@@ -6,7 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -36,12 +39,12 @@ func TestMembersAndActorAccessShareSnapshotAcrossSourceChange(t *testing.T) {
 			_, changed = f.database.Pool.Exec(ctx, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, teamID, actor.UserID)
 		})
 	}})
-	result, err := NewMemberships(traced.store).ListWithAccess(ctx, actor, project.ID)
-	if changed != nil || err != nil || result.ActorAccess.Role != core.ProjectAdmin || !result.ActorAccess.CanTransfer || result.ActorAccess.DirectGrant != nil || result.ActorAccess.TeamRole == nil || *result.ActorAccess.TeamRole != core.ProjectAdmin || len(result.Items) != 1 || result.Items[0].EffectiveRole != core.ProjectAdmin || result.Items[0].InheritedFrom == nil || result.Items[0].InheritedFrom.Role != core.ProjectAdmin {
+	result, err := projectservice.NewMemberships(traced.store).ListWithAccess(ctx, actor, project.ID)
+	if changed != nil || err != nil || result.ActorAccess.Role != model.ProjectAdmin || !result.ActorAccess.CanTransfer || result.ActorAccess.DirectGrant != nil || result.ActorAccess.TeamRole == nil || *result.ActorAccess.TeamRole != model.ProjectAdmin || len(result.Items) != 1 || result.Items[0].EffectiveRole != model.ProjectAdmin || result.Items[0].InheritedFrom == nil || result.Items[0].InheritedFrom.Role != model.ProjectAdmin {
 		t.Fatalf("mixed snapshot: %#v changed=%v err=%v", result, changed, err)
 	}
 	after, err := f.projects.Access(ctx, actor, project.ID)
-	if err != nil || after.Role != core.ProjectMemberRole || after.CanTransfer {
+	if err != nil || after.Role != model.ProjectMemberRole || after.CanTransfer {
 		t.Fatalf("new snapshot failed to observe downgrade: %#v %v", after, err)
 	}
 }
@@ -49,7 +52,7 @@ func TestMembersAndActorAccessShareSnapshotAcrossSourceChange(t *testing.T) {
 func TestProjectAndAccessShareSnapshotAcrossOwnershipChange(t *testing.T) {
 	projects, database, databaseURL, actor := projectService(t)
 	ctx := context.Background()
-	project, err := projects.Create(ctx, actor, CreateProject{ExpectedUserID: actor.UserID, Name: "Ownership snapshot", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, actor, coreproject.CreateProject{ExpectedUserID: actor.UserID, Name: "Ownership snapshot", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +67,7 @@ func TestProjectAndAccessShareSnapshotAcrossOwnershipChange(t *testing.T) {
 			_, changed = database.Pool.Exec(ctx, `UPDATE project_ownership SET team_id=$2,version=9007199254740993 WHERE project_id=$1`, project.ID, newTeam)
 		})
 	}})
-	got, access, err := NewProjects(traced.store).GetWithAccess(ctx, actor, project.ID)
+	got, access, err := projectservice.NewProjects(traced.store).GetWithAccess(ctx, actor, project.ID)
 	if changed != nil || err != nil || got.Ownership != project.Ownership || access.Ownership != got.Ownership || access.OwnerTeam.ID != project.Ownership.TeamID || access.OwnerTeam.Kind != "personal" {
 		t.Fatalf("mixed Project/access snapshot: %#v %#v changed=%v err=%v", got, access, changed, err)
 	}

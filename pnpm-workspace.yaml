@@ -14,5 +14,6 @@ patchedDependencies:
   '@dagrejs/dagre@3.1.1': patches/@dagrejs__dagre@3.1.1.patch
   '@github/copilot-sdk@1.0.11': patches/@github__copilot-sdk@1.0.11.patch
   '@xyflow/system@0.0.83': patches/@xyflow__system@0.0.83.patch
+  mermaid@12.2.0: patches/mermaid@12.2.0.patch
   node-pty@1.1.0: patches/node-pty@1.1.0.patch
   vscode-jsonrpc@8.2.1: patches/vscode-jsonrpc@8.2.1.patch

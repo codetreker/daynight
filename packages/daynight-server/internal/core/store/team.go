@@ -2,9 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -12,7 +13,7 @@ const teamProjection = `t.id::text,t.personal_user_id::text,t.name,t.version,t.c
 	m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at`
 
 type TeamPage struct {
-	Items   []core.Team
+	Items   []model.Team
 	HasMore bool
 }
 
@@ -21,39 +22,39 @@ type TeamTx struct {
 	teamID string
 }
 
-func scanTeam(row pgx.Row) (core.Team, error) {
-	var team core.Team
+func scanTeam(row pgx.Row) (model.Team, error) {
+	var team model.Team
 	var owner *string
 	m := &team.Membership
 	err := row.Scan(&team.ID, &owner, &team.Name, &team.Version, &team.CreatedAt, &team.UpdatedAt,
 		&m.TeamID, &m.UserID, &m.Role, &m.Version, &m.CreatedAt, &m.UpdatedAt)
 	if err != nil {
-		return core.Team{}, err
+		return model.Team{}, err
 	}
 	team.Kind = "ordinary"
 	if owner != nil {
 		team.Kind = "personal"
-		if team.Name != nil || m.UserID != *owner || m.Role != core.ProjectAdmin {
-			return core.Team{}, fmt.Errorf("Personal Team membership is invalid")
+		if team.Name != nil || m.UserID != *owner || m.Role != model.ProjectAdmin {
+			return model.Team{}, fmt.Errorf("Personal Team membership is invalid")
 		}
 	} else if team.Name == nil {
-		return core.Team{}, fmt.Errorf("ordinary Team name is missing")
+		return model.Team{}, fmt.Errorf("ordinary Team name is missing")
 	}
 	team.CreatedAt, team.UpdatedAt = team.CreatedAt.UTC(), team.UpdatedAt.UTC()
 	m.CreatedAt, m.UpdatedAt = m.CreatedAt.UTC(), m.UpdatedAt.UTC()
 	return team, nil
 }
 
-func readTeam(ctx context.Context, tx pgx.Tx, userID, teamID string) (core.Team, error) {
+func readTeam(ctx context.Context, tx pgx.Tx, userID, teamID string) (model.Team, error) {
 	team, err := scanTeam(tx.QueryRow(ctx, `SELECT `+teamProjection+` FROM teams t
 		JOIN team_members m ON m.team_id=t.id WHERE t.id=$1 AND m.user_id=$2`, teamID, userID))
 	if err != nil {
-		return core.Team{}, queryError("read Team", err)
+		return model.Team{}, queryError("read Team", err)
 	}
 	return team, nil
 }
 
-func (s *Snapshot) Team(ctx context.Context, userID, teamID string) (core.Team, error) {
+func (s *Snapshot) Team(ctx context.Context, userID, teamID string) (model.Team, error) {
 	return readTeam(ctx, s.tx, userID, teamID)
 }
 
@@ -67,7 +68,7 @@ func (s *Snapshot) Teams(ctx context.Context, userID string, page Page) (TeamPag
 		return TeamPage{}, queryError("list Teams", err)
 	}
 	defer rows.Close()
-	items := make([]core.Team, 0, page.Limit+1)
+	items := make([]model.Team, 0, page.Limit+1)
 	for rows.Next() {
 		team, err := scanTeam(rows)
 		if err != nil {
@@ -85,36 +86,40 @@ func (s *Snapshot) Teams(ctx context.Context, userID string, page Page) (TeamPag
 	return TeamPage{Items: items, HasMore: more}, nil
 }
 
-func (s *Store) CreateTeam(ctx context.Context, userID, teamID, name string) (core.Team, error) {
+type teamCreationTx struct {
+	tx     pgx.Tx
+	userID string
+}
+
+func (s *Store) CreateTeam(ctx context.Context, userID string, operation func(TeamCreationDAO) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return core.Team{}, queryError("begin Team creation", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin Team creation", err)
 	}
-	var team core.Team
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		var user string
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR KEY SHARE`, userID).Scan(&user); err != nil {
 			return queryError("read Team creator", err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,$2)`, teamID, name); err != nil {
-			return queryError("create Team", err)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, userID); err != nil {
-			return queryError("create Team administrator", err)
-		}
-		team, err = readTeam(ctx, tx, userID, teamID)
-		return err
+		return operation(&teamCreationTx{tx: tx, userID: userID})
 	})
-	if err != nil {
-		return core.Team{}, queryError("create Team", err)
-	}
-	return team, nil
+	return teamCompletion("create Team", err)
 }
 
-func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(*TeamTx) error) error {
+func (tx *teamCreationTx) InsertTeam(ctx context.Context, teamID, name string) (model.Team, error) {
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,$2)`, teamID, name); err != nil {
+		return model.Team{}, queryError("create Team", err)
+	}
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, tx.userID); err != nil {
+		return model.Team{}, queryError("create Team administrator", err)
+	}
+	return readTeam(ctx, tx.tx, tx.userID, teamID)
+}
+
+func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(TeamWriteDAO) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return queryError("begin Team write", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin Team write", err)
 	}
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		var id string
@@ -123,19 +128,32 @@ func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(*Te
 		}
 		return operation(&TeamTx{tx: tx, teamID: teamID})
 	})
-	if err != nil {
-		return queryError("write Team", err)
-	}
-	return nil
+	return teamCompletion("write Team", err)
 }
 
-func (tx *TeamTx) Team(ctx context.Context, userID string) (core.Team, error) {
+func teamCompletion(operation string, err error) (Completion, error) {
+	if err == nil {
+		return Completion{Outcome: TransactionCommitted}, nil
+	}
+	var failure *TransactionError
+	outcome := TransactionUnknown
+	if errors.As(err, &failure) {
+		outcome = failure.Outcome
+	}
+	return Completion{Outcome: outcome}, queryError(operation, err)
+}
+
+var _ TeamWriter = (*Store)(nil)
+var _ TeamWriteDAO = (*TeamTx)(nil)
+var _ TeamCreationDAO = (*teamCreationTx)(nil)
+
+func (tx *TeamTx) Team(ctx context.Context, userID string) (model.Team, error) {
 	return readTeam(ctx, tx.tx, userID, tx.teamID)
 }
 
-func (tx *TeamTx) Rename(ctx context.Context, userID, name string) (core.Team, error) {
+func (tx *TeamTx) Rename(ctx context.Context, userID, name string) (model.Team, error) {
 	if _, err := tx.tx.Exec(ctx, `UPDATE teams SET name=$2,version=version+1,updated_at=statement_timestamp() WHERE id=$1`, tx.teamID, name); err != nil {
-		return core.Team{}, queryError("rename Team", err)
+		return model.Team{}, queryError("rename Team", err)
 	}
 	return tx.Team(ctx, userID)
 }

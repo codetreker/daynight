@@ -11,6 +11,7 @@ export type MacProcessScope = { rootPids: readonly number[]; sessionIds: readonl
 export type MacProcessKernel = {
   bootId(): Promise<string>;
   read(pid: number): Promise<MacProcessSample | null>;
+  executable(pid: number): Promise<string>;
   list(scope?: MacProcessScope): Promise<MacProcessSample[]>;
   peer(endpoint: string): Promise<{ pid: number; auditToken: number[] }>;
   signal(auditToken: readonly number[], signal: number): Promise<number>;
@@ -43,6 +44,7 @@ const loadKernel = async (): Promise<MacProcessKernel> => {
   const koffi = await import("koffi");
   const library = koffi.load("/usr/lib/libSystem.B.dylib");
   const pidInfo = library.func("int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int size)");
+  const pidPath = library.func("int proc_pidpath(int pid, void *buffer, uint32_t size)");
   const listPids = library.func("int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int size)");
   const taskName = library.func("int task_name_for_pid(uint32_t task, int pid, void *port)");
   const taskInfo = library.func("int task_info(uint32_t port, int flavor, void *token, void *count)");
@@ -129,6 +131,12 @@ const loadKernel = async (): Promise<MacProcessKernel> => {
   };
   return {
     bootId: async () => bootId(), read: async pid => read(pid), peer: async endpoint => peer(endpoint),
+    executable: async pid => {
+      const buffer = Buffer.alloc(4096), length = pidPath(pid, buffer, buffer.length) as number;
+      const end = buffer.indexOf(0);
+      if (length <= 0 || end <= 0 || end >= buffer.length || buffer[0] !== 47) throw new Error("Cannot inspect the macOS process executable image.");
+      return buffer.subarray(0, end).toString("utf8");
+    },
     list: async scope => {
       const ids = (type: number, value: number): number[] => {
         for (let capacity = 4096; capacity <= 65536; capacity *= 2) {
@@ -180,8 +188,43 @@ export const createMacProcessControl = (options: { kernel?: MacProcessKernel; pl
     if ((options.platform ?? process.platform) !== "darwin") return Promise.reject(new Error("Original Herdr process control requires macOS."));
     return loaded ??= options.kernel ? Promise.resolve(options.kernel) : loadKernel();
   };
-  const capture = async (pid: number, role: MacProcessIdentity["role"]): Promise<MacProcessIdentity> => {
-    const access = await kernel(), boot = await access.bootId(), sample = await access.read(pid);
+  const capture = async (pid: number, role: MacProcessIdentity["role"], expected?: { executable: string; operation: Operation; ready: () => Promise<boolean> }): Promise<MacProcessIdentity> => {
+    const access = await kernel(), boot = await access.bootId();
+    if (expected) {
+      let original: MacProcessSample | undefined;
+      const wait = async (): Promise<void> => { expected.operation.check(); await delay(10, undefined, { signal: expected.operation.signal }); };
+      const validateBirth = (sample: MacProcessSample | null): MacProcessSample => {
+        if (sample === null) throw new Error("The prepared shell exited before identity registration.");
+        if (sample.pid !== pid || sample.bootId !== boot || original && sample.birthToken !== original.birthToken) throw new Error("The prepared shell was replaced before identity registration.");
+        original ??= sample;
+        return sample;
+      };
+      for (;;) {
+        expected.operation.check();
+        let first: MacProcessSample | null;
+        try { first = await access.read(pid); }
+        catch { await wait(); continue; }
+        validateBirth(first);
+        const ready = await expected.ready();
+        let acknowledged: MacProcessSample | null;
+        try { acknowledged = await access.read(pid); }
+        catch { await wait(); continue; }
+        const before = validateBirth(acknowledged);
+        if (!ready) { await wait(); continue; }
+        let executable: string, last: MacProcessSample | null;
+        try { executable = await access.executable(pid); last = await access.read(pid); }
+        catch { await wait(); continue; }
+        const after = validateBirth(last);
+        // The final shell must acknowledge from user space before image capture:
+        // kernel executable metadata can become visible during an unfinished exec.
+        if (executable === expected.executable && same(before, after)) {
+          expected.operation.check();
+          const result = identityOf(after, role); validate(result); return result;
+        }
+        await wait();
+      }
+    }
+    const sample = await access.read(pid);
     if (sample === null || boot !== sample.bootId) throw new Error("The original macOS process cannot be captured.");
     const result = identityOf(sample, role); validate(result); return result;
   };

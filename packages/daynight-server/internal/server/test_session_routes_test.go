@@ -5,15 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/coder/websocket"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
-	"github.com/google/uuid"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/google/uuid"
 )
 
 func TestTestSessionHTTPAndChannelRequireOwnerCredential(t *testing.T) {
@@ -49,7 +50,7 @@ func TestTestSessionHTTPAndChannelRequireOwnerCredential(t *testing.T) {
 	if response := projectRequest(f.handler, http.MethodGet, "/api/v1/test-sessions/"+f.snapshot.SessionID, ""); response.Code == http.StatusOK {
 		t.Fatal("task leaked into test route")
 	}
-	grant := decodeResponse[sessionrelay.GrantResult](t, projectRequest(f.handler, http.MethodPost, path+"/controller-grant", jsonBody(t, sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})), http.StatusOK)
+	grant := decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, path+"/controller-grant", jsonBody(t, sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})), http.StatusOK)
 	controller := sessionDial(t, f.server.URL, "/api/v1/controller-channel", grant.Token, nil)
 	epoch := uuid.NewString()
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, Provider: "claude", SourceEpoch: epoch, LastAckedSourceSeq: "0"})
@@ -174,7 +175,7 @@ func TestTestSessionHTTPStopRequiresValidProofOwnerAndScope(t *testing.T) {
 	v = value.Session
 	path = "/api/v1/test-sessions/" + v.SessionID
 	proof.Fence = v.Fence
-	grant := decodeResponse[sessionrelay.GrantResult](t, projectRequest(f.handler, http.MethodPost, path+"/controller-grant", jsonBody(t, sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})), http.StatusOK)
+	grant := decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, path+"/controller-grant", jsonBody(t, sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})), http.StatusOK)
 	controller := sessionDial(t, f.server.URL, "/api/v1/controller-channel", grant.Token, nil)
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, Provider: "codex", SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0"})
 	sessionWSKind(t, controller, "welcome")

@@ -12,7 +12,7 @@ import type { TaskSessionSnapshot } from './helpers/session';
 const render = createLocaleRender('en');
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
-afterEach(() => clients.splice(0).forEach(client => client.close()));
+afterEach(() => { clients.splice(0).forEach(client => client.close()); vi.useRealTimers(); });
 
 async function fixture() {
   const s: TaskSessionSnapshot = { ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), lastEventSeq: '0' };
@@ -50,11 +50,12 @@ it.each(['cancel', 'interaction_response', 'update_setting', 'refresh_controls']
   const f = await fixture();
   render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   f.emit(f.operation('provider_accepted', kind));
-  expect(screen.getByText('Accepted by provider')).toBeVisible();
+  expect(screen.getByText('Outcome unknown')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Check original operation' })).toBeEnabled();
 });
 
 it.each([
-  ['accepted', 'Received by relay; awaiting controller'], ['offered', 'Delivering to controller'], ['dispatching', 'Submitting to provider'], ['unknown', 'Outcome unknown'], ['failed', 'Failed'], ['rejected', 'Rejected'], ['expired', 'Expired'],
+  ['accepted', 'Outcome unknown'], ['offered', 'Outcome unknown'], ['dispatching', 'Outcome unknown'], ['unknown', 'Outcome unknown'], ['failed', 'Failed'], ['rejected', 'Rejected'], ['expired', 'Expired'],
 ] as const)('keeps %s visible after newer successful operations', async (state, label) => {
   const f = await fixture();
   render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
@@ -95,4 +96,55 @@ it.each(['confirmed', 'provider_accepted'] as const)('clears only the submitted 
   expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
   expect(f.client.snapshot().state.operations.size).toBe(1);
   expect(container.querySelector('.session-receipts')).toBeNull();
+});
+
+
+it.each(['en', 'zh-CN'] as const)('shows current-page delivery progress without an unknown warning in %s', async locale => {
+  const f = await fixture();
+  vi.useFakeTimers();
+  let acknowledge!: (operation: SessionOperation) => void;
+  vi.mocked(f.api.command).mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
+  const { container } = createLocaleRender(locale)(<SessionView userId={userId} client={f.client} active current />);
+  act(() => f.client.setDraft('Wait for native acceptance'));
+  fireEvent.submit(container.querySelector('form')!);
+  expect(screen.getByText(locale === 'en' ? 'Sending…' : '正在发送…')).toBeVisible();
+  expect(container.querySelector('.session-notice')).toBeNull();
+  expect(container.querySelector('.session-receipt.unknown')).toBeNull();
+  expect(container.querySelector('.session-receipt-progress')).not.toBeNull();
+  expect(screen.queryByRole('button', { name: locale === 'en' ? 'Check original operation' : '核对原操作' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Awaiting provider confirmation' })).toBeDisabled();
+  expect(screen.getByRole('textbox')).toHaveValue('Wait for native acceptance');
+  const command = vi.mocked(f.api.command).mock.calls[0]![1];
+  const operation = { ...f.operation('accepted'), operationId: command.operationId };
+  vi.mocked(f.api.operation).mockResolvedValue(operation);
+  await act(async () => acknowledge(operation));
+  expect(screen.getByText(locale === 'en' ? 'Received by relay; awaiting controller' : '中转已收到，等待 Controller 接收')).toBeVisible();
+  expect(container.querySelector('.session-notice')).toBeNull();
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(screen.getByText(locale === 'en' ? 'Still awaiting acceptance…' : '仍在等待受理…')).toBeVisible();
+  expect(container.querySelector('.session-notice')).toBeNull();
+  const checks = vi.mocked(f.api.operation).mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: locale === 'en' ? 'Check original operation' : '核对原操作' }));
+  await act(async () => vi.advanceTimersByTimeAsync(0));
+  expect(f.api.operation).toHaveBeenCalledTimes(checks + 1);
+  expect(f.api.command).toHaveBeenCalledOnce();
+  vi.mocked(f.api.operation).mockResolvedValue({ ...operation, state: 'provider_accepted', providerResult: 'started' });
+  f.emit({ ...operation, state: 'provider_accepted', providerResult: 'started' });
+  await act(async () => vi.advanceTimersByTimeAsync(750));
+  expect(container.querySelector('.session-receipts')).toBeNull();
+  expect(screen.getByRole('textbox')).toHaveValue('');
+});
+
+it('keeps an uncertain result visible and its draft intact when delivery fails', async () => {
+  const f = await fixture();
+  vi.mocked(f.api.command).mockRejectedValue(new Error('Connection interrupted'));
+  const { container } = render(<SessionView userId={userId} client={f.client} active current />);
+  act(() => f.client.setDraft('Unconfirmed input'));
+  fireEvent.submit(container.querySelector('form')!);
+  await waitFor(() => expect(screen.getByText('Outcome unknown')).toBeVisible());
+  expect(screen.getByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Check original operation' })).toBeEnabled();
+  expect(screen.getByRole('textbox')).toHaveValue('Unconfirmed input');
+  expect(container.querySelector('.session-receipt-progress')).toBeNull();
+  expect(f.api.command).toHaveBeenCalledOnce();
 });

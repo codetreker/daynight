@@ -29,7 +29,7 @@ const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphS
     tasks, summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
       inProgress: tasks.filter((task) => task.status === "in_progress").length, done: tasks.filter((task) => task.status === "done").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.ready === false && task.status === "todo").length } };
-  return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), observedAt: observed, receivedMonotonic: 0, receivedAt: 0, revision: 1 };
+  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: observed, receivedMonotonic: 0, receivedAt: 0, revision: 1 };
 };
 const categories = ({ index }: GraphSnapshot) => ({
   chainIds: index.representativeIds.toReversed().filter((id) => index.components.get(id)!.memberIds.size > 1),

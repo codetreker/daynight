@@ -54,9 +54,9 @@ mockup/
 
 | 当前结构 | 集成方式 |
 |---|---|
-| [Task 模型](../../packages/daynight-server/internal/core/task.go)保存正文、状态、版本及依赖 | 新增独立附件模型与服务，不向 task PATCH 加入文件传输 |
+| [Task 模型](../../packages/daynight-server/internal/core/model/task.go)保存正文、状态、版本及依赖 | 新增独立附件模型与服务，不向 task PATCH 加入文件传输 |
 | [HTTP 组装](../../packages/daynight-server/internal/server/server.go)在同一 mux 注册 API 和内嵌页面 | 附件 API 与预览复用同一服务及 origin |
-| [JSON 解码](../../packages/daynight-server/internal/server/http.go)读取并校验受 1 MiB 限制的 JSON | 二进制上传使用独立的流式处理，既有 JSON 限制保持原义 |
+| [JSON 解码](../../packages/daynight-server/internal/server/httpx/http.go)读取并校验受 1 MiB 限制的 JSON | 二进制上传使用独立的流式处理，既有 JSON 限制保持原义 |
 | [附件迁移](../../packages/daynight-server/internal/core/store/migrations/004_task_attachments.sql)定义独立附件表 | 既有迁移机制维护该表，归属由服务校验 |
 | [CLI API 客户端](../../packages/daynight/src/api/client.ts)区分 JSON、字节与空响应 | 复用期限、取消、错误及元数据预算；原始文件流不经过 JSON 解码 |
 | [CLI 上下文](../../packages/daynight/src/cli/context.ts)提供 text 与 bytes 输出 | `stdoutBytes` 可等待且保留背压，`closeStdoutBytes` 负责命令结束前的输出清理 |
@@ -75,7 +75,7 @@ flowchart TD
     Storage --> Local[LocalStorage]
 ```
 
-服务内通用文件存储包位于 `internal/filestorage/`，本地实现在其
+服务内通用文件存储包位于 `internal/core/filestorage/`，本地实现在其
 `local/` 子包。该包不依赖 task、project、HTTP 或 PG。附件服务选择 bucket、组成
 存储路径，调用 Storage 并读写附件元数据；其他业务可以用自己的 bucket 复用它。
 
@@ -275,7 +275,7 @@ operationId、phase、step 及适用的 projectId/taskId 关联。失败日志�
 保持停写直至核验和切换结束。PG advisory lock 只串行同一数据库的维护调用，不能阻止普通业务写入。
 备份及回退的命令由[部署说明](../../deployment/localhost/README.md#attachment-layout-upgrade)拥有。
 
-维护编排位于附件业务包，复用相同的 project/shard/task 前缀函数。普通文件接口保持 Put/Open/Delete，
+维护入口由 `service/attachment` 取得专用维护连接和根句柄；`core/attachment/migration` 拥有记录、清点、校验和恢复状态机，并复用相同的 project/shard/task 前缀函数。根 store 的维护合同提供数据库身份及有序元数据快照，应用组装侧的维护工厂选择具体后端。专用连接从获取 advisory lock 到操作结束始终保持，同一连接执行全部快照。普通文件接口保持 Put/Open/Delete，
 不增加通用 Rename 或让适配器理解 task。维护过程显式打开配置的 os.Root，所有操作相对于该根句柄。
 根内独占 operation 目录、UUID、当前数据库身份与归属/元数据摘要，以及完整文件树共同绑定续作；
 不另造平台 inode 身份要求，也不根据目录名猜测布局已经迁移。
@@ -502,8 +502,9 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 `tabIndex=0`，使键盘滚动区域与焦点枚举一致。原生 modal 隔离底层交互，确认层复用 `dialogFocusables` 枚举可用控件，显式循环边界 Tab/Shift+Tab，
 包括提交中焦点位于对话框自身的情形；当前层停止键盘事件冒泡，保留外层详情的键盘所有权。
 未提交状态可用 Escape、取消及遮罩关闭并恢复操作入口；提交中保持目标和确认框，
-禁用重复确认及冲突写入。错误在确认层明确展示，保留重试与取消入口。语言选择
-位于可操作的确认层，重译不会重新提交。页签激活状态显式传给附件组件，用于关闭
+禁用重复确认及冲突写入。错误在确认层明确展示，保留重试与取消入口。确认层
+订阅当前语言，不渲染语言选择器及其偏好反馈；语言变化只重译内容，不重新提交。
+页面保留自身语言入口与偏好反馈。页签激活状态显式传给附件组件，用于关闭
 隐藏面板中未提交的菜单和确认；task/project 变化释放原组件。
 [删除确认决策](../../.agents/notes/implemented/feature/2026-10-23-attachment-delete-confirmation.md)
 记录层级与交互取舍。
@@ -523,16 +524,16 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 
 | 类型 | 预览机制 |
 |---|---|
-| Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 流程图组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
+| Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 图表组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
 | 图片 | 原生 img 的加载、错误和重试状态 |
 | PDF | HEAD 检查后交给浏览器原生 iframe |
 | 文本、JSON、源码 | 原始文本节点与 pre，保留换行 |
 | HTML | HEAD 检查后在普通同源 iframe 中加载执行 |
 | 其他格式 | 元数据及下载链接 |
 
-`MarkdownContent` 负责 CommonMark/GFM、Mermaid 流程图及样式，URL 转换与链接激活由
-调用方提供。流程图的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
-隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[流程图设计](daynight-task-inspection.md#mermaid-流程图)，
+`MarkdownContent` 负责 CommonMark/GFM、Mermaid 图表及样式，URL 转换与链接激活由
+调用方提供。图表的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
+隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[图表设计](daynight-task-inspection.md#mermaid-图表)，
 内嵌及独立完整详情不建立第二套渲染机制。`MarkdownAttachmentBase` 区分 `document` 与 `root`：附件调用方使用
 当前文件的目录作为资源基准，描述调用方使用任务附件根；不虚构描述文件名。路径解析逐段处理 URL 编码和 parent 段，拒绝
 越过任务根，保留 query/hash。独立 `#fragment` 保持原值，不改成文件请求。绝对、
@@ -767,8 +768,9 @@ Web 新增 `task-attachments` 功能场景，在原生和实际生产容器上�
 许可和计时场景仍保有独立的写入边界。
 
 附件场景与
-`language-state-preservation` 仅允许精确 fixture task/file 的 PUT/DELETE，后者验证切换期间
-待完成操作只执行一次；`refresh-staleness` 仅允许一次已登记 fixture task/file PUT，将真实上传响应挂起并跨自动读取验证状态与几何保留。描述阅读、其他图场景、任务视图及其他语言场景继续 GET/HEAD。
+`language-state-preservation` 仅允许精确 fixture task/file 的 PUT/DELETE，后者分别验证
+语言切换时的浏览状态保持及挂起写入的状态和次数；组件测试以受控语言变化验证在途
+操作的状态和唯一请求。`refresh-staleness` 仅允许一次已登记 fixture task/file PUT，将真实上传响应挂起并跨自动读取验证状态与几何保留。描述阅读、其他图场景、任务视图及其他语言场景继续 GET/HEAD。
 完整 Chromium channel `chromium` 对 PDF 的证明来自 iframe 实际
 compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通区域分组，独立计算
 各个实心色块的像素数、边界和密度，并在延伸到 frame 右半区的页面候选中检查
@@ -790,5 +792,5 @@ compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通
 
 各实现任务运行所影响模块的既有检查；CLI 使用 `pnpm typecheck`、`pnpm test`、
 `pnpm build` 及相关安装验收，Web 使用 README 拥有的 `web:*` 验证，Go 服务使用
-隔离 PostgreSQL 下的 `bash scripts/check.sh`。服务既有 build、vet、race、go-cov
+隔离 PostgreSQL 下的 `bash scripts/check.sh`。服务既有 build、vet、按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)选择的 race、go-cov
 及未取整总语句覆盖率严格大于 90% 的门槛保持不变。

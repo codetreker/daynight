@@ -35,16 +35,17 @@ export const ConfigurationProjectsDialog = ({ projects, selected, loading, error
   </ManagementDialog>;
 };
 
-export const ConfigurationRemovalDialog = ({ projects, tasks, onClose, onConfirm }: {
+export const ConfigurationRemovalDialog = ({ projects, tasks, disabled, onClose, onConfirm }: {
   readonly projects: readonly { readonly projectId: string; readonly name: string }[];
   readonly tasks: readonly WorkerTaskSnapshot[];
+  readonly disabled: boolean;
   readonly onClose: () => void;
   readonly onConfirm: () => void;
 }) => {
   const { messages: { workers: { configuration: m }, common } } = useI18n();
   const affected = new Set(projects.map(project => project.projectId));
   const observedTasks = tasks.filter(task => affected.has(task.projectId));
-  return <ManagementDialog title={m.removalConfirm} onClose={onClose} footer={<><button className="button" type="button" onClick={onClose}>{m.cancel}</button><button className="button primary" type="button" onClick={onConfirm}>{m.save}</button></>}>
+  return <ManagementDialog title={m.removalConfirm} onClose={onClose} footer={<><button className="button" type="button" onClick={onClose}>{m.cancel}</button><button className="button primary" type="button" disabled={disabled} onClick={onConfirm}>{m.save}</button></>}>
     <p>{m.removalImpact}</p>
     <h3 className="configuration-dialog-subtitle">{m.affectedProjects}</h3><ul className="affected-tasks">{projects.map(project => <li key={project.projectId}>{project.name}<small>{project.projectId}</small></li>)}</ul>
     <h3 className="configuration-dialog-subtitle">{m.affectedTasks}</h3>

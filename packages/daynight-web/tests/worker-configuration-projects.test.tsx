@@ -24,6 +24,18 @@ const page = (items: readonly Project[], nextCursor: string | null = null, userI
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); });
 
 describe('configuration Project choices', () => {
+  it('removes suspended metadata immediately and restores it only after a new authorized read', async () => {
+    const scope = makeScope(), target = project(3), healthy = project(4), old = deferred<Response>(), suspended = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(page([target, healthy])).mockImplementationOnce(() => old.promise)
+      .mockResolvedValueOnce(page([target, healthy])).mockImplementationOnce(() => suspended.promise).mockResolvedValueOnce(page([target, healthy])); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useConfigurationProjects(true), { wrapper: wrapper(scope) }); await flush();
+    act(() => result.current.refresh()); await flush(); act(() => scope.suspendProject(target.id)); await flush();
+    expect(result.current.items).toEqual([healthy]); expect(result.current.loading).toBe(false);
+    old.resolve(page([target, healthy])); await flush(); expect(result.current.items).toEqual([healthy]);
+    act(() => result.current.refresh()); await flush();
+    act(() => scope.resumeProject(target.id)); await flush(); expect(result.current.items).toEqual([target, healthy]);
+    suspended.resolve(page([target, healthy])); await flush(); expect(result.current.items).toEqual([target, healthy]); expect(fetch).toHaveBeenCalledTimes(5);
+  });
   it('withdraws metadata during pagination, ignores older generations, and permits fresh authorization', async () => {
     const scope = makeScope(), target = project(3), healthy = project(4), old = deferred<Response>(), fresh = deferred<Response>();
     let publish!: (event: CacheEvent) => void;
@@ -64,6 +76,17 @@ describe('configuration Project choices', () => {
     expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/api/v1/projects?limit=100', '/api/v1/projects?limit=100&cursor=next%2F%2B']);
     second.resolve(page([project(4)])); await flush();
     expect(result.current.items).toEqual([project(3), project(4)]); expect(result.current.loading).toBe(false); expect(result.current.error).toBeNull();
+  });
+  it.each([{ items: [] as Project[] }, { items: [project(3), project(4)] }])('retains a fully loaded candidate set during a background read, including an empty set', async ({ items }) => {
+    const next = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(page(items)).mockImplementationOnce(() => next.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ enabled }) => useConfigurationProjects(enabled), { initialProps: { enabled: true }, wrapper: wrapper(makeScope()) });
+    await flush(); expect(result.current.loading).toBe(false); expect(result.current.items).toEqual(items);
+    rerender({ enabled: false }); rerender({ enabled: true }); await flush();
+    expect(result.current.loading).toBe(false); expect(result.current.items).toEqual(items);
+    next.resolve(page(items.map(item => ({ ...item })))); await flush();
+    expect(result.current.loading).toBe(false); expect(result.current.items).toEqual(items);
   });
   it('drops cached metadata after permission/read failure without publishing a partial refresh', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(page([project(3)]))

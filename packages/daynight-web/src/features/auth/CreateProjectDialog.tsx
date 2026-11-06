@@ -3,7 +3,6 @@ import { createProject, ProjectCreationUnknown } from "../../api/auth";
 import { ApiError, isAbortError, listProjects } from "../../api/client";
 import type { Project } from "../../api/types";
 import { useI18n } from "../../i18n/LocaleProvider";
-import { LanguageSelector } from "../../i18n/LanguageSelector";
 import { useBodyScrollLock } from "../../app/useBodyScrollLock";
 import type { TaskCacheScope } from "../task-cache/project-cache";
 import { TaskCacheError } from "../task-cache/database";
@@ -18,6 +17,8 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
   const checkActive = useRef<AbortController | null>(null);
   const checkSnapshot = useRef<ReadonlyMap<string, string> | null>(null);
   const itemGenerations = useRef(new Map<string, ReadonlyMap<string, string>>());
+  const checkAction = useRef<() => void>(() => {});
+  const restorePending = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [check, setCheck] = useState<{ status: "idle" | "loading" | "ready" | "error"; items: readonly Project[]; nextCursor: string | null; error: unknown }>({ status: "idle", items: [], nextCursor: null, error: null });
@@ -26,14 +27,25 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
   useBodyScrollLock(true);
   useLayoutEffect(() => {
     const opener = document.activeElement;
-    dialog.current!.showModal();
+    const element = dialog.current!;
+    element.showModal();
     name.current?.focus();
-    return () => { if (opener instanceof HTMLElement && opener.isConnected) opener.focus(); };
+    return () => {
+      if (element.open) element.close();
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
   }, []);
   useEffect(() => () => active.current?.abort(), []);
   useEffect(() => {
     if (admission === undefined) return;
     return admission.subscribeProjection((event) => {
+      if (event.accessRestored) {
+        if (itemGenerations.current.has(event.projectId)) {
+          if (active.current === null) checkAction.current();
+          else restorePending.current = true;
+        }
+        return;
+      }
       if (!event.accessRevoked) return;
       const observed = itemGenerations.current.get(event.projectId);
       const remove = observed !== undefined && admission.projectionEventMatches(observed, event);
@@ -46,14 +58,14 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       }
     });
   }, [admission]);
-  const checkProjects = (cursor: string | null) => {
+  const checkProjects = (cursor: string | null, preserve = false) => {
     if (active.current !== null) return;
     const controller = new AbortController();
     const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal]);
     active.current = controller;
     checkActive.current = controller;
     checkSnapshot.current = null;
-    setCheck((previous) => ({ status: "loading", items: cursor === null ? [] : previous.items, nextCursor: cursor, error: null }));
+    setCheck((previous) => ({ status: "loading", items: cursor === null && !preserve ? [] : previous.items, nextCursor: preserve ? previous.nextCursor : cursor, error: null }));
     void (async () => {
       try {
         const snapshot = admission === undefined ? new Map<string, string>() : await admission.prepareProjection(signal);
@@ -63,20 +75,28 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
         if (admission !== undefined) await admission.ready(signal);
         if (!signal.aborted) {
           const visible = page.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
-          if (cursor === null) itemGenerations.current.clear();
-          for (const item of visible) if (!itemGenerations.current.has(item.id)) itemGenerations.current.set(item.id, snapshot);
+          if (cursor === null && !preserve) itemGenerations.current.clear();
+          for (const item of visible) if (preserve || !itemGenerations.current.has(item.id)) itemGenerations.current.set(item.id, snapshot);
           setCheck((previous) => {
             const failure = admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null);
-            return { status: failure === null ? "ready" : "error", items: cursor === null ? visible : [...previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true), ...visible], nextCursor: page.nextCursor, error: failure };
+            const retained = cursor === null && !preserve ? [] : previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
+            const items = new Map(retained.map((item) => [item.id, item]));
+            for (const item of visible) if (preserve || !items.has(item.id)) items.set(item.id, item);
+            return { status: failure === null ? "ready" : "error", items: [...items.values()], nextCursor: preserve ? previous.nextCursor : page.nextCursor, error: failure };
           });
         }
       } catch (cause) {
         if (signal.aborted || isAbortError(cause)) return;
         try { if (admission !== undefined) await admission.ready(signal); } catch { return; }
         if (!signal.aborted) setCheck((previous) => ({ ...previous, status: "error", error: cause }));
-      } finally { if (active.current === controller) active.current = null; if (checkActive.current === controller) { checkActive.current = null; checkSnapshot.current = null; } }
+      } finally {
+        if (active.current === controller) active.current = null;
+        if (checkActive.current === controller) { checkActive.current = null; checkSnapshot.current = null; }
+        if (restorePending.current && active.current === null) { restorePending.current = false; checkAction.current(); }
+      }
     })();
   };
+  checkAction.current = () => checkProjects(null, true);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (active.current !== null || unknown) return;
@@ -99,7 +119,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
     })();
   };
   return <dialog ref={dialog} className="auth-dialog" aria-labelledby="create-project-title" onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
-    <form onSubmit={submit}><header className="dialog-header"><h2 id="create-project-title">{target.personal ? m.title : locale === "zh-CN" ? "创建项目" : "Create project"}</h2><LanguageSelector /><button className="close-button" type="button" aria-label={m.close} disabled={busy} onClick={onClose}>×</button></header><div className="dialog-body"><p>{target.personal ? m.intro : locale === "zh-CN" ? "Team 成员可以访问此项目，也可以单独管理项目权限。" : "Team members can access this project; project permissions can also be managed separately."}</p>
+    <form onSubmit={submit}><header className="dialog-header"><h2 id="create-project-title">{target.personal ? m.title : locale === "zh-CN" ? "创建项目" : "Create project"}</h2><button className="close-button" type="button" aria-label={m.close} disabled={busy} onClick={onClose}>×</button></header><div className="dialog-body"><p>{target.personal ? m.intro : locale === "zh-CN" ? "Team 成员可以访问此项目，也可以单独管理项目权限。" : "Team members can access this project; project permissions can also be managed separately."}</p>
       {targetTeamId !== undefined && <p>{locale === "zh-CN" ? "创建到：" : "Create in: "}<strong>{target.personal ? (locale === "zh-CN" ? "个人" : "Personal") : target.name}</strong></p>}
       <div className="field"><label htmlFor="project-name">{m.name} <span className="required">*</span></label><input ref={name} id="project-name" name="name" required autoComplete="off" disabled={busy} /></div>
       <div className="field"><label htmlFor="project-repository">{m.repository} <span className="required">*</span></label><input id="project-repository" name="repoUrl" required type="text" autoComplete="off" placeholder="https://github.com/team/project" disabled={busy} /><p className="hint">{m.repositoryHint}</p></div>

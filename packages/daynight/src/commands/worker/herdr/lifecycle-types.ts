@@ -15,6 +15,7 @@ export type HerdrRunPhase = "prepared" | "launch_requested" | "active" | "stop_i
 export type HerdrLocalRun = {
   run: SessionV2Run;
   phase: HerdrRunPhase;
+  nativeLaunch: "not_submitted" | "requested" | "observed" | "unknown";
   instanceDirectory: string;
   daemon: MacProcessIdentity | null;
   processes: MacProcessIdentity[];

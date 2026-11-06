@@ -27,10 +27,12 @@ Selecting deletion focuses the surviving menu trigger before opening confirmatio
 so cancellation restores that trigger. The
 [standalone-detail decision](../architecture/2026-10-24-standalone-task-detail.md)
 owns that link and shares the same complete content with its page container.
-The body heading places the status menu immediately before the platform selector,
-with readiness after both and automatic execution at the right. Status and
-platform use the same compact control height, and the left group can wrap at
-narrow widths. The
+The body heading pairs the status menu with the assignee before the platform
+selector, with readiness after them and automatic execution at the right.
+Status, assignee and platform use the same compact control height. The
+[phone status flow](../bug-fix/2026-11-06-phone-task-status-flow.md) extends this
+allocation with one shared wrapping layout up to 600px and automatic execution
+at the final line's right edge. The
 [notification decision](../bug-fix/2026-10-24-task-detail-notifications.md) owns
 actionable floating notices and lock tooltips. Overview metadata retains the full
 selectable ID and a copy icon matching the overlapping squares immediately after

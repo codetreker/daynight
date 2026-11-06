@@ -1,13 +1,18 @@
 import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { stringifyApiJson } from "../../src/api/json";
 import { selectTaskList } from './project-view';
+import { expectLanguageLayout } from './language-layout';
 import { randomUUID } from 'node:crypto';
 import type { Page, Route, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
+import { en } from "../../src/i18n/messages/en";
+import { zhCN } from "../../src/i18n/messages/zh-CN";
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type ProjectRecord } from '../../src/features/task-cache/database';
 import { authenticatedAPI, bearerContext, browserAuthentication, tokenContext, type AuthenticatedAPI } from './authentication';
 import { executeTask, createProject, createTask, expect, test } from './fixtures';
 import { attachmentFileButton } from './attachment-tree';
+import { verifyScopedInvitationManagement } from './w7-invitations';
+import { runAuthLogin } from './auth-login-diagnostics';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const origin = (info: TestInfo): string => {
@@ -49,80 +54,102 @@ test.afterEach(async ({ context }, info) => {
 test.describe('visible authentication protocol', () => {
   test.use({ authentication: 'visible' });
   test('auth-login-session', scenario('auth-login-session'), async ({ page, context, api: request, allowBrowserWrites }, info) => {
-    const baseURL = origin(info);
-    const project = await createProject(request, { name: `Visible login ${randomUUID()}` });
-    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/auth/logout`, count: 1 }]);
-    const originalViewport = page.viewportSize();
-    if (originalViewport === null) throw new Error('The responsive header check requires a configured viewport.');
-    const narrowHeaderFits = async (state: string) => {
-      for (const width of [320, 361, 375, 390]) {
-        await page.setViewportSize({ width, height: 844 });
-        await expect(page.locator('.site-header .brand')).toBeVisible();
-        await expect(page.locator('.site-header select')).toBeVisible();
-        await expect(page.locator('.site-header .nav-start')).toBeVisible();
-        const geometry = await page.locator('.landing-page .site-header').evaluate((header) => ({
-          viewport: window.innerWidth,
-          documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-          controls: [...header.querySelectorAll('a, select')].map((element) => element.getBoundingClientRect())
-            .filter((bounds) => bounds.width > 0 && bounds.height > 0)
-            .map(({ left, right }) => ({ left, right })),
-        }));
-        expect(geometry.viewport, `${state}: the English header is checked at ${width}px`).toBe(width);
-        expect(geometry.documentWidth, `${state} at ${width}px: the page has no horizontal overflow`).toBeLessThanOrEqual(geometry.viewport);
-        expect(geometry.controls.length, `${state} at ${width}px: header controls remain visible`).toBeGreaterThan(1);
-        for (const bounds of geometry.controls) {
-          expect(bounds.left, `${state} at ${width}px: a header control starts inside the viewport`).toBeGreaterThanOrEqual(0);
-          expect(bounds.right, `${state} at ${width}px: a header control ends inside the viewport`).toBeLessThanOrEqual(geometry.viewport);
+    await runAuthLogin({
+      step: (name, action) => test.step(name, action),
+      attach: (operations) => info.attach('auth-login-operations', { body: JSON.stringify(operations, null, 2), contentType: 'application/json' }),
+      cleanupTimeoutMs: 5_000,
+    }, async ({ operation, withCleanup }) => {
+      const baseURL = origin(info);
+      const project = await operation('Create login project', () => createProject(request, { name: `Visible login ${randomUUID()}` }));
+      allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/auth/logout`, count: 1 }]);
+      const originalViewport = page.viewportSize();
+      if (originalViewport === null) throw new Error('The responsive header check requires a configured viewport.');
+      const narrowHeaderFits = async (state: string) => {
+        for (const width of [320, 361, 375, 390]) {
+          await operation(`${state} header ${width}: resize`, () => page.setViewportSize({ width, height: 844 }));
+          await operation(`${state} header ${width}: brand`, () => expect(page.locator('.site-header .brand')).toBeVisible());
+          await operation(`${state} header ${width}: language layout`, () => expectLanguageLayout(page.locator('.site-header select')));
+          await operation(`${state} header ${width}: navigation`, () => expect(page.locator('.site-header .nav-start')).toBeVisible());
+          await operation(`${state} header ${width}: geometry`, async () => {
+            const geometry = await page.locator('.landing-page .site-header').evaluate((header) => ({
+              viewport: window.innerWidth,
+              documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+              controls: [...header.querySelectorAll('a, select')].map((element) => element.getBoundingClientRect())
+                .filter((bounds) => bounds.width > 0 && bounds.height > 0)
+                .map(({ left, right }) => ({ left, right })),
+            }));
+            expect(geometry.viewport, `${state}: the English header is checked at ${width}px`).toBe(width);
+            expect(geometry.documentWidth, `${state} at ${width}px: the page has no horizontal overflow`).toBeLessThanOrEqual(geometry.viewport);
+            expect(geometry.controls.length, `${state} at ${width}px: header controls remain visible`).toBeGreaterThan(1);
+            for (const bounds of geometry.controls) {
+              expect(bounds.left, `${state} at ${width}px: a header control starts inside the viewport`).toBeGreaterThanOrEqual(0);
+              expect(bounds.right, `${state} at ${width}px: a header control ends inside the viewport`).toBeLessThanOrEqual(geometry.viewport);
+            }
+          });
         }
-      }
-    };
-    const releaseIdentity = Promise.withResolvers<void>();
-    const heldIdentityReads: Promise<void>[] = [];
-    const holdIdentity = (route: Route) => {
-      const pending = releaseIdentity.promise.then(() => route.continue());
-      heldIdentityReads.push(pending);
-      return pending;
-    };
-    await page.setViewportSize({ width: 320, height: 844 });
-    await page.route(`${baseURL}/api/v1/me`, holdIdentity);
-    try {
-      await page.goto('/');
-      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
-      await expect.poll(() => heldIdentityReads.length).toBe(1);
-      await expect(page.locator('.site-header .nav-start')).toHaveText('Sign in / workspace ↗');
-      await narrowHeaderFits('Identity pending');
-      releaseIdentity.resolve();
-      await expect(page.locator('.site-header .nav-start')).toHaveText('Sign in ↗');
-      await narrowHeaderFits('Anonymous');
-    } finally {
-      releaseIdentity.resolve();
-      await page.unroute(`${baseURL}/api/v1/me`, holdIdentity);
-      await Promise.all(heldIdentityReads);
-    }
-    const unavailableIdentity = (route: Route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Unavailable', requestId: 'landing-header' } }) });
-    await page.route(`${baseURL}/api/v1/me`, unavailableIdentity);
-    try {
-      await page.goto('/');
-      await expect(page.locator('.site-header .identity-notice')).toBeVisible();
-      await expect(page.locator('.site-header .nav-start')).toHaveText('Sign in / workspace ↗');
-      await narrowHeaderFits('Identity unavailable');
-    } finally { await page.unroute(`${baseURL}/api/v1/me`, unavailableIdentity); }
-    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
-    await page.setViewportSize(originalViewport);
-    await expect(page.locator('.landing-page')).toBeVisible();
-    await expect(page.locator('.auth-shell')).toHaveCount(0);
-    await page.locator('.landing-page a[href="/login"]').first().click();
-    await expect(page).toHaveURL(`${baseURL}/login`);
-    await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
-    await page.goBack();
-    await expect(page).toHaveURL(`${baseURL}/`);
-    await expect(page.locator('.landing-page')).toBeVisible();
-    const providerSession = await context.newCDPSession(page);
-    let deadline: ReturnType<typeof setTimeout> | undefined;
-    const controlledProvider = new Promise<void>((resolve, reject) => {
-      deadline = setTimeout(() => reject(new Error('The controlled external provider request was not reached.')), 15_000);
-      providerSession.once('Fetch.requestPaused', (event) => {
-        void (async () => {
+      };
+      const releaseIdentity = Promise.withResolvers<void>();
+      const heldIdentityReads: Promise<PromiseSettledResult<void>>[] = [];
+      const holdIdentity = (route: Route) => {
+        const pending = releaseIdentity.promise.then(() => route.continue());
+        heldIdentityReads.push(pending.then(
+          (value) => ({ status: 'fulfilled', value }),
+          (reason: unknown) => ({ status: 'rejected', reason }),
+        ));
+        return pending;
+      };
+      await operation('Resize anonymous landing page', () => page.setViewportSize({ width: 320, height: 844 }));
+      await operation('Hold initial identity response', () => page.route(`${baseURL}/api/v1/me`, holdIdentity));
+      await withCleanup(async () => {
+        await operation('Open landing page with identity pending', () => page.goto('/'));
+        await operation('Select English with identity pending', () => page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en'));
+        await operation('Observe held identity read', () => expect.poll(() => heldIdentityReads.length).toBe(1));
+        await operation('Assert pending identity navigation', () => expect(page.locator('.site-header .nav-start')).toHaveText('Sign in / workspace ↗'));
+        await narrowHeaderFits('Identity pending');
+        releaseIdentity.resolve();
+        await operation('Assert anonymous navigation', () => expect(page.locator('.site-header .nav-start')).toHaveText('Sign in ↗'));
+        await narrowHeaderFits('Anonymous');
+      }, [
+        { operation: 'Release held identity response', action: async () => { releaseIdentity.resolve(); } },
+        { operation: 'Remove initial identity route', action: () => page.unroute(`${baseURL}/api/v1/me`, holdIdentity) },
+        { operation: 'Drain held identity reads', action: async () => {
+          const results = await Promise.all(heldIdentityReads);
+          const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+          if (failures.length === 1) throw failures[0];
+          if (failures.length > 1) throw new AggregateError(failures, 'Held identity reads failed.');
+        } },
+      ]);
+      const unavailableIdentity = (route: Route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Unavailable', requestId: 'landing-header' } }) });
+      await operation('Install unavailable identity response', () => page.route(`${baseURL}/api/v1/me`, unavailableIdentity));
+      await withCleanup(async () => {
+        await operation('Reload landing page with identity unavailable', () => page.goto('/'));
+        await operation('Assert unavailable identity notice', () => expect(page.locator('.site-header .identity-notice')).toBeVisible());
+        await operation('Assert unavailable identity navigation', () => expect(page.locator('.site-header .nav-start')).toHaveText('Sign in / workspace ↗'));
+        await narrowHeaderFits('Identity unavailable');
+      }, [{ operation: 'Remove unavailable identity route', action: () => page.unroute(`${baseURL}/api/v1/me`, unavailableIdentity) }]);
+      await operation('Select Chinese on landing page', () => page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN'));
+      await narrowHeaderFits('Chinese');
+      await operation('Capture narrow landing page', () => picture(page, info, 'language-selector-landing-narrow'));
+      await operation('Restore landing viewport', () => page.setViewportSize(originalViewport));
+      await operation('Assert desktop language layout', () => expectLanguageLayout(page.locator('.site-header select')));
+      await operation('Capture desktop landing page', () => picture(page, info, 'language-selector-landing-desktop'));
+      await operation('Assert anonymous landing page', () => expect(page.locator('.landing-page')).toBeVisible());
+      await operation('Assert landing page has no login shell', () => expect(page.locator('.auth-shell')).toHaveCount(0));
+      await operation('Open explicit login page', () => page.locator('.landing-page a[href="/login"]').first().click());
+      await operation('Assert explicit login URL', () => expect(page).toHaveURL(`${baseURL}/login`));
+      await operation('Assert explicit login heading', () => expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible());
+      await operation('Return from explicit login', () => page.goBack());
+      await operation('Assert returned landing URL', () => expect(page).toHaveURL(`${baseURL}/`));
+      await operation('Assert returned landing page', () => expect(page.locator('.landing-page')).toBeVisible());
+      const providerSession = await operation('Create external provider CDP session', () => context.newCDPSession(page));
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const controlledProvider = Promise.withResolvers<void>();
+      const providerOutcome = controlledProvider.promise.then(
+        () => ({ status: 'passed' as const }),
+        (error: unknown) => ({ status: 'failed' as const, error }),
+      );
+      const handleProviderRequest = (event: { request: { url: string }; requestId: string }) => {
+        void operation('Validate and fulfill external provider request', async () => {
           const upstream = new URL(event.request.url);
           if (upstream.origin !== 'https://github.com' || upstream.pathname !== '/login/oauth/authorize'
             || upstream.searchParams.get('code_challenge_method') !== 'S256') throw new Error('The external provider authorization or PKCE request changed.');
@@ -134,52 +161,70 @@ test.describe('visible authentication protocol', () => {
           target.search = new URLSearchParams({ state, code: `alice:${challenge}` }).toString();
           await providerSession.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 302,
             responseHeaders: [{ name: 'Location', value: target.href }], body: '' });
-        })().then(resolve, reject);
-      });
+        }).then(controlledProvider.resolve, controlledProvider.reject);
+      };
+      providerSession.once('Fetch.requestPaused', handleProviderRequest);
+      // The external provider is controlled; application and gateway redirects use their real handlers.
+      await withCleanup(async () => {
+        await operation('Enable external provider interception', () => providerSession.send('Fetch.enable', { patterns: [{ urlPattern: 'https://github.com/login/oauth/authorize*', requestStage: 'Request' }] }));
+        await operation('Open private project anonymously', () => page.goto(`/projects/${project.id}`));
+        await operation('Assert private project login heading', () => expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible());
+        await operation('Assert private project return path', () => expect.poll(() => {
+          const target = new URL(page.url());
+          return { pathname: target.pathname, returnPath: target.searchParams.get('returnPath') };
+        }).toEqual({ pathname: '/login', returnPath: `/projects/${project.id}` }));
+        deadline = setTimeout(() => controlledProvider.reject(new Error('The controlled external provider request was not reached.')), 15_000);
+        await Promise.all([
+          operation('Click GitHub login', () => page.getByRole('button', { name: '使用 GitHub 登录', exact: true }).click()),
+          operation('Complete controlled external provider', async () => {
+            const outcome = await providerOutcome;
+            if (outcome.status === 'failed') throw outcome.error;
+          }),
+        ]);
+        clearTimeout(deadline);
+        await operation('Assert authenticated project heading', () => expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible());
+        await operation('Assert authenticated project URL', () => expect(page).toHaveURL(`${baseURL}/projects/${project.id}`));
+        await operation('Verify authenticated API session', async () => { expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(200); });
+        await operation('Reload authenticated project', () => page.reload());
+        await operation('Assert reloaded project heading', () => expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible());
+        await operation('Open login while authenticated', () => page.goto('/login'));
+        await operation('Assert authenticated login redirect', () => expect(page).toHaveURL(`${baseURL}/projects`));
+        await operation('Assert personal workspace', () => expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible());
+        await operation('Open authenticated landing page', () => page.goto('/'));
+        await operation('Assert authenticated landing URL', () => expect(page).toHaveURL(`${baseURL}/`));
+        await operation('Assert authenticated landing page', () => expect(page.locator('.landing-page')).toBeVisible());
+        await operation('Resize authenticated landing page', () => page.setViewportSize({ width: 320, height: 844 }));
+        await operation('Select English while authenticated', () => page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en'));
+        await operation('Assert authenticated navigation', () => expect(page.locator('.site-header .nav-start')).toHaveText('Open workspace ↗'));
+        await narrowHeaderFits('Authenticated');
+        await operation('Restore Chinese while authenticated', () => page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN'));
+        await operation('Restore authenticated viewport', () => page.setViewportSize(originalViewport));
+        await operation('Open workspace from landing page', () => page.locator('.landing-page a[href="/projects"]').first().click());
+        await operation('Assert workspace URL', () => expect(page).toHaveURL(`${baseURL}/projects`));
+        await operation('Assert workspace heading', () => expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible());
+        const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
+        const logoutOutcome = signedOut.then((response) => ({ status: 'passed' as const, response }), (error: unknown) => ({ status: 'failed' as const, error }));
+        await operation('Open account menu', () => page.getByRole('button', { name: /^账户菜单：/ }).click());
+        await operation('Click logout', () => page.getByRole('menuitem', { name: '退出登录', exact: true }).click());
+        await operation('Verify logout response', async () => {
+          const outcome = await logoutOutcome;
+          if (outcome.status === 'failed') throw outcome.error;
+          expect(outcome.response.status()).toBe(204);
+        });
+        await operation('Assert logged out URL', () => expect(page).toHaveURL(`${baseURL}/`));
+        await operation('Assert logged out landing page', () => expect(page.locator('.landing-page')).toBeVisible());
+        await operation('Assert logged out page has no login shell', () => expect(page.locator('.auth-shell')).toHaveCount(0));
+        await operation('Verify logged out API session', async () => { expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(401); });
+        await operation('Capture completed login journey', () => picture(page, info, 'auth-login-session'));
+      }, [
+        { operation: 'Remove external provider observer', action: async () => {
+          clearTimeout(deadline);
+          providerSession.removeListener('Fetch.requestPaused', handleProviderRequest);
+        } },
+        { operation: 'Disable external provider interception', action: () => providerSession.send('Fetch.disable') },
+        { operation: 'Detach external provider CDP session', action: () => providerSession.detach() },
+      ]);
     });
-    // The external provider is controlled; application and gateway redirects use their real handlers.
-    try {
-      await providerSession.send('Fetch.enable', { patterns: [{ urlPattern: 'https://github.com/login/oauth/authorize*', requestStage: 'Request' }] });
-      await page.goto(`/projects/${project.id}`);
-      await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
-      await expect.poll(() => {
-        const target = new URL(page.url());
-        return { pathname: target.pathname, returnPath: target.searchParams.get('returnPath') };
-      }).toEqual({ pathname: '/login', returnPath: `/projects/${project.id}` });
-      await Promise.all([page.getByRole('button', { name: '使用 GitHub 登录', exact: true }).click(), controlledProvider]);
-      await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
-      await expect(page).toHaveURL(`${baseURL}/projects/${project.id}`);
-      expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(200);
-      await page.reload();
-      await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
-      await page.goto('/login');
-      await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
-      await page.goto('/');
-      await expect(page).toHaveURL(`${baseURL}/`);
-      await expect(page.locator('.landing-page')).toBeVisible();
-      await page.setViewportSize({ width: 320, height: 844 });
-      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
-      await expect(page.locator('.site-header .nav-start')).toHaveText('Open workspace ↗');
-      await narrowHeaderFits('Authenticated');
-      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
-      await page.setViewportSize(originalViewport);
-      await page.locator('.landing-page a[href="/projects"]').first().click();
-      await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
-      const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
-      await page.getByRole('button', { name: '退出登录', exact: true }).click();
-      expect((await signedOut).status()).toBe(204);
-      await expect(page).toHaveURL(`${baseURL}/`);
-      await expect(page.locator('.landing-page')).toBeVisible();
-      await expect(page.locator('.auth-shell')).toHaveCount(0);
-      expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(401);
-      await picture(page, info, 'auth-login-session');
-    } finally {
-      clearTimeout(deadline);
-      await providerSession.send('Fetch.disable');
-      await providerSession.detach();
-    }
   });
 });
 
@@ -198,8 +243,279 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(aliceUser.id).not.toBe(bobUser.id);
     const rawName = `  Browser project ${randomUUID()}  `;
     const rawRepo = `git@example.org:group/${randomUUID()}.git`;
-    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
+    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 5 }]);
     await page.goto('/projects');
+    await expect(page.locator('.topbar')).toBeVisible();
+    // Exercise recovery over an existing draft using the native browser modal and
+    // real tab focus changes. Only the identity failure is injected.
+    const primaryFocusForRecovery = await context.newCDPSession(page);
+    await primaryFocusForRecovery.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+    await primaryFocusForRecovery.detach();
+    const recoveryTab = await context.newPage();
+    try {
+      await recoveryTab.goto('about:blank');
+      const recoveryTabFocus = await context.newCDPSession(recoveryTab);
+      await recoveryTabFocus.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+      await recoveryTabFocus.detach();
+      await recoveryTab.bringToFront();
+      await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+      const returnCheck = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/me`);
+      await page.bringToFront();
+      await returnCheck;
+      for (const locale of ['zh-CN', 'en'] as const) {
+        const messages = locale === 'zh-CN' ? zhCN : en;
+        for (const width of [320, 1440]) {
+          await page.setViewportSize({ width, height: 900 });
+          await page.evaluate(() => {
+            const previous = Storage.prototype.setItem;
+            Storage.prototype.setItem = function (key, value) {
+              if (key === 'daynight.web.locale') throw new Error('Controlled preference failure');
+              return previous.call(this, key, value);
+            };
+            (window as unknown as { restoreLocaleStorage: () => void }).restoreLocaleStorage = () => { Storage.prototype.setItem = previous; };
+          });
+          try { await page.locator('.topbar').getByRole('combobox', { name: messages.language.label }).selectOption(locale); }
+          finally { await page.evaluate(() => (window as unknown as { restoreLocaleStorage: () => void }).restoreLocaleStorage()); }
+          await expect(page.locator('.topbar .locale-notice')).toBeVisible();
+          const opener = page.getByRole('button', { name: messages.auth.createProject.open });
+          await opener.click();
+          const draft = page.getByRole('dialog', { name: messages.auth.createProject.title });
+          const nameInput = draft.getByLabel(messages.auth.createProject.name);
+          const repositoryInput = draft.getByLabel(messages.auth.createProject.repository);
+          await expect(nameInput).toBeFocused();
+          expect(await draft.evaluate((element) => element.matches(':modal'))).toBe(true);
+          await expect(draft.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
+          await expect(draft.getByRole('button', { name: messages.common.retrySave })).toHaveCount(0);
+          const header = draft.locator('.dialog-header');
+          await expect(header.locator(':scope > *')).toHaveCount(2);
+          const headerGeometry = await header.evaluate((element) => {
+            const title = element.querySelector('h2')!.getBoundingClientRect();
+            const close = element.querySelector('button')!.getBoundingClientRect();
+            return { title: { right: title.right, top: title.top, bottom: title.bottom }, close: { left: close.left, right: close.right, top: close.top, bottom: close.bottom }, viewport: window.innerWidth, document: document.documentElement.scrollWidth };
+          });
+          expect(headerGeometry.title.right).toBeLessThanOrEqual(headerGeometry.close.left);
+          expect(headerGeometry.title.top).toBeLessThan(headerGeometry.close.bottom);
+          expect(headerGeometry.close.top).toBeLessThan(headerGeometry.title.bottom);
+          expect(headerGeometry.close.right).toBeLessThanOrEqual(width);
+          expect(headerGeometry.document).toBeLessThanOrEqual(width);
+          await page.keyboard.press('Tab');
+          await expect(repositoryInput).toBeFocused();
+          await page.keyboard.press('Shift+Tab');
+          await expect(nameInput).toBeFocused();
+          const close = draft.getByRole('button', { name: messages.auth.createProject.close });
+          const submit = draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true });
+          await submit.focus();
+          await page.keyboard.press('Tab');
+          if (await page.evaluate(() => document.activeElement === document.body)) await page.keyboard.press('Tab');
+          await expect(close).toBeFocused();
+          await page.keyboard.press('Shift+Tab');
+          if (await page.evaluate(() => document.activeElement === document.body)) await page.keyboard.press('Shift+Tab');
+          await expect(submit).toBeFocused();
+          await nameInput.focus();
+          await page.locator('.topbar select').evaluate((element: HTMLSelectElement) => element.focus());
+          await expect(nameInput).toBeFocused();
+          await draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true }).click();
+          await expect(nameInput).toBeFocused();
+          expect(await nameInput.evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBe(true);
+          await page.keyboard.press('Escape');
+          await expect(draft).toHaveCount(0);
+          await expect(opener).toBeFocused();
+          await opener.click();
+          await expect(nameInput).toBeFocused();
+          await nameInput.fill('Retained draft ' + 'long '.repeat(24));
+          await repositoryInput.fill('https://example.com/' + 'long-path/'.repeat(20));
+          const releaseCreate = Promise.withResolvers<void>();
+          let createRequests = 0;
+          const creationRoute = async (route: Route) => {
+            if (route.request().method() !== 'POST') return route.continue();
+            createRequests++;
+            await releaseCreate.promise;
+            await route.fulfill({ status: 400, headers: { 'Daynight-User-ID': aliceUser.id }, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_argument', message: 'Invalid project', requestId: 'creation-test' } }) });
+          };
+          await page.route(`${baseURL}/api/v1/projects`, creationRoute);
+          try {
+            await draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true }).click();
+            await expect.poll(() => createRequests).toBe(1);
+            await expect(nameInput).toBeDisabled();
+            await expect(repositoryInput).toBeDisabled();
+            await expect(draft.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
+            await page.keyboard.press('Escape');
+            await expect(draft).toBeVisible();
+            await picture(page, info, `auth-create-${locale}-${width}-pending`);
+            releaseCreate.resolve();
+            await expect(draft.getByRole('alert')).toContainText(messages.auth.createProject.error);
+            await expect(nameInput).toHaveValue('Retained draft ' + 'long '.repeat(24));
+            await expect(repositoryInput).toHaveValue('https://example.com/' + 'long-path/'.repeat(20));
+            expect(createRequests).toBe(1);
+            await picture(page, info, `auth-create-${locale}-${width}-error`);
+          } finally {
+            releaseCreate.resolve();
+            await page.unroute(`${baseURL}/api/v1/projects`, creationRoute);
+          }
+          await nameInput.fill('Retained draft');
+          const draftNode = await draft.elementHandle();
+          if (draftNode === null) throw new Error('The project draft was not mounted.');
+          let checks = 0;
+          let writes = 0;
+          let reads = 0;
+          const countRequests = (request: import('@playwright/test').Request) => {
+            const path = new URL(request.url()).pathname;
+            if (!path.startsWith('/api/v1/') || path === '/api/v1/me') return;
+            if (['GET', 'HEAD'].includes(request.method())) reads++;
+            else writes++;
+          };
+          page.on('request', countRequests);
+          const releaseRetry = Promise.withResolvers<void>();
+          const identityRoute = async (route: Route) => {
+            checks++;
+            if (checks === 1) {
+              await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Unavailable', requestId: 'revalidation-test' } }) });
+            } else {
+              await releaseRetry.promise;
+              await route.continue();
+            }
+          };
+          await page.route(`${baseURL}/api/v1/me`, identityRoute);
+          try {
+            await recoveryTab.bringToFront();
+            await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+            await page.bringToFront();
+            const overlay = page.getByRole('dialog', { name: messages.auth.shell.revalidationLabel });
+            await expect(overlay.getByRole('heading', { name: messages.auth.shell.revalidationError })).toBeVisible();
+            await expect(overlay.getByText(messages.auth.shell.revalidationRetained)).toBeVisible();
+            expect(await overlay.evaluate((dialog) => dialog.matches(':modal'))).toBe(true);
+            await expect(page.locator('.auth-shell')).toHaveAttribute('inert', '');
+            await expect(overlay.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
+            await page.keyboard.press('Escape');
+            await expect(overlay).toBeVisible();
+            const retry = overlay.getByRole('button', { name: messages.auth.shell.revalidationRetry });
+            await expect(retry).toBeVisible();
+            await retry.focus();
+            await page.locator('#project-name').evaluate((input: HTMLInputElement) => input.focus());
+            await expect(retry).toBeFocused();
+            const bounds = await retry.boundingBox();
+            expect(bounds).not.toBeNull();
+            expect(bounds!.x).toBeGreaterThanOrEqual(0);
+            expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+            expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+            await picture(page, info, `auth-revalidation-${locale}-${width}-failure`);
+            await page.keyboard.press('Enter');
+            await expect.poll(() => checks).toBe(2);
+            await expect(overlay.getByRole('status')).toHaveText(messages.auth.shell.revalidationLoading);
+            await expect(overlay.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
+            await picture(page, info, `auth-revalidation-${locale}-${width}-retry`);
+            expect(reads).toBe(0);
+            expect(writes).toBe(0);
+            releaseRetry.resolve();
+            await expect(overlay).toHaveCount(0);
+            expect(await draft.evaluate((element, original) => element === original, draftNode)).toBe(true);
+            await expect(nameInput).toHaveValue('Retained draft');
+            await expect(nameInput).toBeFocused();
+            expect(checks).toBe(2);
+            expect(writes).toBe(0);
+          } finally {
+            releaseRetry.resolve();
+            await page.unroute(`${baseURL}/api/v1/me`, identityRoute);
+            page.off('request', countRequests);
+          }
+          await draft.getByRole('button', { name: messages.auth.createProject.cancel }).click();
+          await expect(opener).toBeFocused();
+        }
+      }
+      await page.setViewportSize({ width: 1600, height: 1100 });
+      await page.locator('.topbar').getByRole('combobox', { name: zhCN.language.label }).selectOption('zh-CN');
+      await page.setViewportSize({ width: 390, height: 700 });
+      const unlockedOverflow = await page.evaluate(() => document.body.style.overflow);
+      await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
+      const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+      const drawerNode = await drawer.elementHandle();
+      expect(drawerNode).not.toBeNull();
+      const drawerFocus = drawer.getByRole('link', { name: '我的 Worker', exact: true });
+      await drawerFocus.focus();
+      await expect(drawerFocus).toBeFocused();
+      await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+      await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+      const firstCheck = Promise.withResolvers<void>(), finishFirstCheck = Promise.withResolvers<void>();
+      const teamReads: import('@playwright/test').Request[] = [];
+      const drawerRequestOrder: string[] = [];
+      let firstIdentityRequest: import('@playwright/test').Request | null = null;
+      const countTeamRead = (request: import('@playwright/test').Request) => {
+        if (request.method() === 'GET' && new URL(request.url()).pathname === '/api/v1/teams') {
+          teamReads.push(request); drawerRequestOrder.push(`team-request:${teamReads.length}`);
+        }
+      };
+      const countIdentityResponse = (response: import('@playwright/test').Response) => {
+        if (response.request() === firstIdentityRequest) drawerRequestOrder.push('identity-response');
+      };
+      page.on('request', countTeamRead);
+      page.on('response', countIdentityResponse);
+      let checks = 0;
+      const drawerIdentityRoute = async (route: Route) => {
+        checks++;
+        if (checks === 1) {
+          firstIdentityRequest = route.request();
+          const response = await authenticatedAPI(context.request).fetch(route.request());
+          expect([200, 304]).toContain(response.status());
+          expect(response.headers()['daynight-user-id']).toBe(aliceUser.id);
+          const body = await response.body();
+          firstCheck.resolve(); await finishFirstCheck.promise;
+          await route.fulfill({ status: response.status(), headers: response.headers(), ...(response.status() === 304 ? {} : { body }) });
+        } else if (checks === 2) {
+          await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Unavailable', requestId: 'drawer-revalidation-test' } }) });
+        } else await route.continue();
+      };
+      await page.route(`${baseURL}/api/v1/me`, drawerIdentityRoute);
+      try {
+        await recoveryTab.bringToFront();
+        await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+        await page.bringToFront(); await firstCheck.promise;
+        await expect(drawer).toBeVisible();
+        expect(await drawer.evaluate((element, original) => element === original, drawerNode)).toBe(true);
+        await expect(drawerFocus).toBeFocused();
+        await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+        await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+        const teamBaseline = teamReads.length;
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        expect(teamReads).toHaveLength(teamBaseline);
+        const sameIdentity = page.waitForResponse(`${baseURL}/api/v1/me`);
+        const refreshedTeams = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/teams'
+          && teamReads.indexOf(response.request()) >= teamBaseline);
+        finishFirstCheck.resolve(); await (await sameIdentity).finished();
+        const teamResponse = await refreshedTeams;
+        expect(teamResponse.status()).toBe(200);
+        expect(teamResponse.headers()['daynight-user-id']).toBe(aliceUser.id);
+        await teamResponse.finished();
+        expect(teamReads.length).toBeGreaterThan(teamBaseline);
+        expect(drawerRequestOrder).toContain('identity-response');
+        expect(drawerRequestOrder.indexOf(`team-request:${teamReads.indexOf(teamResponse.request()) + 1}`)).toBeGreaterThan(drawerRequestOrder.indexOf('identity-response'));
+        await expect(drawer).toBeVisible();
+        expect(await drawer.evaluate((element, original) => element === original, drawerNode)).toBe(true);
+        await expect(drawerFocus).toBeFocused();
+        await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+        await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+        await recoveryTab.bringToFront();
+        await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+        await page.bringToFront();
+        const overlay = page.getByRole('dialog', { name: zhCN.auth.shell.revalidationLabel });
+        await expect(overlay.getByRole('heading', { name: zhCN.auth.shell.revalidationError })).toBeVisible();
+        await expect(drawer).toHaveCount(0);
+        await expect(page.locator('.workspace')).not.toHaveAttribute('inert', '');
+        expect(await page.evaluate(() => document.body.style.overflow)).toBe(unlockedOverflow);
+        await expect(page.locator('.auth-shell')).toHaveAttribute('inert', '');
+        const retryResponse = page.waitForResponse(`${baseURL}/api/v1/me`);
+        await overlay.getByRole('button', { name: zhCN.auth.shell.revalidationRetry }).click();
+        await retryResponse; await expect(overlay).toHaveCount(0);
+        await expect(page.locator('.auth-shell')).not.toHaveAttribute('inert', '');
+        await expect(drawer).toHaveCount(0);
+        expect(checks).toBe(3);
+      } finally {
+        finishFirstCheck.resolve();
+        await page.unroute(`${baseURL}/api/v1/me`, drawerIdentityRoute);
+        page.off('request', countTeamRead);
+        page.off('response', countIdentityResponse);
+      }
+      await page.setViewportSize({ width: 1600, height: 1100 });
+    } finally { await recoveryTab.close(); }
     await page.getByRole('button', { name: '＋ 创建项目' }).click();
     const creation = page.getByRole('dialog', { name: '创建私有项目' });
     await creation.getByLabel('项目名称').fill(rawName);
@@ -436,7 +752,14 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await expect(detail).toHaveCount(0);
     await page.setViewportSize({ width: 390, height: 700 });
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: '工作空间导航', exact: true })).toBeVisible();
+    const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+    await expect(drawer).toBeVisible();
+    const drawerNode = await drawer.elementHandle();
+    expect(drawerNode).not.toBeNull();
+    const oldWorkspace = await page.locator('.workspace').elementHandle();
+    expect(oldWorkspace).not.toBeNull();
+    const drawerFocus = drawer.getByRole('link', { name: '我的 Worker', exact: true });
+    await drawerFocus.focus();
     await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
     await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     await otherTab.bringToFront();
@@ -451,12 +774,12 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await page.bringToFront();
     await expect.poll(() => heldChecks.length).toBe(2);
     expect(heldChecks[1]!.identity).toBe(aliceUser.id);
-    await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
-    await expect(page.locator('.workspace')).not.toHaveAttribute('inert', '');
-    await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+    await expect(drawer).toBeVisible();
+    expect(await drawer.evaluate((element, original) => element === original, drawerNode)).toBe(true);
+    await expect(drawerFocus).toBeFocused();
+    await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
-    await page.setViewportSize({ width: 1600, height: 1100 });
-    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     await otherTab.bringToFront();
     await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
@@ -468,7 +791,12 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     heldChecks[1]!.release();
     await heldChecks[1]!.completed;
     await expect(page.locator('body')).not.toHaveClass(/auth-session-checking/);
-    await expect(page.getByRole('link', { name: '账户设置：Alice', exact: true })).toBeVisible();
+    await expect(page.locator('.account-button')).toHaveAttribute('aria-label', '账户菜单：Alice');
+    await expect(drawer).toBeVisible();
+    expect(await drawer.evaluate((element, original) => element === original, drawerNode)).toBe(true);
+    await expect(drawerFocus).toBeFocused();
+    await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     pendingGraphWindows.push({ identity: 'changed-user', baseline: changedUserGraphBaseline, beforeRelease: graphRequests.length });
     const deniedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/task-sync`
@@ -480,12 +808,15 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(graphRefusal.status()).toBe(404);
     expect(graphRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
     expect((await graphRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
-    await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
-    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
-    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
+    await expect(page.getByRole('button', { name: '账户菜单：Bob', exact: true })).toBeVisible();
+    expect(await drawerNode!.evaluate((element) => element.isConnected)).toBe(false);
+    expect(await oldWorkspace!.evaluate((element) => element.hasAttribute('inert'))).toBe(false);
     await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
     await expect(page.locator('.workspace')).not.toHaveAttribute('inert', '');
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
     await expect(page.getByRole('heading', { name: own.name, exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
     expect(identityRequests).toEqual(['GET', 'GET', 'GET']);
@@ -526,37 +857,102 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     const alice = await user(request);
     const invite = await invitation(request, project.id);
     expect((await bob.post('/api/v1/invitations/accept', { data: { token: invite.token, expectedUserId: bobUser.id } })).status()).toBe(200);
-    const target = `/api/v1/projects/${project.id}/members/${bobUser.id}`;
-    allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${target}`, count: 2 },
-      { method: 'DELETE', url: `${baseURL}/api/v1/projects/${project.id}/members/${alice.id}`, count: 1 }]);
+    const target = `/api/v1/projects/${project.id}/grants/${bobUser.id}`;
+    const selfTarget = `/api/v1/projects/${project.id}/grants/${alice.id}`;
+    allowBrowserWrites([{ method: 'PUT', url: `${baseURL}${target}`, count: 2 },
+      { method: 'DELETE', url: `${baseURL}${selfTarget}`, count: 1 }]);
     await page.goto(`/projects/${project.id}/members`);
-    const bobRole = page.getByRole('combobox', { name: `${bobUser.name} 的项目角色`, exact: true });
+    const bobRole = page.getByRole('combobox', { name: `${bobUser.name} 的单独授权`, exact: true });
     await expect(bobRole).toHaveValue('member');
-    await expect(page.getByRole('combobox', { name: `${alice.name} 的项目角色`, exact: true })).toBeEnabled();
+    await expect(page.getByRole('combobox', { name: `${alice.name} 的单独授权`, exact: true })).toBeEnabled();
+    const browserWrites: string[] = [];
+    page.on('request', (browserRequest) => { if (browserRequest.method() === 'PUT' && browserRequest.url() === `${baseURL}${target}`) browserWrites.push(browserRequest.postData() ?? ''); });
     const observed = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
-    expect((await request.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: observed.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
-    await bobRole.selectOption('admin');
-    await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
+    expect((await request.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: observed.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
+    const external = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
+    const heldRoster = Promise.withResolvers<ReturnType<typeof parseMembers>>();
+    const releaseRoster = Promise.withResolvers<void>();
+    let captured = false;
+    const holdRoster = async (route: Route) => {
+      if (captured || route.request().method() !== 'GET') return route.fallback();
+      captured = true;
+      const response = await route.fetch();
+      const body = await response.text();
+      heldRoster.resolve(parseMembers(await decodeMembersJson(new Response(body)), project.id));
+      await releaseRoster.promise;
+      await route.fulfill({ response, body });
+    };
+    await page.route(`${baseURL}/api/v1/projects/${project.id}/members`, holdRoster);
+    try {
+      await bobRole.selectOption('admin');
+      const rosterRead = await heldRoster.promise;
+      expect(rosterRead.items.find((member) => member.userId === bobUser.id)?.directGrant).toMatchObject({ role: 'admin', version: external.directGrant!.version });
+      const dialog = page.getByRole('dialog');
+      await dialog.getByRole('button', { name: '保存角色', exact: true }).click();
+      expect(browserWrites).toHaveLength(0);
+      releaseRoster.resolve();
+      await expect(dialog.getByRole('alert')).toBeVisible();
+      await expect(bobRole).toHaveValue('admin');
+      expect(browserWrites).toHaveLength(0);
+      await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    } finally { releaseRoster.resolve(); await page.unroute(`${baseURL}/api/v1/projects/${project.id}/members`, holdRoster); }
+
+    expect((await request.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: external.directGrant!.version, role: 'member', expectedUserId: alice.id }) })).status()).toBe(200);
+    const rosterRefresh = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects/${project.id}/members` && response.request().method() === 'GET');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    expect((await rosterRefresh).status()).toBe(200);
+    await expect(bobRole).toHaveValue('member');
+
+    const raced = Promise.withResolvers<void>();
+    const raceGrant = async (route: Route) => {
+      try {
+        const latest = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
+        expect(latest.directGrant?.role).toBe('member');
+        expect(route.request().postData()).toBe(stringifyApiJson({ version: latest.directGrant!.version, role: 'admin', expectedUserId: alice.id }));
+        expect((await request.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: latest.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
+        raced.resolve();
+        await route.continue();
+      } catch (error) { raced.reject(error); await route.abort(); }
+    };
+    await page.route(`${baseURL}${target}`, raceGrant);
+    try {
+      await bobRole.selectOption('admin');
+      const conflict = page.waitForResponse((response) => response.url() === `${baseURL}${target}` && response.request().method() === 'PUT');
+      await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
+      await raced.promise;
+      expect((await conflict).status()).toBe(409);
+    } finally { await page.unroute(`${baseURL}${target}`, raceGrant); }
     await expect(page.getByRole('status').filter({ hasText: '成员状态已变化' })).toBeVisible();
     await expect(bobRole).toHaveValue('admin');
     await bobRole.selectOption('member');
+    const replaced = page.waitForResponse((response) => response.url() === `${baseURL}${target}` && response.request().method() === 'PUT');
     await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
+    const replaceReceipt = await replaced;
+    expect(replaceReceipt.status()).toBe(200);
+    expect(browserWrites).toHaveLength(2);
+    expect(await replaceReceipt.json()).toMatchObject({ grant: { projectId: project.id, userId: bobUser.id, role: 'member' }, actorAccess: { effectiveRole: 'admin' } });
+    await expect(page.getByRole('status').filter({ hasText: `已将 ${bobUser.name} 的单独授权保存为` })).toBeVisible();
     await expect(bobRole).toHaveValue('member');
     const current = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
     expect(current.directGrant!.version).not.toBe(observed.directGrant!.version);
-    expect((await bob.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, role: 'admin', expectedUserId: bobUser.id }) })).status()).toBe(403);
+    expect((await bob.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, role: 'admin', expectedUserId: bobUser.id }) })).status()).toBe(403);
     const collaborative = await createTask(bob, project.id, { title: 'Member can write project tasks' });
     await executeTask(bob, project.id, collaborative);
     const memberFile = attachmentDownloadUrl(project.id, collaborative.id, 'member.txt');
     expect((await bob.put(memberFile, { headers: { 'Content-Type': 'text/plain' }, data: 'Member attachment write' })).status()).toBe(201);
     expect((await bob.get(memberFile)).status()).toBe(200);
-    await page.getByRole('button', { name: `移除 ${alice.name}`, exact: true }).click();
-    const removeSelf = page.getByRole('dialog').getByRole('button', { name: '移除成员', exact: true });
+    await page.getByRole('button', { name: `移除 ${alice.name} 的单独授权`, exact: true }).click();
+    const removeSelf = page.getByRole('dialog').getByRole('button', { name: '移除授权', exact: true });
     await expect(removeSelf).toBeEnabled();
+    const removed = page.waitForResponse((response) => response.url() === `${baseURL}${selfTarget}` && response.request().method() === 'DELETE');
     await removeSelf.click();
+    const removeReceipt = await removed;
+    expect(removeReceipt.status()).toBe(200);
+    expect(await removeReceipt.json()).toMatchObject({ projectId: project.id, userId: alice.id, deleted: true, actorAccess: { effectiveRole: 'admin', directGrant: null } });
+    await expect(page.getByRole('status').filter({ hasText: `已移除 ${alice.name} 的单独授权` })).toBeVisible();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: `移除 ${alice.name}`, exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: `移除 ${alice.name} 的单独授权`, exact: true })).toHaveCount(0);
     const inherited = (await memberList(request, project.id)).items.find((member) => member.userId === alice.id)!;
     expect(inherited.effectiveRole).toBe('admin');
     expect(inherited.directGrant).toBeNull();
@@ -569,7 +965,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     await expect(page.getByText('你可以读写项目中的任务和附件。成员与邀请由项目管理员管理。')).toBeVisible();
     await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toHaveCount(0);
     await picture(page, info, 'auth-project-members');
-    expect((await request.delete(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(204);
+    expect((await request.delete(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(200);
     expect((await bob.get(memberFile)).status()).toBe(404);
     expect((await bob.get(`/api/v1/projects/${project.id}/tasks/${collaborative.id}`)).status()).toBe(404);
     await page.goto(`/projects/${project.id}`);
@@ -617,11 +1013,12 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   const project = await createProject(request, { name: `Invitation ${randomUUID()}` });
   allowBrowserWrites([
     { method: 'POST', url: `${baseURL}/api/v1/projects/${project.id}/invitations`, count: 1 },
-    { method: 'POST', url: `${baseURL}/api/v1/invitations/inspect`, count: 2 },
-    { method: 'POST', url: `${baseURL}/api/v1/invitations/accept`, count: 1 },
+    { method: 'POST', url: `${baseURL}/api/v1/invitations/inspect`, count: 3 },
+    { method: 'POST', url: `${baseURL}/api/v1/invitations/accept`, count: 2 },
     { method: 'POST', url: `${baseURL}/api/v1/team-invitations/inspect`, count: 5 },
     { method: 'POST', url: `${baseURL}/api/v1/team-invitations/accept`, count: 3 },
   ]);
+  await verifyScopedInvitationManagement(page, context, playwright.request, request, baseURL, allowBrowserWrites);
   await page.goto(`/projects/${project.id}/members`);
   await page.getByRole('button', { name: '邀请成员', exact: true }).click();
   const created = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects/${project.id}/invitations` && response.request().method() === 'POST');
@@ -636,7 +1033,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   expect((await active.json() as { items: { id: string }[] }).items.map((item) => item.id)).toContain(metadata.id);
   await browserAuthentication(context, baseURL, 'bob');
   await page.goto('/projects');
-  await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '账户菜单：Bob', exact: true })).toBeVisible();
   await openInvitation(page, metadata.link);
   await expect(page.getByRole('heading', { name: '你受邀加入一个项目' })).toBeVisible();
   await expect(page.locator('.invite-account .person-name')).toHaveText('Bob');
@@ -743,6 +1140,12 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
     await expect(page.getByText('You joined this Team', { exact: true })).toBeVisible();
     await expect(page.getByText(`Team ID: ${team.id}`, { exact: true })).toBeVisible();
+    const openTeam = page.getByRole('link', { name: 'Open Team' });
+    await expect(openTeam).toHaveAttribute('href', `/teams/${team.id}`);
+    await openTeam.click();
+    await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    await expect(page.getByRole('heading', { name: teamName, exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate((id) => localStorage.getItem(`daynight.selectedTeam:${id}`), bob.id)).toBe(team.id);
     await openInvitation(page, teamInvitation.link);
     await expect(page.getByRole('heading', { name: 'Invitation unavailable' })).toBeVisible();
     expect(new URL(page.url()).hash === '', 'Reopening a consumed invitation removes its fragment').toBe(true);
@@ -756,7 +1159,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     expect(unknownInvitationResponse.status()).toBe(201);
     const unknownInvitation = await unknownInvitationResponse.json() as { link: string };
     await page.goto('/projects');
-    await expect(page.getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: teamName, exact: true })).toBeVisible();
     await openInvitation(page, unknownInvitation.link);
     await expect(page.getByRole('heading', { name: 'You are invited to a Team' })).toBeVisible();
     let committedStatus: number | undefined;
@@ -831,7 +1234,8 @@ test('auth-resource-session', scenario('auth-resource-session'), async ({ page, 
   await frame.locator('#counter').press('Escape');
   await expect(detail).toHaveCount(0);
   const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
-  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.getByRole('button', { name: /^账户菜单：/ }).click();
+  await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
   expect((await signedOut).status()).toBe(204);
   await expect(page).toHaveURL(`${baseURL}/`);
   await expect(page.locator('.landing-page')).toBeVisible();

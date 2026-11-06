@@ -77,3 +77,17 @@ it('keeps the affected project hidden and exposes cleanup failure while healthy 
   expect(screen.queryByRole('alert')).toBeNull();
   view.unmount(); scope.dispose();
 });
+
+it('withdraws a suspended project and refreshes it after access is restored without removing healthy entries', async () => {
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(page([lost, healthy]))));
+  const view = render(<ProjectsProvider admission={scope}><ProjectsPage /></ProjectsProvider>);
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  await act(async () => scope.suspendProject(lost.id));
+  expect(screen.queryByRole('heading', { name: 'Lost project' })).toBeNull();
+  const retained = screen.getByRole('heading', { name: 'Healthy project' });
+  await act(async () => scope.resumeProject(lost.id));
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  expect(screen.getByRole('heading', { name: 'Healthy project' })).toBe(retained);
+  view.unmount(); scope.dispose();
+}, 20000);

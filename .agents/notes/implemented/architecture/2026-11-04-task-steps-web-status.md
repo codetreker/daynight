@@ -22,11 +22,18 @@ coalesces a new parent read at that floor and opening generation. Reopening
 requires a fresh parent read even at the same version; repeated stale responses
 fail visibly instead of leaving an unbounded retry or a permanently busy gate.
 Task and Steps state publication both check convergence, including when a
-same-version summary mismatch clears.
+same-version summary mismatch clears. A parent response matching the persisted
+summary can still be ahead of the current page's projection when another page
+commits first. The owner retains that response for pending admission until the
+local projection catches up; completing the cache transaction alone does not
+establish a current parent detail.
 
 A conflict, malformed success or uncertain transport result is reconciled by
 reading current resources under the original identity, without replay. A failed
-readback keeps recovery available and the gate closed. A child 404 checks the
+readback keeps recovery available and the gate closed. If storing a fresh parent
+fails but summary validation permits displaying it, the storage error ends the
+recovery attempt and preserves explicit retry rather than leaving it busy.
+A child 404 checks the
 parent before retiring access. A confirmed parent deletion remains visible across
 a cache generation replacement; the authorized cache index, rather than a
 lagging rendered graph, establishes removal. Request IDs correlate recovery reads with their
@@ -53,4 +60,6 @@ readback preserves the uncertainty without inventing a result.
 
 Status changes require convergence of three independently returned resources,
 so synchronization or read failures remain visible and temporarily prevent
-further writes. The [append form](2026-11-04-task-steps-web-add.md) and [position writes](2026-11-04-task-steps-web-position.md) reuse the same owner; editing and deletion can do so without another gate.
+further writes. The [append and content form](2026-11-04-task-steps-web-add.md)
+and [position writes](2026-11-04-task-steps-web-position.md) reuse the same
+owner; [deletion](2026-11-05-task-steps-web-delete.md) uses that gate as well.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -138,7 +138,7 @@ func TestTaskStatusMigrationConvertsOnlyLegacyStatesAndPreservesMaterials(t *tes
 	}
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Default todo')`, queryID(30), project.ID)
 	created := statusMigrationTask(t, database, project.ID, queryID(30))
-	if created.Status != core.TaskTodo || !created.Ready || created.AllowAgents || created.RequiredPlatform != nil || created.Version != 1 || created.StartedAt != nil || created.CompletedAt != nil || !created.CreatedAt.Equal(created.UpdatedAt) {
+	if created.Status != model.TaskTodo || !created.Ready || created.AllowAgents || created.RequiredPlatform != nil || created.Version != 1 || created.StartedAt != nil || created.CompletedAt != nil || !created.CreatedAt.Equal(created.UpdatedAt) {
 		t.Fatalf("current database defaults are not an unstarted todo: %#v", created)
 	}
 	for _, query := range []string{
@@ -208,7 +208,7 @@ func TestTaskStatusMigrationRollsBackDefaultRowsConstraintAndLedger(t *testing.T
 	}
 }
 
-func statusMigrationTask(t *testing.T, database *Store, projectID, id string) core.Task {
+func statusMigrationTask(t *testing.T, database *Store, projectID, id string) model.Task {
 	t.Helper()
 	task, err := scanHistoricalTask(database.Pool.QueryRow(context.Background(), `SELECT `+historicalPlatformTaskProjection+` FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, projectID, id))
 	if err != nil {

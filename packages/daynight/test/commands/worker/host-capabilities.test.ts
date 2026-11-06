@@ -21,6 +21,21 @@ const collect = async (overrides: Partial<Parameters<typeof createAssistantHostC
 };
 
 describe("assistant host observations", () => {
+  it("probes the bundled Copilot version without forwarding to an automatic update", async () => {
+    const commands: HerdrCommand[] = [];
+    const { assistantHost } = await collect({ runCommand: async command => {
+      commands.push(command);
+      return output(command);
+    } });
+    expect(assistantHost.providers[2]!.available).toBe(true);
+    expect(commands.filter(command => command.file === "copilot").map(command => command.args)).toEqual([
+      ["--no-auto-update", "--version"],
+      ["--headless", "--no-auto-update", "--help"],
+    ]);
+    expect(commands.find(command => command.file === "codex")!.args).toEqual(["--version"]);
+    expect(commands.find(command => command.file === "claude")!.args).toEqual(["--version"]);
+  });
+
   it("reports the global default independently of task mode and isolates other provider settings", async () => {
     const { assistantHost } = await collect();
     expect(assistantHost.defaultProvider).toBe("copilot");
@@ -105,4 +120,22 @@ describe("assistant host observations", () => {
     try { await expect(createAssistantHostCollector({ workingDirectory: root, configuration, environment: {} }).collect(operation)).rejects.toBeInstanceOf(OperationError); }
     finally { operation.dispose(); }
   });
+});
+
+it("uses the current cloud native defaults on each observation without inheriting another provider's settings", async () => {
+  let current = configuration;
+  const collector = createAssistantHostCollector({ workingDirectory: root, configuration: () => current,
+    environment: {}, resolveExecutable: provider => provider, runCommand: output });
+  const operation = createOperation();
+  try {
+    expect((await collector.collect(operation)).assistantHost.defaultProvider).toBe("copilot");
+    current = { agent: "codex", agentControlMode: "web", model: "new-model", args: [], recoveryLimit: 7 };
+    const sample = (await collector.collect(operation)).assistantHost;
+    expect(sample.defaultProvider).toBe("codex");
+    expect(sample.providers).toEqual([
+      { provider: "codex", available: true, reason: null, model: "new-model", args: [] },
+      { provider: "claude", available: true, reason: null, model: null, args: [] },
+      { provider: "copilot", available: true, reason: null, model: null, args: [] },
+    ]);
+  } finally { operation.dispose(); }
 });

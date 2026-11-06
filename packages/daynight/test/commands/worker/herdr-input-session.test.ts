@@ -8,6 +8,7 @@ import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-st
 import WebSocket, { WebSocketServer } from "ws";
 import registrationFixture from "../../session/fixtures/v2/valid-registration.json" with { type: "json" };
 import dispatchFixture from "../../session/fixtures/v2/valid-control-dispatch.json" with { type: "json" };
+import snapshotFixture from "../../session/fixtures/v2/valid-snapshot.json" with { type: "json" };
 import operationFixture from "../../session/fixtures/v2/valid-keys.json" with { type: "json" };
 import type { SessionV2Message, SessionV2Payloads } from "../../../src/session/v2/types.js";
 import type { HerdrLifecycleRecord } from "../../../src/commands/worker/herdr/lifecycle-types.js";
@@ -26,7 +27,7 @@ const setup = async (configure?: (registration: Message<"registration">, record:
   registration.payload.capabilities = { observe: false, control: false, archive: false };
   const segmentId = "00000000-0000-4000-8000-000000000009";
   const record: HerdrLifecycleRecord = { owner: registration.payload.owner, claimId: registration.claimId, cwd: "/isolated", sessionId: registration.sessionId, registrationId: registration.payload.registrationId, connectionEpoch: null, registrationRequest: registration, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending", initialPrompt: "assignment", automationBlocked: false, preparation: null, version: 1,
-    runs: [{ run: { executionGeneration: "1", owner: registration.payload.owner, binding: registration.payload.binding, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [segmentId] }, phase: "active", instanceDirectory: "/isolated/herdr", daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }],
+    runs: [{ run: { executionGeneration: "1", owner: registration.payload.owner, binding: registration.payload.binding, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [segmentId] }, phase: "active", nativeLaunch: "observed", instanceDirectory: "/isolated/herdr", daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }],
     segments: [{ segmentId, segmentOrdinal: "1", executionGeneration: "1", binding: registration.payload.binding, startedAt: "2026-11-04T00:00:00.000Z", endedAt: null, durationMs: null, gap: null }] };
   configure?.(registration, record);
   const connectionEpoch = String(BigInt(registration.payload.connectionEpoch ?? "0") + 1n);
@@ -325,4 +326,17 @@ test.each(["readiness", "cancel", "written"] as const)("publishes the durable in
   }
   expect(f.session.connected(target.sessionId)).toBe(true);
   expect(f.count().suspended).toBe(0);
+});
+
+
+test("publishes a snapshot only for the current active registered segment", async () => {
+  const f = await setup();
+  const snapshot = structuredClone(snapshotFixture) as Message<"snapshot">;
+  await expect(f.session.publishSnapshot(f.record.sessionId, snapshot.payload)).rejects.toThrow();
+  f.activate();
+  await expect(f.session.publishSnapshot(f.record.sessionId, snapshot.payload)).resolves.toBeUndefined();
+  await vi.waitFor(() => expect(f.incoming.at(-1)?.type).toBe("snapshot"));
+  await expect(f.session.publishSnapshot(f.record.sessionId, { ...snapshot.payload, segmentId: "00000000-0000-4000-8000-000000000099" })).rejects.toThrow();
+  f.record.segments[0]!.endedAt = "2026-11-04T00:00:01.000Z";
+  await expect(f.session.publishSnapshot(f.record.sessionId, snapshot.payload)).rejects.toThrow();
 });

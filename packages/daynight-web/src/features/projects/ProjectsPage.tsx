@@ -43,8 +43,8 @@ export const ProjectsPage = ({ onCreate, title, subtitle, emptyDetail }: { reado
 
   return (
     <>
-      <div className="page-heading">
-        <div>
+      <div className="page-heading project-list-heading">
+        <div className="project-list-information">
           <p className="eyebrow">{app.workspace}</p>
           <h1 id="page-title" tabIndex={-1}>{title ?? app.projects}</h1>
           <p className="subtitle">{subtitle ?? m.subtitle}</p>

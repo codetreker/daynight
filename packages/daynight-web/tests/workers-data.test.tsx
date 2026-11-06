@@ -170,6 +170,31 @@ describe('complete Worker list reads', () => {
 });
 
 describe('Worker read lifetimes', () => {
+  it('withdraws a suspended Project and resumes only from a new Worker read', async () => {
+    const scope = makeScope(), target = workerId(301), healthy = workerId(302), old = deferred<Response>(), suspended = deferred<Response>();
+    const initial = workerDetail(), other = { ...initial.worker.tasks[0]!, projectId: healthy, taskId: workerId(501), title: 'Other task' };
+    initial.worker.tasks.push(other); initial.worker.activeTaskCount = 2;
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(initial)).mockImplementationOnce(() => old.promise)
+      .mockResolvedValueOnce(workerResponse(initial)).mockImplementationOnce(() => suspended.promise).mockResolvedValueOnce(workerResponse(initial));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorker(workerId(1), { readEnabled: true }), { wrapper: wrapper(scope) }); await flush();
+    act(() => result.current.refresh()); await flush();
+    act(() => scope.suspendProject(target)); await flush();
+    expect(result.current.snapshot?.worker.tasks.map(task => task.title)).toEqual(['Other task']); expect(result.current.snapshot?.worker.activeTaskCount).toBe(1);
+    old.resolve(workerResponse(initial)); await flush(); expect(result.current.snapshot?.worker.tasks.map(task => task.title)).toEqual(['Other task']);
+    act(() => result.current.refresh()); await flush();
+    act(() => scope.resumeProject(target)); await flush(); expect(result.current.snapshot?.worker.tasks).toHaveLength(2);
+    suspended.resolve(workerResponse(initial)); await flush(); expect(result.current.snapshot?.worker.tasks).toHaveLength(2); expect(fetch).toHaveBeenCalledTimes(5);
+  });
+  it('makes list counts unknown during suspension until an authorized reread', async () => {
+    const scope = makeScope(), target = workerId(301), suspended = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage())).mockImplementationOnce(() => suspended.promise).mockResolvedValueOnce(workerResponse(workerPage()));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkers({ readEnabled: true }), { wrapper: wrapper(scope) }); await flush();
+    act(() => scope.suspendProject(target)); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBeNull();
+    act(() => scope.resumeProject(target)); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBe(1);
+    suspended.resolve(workerResponse(workerPage())); await flush(); expect(result.current.snapshot?.items[0]?.activeTaskCount).toBe(1);
+  });
   it('withdraws detail rows and fences a late poll while preserving telemetry and unrelated tasks', async () => {
     const scope = makeScope(), project = workerId(301), other = workerId(302), old = deferred<Response>(), fresh = deferred<Response>();
     let publish!: (event: CacheEvent) => void;

@@ -19,6 +19,11 @@ preserved ordinary entry points' visible history when filtering first shipped
 without mode controls. The shared Session View now explicitly supplies its
 selected preference and defaults to Conversation. The Conversation
 empty message is localized separately from the original empty-session message.
+The original empty-session message applies in either mode when the unfiltered
+entry list is empty and no older history remains, or history is confirmed
+complete. An empty visible list alone cannot establish that fact. The filtered
+message remains appropriate for hidden entries or unknown older history;
+caller-owned welcome content and empty-state suppression retain precedence.
 History loading, failure and retry remain independent of visible row count.
 The original filtering delivery retained manual pagination and prohibited
 automatic loops through hidden pages. The

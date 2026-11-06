@@ -1,0 +1,168 @@
+package worker
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+)
+
+type workerStore interface {
+	store.SnapshotReader
+	store.WorkerWriter
+}
+
+type Workers struct{ store workerStore }
+
+func NewWorkers(database workerStore) *Workers { return &Workers{store: database} }
+
+type WorkerReportResult struct {
+	Configuration  *model.WorkerConfigurationReceipt
+	ObservedAt     time.Time
+	LastReportedAt time.Time
+}
+
+type WorkerPage struct {
+	ObservedAt time.Time
+	Items      []model.WorkerSnapshot
+	NextCursor *string
+}
+
+type WorkerDetailResult struct {
+	ObservedAt time.Time
+	Worker     model.WorkerSnapshot
+}
+
+func (s *Workers) Report(ctx context.Context, principal model.Principal, workerID string, input model.WorkerReport) (WorkerReportResult, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return WorkerReportResult{}, err
+	}
+	workerID, err := model.CanonicalID(workerID)
+	if err != nil {
+		return WorkerReportResult{}, err
+	}
+	input, err = workercore.ValidateReport(input)
+	if err != nil {
+		return WorkerReportResult{}, err
+	}
+	if input.Configuration != nil {
+		raw, marshalErr := json.Marshal(input.Configuration)
+		if marshalErr != nil {
+			return WorkerReportResult{}, &model.Fault{Code: "invalid_input", Message: "Worker configuration exchange is invalid."}
+		}
+		input.Configuration, err = workercore.ParseWorkerConfigurationExchange(raw)
+		if err != nil {
+			return WorkerReportResult{}, err
+		}
+	}
+	var result WorkerReportResult
+	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
+		tx := scope.WorkerDAO()
+		observedAt, err := scope.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		var items []model.WorkerObservedTask
+		if input.TaskInventory != nil {
+			sources, err := tx.ReportTaskSnapshots(ctx, principal.UserID, *input.TaskInventory)
+			if err != nil {
+				return err
+			}
+			items, err = workercore.MatchTaskSnapshots(sources, *input.TaskInventory, principal.UserID, workerID)
+			if err != nil {
+				return err
+			}
+		}
+		stored, err := tx.UpsertWorker(ctx, workercore.SnapshotForReport(principal.UserID, workerID, input, observedAt, items))
+		if err != nil {
+			return err
+		}
+		if input.Configuration != nil {
+			result.Configuration, err = workercore.ExchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
+			if err != nil {
+				return err
+			}
+		}
+		result.LastReportedAt = stored.LastReportedAt
+		result.ObservedAt, err = scope.ObservedAt(ctx)
+		return err
+	})
+	if err != nil {
+		return WorkerReportResult{}, workerConfigurationError("report worker", err)
+	}
+	if completion.Outcome != store.TransactionCommitted {
+		return WorkerReportResult{}, fmt.Errorf("report worker: transaction did not confirm commit")
+	}
+	return result, nil
+}
+
+func (s *Workers) List(ctx context.Context, principal model.Principal, request model.PageRequest) (WorkerPage, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return WorkerPage{}, err
+	}
+	page, err := workercore.ListPage(request, principal.UserID)
+	if err != nil {
+		return WorkerPage{}, err
+	}
+	var result WorkerPage
+	var records store.WorkerPage
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		var err error
+		result.ObservedAt, err = snapshot.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		records, err = snapshot.WorkerDAO().Workers(ctx, principal.UserID, result.ObservedAt, page)
+		return err
+	})
+	if err != nil {
+		return WorkerPage{}, fmt.Errorf("list workers: %w", err)
+	}
+	result.Items = records.Items
+	if records.HasMore {
+		last := records.Items[len(records.Items)-1]
+		cursor, err := workercore.ListCursor(principal.UserID, last.CreatedAt, last.WorkerID)
+		if err != nil {
+			return WorkerPage{}, fmt.Errorf("encode worker cursor: %w", err)
+		}
+		result.NextCursor = &cursor
+	}
+	return result, nil
+}
+
+func (s *Workers) Get(ctx context.Context, principal model.Principal, workerID string) (WorkerDetailResult, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return WorkerDetailResult{}, err
+	}
+	workerID, err := model.CanonicalID(workerID)
+	if err != nil {
+		return WorkerDetailResult{}, err
+	}
+	var result WorkerDetailResult
+	var refusal *model.Fault
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		var err error
+		result.ObservedAt, err = snapshot.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		result.Worker, err = snapshot.WorkerDAO().Worker(ctx, principal.UserID, workerID, result.ObservedAt)
+		if errors.Is(err, model.ErrNotFound) {
+			refusal = &model.Fault{Code: "not_found", Message: "Worker was not found.", Cause: err}
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return WorkerDetailResult{}, fmt.Errorf("get worker: %w", err)
+	}
+	if refusal != nil {
+		return WorkerDetailResult{}, refusal
+	}
+	return result, nil
+}

@@ -37,10 +37,11 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
   const active = useRef<AbortController | null>(null);
   const activeSnapshot = useRef<ReadonlyMap<string, string> | null>(null);
   const itemGenerations = useRef(new Map<string, ReadonlyMap<string, string>>());
+  const restorePending = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  const request = useCallback(async (cursor: string | null, append: boolean) => {
+  const request = useCallback(async (cursor: string | null, append: boolean, preserve = false): Promise<void> => {
     if (blockedRef.current || admission?.isInvalidated) return;
     active.current?.abort();
     const controller = new AbortController();
@@ -50,6 +51,7 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
     const currentGeneration = ++generation.current;
     setState((previous) => append && previous.scopeKey === scopeKey
       ? { ...previous, loadingMore: true, moreError: null }
+      : preserve && previous.scopeKey === scopeKey && previous.status === 'ready' ? previous
       : initialState(scopeKey));
 
     try {
@@ -63,19 +65,19 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
       }, signal, admission === undefined ? undefined : { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch });
       if (admission !== undefined) await admission.ready(signal);
       if (signal.aborted || blockedRef.current || currentGeneration !== generation.current || scopeRef.current !== scopeKey) return;
-      if (!append) itemGenerations.current.clear();
+      if (!append && !preserve) itemGenerations.current.clear();
       const visible = page.items.filter((project) => admission?.projectionSnapshotDenied(snapshot, project.id) !== true);
       for (const project of visible) if (!append || !itemGenerations.current.has(project.id)) itemGenerations.current.set(project.id, snapshot);
       setState((previous) => {
         if (blockedRef.current || admission?.isInvalidated || scopeRef.current !== scopeKey || previous.scopeKey !== scopeKey) return previous;
         const projects = new Map<string, Project>();
-        for (const project of [...(append ? previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true) : []), ...visible]) {
-          if (!projects.has(project.id)) projects.set(project.id, project);
+        for (const project of [...(append || preserve ? previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true) : []), ...visible]) {
+          if (!projects.has(project.id) || preserve) projects.set(project.id, project);
         }
         return {
           scopeKey,
           items: [...projects.values()],
-          nextCursor: page.nextCursor,
+          nextCursor: preserve && previous.status === 'ready' ? previous.nextCursor : page.nextCursor,
           status: 'ready',
           error: admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null),
           loadingMore: false,
@@ -88,15 +90,26 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
       if (signal.aborted || blockedRef.current || currentGeneration !== generation.current || scopeRef.current !== scopeKey) return;
       setState((previous) => blockedRef.current || admission?.isInvalidated || previous.scopeKey !== scopeKey || scopeRef.current !== scopeKey ? previous : append
         ? { ...previous, loadingMore: false, moreError: error }
+        : preserve && previous.status === 'ready' ? { ...previous, error }
         : { ...initialState(scopeKey), status: 'error', error });
     } finally {
-      if (currentGeneration === generation.current) { active.current = null; activeSnapshot.current = null; }
+      if (currentGeneration === generation.current) {
+        active.current = null; activeSnapshot.current = null;
+        if (restorePending.current) { restorePending.current = false; void request(null, false, true); }
+      }
     }
   }, [scopeKey, admission]);
 
   useEffect(() => {
     if (admission === undefined) return;
     return admission.subscribeProjection((event) => {
+      if (event.accessRestored) {
+        if (itemGenerations.current.has(event.projectId) || stateRef.current.status === 'loading') {
+          if (active.current === null) void request(null, false, true);
+          else restorePending.current = true;
+        }
+        return;
+      }
       if (!event.accessRevoked) return;
       const observed = itemGenerations.current.get(event.projectId);
       const remove = observed !== undefined && admission.projectionEventMatches(observed, event);
@@ -117,6 +130,7 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
       ++generation.current;
       active.current?.abort();
       active.current = null;
+      restorePending.current = false;
     };
   }, [request]);
 

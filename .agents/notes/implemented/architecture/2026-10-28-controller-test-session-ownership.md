@@ -12,7 +12,9 @@ would weaken task isolation or invent ownership that does not exist. A temporary
 grant-renewal or local IPC transport failure also says nothing about the health
 of the native process; unwinding supervision on that failure can stop an
 otherwise valid loop. Losing an input response cannot distinguish a request that
-never arrived from an input already accepted by the provider.
+never arrived from an input already accepted by the provider. Before the child
+creates its IPC endpoint, ordinary startup can also look like a lost connection
+if every observation failure is reported as an outage.
 
 ## Decision
 
@@ -63,6 +65,12 @@ Frame admission ends after a complete authenticated request; native acceptance
 uses a separate bounded response wait. Releasing that waiter cannot cancel the
 already-dispatched native operation.
 
+Before the first successful IPC observation, transport uncertainty retries
+quietly within the existing startup deadline. Once a snapshot has been observed,
+a later transport loss reports one warning and a subsequent observation reports
+recovery, even if the provider has not reached `ready`. Observation history is
+separate from provider readiness, which still governs the startup deadline.
+
 An unstarted registration can be archived with `never_started` only before any
 spawn attempt. The service also requires an unused grant and no connection or
 native identity evidence. Failed process ownership cannot be replaced with this
@@ -109,7 +117,15 @@ may already be dispatching. Even a subsequent snapshot cannot establish that the
 request never arrived, so retransmission could repeat native work. Observation
 preserves the uncertainty without inventing another operation.
 
+**Suppress warnings until provider readiness.** IPC can be observed while the
+provider is still starting. Using readiness alone would hide a real loss after
+that successful observation, so the launcher tracks observation separately.
+
 ## Consequences
+
+Normal child initialization produces no outage/recovery pair. Persistent startup
+failure still reports its original error and follows the original stop path;
+warning suppression changes no supervision, retry, renewal or shutdown behavior.
 
 The service and wire codecs must reject mixed bindings, and every event, receipt,
 grant and browser cache must retain its scope. The historical database table name

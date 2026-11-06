@@ -19,8 +19,9 @@ arrived history target without pushing; cancellation traverses to the original
 entry. The [Steps design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)
 owns the API, scope lifecycle and accepted history limits.
 
-Draft readers and discard callbacks belong to the authenticated cache instance,
-project and task. Cleanup releases registration without choosing to discard.
+Draft readers and discard callbacks belong to the authenticated cache instance
+and a resource scope: project/task for Task drafts, or Worker ID for configuration
+drafts. Worker scope retirement cannot retire a Task or another Worker. Cleanup releases registration without choosing to discard.
 Confirmation preserves a live registration so subsequent input remains protected;
 its synchronous continuation can reuse that admission before React renders the
 discarded state. Identity abort and proven resource retirement clear private
@@ -55,7 +56,11 @@ distance calculations honest without claiming protection across missing indexes.
 
 Every application route consumer must use the admitted-location subscription.
 Task-local actions that retire an editor must request admission, while same-task
-tabs keep the editor and its registration mounted. The small browser host imports
+tabs keep the editor and its registration mounted. Worker configuration likewise
+keeps its registration mounted when its panel is hidden by the runtime tab; its
+raw-input dirty state includes invalid configuration text. The
+[Worker configuration design](../../../../docs/design/daynight-web.md#worker-云端配置编辑)
+owns its resource retirement and editor-focus behavior. The small browser host imports
 the production owner and confirmation directly, allowing browser-history and
 focus checks before any Steps form or HTTP write exists.
 
@@ -67,5 +72,6 @@ the history owner, not the Steps API.
 
 Task-owned native message and attachment dialogs dismiss before a leave choice
 mounts. Their browser top layer would otherwise make the shared confirmation
-inert. Cancellation preserves the draft without reopening the dismissed child
+inert. Worker configuration management dialogs likewise dismiss first to release
+their root isolation and focus constraints. Cancellation preserves the draft without reopening the dismissed child
 dialog, and one Escape handles only the active leave choice.

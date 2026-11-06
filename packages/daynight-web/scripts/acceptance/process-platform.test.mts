@@ -86,6 +86,7 @@ test('macOS inspection waits for confirmed exit during path or argument reads an
     await execute('/usr/bin/xcrun', ['clang', '-Wall', '-Wextra', '-Werror', fileURLToPath(new URL('./process-darwin-boundary.fixture.c', import.meta.url)), '-o', executable], { timeout: 30_000 });
     assert.equal((await execute(executable, ['path-exit'], { timeout: 10_000 })).stdout.trim(), 'null');
     assert.equal((await execute(executable, ['args-exit-completes'], { timeout: 10_000 })).stdout.trim(), 'null');
+    assert.equal((await execute(executable, ['args-exit-completes', 'EIO'], { timeout: 10_000 })).stdout.trim(), 'null');
     for (const scenario of ['path-permission', 'bsd-permission', 'bsd-short-read', 'identity-change']) {
       await assert.rejects(execute(executable, [scenario], { timeout: 10_000 }), (error: unknown) => {
         const result = error as { code: number; stderr: string };
@@ -96,11 +97,11 @@ test('macOS inspection waits for confirmed exit during path or argument reads an
       });
     }
     for (const scenario of ['args-permission', 'args-live-invalid', 'args-exit-persistent', 'args-exit-pid-change', 'args-exit-identity-change', 'args-exit-group-change']) {
-      await assert.rejects(execute(executable, [scenario], { timeout: 10_000 }), (error: unknown) => {
+      for (const extra of [[], ['EIO']]) await assert.rejects(execute(executable, [scenario, ...extra], { timeout: 10_000 }), (error: unknown) => {
         const result = error as { code: number; stderr: string };
         assert.equal(result.code, 1);
         assert.match(result.stderr, /Cannot (read|identify)/);
-        assert.match(result.stderr, scenario === 'args-permission' ? /errno 1/ : /errno 22/);
+        assert.match(result.stderr, scenario === 'args-permission' ? /errno 1/ : extra.length === 0 ? /errno 22/ : /errno 5/);
         return true;
       });
     }

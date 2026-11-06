@@ -5,7 +5,8 @@ work, dependencies, required inputs and resulting artifacts together, with a
 browser dashboard for understanding progress and a command-line client for
 managing tasks. A foreground worker runs automatically claimed tasks through
 Codex, Claude Code or Copilot in private Herdr workspaces or browser-controlled
-Task Sessions. The CLI also provides automated
+Task Sessions. The same Worker hosts named assistants in ordinary directories,
+with shared browser conversations and Daynight CLI access. The CLI also provides automated
 GitHub pull request review through Copilot CLI.
 
 Explore Daynight and its interactive example at **[daynight.cc](https://daynight.cc)**.
@@ -23,7 +24,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   standalone tasks. Explore interactive dependency graphs with upstream context,
   task details and fullscreen reading.
 - **Keep the working material with the task.** Upload designs, screenshots and
-  other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
+  other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
 - **Discuss tasks in the browser or CLI.** Open a task's Discussion tab to read,
   post and reply as your account, with persistent history independent of Sessions.
@@ -39,7 +40,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   invitations and revocable CLI credentials. Set task platform requirements and
   agent permission, and view elapsed time and possible-stall warnings.
 - **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
-  tasks across configured repositories, preserve ongoing work through restarts
+  tasks across selected, prepared Projects, preserve ongoing work through restarts
   and stop ended executions while retaining resources until their cleanup
   and archive requirements are satisfied.
 - **Observe and configure your Workers.** Open My Workers alongside My projects
@@ -53,6 +54,11 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Control a task session in the browser.** With `worker.agentControlMode: web`,
   view native messages, reasoning and tool results, send text, stop a turn, and
   answer supported approvals, questions and forms in the task’s Session tab.
+- **Keep an assistant available.** Open Assistants in the workspace and create one
+  with just a name. A compatible online Worker supplies the directory and Agent;
+  advanced settings allow explicit choices. Switch conversations, inspect details
+  and close or reopen the chat without stopping its Agent. Assistants use the CLI
+  for system queries and authorized operations across accessible projects.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
@@ -88,17 +94,20 @@ to `https://daynight.cc` by default.
 From a Git repository with an `origin` remote:
 
 ```bash
-daynight project create "My project"
+daynight project create "My project" --confirm
 daynight task create --title "Improve installation instructions" \
   --description "Document prerequisites and verify the setup commands."
 daynight task list
 daynight task ready
 ```
 
-`project create` returns the existing project when exactly one matches the
-repository; otherwise it creates a project or reports an ambiguous match. Task
-commands discover the project from the repository. Use `--project <project-id>`
-to select one explicitly. Open the Web app to browse the same tasks and progress.
+`project create` returns the existing project when exactly one accessible project
+matches the repository, and reports multiple matches as ambiguous. Only a new
+project uses `--team <uuid|personal>`, the configured default Team, or Personal
+when no default exists. Omit `--confirm` for interactive confirmation; a
+noninteractive creation requires it. Task commands discover the project from the
+repository. Use `--project <project-id>` to select one explicitly. Open the Web
+app to browse the same tasks and progress.
 
 Read project and task usage from the installed package:
 
@@ -141,6 +150,28 @@ Run `daynight completion setup` to install Bash or zsh completion. The
 [completion guide](packages/daynight/README.md#shell-completion) covers shell
 selection, startup files and activation.
 
+## Assistants
+
+Keep `daynight worker run` running on a machine with a configured native Agent,
+then open **Assistants** in the workspace. No repository registration or separate
+Controller command is required. Create with a name, or expand advanced settings
+to choose a Worker, ordinary directory and Agent. Older Workers without assistant
+hosting reports remain visible as unsupported and cannot be selected automatically.
+
+The Worker remains a foreground process: closing a browser does not stop an
+assistant, but an offline or stopped Worker cannot execute requests. Normal Worker
+restart resumes the original native conversation when its identity and stop
+evidence are available; uncertain execution is reported without starting an
+empty replacement or replaying input.
+
+Deleting an assistant removes its Daynight conversation and private execution
+files after verified stopping. It leaves independently created tasks, working
+directories and Provider-owned native history intact. Webhook/MCP integrations,
+automatic migration and OS service installation are not provided. Existing
+standalone Test Sessions remain separate and are not converted automatically.
+See the [assistant guide](packages/daynight/README.md#bot-management) for CLI
+commands, authentication, lifecycle and failure handling.
+
 ## Standalone Session testing
 
 Run a provider in the current directory and open the printed Daynight URL:
@@ -164,8 +195,8 @@ for input, authentication and lifecycle limits.
 
 ## Worker configuration and startup
 
-Use interactive setup to inspect prerequisites, choose a provider, and
-select one or more existing Daynight Projects:
+Before the first cloud enrollment, use interactive setup to inspect prerequisites,
+choose a provider, and select existing Daynight Projects:
 
 ```bash
 daynight login
@@ -176,8 +207,21 @@ daynight worker run
 Setup reports missing tools or integration settings with repair instructions.
 It previews the selected Projects, paths and native-setting resets before saving
 the agent and complete selection together. Existing Projects are preselected on
-repeat setup. Missing native prerequisites can be repaired after saving; the
-command explicitly reports when the environment still needs attention.
+repeat setup before enrollment. Missing native prerequisites can be repaired after
+saving; the command explicitly reports when the environment still needs attention.
+
+The first run imports local managed settings only when no cloud target exists.
+After enrollment the cloud configuration resource owns concurrency, Project
+selection, global and Project-level Agent/model/args, polling and recovery limits.
+Local setup and repository edits direct managed changes to cloud management;
+repository paths, credentials, Worker identity and agentControlMode remain local.
+Startup checks the cloud before normal scheduling. Heartbeats receive targets
+and report actual application outcomes independently of task polling; settings
+apply separately, and failed items retain errors for the next accepted report.
+Running native processes keep their launch arguments. The
+[configuration contract](docs/spec/daynight-worker-configuration.md) and
+[worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+define ownership, retries and recovery boundaries.
 
 The default `herdr` execution mode requires Git, Herdr 0.9.5 or newer with the supported API, and
 the selected native CLI. Configure provider credentials before execution. Before
@@ -194,12 +238,14 @@ Controller and the Daynight relay, with no Herdr dependency. Each claim retains
 its original mode; a configuration change applies only to new claims. Herdr
 continues to own terminal sessions in the default mode.
 
-`repo add` lists accessible Projects for multiselection. Use `--project
-PROJECT_UUID` for an explicit noninteractive registration; `worker repo list`
-and `worker repo remove` inspect or change the selection. With an empty
-repository list, interactive `worker run` also guides Project selection before
-starting new tasks. Startup saves configured Project mappings before reading
-its complete current claim inventory, including after a local database reset.
+Before enrollment, `repo add` lists accessible Projects for multiselection. Use
+`--project PROJECT_UUID` for an explicit noninteractive registration;
+`worker repo list` and `worker repo remove` inspect or change local registrations.
+Normal `worker run` does not open a Project picker. An empty cloud selection keeps
+heartbeats active and does not create fictitious Task resources. Existing claims,
+cleanup responsibilities and local mappings remain available for reconciliation;
+only selected Projects with confirmed local preparation become eligible for
+execution. A Project without a prepared binding remains pending.
 
 New registrations use `worker.repositoryRoot`, defaulting to `~/daynights`, and
 keep existing paths when the root changes. Review's clone-root setting is
@@ -275,7 +321,7 @@ upload HTML you trust with that authority.
 | Component | Role | Documentation |
 |---|---|---|
 | [`packages/daynight/`](packages/daynight/) | TypeScript CLI, task-management skill and Copilot review coordinator | [CLI manual](packages/daynight/README.md) |
-| [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md) |
+| [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md), [organization rules](docs/daynight-server.md) |
 | [`packages/daynight-web/`](packages/daynight-web/) | React/TypeScript browser workspace embedded in the service | [Web guide](packages/daynight-web/README.md) |
 | [`deployment/localhost/`](deployment/localhost/) | Persistent Docker Compose deployment | [Deployment guide](deployment/localhost/README.md) |
 | [`deployment/dev-ci/`](deployment/dev-ci/) | Disposable full-stack verification environment | [Dev-CI guide](deployment/dev-ci/README.md) |
@@ -339,7 +385,7 @@ from all changed paths, including deletions and both sides of renames:
 | A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
 | Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
 | Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
-| Other `packages/daynight/` paths | Independent ordinary and installed CLI jobs on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
+| Other `packages/daynight/` paths | Complete ordinary and installed CLI phases on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
 | `packages/daynight-server/` | Go server coverage and E2E |
 | `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
 | Runtime files under `deployment/` | Web quality and Web browser acceptance |
@@ -365,10 +411,15 @@ workflow. Exact preparation inputs are listed in
 
 Documentation exclusions apply after CLI source ownership; changes selecting
 several modules run their union. CLI selection enables independent ordinary-test
-and installed-acceptance native matrices, each with a 10-minute bound per job.
-Both prepare their own environment and compiled output; the ordinary Ubuntu
-entry supplies the runtime matrix's package. Environment, acceptance and probe
-artifacts identify their native phase. The Web selector enables a quality job and two
+and installed-acceptance matrices on Linux and Windows, each with a 10-minute
+bound per job. A required `verify-macos` job uses one macOS ARM64 allocation for
+complete ordinary and installed phases in sequence, with a 20-minute outer bound
+and 10-minute validation-command bounds. Each phase builds current source and
+records its own environment, outcome and artifacts. The ordinary Ubuntu entry supplies
+the runtime package; runtime jobs depend only on the Linux/Windows ordinary
+producer matrix, while final `checks` still requires macOS. The
+[single-allocation decision](.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
+owns macOS failure, evidence and budget handling. The Web selector enables a quality job and two
 browser matrix entries, each with a 20-minute bound. The two browser shards
 jointly cover the complete native/container inventory; shard 2 owns the shared
 navigation, deployment, combined-authentication and persistence checks. The
@@ -387,10 +438,13 @@ full application validation. See the
 ## Validation
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
-installed package. Server and Web checks have separate commands and require
-statement coverage strictly greater than 90%. Routine CI suites exclude stress
-workloads. Run the corresponding explicit local command when full-scale evidence
-is required:
+installed package. CLI tests use private home and configuration environments
+and guard real Daynight state (`~/.daynight` and the inherited `DN_CONFIG_DIR`)
+against filesystem and SQLite writes or cleanup. The [CLI test isolation guide](docs/development.md#cli-test-isolation)
+owns child-process propagation, symbolic-link checks and protection limits. Server and Web checks have
+separate commands and require statement coverage strictly greater than 90%.
+Routine CI suites exclude stress workloads. Run the corresponding explicit local
+command when full-scale evidence is required:
 
 | Local workload | Command from the repository root |
 |---|---|
@@ -417,9 +471,14 @@ receipt identity checks and evidence limits.
 Read [AGENTS.md](AGENTS.md) for scope, shared task worktrees, verification and
 delivery. This repository manages concrete work in Daynight; load
 [`using-daynight`](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-before executing a task. See the [repository skills](.agents/skills/) for
-decision notes, scope choices and prose, and [Agent Notes](.agents/notes/README.md)
-for decision history.
+before executing a task. Use
+[`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
+a bounded change request into a clear task, choose its required operating
+system, and hand it off to a Worker. Use
+[`optimize-unit-tests`](.agents/skills/optimize-unit-tests/SKILL.md) to reduce test
+runtime, resource use and CI completion time while preserving defect detection.
+See the [repository skills](.agents/skills/) for decision notes, scope choices
+and prose, and [Agent Notes](.agents/notes/README.md) for decision history.
 
 ## Documentation conventions
 
@@ -428,6 +487,7 @@ for decision history.
 | `README.md` | Project purpose, capabilities, setup, development entry points and documentation conventions |
 | Package READMEs and `docs/development.md` | Component usage, development, release procedures and validation methods |
 | [`docs/ui-design.md`](docs/ui-design.md) | Shared UI design principles, examples and information boundaries |
+| [`docs/daynight-server.md`](docs/daynight-server.md) | Stable server code organization rules |
 | `docs/spec/` | Required product behavior and observable guarantees |
 | `docs/design/` | Current structure, mechanisms, rationale and implementation boundaries |
 | `docs/research/` | Investigations, evidence, sources and observation conditions |
@@ -447,6 +507,7 @@ must not be committed, including interactive previews composed from production
 components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
 and reviewable prototypes in their owning Daynight task's attachments.
 
-Specifications and designs use Chinese headings and prose while preserving
-technical literals. Other documents, skills, code, comments and commit messages
-use English unless explicitly instructed otherwise. Discuss work in Chinese.
+Specifications, designs, and the server organization rules use Chinese headings
+and prose while preserving technical literals. Other documents, skills, code,
+comments and commit messages use English unless explicitly instructed otherwise.
+Discuss work in Chinese.

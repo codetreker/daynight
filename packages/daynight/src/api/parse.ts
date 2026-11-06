@@ -1,9 +1,10 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
 import { parseTaskProperties, readWorkerClaim } from "./task-properties.js";
+import type { ProjectInvitationInspection, ProjectInvitationAcceptance, TeamInvitationInspection, TeamInvitationAcceptance, TeamInvitationMember } from "./types.js";
 
 const ids = (value: unknown): string[] => {
   const parsed = array(value, id);
@@ -46,17 +47,45 @@ const parseTeamRef = (value: unknown): TeamRef => {
   if ((team.kind === "personal") !== (team.name === null)) return malformed();
   return team;
 };
+const teamRole = (value: unknown): TeamRole => value === "member" || value === "admin" ? value : malformed();
+const parseTeamMember = (value: unknown, teamId: string, userId?: string): TeamMember => {
+  const member = fields(value, ["teamId", "userId", "role", "version", "createdAt", "updatedAt"]);
+  const parsed = { teamId: id(member.teamId), userId: id(member.userId), role: teamRole(member.role), version: resourceVersion(member.version), createdAt: timestamp(member.createdAt), updatedAt: timestamp(member.updatedAt) };
+  if (parsed.teamId !== teamId || userId !== undefined && parsed.userId !== userId) return malformed();
+  return parsed;
+};
 export const parseTeam = (value: unknown, userId: string, teamId?: string): Team => {
   const data = fields(value, ["id", "kind", "name", "version", "createdAt", "updatedAt", "membership"]);
   const ref = parseTeamRef({ id: data.id, kind: data.kind, name: data.name });
-  const member = fields(data.membership, ["teamId", "userId", "role", "version", "createdAt", "updatedAt"]);
-  const membership: Team["membership"] = {
-    teamId: id(member.teamId), userId: id(member.userId),
-    role: member.role === "member" || member.role === "admin" ? member.role : malformed(),
-    version: resourceVersion(member.version), createdAt: timestamp(member.createdAt), updatedAt: timestamp(member.updatedAt),
-  };
-  if (membership.teamId !== ref.id || membership.userId !== userId || teamId !== undefined && ref.id !== teamId || ref.kind === "personal" && membership.role !== "admin") return malformed();
+  const membership = parseTeamMember(data.membership, ref.id, userId);
+  if (teamId !== undefined && ref.id !== teamId || ref.kind === "personal" && membership.role !== "admin") return malformed();
   return { ...ref, version: resourceVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt), membership };
+};
+export const parseTeamMembers = (value: unknown, teamId: string, actorId: string): readonly TeamMemberWithProfile[] => {
+  const data = fields(value, ["items"]);
+  const items = array(data.items, (value): TeamMemberWithProfile => {
+    const item = fields(value, ["teamId", "userId", "role", "version", "createdAt", "updatedAt", "profile"]);
+    const { profile: rawProfile, ...rawMember } = item;
+    const member = parseTeamMember(rawMember, teamId);
+    const profile = fields(rawProfile, ["name", "email", "avatarUrl"]);
+    return { ...member, profile: { name: profile.name === null ? null : text(profile.name), email: profile.email === null ? null : text(profile.email), avatarUrl: profile.avatarUrl === null ? null : text(profile.avatarUrl) } };
+  });
+  if (new Set(items.map((item) => item.userId)).size !== items.length || !items.some((item) => item.userId === actorId)) return malformed();
+  return items;
+};
+export const parseTeamMemberRoleReceipt = (value: unknown, actorId: string, previous: TeamMember, role: TeamRole): TeamMemberRoleReceipt => {
+  const data = fields(value, ["membership", "actorRole"]);
+  const membership = parseTeamMember(data.membership, previous.teamId, previous.userId);
+  const actorRole = teamRole(data.actorRole);
+  if (membership.role !== role || membership.createdAt !== previous.createdAt || (previous.role === role ? membership.version !== previous.version || membership.updatedAt !== previous.updatedAt : membership.version <= previous.version) || actorRole !== (actorId === previous.userId ? role : "admin")) return malformed();
+  return { membership, actorRole };
+};
+export const parseRemoveTeamMemberReceipt = (value: unknown, actorId: string, member: TeamMember): RemoveTeamMemberReceipt => {
+  const data = fields(value, ["teamId", "userId", "removed", "actorRole"]);
+  const teamId = id(data.teamId), userId = id(data.userId);
+  const actorRole = data.actorRole === null ? null : teamRole(data.actorRole);
+  if (teamId !== member.teamId || userId !== member.userId || data.removed !== true || (userId === actorId ? actorRole !== null : actorRole !== "admin")) return malformed();
+  return { teamId, userId, removed: true, actorRole };
 };
 export const parseTeamDeleteReceipt = (value: unknown, teamId: string): { readonly teamId: string; readonly deleted: true } => {
   const data = fields(value, ["teamId", "deleted"]);
@@ -110,6 +139,38 @@ const parseProjectGrant = (value: unknown, projectId: string, userId?: string): 
   if (parsed.projectId !== projectId || userId !== undefined && parsed.userId !== userId) return malformed();
   return parsed;
 };
+const sameGrant = (a: ProjectGrant | null, b: ProjectGrant | null): boolean => a === null || b === null ? a === b : a.projectId === b.projectId && a.userId === b.userId && a.role === b.role && a.version === b.version && a.createdAt === b.createdAt && a.updatedAt === b.updatedAt;
+export const parseProjectInvitationInspection = (value: unknown, userId: string): ProjectInvitationInspection => {
+  const data = fields(value, ["projectId", "projectName", "directGrant", "access"]), projectId = id(data.projectId);
+  const directGrant = data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId);
+  const access = data.access === null ? null : parseProjectAccess(data.access, projectId, userId);
+  if (!sameGrant(directGrant, access?.directGrant ?? null)) return malformed();
+  return { projectId, projectName: text(data.projectName, true), directGrant, access };
+};
+export const parseProjectInvitationAcceptance = (value: unknown, userId: string, targetId: string): ProjectInvitationAcceptance => {
+  const data = fields(value, ["projectId", "directGrant", "access", "joined", "consumed"]), projectId = id(data.projectId);
+  const directGrant = parseProjectGrant(data.directGrant, projectId, userId), access = parseProjectAccess(data.access, projectId, userId);
+  const joined = bool(data.joined), consumed = bool(data.consumed);
+  if (projectId !== targetId || !sameGrant(directGrant, access.directGrant) || joined !== consumed || joined && directGrant.role !== "member") return malformed();
+  return { projectId, directGrant, access, joined, consumed };
+};
+const parseInvitationMember = (value: unknown, teamId: string, userId: string): TeamInvitationMember => {
+  const data = fields(value, ["teamId", "userId", "role", "version", "createdAt", "updatedAt"]);
+  const member = { teamId: id(data.teamId), userId: id(data.userId), role: projectRole(data.role), version: resourceVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  if (member.teamId !== teamId || member.userId !== userId) return malformed();
+  return member;
+};
+export const parseTeamInvitationInspection = (value: unknown, userId: string): TeamInvitationInspection => {
+  const data = fields(value, ["team", "membership"]), team = parseTeamRef(data.team);
+  if (team.kind !== "ordinary") return malformed();
+  return { team, membership: data.membership === null ? null : parseInvitationMember(data.membership, team.id, userId) };
+};
+export const parseTeamInvitationAcceptance = (value: unknown, userId: string, targetId: string): TeamInvitationAcceptance => {
+  const data = fields(value, ["team", "membership", "joined", "consumed"]), team = parseTeamRef(data.team);
+  const membership = parseInvitationMember(data.membership, team.id, userId), joined = bool(data.joined), consumed = bool(data.consumed);
+  if (team.kind !== "ordinary" || team.id !== targetId || joined !== consumed || joined && membership.role !== "member") return malformed();
+  return { team, membership, joined, consumed };
+};
 const effectiveRole = (teamRole: ProjectAccess["teamRole"], directGrant: ProjectGrant | null): ProjectAccess["effectiveRole"] => {
   if (teamRole === "admin" || directGrant?.role === "admin") return "admin";
   if (teamRole === "member" || directGrant?.role === "member") return "member";
@@ -124,6 +185,31 @@ export const parseProjectAccess = (value: unknown, projectId: string, userId?: s
   };
   if (access.projectId !== projectId || access.ownerTeam.id !== access.ownership.teamId || access.canTransfer !== (access.teamRole === "admin") || access.effectiveRole !== effectiveRole(access.teamRole, access.directGrant)) return malformed();
   return access;
+};
+const sameTeamRef = (a: TeamRef, b: TeamRef): boolean => a.id === b.id && a.kind === b.kind && a.name === b.name;
+export const parseProjectTransferPreview = (value: unknown, targetTeamId: string): ProjectTransferPreview => {
+  const data = fields(value, ["sourceTeam", "targetTeam", "ownership", "actorRole"]);
+  const target = fields(data.targetTeam, ["id", "kind", "name", "version"]);
+  const preview: ProjectTransferPreview = {
+    sourceTeam: parseTeamRef(data.sourceTeam),
+    targetTeam: { ...parseTeamRef({ id: target.id, kind: target.kind, name: target.name }), version: resourceVersion(target.version) },
+    ownership: parseOwnership(data.ownership),
+    actorRole: data.actorRole === null ? null : projectRole(data.actorRole),
+  };
+  if (preview.sourceTeam.id !== preview.ownership.teamId || preview.targetTeam.id !== targetTeamId || preview.sourceTeam.id === targetTeamId && !sameTeamRef(preview.sourceTeam, preview.targetTeam)) return malformed();
+  return preview;
+};
+export const parseProjectTransferReceipt = (value: unknown, projectId: string, userId: string, preview: ProjectTransferPreview): ProjectTransferReceipt => {
+  const data = fields(value, ["projectId", "changed", "sourceTeam", "ownerTeam", "ownership", "actorAccess"]);
+  const receipt: ProjectTransferReceipt = {
+    projectId: id(data.projectId), changed: bool(data.changed), sourceTeam: parseTeamRef(data.sourceTeam),
+    ownerTeam: parseTeamRef(data.ownerTeam), ownership: parseOwnership(data.ownership),
+    actorAccess: data.actorAccess === null ? null : parseProjectAccess(data.actorAccess, projectId, userId),
+  };
+  const changed = preview.ownership.teamId !== preview.targetTeam.id;
+  if (receipt.projectId !== projectId || receipt.changed !== changed || receipt.sourceTeam.id !== preview.sourceTeam.id || !sameTeamRef(receipt.ownerTeam, preview.targetTeam) || !changed && !sameTeamRef(receipt.sourceTeam, receipt.ownerTeam) || receipt.ownership.teamId !== preview.targetTeam.id || receipt.ownership.version !== preview.ownership.version + (changed ? 1n : 0n)) return malformed();
+  if (receipt.actorAccess !== null && (!sameTeamRef(receipt.actorAccess.ownerTeam, receipt.ownerTeam) || receipt.actorAccess.ownership.teamId !== receipt.ownership.teamId || receipt.actorAccess.ownership.version !== receipt.ownership.version)) return malformed();
+  return receipt;
 };
 export const parseCreatedProject = (value: unknown, userId: string, teamId?: string): Project => {
   const data = fields(value, ["id", "name", "repoUrl", "settings", "ownership", "createdAt", "updatedAt", "access"]);
@@ -162,6 +248,33 @@ export const parseTask = (value: unknown, projectId: string, taskId?: string): T
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
   if (worker?.state === "released" && parsed.status !== "todo") return malformed();
   return parsed;
+};
+
+export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSearchPage => {
+  const data = record(value);
+  if (id(data.projectId) !== projectId) return malformed();
+  const total = count(data.total);
+  const items = array(data.items, (value): TaskSearchItem => {
+    const item = record(value);
+    const itemProject = id(item.projectId);
+    if (itemProject !== projectId) return malformed();
+    // Validate the full shared wire before projecting the fields used by the CLI.
+    if (item.assignedTo !== null) id(item.assignedTo);
+    timestamp(item.updatedAt);
+    const rawContext = item.context === null ? null : record(item.context);
+    const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
+    const rawMatch = record(item.match);
+    const matchFields = array(rawMatch.fields, (field) => field === "title" || field === "description" ? field : malformed());
+    if (matchFields.length > 2 || new Set(matchFields).size !== matchFields.length || matchFields.length === 2 && (matchFields[0] !== "title" || matchFields[1] !== "description")) return malformed();
+    const descriptionSnippet = rawMatch.descriptionSnippet === null ? null : text(rawMatch.descriptionSnippet);
+    if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162)) return malformed();
+    if (matchFields.includes("description") !== (descriptionSnippet !== null)) return malformed();
+    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: status(item.status), context, match: { fields: matchFields, descriptionSnippet } };
+  });
+  if (items.length > 100 || new Set(items.map((item) => item.id)).size !== items.length || items.length > total) return malformed();
+  const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);
+  if (nextCursor !== null && (items.length === 0 || items.length >= total)) return malformed();
+  return { projectId, total, items, nextCursor };
 };
 
 export const parsePage = <T>(value: unknown, parse: (item: unknown) => T, identity: (item: T) => string): Page<T> => {
@@ -255,7 +368,12 @@ export const parseServerError = (value: unknown): ServerError => {
   let details: ErrorDetails | undefined;
   if (data.details !== undefined) {
     const raw = record(data.details);
+    if (code === "invalid_search_expression") fields(raw, ["reason", "position", "length"]);
+    if (code === "search_context_limit_exceeded") fields(raw, ["nodeCount", "edgeCount", "maxNodes", "maxEdges"]);
     details = {
+      ...(raw.reason === undefined ? {} : { reason: text(raw.reason, true) }),
+      ...(raw.position === undefined ? {} : { position: count(raw.position) }),
+      ...(raw.length === undefined ? {} : { length: count(raw.length) }),
       ...(raw.taskIds === undefined ? {} : { taskIds: ids(raw.taskIds) }),
       ...(raw.encodedBytes === undefined ? {} : { encodedBytes: count(raw.encodedBytes) }),
       ...(raw.maxEncodedBytes === undefined ? {} : { maxEncodedBytes: count(raw.maxEncodedBytes) }),
@@ -265,6 +383,8 @@ export const parseServerError = (value: unknown): ServerError => {
       ...(raw.maxEdges === undefined ? {} : { maxEdges: count(raw.maxEdges) }),
     };
   }
+  if (code === "invalid_search_expression" && (details?.reason === undefined || !["empty_phrase", "empty_query", "expected_operand", "field_group_not_supported", "invalid_escape", "missing_field_value", "nesting_too_deep", "query_too_large", "too_many_terms", "unclosed_group", "unclosed_quote", "unexpected_closing_group", "unexpected_token", "unknown_field"].includes(details.reason) || details.position === undefined || details.position < 1 || details.length === undefined)) return malformed();
+  if (code === "search_context_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 20000 || details.maxEdges !== 100000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
   if (code === "graph_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 1000 || details.maxEdges !== 5000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
   if (code === "steps_limit_exceeded" && (details?.encodedBytes === undefined || details.maxEncodedBytes !== 67_108_864 || details.encodedBytes <= details.maxEncodedBytes)) return malformed();
   return { code, message, requestId, ...(details === undefined ? {} : { details }) };

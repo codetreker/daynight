@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -13,7 +13,7 @@ func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskDone)
+	task := queryTask(t, database, project.ID, 10, model.TaskDone)
 	ids := []string{"00000000", "11111111", "abcdef01", "fedcba98"}
 	for index, id := range ids {
 		seedStoreStep(t, database, task.ID, id, int64(index))
@@ -21,12 +21,12 @@ func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `CREATE TABLE moved_rows(id text PRIMARY KEY); CREATE FUNCTION audit_moved_rows() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO moved_rows VALUES(NEW.id); RETURN NEW; END $$; CREATE TRIGGER audit_moved_rows AFTER UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION audit_moved_rows()`); err != nil {
 		t.Fatal(err)
 	}
-	read := func() []core.TaskStep {
+	read := func() []model.TaskStep {
 		t.Helper()
-		var rows []core.TaskStep
-		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		var rows []model.TaskStep
+		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			rows, err = snapshot.TaskSteps(ctx, task.ID)
+			rows, err = snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -47,7 +47,9 @@ func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, `DELETE FROM moved_rows`); err != nil {
 			t.Fatal(err)
 		}
-		if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error { return tx.MoveTaskStep(ctx, task.ID, tc.target, tc.from, tc.to) }); err != nil {
+		if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+			return tx.TaskDAO().MoveTaskStep(ctx, task.ID, tc.target, tc.from, tc.to)
+		}); err != nil {
 			var driver *pgconn.PgError
 			if errors.As(err, &driver) {
 				t.Fatalf("move did not commit: code=%s message=%s", driver.Code, driver.Message)
@@ -73,7 +75,7 @@ func TestTaskStepsMoveStoreFailuresPreserveCausesAndRollback(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	for index, id := range []string{"00000000", "11111111", "abcdef01", "fedcba98"} {
 		seedStoreStep(t, database, task.ID, id, int64(index))
 	}
@@ -88,17 +90,17 @@ func TestTaskStepsMoveStoreFailuresPreserveCausesAndRollback(t *testing.T) {
 	before := state()
 	for _, mode := range []string{"query", "count", "constraint"} {
 		t.Run(mode, func(t *testing.T) {
-			err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+			err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
 				switch mode {
 				case "query":
-					if _, err := tx.tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN position TO invalid_position`); err != nil {
+					if _, err := tx.(*ProjectTx).tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN position TO invalid_position`); err != nil {
 						return err
 					}
-					return tx.MoveTaskStep(ctx, task.ID, "00000000", 0, 3)
+					return tx.TaskDAO().MoveTaskStep(ctx, task.ID, "00000000", 0, 3)
 				case "count":
-					return tx.MoveTaskStep(ctx, task.ID, "00000000", 0, 5)
+					return tx.TaskDAO().MoveTaskStep(ctx, task.ID, "00000000", 0, 5)
 				default:
-					return tx.MoveTaskStep(ctx, task.ID, "00000000", 0, -1)
+					return tx.TaskDAO().MoveTaskStep(ctx, task.ID, "00000000", 0, -1)
 				}
 			})
 			var failure *TransactionError
@@ -106,7 +108,7 @@ func TestTaskStepsMoveStoreFailuresPreserveCausesAndRollback(t *testing.T) {
 				t.Fatalf("store move failure completion: %+v %v", failure, err)
 			}
 			if mode == "count" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatal("count mismatch marker lost")
 				}
 			} else {

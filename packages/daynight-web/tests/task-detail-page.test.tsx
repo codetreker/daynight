@@ -44,6 +44,7 @@ const installed = (initial?: TaskDetail) => {
       }
       return resourceResponse(task, TEST_VIEWER_ID);
     }
+    if (new URL(url, location.origin).pathname.endsWith('/sessions')) return resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID);
     if (url.includes('/attachments?')) return resourceResponse({ items: [...paths].map((path) => ({ path, contentType: 'text/plain', sizeBytes: 12, createdAt: first.createdAt, updatedAt: first.updatedAt })), nextCursor: null });
     if (url.includes('/attachments/files/')) {
       if (options?.method === 'DELETE') { paths.delete(url.split('/attachments/files/')[1]!.split('/').map(decodeURIComponent).join('/')); return new Response(null, { status: 204 }); }

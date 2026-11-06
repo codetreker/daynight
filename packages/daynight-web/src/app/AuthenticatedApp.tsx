@@ -1,9 +1,23 @@
+import { clearPendingBotDeletions } from '../features/bots/deletion-coordinator';
+import { clearPendingBotCreation } from '../features/bots/pending-creation';
+import { BotsPage } from '../features/bots/BotsPage';
+import '../styles/assistant-workspace.css';
+import { useBotMessages } from '../features/bots/messages';
 import { CurrentAccountProvider } from './CurrentAccountContext';
 import { clearSessionDrafts } from '../features/task-agent-session/client';
+import { clearBotSessionStorage } from '../features/bots/session-storage';
+import { clearSessionDisplayPreference } from '../features/task-agent-session/useSessionDisplayPreference';
+
+function clearPrivateSessionState(userId: string): void {
+  clearSessionDrafts(userId);
+  clearPendingBotCreation(userId);
+  clearPendingBotDeletions(userId);
+  for (const sessionId of clearBotSessionStorage(userId)) clearSessionDisplayPreference({ userId, sessionId });
+}
 import { TestSessionPage } from '../features/task-agent-session/TestSessionPage';
 import { TestSessionListPage } from '../features/task-agent-session/TestSessionListPage';
 import { useTestSessionListMessages } from '../features/task-agent-session/test-session-list-messages';
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from "../features/task-cache/TaskCacheProvider";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { logout, me } from "../api/auth";
@@ -12,6 +26,7 @@ import { ApiError, invalidateAuthRequests, isAbortError, pauseAuthRequests, subs
 import type { Project } from "../api/types";
 import { AccountPage } from "../features/management/AccountPage";
 import { ProjectSettingsPanel } from "../features/management/ProjectSettingsPanel";
+import { TransferResultNotice, useTransferNavigation } from "../features/management/transfer-navigation";
 import { MembersPanel } from "../features/management/MembersPanel";
 import { CreateProjectDialog } from "../features/auth/CreateProjectDialog";
 import { InvitationPage } from "../features/auth/InvitationPage";
@@ -32,8 +47,12 @@ import { LanguageSelector } from "../i18n/LanguageSelector";
 import { WorkersPage } from "../features/workers/WorkersPage";
 import { WorkerDetailPage } from "../features/workers/WorkerDetailPage";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
+import { AccountMenu } from "./AccountMenu";
 import { TeamsProvider, useTeams } from "../features/teams/TeamsProvider";
+import { TeamPreferenceProvider, useCurrentTeamPreference } from "../features/teams/useTeamPreference";
 import { useTeamMessages } from "../features/teams/messages";
+import { CreateTeamDialog, TeamSettingsPanel } from "../features/teams/TeamManagement";
+import { TeamMembersPanel } from "../features/teams/TeamMembersPanel";
 import { useSidebarPreference } from "./useSidebarPreference";
 import { useBrowserLocation } from './browser-location';
 import "../styles/auth.css";
@@ -71,8 +90,9 @@ const ProjectManagementNav = ({ projectId, current }: { readonly projectId: stri
   return <nav className="project-management-nav" aria-label={m.projectSettings}><a className="button" href={`/projects/${projectId}`} onClick={followLink}>{app.projectTasks}</a><a className="button" href={`/projects/${projectId}/members`} onClick={followLink} aria-current={current === "members" ? "page" : undefined}>{m.members}</a><a className="button" href={`/projects/${projectId}/settings`} onClick={followLink} aria-current={current === "settings" ? "page" : undefined}>{m.projectSettings}</a></nav>;
 };
 
-const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, identityChecking }: { readonly selectedTeamId: string; readonly user: CurrentUser; readonly children: ReactNode; readonly route: AuthRoute; readonly onSignOut: () => void; readonly blocked: boolean; readonly identityChecking: boolean }) => {
+const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, onCreateTeam }: { readonly onCreateTeam: () => void; readonly selectedTeamId: string; readonly user: CurrentUser; readonly children: ReactNode; readonly route: AuthRoute; readonly onSignOut: () => void; readonly blocked: boolean }) => {
   const { messages: { auth: { shell: m }, workspace: { app }, setup } } = useI18n();
+  const botMessages = useBotMessages();
   const testMessages = useTestSessionListMessages();
   const teamMessages = useTeamMessages();
   const teams = useTeams();
@@ -80,11 +100,11 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
   const workspace = useRef<HTMLDivElement>(null);
   const sidebar = useSidebarPreference();
   const resourceId = "projectId" in route ? route.projectId : "workerId" in route ? route.workerId : "teamId" in route ? route.teamId : null;
-  const label = route.kind === "workers" ? m.workers : route.kind === "worker" ? m.worker : route.kind === "testSessions" ? testMessages.title : route.kind === "testSession" ? testMessages.session : route.kind === "projects" ? teamMessages.personal : route.kind === "team" ? teams.detail.team?.name ?? teamMessages.teamProjects : route.kind === "sharedProjects" ? teamMessages.shared : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
-  useLayoutEffect(() => { content.current?.focus(); }, [route.kind, resourceId]);
+  const label = route.kind === "bots" || route.kind === "bot" ? botMessages.title : route.kind === "workers" ? m.workers : route.kind === "worker" ? m.worker : route.kind === "testSessions" ? testMessages.title : route.kind === "testSession" ? testMessages.session : (route.kind === "projects" || route.kind === "team") ? teams.detail.team?.kind === "personal" ? teamMessages.personal : teams.detail.team?.name ?? teamMessages.teamProjects : route.kind === "teamSettings" ? teamMessages.settings : route.kind === "teamMembers" ? teamMessages.members : route.kind === "sharedProjects" ? teamMessages.shared : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
+  useLayoutEffect(() => { if (!blocked) content.current?.focus(); }, [route.kind, resourceId, blocked]);
   return (
-    <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}${route.kind === "testSession" ? " test-session-shell" : ""}`} aria-hidden={blocked} inert={blocked}>
-      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + (resourceId === null ? "" : `:${resourceId}`)} projectsActive={route.kind === "projects" || route.kind === "team"} sharedActive={route.kind === "sharedProjects"} personalId={user.personalTeam.id} selectedTeamId={selectedTeamId} workersActive={route.kind === "workers" || route.kind === "worker"} activeProjectId={"projectId" in route ? route.projectId : null} accountActive={route.kind === "account"} testSessionsActive={route.kind === "testSessions" || route.kind === "testSession"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
+    <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}${route.kind === "testSession" || route.kind === "bots" || route.kind === "bot" ? " test-session-shell" : ""}${route.kind === "testSession" ? " test-session-detail-shell" : ""}${route.kind === "bots" || route.kind === "bot" ? " assistant-workspace-shell" : ""}`} aria-hidden={blocked} inert={blocked}>
+      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + (resourceId === null ? "" : `:${resourceId}`)} projectsActive={route.kind === "projects" || route.kind === "team"} sharedActive={route.kind === "sharedProjects"} teamSettingsActive={route.kind === "teamSettings"} teamMembersActive={route.kind === "teamMembers"} personalId={user.personalTeam.id} selectedTeamId={teams.detail.status === "ready" ? selectedTeamId : null} visibilityTeamId={teams.visibilityTeamId} workersActive={route.kind === "workers" || route.kind === "worker"} botsActive={route.kind === "bots" || route.kind === "bot"} activeProjectId={"projectId" in route ? route.projectId : null} testSessionsActive={route.kind === "testSessions" || route.kind === "testSession"} blocked={blocked} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} onCreateTeam={onCreateTeam} />
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
@@ -92,8 +112,7 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
           <div className="account-actions">
             <a className="setup-guide-link" href="/setup" target="_blank" rel="noopener noreferrer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v15M3 4h5a5 5 0 0 1 4 2 5 5 0 0 1 4-2h5v15h-5a5 5 0 0 0-4 2 5 5 0 0 0-4-2H3z" /></svg>{setup.navigation}</a>
             <LanguageSelector />
-            <a className="account-button" href="/account" onClick={followLink} aria-label={m.accountLink({ name: accountLabel(user, m.currentAccount) })}><span className="avatar" aria-hidden="true">{accountLabel(user, m.currentAccount).slice(0, 1).toUpperCase()}</span><span className="account-name">{accountLabel(user, m.currentAccount)}</span></a>
-            <button className="inline-link" type="button" onClick={onSignOut}>{m.signOut}</button>
+            <AccountMenu name={accountLabel(user, m.currentAccount)} onSignOut={onSignOut} />
           </div>
         </header>
         <main className="content" id="main-content" ref={content} tabIndex={-1}>
@@ -105,25 +124,84 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
   );
 };
 
-const WorkspaceRoutes = ({ user, route, selectedTeamId, admission, onSignOut, onIdentityMismatch, blocked, identityChecking, children }: { readonly admission: TaskCacheScope; readonly selectedTeamId: string; readonly user: CurrentUser; readonly route: AuthRoute; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly blocked: boolean; readonly identityChecking: boolean; readonly children: ReactNode }) => {
-  const { messages: { auth: { shell: m }, workspace: { app }, common } } = useI18n();
-  const projects = useProjectList();
-  const teams = useTeams();
-  const teamMessages = useTeamMessages();
-  const [creating, setCreating] = useState<{ readonly id: string; readonly name: string; readonly personal: boolean } | null>(null);
-  const [projectName, setProjectName] = useState<string | null>(null);
-  return <Workspace user={user} route={route} selectedTeamId={selectedTeamId} onSignOut={onSignOut} blocked={blocked} identityChecking={identityChecking}>
-    {children}{route.kind === "workers" ? <WorkersPage readEnabled={!identityChecking && !blocked} /> : route.kind === "worker" ? <WorkerDetailPage key={route.workerId} workerId={route.workerId} readEnabled={!identityChecking && !blocked} /> : route.kind === "testSessions" ? <TestSessionListPage /> : route.kind === "testSession" ? <TestSessionPage key={route.sessionId} sessionId={route.sessionId} /> : route.kind === "sharedProjects" ? <ProjectsPage title={teamMessages.sharedProjects} subtitle={teamMessages.sharedSubtitle} emptyDetail={teamMessages.sharedEmpty} /> : route.kind === "projects" || route.kind === "team" ? teams.detail.status === "loading" ? <section className="state-box" role="status">{teamMessages.loading}</section> : teams.detail.status === "error" ? <section className="state-box" role="alert"><h1>{teamMessages.failed}</h1><p>{teams.detail.error instanceof ApiError && (teams.detail.error.status === 403 || teams.detail.error.status === 404) ? teamMessages.unavailable : teams.detail.error instanceof ApiError && teams.detail.error.kind === "network" ? teamMessages.network : teamMessages.readError}</p>{teams.detail.error instanceof ApiError && teams.detail.error.requestId !== null && <p>{common.requestId}<code>{teams.detail.error.requestId}</code></p>}<button className="button" type="button" onClick={teams.refreshDetail}>{teamMessages.retry}</button></section> : <ProjectsPage title={teams.detail.team!.kind === "personal" ? teamMessages.personal : teams.detail.team!.name!} subtitle={teams.detail.team!.kind === "personal" ? teamMessages.personalSubtitle : teamMessages.teamSubtitle} onCreate={() => setCreating({ id: selectedTeamId, name: teams.detail.team!.kind === "personal" ? teamMessages.personal : teams.detail.team!.name!, personal: teams.detail.team!.kind === "personal" })} /> : route.kind === "project" ? <ProjectAccessBoundary key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /></ProjectAccessBoundary> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={user} onRemoved={() => { projects.refresh(); navigate("/projects"); }} onUnavailable={projects.refresh} /></> : route.kind === "account" ? <AccountPage user={user} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
-    {creating !== null && <CreateProjectDialog admission={admission} teamId={creating.id} teamName={creating.name} teamPersonal={creating.personal} userId={user.id} onIdentityMismatch={onIdentityMismatch} onClose={() => setCreating(null)} onCreated={(project) => { setCreating(null); projects.refresh(); navigate(`/projects/${project.id}`); }} />}
-  </Workspace>;
+const TeamPreferenceError = ({ inline = false }: { readonly inline?: boolean }) => {
+  const teams = useTeams(), m = useTeamMessages();
+  const { messages: { common } } = useI18n();
+  const { error, storageError } = teams.detail;
+  const Heading = inline ? "h2" : "h1";
+  return <section className={inline ? "notice error" : "state-box"} role="alert"><Heading>{m.failed}</Heading><p>{storageError ? m.storageRead : error instanceof ApiError && error.kind === "server" && ((error.status === 403 && error.code === "forbidden") || (error.status === 404 && error.code === "not_found")) ? m.unavailable : error instanceof ApiError && error.kind === "network" ? m.network : m.readError}</p>{error instanceof ApiError && error.requestId !== null && <p>{common.requestId}<code>{error.requestId}</code></p>}<button className="button" type="button" onClick={teams.refreshDetail}>{m.retry}</button></section>;
 };
 
-const TeamWorkspace = ({ user, route, admission, admissionBlocked, onSignOut, onIdentityMismatch, blocked, identityChecking, children }: { readonly user: CurrentUser; readonly route: AuthRoute; readonly admission: TaskCacheScope; readonly admissionBlocked: boolean; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly blocked: boolean; readonly identityChecking: boolean; readonly children: ReactNode }) => {
-  const [lastTeamId, setLastTeamId] = useState(user.personalTeam.id);
-  const selectedTeamId = route.kind === "team" ? route.teamId : route.kind === "projects" ? user.personalTeam.id : lastTeamId;
-  useEffect(() => { if (route.kind === "team" || route.kind === "projects") setLastTeamId(selectedTeamId); }, [route.kind, selectedTeamId]);
+const WorkspaceRoutes = ({ user, route, selectedTeamId, admission, onSignOut, onIdentityMismatch, blocked, identityChecking, workspaceVisible, guardedTeam, setTeamGuard, children }: { readonly workspaceVisible: boolean; readonly admission: TaskCacheScope; readonly selectedTeamId: string; readonly user: CurrentUser; readonly route: AuthRoute; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly blocked: boolean; readonly identityChecking: boolean; readonly guardedTeam: (id: string) => boolean; readonly setTeamGuard: (id: string, source: "settings" | "members", guarded: boolean) => void; readonly children: ReactNode }) => {
+  const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
+  const projects = useProjectList();
+  const teams = useTeams();
+  const confirmedTeam = useCurrentTeamPreference().confirmedTeam;
+  const teamMessages = useTeamMessages();
+  const transfer = useTransferNavigation(admission, user, projects.refresh);
+  const [creating, setCreating] = useState<{ readonly id: string; readonly name: string; readonly personal: boolean } | null>(null);
+  const [creatingTeam, setCreatingTeam] = useState(false);
+  const [savedTeamResult, setSavedTeamResult] = useState<string | null>(null);
+  const [memberResults, setMemberResults] = useState<ReadonlyMap<string, "changed" | "left">>(() => new Map());
+  const clearMemberResult = (teamId: string) => setMemberResults((previous) => {
+    if (!previous.has(teamId)) return previous;
+    const next = new Map(previous); next.delete(teamId); return next;
+  });
+  const saveMemberResult = (teamId: string, kind: "changed" | "left") => setMemberResults((previous) => new Map(previous).set(teamId, kind));
+  const mountedSettings = useRef<string | null>(null), mountedMembers = useRef<{ id: string; host: HTMLDivElement }[]>([]);
+  const mountedProjectMembers = useRef<{ id: string; host: HTMLDivElement }[]>([]);
+  const projectMemberSlot = useRef<HTMLDivElement>(null);
+  const attachProjectMemberSlot = useCallback((slot: HTMLDivElement | null) => { projectMemberSlot.current = slot; if (slot) for (const member of mountedProjectMembers.current) if (member.host.parentNode !== slot) slot.appendChild(member.host); }, []);
+  useLayoutEffect(() => { const slot = projectMemberSlot.current; if (slot) for (const member of mountedProjectMembers.current) if (member.host.parentNode !== slot) slot.appendChild(member.host); });
+  if (route.kind === "members" && !mountedProjectMembers.current.some((member) => member.id === route.projectId)) mountedProjectMembers.current.push({ id: route.projectId, host: document.createElement("div") });
+  const memberSlot = useRef<HTMLDivElement>(null);
+  const mountedProjectSettings = useRef<{ id: string; host: HTMLDivElement; retained: { settings: boolean; transfer: boolean } }[]>([]);
+  const [, updateProjectSettings] = useState(0);
+  const retainProjectSettings = useCallback((projectId: string, owner: "settings" | "transfer", retained: boolean) => {
+    const settings = mountedProjectSettings.current.find((entry) => entry.id === projectId);
+    if (settings === undefined || settings.retained[owner] === retained) return;
+    settings.retained[owner] = retained;
+    updateProjectSettings((value) => value + 1);
+  }, []);
+  const projectSettingsSlot = useRef<HTMLDivElement>(null);
+  const attachProjectSettingsSlot = useCallback((slot: HTMLDivElement | null) => { projectSettingsSlot.current = slot; if (slot) for (const settings of mountedProjectSettings.current) if (settings.host.parentNode !== slot) slot.appendChild(settings.host); }, []);
+  // Keep each portal's host stable across standalone routes so dispatched writes retain their owner.
+  const attachMemberSlot = useCallback((slot: HTMLDivElement | null) => { memberSlot.current = slot; if (slot) for (const member of mountedMembers.current) if (member.host.parentNode !== slot) slot.appendChild(member.host); }, []);
+  useLayoutEffect(() => { const slot = memberSlot.current; if (slot) for (const member of mountedMembers.current) if (member.host.parentNode !== slot) slot.appendChild(member.host); });
+  useLayoutEffect(() => { const slot = projectSettingsSlot.current; if (slot) for (const settings of mountedProjectSettings.current) if (settings.host.parentNode !== slot) slot.appendChild(settings.host); });
+  mountedProjectSettings.current = mountedProjectSettings.current.filter((settings) => settings.retained.settings || settings.retained.transfer || route.kind === "settings" && settings.id === route.projectId);
+  if (route.kind === "settings" && !mountedProjectSettings.current.some((settings) => settings.id === route.projectId)) mountedProjectSettings.current.push({ id: route.projectId, host: document.createElement("div"), retained: { settings: false, transfer: false } });
+  if (route.kind !== "teamSettings" || mountedSettings.current !== route.teamId) mountedSettings.current = null;
+  const preferenceDenied = teams.detail.error instanceof ApiError && teams.detail.error.kind === "server" && (teams.detail.error.status === 403 && teams.detail.error.code === "forbidden" || teams.detail.error.status === 404 && teams.detail.error.code === "not_found");
+  const settingsReady = route.kind === "teamSettings" && teams.detail.id === route.teamId && (teams.detail.status === "ready" || teams.detail.status === "error" && mountedSettings.current === route.teamId && guardedTeam(route.teamId)) && !blocked;
+  if (settingsReady && route.kind === "teamSettings") mountedSettings.current = route.teamId;
+  const teamPage = route.kind === "projects" || route.kind === "team" || route.kind === "teamSettings" || route.kind === "teamMembers";
+  const membersReady = route.kind === "teamMembers" && teams.detail.id === route.teamId && (teams.detail.status === "ready" || teams.detail.status === "error" && guardedTeam(route.teamId)) && !blocked;
+  if (membersReady && route.kind === "teamMembers" && !mountedMembers.current.some((member) => member.id === route.teamId)) mountedMembers.current.push({ id: route.teamId, host: document.createElement("div") });
+  return <>{workspaceVisible && <Workspace user={user} route={route} selectedTeamId={selectedTeamId} onSignOut={onSignOut} blocked={blocked} onCreateTeam={() => setCreatingTeam(true)}>
+    {children}{savedTeamResult !== null && !(settingsReady && route.kind === "teamSettings" && route.teamId === savedTeamResult) && <div className="notice" role="status"><span>{teamMessages.savedName}</span> <code>{savedTeamResult}</code> <button type="button" className="button quiet" onClick={() => setSavedTeamResult(null)}>{teamMessages.dismiss}</button></div>}{!teamPage && teams.detail.status === "error" && <TeamPreferenceError inline />}<TransferResultNotice result={transfer.result} retry={transfer.retry} dismiss={transfer.dismiss} />{[...memberResults].map(([teamId, kind]) => <div key={teamId} className="notice" role="status">{kind === "left" ? teamMessages.left : teamMessages.memberChanged} <code>{teamId}</code> <button type="button" className="button quiet" onClick={() => clearMemberResult(teamId)}>{teamMessages.dismiss}</button></div>)}{route.kind === "bots" || route.kind === "bot" ? <BotsPage botId={route.kind === "bot" ? route.botId : null} readEnabled={!identityChecking && !blocked} /> : route.kind === "workers" ? <WorkersPage readEnabled={!identityChecking && !blocked} /> : route.kind === "worker" ? <WorkerDetailPage key={route.workerId} workerId={route.workerId} readEnabled={!identityChecking && !blocked} /> : route.kind === "testSessions" ? <TestSessionListPage /> : route.kind === "testSession" ? <TestSessionPage key={route.sessionId} sessionId={route.sessionId} /> : route.kind === "sharedProjects" ? <ProjectsPage title={teamMessages.sharedProjects} subtitle={teamMessages.sharedSubtitle} emptyDetail={teamMessages.sharedEmpty} /> : route.kind === "projects" || route.kind === "team" || route.kind === "teamSettings" || route.kind === "teamMembers" ? teams.detail.status === "loading" ? <section className="state-box" role="status">{teamMessages.loading}</section> : teams.detail.status === "error" ? <TeamPreferenceError /> : (route.kind === "teamSettings" || route.kind === "teamMembers") ? null : <ProjectsPage title={teams.detail.team!.kind === "personal" ? teamMessages.personal : teams.detail.team!.name!} subtitle={teams.detail.team!.kind === "personal" ? teamMessages.personalSubtitle : teamMessages.teamSubtitle} {...(teams.detail.team!.kind === "personal" ? {} : { emptyDetail: teamMessages.teamEmpty })} onCreate={() => setCreating({ id: selectedTeamId, name: teams.detail.team!.kind === "personal" ? teamMessages.personal : teams.detail.team!.name!, personal: teams.detail.team!.kind === "personal" })} /> : route.kind === "project" ? <ProjectAccessBoundary key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={user} onOpenMembers={(project) => navigate(`/projects/${project.id}/members`)} /></ProjectAccessBoundary> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><div ref={attachProjectMemberSlot} /></> : route.kind === "account" ? <AccountPage user={user} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
+    {route.kind === "teamSettings" && mountedSettings.current === route.teamId && <div hidden={!settingsReady} inert={!settingsReady}><TeamSettingsPanel key={route.teamId} teamId={route.teamId} active={settingsReady} admissionBlocked={identityChecking} preferenceDenied={preferenceDenied} confirmedTeam={confirmedTeam} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={(guarded) => { setTeamGuard(route.teamId, "settings", guarded); if (!guarded && teams.detail.status === "error") teams.refreshDetail(); }} onDeleted={() => { teams.refreshList(); navigate(`/teams/${user.personalTeam.id}`); }} onUnavailable={() => { const result = teams.forgetUnavailable(route.teamId); if (result === "forgotten") navigate("/projects"); return result; }} onUpdated={(team) => { setSavedTeamResult(team.id); teams.acceptTeam(team); teams.refreshList(); }} /></div>}
+    <div ref={attachProjectSettingsSlot} />
+    <div ref={attachMemberSlot} />
+    {creatingTeam && <CreateTeamDialog admission={admission} active={!blocked} onIdentityMismatch={onIdentityMismatch} onClose={() => setCreatingTeam(false)} onCreated={(team) => { setCreatingTeam(false); teams.refreshList(); navigate(`/teams/${team.id}`); }} />}
+    {creating !== null && <CreateProjectDialog admission={admission} teamId={creating.id} teamName={creating.name} teamPersonal={creating.personal} userId={user.id} onIdentityMismatch={onIdentityMismatch} onClose={() => setCreating(null)} onCreated={(project) => { setCreating(null); projects.refresh(); navigate(`/projects/${project.id}`); }} />}
+  </Workspace>}
+    {mountedProjectMembers.current.map(({ id: projectId, host }) => { const onRoute = route.kind === "members" && route.projectId === projectId; const active = onRoute && workspaceVisible && !blocked; return createPortal(<div hidden={!active} inert={!active}><MembersPanel projectId={projectId} user={user} active={active} onRoute={onRoute} onRemoved={() => { projects.refresh(); if (onRoute) navigate("/projects"); }} onUnavailable={projects.refresh} /></div>, host, `project:${projectId}`); })}
+    {mountedProjectSettings.current.map(({ id: projectId, host }) => { const onRoute = route.kind === "settings" && route.projectId === projectId; const active = workspaceVisible && onRoute && !blocked; return createPortal(<div hidden={!active} inert={!active}><ProjectSettingsPanel projectId={projectId} user={user} active={active} onRoute={onRoute} onRetentionChange={(retained) => retainProjectSettings(projectId, "transfer", retained)} onSettingsRetentionChange={(retained) => retainProjectSettings(projectId, "settings", retained)} onTransferred={transfer.complete} /></div>, host, projectId); })}
+    {mountedMembers.current.map(({ id: teamId, host }) => { const active = route.kind === "teamMembers" && route.teamId === teamId && membersReady; return createPortal(<div hidden={!active} inert={!active}><TeamMembersPanel teamId={teamId} active={active} admissionBlocked={identityChecking} preferenceDenied={preferenceDenied && teams.detail.id === teamId} onRoute={route.kind === "teamMembers" && route.teamId === teamId} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={(guarded) => setTeamGuard(teamId, "members", guarded)} onUnavailable={() => { if (!active) return "changed"; const result = teams.forgetUnavailable(teamId); if (result === "forgotten") navigate("/projects"); return result; }} onStart={() => clearMemberResult(teamId)} onChanged={(confirmed) => { if (confirmed) saveMemberResult(teamId, "changed"); if (route.kind === "teamMembers" && route.teamId === teamId) teams.refreshDetail(); teams.refreshList(); }} onLeft={() => { saveMemberResult(teamId, "left"); teams.leaveTeam(teamId); teams.refreshList(); const current = parseAuthRoute(window.location.pathname, window.location.search); if (route.kind === "teamMembers" && route.teamId === teamId && current.kind === "teamMembers" && current.teamId === teamId) navigate(`/teams/${user.personalTeam.id}`); }} /></div>, host, teamId); })}
+  </>;
+};
+
+const TeamWorkspace = ({ user, route, admission, admissionBlocked, onSignOut, onIdentityMismatch, blocked, identityChecking, workspaceVisible, guardedTeam, setTeamGuard, children }: { readonly workspaceVisible: boolean; readonly user: CurrentUser; readonly route: AuthRoute; readonly admission: TaskCacheScope; readonly admissionBlocked: boolean; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly blocked: boolean; readonly identityChecking: boolean; readonly guardedTeam: (id: string) => boolean; readonly setTeamGuard: (id: string, source: "settings" | "members", guarded: boolean) => void; readonly children: ReactNode }) => {
+  const preference = useCurrentTeamPreference();
+  const selectedTeamId = preference.detail.id;
   const scope = route.kind === "sharedProjects" ? { kind: "shared" as const } : { kind: "team" as const, teamId: selectedTeamId };
-  return <TeamsProvider personalTeam={user.personalTeam} selectedId={selectedTeamId} admission={admission} admissionBlocked={admissionBlocked}><ProjectsProvider scope={scope} admission={admission} admissionBlocked={admissionBlocked}><WorkspaceRoutes user={user} route={route} selectedTeamId={selectedTeamId} admission={admission} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} blocked={blocked} identityChecking={identityChecking}>{children}</WorkspaceRoutes></ProjectsProvider></TeamsProvider>;
+  return <TeamsProvider preference={preference} admission={admission} admissionBlocked={admissionBlocked}><ProjectsProvider scope={scope} admission={admission} admissionBlocked={admissionBlocked || (scope.kind === "team" && preference.detail.status !== "ready")}><WorkspaceRoutes user={user} route={route} selectedTeamId={selectedTeamId} admission={admission} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} blocked={blocked} identityChecking={identityChecking} workspaceVisible={workspaceVisible} guardedTeam={guardedTeam} setTeamGuard={setTeamGuard}>{children}{preference.saveError && <TeamSaveError onRetry={preference.retrySave} />}</WorkspaceRoutes></ProjectsProvider></TeamsProvider>;
+};
+
+const TeamSaveError = ({ onRetry }: { readonly onRetry: () => void }) => {
+  const m = useTeamMessages();
+  return <div className="notice warning" role="alert"><p>{m.storageWrite}</p><button className="button" type="button" onClick={onRetry}>{m.retry}</button></div>;
 };
 
 const RevalidationOverlay = ({ failed, onRetry }: { readonly failed: boolean; readonly onRetry: () => void }) => {
@@ -135,7 +213,6 @@ const RevalidationOverlay = ({ failed, onRetry }: { readonly failed: boolean; re
     return () => queueMicrotask(() => { if (opener instanceof HTMLElement && opener.isConnected) opener.focus(); });
   }, []);
   return <dialog ref={dialog} className="auth-revalidation-overlay" aria-label={m.revalidationLabel} onCancel={(event) => event.preventDefault()} onKeyDown={(event) => event.stopPropagation()}>
-    <LanguageSelector />
     {failed ? <div role="alert"><h1>{m.revalidationError}</h1><p>{m.revalidationRetained}</p><button className="button primary" type="button" onClick={onRetry}>{m.revalidationRetry}</button></div> : <div role="status"><span className="spinner" aria-hidden="true" /><p>{m.revalidationLoading}</p></div>}
   </dialog>;
 };
@@ -147,6 +224,7 @@ const assignLogin = (url: string) => window.location.assign(url);
 
 export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly navigateToLogin?: (url: string) => void }) => {
   const { locale, messages: { auth: { shell: m }, workspace: { app, projects } } } = useI18n();
+  const botMessages = useBotMessages();
   const testMessages = useTestSessionListMessages();
   const [invitation, setInvitation] = useState(captureInvitation);
   const location = useBrowserLocation();
@@ -169,6 +247,17 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const mounted = useRef(true);
   const cacheScope = useRef<TaskCacheScope | null>(null);
   const identityRecheck = useRef<() => void>(() => {});
+  const memberGuards = useRef<{ identity: string; teams: Map<string, Set<"settings" | "members">> }>({ identity: "", teams: new Map() });
+  const [, updateMemberGuards] = useState(0);
+  const guardedTeam = useCallback((id: string) => memberGuards.current.teams.has(id), []);
+  const setTeamGuard = useCallback((id: string, source: "settings" | "members", guarded: boolean) => {
+    const teams = memberGuards.current.teams;
+    const sources = teams.get(id) ?? new Set<"settings" | "members">();
+    if (sources.has(source) === guarded) return;
+    if (guarded) { sources.add(source); teams.set(id, sources); }
+    else { sources.delete(source); if (sources.size === 0) teams.delete(id); }
+    updateMemberGuards((value) => value + 1);
+  }, []);
   const route = parseAuthRoute(pathname, search);
   const navigation = new URLSearchParams(search);
   navigation.delete("authError");
@@ -183,8 +272,8 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   useLayoutEffect(() => {
     document.documentElement.lang = locale;
     const page = session.status === "authenticated" ? route.kind : session.status === "anonymous" ? "login" : session.status;
-    document.title = page === "team" ? `${teamMessages.teamProjects} · Daynight` : page === "sharedProjects" ? `${teamMessages.shared} · Daynight` : page === "testSessions" ? `${testMessages.title} · Daynight` : page === "testSession" ? `${testMessages.session} · Daynight` : (page === "attachment" || page === "task") ? app.documentTitle.task : m.documentTitle[page];
-  }, [locale, m.documentTitle, app.documentTitle.task, route.kind, session.status, testMessages.title, testMessages.session, teamMessages.teamProjects, teamMessages.shared]);
+    document.title = (page === "bots" || page === "bot") ? `${botMessages.title} · Daynight` : (page === "team" || page === "teamSettings" || page === "teamMembers") ? `${page === "teamSettings" ? teamMessages.settings : page === "teamMembers" ? teamMessages.members : teamMessages.teamProjects} · Daynight` : page === "sharedProjects" ? `${teamMessages.shared} · Daynight` : page === "testSessions" ? `${testMessages.title} · Daynight` : page === "testSession" ? `${testMessages.session} · Daynight` : (page === "attachment" || page === "task") ? app.documentTitle.task : m.documentTitle[page];
+  }, [locale, botMessages.title, m.documentTitle, app.documentTitle.task, route.kind, session.status, testMessages.title, testMessages.session, teamMessages.teamProjects, teamMessages.settings, teamMessages.members, teamMessages.shared]);
   const [loginError] = useState(() => {
     const parameters = new URLSearchParams(window.location.search);
     const failed = parameters.get("authError") === "login_failed";
@@ -202,7 +291,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       invitationRef.current = pending;
       setInvitation(pending);
     }
-    if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
+    if (sessionRef.current.status === "authenticated") clearPrivateSessionState(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests(); ++generation.current; active.current?.abort(); active.current = null;
     setRevalidation("idle"); setSession({ status: "anonymous", ...(notice === undefined ? {} : { notice }) });
@@ -238,7 +327,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       if (previous.status === "authenticated" && previous.user.id === user.id && !cacheScope.current?.isInvalidated) {
         setSession({ ...previous, user });
       } else {
-        if (previous.status === "authenticated") clearSessionDrafts(previous.user.id);
+        if (previous.status === "authenticated") clearPrivateSessionState(previous.user.id);
         void cacheScope.current?.invalidateScope();
         cacheScope.current = createTaskCacheScope({ userId: user.id, onIdentityMismatch: () => identityRecheck.current() });
         invalidateAuthRequests();
@@ -292,7 +381,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   }, [pauseIdentity]);
   const invalidateIdentity = useCallback(() => {
     if (invitationFlowRef.current) discardInvitation();
-    if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
+    if (sessionRef.current.status === "authenticated") clearPrivateSessionState(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests();
     pauseIdentity();
@@ -345,19 +434,22 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     navigateToLogin(`/api/v1/auth/login?${parameters}`);
   };
   const cleanupWarning = cleanupFailed || invitation.cleanupFailed ? <div className="notice warning" role="alert">{m.invitationCleanupError}</div> : null;
-  if (returnPath === null && (route.kind === "login" || route.kind !== "notFound" && session.status === "anonymous")) return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.invalidLoginTarget}</h1><p>{m.invalidLoginTargetDetail}</p><LanguageSelector /><a className="button primary" href="/login">{m.startFreshLogin}</a></section></main></>;
-  if (route.kind === "notFound") return <>{cleanupWarning}<main className="auth-main"><section className="state-box"><h1>{app.notFound}</h1><LanguageSelector /><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section></main></>;
+  const invalidTarget = <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.invalidLoginTarget}</h1><p>{m.invalidLoginTargetDetail}</p><LanguageSelector /><a className="button primary" href="/login">{m.startFreshLogin}</a></section></main></>;
+  const notFound = <>{cleanupWarning}<main className="auth-main"><section className="state-box"><h1>{app.notFound}</h1><LanguageSelector /><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section></main></>;
+  const identityLoading = <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main></>;
+  if (session.status !== "authenticated" && returnPath === null && (route.kind === "login" || route.kind !== "notFound" && session.status === "anonymous")) return invalidTarget;
+  if (session.status !== "authenticated" && route.kind === "notFound") return notFound;
   if (logoutPending) return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.signingOut}</h1><LanguageSelector /></section></main></>;
-  if (session.status === "loading" || session.status === "authenticated" && route.kind === "login") return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main></>;
+  if (session.status === "loading") return identityLoading;
   if (session.status === "error") return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.identityError}</h1><p>{m.networkRetry}</p><LanguageSelector /><button className="button primary" type="button" onClick={() => setAttempt((value) => value + 1)}>{projects.retry}</button></section></main></>;
   if (session.status === "anonymous") return <>{cleanupWarning}{invitationFlow && invitation.storageUnavailable && <div className="notice warning" role="alert">{m.invitationStorageError}</div>}<LoginPage invitation={destination.kind === "invitations" || destination.kind === "teamInvitations"} device={destination.kind === "device"} {...(session.notice !== undefined ? { notice: m.notice[session.notice] } : loginError ? { notice: m.notice.loginFailed } : {})} onLogin={startLogin} />{logoutFailed && <button className="button" type="button" onClick={() => signOut(logoutContinuation.current)}>{m.retryLogout}</button>}</>;
   const identity = `${session.user.id}:${session.generation}`;
+  if (memberGuards.current.identity !== identity) memberGuards.current = { identity, teams: new Map() };
   const revalidationOverlay = blocked ? <RevalidationOverlay failed={revalidation === "error"} onRetry={recheckIdentity} /> : null;
-  if (route.kind === "attachment" || route.kind === "task") return <CurrentAccountProvider user={session.user} admissionBlocked={revalidation !== "idle"}><TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskAssigneesProvider><TaskDetailSessionProvider>{revalidationOverlay}{cleanupWarning}<div className="auth-shell" key={identity} aria-hidden={blocked} inert={blocked}>
+  const preferenceRoute = route.kind === "projects" ? "default" : (route.kind === "team" || route.kind === "teamSettings" || route.kind === "teamMembers") ? route.teamId : null;
+  const workspaceRoute = !["login", "notFound", "attachment", "task", "teamInvitations", "invitations", "device"].includes(route.kind);
+  const content = route.kind === "login" ? returnPath === null ? invalidTarget : identityLoading : route.kind === "notFound" ? notFound : route.kind === "attachment" || route.kind === "task" ? <>{revalidationOverlay}{cleanupWarning}<div className="auth-shell" key={identity} aria-hidden={blocked} inert={blocked}>
     <TaskDetailPage key={route.projectId} projectId={route.projectId} taskId={route.taskId} navigation={{ tab: route.tab, path: route.path }} />
-  </div></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider>;
-  if (route.kind === "teamInvitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><TeamInvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation.scope === "project" ? { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } : invitation} user={session.user} onAccepted={discardInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></>;
-  if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation.scope === "team" ? { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } : invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></>;
-  if (route.kind === "device") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={() => signOut(returnPath)} onIdentityMismatch={invalidateIdentity} /></div></>;
-  return <CurrentAccountProvider user={session.user} admissionBlocked={revalidation !== "idle"}><TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskAssigneesProvider><TaskDetailSessionProvider>{revalidationOverlay}<TeamWorkspace key={identity} user={session.user} route={route} admission={cacheScope.current!} admissionBlocked={revalidation !== "idle"} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} blocked={blocked} identityChecking={revalidation !== "idle"}>{cleanupWarning}</TeamWorkspace></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider>;
+  </div></> : route.kind === "teamInvitations" ? <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><TeamInvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation.scope === "project" ? { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } : invitation} user={session.user} onAccepted={discardInvitation} onOpenTeam={(teamId) => navigate(`/teams/${teamId}`)} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></> : route.kind === "invitations" ? <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation.scope === "team" ? { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } : invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></> : route.kind === "device" ? <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={() => signOut(returnPath)} onIdentityMismatch={invalidateIdentity} /></div></> : null;
+  return <CurrentAccountProvider user={session.user} admissionBlocked={revalidation !== "idle"}><TaskCacheProvider key={identity} scope={cacheScope.current!}><TeamPreferenceProvider personal={session.user.personalTeam} routeKey={preferenceRoute} restoreOnEntry={workspaceRoute} admission={cacheScope.current!} blocked={revalidation !== "idle"} guardUnavailable={guardedTeam}><TaskAssigneesProvider><TaskDetailSessionProvider>{content}{workspaceRoute && revalidationOverlay}<TeamWorkspace user={session.user} route={route} admission={cacheScope.current!} admissionBlocked={revalidation !== "idle" || !workspaceRoute} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} blocked={blocked || !workspaceRoute} identityChecking={revalidation !== "idle"} workspaceVisible={workspaceRoute} guardedTeam={guardedTeam} setTeamGuard={setTeamGuard}>{cleanupWarning}</TeamWorkspace></TaskDetailSessionProvider></TaskAssigneesProvider></TeamPreferenceProvider></TaskCacheProvider></CurrentAccountProvider>;
 };

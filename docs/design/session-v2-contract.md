@@ -5,7 +5,7 @@
 [行为要求](../spec/session-v2.md)规定生产者和消费者必须维持的保证。本设计定义
 可交换的字节、对象和验证入口。TS 的
 [`session/v2/`](../../packages/daynight/src/session/v2/) 是 browser-safe 源码；
-Go 的 [`sessionprotocol/v2/`](../../packages/daynight-server/internal/sessionprotocol/v2/)
+Go 的 [`core/session/protocol/v2/`](../../packages/daynight-server/internal/core/session/protocol/v2/)
 为独立包。v1 模块保留原类型和解析规则，不通过放宽旧 parser 接收新内容。
 
 TS `values.ts` 拥有版本、限额、原始 JSON 解码、基本值和规范序列化；`types.ts`
@@ -70,13 +70,34 @@ Herdr 的实际 terminal ID 是 `term_…` 字符串；不可将其当 UUID。
 `birthToken` 和 `bootId`。`StopProof` 包含 UUID `recordId`、Seq
 `executionGeneration`、`binding`、NativeText `bootId`、Time `stoppedAt`、
 `method=instances_exited|boot_changed`、`terminalStopped=true`、`processes`。
-进程至少覆盖一个 shell 和一个 agent，原实例三元组不得重复。
+普通证明的进程至少覆盖一个 shell 和一个 agent，原实例三元组不得重复；其 JSON
+不包含 `nativeLaunch` 或 `daemon` 键。
+
+准备证明保留上述共同字段，并且必须包含 `nativeLaunch="not_submitted"` 与
+`daemon:{pid,birthToken,bootId}`。`processes` 恰有一个 `role=shell` 的原进程，
+daemon 与 shell 使用同一 boot、不同 PID；字段类型与普通进程身份相同。两种证明
+分别校验精确键集合，缺少 agent 不会隐式选择准备分支。准备证明依赖 Worker 的
+持久启动事实及原资源停止观察，服务端不能独立观察执行机器上的原生进程。
 
 `Run`：`executionGeneration`、`owner`、`binding`、Time `startedAt`、
 Time 或 `null` 的 `stoppedAt`、StopProof 或 `null` 的 `stopProof`、UUID 数组
 `segmentIds`。停止时间与证明同时为 null 或同时存在；证明的代次、绑定和时间
 必须匹配该运行。账本代次从 1 连续递增，外层代次等于最后一代；除最后一代外
 全部已停止。各代 owner 相同、段 ID 全局唯一，已知 nativeSessionId 不可改写。
+准备证明要求本代 `segmentIds=[]`，proof 与 run 的 nativeSessionId 完全一致；
+可保留前代已知值，不能在停止时补入新值。服务端在 ledger、recording evidence
+的两个写入方向及最终冻结前，均拒绝准备证明与本代非零 selected/registered count
+或 ObservedContent 共存。前代内容不影响本代判断；captureError 不得清空来制造
+合法 unavailable。准备证明不能消费 generation grant 或自动恢复授权。
+
+零帧准备运行按实际无错误证据取得 `unavailable/ended_before_first_sample` 回执。
+若前代已有帧，固定归档保留原帧与段，准备代进入 `unavailableRuns`，代次边界仍有
+显式 restart gap。不得制造空 ready 归档或将丢失的源改称合法零帧。
+
+新分支沿用 v2 envelope/schemaVersion/projectionVersion，要求服务端与 Web reader
+先具备解码能力，再启用 Worker 生成。旧 Worker 的普通证明仍可读写；旧 reader
+拒绝新增分支时保留原证据与收尾责任，不转换 proof 或固定归档。缓存旧 Web 需要
+刷新到支持版本；此扩展不承诺旧页面无刷新读取新证明。
 
 ## 完整帧
 

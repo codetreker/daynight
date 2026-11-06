@@ -12,7 +12,7 @@ const matches = (scope: TaskCacheScope, fence: Fence, event: CacheEvent) => fenc
 
 export const useConfigurationProjects = (readEnabled: boolean) => {
   const scope = useTaskCacheScope();
-  const [state, setState] = useState<{ readonly scope: typeof scope; readonly fence: Fence; readonly items: readonly Project[]; readonly loading: boolean; readonly error: unknown }>({ scope, fence: null, items: [], loading: true, error: null });
+  const [state, setState] = useState<{ readonly scope: typeof scope; readonly fence: Fence; readonly items: readonly Project[]; readonly loading: boolean; readonly loaded: boolean; readonly error: unknown }>({ scope, fence: null, items: [], loading: true, loaded: false, error: null });
   const refreshAction = useRef<() => void>(() => {});
   const history = useRef<{ scope: typeof scope; fence: Fence; errors: Map<string, unknown> }>({ scope, fence: null, errors: new Map() });
   if (history.current.scope !== scope) history.current = { scope, fence: null, errors: new Map() };
@@ -31,7 +31,7 @@ export const useConfigurationProjects = (readEnabled: boolean) => {
       const signal = AbortSignal.any([request.signal, scope.signal]), attempt = ++generation;
       let preparedFence: ReadonlyMap<string, string> | null = null, snapshotError: TaskCacheError | null = null;
       const current = () => live() && attempt === generation && !signal.aborted;
-      setState(old => ({ scope, fence: old.scope === scope ? old.fence : null, items: old.scope === scope ? old.items : [], loading: true, error: cleanupErrors.values().next().value ?? null }));
+      setState(old => old.scope === scope ? { ...old, loading: !old.loaded, error: cleanupErrors.values().next().value ?? null } : { scope, fence: null, items: [], loading: true, loaded: false, error: cleanupErrors.values().next().value ?? null });
       try {
         const prepared = await scope.prepareProjection(signal);
         if (!current()) return;
@@ -57,19 +57,24 @@ export const useConfigurationProjects = (readEnabled: boolean) => {
         if (current()) {
           controller = null; projection.fence = prepared;
           for (const projectId of cleanupErrors.keys()) if (!scope.isProjectionDenied(projectId)) cleanupErrors.delete(projectId);
-          setState({ scope, fence: prepared, items: [...projects.values()].filter(project => !scope.projectionSnapshotDenied(prepared, project.id)), loading: false, error: snapshotError ?? scope.projectionSnapshotError(prepared) ?? cleanupErrors.values().next().value ?? null });
+          setState({ scope, fence: prepared, items: [...projects.values()].filter(project => !scope.projectionSnapshotDenied(prepared, project.id)), loading: false, loaded: true, error: snapshotError ?? scope.projectionSnapshotError(prepared) ?? cleanupErrors.values().next().value ?? null });
         }
       } catch (error) {
-        if (current()) { controller = null; setState({ scope, fence: null, items: [], loading: false, error: snapshotError ?? (preparedFence === null ? scope.projectionError : scope.projectionSnapshotError(preparedFence)) ?? cleanupErrors.values().next().value ?? error }); }
+        if (current()) { controller = null; setState({ scope, fence: null, items: [], loading: false, loaded: false, error: snapshotError ?? (preparedFence === null ? scope.projectionError : scope.projectionSnapshotError(preparedFence)) ?? cleanupErrors.values().next().value ?? error }); }
       }
     };
     const visibility = () => {
       if (document.visibilityState === 'hidden') { ++generation; controller?.abort(); }
       else void load();
     };
-    const invalidate = () => { ++generation; controller?.abort(); setState({ scope, fence: null, items: [], loading: false, error: null }); };
+    const invalidate = () => { ++generation; controller?.abort(); setState({ scope, fence: null, items: [], loading: false, loaded: false, error: null }); };
     const unsubscribe = scope.subscribeProjection(event => {
-      if (!event.accessRevoked) {
+      if (event.accessRestored) {
+        ++generation; controller?.abort(); controller = null;
+        void load();
+        return;
+      }
+      if (!event.accessRevoked && !event.scopeSuspended) {
         if (scope.getAuthorizedProject(event.projectId) !== null) cleanupErrors.delete(event.projectId);
         return;
       }

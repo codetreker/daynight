@@ -16,9 +16,11 @@ Foreground identity checks run in the background while the current authenticated
 content stays visible and interactive. They do not open an identity dialog, hide
 content, or disturb content focus and inertness. The temporary narrow-screen
 navigation introduced by the [sidebar preference decision](../feature/2026-10-25-sidebar-preference.md)
-closes at the start of a check and releases its own focus containment, background
-inertness and scroll lock so it cannot compete with identity recovery. Same-user
-success keeps the session generation
+originally closed at the start of a check to prevent its focus containment,
+background inertness and scroll lock from competing with identity recovery. The
+[workspace stability decision](2026-11-05-stable-workspace-during-identity-checks.md)
+replaces that policy: normal checking retains the overlay, and blocking recovery
+releases it. Same-user success keeps the session generation
 and component instances, including drafts and one-time secrets. Each qualified
 external return synchronously cancels and supersedes the previous check;
 responses from older checks cannot decide the current identity. A confirmed
@@ -44,7 +46,7 @@ an action with another account's shared Cookie.
 
 A failed identity check preserves component state behind the existing blocking
 error overlay. Explicit retry and subsequent external returns retain that block
-until verification succeeds. Initial identity loading continues to use its
+until verification succeeds. The [revalidation language decision](2026-11-05-revalidation-language-entry.md) keeps the recovery overlay localized without a duplicate selector. Initial identity loading continues to use its
 loading page. Graph polling and resource authorization keep their existing
 owners and behavior. [Session connection reuse](2026-10-28-session-focus-connection-reuse.md)
 extends this policy with bounded transport retention and buffered publication
@@ -70,7 +72,7 @@ Keeping checks and separating their presentation preserves timely detection.
 ## Consequences
 
 Ordinary tab returns retain visible content, detail and management dialogs,
-content focus and browsing state; the temporary navigation overlay closes.
+content focus and browsing state, including the temporary navigation overlay.
 The account check alone leaves loaded content visible and interactive while
 pending, including when another tab has changed the shared session. A separately
 verified project access loss immediately withdraws its content, including during

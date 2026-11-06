@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *testing.T) {
@@ -14,9 +14,9 @@ func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 	project := queryProject(t, database, 1)
 	owner, workerID := queryID(2), queryID(3)
 	for number := 10; number < 14; number++ {
-		queryTask(t, database, project.ID, number, core.TaskInProgress)
-		claim := &core.WorkerClaim{ClaimID: queryID(number + 100), State: core.WorkerActive, UserID: owner, WorkerID: workerID,
-			Machine: core.WorkerMachine{ID: queryID(4), Name: "Machine"}, Platform: core.PlatformLinux, Agent: core.AgentCodex, AgentControlMode: core.AgentControlModeHerdr, WorktreeID: queryID(number + 200), Phase: core.WorkerPreparing, ClaimedAt: time.Now().UTC()}
+		queryTask(t, database, project.ID, number, model.TaskInProgress)
+		claim := &model.WorkerClaim{ClaimID: queryID(number + 100), State: model.WorkerActive, UserID: owner, WorkerID: workerID,
+			Machine: model.WorkerMachine{ID: queryID(4), Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: queryID(number + 200), Phase: model.WorkerPreparing, ClaimedAt: time.Now().UTC()}
 		if number < 12 {
 			claim.UserID = queryID(5)
 		}
@@ -27,9 +27,9 @@ func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 	query := TaskQuery{Page: Page{Limit: 1}, Worker: &WorkerQuery{UserID: owner, WorkerID: workerID}}
 	for _, number := range []int{12, 13} {
 		var page TaskPage
-		err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+		err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 			var err error
-			page, err = snapshot.Tasks(context.Background(), project.ID, query)
+			page, err = snapshot.TaskDAO().Tasks(context.Background(), project.ID, query)
 			return err
 		})
 		if err != nil || len(page.Items) != 1 || page.Items[0].ID != queryID(number) || page.HasMore != (number == 12) {

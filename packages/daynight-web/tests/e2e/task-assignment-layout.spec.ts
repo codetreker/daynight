@@ -1,13 +1,15 @@
+import { expectTaskStatusLayout } from './task-status-layout';
 import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { stringifyApiJson } from "../../src/api/json";
 import type { Locator, Page, Response, TestInfo } from '@playwright/test';
 import { bearerContext, type AuthenticatedAPI } from './authentication';
-import { createProject, createTask, expect, seedUserProfile, test } from './fixtures';
+import { createProject, createTask, executeTask, expect, finishTask, seedUserProfile, startTask, test } from './fixtures';
 import { closeChain, openChain } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
+import { createWireReceipts } from '../../scripts/acceptance/wire-receipts.mts';
 
 const scenario = { annotation: { type: 'scenario', description: 'task-assignment-layout' } };
-const longName = 'Alexandra 长姓名负责人 María del Carmen — complete accessible identity across task views';
+const longName = `Alexandra${'W'.repeat(70)}`;
 type Profile = { readonly id: string; readonly name: string | null; readonly avatarUrl: string | null };
 const profile = async (api: AuthenticatedAPI): Promise<Profile> => {
   const response = await api.get('/api/v1/me'); expect(response.status()).toBe(200); return await response.json() as Profile;
@@ -34,6 +36,7 @@ const picture = async (page: Page, info: TestInfo, name: string): Promise<void> 
   await info.attach('scenario-screenshot', { path, contentType: 'image/png' });
 };
 const expectRowGeometry = async (page: Page): Promise<void> => {
+  await expectTaskStatusLayout(detail(page));
   await expect.poll(() => detail(page).evaluate((surface) => {
     const row = surface.querySelector<HTMLElement>('.task-detail-status-row')!;
     const pair = row.querySelector<HTMLElement>('.task-detail-status-assignee')!;
@@ -61,6 +64,7 @@ const expectMenuGeometry = async (page: Page): Promise<void> => {
 const layouts = [
   { locale: 'zh-CN', width: 1366 }, { locale: 'en', width: 1366 },
   { locale: 'zh-CN', width: 390 }, { locale: 'en', width: 390 },
+  { locale: 'zh-CN', width: 375 }, { locale: 'en', width: 375 },
   { locale: 'zh-CN', width: 320 }, { locale: 'en', width: 320 },
 ] as const;
 
@@ -72,31 +76,22 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
   const project = await createProject(api, { name: 'Persistent assignee and current-account cache acceptance' });
   const first = await createTask(api, project.id, { title: 'First task sharing an inline avatar', assignedTo: alice.id });
   const second = await createTask(api, project.id, { title: 'Second task sharing an inline avatar', assignedTo: alice.id });
+  const historic = await createTask(api, project.id, { title: 'Historical completed standalone task', assignedTo: alice.id });
+  await executeTask(api, project.id, historic);
   const peoplePath = `/api/v1/projects/${project.id}/task-assignees`;
   const syncPath = `/api/v1/projects/${project.id}/task-sync`;
   const requests: string[][] = [];
   const payloads: { readonly userIds: readonly string[]; readonly bytes: number }[] = [];
   const payloadReads: Promise<void>[] = [];
-  type WireReceipt = { readonly path: string; validator: boolean; wireStatus: number | null; wireBytes: number | null };
-  const wire = new Map<string, WireReceipt>();
-  const validators = new Map<string, boolean>();
+  const wire = createWireReceipts(['/api/v1/me', peoplePath]);
   const network = await page.context().newCDPSession(page);
   await network.send('Network.enable');
   // Routing disables Chromium's HTTP cache, so this phase observes the real network without intercepting requests.
-  network.on('Network.requestWillBeSent', (event) => {
-    const path = new URL(event.request.url).pathname;
-    if (path === '/api/v1/me' || path === peoplePath) wire.set(event.requestId, {
-      path, validator: validators.get(event.requestId) ?? Object.keys(event.request.headers).some((name) => name.toLowerCase() === 'if-none-match'), wireStatus: null, wireBytes: null,
-    });
-  });
-  network.on('Network.requestWillBeSentExtraInfo', (event) => {
-    const validator = Object.keys(event.headers).some((name) => name.toLowerCase() === 'if-none-match');
-    validators.set(event.requestId, validator);
-    const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.validator = validator;
-  });
-  network.on('Network.responseReceivedExtraInfo', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireStatus = event.statusCode; });
-  network.on('Network.loadingFinished', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireBytes = event.encodedDataLength; });
-  const meReceipts = () => [...wire.values()].filter((receipt) => receipt.path === '/api/v1/me');
+  network.on('Network.requestWillBeSent', wire.requestWillBeSent);
+  network.on('Network.requestWillBeSentExtraInfo', wire.requestWillBeSentExtraInfo);
+  network.on('Network.responseReceivedExtraInfo', wire.responseReceivedExtraInfo);
+  network.on('Network.loadingFinished', wire.loadingFinished);
+  const meReceipts = () => wire.receipts().filter((receipt) => receipt.path === '/api/v1/me');
   const expectMe = async (index: number, status: number) => {
     await expect.poll(() => meReceipts()[index]?.wireStatus).toBe(status);
     // Session expiry aborts the active identity fetch after the 401 headers arrive.
@@ -137,6 +132,12 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
   try {
     await page.clock.install({ time: new Date('2029-01-01T00:00:00Z') });
     await page.goto(`/projects/${project.id}`); await standalone(page);
+    await expect(page.locator(`#standalone-task-${historic.id}`)).toBeVisible();
+    const status = page.getByRole('combobox', { name: /^(状态|Status)$/, exact: true });
+    await status.selectOption('done');
+    await expect(page.locator(`#standalone-task-${historic.id}`)).toBeVisible();
+    await expect(page.locator(`#standalone-task-${first.id}`)).toHaveCount(0);
+    await status.selectOption('all');
     await expectAvatar(page.locator(`#standalone-task-${first.id} .assignee-avatar img`));
     await expectMe(0, 200);
     expect(requests, 'Shared visible assignees are resolved once').toEqual([[alice.id]]);
@@ -208,12 +209,15 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
     await expect(page.getByRole('heading', { name: /^(登录你的工作空间|Sign in to your workspace)$/, exact: true })).toBeVisible();
     await expect(page.getByText(first.title, { exact: true })).toHaveCount(0);
     await Promise.all(payloadReads);
-    await info.attach('assignment-people-cache', { body: JSON.stringify({ projectId: project.id, avatarBytes: Buffer.byteLength(avatar), requests, payloads, wire: [...wire.values()] }), contentType: 'application/json' });
   } finally {
-    page.off('request', observeRequest); page.off('response', observeResponse);
-    await page.clock.resume(); await network.detach();
-    await Promise.all(payloadReads);
-    await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl });
+    try {
+      await info.attach('assignment-people-cache', { body: JSON.stringify({ projectId: project.id, avatarBytes: Buffer.byteLength(avatar), requests, payloads, wire: wire.receipts() }), contentType: 'application/json' });
+    } finally {
+      page.off('request', observeRequest); page.off('response', observeResponse);
+      await page.clock.resume(); await network.detach();
+      await Promise.all(payloadReads);
+      await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl });
+    }
   }
 };
 
@@ -234,7 +238,10 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     const unassigned = await createTask(api, project.id, { title: 'Unassigned task', assignedTo: null });
     const goal = await createTask(api, project.id, { title: 'Goal context assigned to another person', assignedTo: bobProfile.id });
     const child = await createTask(api, project.id, { title: 'Matching blocked successor', assignedTo: aliceProfile.id, dependsOn: [goal.id] });
-    const hiddenSibling = await createTask(api, project.id, { title: 'Hidden sibling remains in the full graph', assignedTo: bobProfile.id, dependsOn: [goal.id] });
+    const hiddenSibling = await createTask(api, project.id, { title: 'Other sibling remains in the full chain', assignedTo: bobProfile.id, dependsOn: [goal.id] });
+    const startedGoal = await startTask(api, project.id, goal);
+    const completed = await createTask(api, project.id, { title: 'Completed task assigned to me', assignedTo: aliceProfile.id });
+    await executeTask(api, project.id, completed);
     const shortBob = bobProfile.id.slice(0, 8);
     const peopleRequests: { readonly bounded: boolean; readonly status: number }[] = [];
     page.on('response', (response) => {
@@ -245,6 +252,51 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     for (const { locale, width } of layouts) {
       await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
       await page.setViewportSize({ width, height: 900 }); await standalone(page);
+      const status = page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true });
+      await expect(status.locator('option')).toHaveText(locale === 'en' ? ['All statuses', 'To do', 'In progress', 'Done'] : ['全部状态', '待办', '进行中', '已完成']);
+      await chooseFilter(page, longName);
+      await expect.poll(() => status.evaluate((element) => {
+        const owner = document.querySelector<HTMLElement>('.task-assignee-filter')!.getBoundingClientRect();
+        const status = element.getBoundingClientRect();
+        const separate = owner.right <= status.left + 1 || status.right <= owner.left + 1 || owner.bottom <= status.top + 1 || status.bottom <= owner.top + 1;
+        return separate && owner.left >= 0 && status.left >= 0 && owner.right <= innerWidth && status.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
+      })).toBe(true);
+      if (width === 1366) {
+        const ownerBounds = await page.locator('.task-assignee-filter').boundingBox();
+        const statusBounds = await status.boundingBox();
+        expect(Math.abs(ownerBounds!.y + ownerBounds!.height / 2 - statusBounds!.y - statusBounds!.height / 2)).toBeLessThanOrEqual(2);
+      }
+      for (const value of ['all', 'todo', 'in_progress', 'done']) {
+        await status.selectOption(value);
+        expect(await status.evaluate((select) => {
+          const box = select.getBoundingClientRect();
+          const svg = select.parentElement!.querySelector('svg')!;
+          const arrow = svg.getBoundingClientRect();
+          const path = svg.querySelector('path')!;
+          const shape = path.getBBox();
+          const style = getComputedStyle(select);
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d')!;
+          context.font = `${style.fontSize} ${style.fontFamily}`;
+          const textWidth = context.measureText((select as HTMLSelectElement).selectedOptions[0]!.text).width;
+          return style.appearance === 'none' && path.getAttribute('d') === 'm2 4 3 3 3-3'
+            && shape.x === 2 && shape.y === 4 && shape.width === 6 && shape.height === 3
+            && Math.abs(arrow.top + arrow.height / 2 - box.top - box.height / 2) <= .5
+            && Math.abs(box.right - arrow.right - 9) <= .5
+            && box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft) + textWidth < arrow.left
+            && arrow.right < box.right && box.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
+        })).toBe(true);
+      }
+      await status.selectOption('all');
+      const arrowBox = await status.locator('..').locator('svg').boundingBox();
+      await page.mouse.click(arrowBox!.x + arrowBox!.width / 2, arrowBox!.y + arrowBox!.height / 2);
+      await expect(status).toBeFocused(); await page.keyboard.press('Escape');
+      await page.locator('.task-assignee-filter .assignee-trigger').focus(); await page.keyboard.press('Tab');
+      await expect(status).toBeFocused(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+      await expect(status).toHaveValue('todo');
+      await picture(page, info, `status-filter-${locale}-${width}`);
+      await status.selectOption('all');
+      await chooseFilter(page, locale === 'en' ? 'Everyone' : '所有负责人');
       const row = page.locator(`#standalone-task-${assigned.id}`);
       await expect(row.locator('.task-assignee-identity')).toHaveAccessibleName(`${locale === 'en' ? 'Assignee: ' : '负责人：'}${longName}`);
       await expect(row.locator('.assignee-avatar')).toHaveText('A'); await expect(row.locator('.assignee-avatar img')).toHaveCount(0);
@@ -282,18 +334,43 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
     await chooseFilter(page, 'Assigned to me'); await page.getByRole('tab', { name: 'Task chains', exact: true }).click();
     const goalRow = page.locator(`[data-chain-id="${goal.id}"]`); await expect(goalRow).toBeVisible();
+    const status = page.getByRole('combobox', { name: 'Status', exact: true });
+    await expect(status).toHaveValue('all');
+    await status.focus(); await page.keyboard.press('End');
+    await expect(status).toHaveValue('done');
+    await expect(goalRow).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
+    await expect(page.locator(`#standalone-task-${completed.id}`)).toBeVisible();
+    await expect(page.locator(`#standalone-task-${assigned.id}`)).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Task chains', exact: true }).click();
+    await status.selectOption('in_progress');
+    // The representative is in progress and a different member is assigned to me.
+    await expect(goalRow).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'No tasks match the filters', exact: true })).toBeVisible();
+    await selectOverview(page); await page.locator('.overview-progress-row').filter({ hasText: goal.title }).click();
+    await expect(goalRow.locator('.goal-toggle')).toBeFocused();
+    await expect(goalRow.locator('.goal-toggle')).toHaveClass(/overview-progress-target/);
+    await expect(status).toHaveValue('all');
+    await expect(page.locator('.task-assignee-filter .assignee-trigger')).toHaveText('Assigned to me');
+    await status.selectOption('todo');
+    await expect(goalRow).toBeVisible();
     await expect(goalRow.locator('.root-progress-label')).toHaveText('0/3 completed'); await goalRow.locator('.goal-toggle').click();
-    await expect(goalRow.getByText('1 matching child tasks', { exact: true })).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${child.id}`)).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${child.id}`).locator('..').locator('.graph-blocked-badge')).toBeVisible();
-    await expect(page.locator(`#chain-task-${goal.id}-${hiddenSibling.id}`)).toHaveCount(0);
+    await expect(page.locator(`#chain-task-${goal.id}-${hiddenSibling.id}`)).toBeVisible();
     await page.locator(`#chain-task-${goal.id}-${child.id}`).click();
     await expect(detail(page).locator('.task-detail-blocked')).toBeVisible();
     await expect(detail(page).getByRole('button', { name: /Goal context assigned to another person/ })).toHaveCount(2); await closeDetail(page);
     await openChain(page, goal.id); await expect(page.locator('.task-chain-meta')).toContainText('0/3 completed');
     await expect(page.locator('.task-chain-dialog .task-node-title', { hasText: goal.title })).toBeVisible();
     await expect(page.locator('.task-chain-dialog .task-node-title', { hasText: hiddenSibling.title })).toBeVisible(); await closeChain(page);
-    await chooseFilter(page, 'Unassigned'); await expect(page.getByRole('heading', { name: 'No tasks match this assignee', exact: true })).toBeVisible();
+    await finishTask(api, project.id, startedGoal);
+    await startTask(api, project.id, child);
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(goalRow).toHaveCount(0);
+    await status.selectOption('in_progress'); await expect(goalRow).toBeVisible();
+    await status.selectOption('all');
+    await chooseFilter(page, 'Unassigned'); await expect(goalRow).toHaveCount(0);
     await selectOverview(page); await page.locator('.overview-progress-row').filter({ hasText: goal.title }).click();
     await expect(page.locator('.task-assignee-filter .assignee-trigger')).toHaveText('Everyone'); await expect(goalRow).toBeVisible();
 

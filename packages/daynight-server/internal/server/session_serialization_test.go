@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
@@ -87,24 +87,6 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 	f.grant = f.mint(t, "reconnect")
 	controller, snapshot = f.controller(t, epoch)
 	send("2")
-}
-
-func TestSessionResultHandlesCancellationEncodingAndWriteFailure(t *testing.T) {
-	routes := &sessionRoutes{logger: testLogger()}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/test-sessions", nil)
-	ctx, cancel := context.WithCancel(request.Context())
-	cancel()
-	canceled := httptest.NewRecorder()
-	routes.result(canceled, request.WithContext(ctx), http.StatusOK, map[string]string{"text": "unused"}, nil)
-	if canceled.Body.Len() != 0 || len(canceled.Header()) != 0 {
-		t.Fatal("canceled request wrote a response")
-	}
-	invalid := httptest.NewRecorder()
-	routes.result(invalid, request, http.StatusOK, make(chan int), nil)
-	if invalid.Code != http.StatusInternalServerError {
-		t.Fatal("encoding failure did not become a response error")
-	}
-	routes.result(&failingResponseWriter{header: make(http.Header)}, request, http.StatusOK, map[string]string{"text": "<>&"}, nil)
 }
 
 func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer(t *testing.T) {

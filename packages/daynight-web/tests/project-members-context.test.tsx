@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listMembers } from '../src/api/auth';
 import type { ProjectParticipant } from '../src/api/auth-types';
@@ -52,5 +52,19 @@ describe('shared project-member lookup', () => {
     expect(await screen.findByText('Other project')).toBeVisible();
     await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Jianjun')).toBeNull();
+  });
+
+  it('does not publish an old project lookup after the provider changes project', async () => {
+    const old = Promise.withResolvers<ReturnType<typeof memberPage>>();
+    vi.mocked(listMembers).mockImplementation((project) => project === projectId ? old.promise : Promise.resolve(memberPage([{ ...member, profile: { ...member.profile, name: 'New project' }, directGrant: { ...member.directGrant!, projectId: otherProjectId } }], otherProjectId)));
+    const view = renderWithLocale(<ProjectMembersProvider projectId={projectId}><Probe label="task" /></ProjectMembersProvider>, { locale: 'en', taskCache: true });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    const oldSignal = vi.mocked(listMembers).mock.calls[0]![1];
+    view.rerender(<ProjectMembersProvider projectId={otherProjectId}><Probe label="task" project={otherProjectId} /></ProjectMembersProvider>);
+    expect(await screen.findByText('New project')).toBeVisible();
+    expect(oldSignal.aborted).toBe(true);
+    await act(async () => old.resolve(memberPage([member])));
+    expect(screen.queryByText('Jianjun')).toBeNull();
+    expect(screen.getByText('New project')).toBeVisible();
   });
 });

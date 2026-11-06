@@ -32,6 +32,13 @@ new SQL statement. A lock wait can return a newly committed Bot row while a
 subquery in the same statement still uses an earlier snapshot; separating the
 projection keeps both IDs consistent after concurrent registration.
 
+First registration revalidates the PAT with the relay's current server clock
+after binding writes and before transaction completion. Unbound failure reports
+do the same after startup writes or before a same-result return. The credential
+share lock protects against revocation, not the passage of time while waiting
+for an unchanged Bot row; expiration rejects success and rolls back the complete
+binding or startup mutation. Bound paths retain their Session authorization checks.
+
 Bot grant verifies the bound Worker, current Bot version and independent/native
 identity before using the shared grant mechanism. A new generation requires a
 known original native ID, the previous generation and its stop proof. Ordinary
@@ -81,8 +88,16 @@ preserves that path while recovery keeps the stronger known-ID condition.
 
 **Expose bound-Bot deletion with registration.** Persistent admission is necessary
 but does not perform native stopping or SQL, archive and Worker-private cleanup.
-The management endpoint continues to reject deletion of bound definitions until
-the complete cleanup responsibility can be preserved and discharged.
+At registration delivery, the management endpoint therefore rejected bound
+definitions. The [history deletion decision](2026-11-04-bot-history-deletion.md)
+now preserves and discharges server cleanup alongside a bound Worker receipt.
+
+**Rely on the credential check before the Bot lock.** That check establishes
+initial admission and its share lock prevents concurrent revocation. It cannot
+prevent natural expiration while another transaction holds the Bot lock without
+changing its version, so version checks do not close the authorization gap.
+Final validation stays in the two unbound lifecycle paths rather than changing
+the shared transaction wrapper or the independent Session protocol.
 
 ## Consequences
 
@@ -92,14 +107,19 @@ existing Task and Test consumers, and the Bot lifecycle cannot be bypassed throu
 ordinary Test management routes. Reads and writes pay a Bot-row lock and binding
 check so deletion remains authoritative across relay caches.
 
+The unbound paths pay one additional credential query on successful completion.
+Migrated-database relay and HTTP tests observe the exact Bot blocker, let the PAT
+naturally expire and compare complete Bot, Session and preference state after
+refusal; the HTTP cases also require 401. Valid-PAT and exact-replay cases preserve
+their original version behavior.
+
 Readiness is local to the relay observation used to validate the report. Callers
 must not infer it from another instance's durable Snapshot. A persistent ready
 startup result records a past verified binding, not ongoing Worker availability.
 Current connectivity remains a Session observation.
 
 The server interfaces do not provide Worker process hosting, provider role
-injection, browser panes or physical history cleanup. Public deletion of a bound
-Bot remains refused. Cleanup must retain the Bot-before-Session order and exact
-responsibility, while allowing the minimum Bot record to outlive deleted Session
-rows. Server tests establish admission and transaction behavior; they do not prove
+injection or browser panes. The [history deletion decision](2026-11-04-bot-history-deletion.md)
+extends public deletion to bound Bots while retaining this lock order and exact
+responsibility, and allows the minimum Bot record to outlive deleted Session rows. Server tests establish admission and transaction behavior; they do not prove
 real provider execution or the combined assistant experience.

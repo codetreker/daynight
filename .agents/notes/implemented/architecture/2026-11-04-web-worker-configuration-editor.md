@@ -25,8 +25,11 @@ baseline, raw draft input, and an immutable submitted value. Background reads
 update target and application evidence without replacing the draft. Stable
 controls preserve focus, selection and local disclosure state. The mounted
 editor survives tab changes, while only its active, visible and admitted view
-starts automatic reads. Account or Worker retirement invalidates its requests
-and memory.
+starts automatic reads. Temporary admission pauses retain the visible editor,
+local interactions and in-flight write ownership; results wait for admission
+before publication. The Project chooser retains its loaded collection during a
+background check, including a successfully loaded empty collection. Account or
+Worker retirement invalidates its requests and memory.
 
 Saving sends one complete target against the captured target revision. A
 conflict keeps the draft and exposes the current target for explicit loading.
@@ -34,6 +37,13 @@ Unknown write results retain the submitted snapshot and use GET reconciliation
 without PUT replay. A matching current target describes the resource's state;
 it does not establish that the preceding request caused it. Later edits remain
 separate from that submitted value.
+
+Field feedback compares each valid parsed field with the current saved target,
+independently of errors in other fields. Project native feedback compares the
+explicit overrides, retaining the distinction between inheritance and clears.
+Invalid input remains unsaved. Formatting differences do not mask the actual
+application result, and the raw draft is never rewritten for this comparison.
+The form's edit baseline continues to track raw input separately.
 
 The [configuration protocol](../../../../docs/spec/daynight-worker-configuration.md)
 owns fields, revisions, initialization and access. The editor preserves omitted
@@ -57,9 +67,21 @@ application observations and must retain unfinished input, so it needs an
 independent edit baseline and raw draft rather than a resource projection that
 is replaced on each refresh.
 
+**End the write lifecycle whenever reads pause.** An identity check is not a
+resource change. Aborting a dispatched PUT on that transition obscures its
+actual outcome and discards an open chooser and its unapplied selection. Separate
+resource ownership from request admission while retaining actual retirement and
+error handling.
+
 **Retry a save after a lost response.** The server may already have committed
 the target. Reading current state preserves the exact-version decision and
 prevents a second write from being mistaken for recovery of the first.
+
+**Compare field feedback as raw text.** Equivalent JSON whitespace or integer
+leading zeroes would appear unsaved after the server accepted the same value.
+Rewriting input into canonical form would instead disturb the editor and its
+selection. Comparing the complete parsed draft would also let an unrelated
+invalid field obscure another field's saved state.
 
 ## Consequences
 

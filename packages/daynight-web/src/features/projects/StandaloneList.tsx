@@ -1,7 +1,7 @@
 import { TaskPausedBadge, useTaskPaused } from "../task-pause/TaskPause";
 import { ListPagination } from "./ListPagination";
 import type { PaginationState } from "./usePagination";
-import { memo, useId, useRef } from "react";
+import { memo, useId, useLayoutEffect, useRef } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import type { GraphTask } from "../../api/types";
 import { useTaskExecution } from "../task-execution/TaskExecutionClock";
@@ -15,14 +15,11 @@ import "../../styles/task-status-rows.css";
 
 type StandaloneListProps = {
   readonly projectId: string;
-  readonly filtered?: boolean;
   readonly index: GraphIndex;
   readonly taskIds: readonly string[];
   readonly allTaskIds: readonly string[];
   readonly onSelectTask: (id: string, trigger: HTMLElement) => void;
   readonly pagination?: PaginationState;
-  readonly showAll: boolean;
-  readonly onShowAllChange: (show: boolean) => void;
 };
 
 const StandaloneRow = memo(({ projectId, task, onSelectTask }: { readonly projectId: string; readonly task: GraphTask; readonly onSelectTask: StandaloneListProps["onSelectTask"] }) => {
@@ -41,22 +38,24 @@ const StandaloneRow = memo(({ projectId, task, onSelectTask }: { readonly projec
   </button>{execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}</li>;
 });
 
-export const StandaloneList = ({ projectId, filtered = false, index, taskIds, allTaskIds, onSelectTask, showAll, onShowAllChange, pagination }: StandaloneListProps) => {
+export const StandaloneList = ({ projectId, index, taskIds, allTaskIds, onSelectTask, pagination }: StandaloneListProps) => {
   const { messages: { workspace: { standalone: m }, assignment } } = useI18n();
-  const checkbox = useRef<HTMLInputElement>(null);
-  const completedCount = allTaskIds.filter((id) => index.nodes.get(id)!.status === "done").length;
+  const container = useRef<HTMLElement>(null);
+  const focusedControl = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (focusedControl.current !== null && !focusedControl.current.isConnected && document.activeElement === document.body) {
+      (container.current?.querySelector<HTMLElement>(".standalone-row") ?? container.current)?.focus({ preventScroll: true });
+    }
+  }, [taskIds]);
   return (
-    <section id="project-standalone-list" tabIndex={-1} aria-label={m.list}>
+    <section id="project-standalone-list" tabIndex={-1} aria-label={m.list} ref={container} onFocusCapture={(event) => { focusedControl.current = event.target; }}>
       <div className="task-view-toolbar">
-        {allTaskIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showAll} onChange={(event) => { onShowAllChange(event.currentTarget.checked); }} />{m.showAll}</label>}
         <span className="task-view-summary" aria-label={m.summaryLabel({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}>{m.summary({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}</span>
       </div>
       {allTaskIds.length === 0 ? (
         <div className="state-box"><h3>{m.empty}</h3><p>{m.emptyDetail}</p></div>
-      ) : taskIds.length === 0 && filtered ? <div className="state-box"><h3>{assignment.noMatches}</h3></div> : taskIds.length === 0 ? (
-        <div className="state-box completed-chains-empty"><h3>{m.allCompleted}</h3><p>{m.hiddenCompleted({ count: completedCount })}</p>
-          <button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowAllChange(true); }}>{m.showAll}</button>
-        </div>
+      ) : taskIds.length === 0 ? (
+        <div className="state-box"><h3>{assignment.noMatches}</h3></div>
       ) : (
         <ul className="standalone-list">{taskIds.map((id) => <StandaloneRow key={id} projectId={projectId} task={index.nodes.get(id)!} onSelectTask={onSelectTask} />)}</ul>
       )}

@@ -13,7 +13,7 @@ optimization alone does not bound their raster cost.
 
 ## Decision
 
-Dagre retains visible-card placement and ordering. The uniform column planner
+At this decision Dagre retained visible-card placement and ordering. The uniform column planner
 retains right-center source ports, left-center target ports and each CanvasNode's
 actual dimensions. Intermediate columns use the nearest free row to the
 interpolated Dagre route intent, with sixteen-unit expanded occupied intervals.
@@ -49,6 +49,8 @@ straight or curved paint piece has at most 8,192 graph units of arc length,
 extending the [stroke bound](../bug-fix/2026-10-22-bounded-dashed-dependency-lines.md)
 to tall cubic passages. Cumulative phase error remains at most 0.025 CSS px at
 maximum 1.8 zoom.
+
+The [graph direction decision](../feature/2026-11-05-task-graph-direction.md) extends the same channel and curve guarantees to top-to-bottom layouts, preserving actual card dimensions and directional ports.
 
 The existing memoized SVG and inspection presentation retain edge identity,
 arrowheads, external classification, accessibility and passive paint pieces.

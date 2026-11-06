@@ -100,6 +100,26 @@ describe('project creation context', () => {
     view.unmount(); admission.dispose();
   });
 
+  it('refreshes a temporarily suspended project in the unknown-outcome check without losing the form', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const id = '10000000-0000-4000-8000-000000000036';
+    const project = { id, name: 'Observed project', repoUrl: 'git@example.test:observed.git', ownership: { teamId: teamA, version: 1 }, settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    vi.stubGlobal('fetch', vi.fn((_url: string, options?: RequestInit) => options?.method === 'POST' ? Promise.reject(new Error('connection lost')) : Promise.resolve(new Response(JSON.stringify({ items: [project], nextCursor: null }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } }))));
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Draft name' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:draft.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await screen.findByText(/creation result is unknown/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Check projects' }));
+    await screen.findByRole('link', { name: 'Observed project' }, { timeout: 10000 });
+    await act(async () => admission.suspendProject(id));
+    expect(screen.queryByRole('link', { name: 'Observed project' })).toBeNull();
+    await act(async () => admission.resumeProject(id));
+    await screen.findByRole('link', { name: 'Observed project' }, { timeout: 10000 });
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Draft name');
+    view.unmount(); admission.dispose();
+  }, 20000);
+
   it.each(['same', 'changed'] as const)('holds a successful creation until the %s identity is confirmed', async (outcome) => {
     const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
     const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();

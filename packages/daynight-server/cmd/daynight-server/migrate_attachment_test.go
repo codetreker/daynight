@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment/migration"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func TestMigrationCommandRejectsInvalidArgumentsBeforeConfiguration(t *testing.T) {
@@ -56,7 +56,7 @@ func TestMigrationFailureDiagnosticsPreserveSafeCauseCategories(t *testing.T) {
 	for _, cause := range []error{errors.New("sensitive-path"), fs.ErrPermission, fs.ErrNotExist, syscall.EXDEV, context.Canceled} {
 		var output bytes.Buffer
 		logger := slog.New(slog.NewJSONHandler(&output, nil))
-		logAttachmentMigrationFailure(context.Background(), logger, &service.AttachmentMigrationError{OperationID: "operation", Phase: "placing", Category: "filesystem", Diagnostic: "Directory move failed.", Cause: cause})
+		logAttachmentMigrationFailure(context.Background(), logger, &migration.AttachmentMigrationError{OperationID: "operation", Phase: "placing", Category: "filesystem", Diagnostic: "Directory move failed.", Cause: cause})
 		var event map[string]any
 		if json.Unmarshal(output.Bytes(), &event) != nil || event["operationId"] != "operation" || event["phase"] != "placing" || strings.Contains(output.String(), "sensitive-path") {
 			t.Fatalf("unsafe migration diagnostic: %s", &output)
@@ -113,7 +113,7 @@ func TestMigrationCommandOutputFailurePreservesResumableOperation(t *testing.T) 
 	if code := run(context.Background(), []string{"migrate-attachment-layout", "resume", "--operation-id", operationID}, getenv, &stdout, &stderr); code != 0 {
 		t.Fatalf("recorded operation could not be recovered after output failure: %d %s", code, &stderr)
 	}
-	var completed service.AttachmentMigrationSummary
+	var completed migration.AttachmentMigrationSummary
 	if err := json.Unmarshal(stdout.Bytes(), &completed); err != nil || completed.OperationID != operationID || completed.Phase != "complete" || completed.ReceiptPath == nil {
 		t.Fatalf("successful recovery did not publish one completion result: %s %v", &stdout, err)
 	}

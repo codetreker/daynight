@@ -117,7 +117,12 @@ export const useWorkerObservation = <T extends { readonly observedAt: string }>(
       setState(initialState(scope, resource));
     };
     const unsubscribe = scope.subscribeProjection(event => {
-      if (!event.accessRevoked) {
+      if (event.accessRestored) {
+        ++generation; controller?.abort(); controller = null;
+        void request();
+        return;
+      }
+      if (!event.accessRevoked && !event.scopeSuspended) {
         if (scope.getAuthorizedProject(event.projectId) !== null) cleanupErrors.delete(event.projectId);
         return;
       }

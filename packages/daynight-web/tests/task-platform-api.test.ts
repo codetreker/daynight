@@ -25,10 +25,12 @@ describe('strict execution platform contract', () => {
     expect(parseTaskDetail({ ...task, requiredPlatform }, projectId, taskId)).toMatchObject({ requiredPlatform, ready: true, allowAgents: false });
     expect(parseTaskGraph(graph(requiredPlatform), projectId).tasks[0]).toMatchObject({ requiredPlatform, ready: true });
   });
-  it.each([undefined, '', 'darwin', 'win32', 'LINUX', false, 0, {}, []])('rejects missing or malformed platform %#', async (requiredPlatform) => {
+  it.each([undefined, '', 'darwin', 'win32', 'LINUX', false, 0, {}, []])('rejects missing or malformed platform %#', (requiredPlatform) => {
     expect(() => parseTaskDetail({ ...task, requiredPlatform }, projectId, taskId)).toThrow('invalid response');
     expect(() => parseTaskGraph(graph(requiredPlatform), projectId)).toThrow('invalid response');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...task, requiredPlatform })));
+  });
+  it('classifies a malformed platform in an HTTP response as a protocol error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...task, requiredPlatform: 'darwin' })));
     await expect(getTask(projectId, taskId, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
   });
   it.each([null, 'windows', 'linux', 'macos'] as const)('submits one exact-version platform PATCH for %s', async (requiredPlatform) => {

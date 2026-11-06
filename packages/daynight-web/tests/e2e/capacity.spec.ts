@@ -475,6 +475,38 @@ const measureInteractions = async (page: Page, fixture: CapacityFixture, expansi
   await expect(page.locator(`.react-flow__node[data-id="${batch.id}"] .task-node-body`)).toBeFocused();
   expect(await checkDependencyGeometry(page, batch.expanded, info), 'Explicit expansion paints every newly induced API relation without an edge limit').toEqual({ total: 0, examples: [] });
   await assertInspection(page, fixture, selectedId, batch.expanded);
+  if (repetition === 0 && dataset.scenario === 'capacity-chain') {
+    await page.getByRole('radio', { name: '垂直', exact: true }).click();
+    await expect(page.getByRole('radio', { name: '垂直', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await assertVisibleTopology(page, batch.expanded, full);
+    await assertInspection(page, fixture, selectedId, batch.expanded);
+    expect(await checkDependencyGeometry(page, batch.expanded, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+    const detail = page.locator(`.react-flow__node[data-id="${selectedId}"] .task-node-details`);
+    await page.keyboard.press('Tab'); await detail.focus(); await painted(page);
+    await detail.click();
+    await expect(page.locator('.task-detail-dialog')).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(detail).toBeFocused();
+    const viewport = page.locator('.react-flow__viewport');
+    const beforeZoom = await viewport.getAttribute('style');
+    await page.getByRole('button', { name: '放大', exact: true }).click();
+    await expect.poll(() => viewport.getAttribute('style')).not.toBe(beforeZoom);
+    const beforePan = await viewport.getAttribute('style'); const point = await panPoint(page);
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    try { await page.mouse.move(point.x + 40, point.y + 24, { steps: 4 }); } finally { await page.mouse.up(); }
+    await expect.poll(() => viewport.getAttribute('style')).not.toBe(beforePan);
+    await page.getByRole('button', { name: '适应画布', exact: true }).click();
+    await assertVisibleTopology(page, batch.expanded, full);
+    await assertInspection(page, fixture, selectedId, batch.expanded);
+    await page.locator('.graph-reset-overview').click();
+    await expect(page.locator('.react-flow__node')).toHaveCount(overview.nodes.length);
+    await assertVisibleTopology(page, overview, full);
+    await assertInspection(page, fixture, selectedId, overview);
+    expect(await checkDependencyGeometry(page, overview, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+    await page.getByRole('radio', { name: '水平', exact: true }).click();
+    await expect(page.getByRole('radio', { name: '水平', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await assertVisibleTopology(page, overview, full);
+    await assertInspection(page, fixture, selectedId, overview);
+  }
   await page.locator('.graph-reset-overview').click();
   await expect(page.locator('.react-flow__node')).toHaveCount(overview.nodes.length);
   await visibleGraph(page, fixture.root.id, overview);

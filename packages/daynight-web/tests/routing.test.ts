@@ -53,7 +53,7 @@ describe('uniform node-safe dependency channels', () => {
     const source = rectangle('s', 32, 32); const target = rectangle('t', 600, 32);
     const input = edge('s', 't', [{ x: 252, y: 80 }, { x: 600, y: 80 }]);
     expect(() => planDependencyRoutes([{ ...source, left: NaN }, target], [input])).toThrow(/invalid node bounds/);
-    expect(() => planDependencyRoutes([source, { ...source, id: 'other', right: 260 }, target], [input])).toThrow(/nonoverlapping node columns/);
+    expect(() => planDependencyRoutes([source, { ...source, id: 'other', left: 24, right: 260 }, target], [input])).toThrow(/nonoverlapping node columns/);
     expect(() => planDependencyRoutes([source, rectangle('other', 252, 32), target], [input])).toThrow(/positive rank gaps/);
     expect(() => planDependencyRoutes([source, rectangle('s', 316, 160), target], [input])).toThrow(/duplicate node identities/);
     expect(() => planDependencyRoutes([source, target], [edge('s', 'missing', input.points)])).toThrow(/forward endpoints/);
