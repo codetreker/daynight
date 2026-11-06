@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -125,6 +126,30 @@ func TestTaskHTTPStatusResourceScopeCanonicalIDsAndExactVersion(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "secret") {
 		t.Fatalf("resource diagnostics exposed data: %s", &logs)
+	}
+}
+
+func TestTaskHTTPCompletionAtMaximumVersionAndNoOp(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	task := createHTTPTask(t, handler, taskProject(t, handler).ID, "Maximum version")
+	task = setHTTPTask(t, handler, task, "in_progress")
+	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET version=$1 WHERE id=$2`, int64(math.MaxInt64-1), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := readHTTPTask(t, handler, task)
+	response := projectRequest(handler, http.MethodPut, taskPath(task)+"/status", `{"version":9223372036854775806,"status":"done"}`)
+	completed := decodeResponse[api.Task](t, response, http.StatusOK)
+	if completed.Status != "done" || completed.Version != math.MaxInt64 || !reflect.DeepEqual(completed.StartedAt, before.StartedAt) || completed.CompletedAt == nil || !strings.Contains(response.Body.String(), `"version":9223372036854775807`) {
+		t.Fatalf("maximum version completion: %+v", completed)
+	}
+	if read := readHTTPTask(t, handler, task); !reflect.DeepEqual(read, completed) {
+		t.Fatal("maximum version completion did not persist")
+	}
+	response = projectRequest(handler, http.MethodPut, taskPath(task)+"/status", `{"version":9223372036854775807,"status":"done"}`)
+	confirmed := decodeResponse[api.Task](t, response, http.StatusOK)
+	if !reflect.DeepEqual(confirmed, completed) || !reflect.DeepEqual(readHTTPTask(t, handler, task), completed) || !strings.Contains(response.Body.String(), `"version":9223372036854775807`) {
+		t.Fatal("maximum version same-status request changed the task")
 	}
 }
 
