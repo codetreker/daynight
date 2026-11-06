@@ -13,7 +13,7 @@ const command = gate.match(/^        run: (.+)$/m)![1]!;
 test("the final gate waits for every independent validation stage", () => {
   assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(new Set(required), new Set([...jobs.keys()].filter((name) => name !== "checks")));
-  for (const [name, mode] of [["verify-server", "coverage"], ["verify-server-e2e", "e2e"]]) {
+  for (const [name, mode] of [["verify-server", "coverage"]]) {
     const job = jobs.get(name!)!;
     assert.match(job, /^    needs: detect-changes$/m);
     assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
@@ -36,11 +36,11 @@ const runGate = (results: Record<string, string>): number | null => {
 
 const success = Object.fromEntries(required.map((name) => [name, "success"]));
 
-test("both successful server jobs pass the actual workflow gate", () => {
+test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-macos", "verify-server", "verify-server-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-macos", "verify-server"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
