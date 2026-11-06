@@ -638,6 +638,13 @@ witness retains the persisted interaction-ID mapping. The
 [command-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-command-rule-isolation.md)
 records that split.
 
+Session load-state tests control `LockSession` through its DAO interface and
+observe local live-state and pending-content behavior for valid bindings,
+mismatches, missing records and operational errors. Actual row deletion, DAO
+missing-row mapping and Bot deletion/revocation barriers retain PostgreSQL. The
+[load-state decision](../../.agents/notes/implemented/testing/2026-11-06-session-load-state-isolation.md)
+records the error and invalidation expectations.
+
 Project request validation uses a valid synthetic principal and a fail-on-access
 store for UUID, creation input, pagination and entropy refusals that precede
 storage. Real creation, readback, keyset paging and operational-error tests keep
