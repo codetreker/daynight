@@ -62,4 +62,4 @@ List 使用现有只读 Repeatable Read，在同一快照重验 credential、Req
 
 HTTP 日志使用既有 requestId，追加 project_id、task_id、message_id 和经过验证的有限执行来源。component=task_thread；失败保留 phase、安全 cause/code，未知提交记录 thread_error_code=message_outcome_unknown 与 write_outcome=unknown。正文、名称、token、DSN、SQL 和原始上游错误不进入日志。
 
-[决策记录](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-storage.md)保存真实替代方案与范围成本。命令和完整 gate 由[服务端指南](../../packages/daynight-server/README.md#validate)拥有。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-storage.md)保存真实替代方案与范围成本。命令和完整 gate 由[服务端指南](../../packages/daynight-server/README.md#validate)拥有。

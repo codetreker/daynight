@@ -38,4 +38,4 @@
 
 Web 单元与 DOM 测试验证 API 身份、LRU、轻量存储、草稿/回执恢复、迟到响应、当前与可见性分离以及认证生命周期。真实浏览器用共享组件测量文字锚点、DOM 对象身份、分页失败与重连、资源释放和窄屏布局。测试用 API、连接和 Provider 受控时，结果只证明浏览器消费行为，不证明原生托管或完整助手运行。
 
-取舍与后续组合约束见[缓存决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-session-cache.md)。
+取舍与后续组合约束见[缓存决策](../../.agents/notes/archived/architecture/2026-11-04-bot-session-cache.md)。

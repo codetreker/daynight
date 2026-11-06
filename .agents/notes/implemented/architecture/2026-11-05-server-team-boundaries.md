@@ -22,7 +22,7 @@ Creation locks the creator user and atomically inserts the Team and its initial
 admin. Existing Team writes lock the Team before reading current membership and
 versions. Deletion checks ownership in a separate Read Committed statement after
 that lock. Invitation acceptance rechecks the invitation and membership after
-locking the Team. The [Team lifecycle decision](2026-11-04-team-lifecycle.md)
+locking the Team. The [Team lifecycle decision](../../archived/architecture/2026-11-04-team-lifecycle.md)
 retains the locking rationale and public behavior.
 
 ## Alternatives

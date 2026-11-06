@@ -22,7 +22,7 @@ claiming to recover its receipt. Actual denial, changed role and read failures
 retain their respective handling.
 
 This applies the [workspace presentation decision](2026-11-05-stable-workspace-during-identity-checks.md)
-to [Team management](../feature/2026-11-04-web-team-management.md),
+to [Team management](../../archived/feature/2026-11-04-web-team-management.md),
 [members](../feature/2026-11-05-web-team-members.md) and
 [invitations](../feature/2026-11-05-web-scoped-invitations.md). The
 [Team browsing decision](2026-11-05-stable-team-checks.md) owns directory and

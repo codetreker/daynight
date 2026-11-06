@@ -20,7 +20,7 @@ The driver-independent store contract exposes the scoped DAOs; PostgreSQL owns
 locking and transaction completion. The [attachment design](../../../../docs/design/daynight-task-attachments.md)
 describes the resulting behavior.
 
-The [Task deletion decision](../feature/2026-10-25-task-soft-deletion.md)
+The [Task deletion decision](../../archived/feature/2026-10-25-task-soft-deletion.md)
 retains the data and the distinct authorized deletion response. This decision
 extends its guarantee to attachment mutations already in flight.
 
