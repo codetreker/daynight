@@ -368,6 +368,14 @@ ID. Revocation invalidates access rows in the same transaction, and Thread and
 Bot credential checks recheck expiry after lock waits. OAuth credentials do not
 authenticate ordinary REST or private Worker endpoints.
 
+The authorization use cases and unmounted HTTP adapters support browser-bound
+requests, account-checked decisions and one-time S256 code exchange. A valid
+exchange consumes the code and issues its credential family in one transaction;
+a correctly bound replay revokes that family. Incorrect bindings leave the code
+usable. Decision and token responses cannot be recovered after loss: inspect the
+request state and start a new authorization when necessary. Production consent,
+discovery and the complete token endpoint are not yet mounted.
+
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
 operations have a separate 16-slot budget. A saturated budget returns
