@@ -52,6 +52,23 @@ it("selects shared agents and Project scope from a real Git subdirectory", async
   expect(await readdir(f.home)).toEqual([]); await expect(lstat(f.agentLog)).rejects.toMatchObject({ code: "ENOENT" });
 }, 30_000);
 
+it("installs Project scope at the current linked worktree rather than the primary checkout", async () => {
+  const f = await fixture(["codex"]);
+  const primary = path.join(f.root, "primary"), linked = path.join(f.root, "linked worktree 中文"); await mkdir(primary);
+  const git = (args: string[], input?: string) => execFileSync("git", ["-C", primary, ...args], { encoding: "utf8", env: f.environment, timeout: 10_000, ...(input === undefined ? {} : { input }) }).trim();
+  git(["init", "-q"]); const tree = git(["mktree"], "");
+  const commit = git(["hash-object", "-t", "commit", "-w", "--stdin"], `tree ${tree}\nauthor Fixture <fixture@example.invalid> 1700000000 +0000\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\n\nFixture\n`);
+  git(["update-ref", "refs/heads/main", commit]); git(["symbolic-ref", "HEAD", "refs/heads/main"]); git(["worktree", "add", "--detach", linked, "HEAD"]);
+  const result = await skillTerminal(receipt, f, [
+    { waitFor: agentsPrompt, keys: [" ", "\r"] }, { waitFor: scopePrompt, keys: [down, "\r"] },
+  ], linked, command);
+  expect(result.code, result.stderr).toBe(0);
+  const target = path.join(linked, ".agents/skills/using-daynight"); expect(result.stdout).toContain(target);
+  expect(await readFile(path.join(target, "SKILL.md"))).toEqual(await readFile(path.resolve(import.meta.dirname, "../../../dist/commands/skill/skills/using-daynight/SKILL.md")));
+  await expect(lstat(path.join(primary, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(lstat(path.join(linked, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" }); expect(await readdir(f.home)).toEqual([]);
+}, 30_000);
+
 it.each(["agents", "scope"] as const)("cancels the %s terminal selector without installation", async (stage) => {
   const f = await fixture(["codex", "copilot", "claude"]);
   const actions = stage === "agents" ? [{ waitFor: agentsPrompt, keys: ["\u0003"] }]

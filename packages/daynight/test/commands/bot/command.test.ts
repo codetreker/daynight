@@ -60,6 +60,37 @@ describe("public Bot commands", () => {
     expect((await run(["create", "--name", "助手", "--worker", workerId, "--cwd", overrides.cwd, "--agent", "claude", "--request-id", id])).exit).toBe(0);
     expect(JSON.parse(requests[0]!.init.body as string)).toEqual({ id, name: "助手", overrides });
   });
+  it("prints the unchanged active Bot on a creation replay using its original identity", async () => {
+    const { run, requests } = await fixture(() => json(bot));
+    const first = await run(["create", "--name", "助手", "--request-id", id, "--json"]);
+    const second = await run(["create", "--name", "助手", "--request-id", id, "--json"]);
+    expect(first.exit).toBe(0); expect(second.exit).toBe(0);
+    expect(JSON.parse(first.out)).toEqual(bot);
+    expect(JSON.parse(second.out.slice(first.out.length))).toEqual(bot);
+    expect(requests.map(({ init }) => JSON.parse(String(init.body)))).toEqual([{ id, name: "助手" }, { id, name: "助手" }]);
+    expect(second.err).toBe("");
+  });
+  it("prints both completed cleanup phases on Bot show", async () => {
+    const tombstone = deleted("completed", "completed");
+    const { run, requests } = await fixture(() => json(tombstone));
+    const result = await run(["show", id, "--json"]);
+    expect(result.exit).toBe(0); expect(JSON.parse(result.out)).toEqual(tombstone);
+    expect(requests.map(({ init }) => init.method)).toEqual(["GET"]);
+    expect(result.err).toBe("");
+  });
+  it.each([
+    [["create", "--name", "changed", "--request-id", id, "--json"], "resource_conflict"],
+    [["create", "--name", "Legacy", "--worker", workerId, "--json"], "resource_conflict"],
+    [["create", "--name", "Unavailable", "--worker", workerId, "--agent", "claude", "--json"], "resource_conflict"],
+    [["create", "--name", "Offline", "--worker", workerId, "--json"], "resource_conflict"],
+    [["delete", id, "--if-version", "1", "--json"], "version_conflict"],
+  ])("exposes the definite refusal for %j without success output", async (args, code) => {
+    const { run, requests } = await fixture(() => json({ error: { code, message: "rejected", requestId: "refused" } }, 409));
+    const result = await run(args);
+    expect(result.exit).toBe(1); expect(result.out).toBe("");
+    expect(JSON.parse(result.err).error).toMatchObject({ code, outcomeUnconfirmed: false });
+    expect(requests).toHaveLength(1);
+  });
   it.each(["pending", "completed"])("accepts a creation replay with a %s deletion tombstone", async (state) => {
     const tombstone = deleted(state, state);
     const { run, requests } = await fixture(() => json(tombstone));

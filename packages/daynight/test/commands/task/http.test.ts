@@ -56,6 +56,18 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
 };
 
 describe("task commands over HTTP", () => {
+  it("preserves paused, blocked and not-ready facts in show and the two-task inventory", async () => {
+    const blocked = { ...task, properties: { paused: true }, ready: false, dependsOn: [otherId], blockedBy: [otherId] };
+    const prerequisite = { ...task, id: otherId, title: "Prerequisite" };
+    const { description: _blockedDescription, ...blockedListItem } = blocked;
+    const { description: _prerequisiteDescription, ...prerequisiteListItem } = prerequisite;
+    const f = await fixture((request, response) => respond(response, request.path.endsWith(taskId) ? blocked : { items: [prerequisite, blocked], nextCursor: null }));
+    await f.run(["show", taskId, "--json"]);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(blocked);
+    await f.run(["list", "--json"]);
+    expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual([prerequisiteListItem, blockedListItem]);
+    expect(f.context.stderr).not.toHaveBeenCalled();
+  });
   it.each([false, true].flatMap((removeDepends) => [undefined, "9223372036854775807"].map((version) => ({ removeDepends, version }))))("deletes once with exact version $version and removal consent $removeDepends", async ({ version, removeDepends }) => {
     const f = await fixture((request, response) => {
       if (request.method === "DELETE") { response.writeHead(204); response.end(); }

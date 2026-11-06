@@ -461,9 +461,18 @@ def scenarios():
         ("double quoted directory", 'daynight review add-repo --path "sp\t', ["review", "add-repo", "--path", "space directory/"]),
         ("Unicode directory", "daynight review add-repo --path 中\t", ["review", "add-repo", "--path", "中文目录/"]),
         ("apostrophe directory", "daynight review add-repo --path apo\t", ["review", "add-repo", "--path", "apostrophe'directory/"]),
+        ("single quoted apostrophe", "daynight review add-repo --path 'apo\t", ["review", "add-repo", "--path", "apostrophe'directory/"]),
         ("double quote directory", "daynight review add-repo --path dou\t", ["review", "add-repo", "--path", 'double"directory/']),
         ("dollar directory", 'daynight review add-repo --path "dol\t', ["review", "add-repo", "--path", "dollar$directory/"]),
+        ("already escaped dollar", 'daynight review add-repo --path "dollar\\$d\t', ["review", "add-repo", "--path", "dollar$directory/"]),
         ("backtick directory", 'daynight review add-repo --path "bac\t', ["review", "add-repo", "--path", "backtick`directory/"]),
+        ("double quoted backslash", 'daynight review add-repo --path "sla\t', ["review", "add-repo", "--path", "slash\\directory/"]),
+        ("already escaped backslash", 'daynight review add-repo --path "slash\\\\d\t', ["review", "add-repo", "--path", "slash\\directory/"]),
+        ("double quoted quote", 'daynight review add-repo --path "dou\t', ["review", "add-repo", "--path", 'double"directory/']),
+        ("already escaped quote", 'daynight review add-repo --path "double\\"d\t', ["review", "add-repo", "--path", 'double"directory/']),
+        ("double quoted command substitution", 'daynight review add-repo --path "inj\t', ["review", "add-repo", "--path", "inject$(touch injected-marker)/"]),
+        ("double quoted backtick substitution", 'daynight review add-repo --path "expl\t', ["review", "add-repo", "--path", "exploit`touch injected-marker`/"]),
+        ("unquoted command substitution", 'daynight review add-repo --path inj\t', ["review", "add-repo", "--path", "inject$(touch injected-marker)/"]),
         ("colon directory", "daynight review add-repo --path col\t", ["review", "add-repo", "--path", "colon:directory/"]),
         ("colon directory after word break", "daynight review add-repo --path colon:di\t", ["review", "add-repo", "--path", "colon:directory/"]),
         ("literal quoted tilde", "daynight review add-repo --path '~lit\t", ["review", "add-repo", "--path", "~literal/"]),
@@ -619,12 +628,17 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
     evidence.append(receipt)
     try:
         cases, unchanged = scenarios()
+        # zsh's native _files does not extend this already escaped backslash.
+        if kind == "zsh":
+            cases = [case for case in cases if case[0] != "already escaped backslash"]
         cases.append(("home directory", "daynight review add-repo --path ~/hom\t", ["review", "add-repo", "--path", str(directory / "home" / "home-directory") + "/"]))
         for name, keys, expected in cases:
             line, cursor, output = shell.complete(keys)
             if open_quote(line):
                 shell.send(open_quote(line))
             actual = shell.execute()
+            if (directory / "injected-marker").exists():
+                raise AssertionError(f"{label}: {name}: completion caused command substitution")
             native_expected = list(expected)
             # ZLE removes an automatically added directory slash when accepting the line.
             directory_option = "--path" if "--path" in expected else None
@@ -951,7 +965,7 @@ def main():
                 sentinel = directory / "bin" / command
                 sentinel.write_text("#!/bin/sh\nprintf x >>" + shlex.quote(str(directory / "forbidden-executions.log")) + "\nprintf '__DAYNIGHT_FORBIDDEN_NODE__\\n'\nexit 99\n")
                 sentinel.chmod(0o755)
-            for name in ["review", "project", "task", "setup", "normal-directory", "space directory", "中文目录", "apostrophe'directory", 'double"directory', "dollar$directory", "backtick`directory", "colon:directory", "~literal", "home/home-directory"]:
+            for name in ["review", "project", "task", "setup", "normal-directory", "space directory", "中文目录", "apostrophe'directory", 'double"directory', "dollar$directory", "backtick`directory", "slash\\directory", "inject$(touch injected-marker)", "exploit`touch injected-marker`", "colon:directory", "~literal", "home/home-directory"]:
                 (directory / name).mkdir(parents=True)
             scripts = {}
             for kind in ["bash", "zsh"]:
