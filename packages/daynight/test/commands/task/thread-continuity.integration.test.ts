@@ -79,6 +79,28 @@ it("retrieves messages omitted by the rendered byte budget using the first displ
   expect(f.context.stderr).not.toHaveBeenCalled();
 });
 
+it("keeps the same Agent message in default and detailed reads while exposing execution only in details", async () => {
+  const claimId = id(7), workerId = id(8);
+  const f = await fixture((request, response) => {
+    const detailed = request.url.searchParams.get("details") === "true";
+    const author = { userId, displayName: "Alice", Agent: true, ...(detailed ? { execution: { claimId, workerId, provider: "codex" } } : {}) };
+    json(response, { items: [{ ...message(1, "Agent message"), author }], hasMoreBefore: false, hasMoreAfter: false });
+  });
+  expect(await f.run(["read", taskId])).toBe(0);
+  expect(await f.run(["read", taskId, "--details"])).toBe(0);
+  const [normal, detailed] = f.chunks.map(chunk => chunk.toString("utf8"));
+  for (const output of [normal!, detailed!]) {
+    expect(output).toContain(`Id: ${id(1)}\n`);
+    expect(output).toContain(`Author: Alice's Agent (${userId})\n`);
+    expect(output).toContain('Message: "Agent message"');
+  }
+  expect(normal).not.toContain("Execution ");
+  for (const field of [`Execution ClaimId: ${claimId}\n`, `Execution WorkerId: ${workerId}\n`, "Execution Provider: codex\n"]) expect(detailed).toContain(field);
+  expect(f.requests.map(({ url }) => url.searchParams.get("details"))).toEqual(["false", "true"]);
+  expect(f.requests.every(({ method }) => method === "GET")).toBe(true);
+  expect(f.context.stderr).not.toHaveBeenCalled();
+});
+
 it("reports a lost HTTP POST response as unknown without replay or private output", async () => {
   const f = await fixture((_request, response) => { response.socket!.destroy(); });
   expect(await f.run(["post", taskId, "--body", "private message"])).toBe(1);

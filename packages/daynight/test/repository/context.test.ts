@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { devNull } from "node:os";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createOperation } from "../../src/api/index.js";
@@ -16,13 +17,33 @@ const serverUrl = "http://localhost:8787";
 const project: Project = { id, name: "Project", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
 const directories: string[] = [];
 const operations: Operation[] = [];
+let savedGitEnvironment: [string, string][] | undefined;
+const clearGitEnvironment = () => { for (const name of Object.keys(process.env)) if (name.toUpperCase().startsWith("GIT_")) delete process.env[name]; };
 afterEach(async () => {
-  operations.splice(0).forEach((operation) => operation.dispose());
-  vi.restoreAllMocks();
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  const failures: unknown[] = [];
+  try {
+    for (const operation of operations.splice(0)) {
+      try { operation.dispose(); } catch (error) { failures.push(error); }
+    }
+    try { vi.restoreAllMocks(); } catch (error) { failures.push(error); }
+    for (const directory of directories.splice(0)) {
+      try { await rm(directory, { recursive: true, force: true }); } catch (error) { failures.push(error); }
+    }
+  } finally {
+    if (savedGitEnvironment !== undefined) {
+      clearGitEnvironment();
+      for (const [name, value] of savedGitEnvironment) process.env[name] = value;
+      savedGitEnvironment = undefined;
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "Repository fixture cleanup failed.");
 });
 const operation = (): Operation => { const value = createOperation(); operations.push(value); return value; };
 const fixture = async () => {
+  savedGitEnvironment ??= Object.entries(process.env).filter(([name, value]) => name.toUpperCase().startsWith("GIT_") && value !== undefined).map(([name, value]) => [name, value!] as [string, string]);
+  clearGitEnvironment();
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
+  process.env.GIT_CONFIG_GLOBAL = devNull;
   const temporary = path.resolve(import.meta.dirname, "../../../../.tmp/repository-tests");
   await mkdir(temporary, { recursive: true });
   const root = await mkdtemp(path.join(temporary, "context 用户 "));
@@ -68,6 +89,10 @@ describe("repository project selection", () => {
   });
 
   it("writes separate bindings in a linked worktree and a submodule", async () => {
+    const sentinel = await fixture();
+    const sentinelConfig = await readFile(path.join(sentinel, ".git/config"), "utf8");
+    process.env.GIT_DIR = path.join(sentinel, ".git");
+    process.env.GIT_WORK_TREE = sentinel;
     const source = await fixture(), parent = await fixture();
     const git = (root: string, args: string[], input?: string) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", timeout: 10_000, ...(input === undefined ? {} : { input }) }).trim();
     const tree = git(source, ["mktree"], "");
@@ -86,6 +111,8 @@ describe("repository project selection", () => {
       expect(client.listProjects).toHaveBeenCalledOnce(); expect(client.getProject).toHaveBeenCalledWith(id);
     }
     for (const root of [source, parent]) await expect(lstat(path.join(root, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(sentinel, ".git/config"), "utf8")).toBe(sentinelConfig);
+    expect(git(sentinel, ["for-each-ref", "--format=%(refname)", "refs/heads/"])).toBe("");
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reports a real access-denied binding read without rediscovery or writes", async () => {

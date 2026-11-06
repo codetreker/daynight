@@ -18,7 +18,7 @@ const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 type Request = { method: string; path: string; body: string; requestId: string | undefined; authorization: string | undefined };
-const fixture = async (lost = true, refusal?: string) => {
+const fixture = async (lost = true, refusal?: string, privateFailure = false) => {
   const requests: Request[] = [];
   const server = createServer((request, response: ServerResponse) => {
     let body = ""; request.setEncoding("utf8"); request.on("data", (part: string) => { body += part; });
@@ -28,8 +28,8 @@ const fixture = async (lost = true, refusal?: string) => {
       if (observed.method !== "GET") {
         if (lost) { response.socket!.destroy(); return; }
         if (refusal !== undefined) { response.writeHead(409, { "Content-Type": "application/json", "Daynight-User-ID": userId }); response.end(JSON.stringify({ error: { code: refusal, message: "refused", requestId: "refusal" } })); return; }
-        const value = observed.method === "PATCH" ? { membership: { ...member(userId), role: "member", version: version + 1n }, actorRole: "member" } : observed.path.endsWith(`/members/${userId}`) ? { teamId, userId, removed: true, actorRole: null } : { teamId, deleted: true };
-        response.writeHead(200, { "Content-Type": "application/json", "Daynight-User-ID": userId }); response.end(stringifyApiJson(value)); return;
+        const value = observed.method === "POST" ? { ...team, name: JSON.parse(observed.body).name, version: 1n, membership: { ...member(userId), version: 1n } } : observed.method === "PATCH" ? { membership: { ...member(userId), role: "member", version: version + 1n }, actorRole: "member" } : observed.path.endsWith(`/members/${userId}`) ? { teamId, userId, removed: true, actorRole: null } : { teamId, deleted: true };
+        response.writeHead(observed.method === "POST" ? 201 : 200, { "Content-Type": "application/json", "Daynight-User-ID": userId, ...(observed.method === "POST" ? { Location: `/api/v1/teams/${teamId}` } : {}) }); response.end(stringifyApiJson(value)); return;
       }
       const selectedTeam = observed.path.includes(personalId) ? personalId : teamId;
       const value = observed.path === "/api/v1/me" ? me : observed.path.endsWith("/members") ? { items: [member(userId), member(otherId)].map((item) => ({ ...item, teamId: selectedTeam, profile: { name: null, email: null, avatarUrl: null } })) } : selectedTeam === personalId ? { ...team, id: personalId, kind: "personal", name: null, membership: { ...member(userId), teamId: personalId } } : team;
@@ -41,7 +41,12 @@ const fixture = async (lost = true, refusal?: string) => {
   const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing HTTP listener.");
   const serverUrl = `http://127.0.0.1:${address.port}`;
   const operation = createOperation({ limits: { totalMs: 5_000, requestMs: 3_000 } }); cleanups.push(() => operation.dispose());
-  const api = createApiClient({ serverUrl, serverToken: "private-token", expectedUserId: userId, operation });
+  const fetchWithPrivateFailure: typeof globalThis.fetch = async (input, init) => {
+    const response = await globalThis.fetch(input, init);
+    if (init?.method === "DELETE") { await response.body?.cancel(); throw new Error("private proxy loss"); }
+    return response;
+  };
+  const api = createApiClient({ serverUrl, serverToken: "private-token", expectedUserId: userId, operation, ...(privateFailure ? { fetch: fetchWithPrivateFailure } : {}) });
   const context = { version: "0", packageDirectory: "unused", homeDirectory: () => { throw new Error("Unexpected config read"); }, workingDirectory: () => { throw new Error("Unexpected repository read"); }, stdout: vi.fn<(text: string) => void>(), stderr: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn(async (_value: Uint8Array) => {}) } satisfies CliContext;
   const dependencies: TeamCommandDependencies = { runServerCommand: async (current, command) => {
     const output = await command({ api, operation, serverUrl, serverConfiguration: { serverUrl } });
@@ -50,6 +55,26 @@ const fixture = async (lost = true, refusal?: string) => {
   const run = (args: string[]) => runCli(["team", ...args], context, [{ name: "team", description: "Manage teams", load: async () => ({ run: (rest, current) => runTeamCommand(rest, current, dependencies) }) }]);
   return { requests, context, run };
 };
+
+it("prints every field of a confirmed Team creation", async () => {
+  const f = await fixture(false);
+  const name = "  Team\nwith\rcontrols\tand\\backslash  ";
+  expect(await f.run(["create", name, "--confirm", "--json"])).toBe(0);
+  const expected = { ...team, name, version: 1n, membership: { ...member(userId), version: 1n } };
+  expect(Buffer.from(f.context.stdoutBytes.mock.calls[0]![0]).toString().trim()).toBe(stringifyApiJson(expected));
+  expect(f.requests.map(({ method, path }) => `${method} ${path}`)).toEqual(["GET /api/v1/me", "POST /api/v1/teams"]);
+  expect(JSON.parse(f.requests[1]!.body)).toEqual({ name, expectedUserId: userId });
+  expect(f.context.stderr).not.toHaveBeenCalled();
+});
+
+it("prints both Team members with exact identities, roles, versions and profiles", async () => {
+  const f = await fixture(false);
+  expect(await f.run(["member", "list", "--team", teamId, "--json"])).toBe(0);
+  const members = [member(userId), member(otherId)].map(item => ({ ...item, profile: { name: null, email: null, avatarUrl: null } }));
+  expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`${stringifyApiJson(members)}\n`);
+  expect(f.requests.map(({ method, path }) => `${method} ${path}`)).toEqual(["GET /api/v1/me", `GET /api/v1/teams/${teamId}/members`]);
+  expect(f.context.stderr).not.toHaveBeenCalled();
+});
 
 it.each(["rename", "remove"])("reports a lost %s response with one write and safe request identity", async (action) => {
   const f = await fixture();
@@ -65,6 +90,19 @@ it.each(["rename", "remove"])("reports a lost %s response with one write and saf
   const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
   expect(diagnostic).toContain(`outcome is unknown (requestId=${write.requestId})`);
   expect(diagnostic).not.toMatch(/private-token|Private new name|Private old name|Caused by:/);
+});
+
+it("keeps a private transport failure out of an unknown removal diagnostic", async () => {
+  const f = await fixture(false, undefined, true);
+  expect(await f.run(["member", "remove", otherId, "--team", teamId, "--confirm", "--json"])).toBe(1);
+  expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET", "DELETE"]);
+  const write = f.requests[2]!;
+  expect(write.requestId).toMatch(/^[0-9a-f-]{36}$/);
+  const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
+  expect(diagnostic).toContain(`outcome is unknown (requestId=${write.requestId})`);
+  expect(diagnostic).not.toContain("private proxy loss");
+  expect(diagnostic).not.toContain("private-token");
+  expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
 });
 
 it.each([
