@@ -317,6 +317,13 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     try { return db.prepare("SELECT * FROM tasks WHERE task_id=?").get(taskId) as Row | undefined; }
     finally { db.close(); }
   };
+  const frozenNative = (projectId: string, taskId: string, claimId: string): unknown => {
+    const db = new Database(databaseFile, { readonly: true });
+    try {
+      const stored = db.prepare("SELECT configuration FROM claim_native_configurations WHERE project_id=? AND task_id=? AND claim_id=?").get(projectId, taskId, claimId) as { configuration: string } | undefined;
+      return stored === undefined ? undefined : JSON.parse(stored.configuration);
+    } finally { db.close(); }
+  };
   const waitFor = async (label: string, condition: () => boolean | Promise<boolean>, timeout = 20_000): Promise<void> => {
     const deadline = Date.now() + timeout;
     while (!await condition()) {
@@ -390,13 +397,14 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     await writeFile(sentinel, "Keep the original uncommitted task result.\n");
     const sql = new Database(databaseFile, { readonly: true });
     try {
-      expect(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+      expect(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "claim_native_configurations" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
       expect(sql.prepare("SELECT COUNT(*) AS count FROM bots").get()).toEqual({ count: 0 });
       expect(sql.prepare("SELECT COUNT(*) AS count FROM bot_executions").get()).toEqual({ count: 0 });
       expect((sql.prepare("PRAGMA table_info(projects)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "repo_url", "local_path"]);
       expect((sql.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
       expect(sql.prepare("SELECT DISTINCT agent_control_mode FROM tasks").all()).toEqual([{ agent_control_mode: "herdr" }]);
     } finally { sql.close(); }
+    expect(frozenNative(second.projectId, second.id, originalClaim)).toEqual({ agent: "codex", model: "fixture-model", args: ["--search"] });
     if (scenario === "resume") {
       const currentWorkspace = (await events()).find((event) => event.kind === "workspace" && event.taskId === second.id)!;
       second.title = '重命名运行中的任务 👨‍👩‍👧‍👦 | daynight:{"literal":"title"}';
@@ -475,11 +483,17 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(row(second.id)).toMatchObject({ status: "active", claim_id: originalClaim, agent: "codex" });
       expect(await readFile(sentinel, "utf8")).toBe("Keep the original uncommitted task result.\n");
       const latestStart = (await events()).filter((event) => event.kind === "native-start" && event.taskId === second.id).at(-1)!;
-      expect(latestStart.argv).toContain("current-model");
       expect(latestStart.argv).not.toContain("stale-local-model");
+      const expectedFrozenModel = scenario === "empty-database" ? "current-model" : "fixture-model";
+      expect(frozenNative(second.projectId, second.id, originalClaim)).toEqual({ agent: "codex", model: expectedFrozenModel, args: ["--search"] });
       if (scenario === "resume") {
         expect(restartedSession).toBe(originalSession);
-        expect(latestStart.argv?.slice(0, 7)).toEqual(["codex", "--no-daemon", "resume", originalSession, "--model", "current-model", "--search"]);
+        expect(latestStart.argv?.slice(0, 5)).toEqual(["codex", "--no-daemon", "resume", originalSession, "--search"]);
+        expect(latestStart.argv).not.toContain("--model");
+        expect(latestStart.argv).not.toContain("--effort");
+        expect(latestStart.argv!.some(argument => argument.includes("model_reasoning_effort"))).toBe(false);
+        expect(latestStart.argv).not.toContain("current-model");
+        expect(latestStart.argv).not.toContain("fixture-model");
         expect(latestStart.argv).toContain("--dangerously-bypass-approvals-and-sandbox");
         expect(latestStart.argv).toContain("--dangerously-bypass-hook-trust");
         const trust = latestStart.argv!.at(-1)!;
@@ -487,6 +501,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       } else {
         expect(restartedSession).not.toBe(originalSession);
         expect(latestStart.argv).not.toContain("resume");
+        expect(latestStart.argv?.slice(0, 5)).toEqual(["codex", "--no-daemon", "--model", expectedFrozenModel, "--search"]);
         const restartLogs = logs.slice(restartLogOffset).join("");
         expect(restartLogs).toContain(` info ${second.projectId.split("-")[0]}/${second.id.split("-")[0]}/${originalClaim.split("-")[0]} active Starting a new native conversation in the task worktree.`);
         expect(restartLogs).not.toContain(" warning ");
@@ -539,6 +554,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(assignment).toContain("references/autopilot-managed-task.md"); expect(assignment).not.toContain("worker-fixture-token");
       const originalClaim = originalClaims.get(task.id)!;
       expect(JSON.parse(assignment.split("Assignment:")[1]!)).toMatchObject({ projectId: task.projectId, taskId: task.id, claimId: originalClaim.claimId, workerId: originalClaim.workerId, worktreeId: originalClaim.worktreeId, platform: "linux", nativeSessionId: null, configuration: { agent: "codex", model: "fixture-model", args: ["--search"], recoveryLimit: 3 } });
+      if (assignments.length > 1) {
+        expect(JSON.parse(assignments[1]!.text!.split("Assignment:")[1]!)).toMatchObject({ claimId: originalClaim.claimId, configuration: { agent: "codex", model: scenario === "empty-database" ? "current-model" : "fixture-model", args: ["--search"], recoveryLimit: 3 } });
+      }
     }
     expect(observed.filter((event) => event.kind === "daemon-start")).toHaveLength(scenario === "inventory-failure" ? 1 : 2);
     expect(observed.filter((event) => event.kind === "daemon-stop")).toHaveLength(scenario === "inventory-failure" ? 1 : 2);

@@ -39,7 +39,7 @@ it("ships exact SQL resources and initializes and resets every installed store f
     count += Object.keys(source).length;
     expect(files(path.join(installed, "dist", directory))).toEqual(source);
   }
-  expect(count).toBe(19);
+  expect(count).toBe(20);
   const cwd = path.join(fixture.receipt.root, "different caller 中文");
   const databases = path.join(fixture.receipt.root, "databases");
   mkdirSync(cwd); mkdirSync(databases);
@@ -52,7 +52,7 @@ const load = relative => import(pathToFileURL(path.join(installed, "dist", relat
 const { openSqliteDatabase } = await load("platform/sqlite-access.js");
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
-  ["commands/worker/store-format.js", "workerStoreFormat", 11, ["bot_executions", "bots", "cleanup_schedules", "projects", "tasks"]],
+  ["commands/worker/store-format.js", "workerStoreFormat", 12, ["bot_executions", "bots", "claim_native_configurations", "cleanup_schedules", "projects", "tasks"]],
   ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 3, ["executions", "orchestration_blockers"]],
   ["commands/controller/journal-format.js", "controllerJournalFormat", 6, ["content_index", "execution", "operations", "outbox"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
@@ -81,7 +81,7 @@ for (const [module, name, version, tables] of owners) {
 console.log(JSON.stringify(versions));
 `, [installed, databases], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, 11, 3, 6, 1]);
+  expect(JSON.parse(result.stdout)).toEqual([2, 12, 3, 6, 1]);
 });
 
 it("rejects a missing installed SQL resource without repository fallback or retained-data changes", () => {
@@ -124,8 +124,8 @@ db.close();
 });
 it("discovers newly added installed migrations and executes them only in filename order", () => {
   const directory = path.join(installed, "dist/commands/worker/sqlite");
-  const first = path.join(directory, "012-create-order-probe.sql");
-  const second = path.join(directory, "013-record-order-probe.sql");
+  const first = path.join(directory, "013-create-order-probe.sql");
+  const second = path.join(directory, "014-record-order-probe.sql");
   expect(existsSync(first)).toBe(false); expect(existsSync(second)).toBe(false);
   const databaseFile = path.join(fixture.receipt.root, "filename-ordered-worker.sqlite");
   const original = new Database(databaseFile);
@@ -147,7 +147,7 @@ store.close();
     expect(result.status, result.stderr).toBe(0);
     const upgraded = new Database(databaseFile, { readonly: true });
     try {
-      expect(upgraded.pragma("user_version", { simple: true })).toBe(13);
+      expect(upgraded.pragma("user_version", { simple: true })).toBe(14);
       expect(upgraded.prepare("SELECT value FROM filename_order_probe").all()).toEqual([{ value: "sorted" }]);
     } finally { upgraded.close(); }
   } finally { rmSync(first, { force: true }); rmSync(second, { force: true }); }
