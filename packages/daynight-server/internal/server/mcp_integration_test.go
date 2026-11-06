@@ -99,9 +99,10 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	list, err := productionClient.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 4 {
-		t.Fatalf("production tools: %#v, %v", list, err)
+	if err != nil {
+		t.Fatalf("list production tools: %v", err)
 	}
+	assertMCPProductionTools(t, list.Tools)
 
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.
@@ -190,7 +191,27 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
 	list, err = bobProduction.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 4 {
+	if err != nil {
 		t.Fatalf("remaining PAT discovery: %#v, %v", list, err)
+	}
+	assertMCPProductionTools(t, list.Tools)
+}
+
+func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
+	t.Helper()
+	want := map[string]bool{
+		"project_create": true, "project_transfer": true, "project_list": true, "project_show": true,
+		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
+		"invitation_inspect": true, "invitation_accept": true,
+	}
+	for _, tool := range tools {
+		if !want[tool.Name] {
+			t.Errorf("unexpected or duplicate production tool %s", tool.Name)
+			continue
+		}
+		delete(want, tool.Name)
+	}
+	for name := range want {
+		t.Errorf("missing production tool %s", name)
 	}
 }

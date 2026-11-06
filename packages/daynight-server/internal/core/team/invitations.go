@@ -3,9 +3,11 @@ package team
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
@@ -84,6 +86,44 @@ func ListInvitations(ctx context.Context, dao store.TeamReader, p model.Principa
 	}
 	return dao.TeamInvitations(ctx, id, clock().UTC())
 }
+
+type InvitationPage struct {
+	Items      []model.TeamInvitation
+	NextCursor *string
+}
+
+func ListInvitationPage(ctx context.Context, dao store.TeamReader, p model.Principal, id string, request model.PageRequest, clock func() time.Time) (InvitationPage, error) {
+	scope := query.ListScope{Kind: "team_invitations", UserID: p.UserID, ProjectID: id}
+	page, err := query.ListPage(request, scope)
+	if err != nil {
+		return InvitationPage{}, err
+	}
+	t, err := dao.Team(ctx, p.UserID, id)
+	if errors.Is(err, model.ErrNotFound) {
+		return InvitationPage{}, &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
+	}
+	if err != nil {
+		return InvitationPage{}, err
+	}
+	if err := requireOrdinaryTeamAdmin(t); err != nil {
+		return InvitationPage{}, err
+	}
+	result, err := dao.TeamInvitationPage(ctx, id, clock().UTC(), page)
+	if err != nil {
+		return InvitationPage{}, err
+	}
+	response := InvitationPage{Items: result.Items}
+	if result.HasMore {
+		last := result.Items[len(result.Items)-1]
+		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.ID)
+		if err != nil {
+			return InvitationPage{}, fmt.Errorf("encode Team invitation cursor: %w", err)
+		}
+		response.NextCursor = &cursor
+	}
+	return response, nil
+}
+
 func RevokeInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, inviteID string, clock func() time.Time) (bool, error) {
 	t, err := dao.Team(ctx, p.UserID)
 	if err != nil {
