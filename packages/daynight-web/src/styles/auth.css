@@ -79,6 +79,41 @@
 .notice p + button { margin-top: 11px; }
 .notice .request-id { margin-top: 5px; font-size: 11px; }
 .notice > .button { margin-left: 7px; }
+.standalone-task-route { display: flex; flex-direction: column; height: 100dvh; min-height: 0; }
+.standalone-task-route > .auth-shell { flex: 1; min-height: 0; }
+.standalone-task-route .task-detail-page-container { position: relative; height: 100%; }
+.standalone-task-route .task-detail-page { height: 100%; }
+.standalone-task-route .task-detail-page:is(.task-detail-fullscreen, .task-detail-session-fullscreen) { position: absolute; inset: 0; height: 100%; max-height: 100%; }
+.standalone-task-route:has(> .standalone-deletion-slot:not(:empty)) .task-agent-session.session-fullscreen {
+  position: fixed;
+  top: var(--session-viewport-top, 0px);
+  left: var(--session-viewport-left, 0px);
+  width: var(--session-viewport-width, 100%);
+  height: max(0px, calc(var(--session-viewport-height, 100dvh) - var(--session-result-reserve, 0px)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.standalone-task-route:has(> .standalone-deletion-slot:not(:empty)) .task-agent-session.session-fullscreen > .session-composer { flex-shrink: 0; }
+.standalone-deletion-slot:empty { display: none; }
+.standalone-task-route > .standalone-deletion-slot { position: relative; z-index: 35; flex: none; padding: 8px 12px; background: #fff; }
+.standalone-task-route:has(.task-agent-session.session-fullscreen) > .standalone-deletion-slot:not(:empty) {
+  position: fixed;
+  top: calc(var(--standalone-session-viewport-top, 0px) + var(--standalone-session-viewport-height, 100dvh) - var(--standalone-session-result-reserve, 0px));
+  left: var(--standalone-session-viewport-left, 0px);
+  width: var(--standalone-session-viewport-width, 100%);
+}
+.standalone-other-route:has(> .standalone-deletion-slot:not(:empty)) { padding-bottom: 60px; }
+.standalone-other-route > .standalone-deletion-slot { position: fixed; z-index: 35; right: 12px; bottom: 12px; width: min(440px, calc(100vw - 24px)); }
+.standalone-deletion-results { position: relative; display: flex; flex-direction: column; align-items: flex-end; pointer-events: none; }
+.standalone-deletion-toggle, .standalone-deletion-panel { pointer-events: auto; }
+.standalone-deletion-toggle { flex: none; box-shadow: 0 5px 20px #17244726; }
+.standalone-deletion-panel:not([hidden]) { position: absolute; right: 0; bottom: calc(100% + 8px); width: min(440px, calc(100vw - 24px)); max-height: min(50dvh, 480px); overflow: auto; overscroll-behavior: contain; }
+.standalone-task-route:has(.task-agent-session.session-fullscreen) .standalone-deletion-panel:not([hidden]) {
+  width: min(440px, calc(var(--standalone-session-viewport-width, 100vw) - 24px));
+  max-height: max(0px, min(480px, calc(var(--standalone-session-viewport-height, 100dvh) - var(--standalone-session-result-reserve, 0px) - 16px)));
+}
+.standalone-deletion-results .notice { margin: 0 0 8px; box-shadow: 0 5px 20px #17244726; }
+.standalone-deletion-results .notice:last-child { margin-bottom: 0; }
 
 .panel { border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: var(--shadow); overflow: hidden; margin-bottom: 24px; min-width: 0; }
 .panel-heading { padding: 20px 23px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--line); }
@@ -471,3 +506,9 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
   .grant-row .actions { justify-content: flex-start; margin-left: 0; }
   .grant-status-notice { margin-inline: 14px; }
 }
+
+.project-deletion-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .5rem 1rem; padding: 1rem; border: 1px solid var(--border, #e1e4ea); border-radius: .5rem; background: var(--surface-muted, #f8f9fb); }
+.project-deletion-details dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.project-deletion-details dt { font-weight: 600; }
+@media (max-width: 480px) { .project-deletion-details { grid-template-columns: minmax(0, 1fr); gap: .25rem; } }
+.project-deletion-challenge { overflow-wrap: anywhere; white-space: pre-wrap; font-weight: 600; }

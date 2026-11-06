@@ -18,7 +18,7 @@ import (
 )
 
 func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
-	for _, scenario := range []string{"unknown history", "migration SQL failure"} {
+	for _, scenario := range []string{"unknown history", "migration SQL failure", "snapshot SQL failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			values := processAPIEnvironment(t)
 			adminURL := values["DAYNIGHT_DATABASE_URL"]
@@ -52,8 +52,14 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 				if _, err := observer.Exec(ctx, "INSERT INTO schema_migrations(version,checksum) VALUES (99,repeat('0',64))"); err != nil {
 					t.Fatal(err)
 				}
-			} else if _, err := observer.Exec(ctx, "CREATE TABLE tasks (private_migration_marker boolean)"); err != nil {
-				t.Fatal(err)
+			} else if scenario == "migration SQL failure" {
+				if _, err := observer.Exec(ctx, "CREATE TABLE tasks (private_migration_marker boolean)"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				query.Set("default_transaction_read_only", "on")
+				parsed.RawQuery = query.Encode()
+				values["DAYNIGHT_DATABASE_URL"] = parsed.String()
 			}
 			process := startMigrationProcess(t, values)
 			ticker := time.NewTicker(20 * time.Millisecond)
@@ -110,12 +116,21 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 			}
 			if scenario == "unknown history" {
 				_, err = observer.Exec(ctx, "DELETE FROM schema_migrations WHERE version=99")
-			} else {
+			} else if scenario == "migration SQL failure" {
 				var versions []int64
 				if err := observer.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1}) {
 					t.Fatalf("failed migration changed the committed prefix: %v %v", versions, err)
 				}
 				_, err = observer.Exec(ctx, "DROP TABLE tasks")
+			} else {
+				var objects int
+				if err := observer.QueryRow(ctx, `SELECT count(*) FROM pg_depend
+					WHERE refclassid='pg_namespace'::regclass AND refobjid=current_schema()::regnamespace`).Scan(&objects); err != nil || objects != 0 {
+					t.Fatalf("failed snapshot retained %d objects: %v", objects, err)
+				}
+				query.Del("default_transaction_read_only")
+				parsed.RawQuery = query.Encode()
+				values["DAYNIGHT_DATABASE_URL"] = parsed.String()
 			}
 			if err != nil {
 				t.Fatal(err)

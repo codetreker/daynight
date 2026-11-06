@@ -20,7 +20,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, databaseFailure("connect", err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
 		pool.Close()
 		return nil, databaseFailure("migrate", err)
 	}

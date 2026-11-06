@@ -131,6 +131,11 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	var existingObjects int
+	if err := observer.QueryRow(ctx, `SELECT count(*) FROM pg_depend
+		WHERE refclassid='pg_namespace'::regclass AND refobjid=current_schema()::regnamespace`).Scan(&existingObjects); err != nil || existingObjects != 0 {
+		t.Fatalf("concurrent initialization requires an empty schema: objects=%d error=%v", existingObjects, err)
+	}
 	const migrationLock int64 = 0x4441594e49474854
 	if _, err := observer.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLock); err != nil {
 		t.Fatal(err)
@@ -182,6 +187,12 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 	var versions []int64
 	if err := observer.QueryRow(ctx, `SELECT array_agg(version ORDER BY version) FROM schema_migrations`).Scan(&versions); err != nil {
 		t.Fatal(err)
+	}
+	var seedRows int
+	if err := observer.QueryRow(ctx, `SELECT (SELECT count(*) FROM private_transfer_ledger WHERE singleton)
+		+ (SELECT count(*) FROM oauth_credential_cleanup_cursor WHERE singleton)
+		+ (SELECT count(*) FROM oauth_authorization_cleanup_cursor WHERE singleton)`).Scan(&seedRows); err != nil || seedRows != 3 {
+		t.Fatalf("concurrent initialization lost system records: count=%d error=%v", seedRows, err)
 	}
 	migrationRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres")
 	var wantVersions []int64

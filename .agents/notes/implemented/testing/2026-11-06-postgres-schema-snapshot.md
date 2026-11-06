@@ -17,8 +17,10 @@ Its explicit maintenance command derives the snapshot from the complete
 historical migration path with PostgreSQL 18 `pg_dump`. It captures final
 schema definitions, all initial non-ledger table data and sequence state.
 The artifact includes the migration-ledger table structure but no historical
-application timestamps. Production startup continues to use historical
-migrations; the snapshot's current consumer is its equivalence test.
+application timestamps. The equivalence test checks the artifact independently
+of runtime initialization. The [bootstrap decision](../architecture/2026-11-06-postgres-schema-bootstrap.md)
+owns its use for atomic initialization of an empty target namespace; existing
+namespaces retain historical migration replay.
 
 Ordinary validation builds independent historical and snapshot schemas and
 compares their actual catalogs and initial data. It preserves visible column
@@ -66,7 +68,8 @@ without replacing historical upgrade, backfill, rollback or lock tests. The
 snapshot can initialize an independently scoped schema without embedding a
 particular installation's namespace.
 
-The artifact and its validation add maintenance and test work. This decision
-alone does not shorten fixture initialization or establish a CI speedup;
-source-bound measurements own performance claims. Initialization behavior,
-transaction atomicity and concurrent startup remain separate runtime concerns.
+The artifact and its validation add maintenance and test work. The snapshot
+was introduced with independent equivalence proof before runtime adoption.
+Source-bound measurements own performance claims; catalog equivalence alone
+does not establish a CI speedup. Runtime atomicity and concurrent startup are
+specified by the separate bootstrap decision.

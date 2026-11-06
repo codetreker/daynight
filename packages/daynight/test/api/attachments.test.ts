@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createApiClient, createOperation, stringifyApiJson, validateAttachmentPath } from "../../src/api/index.js";
 import type { Operation } from "../../src/api/index.js";
@@ -29,7 +30,13 @@ const server = async (handler: (request: IncomingMessage, response: ServerRespon
   if (typeof address !== "object" || address === null) throw new Error("Missing server address.");
   return `http://127.0.0.1:${address.port}`;
 };
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
+afterEach(async () => {
+  try { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); }
+  finally {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  }
+});
 
 describe("task attachment transport", () => {
   it.each([200, 201])("streams PUT bytes with encoded path and accepts metadata status %i", async (status) => {
@@ -121,14 +128,43 @@ describe("task attachment transport", () => {
   });
 
   it("retains request deadlines until the sink has flushed and cancels a blocked sink", async () => {
-    let sinkSignal: AbortSignal | undefined;
-    const consume = vi.fn((_chunk: Uint8Array, signal: AbortSignal) => { sinkSignal = signal; return new Promise<void>(() => {}); });
+    let elapsed = 0;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    const entered = Promise.withResolvers<AbortSignal>();
+    const consume = vi.fn((_chunk: Uint8Array, signal: AbortSignal) => { entered.resolve(signal); return new Promise<void>(() => {}); });
     const cancel = vi.fn();
     const stream = new ReadableStream<Uint8Array>({ start: (controller) => controller.enqueue(new Uint8Array([1])), cancel }, { highWaterMark: 0 });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(stream));
-    await expect(client(fetch, operation({ limits: { requestMs: 20 } })).readTaskAttachment(projectId, taskId, attachment.path, consume)).rejects.toMatchObject({ cause: { kind: "request_timeout" } });
-    expect(sinkSignal?.aborted).toBe(true);
-    expect(cancel).toHaveBeenCalledOnce();
+    const op = operation({ limits: { requestMs: 20 } });
+    const pending = client(fetch, op).readTaskAttachment(projectId, taskId, attachment.path, consume);
+    const rejected = expect(pending).rejects.toMatchObject({ cause: { kind: "request_timeout" } });
+    const settled = vi.fn();
+    void pending.then(settled, settled);
+    try {
+      const sinkSignal = await entered.promise;
+      expect(consume).toHaveBeenCalledExactlyOnceWith(new Uint8Array([1]), sinkSignal);
+      expect(sinkSignal.aborted).toBe(false);
+      expect(stream.locked).toBe(true);
+      expect(settled).not.toHaveBeenCalled();
+      expect(cancel).not.toHaveBeenCalled();
+      elapsed = 19;
+      await vi.advanceTimersByTimeAsync(19);
+      expect(sinkSignal.aborted).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
+      expect(cancel).not.toHaveBeenCalled();
+      elapsed = 20;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sinkSignal.aborted).toBe(true);
+      expect(settled).toHaveBeenCalledOnce();
+      await rejected;
+      expect(consume).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(stream.locked).toBe(false);
+    } finally {
+      op.dispose();
+      await Promise.allSettled([pending, rejected]);
+    }
   });
 
   it("preserves sink errors and cancels its response immediately", async () => {

@@ -123,6 +123,15 @@ Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
 and the total length.
+
+Attachment request-deadline tests control both the deadline timers and the
+`node:perf_hooks` monotonic clock. The blocked-sink fixture observes entry into
+its consumer before advancing to the deadline, then checks the timeout, sink
+abort and response cancellation. This keeps setup time from exercising an
+earlier timeout stage. The
+[attachment deadline decision](../.agents/notes/implemented/testing/2026-11-07-attachment-sink-deadline.md)
+records the assertion and clock boundaries.
+
 Controller IPC admission tests keep real sockets, assert the production timeout
 and its cancellation, and accelerate the incomplete socket's native expiry;
 virtual time separately exercises the authenticated response wait. The
@@ -488,7 +497,7 @@ bash deployment/localhost/up.sh
 ```
 
 The command requires the five authentication settings in that private file,
-builds the UI and server inside Docker, applies embedded migrations and waits for
+builds the UI and server inside Docker, initializes or upgrades PostgreSQL and waits for
 `/readyz`. Open the configured public origin and log in through UniAuth. APIs and
 trusted attachment previews share that origin. For CLI access to this local test
 deployment, set `serverUrl` to its public origin in `~/.daynight/config.yml`,
@@ -521,11 +530,20 @@ describes the actual check. Tests require the isolated PostgreSQL instance and
 fail if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
+Business-rule unit tests use domain facts and DAO-interface mocks without a
+PostgreSQL fixture; SQL, transaction, persistence and cross-operation authority
+proofs remain integration tests. The
+[server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
+owns their scope and failure expectations. A selected pure-rule test must run
+without a database URL; the full module check still includes real PostgreSQL.
+
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;
 the [snapshot maintenance guide](../packages/daynight-server/README.md#schema-snapshot-maintenance)
 owns the PostgreSQL 18 regeneration command and equivalence requirements.
-Runtime startup still uses the historical migration path.
+Runtime startup initializes an empty target namespace atomically from the
+snapshot and replays historical migrations for an existing namespace. Missing
+ledger metadata alone does not establish that the namespace is empty.
 
 The Go module's [fresh-process attachment test](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 checks grant removal and new project denial while an admitted upload remains
