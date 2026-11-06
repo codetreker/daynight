@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -372,6 +373,35 @@ func TestUploadMetadataFailureRemainsUnknown(t *testing.T) {
 	if _, err = s.Execute(t.Context(), f.actor, f.binding.ProjectID, f.binding.TaskID, commit); err == nil {
 		t.Fatal("unknown commit was replayed")
 	}
+	address, err := attachmentcore.NewAddress(f.binding.ProjectID, f.binding.TaskID, "metadata-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyTarget := func() {
+		t.Helper()
+		object, err := f.files.Open(t.Context(), attachmentcore.Bucket, address.StoragePath)
+		if err != nil {
+			t.Fatalf("open published target: %v", err)
+		}
+		content, readErr := io.ReadAll(object.Body)
+		closeErr := object.Body.Close()
+		if readErr != nil || closeErr != nil || string(content) != "content" {
+			t.Fatalf("published target content: %q, read=%v close=%v", content, readErr, closeErr)
+		}
+	}
+	verifyTarget()
+	aborted := runUpload(t, s, f, f.actor, UploadInput{Action: "abort", TransferID: id})
+	if aborted["cleanupState"] != "pending" || aborted["writeOutcome"] != "unknown" || aborted["operationId"] != result["operationId"] {
+		t.Fatalf("abort lost unknown facts: %+v", aborted)
+	}
+	if err := f.lifecycle.Maintain(t.Context()); err != nil {
+		t.Fatalf("reclaim private namespace: %v", err)
+	}
+	status = runUpload(t, s, f, f.actor, UploadInput{Action: "status", TransferID: id})
+	if status["state"] != "closed" || status["cleanupState"] != "complete" || status["writeOutcome"] != "unknown" || status["operationId"] != result["operationId"] || status["attachment"] != nil {
+		t.Fatalf("cleanup lost unknown facts: %+v", status)
+	}
+	verifyTarget()
 }
 
 func TestUploadExpiredCommitLeaseNeverReplaysOrDeletesTarget(t *testing.T) {
@@ -394,7 +424,17 @@ func TestUploadExpiredCommitLeaseNeverReplaysOrDeletesTarget(t *testing.T) {
 	if _, err := s.Execute(t.Context(), f.actor, f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "commit", TransferID: id, TotalBytes: "8"}); err == nil {
 		t.Fatal("expired commit replayed")
 	}
-	runUpload(t, s, f, f.actor, UploadInput{Action: "abort", TransferID: id})
+	aborted := runUpload(t, s, f, f.actor, UploadInput{Action: "abort", TransferID: id})
+	if aborted["cleanupState"] != "pending" || aborted["writeOutcome"] != "unknown" || aborted["operationId"] != opID {
+		t.Fatalf("abort lost unknown facts: %+v", aborted)
+	}
+	if err := f.lifecycle.Maintain(t.Context()); err != nil {
+		t.Fatalf("reclaim private namespace: %v", err)
+	}
+	status = runUpload(t, s, f, f.actor, UploadInput{Action: "status", TransferID: id})
+	if status["state"] != "closed" || status["cleanupState"] != "complete" || status["writeOutcome"] != "unknown" || status["operationId"] != opID || status["attachment"] != nil {
+		t.Fatalf("cleanup lost unknown facts: %+v", status)
+	}
 	verifyUploadBytes(t, attachments, f, "lease", previous)
 }
 

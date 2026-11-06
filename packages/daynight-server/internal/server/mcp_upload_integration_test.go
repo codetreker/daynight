@@ -32,15 +32,16 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// dropCommitResponse consumes exactly one server response while withholding it
-// from the client. The transport does not retry the submitted commit.
-type dropCommitResponse struct {
-	base    http.RoundTripper
-	dropped atomic.Bool
+// dropUploadResponses consumes the configured responses while withholding them
+// from the client. The transport does not retry submitted requests.
+type dropUploadResponses struct {
+	base        http.RoundTripper
+	beginDrops  atomic.Int32
+	commitDrops atomic.Int32
 }
 
-func (d *dropCommitResponse) RoundTrip(req *http.Request) (*http.Response, error) {
-	commit := false
+func (d *dropUploadResponses) RoundTrip(req *http.Request) (*http.Response, error) {
+	action := ""
 	if req.Body != nil {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -57,27 +58,48 @@ func (d *dropCommitResponse) RoundTrip(req *http.Request) (*http.Response, error
 			} `json:"params"`
 		}
 		if json.Unmarshal(body, &call) == nil {
-			commit = call.Method == "tools/call" && call.Params.Name == "task_attachment_put" && call.Params.Arguments.Action == "commit"
+			if call.Method == "tools/call" && call.Params.Name == "task_attachment_put" {
+				action = call.Params.Arguments.Action
+			}
 		}
 	}
 	response, err := d.base.RoundTrip(req)
-	if err != nil || !commit || !d.dropped.CompareAndSwap(false, true) {
+	if err != nil {
 		return response, err
+	}
+	var counter *atomic.Int32
+	var limit int32
+	switch action {
+	case "begin":
+		counter, limit = &d.beginDrops, 2
+	case "commit":
+		counter, limit = &d.commitDrops, 1
+	default:
+		return response, nil
+	}
+	for {
+		current := counter.Load()
+		if current >= limit {
+			return response, nil
+		}
+		if counter.CompareAndSwap(current, current+1) {
+			break
+		}
 	}
 	if response.StatusCode != http.StatusOK {
 		defer response.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return nil, fmt.Errorf("commit HTTP %d: %s", response.StatusCode, body)
+		return nil, fmt.Errorf("%s HTTP %d: %s", action, response.StatusCode, body)
 	}
 	_, readErr := io.Copy(io.Discard, response.Body)
 	closeErr := response.Body.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return nil, err
 	}
-	return nil, errors.New("injected lost commit response")
+	return nil, fmt.Errorf("injected lost %s response", action)
 }
 
-func TestMCPUploadMultichunkLostCommitResponse(t *testing.T) {
+func TestMCPUploadRecoversLostBeginAndCommitResponses(t *testing.T) {
 	database := projectTestStore(t)
 	files := attachmentTestFiles(t)
 	production := httptest.NewUnstartedServer(nil)
@@ -128,6 +150,15 @@ func TestMCPUploadMultichunkLostCommitResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := mcpPATClient(t, origin, token)
+	drop := &dropUploadResponses{base: mcpPATTransport{token: token}}
+	lossClient := sdk.NewClient(&sdk.Implementation{Name: "mcp-response-loss", Version: "1"}, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	lossSession, err := lossClient.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: origin + "/mcp", HTTPClient: &http.Client{Transport: drop}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lossSession.Close() })
 	call := func(session *sdk.ClientSession, args map[string]any, wantError bool) map[string]any {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
@@ -160,9 +191,25 @@ func TestMCPUploadMultichunkLostCommitResponse(t *testing.T) {
 	transferID := uuid.NewString()
 	begin := args("begin")
 	begin["transferId"], begin["path"], begin["contentType"] = transferID, "binary/combined.bin", "application/octet-stream"
+	for i := int32(1); i <= 2; i++ {
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		_, err := lossSession.CallTool(ctx, &sdk.CallToolParams{Name: "task_attachment_put", Arguments: begin})
+		cancel()
+		if err == nil || drop.beginDrops.Load() != i {
+			t.Fatalf("begin response %d was not lost: %v", i, err)
+		}
+		var active, matching int
+		if err := database.Pool.QueryRow(t.Context(), `SELECT count(*), count(*) FILTER (WHERE id=$2 AND state='receiving') FROM private_transfers WHERE user_id=$1 AND state <> 'closed'`, principal.UserID, transferID).Scan(&active, &matching); err != nil || active != 1 || matching != 1 {
+			t.Fatalf("lost begin %d did not preserve the original active transfer: active=%d matching=%d error=%v", i, active, matching, err)
+		}
+	}
 	started := object(call(client, begin, false)["data"])
 	if started["transferId"] != transferID || started["state"] != "receiving" || started["nextOffset"] != "0" {
 		t.Fatalf("begin: %#v", started)
+	}
+	var active, matching int
+	if err := database.Pool.QueryRow(t.Context(), `SELECT count(*), count(*) FILTER (WHERE id=$2) FROM private_transfers WHERE user_id=$1 AND state <> 'closed'`, principal.UserID, transferID).Scan(&active, &matching); err != nil || active != 1 || matching != 1 {
+		t.Fatalf("repeated begin allocated extra active slots: active=%d matching=%d error=%v", active, matching, err)
 	}
 	parts := [][]byte{bytes.Repeat([]byte{0, 0xff, 0x7f, 0x41}, (512<<10)/4), bytes.Repeat([]byte{0x80, 0, 0xfe}, 171)}
 	all := bytes.Join(parts, nil)
@@ -187,19 +234,10 @@ func TestMCPUploadMultichunkLostCommitResponse(t *testing.T) {
 	whole := sha256.Sum256(all)
 	commit := args("commit")
 	commit["transferId"], commit["totalBytes"], commit["sha256"] = transferID, strconv.Itoa(len(all)), hex.EncodeToString(whole[:])
-	drop := &dropCommitResponse{base: mcpPATTransport{token: token}}
-	lossClient := sdk.NewClient(&sdk.Implementation{Name: "mcp-response-loss", Version: "1"}, nil)
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	lossSession, err := lossClient.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: origin + "/mcp", HTTPClient: &http.Client{Transport: drop}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
-	cancel()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = lossSession.Close() })
 	ctx, cancel = context.WithTimeout(t.Context(), 15*time.Second)
 	_, err = lossSession.CallTool(ctx, &sdk.CallToolParams{Name: "task_attachment_put", Arguments: commit})
 	cancel()
-	if err == nil || !drop.dropped.Load() {
+	if err == nil || drop.commitDrops.Load() != 1 {
 		t.Fatalf("commit response was not lost: %v", err)
 	}
 	recovered := object(call(client, status, false)["data"])
