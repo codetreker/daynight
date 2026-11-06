@@ -51,6 +51,8 @@ import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
+import { createWorkerReadOnlyChannel } from "./read-only/channel.js";
+import { browseWorkerDirectory } from "./read-only/directory.js";
 import { createWorkerGitManager } from "./worktrees.js";
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
@@ -207,6 +209,7 @@ export const runWorker = async (options: {
   let reporter: ReturnType<typeof createWorkerReporter> | undefined;
   let bots: WorkerBotHost | undefined;
   let botRun: Promise<void> | undefined;
+  let readOnly: ReturnType<typeof createWorkerReadOnlyChannel> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
   const failures: unknown[] = [];
   try {
@@ -302,6 +305,11 @@ export const runWorker = async (options: {
     let bootstrap: WorkerCloudValue | null = null;
     if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, signal);
     const manager = configuration;
+    readOnly = createWorkerReadOnlyChannel({ serverOrigin: serverUrl, serverToken, ownerUserId: userId, workerId,
+      configurationSignature: () => JSON.stringify(manager.current().effective),
+      execute: (_operation, input, requestSignal) => browseWorkerDirectory(input, { defaultCwd: options.workingDirectory, signal: requestSignal }),
+      onError: message => emit({ kind: "worker-readonly", message }),
+    });
     let initialRemovalsComplete = false;
     let initialRemovalsJob: Promise<void> | undefined;
     const ensureInitialRemovals = (): Promise<void> => {
@@ -438,6 +446,7 @@ export const runWorker = async (options: {
     if (!isWorkerCancellation(error, signal)) failures.push(error);
   } finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
+    readOnly?.close();
     await renewal;
     try { await reporter?.stop(); } catch (error) { failures.push(error); }
     try { await initialRemovalReconciliation; } catch { /* The reconciliation failure was reported when it occurred. */ }

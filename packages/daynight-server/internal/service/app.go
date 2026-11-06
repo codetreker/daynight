@@ -120,6 +120,9 @@ func (a *App) Close(ctx context.Context) error {
 			return err
 		}
 	}
+	if a.WorkerReadOnly != nil {
+		a.WorkerReadOnly.Close()
+	}
 	if err := a.Engine.Stop(ctx); err != nil {
 		return err
 	}
