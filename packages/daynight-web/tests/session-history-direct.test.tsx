@@ -27,12 +27,12 @@ function DirectRecords({ active = true, onSessions }: { active?: boolean; onSess
   useEffect(() => { onSessions?.(sessions); sessions.openDirect(projectId, taskId); return () => sessions.releaseRead(projectId, taskId); }, [sessions]);
   return <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} direct>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>;
 }
-function setup(taskEpoch = epoch) {
+function setup(taskEpoch = epoch, onSessions?: (sessions: TaskDetailSessions) => void) {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': taskEpoch }) })));
   const api = { history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: null as string | null })), archive: vi.fn(async () => ({ status: { payload: { state: 'pending' } }, archive: null })), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
   vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
-  const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords {...(onSessions === undefined ? {} : { onSessions })} /></TaskDetailSessionProvider></TaskCacheProvider>);
   return { scope, api, view };
 }
 afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); vi.unstubAllGlobals(); });
@@ -155,6 +155,78 @@ it('withdraws records on a session denial and retries without restoring selectio
   expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   expect(await screen.findByRole('button', { name: /Herdr/ })).toHaveAttribute('aria-pressed', 'false');
+});
+
+it('withdraws direct records and selection across a batched access recheck, and starts recovery at the first page', async () => {
+  const { scope, api } = setup();
+  api.history.mockResolvedValueOnce({ items: [item], nextCursor: 'next' });
+  let finishOld!: (page: { items: SessionHistoryItem[]; nextCursor: string | null }) => void;
+  api.history.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+  api.history.mockRejectedValueOnce(new ApiError('server', 503));
+  api.history.mockResolvedValueOnce({ items: [second], nextCursor: null });
+  fireEvent.click(await screen.findByRole('button', { name: /Herdr/ }));
+  expect(await screen.findByText('Recording is waiting to be archived.')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier records' }));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  const oldSignal = api.history.mock.calls[1]![1];
+  const emit = (scope as unknown as { emit(event: { projectId: string; directAccessUncertain?: true; directAccessRecheck?: true }): void }).emit.bind(scope);
+  act(() => { emit({ projectId, directAccessUncertain: true }); emit({ projectId, directAccessRecheck: true }); });
+  expect(oldSignal.aborted).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Load earlier records' })).toBeNull();
+  await act(async () => finishOld({ items: [item], nextCursor: 'stale' }));
+  expect(await screen.findByRole('alert')).toBeVisible();
+  expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+  expect(api.history.mock.calls.map(call => call[0])).toEqual([null, 'next', null, null]);
+});
+
+it('does not retry direct records while project access is uncertain or its recheck fails', async () => {
+  let sessions!: TaskDetailSessions;
+  const { scope, api } = setup(epoch, value => { sessions = value; });
+  fireEvent.click(await screen.findByRole('button', { name: /Herdr/ }));
+  const emit = (scope as unknown as { emit(event: { projectId: string; directAccessUncertain?: true; directAccessRecheck?: true; error?: unknown }): void }).emit.bind(scope);
+  act(() => emit({ projectId, directAccessUncertain: true }));
+  expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  act(() => emit({ projectId, directAccessRecheck: true, error: new Error('Access check failed') }));
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await act(async () => { await Promise.resolve(); });
+  expect(api.history).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+  api.history.mockResolvedValueOnce({ items: [second], nextCursor: null });
+  act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+  expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toHaveAttribute('aria-pressed', 'false');
+  expect(api.history.mock.calls.map(call => call[0])).toEqual([null, null]);
+  expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+});
+
+it.each(['same mount', 'remount'] as const)('recovers direct records after confirmed project withdrawal and reauthorization on %s', async mode => {
+  let sessions!: TaskDetailSessions;
+  const { scope, api, view } = setup(epoch, value => { sessions = value; });
+  api.history.mockResolvedValueOnce({ items: [item], nextCursor: 'old-cursor' });
+  fireEvent.click(await screen.findByRole('button', { name: /Herdr/ }));
+  expect(await screen.findByText('Recording is waiting to be archived.')).toBeVisible();
+  const emit = (scope as unknown as { emit(event: { projectId: string; directAccessUncertain: true }): void }).emit.bind(scope);
+  act(() => emit({ projectId, directAccessUncertain: true }));
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse({ error: { code: 'not_found', message: 'not found', requestId: 'withdrawal' } }, { status: 404, headers: viewerHeaders(TEST_VIEWER_ID) })));
+  await act(async () => { expect(await scope.revalidateProjectAccess(projectId)).toBe(false); });
+  expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  api.history.mockResolvedValueOnce({ items: [second], nextCursor: null });
+  if (mode === 'same mount') act(() => sessions.openDirect(projectId, taskId));
+  else {
+    view.rerender(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider>{null}</TaskDetailSessionProvider></TaskCacheProvider>);
+    view.rerender(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  }
+  expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Load earlier records' })).toBeNull();
+  expect(api.history.mock.calls.map(call => call[0])).toEqual([null, null]);
 });
 
 it('discards a delayed old-history response and reads again under the new receipt', async () => {

@@ -161,6 +161,7 @@ it("honors a current history's access denial after repeated stale manifest hints
   const fresh = await newer.beginSync(projectId, signal());
   await newer.applySync(fresh, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
   const denied = await newer.beginSync(projectId, signal()); suppress.mockRestore();
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse({ error: { code: 'not_found', message: 'not found', requestId: 'missing' } }, { status: 404, headers: viewerHeaders(userId) })));
   expect(await newer.revokeProject(denied, signal())).toBe(true);
   await vi.waitFor(() => expect(events.some(event => event.accessRevoked)).toBe(true));
   expect(direct.isTaskReadCurrent(recovery, true)).toBe(false); injector.close();
@@ -216,7 +217,7 @@ it("confirms a delayed old graph after a direct owner has already admitted the n
   } finally { unsubscribe(); sessions.dispose(); }
 });
 
-it.each(["replacement", "revocation"] as const)("keeps uncertain write ownership only until confirmed %s", async (ending) => {
+it.each(["replacement", "revocation"] as const)("preserves uncertain write ownership through %s according to its history", async (ending) => {
   const cache = scope();
   const delayed = await cache.beginTaskRead(projectId, taskId(1), 1, 1, signal());
   const owner = await cache.beginTaskRead(projectId, taskId(1), 1, 2, signal());
@@ -235,7 +236,8 @@ it.each(["replacement", "revocation"] as const)("keeps uncertain write ownership
     const denied = await cache.beginSync(projectId, signal());
     expect(await cache.revokeProject(denied, signal())).toBe(true);
   }
-  expect(cache.isTaskHistoryPossiblyCurrent(owner)).toBe(false);
+  expect(cache.isTaskHistoryPossiblyCurrent(owner)).toBe(ending === 'revocation');
+  if (ending === 'revocation') expect(cache.isTaskHistoryConfirmedCurrent(owner)).toBe(false);
 });
 
 it("automatically rereads after a peer hint is confirmed as a real history replacement", async () => {

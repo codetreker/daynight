@@ -10,6 +10,7 @@ export type UserScopeRecord = { readonly userId: string; readonly userFence: str
 export type ProjectRecord = {
   readonly userId: string; readonly projectId: string; readonly userFence: string;
   readonly cacheGeneration: string; readonly state: "active" | "invalidated";
+  readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean;
   readonly invalidatedBy: "access" | "corrupt" | "user" | null;
   readonly epoch: string | null; readonly project: Project | null;
   readonly maxUpdatedAt: string | null; readonly taskCount: number; readonly edgeCount: number;

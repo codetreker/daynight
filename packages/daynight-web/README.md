@@ -420,8 +420,12 @@ minimum-version or semantic-version check.
 `api/workers.ts` decodes the account snapshot contract and admits the principal
 before parsing either a successful response or a resource error, including 404.
 `useWorkers`, `useWorker` and `useWorkerObservation` retain only page-local memory.
-They reuse TaskCacheScope for authenticated lifetime and foreground admission;
-Worker data never enters the project cache, IndexedDB or a global registry.
+They reuse TaskCacheScope for authenticated lifetime, foreground admission and
+Project withdrawal generations; Worker data never enters the project cache,
+IndexedDB or a global registry. Independent reads capture generations before
+requesting data, withdraw matching private projections on access-negative events
+and fence late responses. A Worker detail filters affected task rows; a list
+invalidates counts without per-project provenance until an authoritative reread.
 Reads and publication both wait for identity confirmation, and abort signals,
 resource identity and request generations fence late results. The shell's
 `readEnabled` pauses private work during identity checking and blocking recovery.
@@ -685,9 +689,13 @@ authorization without removing the old-generation fences.
 
 Ordinary broadcast hints contain no task content or access grant; authorized
 receivers reread committed stores without another network request. Negative hints
-carry userFence/revokedGeneration and immediately deny matching peers, including
-a bound cold peer with no projection, without rebroadcast. Stale hints cannot
-replace a newer generation or denial. Failed IDB opening,
+carry userFence/revokedGeneration. Independent projections compare the event to
+the generation captured at read start, even if cleanup has already advanced the
+durable manifest. The manifest persists successive generations atomically, and denial tickets
+carry their complete ancestry. New-generation denial withdraws older observations
+even if replacement hints were lost, without letting an old denial withdraw a
+proven later observation. Corrupt unknown history is isolated and reread. A bound cold cache peer records a matching durable denial
+without rebroadcast. Stale hints cannot replace a newer generation or denial. Failed IDB opening,
 blocked upgrades, abnormal close, corruption or writes use existing visible
 error/Retry states and retain an allowed current view. Missing or malformed user
 scope records are repaired in one shared-cache transaction: replace the fence,
@@ -1969,12 +1977,12 @@ corresponding `.tmp/` directories. The
 [shared preview decision](../../.agents/notes/implemented/testing/2026-11-05-shared-team-navigation-preview.md)
 owns preparation sharing, isolation and deadline handling.
 
-The required comparison is `covered * 10 > total * 9` using BigInt. Exactly 90%
-fails independently of display rounding. Pure-type declarations contribute zero
-statements only after the pinned TypeScript compiler's emitted JavaScript proves
-that they have no runtime body. Temporary native compiler inputs and outputs live
-under this package's `.tmp/` and are removed after classification. Typechecking
-remains a separate mandatory check; classification is not a substitute for it.
+The required coverage comparison is `covered * 10 > total * 9` using BigInt.
+Exactly 90% fails independently of display rounding. Pure-type declarations
+contribute zero statements only after the pinned TypeScript compiler confirms
+there is no runtime body. Temporary compiler inputs and outputs stay under this
+package's `.tmp/` and are removed after classification. Typechecking remains a
+separate mandatory check.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
 The Web selector starts `verify-web-quality` and `verify-web-browser` independently
@@ -1985,6 +1993,29 @@ stages and uploads coverage evidence. The browser job runs the assistant suite
 below without depending on the quality job or its artifacts. The module browser
 entry separately runs the navigation, Team, assistant and other fixture
 configurations.
+
+## Independent browser checks
+
+Run all module browser configurations after installing Chromium with
+`pnpm web:test:browser`, or run the Project withdrawal fixture directly:
+
+```bash
+pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/project-withdrawal-playwright.config.ts
+```
+
+The Project withdrawal fixture uses controlled API responses across multiple
+tabs with Chromium's IndexedDB and BroadcastChannel. It exercises withdrawal,
+late reads and fresh access, but does not call a real service. Their configured
+fixtures and cleanup belong to each suite. These checks cover
+browser interaction under controlled responses; they do not prove live service,
+PostgreSQL, installed-CLI or native/container integration. The Go module test
+[`TestAttachmentGrantRevocationWithFreshProcess`](../daynight-server/cmd/daynight-server/attachment_grant_revocation_test.go)
+separately verifies that member removal and new Project-access refusal complete
+while an admitted 1 MiB upload is incomplete, followed by its successful
+completion, attachment refusal, byte verification and cleanup. The
+[acceptance ownership decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
+records the division.
+
 
 ### Assistant browser validation
 

@@ -82,6 +82,26 @@ it("preserves a confirmed write when the required refresh fails and never replay
   expect(writes).toBe(1); expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
 });
 
+it.each(['confirmed', 'refused'] as const)('settles a %s direct write after a peer publishes an ordinary same-epoch graph', async outcome => {
+  const { sessions } = world(), peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const write = deferred<Response>(); let writes = 0, committed = false;
+  vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+    if (init.method === 'PUT') { writes++; return write.promise; }
+    return Promise.resolve(response(committed ? { ...body(2n), status: 'in_progress', ready: false, startedAt: '2026-10-22T10:00:00Z' } : body()));
+  }));
+  try {
+    sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+    sessions.setStatus(project, task, 'in_progress', 1n); await waitFor(() => expect(writes).toBe(1));
+    const graph = graphFixture([body()]), ticket = await peer.beginSync(project, signal());
+    await peer.applySync(ticket, taskSyncFromGraph(graph, { query: {}, epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties }), signal());
+    if (outcome === 'confirmed') {
+      committed = true; write.resolve(response({ ...body(2n), status: 'in_progress', ready: false, startedAt: '2026-10-22T10:00:00Z' }));
+    } else write.resolve(response({ error: { code: 'forbidden', message: 'Denied', requestId: 'refused' } }, null, 403));
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe(outcome));
+    expect(writes).toBe(1);
+  } finally { peer.dispose(); }
+});
+
 it("retires an old opening on epoch replacement and rereads under the new fence", async () => {
   const { sessions } = world(); let reads = 0;
   vi.stubGlobal("fetch", vi.fn().mockImplementation(() => { reads++; return Promise.resolve(response(reads === 1 ? body() : body(1n, "Replacement"), reads === 1 ? epoch : replacement)); }));
@@ -935,13 +955,13 @@ it("retries failed history retirement cleanup before admitting another read", as
   const { scope } = world(); const first = await scope.beginTaskRead(project, task, 1, 1, signal());
   await scope.observeHistory(first, epoch, signal());
   const next = await scope.beginTaskRead(project, task, 1, 2, signal());
-  const internals = scope as unknown as { userTransaction: (...args: unknown[]) => Promise<unknown> };
-  const transaction = internals.userTransaction.bind(scope);
-  vi.spyOn(internals, "userTransaction").mockImplementationOnce((...args) => transaction(...args)).mockRejectedValueOnce(new Error("storage unavailable")).mockImplementation((...args) => transaction(...args));
+  const internals = scope as unknown as { ensureHistoryPurged: (projectId: string) => Promise<void> };
+  const purge = internals.ensureHistoryPurged.bind(scope);
+  vi.spyOn(internals, "ensureHistoryPurged").mockRejectedValueOnce(new Error("storage unavailable")).mockImplementation((id) => purge(id));
   await expect(scope.observeHistory(next, replacement, signal())).rejects.toThrow("storage unavailable");
   const retried = await scope.beginTaskRead(project, task, 2, 1, signal());
   expect(await scope.observeHistory(retried, replacement, signal())).toBe("current");
-  expect(internals.userTransaction).toHaveBeenCalledTimes(4);
+  expect(internals.ensureHistoryPurged).toHaveBeenCalledTimes(2);
 });
 
 it("does not blacklist a validated epoch when a delayed other-tab purge has no active manifest", async () => {
