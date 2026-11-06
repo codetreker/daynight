@@ -19,11 +19,13 @@ type App struct {
 	Web   *webresources.Resources
 	Ready func(context.Context) error
 
-	closeLock   chan struct{}
-	files       interface{ Close() error }
-	persistence *Persistence
-	closed      bool
-	closeErr    error
+	closeLock         chan struct{}
+	files             interface{ Close() error }
+	persistence       *Persistence
+	persistenceClosed chan struct{}
+	filesClosed       chan struct{}
+	closed            bool
+	closeErr          error
 }
 
 // NewIdentityClient constructs the one application client before opening resources.
@@ -72,11 +74,17 @@ func OpenApp(ctx context.Context, c config.Config) (*App, error) {
 
 // Close retains resources if operations have not stopped. It may be retried.
 func (a *App) Close(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case <-a.closeLock:
 		defer func() { a.closeLock <- struct{}{} }()
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if a.closed {
 		return a.closeErr
@@ -84,12 +92,51 @@ func (a *App) Close(ctx context.Context) error {
 	if err := a.Engine.Stop(ctx); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if a.persistence != nil {
-		a.persistence.Close()
+		if a.persistenceClosed == nil {
+			a.persistenceClosed = make(chan struct{})
+			go func() {
+				a.persistence.Close()
+				close(a.persistenceClosed)
+			}()
+		}
+		select {
+		case <-a.persistenceClosed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 	if a.files != nil {
-		a.closeErr = a.files.Close()
+		if a.filesClosed == nil {
+			done := make(chan struct{})
+			a.filesClosed = done
+			go func() {
+				a.closeErr = a.files.Close()
+				close(done)
+			}()
+		}
+		select {
+		case <-a.filesClosed:
+			a.closed = true
+			return errors.Join(a.closeErr, ctx.Err())
+		case <-ctx.Done():
+			// If closure completed concurrently, retain its result as well as
+			// the caller's deadline; the channel synchronizes the error value.
+			select {
+			case <-a.filesClosed:
+				a.closed = true
+				return errors.Join(a.closeErr, ctx.Err())
+			default:
+				return ctx.Err()
+			}
+		}
 	}
 	a.closed = true
-	return a.closeErr
+	return ctx.Err()
 }

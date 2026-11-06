@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -189,5 +191,153 @@ func TestIdentityClientPreservesSafeSDKFailure(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), c.UniAuthAppID) || strings.Contains(err.Error(), c.UniAuthAppSecret) || strings.Contains(errors.Unwrap(failure).Error(), c.UniAuthAppSecret) {
 		t.Fatal("SDK failure exposed credentials")
+	}
+}
+
+type observedAppFiles struct {
+	persistenceDone         <-chan struct{}
+	closes                  atomic.Int32
+	closedBeforePersistence atomic.Bool
+}
+
+func (f *observedAppFiles) Close() error {
+	select {
+	case <-f.persistenceDone:
+	default:
+		f.closedBeforePersistence.Store(true)
+	}
+	f.closes.Add(1)
+	return nil
+}
+
+func TestAppCloseWaitsForPersistenceAndReusesTimedOutClose(t *testing.T) {
+	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	started, release, completed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseClose := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseClose)
+	var calls atomic.Int32
+	app.persistence = &Persistence{Close: func() { calls.Add(1); close(started); <-release; close(completed) }}
+	files := &observedAppFiles{persistenceDone: completed}
+	app.files = files
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := app.Close(canceled); !errors.Is(err, context.Canceled) || calls.Load() != 0 {
+		t.Fatalf("expired caller started closing resources: %v", err)
+	}
+	first := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		first <- app.Close(ctx)
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("persistence close did not start")
+	}
+	ctx, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := app.Close(ctx)
+	stop()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("concurrent waiter did not time out: %v", err)
+	}
+	select {
+	case err = <-first:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("blocked persistence did not time out: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first close ignored its deadline")
+	}
+	if calls.Load() != 1 || files.closes.Load() != 0 {
+		t.Fatal("resources closed before persistence completed")
+	}
+	ctx, stop = context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err = app.Close(ctx)
+	stop()
+	if !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 1 || files.closes.Load() != 0 {
+		t.Fatalf("retry duplicated close or released files: %v", err)
+	}
+	releaseClose()
+	select {
+	case <-completed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("persistence did not finish")
+	}
+	if err := app.Close(canceled); !errors.Is(err, context.Canceled) || files.closes.Load() != 0 {
+		t.Fatalf("canceled caller released files: %v", err)
+	}
+	if err := app.Close(context.Background()); err != nil {
+		t.Fatalf("close retry: %v", err)
+	}
+	if err := app.Close(context.Background()); err != nil {
+		t.Fatalf("repeated close: %v", err)
+	}
+	if calls.Load() != 1 || files.closes.Load() != 1 || files.closedBeforePersistence.Load() {
+		t.Fatal("resources closed out of order or more than once")
+	}
+	if err := app.Close(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("completed app hid canceled caller: %v", err)
+	}
+}
+
+type blockingAppFiles struct {
+	started, release chan struct{}
+	calls            atomic.Int32
+	err              error
+}
+
+func (f *blockingAppFiles) Close() error {
+	f.calls.Add(1)
+	close(f.started)
+	<-f.release
+	return f.err
+}
+
+func TestAppCloseWaitsForFileCloseAndRetainsFailure(t *testing.T) {
+	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	var persistenceCalls atomic.Int32
+	app.persistence = &Persistence{Close: func() { persistenceCalls.Add(1) }}
+	failure := errors.New("file close failed")
+	files := &blockingAppFiles{started: make(chan struct{}), release: make(chan struct{}), err: failure}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(files.release) }) }
+	t.Cleanup(release)
+	app.files = files
+	first := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 70*time.Millisecond)
+		defer cancel()
+		first <- app.Close(ctx)
+	}()
+	select {
+	case <-files.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("file close did not start")
+	}
+	select {
+	case err := <-first:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("blocked file close did not time out: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("file close ignored caller deadline")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := app.Close(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) || files.calls.Load() != 1 || persistenceCalls.Load() != 1 {
+		t.Fatalf("retry duplicated pending close: %v", err)
+	}
+	release()
+	if err := app.Close(context.Background()); !errors.Is(err, failure) {
+		t.Fatalf("file failure lost on retry: %v", err)
+	}
+	if err := app.Close(context.Background()); !errors.Is(err, failure) {
+		t.Fatalf("file failure lost on repeated close: %v", err)
+	}
+	if files.calls.Load() != 1 || persistenceCalls.Load() != 1 {
+		t.Fatal("resources closed more than once")
 	}
 }
