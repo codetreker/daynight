@@ -972,8 +972,9 @@ remains separate. Artifacts retain 30 days. The
 [two-shard decision](../.agents/notes/archived/testing/2026-11-04-web-ci-case-shards.md)
 records duplication costs and the limits of the estimated critical path.
 
-The [quality isolation decision](../.agents/notes/archived/testing/2026-10-26-web-quality-job-isolation.md)
-retains the independent quality responsibility and command budgets. Standard
+Quality checks retain their independent responsibility and command budgets;
+the [quality isolation decision](../.agents/notes/archived/testing/2026-10-26-web-quality-job-isolation.md)
+records that separation and its rationale. Standard
 Playwright JSON reports expose named phases for the largest journeys. Selected
 status journeys share worker-owned API/CLI credentials and a project while
 retaining fresh per-case API contexts, browser login and artifact validation;

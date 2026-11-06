@@ -37,7 +37,7 @@ This extends the [compact header decision](../../archived/simplification/2026-10
 and the [fullscreen decision](../../archived/feature/2026-10-25-task-detail-fullscreen.md).
 The [automation decision](../../archived/architecture/2026-10-23-task-agent-automation.md)
 and [platform control decision](../../archived/simplification/2026-10-24-task-platform-confirmation-control.md)
-retain confirmation and mutation ownership. The [Web requirements](../../../../docs/spec/daynight-web.md)
+record the rationale for the existing confirmation and mutation ownership. The [Web requirements](../../../../docs/spec/daynight-web.md)
 own row limits; the [Web design](../../../../docs/design/daynight-web.md)
 owns current component layout.
 

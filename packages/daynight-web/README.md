@@ -1806,8 +1806,8 @@ heading-height subtraction, extra renderer, metadata API or preview credential
 is introduced. The [full-reader decision](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-full-reader.md)
 retains routing/rendering foundations and the
 [shared-page decision](../../.agents/notes/archived/architecture/2026-10-24-shared-attachment-page.md)
-retains full attachment-panel reuse rationale; complete Task Detail composition
-now belongs to the standalone-detail decision. The production `task-detail-page`
+retains full attachment-panel reuse rationale. The standalone-detail decision
+records the original complete Task Detail composition choices. The production `task-detail-page`
 and `task-attachments` journeys use actual services on both runtime targets with
 source-qualified receipts.
 
@@ -2243,8 +2243,10 @@ control response delivery without fabricating status-changing responses. The
 [cross-layer decision](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 distinguishes installed-process races, production journeys and offline fixtures.
 The status journeys retain their annotations, target topology, coverage and
-cleanup checks. Capacity selection is owned separately by the
-[local stress decision](../../.agents/notes/archived/testing/2026-11-03-local-stress-suites.md).
+cleanup checks. Capacity workloads run separately under the existing local
+stress selection rules; the
+[local stress decision](../../.agents/notes/archived/testing/2026-11-03-local-stress-suites.md)
+records that separation and its rationale.
 
 One packed/installed CLI is shared by the whole web run. On each target,
 `task-attachments` uploads through that CLI and consumes the same task/files in

@@ -21,8 +21,8 @@ runtime disable automatic updates. Other providers keep their own version
 arguments.
 
 The [SDK runtime ownership decision](../../archived/architecture/2026-10-28-copilot-web-sdk-runtime.md)
-continues to own process lifecycle, native profile, session identity, role
-instructions, permissions and unknown send outcomes. The package upgrade does
+records the rationale for process lifecycle, native profile, session identity,
+role instructions, permissions and unknown send outcomes. The package upgrade does
 not change those mechanisms. Installation and restart guidance belongs in the
 [CLI reference](../../../../packages/daynight/README.md#web-worker-sessions).
 

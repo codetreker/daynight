@@ -16,8 +16,10 @@ selector, preference notice or save retry of its own. Existing page language
 entries and their preference feedback remain in place. Locale updates still
 translate the confirmation and its errors without changing the target, restarting
 or duplicating an operation, or replacing attachment and preview state. Modal
-isolation, focus containment, layered Escape and focus restoration continue to
-follow the [attachment confirmation decision](../../archived/feature/2026-10-23-attachment-delete-confirmation.md).
+isolation, focus containment, layered Escape and focus restoration remain
+unchanged; the
+[attachment confirmation decision](../../archived/feature/2026-10-23-attachment-delete-confirmation.md)
+records their original rationale.
 
 This partially supersedes that decision's original selector placement. The
 selector had allowed switching while the modal made the underlying page inert;

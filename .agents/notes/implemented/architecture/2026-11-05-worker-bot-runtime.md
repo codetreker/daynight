@@ -19,8 +19,10 @@ execution, lose responsibility or authorize removal of a replacement file.
 ## Decision
 
 Bot launch uses the existing independent Session and Controller contracts with
-no initial user input. The [inventory decision](../../archived/architecture/2026-11-04-worker-bot-inventory.md)
-retains ownership of frozen registration and role intent. A separate execution
+no initial user input. Frozen registration and role intent retain their
+existing inventory ownership; the
+[inventory decision](../../archived/architecture/2026-11-04-worker-bot-inventory.md)
+records the original separation. A separate execution
 table introduced in Worker format 9 stores monotonic submission evidence, process
 identity, observations and alias ownership. Format 10 retains recovery provenance,
 predecessor stop proof and private paths across generations, and separates the

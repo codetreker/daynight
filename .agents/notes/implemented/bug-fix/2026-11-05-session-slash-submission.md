@@ -35,7 +35,7 @@ This partially supersedes the original
 [native controls decision](../../archived/feature/2026-10-28-chatbox-native-controls.md):
 explicit commands still require native methods and receipts, while unknown slash
 text is ordinary input. The [command menu decision](../../archived/bug-fix/2026-11-04-session-command-menu.md)
-continues to own layout, dismissal and focus. The
+records the rationale for the existing layout, dismissal and focus rules. The
 [requirements](../../../../docs/spec/task-sessions.md#chatbox-设置命令与运行状态)
 and [design](../../../../docs/design/task-session-protocol.md) own the full contract.
 

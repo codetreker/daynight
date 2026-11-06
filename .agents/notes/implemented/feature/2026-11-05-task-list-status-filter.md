@@ -32,12 +32,13 @@ statistics and graph context. The [recent browsing decision](../../archived/feat
 retains the seven-local-day Overview projection and pagination rationale, but
 its former task-list window and independent Show all preferences are replaced.
 The [assignee foundation](../../archived/architecture/2026-11-03-task-assignment-foundation.md)
-continues to own identity and profile semantics. The [task view](../../archived/feature/2026-10-22-project-task-views.md),
+records the rationale for the existing identity and profile semantics. The [task view](../../archived/feature/2026-10-22-project-task-views.md),
 [Goal list](../../archived/feature/2026-10-26-goal-task-lists.md), [project sections](../../archived/feature/2026-10-25-project-overview-task-sections.md),
 [chain status](../../archived/bug-fix/2026-10-22-task-chain-status.md), [Overview progress](../../archived/feature/2026-10-26-project-overview-progress.md),
 [status ordering](../../archived/bug-fix/2026-10-28-project-status-order.md), and
 [shared scroll](../../archived/bug-fix/2026-11-03-shared-task-list-scroll.md) decisions
-retain their other responsibilities. The [Web specification](../../../../docs/spec/daynight-web.md)
+record the original choices behind the other behavior, which remains unchanged.
+The [Web specification](../../../../docs/spec/daynight-web.md)
 owns observable behavior and the [Web design](../../../../docs/design/daynight-web.md)
 owns current composition.
 

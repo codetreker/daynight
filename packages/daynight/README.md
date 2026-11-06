@@ -1863,9 +1863,10 @@ new targets replace old application retries. Already-started Project removal
 work retains its original revision until its adapter completes. A recovered
 failure remains reportable until
 accepted, and an acknowledgment cannot clear failures that arose during the
-request. The [Worker requirements](../../docs/spec/daynight-worker.md) and
+request. The [Worker requirements](../../docs/spec/daynight-worker.md) define
+the state and failure guarantees; the
 [configuration decision](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)
-define the state and failure guarantees.
+records their original rationale.
 
 The existing coordinator reads current successful concurrency, polling,
 recovery and native values. Lowering concurrency does not stop existing tasks;

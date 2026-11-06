@@ -27,7 +27,8 @@ unchanged, so existing Controllers remain usable.
 
 The [Session requirements](../../../../docs/spec/task-sessions.md#chatbox-设置命令与运行状态)
 own the behavior. The [English operation-label decision](../../archived/bug-fix/2026-11-04-english-session-operation-labels.md)
-continues to govern the fixed English toolbar and activity positions.
+records the rationale for the toolbar and activity positions retaining fixed
+English operation labels.
 
 ## Alternatives
 

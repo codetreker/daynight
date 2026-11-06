@@ -40,7 +40,7 @@ during cleanup. Raw CDP interception remains necessary: the provider request
 follows real application and gateway redirects, which Playwright's user routing
 does not intercept as independent requests. The
 [authentication activation decision](../../archived/architecture/2026-10-22-authentication-activation.md)
-continues to own the fixture and trace privacy policy.
+records the rationale for the existing fixture and trace privacy policy.
 
 ## Alternatives
 

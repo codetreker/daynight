@@ -16,7 +16,7 @@ The [auth specification](../../../../docs/spec/daynight-auth.md#web-交互与状
 owns reachability, and the [auth design](../../../../docs/design/daynight-auth.md)
 describes the local scrolling mechanism. The existing
 [grant management decision](../../archived/architecture/2026-11-04-project-grant-management.md)
-continues to own mutations and access receipts.
+records the rationale for the existing mutation and access-receipt mechanisms.
 
 ## Alternatives
 
