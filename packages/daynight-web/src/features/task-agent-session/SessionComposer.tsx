@@ -39,6 +39,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const controlMessages = useSessionControlMessages(state.snapshot?.identity.provider);
   const [controlView, setControlView] = useState<ControlsView>(null);
   const [compactMenus, setCompactMenus] = useState(false);
+  const keyboardMenuInteraction = useRef(false);
+  const previousMenu = useRef<{ compact: boolean; view: ControlsView }>({ compact: false, view: null });
   useLayoutEffect(() => {
     if (!presentation?.compactMenus || !active) { setCompactMenus(false); return; }
     const viewport = window.visualViewport;
@@ -164,6 +166,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const dismissControls = useCallback(() => { setControlView(null); dismissCommands(true); }, []);
   const closeControls = useCallback(() => { dismissControls(); inputRef.current?.focus({ preventScroll: true }); }, [dismissControls]);
   useLayoutEffect(() => {
+    const previous = previousMenu.current;
+    previousMenu.current = { compact: compactMenus, view: controlView };
     if (!compactMenus || !active || !showCommands && controlView === null) return;
     const form = formRef.current!, input = inputRef.current!;
     const section = form.closest<HTMLElement>('.task-agent-session');
@@ -189,6 +193,18 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
       flushSync(dismissControls);
     };
     place();
+    if ((controlView === 'model' || controlView === 'permissions') && (previous.view !== controlView || !previous.compact)) {
+      const focused = document.activeElement;
+      if (previous.view === controlView && !menu.contains(focused) && !footer.contains(focused) && focused !== input) {
+        // Entering compact layout must not cover focus that already left the composer.
+        dismissControls();
+      } else if (keyboardMenuInteraction.current && !menu.contains(focused)) {
+        // The overlay precedes its trigger and input in DOM order. Give keyboard
+        // activation an entry point before Tab would leave and dismiss it.
+        menu.scrollTop = 0;
+        menu.querySelector<HTMLElement>('button:not(:disabled), select:not(:disabled)')?.focus({ preventScroll: true });
+      }
+    }
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
     observer?.observe(section); observer?.observe(form); observer?.observe(input); observer?.observe(footer);
     window.addEventListener('resize', place); viewport?.addEventListener('resize', place); viewport?.addEventListener('scroll', place);
@@ -438,7 +454,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const activityProps = { suppressStatus: sessionNoticeOwned, snapshot, connected, active, commandPending: commandPending || hasPendingOperation(state, 'execute_command'), interruptRequested, interruptPending: cancelling || hasPendingOperation(state, 'cancel'), interruptAllowed: cancelAllowed, onInterrupt: () => void cancel() };
   const activity = <SessionActivity {...activityProps} />;
   const submit = <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(submission.kind !== 'message' ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>;
-  return <form ref={formRef} className={`session-composer session-composer-adaptive${compactMenus ? ' session-composer-compact-menus' : ''}`} onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
+  return <form ref={formRef} className={`session-composer session-composer-adaptive${compactMenus ? ' session-composer-compact-menus' : ''}`} onPointerDownCapture={() => { keyboardMenuInteraction.current = false; }} onKeyDownCapture={() => { keyboardMenuInteraction.current = true; }} onClickCapture={event => { keyboardMenuInteraction.current = event.detail === 0; }} onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
     if (event.key !== 'Escape' || !(controlView || showCommands)) return;
     event.stopPropagation();
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
