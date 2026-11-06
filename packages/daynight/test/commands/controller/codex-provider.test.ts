@@ -1,8 +1,104 @@
 import { test, expect } from "vitest";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
 import type { ProviderState } from "../../../src/commands/controller/providers/types.js";
+
+const initialSelectionCases = [
+  { name: "model and effort", model: "selected-model", args: ["--effort", "high"], patch: { model: "selected-model", effort: "high" } },
+  { name: "model only", model: "selected-model", args: [], patch: { model: "selected-model" } },
+  { name: "effort only", model: null, args: ["--effort", "high"], patch: { effort: "high" } },
+  { name: "native defaults", model: null, args: [], patch: null },
+];
+
+test.each(initialSelectionCases)("fresh Codex persists $name after materializing the empty thread without requiring a settings notification", async ({ model, args, patch }) => {
+  const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "codex-initial-settings-")), log = join(directory, "requests.jsonl");
+  try {
+    const provider = await openCodexProvider({ cwd: process.cwd(), model, args, resumeNativeSessionId: null,
+      env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, CODEX_TEST_EMPTY_READ_ERROR: "1", CODEX_TEST_EFFECTIVE_CONFIG: JSON.stringify({ model: "directory-model", model_reasoning_effort: "low" }) },
+      executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+    await provider.close();
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const updates = requests.filter(request => request.method === "thread/settings/update");
+    expect(updates.map(request => request.params)).toEqual(patch ? [{ threadId: "native-thread", ...patch }] : []);
+    if (patch) {
+      const readIndex = requests.findIndex(request => request.method === "thread/read" && request.params.includeTurns === true);
+      expect(readIndex).toBeGreaterThan(-1);
+      expect(requests.indexOf(updates[0])).toBeGreaterThan(readIndex);
+    }
+    expect(requests.filter(request => ["turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test.each([
+  { name: "permission denial with model", model: "selected-model", args: [], code: -32603, message: "Permission denied" },
+  { name: "unsupported read with effort", model: null, args: ["--effort", "high"], code: -32601, message: "Method not found" },
+  { name: "unrecognized code with compatibility text", model: "selected-model", args: ["--effort", "high"], code: -32603, message: "list_turns is not supported yet" },
+  { name: "omitted selections retain legacy read compatibility", model: null, args: [], code: -32603, message: "Permission denied" },
+])("empty thread $name cannot falsely confirm explicit settings persistence", async ({ model, args, code, message }) => {
+  const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "codex-read-failure-")), log = join(directory, "requests.jsonl");
+  const states: ProviderState[] = []; let child: import("node:child_process").ChildProcess | undefined;
+  try {
+    const result = await openCodexProvider({ cwd: process.cwd(), model, args, resumeNativeSessionId: null,
+      env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, CODEX_TEST_READ_ERROR: JSON.stringify({ code, message }) },
+      executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: state => states.push(state), onSpawn: value => { child = value; } })
+      .then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
+    const explicit = model !== null || args.length > 0;
+    try { if (explicit) expect(result.error).toMatchObject({ code, message }); else expect(result.error).toBeNull(); }
+    finally { await result.provider?.close(); }
+    expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+    expect(states.some(state => state.nativeSessionId === "native-thread")).toBe(true);
+    expect(states.some(state => state.activity === "idle")).toBe(!explicit);
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(request => request.method === "thread/start")).toHaveLength(1);
+    expect(requests.filter(request => ["thread/settings/update", "thread/resume", "turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("Codex resume preserves native settings without replaying frozen initial choices", async () => {
+  const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "codex-resume-settings-")), log = join(directory, "requests.jsonl");
+  const states: ProviderState[] = [];
+  try {
+    const provider = await openCodexProvider({ cwd: process.cwd(), model: "old-model", args: ["--effort", "high"], resumeNativeSessionId: "native-thread",
+      env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, CODEX_TEST_THREAD_SETTINGS: JSON.stringify({ model: "changed-model", reasoningEffort: "low" }), CODEX_TEST_MODELS: JSON.stringify([{ model: "changed-model", supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }] }]) },
+      executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: state => states.push(state), onSpawn: () => {} });
+    try {
+      expect(states.at(-1)?.controls?.settings.find(setting => setting.id === "model")?.value).toBe("changed-model");
+      expect(states.at(-1)?.controls?.settings.find(setting => setting.id === "effort")?.value).toBe("low");
+    } finally { await provider.close(); }
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(request => ["thread/start", "thread/settings/update", "turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+    const resume = requests.find(request => request.method === "thread/resume");
+    expect(resume.params).not.toHaveProperty("model");
+    expect(resume.params.config).not.toHaveProperty("model_reasoning_effort");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test.each(["reject", "disconnect", "null", "[]", "1", "missing"])("initial Codex settings %s closes the provider without retrying or losing its observed native identity", async mode => {
+  const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "codex-settings-failure-")), log = join(directory, "requests.jsonl");
+  const states: ProviderState[] = []; let child: import("node:child_process").ChildProcess | undefined;
+  try {
+    const result = await openCodexProvider({ cwd: process.cwd(), model: "selected-model", args: ["--effort", "high"], resumeNativeSessionId: null,
+      env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, CODEX_TEST_INITIAL_SETTINGS: mode },
+      executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: state => states.push(state), onSpawn: value => { child = value; } })
+      .then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
+    try { expect(result.error).toBeInstanceOf(Error); } finally { await result.provider?.close(); }
+    expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+    expect(states.some(state => state.nativeSessionId === "native-thread")).toBe(true);
+    expect(states.some(state => state.activity === "idle")).toBe(false);
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(request => request.method === "thread/start")).toHaveLength(1);
+    expect(requests.filter(request => request.method === "thread/settings/update")).toHaveLength(1);
+    expect(requests.filter(request => ["thread/resume", "turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("new Codex execution applies effort to thread startup before validating its native receipt", async () => {
   const provider = await openCodexProvider({ cwd: process.cwd(), model: "native-model", args: ["--effort", "high"], resumeNativeSessionId: null, validateNativeSelection: true,
     env: { ...process.env, CODEX_TEST_APPLY_EFFORT: "1", CODEX_TEST_MODELS: JSON.stringify([{ model: "native-model", supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }] }]), CODEX_TEST_THREAD_SETTINGS: JSON.stringify({ model: "native-model" }) },

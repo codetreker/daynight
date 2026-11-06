@@ -55,7 +55,18 @@ for await (const line of createInterface({input:process.stdin})) {
    out({id:m.id,result:{data:[{...interruptedHistory(next ? 'second-turn' : 'first-turn'),items:next?[user]:[]}],nextCursor:next?null:'second',backwardsCursor:null}});
   } else out({id:m.id,result:{data:interruptCase?[{...turn,items:interruptCase==='missing-user'?[]:[user]}]:[],nextCursor:null,backwardsCursor:null}});
  }
- if(m.method==='thread/read')out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});
+ if(m.method==='thread/read') {
+  if(process.env.CODEX_TEST_READ_ERROR)out({id:m.id,error:JSON.parse(process.env.CODEX_TEST_READ_ERROR)});
+  else if(process.env.CODEX_TEST_EMPTY_READ_ERROR)out({id:m.id,error:{code:-32601,message:'list_turns is not supported yet'}});
+  else out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});
+ }
+ if(m.method==='thread/settings/update') {
+  const mode=process.env.CODEX_TEST_INITIAL_SETTINGS;
+  if(mode==='reject')out({id:m.id,error:{code:-32602,message:'Initial settings rejected'}});
+  else if(mode==='disconnect')process.exit(0);
+  else if(mode==='missing')out({id:m.id});
+  else out({id:m.id,result:mode?JSON.parse(mode):{}});
+ }
  if(m.method==='model/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_MODELS ?? '[]'),nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});
  if(m.method==='skills/list')out({id:m.id,result:{data:[]}});

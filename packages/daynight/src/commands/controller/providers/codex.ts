@@ -185,8 +185,17 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         await readItems();
       }
     } else {
+      const hasInitialSettings = Boolean(options.model || config.effort);
       // Persist an empty thread where supported; an absent native file is never guessed on recovery.
-      await rpc.request("thread/read", { threadId: nativeId, includeTurns: true }).catch(error => { if (!(error instanceof NativeRpcError)) throw error; });
+      await rpc.request("thread/read", { threadId: nativeId, includeTurns: true }).catch(error => {
+        if (!(error instanceof NativeRpcError) || hasInitialSettings && (error.code !== -32601 || error.message !== "list_turns is not supported yet")) throw error;
+      });
+      if (hasInitialSettings) {
+        // The empty rollout must exist before explicit initial settings are persisted.
+        // Same-value updates can acknowledge with {} without a settings notification.
+        const persisted = await rpc.request("thread/settings/update", { threadId: nativeId, ...(options.model ? { model: options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) });
+        if (!persisted || typeof persisted !== "object" || Array.isArray(persisted)) throw new Error("Native Codex initial settings persistence is unconfirmed.");
+      }
     }
     activity = "idle"; state();
   } catch (error) { await close(); throw error; }

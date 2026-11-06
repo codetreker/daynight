@@ -129,6 +129,14 @@ runtime 从已读回 ticket 条件构造 `ProviderOptions.instructions`，新建
 
 生成新 generation 的生产者负责携带已冻结的原文。journal 保存整份 ticket hash 和原执行/停止/native 身份，不增加角色副本或角色变更机制；它不能独立判断生产者是否在两代间换了模板。Bot 的版本化模板、首次准备与服务端冻结不由这个共享层承担。三种 Provider 的原生追加映射也有各自实现与运行验收；共享透传不宣称原生追加或完整 Bot 托管已经可用。取舍见[角色传递决策](../../.agents/notes/archived/architecture/2026-11-04-controller-role-instructions.md)。
 
+### Codex 初始设置持久化
+
+新建 Codex Provider 先通过 `thread/start` 应用明确 model 与 `config.model_reasoning_effort`，读取能力并完成现有选择校验，再执行 `thread/read(includeTurns: true)` 物化空线程。原生空线程读取可能已经写入 rollout，却返回 code 为 `-32601`、message 为 `list_turns is not supported yet` 的 `NativeRpcError`；有明确初始选择时仅兼容这一精确组合。其他读取拒绝立即终止初始化，不继续更新设置：写盘失败后 `thread/settings/update` 仍可能返回 `{}`，不足以证明 rollout 存在。双省略沿用原有原生读取错误兼容行为；传输错误继续终止初始化。
+
+完成读取后，仅当存在明确初始选择时调用一次 `thread/settings/update`，patch 只包含 `threadId`、实际指定的 model 和解析后的 effort。不能将更新前移到空线程读取之前：原生尚未物化 rollout 时的更新不足以让无输入线程冷恢复保留设置。双省略不新增更新，也不使用 controls 的模型默认 effort 或目录默认值构造 patch。
+
+同值更新可能返回合法空对象而不发送 `thread/settings/updated`，因此初始化直接校验 RPC 成功回执为非空值、非数组的对象，不复用等待设置变更通知的交互 controls 操作。收到有效回执后才能置为 idle 并返回 Provider handle。拒绝、畸形回执、超时和断流沿外层初始化异常路径关闭拥有的进程并传播错误，不重试或抹掉已观察的 native ID。`thread/resume` 完全省略初始设置重写，用户会话内变更继续由原生持久设置拥有。取舍见[空线程初始设置决策](../../.agents/notes/implemented/bug-fix/2026-11-07-codex-empty-thread-settings.md)。
+
 ### Codex 原生角色映射
 
 Codex 适配器在 `thread/start` 与 `thread/resume` 共用的参数构造中，仅当 `ProviderOptions.instructions` 存在时设置 `developerInstructions`，不改写原文，不设置 `baseInstructions`。使用独立的 developer 层可保留原生基础提示；Codex 会以提供的文本覆盖该层配置，并不会自动拼接已有的 `developer_instructions`。新建仍按既有条件选择 model、sandbox、approvalPolicy，恢复仍使用原 threadId 与 excludeTurns；CLI alias 和 native PATH override 保持在原 config 合并路径中。角色本身不调用 send，也不改变首个真实用户请求的 effort 选择。
