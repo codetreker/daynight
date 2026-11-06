@@ -150,6 +150,7 @@ export const createBotCliProbe = async (
         child!.send({ type: "run", file, args, environment: targetEnvironment }, error => { if (error !== null) fail(); });
         const message = await response;
         operation.check();
+        if (message.type === "failure" && message.code === "limit_exceeded") throw Object.assign(new Error("Bot CLI capability output exceeds its limit."), { code: "limit_exceeded" as const });
         if (message.type !== "result" || message.code !== 0 || message.signal !== null || typeof message.stdout !== "string" || typeof message.stderr !== "string") {
           throw new Error("Bot CLI capability command failed.");
         }

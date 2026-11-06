@@ -17,6 +17,15 @@ const Protocol = "daynight.worker-readonly.v1"
 const MaxWireBytes = 256 << 10
 const MaxResultBytes = 64 << 10
 const RequestTimeout = 10 * time.Second
+const ModelRequestTimeout = 30 * time.Second
+
+// OperationTimeout includes discovery and its native resource cleanup.
+func OperationTimeout(operation string) time.Duration {
+	if operation == "model.list" {
+		return ModelRequestTimeout
+	}
+	return RequestTimeout
+}
 
 type Hello struct {
 	Type                 string   `json:"type"`
@@ -88,14 +97,24 @@ func Decode(raw []byte, out any) error {
 	return nil
 }
 func ValidateHello(h Hello) error {
-	if h.Type != "hello" || h.Protocol != Protocol || !validID(h.CapabilityGeneration) || len(h.Operations) != 1 || h.Operations[0] != "directory.list" {
+	if h.Type != "hello" || h.Protocol != Protocol || !validID(h.CapabilityGeneration) || len(h.Operations) < 1 || len(h.Operations) > 2 {
 		return fault("unsupported", "Worker read-only protocol or operations are not supported.")
+	}
+	seen := map[string]bool{}
+	for _, operation := range h.Operations {
+		if operation != "directory.list" && operation != "model.list" || seen[operation] {
+			return fault("unsupported", "Worker read-only operations are invalid.")
+		}
+		seen[operation] = true
 	}
 	return nil
 }
 func ValidateRequest(r Request) error {
 	if !validID(r.RequestID) {
 		return fault("invalid_input", "requestId must be a canonical UUID.")
+	}
+	if r.Operation == "model.list" {
+		return validateModelInput(r.Input)
 	}
 	if r.Operation != "directory.list" {
 		return fault("unsupported", "Worker read-only operation is not supported.")
@@ -131,21 +150,22 @@ func ValidateRequest(r Request) error {
 	return nil
 }
 func ValidateResult(m Message) error {
-	if m.Type != "result" || !validID(m.RequestID) || len(m.Input) > 0 || m.Operation != "" || m.TimeoutMs != 0 {
-		return fault("invalid_input", "Worker read-only response envelope is invalid.")
+	return ValidateOperationResult(m, "directory.list")
+}
+
+// ValidateOperationResult binds the result shape to the admitted request operation.
+func ValidateOperationResult(m Message, operation string) error {
+	if operation != "directory.list" && operation != "model.list" {
+		return fault("unsupported", "Worker read-only operation is not supported.")
 	}
-	if (len(m.Result) > 0) == (m.Error != nil) {
-		return fault("invalid_input", "Worker response requires exactly one result or error.")
+	if err := validateResultEnvelope(m); err != nil {
+		return err
 	}
 	if m.Error != nil {
-		allowed := map[string]bool{"offline": true, "unsupported": true, "permission_denied": true, "not_found": true, "timeout": true, "cancelled": true, "invalid_path": true, "invalid_cursor": true, "io_error": true, "busy": true, "limit_exceeded": true}
-		if !allowed[m.Error.Code] || m.Error.Message == "" || len(m.Error.Message) > 1024 {
-			return fault("invalid_input", "Worker response error is invalid.")
-		}
 		return nil
 	}
-	if len(m.Result) > MaxResultBytes {
-		return fault("invalid_input", "Worker directory response exceeds its byte limit.")
+	if operation == "model.list" {
+		return validateModelResult(m.Result)
 	}
 	var result DirectoryResult
 	if e := Decode(m.Result, &result); e != nil {
@@ -164,6 +184,26 @@ func ValidateResult(m Message) error {
 		if e.Name == "" || e.Path == "" || len(e.Name) > 1024 || len(e.Path) > 4096 {
 			return fault("invalid_input", "Worker directory entry is invalid.")
 		}
+	}
+	return nil
+}
+
+func validateResultEnvelope(m Message) error {
+	if m.Type != "result" || !validID(m.RequestID) || len(m.Input) > 0 || m.Operation != "" || m.TimeoutMs != 0 {
+		return fault("invalid_input", "Worker read-only response envelope is invalid.")
+	}
+	if (len(m.Result) > 0) == (m.Error != nil) {
+		return fault("invalid_input", "Worker response requires exactly one result or error.")
+	}
+	if m.Error != nil {
+		allowed := map[string]bool{"offline": true, "unsupported": true, "permission_denied": true, "not_found": true, "timeout": true, "cancelled": true, "invalid_path": true, "invalid_cursor": true, "io_error": true, "busy": true, "limit_exceeded": true, "invalid_input": true, "capability_error": true, "cleanup_unknown": true, "stale_configuration": true}
+		if !allowed[m.Error.Code] || m.Error.Message == "" || len(m.Error.Message) > 1024 {
+			return fault("invalid_input", "Worker response error is invalid.")
+		}
+		return nil
+	}
+	if len(m.Result) > MaxResultBytes {
+		return fault("invalid_input", "Worker read-only response exceeds its byte limit.")
 	}
 	return nil
 }

@@ -53,6 +53,6 @@ Queries require the Worker and HTTP caller to reach the same service instance;
 there is no cross-instance broker or durable result recovery. Old Workers return
 unsupported and no local fallback is available. Directory mutations invalidate
 cursors. Hidden filtering means dot-prefixed names, including on Windows; it does
-not inspect Windows hidden attributes. Model discovery can add a typed operation
-without opening arbitrary command execution. A need for cross-instance routing
+not inspect Windows hidden attributes. [Model discovery](2026-11-06-worker-model-discovery.md)
+uses a typed operation without opening arbitrary command execution. A need for cross-instance routing
 or directories above the scan limit requires revisiting these explicit limits.
