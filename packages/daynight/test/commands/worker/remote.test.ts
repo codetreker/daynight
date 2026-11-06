@@ -62,6 +62,35 @@ afterEach(async () => {
 });
 
 describe("worker remote API", () => {
+  it("publishes a failed native startup for the observed claim with authenticated HTTP and reads it back", async () => {
+    const token = "fixture-startup-token";
+    const report = { schemaVersion: 1 as const, source: "worker" as const, sessionId: uuid(30), claimId: descriptor.claimId,
+      executionGeneration: "1", controllerInstanceId: uuid(31), revision: "1", observedAt: time,
+      startup: { state: "failed" as const, reasonCode: "native_rejected" as const },
+      recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } };
+    const initial = task(taskId, { ...worker, agentControlMode: "web" });
+    const updated = { ...initial, version: 2n, properties: { ...initial.properties, worker: { ...worker, agentControlMode: "web" as const, phase: "waiting" as const, herdr: null, nativeSessionId: null }, sessionStartup: report } };
+    const requests: { method: string | undefined; url: string | undefined; authorization: string | undefined; protocol: string | string[] | undefined; body: unknown }[] = [];
+    let saved = false;
+    const serverUrl = await listen((request, response, body) => {
+      requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization, protocol: request.headers["daynight-worker-protocol"], body });
+      if (request.url === "/api/v1/me") respond(response, { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(90), kind: "personal", name: null } });
+      else if (request.method === "PATCH") { saved = true; respond(response, updated); }
+      else respond(response, saved ? updated : initial);
+    }, { identity: false });
+    const remote = createWorkerRemote({ serverUrl, serverToken: token });
+    expect(await remote.currentUserId(signal())).toBe(worker.userId);
+    const observed = await remote.readTask(projectId, taskId, signal());
+    await expect(remote.update(observed, { phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report }, signal())).resolves.toEqual(updated);
+    await expect(remote.readTask(projectId, taskId, signal())).resolves.toEqual(updated);
+    const taskPath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
+    expect(requests.map(({ method, url }) => [method, url])).toEqual([["GET", "/api/v1/me"], ["GET", taskPath], ["PATCH", `${taskPath}/worker-claim`], ["GET", taskPath]]);
+    expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
+    expect(requests.slice(1).map(({ protocol }) => protocol)).toEqual(["2", "2", "2"]);
+    expect(requests[2]!.body).toEqual({ version: 1n, claimId: descriptor.claimId, phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report });
+    expect(JSON.stringify(report)).not.toContain(token);
+  });
+
   it("exchanges configuration through the authenticated single report operation without affecting legacy reports", async () => {
     const requests: { method: string | undefined; url: string | undefined; capability: string | undefined; body: unknown }[] = [];
     const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };

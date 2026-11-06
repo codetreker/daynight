@@ -160,6 +160,27 @@ describe("worker repository commands", () => {
     expect(saved.worker.repositories).toHaveLength(kind === "add" ? 1 : 0);
   });
 
+  it("requires a terminal for implicit addition after reading the Project inventory", async () => {
+    const f = await fixture();
+    f.prompt.isInteractive = false;
+    await expect(runWorkerRepositoryCommand({ kind: "add" }, f.context, f.dependencies)).rejects.toThrow("requires terminal input and stderr. Run daynight worker repo add --project <project-id>");
+    expect(f.dependencies.readProjects).toHaveBeenCalledOnce();
+    expect(f.dependencies.change).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+    expect((await readdir(f.homeDirectory, { recursive: true })).sort()).toEqual(configurationContents);
+  });
+
+  it.each([undefined, firstId])("preserves a Project inventory failure before selecting or writing (project: %s)", async projectId => {
+    const f = await fixture();
+    const failure = new Error("forbidden");
+    f.dependencies.readProjects.mockRejectedValueOnce(failure);
+    await expect(runWorkerRepositoryCommand({ kind: "add", ...(projectId === undefined ? {} : { projectId }) }, f.context, f.dependencies)).rejects.toBe(failure);
+    expect(f.questions).toEqual([]); expect(f.dependencies.change).not.toHaveBeenCalled(); expect(f.context.stdout).not.toHaveBeenCalled();
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+    expect((await readdir(f.homeDirectory, { recursive: true })).sort()).toEqual(configurationContents);
+  });
+
   it("rejects inaccessible Project IDs for addition without writing", async () => {
     const f = await fixture(stringify({ worker: { repositories: [configuredRepository] } }));
     f.dependencies.readProjects.mockResolvedValueOnce([projects[1]!]);
