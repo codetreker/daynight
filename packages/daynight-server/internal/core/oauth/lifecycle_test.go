@@ -26,6 +26,48 @@ type lifecycleFake struct {
 	pruneLimits []int
 }
 
+type skewedOwnerWriter struct {
+	*lifecycleFake
+	databaseTime time.Time
+}
+
+func (w skewedOwnerWriter) WriteGrantLifecycle(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error) {
+	err := fn(skewedOwnerDAO{GrantLifecycleDAO: w.lifecycleFake, databaseTime: w.databaseTime})
+	if err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
+
+type skewedOwnerDAO struct {
+	store.GrantLifecycleDAO
+	databaseTime time.Time
+}
+
+func (d skewedOwnerDAO) FreshTime(_ context.Context, caller time.Time) (time.Time, error) {
+	if caller.After(d.databaseTime) {
+		return caller, nil
+	}
+	return d.databaseTime, nil
+}
+
+func (d skewedOwnerDAO) LockOwnerSession(context.Context, model.Principal, time.Time) error {
+	return nil
+}
+
+func TestSessionGrantListReturnsDatabaseObservationTime(t *testing.T) {
+	f := newLifecycleFake()
+	databaseTime := time.Now().UTC().Add(2 * time.Hour)
+	f.grant.ExpiresAt = databaseTime.Add(-time.Hour)
+	s := NewGrantLifecycle(skewedOwnerWriter{lifecycleFake: f, databaseTime: databaseTime})
+	s.now = func() time.Time { return databaseTime.Add(-3 * time.Hour) }
+	p := model.Principal{Kind: model.SessionCredential, UserID: f.grant.UserID, CredentialID: uuid.NewString()}
+	items, observed, err := s.ListSessionGrants(t.Context(), p)
+	if err != nil || len(items) != 1 || !observed.Equal(databaseTime) || items[0].ExpiresAt.After(observed) {
+		t.Fatalf("database observation: %+v %v %v", items, observed, err)
+	}
+}
+
 func (f *lifecycleFake) failure(name string) error {
 	f.calls[name]++
 	return f.failures[fmt.Sprintf("%s:%d", name, f.calls[name])]
