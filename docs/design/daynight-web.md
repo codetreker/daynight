@@ -41,7 +41,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 |---|---|
 | Go 服务已有项目与任务 JSON API | `packages/daynight-server/api/projects.go` 的 `ProjectPage` 返回项目及 `nextCursor`；`api/tasks.go` 的 `Task` 包含 `dependsOn`、`externalDependsOn`、`blockedBy`、`ready`、`allowAgents`、`requiredPlatform`。 |
 | 页面与 API 同源 | `internal/server/webui` 在同一 mux 注册精确页面和静态资源路由，`internal/server` 注册 API 路由；`internal/service/webui` 内嵌真实构建产物，未知 API 保留 JSON 404。 |
-| 已有一致读取机制 | `packages/daynight-server/internal/core/store/snapshot.go` 的 `ReadSnapshot` 使用只读 `REPEATABLE READ`。 |
+| 已有一致读取机制 | `packages/daynight-server/internal/core/store/postgres/snapshot.go` 的 `ReadSnapshot` 使用只读 `REPEATABLE READ`。 |
 | 分页之间没有共同快照 | [服务端分页约定](../spec/daynight-server.md)明确这一边界；不能用多次 task list 拼成准确的项目全图。 |
 | web 与 CLI 工作区独立 | 私有 React/TypeScript/Vite 包使用显式 `web:*` 命令；根 build/typecheck/test 继续只覆盖 CLI，web 使用按[CI 路由](../../README.md#ci-selection)选择的独立 job。 |
 
@@ -617,7 +617,7 @@ packages/daynight-web/
 packages/daynight-server/
   api/task_graph.go                 HTTP 图 DTO
   internal/core/model/task_graph.go 无传输依赖的读取模型
-  internal/core/store/task_graph.go PostgreSQL 快照查询
+  internal/core/store/postgres/task/graph.go PostgreSQL 快照查询
   internal/service/task/task_graph.go 图读取编排
   internal/core/task/projection/   图限制与统计规则
   internal/server/task/task_graph.go  图 HTTP handler 与 DTO 转换
@@ -646,8 +646,8 @@ packages/daynight-server/
 | 附件 hook/model | 当前 project/task 的分页、写状态、选择、预览状态及目录树 | 调用 api；不修改详情或图快照 |
 | 详情主体、TaskDetailPage 与附件预览 | 两种容器共享完整详情；独立页持有图快照和任务/页签/文件导航，附件共享完整清单与渲染 | 使用原有详情、图和文件接口；仅实际任务对话框中的 frame 复用 focus helper 安装键盘桥 |
 | Go server | HTTP 解析、响应、路由与方法语义 | 调用 service 或 webui |
-| Go service | 具体 store 的读取事务、领域拒绝、图摘要 | 调用 core/store，返回 core 模型 |
-| core/store | 同一快照内的具体 SQL 查询与扫描 | 使用 pgx，不依赖 HTTP、React 或 API DTO |
+| Go service | 读取事务、领域拒绝、图摘要 | 调用 core/store 合同，返回 core 模型 |
+| core/store 与 PostgreSQL 后端 | 同一快照的数据访问合同及其 SQL 查询与扫描实现 | 合同不依赖驱动；后端使用 pgx，不依赖 HTTP、React 或 API DTO |
 | service/webui | 内嵌资源及文件读取 | 不访问业务 store |
 | server/webui | 页面与资源路由、Content-Type 和缓存策略 | 读取资源，不另包日志中间件 |
 
@@ -865,6 +865,20 @@ dev-ci 拥有唯一镜像、实际运行镜像身份校验和完整 shell 清理
 每个 phase 的 profile 留在独立私有根；命令结束后必须确认整个所属进程组停止。
 错误、取消、意外服务退出和清理失败都传播并排空已启动任务。两个目标结束后才做
 run-wide CLI 回收，避免清除另一活动目标的命令或凭据。
+
+Chromium 安装完成后，CI 通过现有 run/source 绑定的父 evidence 请求导航检查；
+可选字段仅允许缺省或 `navigationChecks: true`，且必须属于 functional 共享检查分片。
+容器 callback 验证原有 permission 和安装 CLI 后，并行执行串行导航与 container
+functional；两个分支排空后才进行 combined-auth 重启，callback 结束后 dev-ci 才可
+清理网络。导航使用独立端口、Vite cache/outDir 和受控 API，不修改生产目标数据库、
+profile 或安装 CLI。导航命令使用环境副本并移除生产浏览器归属标记
+`DAYNIGHT_ACCEPTANCE_DIRECTORY`，保留显式 browser channel 与工具配置，使相同
+executable 的导航浏览器不会被 functional cleanup 视为未记录生产进程。
+任一分支失败立即取消共享 controller，等待所属资源清理完成后
+传播原始与清理错误。导航命令取消后的一秒 escalation 位于 dev-ci callback 的五秒
+TERM grace 内；180/540/180 秒验证时限保持不变。此调度不改变分片选择、worker 数、原有许可和 native/container
+屏障；direct acceptance 与 shard 1 保持原路径。资源权衡由
+[浏览器 job 调度决策](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)拥有。
 
 较轻的 shard 2 统一拥有全部 28 项 navigation-contract、部署生命周期 fixture、
 原生/容器各十项 combined-auth，以及真实附件持久化与成对备份恢复。

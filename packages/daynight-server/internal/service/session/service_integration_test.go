@@ -11,14 +11,14 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
 
 type serviceFixture struct {
-	db            *store.Store
+	db            *postgres.Store
 	service       *Service
 	owner         model.Principal
 	project, task string
@@ -28,7 +28,7 @@ type serviceFixture struct {
 func newServiceFixture(t *testing.T) serviceFixture {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, testsupport.ServiceDatabaseURL(t))
+	db, err := postgres.Open(ctx, testsupport.ServiceDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -78,8 +78,8 @@ its Principal. Resource services check current membership inside their existing
 Snapshot or project write lock. These are distinct admission points; this change
 does not serialize credential revocation with every business transaction.
 At activation, attachment membership, task and path checks finished in a short
-snapshot before file IO. Reads continue to use a short authorization snapshot.
-The later [attachment serialization decision](https://github.com/codetreker/daynight/blob/7ee7d369dbc6a3c11c606fe9e6ebcd4e01f93908/.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)
+snapshot before file IO. Reads continue to check membership and task state in a
+short authorization snapshot. The later [serialization decision](2026-11-06-attachment-task-deletion-serialization.md)
 retains Task and authorization-source locks through mutation IO and metadata
 completion. An admitted operation may finish after credentials change; new
 requests authenticate and authorize again. No post-IO membership recheck is
@@ -200,7 +200,8 @@ membership revocation and PAT lifecycle. Its ten-check receipt on each target
 preserves the existing Playwright inventory and budgets. The same decision
 assigns the admitted-upload grant-lock race to
 `TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock` in Go's
-built-binary HTTP/PostgreSQL E2E fixture. The browser journey does not own paused upload IO, and the separate
-real UniAuth result-loss test retains downstream TCP loss. Source receipts and
+built-binary HTTP/PostgreSQL E2E fixture. The browser journey does not own
+paused upload IO, and the separate real UniAuth result-loss test retains
+downstream TCP loss. Source receipts and
 third-party manual login evidence remain distinct; a code or documentation change
 does not itself establish a passing run.

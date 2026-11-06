@@ -14,7 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
@@ -29,8 +29,8 @@ type resourceTestHandler struct {
 	principal model.Principal
 }
 
-func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
-func projectTestHandler(t *testing.T, database *store.Store, output io.Writer) *resourceTestHandler {
+func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
+func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	files, err := local.New(t.TempDir())
 	if err != nil {

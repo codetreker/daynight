@@ -1866,6 +1866,13 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+The Project settings route-retention suite exercises dispatched saves through
+`AuthenticatedApp` navigation, including request survival, the confirmed
+receipt and return-read ordering. Form tests separately cover localized feedback,
+exact version serialization and cancellation before dispatch. The
+[project checks decision](../../.agents/notes/implemented/bug-fix/2026-11-05-stable-project-checks.md)
+records the ownership trade-off.
+
 Status, platform and automatic-permission API tests distinguish strict decoder
 inputs, target-specific write confirmation and shared transport failures. Complete
 detail/graph malformed-field matrices retain their input boundaries; representative
@@ -1973,6 +1980,22 @@ existing source/run-bound parent receipt. Invalid identities, collection errors,
 unknown/duplicate/missing scenarios or a mismatched selection fail validation.
 The pure `scripts/acceptance/inventory.mts` owns canonical functional and
 combined-authentication check names.
+
+After Chromium installation, CI requests navigation checks through its existing
+source/run-bound acceptance receipt. The container callback waits for permission
+and installed-CLI validation, then overlaps the serial navigation branch with
+container functional validation. Both branches drain before combined
+authentication can restart a target and before callback exit allows dev-ci network
+cleanup. Navigation hosts use separate ports, build/cache directories and routed
+API fixtures. A branch failure cancels their shared controller and preserves
+operation and cleanup failures. Navigation commands receive an environment copy
+without the production browser-ownership marker, preserving explicit browser
+channel and tool settings. Navigation command cancellation escalates after
+one second, within dev-ci's callback termination grace, while its verification
+deadlines remain unchanged. Direct acceptance callers and shard 1 keep their
+existing paths. The
+[browser job scheduling decision](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
+owns this isolation and resource trade-off.
 
 Shard 2 owns the complete 28-case navigation-contract suite, dev-ci lifecycle
 fixtures, both ten-check combined-authentication journeys, and the real

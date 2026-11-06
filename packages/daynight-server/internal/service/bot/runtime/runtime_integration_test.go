@@ -13,6 +13,7 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	botruntime "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot/runtime"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
@@ -21,7 +22,7 @@ import (
 )
 
 type botFixture struct {
-	db     *store.Store
+	db     *postgres.Store
 	p      model.Principal
 	svc    *sessionservice.Service
 	engine *sessioncore.Engine
@@ -31,7 +32,7 @@ type botFixture struct {
 func newBoundBot(t *testing.T) botFixture {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, testsupport.ServiceDatabaseURL(t))
+	db, err := postgres.Open(ctx, testsupport.ServiceDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

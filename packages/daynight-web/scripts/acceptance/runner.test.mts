@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { processIdentity } from './identity.mts';
+import { writeContainerPermission } from './permission.mts';
 import { functionalScenarios } from './inventory.mts';
 import { launchNativeServer, restartContainerServer } from './runner.mts';
 import type { CombinedCommand } from './auth-combined-target.mts';
@@ -441,13 +442,17 @@ test('container callbacks reject malformed shard metadata before Docker or brows
         { mode: 'functional', shard: { current: 1, total: 2 } },
         { mode: 'functional', selection: functionalScenarios.slice(0, functionalScenarios.length / 2) },
         { mode: 'stress', shard: { current: 1, total: 2 }, selection: functionalScenarios.slice(0, functionalScenarios.length / 2) },
+        { mode: 'functional', navigationChecks: false },
+        { mode: 'functional', navigationChecks: 'true' },
+        { mode: 'stress', navigationChecks: true },
+        { mode: 'functional', navigationChecks: true, shard: { current: 1, total: 2 }, selection: functionalScenarios.slice(0, Math.ceil(functionalScenarios.length / 2)) },
       ]) {
         await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: id,
           source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha }, ...metadata }));
         const result = await start([cli, '--container'], value).done;
         assert.equal(result.timedOut, false);
         assert.equal(result.code, 1);
-        assert.match(result.stderr, /Invalid functional shard|Functional shard selection|cannot declare a shard selection|requires functional acceptance/);
+        assert.match(result.stderr, /Invalid functional shard|Functional shard selection|cannot declare a shard selection|requires functional acceptance|Navigation checks require functional acceptance/);
         assert.equal(await readFile(value.commands, 'utf8'), '');
       }
     } finally { await rm(directory, { recursive: true, force: true }); }
@@ -529,6 +534,85 @@ const installationRecoveryFixture = async (value: Fixture, completed: boolean) =
   value.env.CI = undefined;
   return { id, directory, root, evidence };
 };
+
+test('CI navigation intent is strict and scoped before any acceptance preparation', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  await fixture(async value => {
+    delete value.env.CI;
+    for (const options of [{ navigationChecks: false }, { navigationChecks: 'true' }, { navigationChecks: undefined },
+      { navigationChecks: true, stress: true }, { navigationChecks: true, shard: { current: 1, total: 2 } }]) {
+      const serialized = options.navigationChecks === undefined ? '{navigationChecks:undefined}' : JSON.stringify(options);
+      const result = await start(['--input-type=module', '--eval', `
+        import assert from 'node:assert/strict';
+        const { runAcceptance } = await import(${JSON.stringify(runner)});
+        await assert.rejects(runAcceptance(new AbortController(), ${serialized}), /Navigation checks require functional acceptance with shared checks/);
+      `], value).done;
+      assert.equal(result.code, 0, result.stderr); assert.equal(await readFile(value.commands, 'utf8'), '');
+    }
+  });
+});
+
+test('container navigation starts after source-bound permission and installed CLI validation', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async () => {
+  await fixture(async value => {
+    const current = await installationRecoveryFixture(value, true);
+    const devCiRunId = '20261021123457-1234-56789', directory = join(current.directory, 'container');
+    const evidence = { ...current.evidence, mode: 'functional', navigationChecks: true };
+    await writeFile(join(current.directory, 'evidence.json'), JSON.stringify(evidence));
+    await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'docker %s\\n\' "$*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
+    await writeFile(join(value.bin, 'pnpm'), '#!/bin/sh\nprintf \'pnpm %s\\n\' "$*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nexit 91\n');
+    const browserExecutable = join(value.bin, 'fixture-browser');
+    await writeFile(browserExecutable, '#!/bin/sh\nexit 91\n', { mode: 0o755 });
+    value.env = { ...value.env, CI: undefined, DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId,
+      DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345', DAYNIGHT_BROWSER_EXECUTABLE: browserExecutable };
+    const running = start([cli, '--container'], value);
+    try {
+      const ready = await readyReceipt(join(directory, 'ready.json'), running);
+      assert.equal(ready.acceptanceRunId, current.id);
+      assert.equal((await readFile(value.commands, 'utf8')).includes('pnpm'), false);
+      await writeContainerPermission(directory, { acceptanceRunId: current.id, devCiRunId, sourceGitSha });
+      const result = await running.done;
+      assert.equal(result.timedOut, false); assert.equal(result.code, 1);
+      const commands = (await readFile(value.commands, 'utf8')).trim().split('\n');
+      assert.ok(commands.some(command => command.includes('tests/navigation/playwright.config.ts')));
+      assert.equal(commands.some(command => command.includes('tests/navigation/team-playwright.config.ts')), false);
+      assert.equal(commands.some(command => command.includes('tests/navigation/bots-viewport-playwright.config.ts')), false);
+      assert.match(result.stderr, /Acceptance command failed/);
+    } finally {
+      if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGKILL');
+      await running.done; await rm(current.directory, { recursive: true, force: true });
+      await rm(join(temporaryRoot, 'acceptance-private', current.id), { recursive: true, force: true });
+    }
+  });
+});
+
+test('container callback rechecks immutable navigation intent after permission before verification commands', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async () => {
+  await fixture(async value => {
+    const current = await installationRecoveryFixture(value, true), devCiRunId = '20261021123457-1234-56789';
+    const directory = join(current.directory, 'container');
+    await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'docker %s\\n\' "$*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
+    value.env = { ...value.env, CI: undefined, DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId,
+      DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };
+    try {
+      for (const initial of [undefined, true] as const) {
+        await rm(directory, { recursive: true, force: true }); await writeFile(value.commands, '');
+        const evidence = { ...current.evidence, mode: 'functional', ...(initial === undefined ? {} : { navigationChecks: true }) };
+        await writeFile(join(current.directory, 'evidence.json'), JSON.stringify(evidence));
+        const running = start([cli, '--container'], value);
+        try {
+          await readyReceipt(join(directory, 'ready.json'), running);
+          const changed = { ...current.evidence, mode: 'functional', ...(initial === true ? {} : { navigationChecks: true }) };
+          await writeFile(join(current.directory, 'evidence.json'), JSON.stringify(changed));
+          await writeContainerPermission(directory, { acceptanceRunId: current.id, devCiRunId, sourceGitSha });
+          const result = await running.done;
+          assert.equal(result.code, 1); assert.match(result.stderr, /navigation intent changed/);
+          assert.equal((await readFile(value.commands, 'utf8')).includes('pnpm'), false);
+        } finally {
+          if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGKILL');
+          await running.done;
+        }
+      }
+    } finally { await rm(current.directory, { recursive: true, force: true }); }
+  });
+});
 
 test('recovery owns an interrupted preparation root before any installed receipt exists and is repeatable', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
   await fixture(async (value) => {

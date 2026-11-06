@@ -10,6 +10,13 @@ import (
 )
 
 func taskWriteFault(err error) *model.Fault {
+	if failed, _ := store.DatabaseErrorFacts(err); failed {
+		return nil
+	}
+	var transaction *store.TransactionError
+	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
+		return nil
+	}
 	var fault *model.Fault
 	if errors.As(err, &fault) {
 		return fault

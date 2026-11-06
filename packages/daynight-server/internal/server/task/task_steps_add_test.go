@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -184,7 +184,7 @@ func TestStepsHTTPAddCommittedResponseLossAndReadOnlyReconciliation(t *testing.T
 					t.Fatal(err)
 				}
 				t.Cleanup(pool.Close)
-				handler = projectTestHandler(t, &store.Store{Pool: pool}, &logs)
+				handler = projectTestHandler(t, &postgres.Store{Pool: pool}, &logs)
 			}
 			request := httptest.NewRequest("POST", path, strings.NewReader(`{"version":1,"id":"ABCDEF01","title":"secret-title","description":"secret-markdown https://secret.invalid token-secret"}`)).WithContext(ctx)
 			authorizeResourceRequest(handler, request)

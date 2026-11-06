@@ -4,14 +4,14 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 )
 
-func taskService(t *testing.T) (*taskservice.Tasks, *store.Store, model.Project, string, model.Principal) {
+func taskService(t *testing.T) (*taskservice.Tasks, *postgres.Store, model.Project, string, model.Principal) {
 	return testsupport.TaskService(t)
 }
 
@@ -42,12 +42,12 @@ func assertTaskUnchanged(t *testing.T, tasks *taskservice.Tasks, principal model
 }
 
 func serviceDatabaseURL(t *testing.T) string { return testsupport.ServiceDatabaseURL(t) }
-func projectService(t *testing.T) (*projectservice.Projects, *store.Store, string, model.Principal) {
+func projectService(t *testing.T) (*projectservice.Projects, *postgres.Store, string, model.Principal) {
 	return testsupport.ProjectService(t)
 }
-func servicePrincipal(t *testing.T, db *store.Store) model.Principal {
+func servicePrincipal(t *testing.T, db *postgres.Store) model.Principal {
 	return testsupport.ServicePrincipal(t, db)
 }
-func fixtureIdentitySession(t *testing.T, db *store.Store, user model.User, session model.Session) model.Principal {
+func fixtureIdentitySession(t *testing.T, db *postgres.Store, user model.User, session model.Session) model.Principal {
 	return testsupport.FixtureIdentitySession(t, db, user, session)
 }

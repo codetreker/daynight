@@ -59,8 +59,8 @@ flowchart LR
     S --> F[现有文件存储]
 ```
 
-core 分别表达用户、凭据、独立项目授权和当前项目准入；core/store 拥有迁移、查询与
-事务，service 在业务事务内作授权决定，server 拥有 HTTP/Cookie/错误映射。
+core 分别表达用户、凭据、独立项目授权和当前项目准入；core/store 定义数据访问及
+事务合同，PostgreSQL 后端实现迁移和查询，service 在业务事务内作授权决定，server 拥有 HTTP/Cookie/错误映射。
 复用一个 store 和既有文件存储，不复制业务实现或增加通用权限引擎。
 
 Principal 形状为 `{UserID, CredentialID, Kind}`，Kind 只有 session/PAT。认证代码
@@ -346,9 +346,9 @@ invitation_unavailable；[Team 邀请决策](../../.agents/notes/implemented/arc
 
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
-提交串行化。附件读取在短快照完成项目和 task 准入后执行文件 IO；附件变更在 Task 锁后
-检查并锁定授权来源，直至文件和事务绑定的 metadata 操作完成。已准入操作允许完成；
-不能在文件写入后仅因成员刚移除而拒绝元数据写入。真实存储/
+提交串行化。附件读取在短快照完成项目和 task 的成员检查后准入文件 IO；附件变更在
+Task 锁后检查并锁定授权来源，直至文件和事务绑定的 metadata 操作完成。已准入操作
+允许完成；不能在文件写入后仅因成员刚移除而拒绝元数据写入。真实存储/
 数据库错误按原链传播，保留 K1。撤销后新准入请求拒绝，已发字节不承诺撤回。
 
 ## HTTP、Web 与 CLI
@@ -667,8 +667,8 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 重启、成员撤销后的可见权限及 PAT 独立性证明。两目标各有一份十项检查的额外必需回执。
 已准入上传的 grant 锁等待由 Go 服务的
 `TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock` 使用 `cmd/e2e_tests`
-built-binary fixture、真实认证 HTTP 与隔离 PostgreSQL 验证；浏览器 combined 不运行暂停上传、专用 transport 或
-数据库锁观察。该迁移不声称另行覆盖原先的附件 socket 中断场景。常规验收保留
+built-binary fixture、真实认证 HTTP 与隔离 PostgreSQL 验证；浏览器 combined 不运行
+暂停上传、专用 transport 或数据库锁观察。该迁移不声称另行覆盖原先的附件 socket 中断场景。常规验收保留
 原生和容器各 42 项功能场景，显式本地压力验收另有 5 项原生容量场景；项目设置旅程
 单独拥有阈值读写与未知结果核对。
 

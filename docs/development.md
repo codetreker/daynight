@@ -342,8 +342,17 @@ records the ownership and observation guarantees, and the
 [controlled-holder decision](../.agents/notes/archived/bug-fix/2026-10-21-apfs-controlled-holder-observation.md)
 records the limited process selection and required native evidence. No live GitHub or Copilot
 credentials are required by these checks.
-SQLite tests use real disk databases, including reopen, transaction rollback,
-locking, and revision/retry transitions on every platform.
+SQLite business-state unit tests use private native `:memory:` connections,
+including real constraints, migrations, transaction rollback and revision/retry
+transitions. Stores receive these connections explicitly; fixture cleanup closes
+them. Cases proving file persistence after reopen, WAL snapshots, separate live
+connections, filesystem errors, instance locking or cross-process recovery use
+real file databases in `*.integration.test.ts` suites. Ordinary `pnpm test` and
+the CLI CI matrix run both kinds with the existing platform and failure checks.
+Git repositories, IPC and Controller pending-content files retain their own
+private filesystem fixtures. The
+[memory SQLite decision](../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)
+owns storage selection and connection ownership.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
@@ -935,6 +944,19 @@ Both targets drain before run-wide CLI recovery, preserving active commands and
 credentials in the other target. The
 [functional target decision](../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
 owns those isolation constraints.
+
+Chromium installation completes before CI starts acceptance. A validated optional
+navigation request in the existing source/run receipt makes the container callback
+run serial navigation alongside its functional browser, after permission and
+installed-CLI validation. Both branches drain before combined-authentication
+restart and callback exit, keeping network teardown outside navigation. Their
+hosts, output directories, profiles and API fixtures remain separate. Navigation
+command environments omit the production browser-ownership marker while retaining
+browser-channel and tool settings. Navigation
+command cancellation uses a one-second escalation grace inside the callback's
+outer termination grace, preserving verification deadlines. The
+[browser job scheduling decision](../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
+owns cancellation, concurrency and measurement limits.
 
 Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
 ten-check combined-authentication journeys and the existing real attachment
