@@ -457,3 +457,35 @@ func TestMCPTaskExternalDependenciesCountCompiledBusinessPayload(t *testing.T) {
 		t.Fatalf("oversized dependency payload created %d tasks", count)
 	}
 }
+
+func TestMCPTaskUnchangedMutationReceipt(t *testing.T) {
+	client, project, _, _, _, _, _ := taskResourceClient(t)
+	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Unchanged"})
+	result, envelope := callTaskResource(t, client, "task_update", map[string]any{"projectId": project, "taskId": task["id"], "ifVersion": task["version"], "title": "Unchanged"})
+	if result.IsError || object(t, envelope["meta"])["outcome"] != "unchanged" || object(t, envelope["data"])["version"] != task["version"] {
+		t.Fatalf("unchanged receipt: %#v", envelope)
+	}
+}
+
+func TestMCPRejectsUnknownToolBudgetClass(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	entry, err := New(testAuthenticator{}, "https://daynight.test", nil, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := entry.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	tool := simpleTestTool("invalid_budget", testObjectSchema(), standardOutputSchema())
+	err = entry.RegisterTool(tool, BudgetClass(255), func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		t.Fatal("invalid-budget handler invoked")
+		return ToolResult{}, nil
+	})
+	if err == nil {
+		t.Fatal("unknown budget class registered")
+	}
+}
