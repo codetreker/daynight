@@ -23,6 +23,10 @@ Keep directory enumeration bounded in time, bytes, scanned entries and retained
 operations. Signed cursors retain only page identity, while each page scans a
 bounded current layer. Cancelled filesystem calls retain their capacity until
 native completion and directory closure because Node cannot cancel those calls.
+Keep the operation deadline separate from the HTTP response context so an expired
+operation can still return its timeout error. Caller cancellation during credential
+checks is not evidence that the shared Worker connection lost authorization; it
+ends only that query and leaves unrelated pending queries intact.
 
 ## Alternatives
 

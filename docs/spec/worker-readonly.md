@@ -10,7 +10,7 @@ Web 通过类型化客户端提交 `directory.list`。模型发现可以扩展�
 
 每次操作绑定当前用户、Worker、请求 ID、连接 ID 和能力代次。Worker 连接必须使用有效的 PAT，查询允许同一所有者的有效 Web Session 或 PAT。服务端在接入、投递与响应交付时核对权限，并持续复核长连接。
 
-连接替换、断线、配置变化、账号切换、取消或超时后，旧结果不能作为新请求的有效响应。查询不自动改选其它 Worker，也不能回退到服务端或浏览器目录。旧 Worker 明确返回不支持；离线与不支持分别表达。
+连接替换、断线、配置变化、账号切换、取消或超时后，旧结果不能作为新请求的有效响应。单个查询在鉴权期间取消或超时，不得断开共享 Worker 通道或使其它有效查询失败。查询不自动改选其它 Worker，也不能回退到服务端或浏览器目录。旧 Worker 明确返回不支持；离线与不支持分别表达。
 
 ## 目录语义
 
@@ -26,7 +26,7 @@ Web 通过类型化客户端提交 `directory.list`。模型发现可以扩展�
 
 无法取消的系统调用保留占用名额直到调用和目录句柄关闭结束，最多四个并发未结束的目录操作；取消不能释放名额后无限积压系统调用。服务端限制每 Worker 16 个和全局 1,024 个待处理请求，连接和队列也有上限。
 
-消费者必须区分 `offline`、`unsupported`、`permission_denied`、`not_found`、`timeout`、`cancelled`、`invalid_path`、`invalid_cursor`、`io_error`、`busy` 和 `limit_exceeded`。空目录是成功结果中的空列表，不是错误的替代形式。协议、认证或所有权错误沿用 HTTP API 错误。
+消费者必须区分 `offline`、`unsupported`、`permission_denied`、`not_found`、`timeout`、`cancelled`、`invalid_path`、`invalid_cursor`、`io_error`、`busy` 和 `limit_exceeded`。服务端转发期限到达且 HTTP 调用方仍连接时，返回 HTTP 504 和 `timeout` 错误正文。空目录是成功结果中的空列表，不是错误的替代形式。协议、认证或所有权错误沿用 HTTP API 错误。
 
 ## 验证边界
 

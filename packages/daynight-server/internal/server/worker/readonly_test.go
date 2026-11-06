@@ -437,3 +437,68 @@ func TestReadOnlyHTTPErrorStatusesRemainDistinct(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOnlyHTTPForwardingDeadlineReturnsTimeoutJSON(t *testing.T) {
+	f := newReadOnlyFixture(t)
+	c, _ := f.connect(t, f.worker, f.token)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	type answer struct {
+		response *http.Response
+		err      error
+	}
+	answers := make(chan answer, 1)
+	started := time.Now()
+	go func() {
+		response, err := f.request(ctx, f.worker, f.token, ro.Request{RequestID: uuid.NewString(), Operation: "directory.list", Input: json.RawMessage(`{}`)})
+		answers <- answer{response, err}
+	}()
+	request := readOnlyRead(t, c)
+	// A real reader answers the channel's heartbeats while this Worker withholds its result.
+	cancellation := make(chan ro.Message, 1)
+	readErrors := make(chan error, 1)
+	go func() {
+		_, raw, err := c.Read(ctx)
+		if err != nil {
+			readErrors <- err
+			return
+		}
+		var m ro.Message
+		if err = ro.Decode(raw, &m); err != nil {
+			readErrors <- err
+			return
+		}
+		cancellation <- m
+	}()
+	var result answer
+	select {
+	case result = <-answers:
+	case <-ctx.Done():
+		t.Fatal("forwarding response exceeded its deadline")
+	}
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	raw, err := io.ReadAll(result.response.Body)
+	result.response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failure api.ErrorResponse
+	if err = json.Unmarshal(raw, &failure); err != nil || result.response.StatusCode != 504 || failure.Error.Code != "timeout" {
+		t.Fatalf("forwarding timeout after %s: status=%d body=%q decode=%v", time.Since(started), result.response.StatusCode, raw, err)
+	}
+	if time.Since(started) < ro.RequestTimeout-time.Second {
+		t.Fatal("body deadline interrupted the forwarding window")
+	}
+	select {
+	case m := <-cancellation:
+		if m.Type != "cancel" || m.RequestID != request.RequestID {
+			t.Fatal("timeout cancelled another request")
+		}
+	case err := <-readErrors:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal("timed-out request was not cancelled")
+	}
+}

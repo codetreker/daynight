@@ -3,6 +3,7 @@ package workerreadonly
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -102,9 +103,15 @@ func (b *Broker) Disconnect(c *Connection) {
 	b.disconnect(c, fault("offline", "Worker read-only connection is offline."))
 }
 func (b *Broker) Check(ctx context.Context, c *Connection) error {
+	if err := requestContextError(ctx, nil); err != nil {
+		return err
+	}
 	if e := b.authorize(ctx, c.Principal, c.WorkerID); e != nil {
-		b.Disconnect(c)
-		return e
+		// A caller's interrupted authority read does not invalidate the shared Worker.
+		if ctx.Err() == nil && !errors.Is(e, context.Canceled) && !errors.Is(e, context.DeadlineExceeded) {
+			b.Disconnect(c)
+		}
+		return requestContextError(ctx, e)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -113,9 +120,33 @@ func (b *Broker) Check(ctx context.Context, c *Connection) error {
 	}
 	return nil
 }
-func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (Message, error) {
+func requestContextError(ctx context.Context, err error) error {
+	cause := ctx.Err()
+	if cause == nil {
+		cause = err
+	}
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		return fault("timeout", "Worker read-only request did not complete before its deadline.")
+	case errors.Is(cause, context.Canceled):
+		return fault("cancelled", "Worker read-only request was cancelled.")
+	default:
+		return err
+	}
+}
+func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (result Message, err error) {
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
+	// Normalize every exit while the operation context still reflects its caller or deadline.
+	defer func() {
+		if failure := requestContextError(ctx, err); failure != nil {
+			result = Message{}
+			err = failure
+		}
+	}()
+	if err := requestContextError(ctx, nil); err != nil {
+		return Message{}, err
+	}
 	if e := ValidateRequest(r); e != nil {
 		return Message{}, e
 	}
@@ -188,7 +219,7 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 	select {
 	case out := <-work.answer:
 		if e := ctx.Err(); e != nil {
-			return Message{}, fault("cancelled", "Worker read-only request was cancelled.")
+			return Message{}, e
 		}
 		if out.err != nil {
 			return Message{}, out.err
@@ -207,11 +238,7 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 		}
 		return out.message, nil
 	case <-ctx.Done():
-		code := "cancelled"
-		if ctx.Err() == context.DeadlineExceeded {
-			code = "timeout"
-		}
-		return Message{}, fault(code, "Worker read-only request did not complete.")
+		return Message{}, ctx.Err()
 	}
 }
 func (b *Broker) Deliver(ctx context.Context, c *Connection, m Message) error {

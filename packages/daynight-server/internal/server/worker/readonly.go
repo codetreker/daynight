@@ -79,7 +79,6 @@ func readOnlyWorker(r *http.Request) (string, error) {
 func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	ctx, cancel := context.WithTimeout(r.Context(), ro.RequestTimeout)
 	defer cancel()
-	r = r.WithContext(ctx)
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Now().Add(h.bodyTimeout))
 	_ = controller.SetWriteDeadline(time.Now().Add(ro.RequestTimeout + 5*time.Second))
@@ -132,7 +131,7 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 	}
 	var result ro.Message
 	if err == nil {
-		result, err = h.broker.Request(r.Context(), p, id, input)
+		result, err = h.broker.Request(ctx, p, id, input)
 	}
 	if err != nil {
 		h.failure(w, r, err)
