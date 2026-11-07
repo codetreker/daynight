@@ -2049,6 +2049,12 @@ The [direct-observation state-wait decision](../../.agents/notes/implemented/tes
 and [Steps session state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-steps-session-state-waits.md)
 record these readiness and reader-lifetime requirements.
 
+Catalogue-only direct-observation cases mount the real detail hook, session and
+cache without the detail surface. They bind injected cache verification outcomes
+to the catalogue request signal. Menu, relation, focus and confirmation cases
+retain the full surface. The [catalogue fixture decision](../../.agents/notes/implemented/testing/2026-11-07-direct-catalogue-fixture.md)
+records the ownership and isolation trade-off.
+
 Authenticated-shell and Team-navigation integration tests use the state waiter
 for request counters, request bodies and storage observations. Rendered controls
 and mixed state/presentation predicates retain the DOM waiter. Identity-mismatch
