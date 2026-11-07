@@ -57,7 +57,7 @@ func TestNativeSessionHTTPAndBrowserKeepOtherProjectMembersReadOnly(t *testing.T
 			browser := sessionDial(t, f.server.URL, path+"/channel", reader.token, nil)
 			defer browser.CloseNow()
 			frame := sessionWSKind(t, browser, "snapshot")
-			projected, err := sp.DecodeSnapshot(frame["session"])
+			projected, err := sp.DecodeSnapshot(frame["snapshot"])
 			if err != nil || projected.Operations != (sp.Operations{}) || projected.Controls.Settings[0].Mutable || projected.Controls.Commands[0].Available {
 				t.Fatal("reader browser snapshot retained interaction authority", err)
 			}
@@ -101,6 +101,7 @@ func TestTerminalSessionHTTPKeepsOtherProjectMembersReadOnly(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, f.base+"/"+message.SessionID+"/commands", strings.NewReader(jsonBody(t, message)))
 			authorizeResourceRequest(reader, request)
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Request-ID", "project-test")
 			request.Header.Set(v2.ProtocolHeader, v2.Protocol)
 			request.Header.Set("Daynight-Browser-Client", browserID)
 			response := httptest.NewRecorder()
