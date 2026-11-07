@@ -71,7 +71,7 @@ func fingerprint(p model.Principal, o Owner, m Mutation) (string, error) {
 	if m.Kind != "endpoint.create" {
 		ifVersion = &m.IfVersion
 	}
-	return core.Fingerprint(core.Intent{OperationID: m.OperationID, ActorID: p.UserID, OwnerKind: o.Kind, OwnerID: o.ID, Kind: m.Kind, TargetID: m.EndpointID, IssuedAt: m.IssuedAt, IfVersion: ifVersion, Name: m.Name, Enabled: m.Enabled, Destination: dest, HasSubscriptions: m.HasSubscriptions, Mode: m.Mode})
+	return core.Fingerprint(core.Intent{OperationID: m.OperationID, ActorID: p.UserID, OwnerKind: o.Kind, OwnerID: o.ID, Kind: m.Kind, TargetID: m.EndpointID, IssuedAt: m.IssuedAt, IfVersion: ifVersion, Name: m.Name, Enabled: m.Enabled, Destination: dest, HasSubscriptions: m.HasSubscriptions, Subscriptions: m.Subscriptions, ConfirmProjectIDs: m.ConfirmProjectIDs, Mode: m.Mode})
 }
 func checkTime(issued string, now time.Time, policy wm.Policy) error {
 	switch err := core.CheckIssuedAtLimits(issued, now, time.Duration(policy.OperationMaxAgeSeconds)*time.Second, time.Duration(policy.OperationFutureSkewSeconds)*time.Second); {
@@ -86,6 +86,9 @@ func checkTime(issued string, now time.Time, policy wm.Policy) error {
 	}
 }
 func validateMutation(m *Mutation) error {
+	if err := validSubscriptionInput(*m); err != nil {
+		return err
+	}
 	if core.CanonicalUUID(m.OperationID) != nil || core.CanonicalUUID(m.ExpectedUserID) != nil {
 		return fault("invalid_input", "Invalid operation identity.")
 	}
@@ -160,7 +163,26 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if e = checkTime(m.IssuedAt, now, policy); e != nil {
 			return e
 		}
-		authorityErr := sc.LockAuthority(ctx, o, p.UserID)
+		var plannedVersion int64
+		var plannedSubscriptions []wm.Subscription
+		if m.Kind != "endpoint.create" {
+			planned, e := w.Endpoint(ctx, o, m.EndpointID)
+			if e != nil {
+				return notFound(e)
+			}
+			if planned.DeletedAt != nil {
+				return fault("not_found", "Webhook resource was not found.")
+			}
+			plannedVersion = planned.ConfigVersion
+			if plannedVersion != m.IfVersion {
+				return fault("version_conflict", "Webhook configuration version changed.")
+			}
+			plannedSubscriptions, e = w.Subscriptions(ctx, planned.ID)
+			if e != nil {
+				return e
+			}
+		}
+		authorityErr := sc.LockConfigurationSources(ctx, o, p.UserID, configurationProjects(plannedSubscriptions, m))
 		if failed, _ := store.DatabaseErrorFacts(authorityErr); failed {
 			return authorityErr
 		}
@@ -212,7 +234,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			if ep.DeletedAt != nil {
 				return fault("not_found", "Webhook resource was not found.")
 			}
-			if ep.ConfigVersion != m.IfVersion {
+			if ep.ConfigVersion != plannedVersion {
 				return fault("version_conflict", "Webhook configuration version changed.")
 			}
 			oldKeys, e = w.SigningKeys(ctx, ep.ID)
@@ -221,6 +243,13 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			}
 		}
 		oldEP := ep
+		var oldSubscriptions []wm.Subscription
+		if m.Kind != "endpoint.create" {
+			oldSubscriptions, e = w.LockSubscriptions(ctx, ep.ID)
+			if e != nil {
+				return e
+			}
+		}
 		keys := append([]wm.SigningKey(nil), oldKeys...)
 		changed := false
 		deleted := false
@@ -352,6 +381,14 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		default:
 			return fault("invalid_input", "Unsupported webhook operation.")
 		}
+		var subscriptionChanges subscriptionChanges
+		if m.Kind == "endpoint.create" || m.Kind == "endpoint.update" || m.Kind == "endpoint.delete" {
+			subscriptionChanges, e = s.planSubscriptions(ctx, sc, ep, p.UserID, m, oldSubscriptions, m.Kind == "endpoint.update" && !oldEP.Enabled && ep.Enabled, now)
+			if e != nil {
+				return e
+			}
+			changed = changed || subscriptionChanges.changed
+		}
 		if changed && m.Kind != "endpoint.create" {
 			if ep.ConfigVersion == math.MaxInt64 {
 				return fault("version_exhausted", "Configuration version exhausted.")
@@ -425,6 +462,9 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			if e = w.PutEndpoint(ctx, ep); e != nil {
 				return e
 			}
+			if e = subscriptionChanges.save(ctx, w); e != nil {
+				return e
+			}
 			if e = w.DeleteSigningKeys(ctx, ep.ID); e != nil {
 				return e
 			}
@@ -479,7 +519,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if e != nil {
 			return notFound(e)
 		}
-		view, e := s.endpointView(ctx, sc, ep, manage)
+		view, e := s.endpointView(ctx, sc, ep, p.UserID, manage)
 		if e != nil {
 			return e
 		}

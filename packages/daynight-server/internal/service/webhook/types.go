@@ -3,6 +3,7 @@ package webhook
 
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"io"
@@ -17,6 +18,8 @@ type Mutation struct {
 	Enabled                                                 *bool
 	Destination                                             *Destination
 	HasSubscriptions                                        bool
+	Subscriptions                                           []core.SubscriptionInput
+	ConfirmProjectIDs                                       []string
 	Mode                                                    string
 }
 type ListQuery struct {

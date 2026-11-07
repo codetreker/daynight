@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
@@ -202,6 +203,9 @@ func (s *Projects) Delete(ctx context.Context, p model.Principal, id string) (De
 		}
 		if !marked {
 			return errors.New("project deletion did not mark a project")
+		}
+		if err = webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{ProjectID: id}); err != nil {
+			return err
 		}
 		if err = session.RetireProject(ctx, scope.SessionDAO(), id); err != nil {
 			return err

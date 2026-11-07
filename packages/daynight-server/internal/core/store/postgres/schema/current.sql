@@ -1,4 +1,4 @@
--- Schema snapshot version: 48
+-- Schema snapshot version: 49
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -613,6 +613,16 @@ CREATE TABLE "users" (
     CONSTRAINT "users_uniauth_id_check" CHECK (("length"("uniauth_id") > 0))
 );
 
+CREATE TABLE "webhook_bindings" (
+    "id" "uuid" NOT NULL,
+    "subscription_id" "uuid" NOT NULL,
+    "event_type" "text" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "webhook_bindings_created_at_check" CHECK ("isfinite"("created_at")),
+    CONSTRAINT "webhook_bindings_deleted_at_check" CHECK ("isfinite"("deleted_at"))
+);
+
 CREATE TABLE "webhook_endpoints" (
     "id" "uuid" NOT NULL,
     "owner_kind" "text" NOT NULL,
@@ -732,6 +742,25 @@ CREATE TABLE "webhook_signing_keys" (
     CONSTRAINT "webhook_signing_keys_overlap_started_at_check" CHECK ("isfinite"("overlap_started_at")),
     CONSTRAINT "webhook_signing_keys_overlap_until_check" CHECK ("isfinite"("overlap_until")),
     CONSTRAINT "webhook_signing_keys_slot_check" CHECK (("slot" = ANY (ARRAY['current'::"text", 'overlap'::"text"])))
+);
+
+CREATE TABLE "webhook_subscriptions" (
+    "id" "uuid" NOT NULL,
+    "endpoint_id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "authorization_state" "text" NOT NULL,
+    "authorization_epoch" bigint NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "webhook_subscriptions_authorization_epoch_check" CHECK (("authorization_epoch" > 0)),
+    CONSTRAINT "webhook_subscriptions_authorization_state_check" CHECK (("authorization_state" = ANY (ARRAY['active'::"text", 'confirmation_required'::"text"]))),
+    CONSTRAINT "webhook_subscriptions_created_at_check" CHECK ("isfinite"("created_at")),
+    CONSTRAINT "webhook_subscriptions_deleted_at_check" CHECK ("isfinite"("deleted_at")),
+    CONSTRAINT "webhook_subscriptions_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
+    CONSTRAINT "webhook_subscriptions_updated_at_check" CHECK ("isfinite"("updated_at"))
 );
 
 CREATE TABLE "workers" (
@@ -955,6 +984,9 @@ ALTER TABLE ONLY "users"
 ALTER TABLE ONLY "users"
     ADD CONSTRAINT "users_uniauth_id_key" UNIQUE ("uniauth_id");
 
+ALTER TABLE ONLY "webhook_bindings"
+    ADD CONSTRAINT "webhook_bindings_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "webhook_endpoints"
     ADD CONSTRAINT "webhook_endpoints_pkey" PRIMARY KEY ("id");
 
@@ -969,6 +1001,9 @@ ALTER TABLE ONLY "webhook_signing_keys"
 
 ALTER TABLE ONLY "webhook_signing_keys"
     ADD CONSTRAINT "webhook_signing_keys_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "webhook_subscriptions"
+    ADD CONSTRAINT "webhook_subscriptions_pkey" PRIMARY KEY ("id");
 
 ALTER TABLE ONLY "workers"
     ADD CONSTRAINT "workers_pkey" PRIMARY KEY ("user_id", "worker_id");
@@ -1061,6 +1096,12 @@ CREATE UNIQUE INDEX "test_session_execution" ON "task_sessions" USING "btree" ("
 
 CREATE UNIQUE INDEX "test_session_registration" ON "task_sessions" USING "btree" ("owner_user_id", "registration_id") WHERE ("scope" = 'test'::"text");
 
+CREATE UNIQUE INDEX "webhook_bindings_active" ON "webhook_bindings" USING "btree" ("subscription_id", "event_type") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "webhook_bindings_capture" ON "webhook_bindings" USING "btree" ("event_type", "subscription_id", "id") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "webhook_bindings_deleted" ON "webhook_bindings" USING "btree" ("subscription_id", "deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
+
 CREATE INDEX "webhook_endpoints_deleted" ON "webhook_endpoints" USING "btree" ("deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
 
 CREATE INDEX "webhook_endpoints_master_key" ON "webhook_endpoints" USING "btree" ("destination_master_key_id", "id") WHERE ("destination_master_key_id" IS NOT NULL);
@@ -1072,6 +1113,12 @@ CREATE INDEX "webhook_operations_endpoint" ON "webhook_operations" USING "btree"
 CREATE INDEX "webhook_operations_expiry" ON "webhook_operations" USING "btree" ("expires_at", "owner_kind", "owner_id", "operation_id");
 
 CREATE INDEX "webhook_signing_keys_master_key" ON "webhook_signing_keys" USING "btree" ("master_key_id", "endpoint_id", "id");
+
+CREATE INDEX "webhook_subscriptions_acl" ON "webhook_subscriptions" USING "btree" ("project_id", "owner_kind", "owner_id", "id") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "webhook_subscriptions_deleted" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
+
+CREATE INDEX "webhook_subscriptions_endpoint" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "id") WHERE ("deleted_at" IS NULL);
 
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
 

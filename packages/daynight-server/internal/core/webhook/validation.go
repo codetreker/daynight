@@ -149,6 +149,25 @@ type Destination struct {
 	Kind, AdapterVersion, URL string
 }
 
+// SubscriptionInput describes one independently retained project selection.
+type SubscriptionInput struct {
+	ID         *string
+	ProjectID  string
+	EventTypes []string
+}
+
+// EventTypes is the fixed catalog accepted by configuration and dispatch.
+var EventTypes = [...]string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"}
+
+func ValidEventType(value string) bool {
+	for _, eventType := range EventTypes {
+		if value == eventType {
+			return true
+		}
+	}
+	return false
+}
+
 // Intent contains all normalized inputs to a T01 mutation. Nil optional fields
 // represent omitted fields and remain distinct from provided zero values.
 type Intent struct {
@@ -158,6 +177,8 @@ type Intent struct {
 	Enabled                                                            *bool
 	Destination                                                        *Destination
 	HasSubscriptions                                                   bool
+	Subscriptions                                                      []SubscriptionInput `json:",omitempty"`
+	ConfirmProjectIDs                                                  []string            `json:",omitempty"`
 	Mode                                                               string
 }
 

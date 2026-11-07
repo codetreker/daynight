@@ -8,6 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
@@ -61,8 +62,9 @@ func (s *Store) WriteProjectDeletion(ctx context.Context, id string, operation f
 	return teamCompletion("project deletion", err)
 }
 
-func (s *deletionSnapshot) ProjectDAO() store.ProjectReader   { return project.NewReader(s.tx) }
-func (s *deletionScope) ProjectDAO() store.ProjectDeletionDAO { return &s.projectDeletion }
+func (s *deletionSnapshot) ProjectDAO() store.ProjectReader          { return project.NewReader(s.tx) }
+func (s *deletionScope) ProjectDAO() store.ProjectDeletionDAO        { return &s.projectDeletion }
+func (s *deletionScope) EligibilityDAO() store.WebhookEligibilityDAO { return eligibility.New(s.tx) }
 func (s *deletionScope) SessionDAO() store.ProjectSessionRetirementDAO {
 	return session.NewProjectRetirementDAO(s.tx, s.projectID)
 }

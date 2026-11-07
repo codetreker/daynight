@@ -49,3 +49,20 @@ type Policy struct {
 	JitterBasisPoints, JitterMaxSeconds                                          int32
 	KeyOverlapDefaultSeconds, KeyOverlapMaxSeconds                               int32
 }
+
+// Subscription retains a project authorization identity across configuration edits.
+type Subscription struct {
+	ID, EndpointID, ProjectID string
+	Owner                     Owner
+	AuthorizationState        string
+	AuthorizationEpoch        int64
+	CreatedAt, UpdatedAt      time.Time
+	DeletedAt                 *time.Time
+}
+
+// Binding identifies one continuous selection of an event type.
+type Binding struct {
+	ID, SubscriptionID, EventType string
+	CreatedAt                     time.Time
+	DeletedAt                     *time.Time
+}
