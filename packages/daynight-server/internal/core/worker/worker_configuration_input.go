@@ -63,7 +63,7 @@ func configurationInteger(raw json.RawMessage, minimum, maximum int64) (int64, e
 	return value, nil
 }
 
-func configurationNative(raw json.RawMessage, overrides bool) (model.WorkerNativeConfiguration, map[string]json.RawMessage, error) {
+func configurationNative(raw json.RawMessage, overrides, admit bool) (model.WorkerNativeConfiguration, map[string]json.RawMessage, error) {
 	fields, err := configurationObject(raw, "native", overrides, "agent", "model", "args")
 	if err != nil {
 		return model.WorkerNativeConfiguration{}, nil, err
@@ -85,14 +85,21 @@ func configurationNative(raw json.RawMessage, overrides bool) (model.WorkerNativ
 		if err := configurationDecode(field, &value.Args); err != nil {
 			return value, nil, err
 		}
+		if admit {
+			if err := nativeLimits("native", value); err != nil {
+				return value, nil, InputLimit(err)
+			}
+		}
 		for _, arg := range value.Args {
 			if !configurationText(arg) {
 				return value, nil, invalidInput("Native arguments must be nonempty text without control characters.")
 			}
 		}
 	}
-	if err := nativeLimits("native", value); err != nil {
-		return value, nil, InputLimit(err)
+	if admit {
+		if err := nativeLimits("native", value); err != nil {
+			return value, nil, InputLimit(err)
+		}
 	}
 	// Re-encoding each node gives equal override values one canonical representation.
 	normalized := make(map[string]json.RawMessage, len(fields))
@@ -109,6 +116,12 @@ func configurationNative(raw json.RawMessage, overrides bool) (model.WorkerNativ
 }
 
 func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, error) {
+	return parseWorkerConfiguration(raw, true)
+}
+
+// Stored values need structural normalization for semantic comparisons even
+// when they predate current write limits. Only candidates are admitted.
+func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConfiguration, error) {
 	var value model.WorkerConfiguration
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
@@ -129,7 +142,7 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 	if err != nil {
 		return value, err
 	}
-	value.Native, _, err = configurationNative(fields["native"], false)
+	value.Native, _, err = configurationNative(fields["native"], false, admit)
 	if err != nil {
 		return value, err
 	}
@@ -137,8 +150,10 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 	if err := configurationDecode(fields["projects"], &projects); err != nil {
 		return value, err
 	}
-	if err := upper("projects", int64(len(projects)), MaxProjects, "items"); err != nil {
-		return value, InputLimit(err)
+	if admit {
+		if err := upper("projects", int64(len(projects)), MaxProjects, "items"); err != nil {
+			return value, InputLimit(err)
+		}
 	}
 	value.Projects = make([]model.WorkerProjectConfiguration, 0, len(projects))
 	seen := make(map[string]bool, len(projects))
@@ -159,18 +174,20 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 			return value, invalidInput("Configuration projects must be unique.")
 		}
 		seen[project.ProjectID] = true
-		_, project.NativeOverrides, err = configurationNative(fields["nativeOverrides"], true)
+		_, project.NativeOverrides, err = configurationNative(fields["nativeOverrides"], true, admit)
 		if err != nil {
 			return value, err
 		}
 		value.Projects = append(value.Projects, project)
 	}
 	slices.SortFunc(value.Projects, func(a, b model.WorkerProjectConfiguration) int { return strings.Compare(a.ProjectID, b.ProjectID) })
-	if err := AdmitConfiguration(value); err != nil {
-		return value, InputLimit(err)
-	}
-	if _, err := workerprotocol.EncodeConfiguration(io.Discard, value, MaxConfigurationJSONBytes); err != nil {
-		return value, InputLimit(err)
+	if admit {
+		if err := AdmitConfiguration(value); err != nil {
+			return value, InputLimit(err)
+		}
+		if _, err := workerprotocol.EncodeConfiguration(io.Discard, value, MaxConfigurationJSONBytes); err != nil {
+			return value, InputLimit(err)
+		}
 	}
 	return value, nil
 }
@@ -285,7 +302,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		if !configurationNull(item.AppliedValue) {
 			switch item.Key.Kind {
 			case "native", "projectNative":
-				_, _, err = configurationNative(item.AppliedValue, false)
+				_, _, err = configurationNative(item.AppliedValue, false, true)
 			case "projectPreparation", "projectRemoval":
 				var ready bool
 				err = configurationDecode(item.AppliedValue, &ready)

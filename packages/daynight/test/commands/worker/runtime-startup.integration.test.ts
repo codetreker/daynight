@@ -110,6 +110,43 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("continues retained-project reconciliation after a full observation is acknowledged and after restart", async () => {
+    const f = await fixture(true, false), target = desired([]), ids = [uuid(10_000), uuid(10_001)];
+    for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });
+    const stored = (key: Record<string, string>, appliedValue: unknown) => ({ value: { key, targetRevision: "1", appliedValue, state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
+    const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "native" }, target.value.native)];
+    for (let n = 0; n < 1019; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(20_000 + n) }, true));
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 1, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: target, observationRevision: "0", nextFailureId: 1, items }));
+    let revision = 0n, reporterOptions: ReporterOptions | undefined;
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(revision), observation: null }));
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { reporterOptions = options; return reporter(); });
+    const stopProject = vi.fn(async (_projectId: string, _signal: AbortSignal) => {}), tick = vi.fn(async () => {});
+    mocks.coordinator.mockImplementation(() => ({ stopProject, tick, updateConfiguration: vi.fn(), shutdown: vi.fn(async () => true) }));
+    for (let pass = 0; pass < 2; pass++) {
+      reporterOptions = undefined; stopProject.mockClear(); tick.mockClear();
+      const { cancellation, running } = start(f);
+      await vi.waitFor(() => {
+        expect(reporterOptions).toBeDefined();
+        expect(stopProject).toHaveBeenCalledTimes(pass === 0 ? 1 : 2);
+        expect(reporterOptions!.configuration!.capture().observation!.items.filter(item => item.key.kind === "projectRemoval" && item.state === "applied")).toHaveLength(pass === 0 ? 1020 : 2);
+        if (pass === 0) expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("capacity") }) }));
+      }, { timeout: 10_000, interval: 50 });
+      const firstBatch = reporterOptions!.configuration!.capture();
+      await reporterOptions!.configuration!.accept(firstBatch, { desired: target, observationRevision: String(++revision), observationAccepted: true });
+      if (pass === 0) {
+        await vi.waitFor(() => {
+          expect(stopProject).toHaveBeenCalledTimes(2);
+          expect(reporterOptions!.configuration!.capture().observation!.items).toEqual(expect.arrayContaining([expect.objectContaining({ key: { kind: "projectRemoval", projectId: ids[1] }, state: "applied" })]));
+        }, { timeout: 10_000, interval: 50 });
+        const lastBatch = reporterOptions!.configuration!.capture();
+        await reporterOptions!.configuration!.accept(lastBatch, { desired: target, observationRevision: String(++revision), observationAccepted: true });
+      }
+      expect(new Set(stopProject.mock.calls.map(([id]) => id))).toEqual(new Set(ids));
+      await vi.waitFor(() => expect(tick).toHaveBeenCalled(), { timeout: 10_000, interval: 100 });
+      cancellation.abort(); await running;
+    }
+  }, 30_000);
   it("starts reporting a full cache and adopts a deferred target after acknowledged removal", async () => {
     const f = await fixture(true, false), cancellation = new AbortController(); cancellations.add(cancellation);
     const old = desired([]), next: WorkerCloudDesired = { ...desired([uuid(10)]), revision: "2" };

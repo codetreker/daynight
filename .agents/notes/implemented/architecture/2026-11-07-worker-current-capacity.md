@@ -22,7 +22,9 @@ and [configuration](../../../../docs/spec/daynight-worker-configuration.md)
 The Worker bounds growth of its current application observations and uses the
 existing receipt to compact confirmed results that are no longer needed. It
 retains unfinished removals and unconfirmed failures and does not truncate a
-complete inventory. The [configuration decision](../../archived/architecture/2026-11-04-worker-cloud-configuration.md)
+complete inventory. Startup retains registration progress across capacity retries
+within the current run and re-observes retained projects after restart. The
+[configuration decision](../../archived/architecture/2026-11-04-worker-cloud-configuration.md)
 records the original separation between target and application observations.
 
 ## Alternatives
