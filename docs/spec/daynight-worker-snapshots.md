@@ -128,6 +128,8 @@ activeTaskCount 是当前有权限访问的快照任务数。它不是实时任�
 
 分页使用不可变 `(created_at,worker_id)` 位置，cursor 绑定资源类型和认证账号。持续更新的 lastReportedAt 不作为位置；换账号或不匹配的 cursor 返回输入错误。每页是各自一致的读取快照，跨页期间的新注册或重新活跃记录可在下一轮遍历出现。
 
+列表完整 JSON 响应最多 8 MiB，包含转义、外壳、cursor 和末尾换行；达到字节或条数限制时从最后返回项继续。历史首项无法装入时返回 409 `resource_limit_exceeded`，不返回局部成功。
+
 ## 错误与可观察结果
 
 格式与约束错误沿用 `400 invalid_input`，未认证为 401，未知/他人/超窗详情为 404，active 名额拒绝为 `409 active_worker_limit_exceeded`，存储失败为清洗后的 500。失败响应保留既有 requestId，SQL、连接串、完整遥测、原生命令输出和凭据不进入诊断。

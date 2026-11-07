@@ -2,6 +2,8 @@ package task
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -13,6 +15,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
@@ -266,12 +269,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 	}
 	logger = logger.With("task_id", task.ID)
 	logger.InfoContext(request.Context(), "task created", "type", "resource", "component", "task", "phase", "create", "request_id", httpx.RequestID(request.Context()))
-	response, err := taskResponse(task, request)
-	if err != nil {
-		httpx.WriteError(w, request, logger, "task", "create", err)
-		return
-	}
-	httpx.WriteCreated(w, request, logger, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, response)
+	writeTaskMutation(w, request, logger, "task", http.StatusCreated, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, task)
 }
 
 func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -286,6 +284,7 @@ func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, princip
 		httpx.WriteError(w, request, logger, "task", "list", err)
 		return
 	}
+	input.ExtendedWorker = extendedWorkerProtocol(request)
 	page, err := h.listWorkerCompatibleTasks(request, principal, projectID, input)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "list", err)
@@ -319,9 +318,13 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 		httpx.WriteError(w, request, logger, "task", "get", err)
 		return
 	}
-	observation, err := h.tasks.Observe(request.Context(), principal, projectID, id)
+	observation, err := h.tasks.ObserveREST(request.Context(), principal, projectID, id, extendedWorkerProtocol(request))
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "get", err)
+		return
+	}
+	if _, err := taskprotocol.EncodeREST(io.Discard, observation.Task, extendedWorkerProtocol(request), taskcore.MaxTaskResponseJSONBytes); err != nil {
+		httpx.WriteError(w, request, logger, "task", "response", taskReadResponseError(err))
 		return
 	}
 	logger.InfoContext(request.Context(), "task read", "type", "resource", "component", "task", "phase", "get", "request_id", httpx.RequestID(request.Context()))
@@ -332,6 +335,14 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 	}
 	w.Header().Set("Daynight-Task-Epoch", observation.Epoch)
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
+}
+
+func taskReadResponseError(err error) error {
+	var violation *limit.Violation
+	if errors.As(err, &violation) || errors.Is(err, taskprotocol.ErrLegacyWorkerIndeterminate) {
+		return &model.Fault{Code: "resource_limit_exceeded", Message: "Task response exceeds the encoded resource limit.", Cause: err}
+	}
+	return err
 }
 
 func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -362,12 +373,25 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	logger.InfoContext(request.Context(), "task updated", "type", "resource", "component", "task", "phase", "update", "request_id", httpx.RequestID(request.Context()))
+	writeTaskMutation(w, request, logger, "task", http.StatusOK, "", task)
+}
+
+func committedResponseFailure(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component string, err error) {
+	logger = logger.With("tx_outcome", "committed", "write_outcome", "unknown")
+	httpx.WriteError(w, request, logger, component, "response", &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err})
+}
+
+func writeTaskMutation(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component string, status int, location string, task model.Task) {
+	logger = logger.With("tx_outcome", "committed")
 	response, err := taskResponse(task, request)
 	if err != nil {
-		httpx.WriteError(w, request, logger, "task", "response", err)
+		committedResponseFailure(w, request, logger, component, err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
+	if location != "" {
+		w.Header().Set("Location", location)
+	}
+	httpx.WriteMutationJSON(w, request, logger, component, status, response)
 }
 
 func timestampResponse(value *time.Time) *time.Time {

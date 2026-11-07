@@ -218,7 +218,7 @@ func TestInvitationPageBudgetAndCursor(t *testing.T) {
 	}
 	team.page.Items = []model.TeamInvitation{{ID: invitationTestProjectID, TeamID: invitationTestTeamID, CreatedBy: strings.Repeat("x", 17000), CreatedAt: now, ExpiresAt: now.Add(time.Hour)}}
 	out = invitationCall(t, client, "team_invitation_list", map[string]any{"team": invitationTestTeamID}, true)
-	if object(t, out["error"])["code"] != "internal_error" {
+	if object(t, out["error"])["code"] != "resource_limit_exceeded" {
 		t.Fatal("oversized item was not rejected")
 	}
 	adapter := invitationAdapter{teams: team}

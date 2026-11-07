@@ -9,6 +9,7 @@ import (
 type BotReader interface {
 	Bot(context.Context, string) (model.Bot, error)
 	Bots(context.Context, string, *string, Page) (BotPage, error)
+	BotsBounded(context.Context, string, *string, Page) (BotPage, error)
 	BotWorker(context.Context, string, string) error
 	BotDefaults(context.Context, string) (model.BotDefaultsInput, error)
 }

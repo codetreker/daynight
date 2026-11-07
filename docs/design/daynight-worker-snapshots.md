@@ -44,9 +44,9 @@ UPSERT 同时写锁后采集的 last_seen_at、telemetry、task_snapshot，目�
 
 列表和详情复用 read-only REPEATABLE READ，并在同一快照取得数据库 observedAt、Worker 行及任务可见性。近期条件为 `last_seen_at >= observedAt - interval '72 hours'`；详情额外按账号和 workerId 定位。GET 没有续活写入。
 
-列表按稳定 `(created_at,worker_id)` keyset 读取 limit+1 行。service 生成类型为 workers、绑定认证 userId 的 cursor；它不将频繁变化的 last_seen_at 用作游标。近期索引与创建时间排序承担不同职责，实际查询计划用于核对账号近期筛选及分页成本。
+列表按稳定 `(created_at,worker_id)` keyset 逐项读取摘要，service 按实际 JSON 输出和 cursor 计入 8 MiB 页预算，最多多读一项作为续页依据。cursor 绑定认证 userId；它不将频繁变化的 last_seen_at 用作游标。近期索引与创建时间排序承担不同职责。
 
-每页收集任务快照引用后，使用与上报相同的 `ProjectAccessRelation` 按认证 userId 批量查询当前可访问且未删除的任务，再核对引用的 projectId 并过滤任务数组。详情使用同一个过滤机制，不逐项查询权限。计数由过滤后的数组产生；unavailable 输出 null，已知或 stale 输出实际可见数量。当前 claim 不参与旧观测的读取资格，因此完成和转交不会改写历史 phase/status，权限撤销与删除则立即约束后续读取的标题和计数。过滤不改写保存的快照；重新获得项目权限后，仍未删除的历史观测可再次返回。
+列表 SQL 只投影摘要字段，并使用 `ProjectAccessRelation` 按认证 userId 计数当前可访问且未删除的快照任务，不传输或解码完整 telemetry 和任务数组。详情读取单份完整快照后以相同权限规则过滤。unavailable 输出 null，已知或 stale 输出实际可见数量。当前 claim 不参与旧观测的读取资格，因此完成和转交不会改写历史 phase/status，权限撤销与删除则立即约束后续读取的标题和计数。过滤不改写保存的快照；重新获得项目权限后，仍未删除的历史观测可再次返回。
 
 ## 时间与数据含义
 

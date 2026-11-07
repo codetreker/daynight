@@ -235,7 +235,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 并绑定 project、task 与附件列表类型；沿用既有 opaque cursor 和 `items/nextCursor`
 形式。附件游标单独保存 version/kind/projectId/taskId/path，严格拒绝未知字段、
 尾随 JSON 和跨作用域重用；不伪造既有 task 列表所需的 UUID/time 游标。每页使用
-当前数据，不提供跨页快照。
+当前数据，不提供跨页快照。REST 在同一快照中逐项读取并按实际 JSON 编码计入 2 MiB，含 cursor 和换行；下一项超限时从最后返回路径继续，首项无法装入时返回 409 `resource_limit_exceeded`。
 
 ## 上传、覆盖、读取与删除
 

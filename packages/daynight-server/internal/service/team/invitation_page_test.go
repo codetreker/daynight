@@ -41,6 +41,35 @@ func invitationPrincipal() model.Principal {
 	return model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 }
 
+func TestInvitationsAdmittedUsesOneExpiryTime(t *testing.T) {
+	principal, teamID := invitationPrincipal(), uuid.NewString()
+	now := time.Date(2026, 11, 6, 18, 30, 0, 0, time.UTC)
+	items := []model.TeamInvitation{{ID: uuid.NewString(), TeamID: teamID, CreatedAt: now.Add(-time.Hour)}, {ID: uuid.NewString(), TeamID: teamID, CreatedAt: now.Add(-time.Minute)}}
+	clockCalls, pageCalls := 0, 0
+	reader := &invitationReader{
+		team: func(context.Context, string, string) (model.Team, error) {
+			return model.Team{TeamRef: model.TeamRef{ID: teamID, Kind: "ordinary"}, Membership: model.TeamMember{Role: model.ProjectAdmin}}, nil
+		},
+		page: func(_ context.Context, _ string, observed time.Time, page store.Page) (store.TeamInvitationPage, error) {
+			if !observed.Equal(now) {
+				t.Fatalf("expiry cutoff changed: %v", observed)
+			}
+			pageCalls++
+			if page.After == nil {
+				return store.TeamInvitationPage{Items: items[:1], HasMore: true}, nil
+			}
+			return store.TeamInvitationPage{Items: items[1:]}, nil
+		},
+	}
+	snapshot := &invitationSnapshot{dao: reader}
+	snapshot.read = func(_ context.Context, op func(store.SnapshotScope) error) error { return op(snapshot) }
+	svc := &Teams{reader: snapshot, now: func() time.Time { clockCalls++; return now.Add(time.Duration(clockCalls-1) * time.Hour) }}
+	page, err := svc.InvitationsAdmitted(t.Context(), principal, teamID, model.PageRequest{Limit: 2}, func([]model.TeamInvitation, *string) error { return nil })
+	if err != nil || !reflect.DeepEqual(page.Items, items) || page.NextCursor != nil || clockCalls != 1 || pageCalls != 2 {
+		t.Fatalf("page=%+v clock calls=%d page calls=%d err=%v", page, clockCalls, pageCalls, err)
+	}
+}
+
 func TestListInvitationPageUsesOneSnapshotAndForwardsPaging(t *testing.T) {
 	principal := invitationPrincipal()
 	teamID := uuid.NewString()

@@ -376,3 +376,155 @@ func TestPreferenceWriteFailuresRemainErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestBoundedBotProjectionExcludesUnreturnedFields(t *testing.T) {
+	f := newFixture(t)
+	original := f.ready(t, f.candidate)
+	exec(t, f.tx, `UPDATE bots SET requested_overrides=requested_overrides || jsonb_build_object('unused',repeat('x',18000000)), request_fingerprint=repeat('a',64) WHERE id=$1`, original.ID)
+	page, err := f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 10})
+	if err != nil || len(page.Items) != 1 || page.OversizedBotID != "" {
+		t.Fatalf("bounded projection: %+v %v", page, err)
+	}
+	got := page.Items[0]
+	if got.ID != original.ID || !reflect.DeepEqual(got.ResolvedConfiguration, original.ResolvedConfiguration) || !reflect.DeepEqual(got.RoleConfiguration, original.RoleConfiguration) || got.RequestFingerprint != "" {
+		t.Fatalf("projection mismatch: %+v", got)
+	}
+	exec(t, f.tx, `UPDATE bots SET role_configuration=jsonb_set(role_configuration,'{instructions}',to_jsonb(repeat('x',18000000))) WHERE id=$1`, original.ID)
+	page, err = f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 10})
+	if err != nil || page.OversizedBotID != original.ID || len(page.Items) != 0 {
+		t.Fatalf("oversized: %+v %v", page, err)
+	}
+}
+
+func TestBoundedBotProjectionRejectsMalformedKnownFields(t *testing.T) {
+	f := newFixture(t)
+	item := f.ready(t, f.candidate)
+	// Simulate legacy or externally corrupted rows without changing the schema outside this rolled-back fixture.
+	for _, constraint := range []string{"bots_role_configuration_check", "bots_requested_overrides_check", "bots_resolved_configuration_check", "bots_startup_result_check"} {
+		exec(t, f.tx, `ALTER TABLE bots DROP CONSTRAINT `+constraint)
+	}
+	for _, mutation := range []string{
+		`UPDATE bots SET role_configuration='"bad"'::jsonb WHERE id=$1`,
+		`UPDATE bots SET requested_overrides='"bad"'::jsonb WHERE id=$1`,
+		`UPDATE bots SET resolved_configuration='"bad"'::jsonb WHERE id=$1`,
+		`UPDATE bots SET startup_result='"bad"'::jsonb WHERE id=$1`,
+		`UPDATE bots SET resolved_configuration=jsonb_set(resolved_configuration,'{args}','[1]'::jsonb) WHERE id=$1`,
+		`UPDATE bots SET role_configuration=jsonb_set(role_configuration,'{instructions}','1'::jsonb) WHERE id=$1`,
+	} {
+		exec(t, f.tx, `SAVEPOINT malformed_bot`)
+		exec(t, f.tx, mutation, item.ID)
+		if _, err := f.reader.Bot(t.Context(), item.ID); err == nil {
+			t.Fatalf("full read accepted malformed %s", mutation)
+		}
+		if _, err := f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 1}); err == nil {
+			t.Fatalf("bounded read accepted malformed %s", mutation)
+		}
+		exec(t, f.tx, `ROLLBACK TO SAVEPOINT malformed_bot`)
+	}
+	deletion := &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: item.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+	if _, err := f.writer.SaveBotDeletion(t.Context(), item.ID, deletion); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, f.tx, `UPDATE bots SET role_configuration='"bad"'::jsonb WHERE id=$1`, item.ID)
+	if _, err := f.reader.BotsBounded(t.Context(), f.principal.UserID, &f.candidate.WorkerID, store.Page{Limit: 1}); err == nil {
+		t.Fatal("deleted Bot hid malformed definition")
+	}
+}
+
+func TestBoundedBotProjectionMatchesGoJSONAliases(t *testing.T) {
+	f := newFixture(t)
+	original := f.ready(t, f.candidate)
+	exec(t, f.tx, `UPDATE bots SET
+        requested_overrides=jsonb_build_object('worKerId',$2::text,'Model','initial','model','final'),
+        role_configuration=jsonb_build_object('Instructions',repeat('x',18000000),'instructions','small','revision','r','digest','d'),
+        resolved_configuration=(resolved_configuration-'selection') || jsonb_build_object('Selection',jsonb_build_object('schemaVersion',1,'modelSource','first'),'selection',jsonb_build_object('reasoningEffortSource','second'))
+        WHERE id=$1`, original.ID, original.WorkerID)
+	full, err := f.reader.Bot(t.Context(), original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 1})
+	if err != nil || len(page.Items) != 1 || page.OversizedBotID != "" {
+		t.Fatalf("page: %+v %v", page, err)
+	}
+	got := page.Items[0]
+	if !reflect.DeepEqual(got.RequestedOverrides, full.RequestedOverrides) || !reflect.DeepEqual(got.ResolvedConfiguration, full.ResolvedConfiguration) || !reflect.DeepEqual(got.RoleConfiguration, full.RoleConfiguration) {
+		t.Fatalf("bounded projection differs from original decode: got=%+v want=%+v", got, full)
+	}
+	exec(t, f.tx, `UPDATE bots SET role_configuration=jsonb_build_object('inſtructions','unicode-folded','revision','r','digest','d') WHERE id=$1`, original.ID)
+	full, err = f.reader.Bot(t.Context(), original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 1})
+	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].RoleConfiguration, full.RoleConfiguration) {
+		t.Fatalf("unicode fold differs: %+v %v", page, err)
+	}
+	exec(t, f.tx, `UPDATE bots SET role_configuration=jsonb_build_object('Instructions',123,'instructions','valid','revision','r','digest','d') WHERE id=$1`, original.ID)
+	if _, err = f.reader.Bot(t.Context(), original.ID); err == nil {
+		t.Fatal("original accepted wrong type before override")
+	}
+	if _, err = f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 1}); err == nil {
+		t.Fatal("bounded projection hid an earlier type error")
+	}
+	exec(t, f.tx, `UPDATE bots SET role_configuration='{"instructions":"valid","revision":"r","digest":"d"}', resolved_configuration=(resolved_configuration-'Selection'-'selection') || jsonb_build_object('Selection',jsonb_build_object('modelSource','before'),'selection',NULL) WHERE id=$1`, original.ID)
+	full, err = f.reader.Bot(t.Context(), original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 1})
+	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].ResolvedConfiguration, full.ResolvedConfiguration) {
+		t.Fatalf("selection null reset differs: %+v %v", page, err)
+	}
+	exec(t, f.tx, `UPDATE bots SET deletion=jsonb_build_object('deletionId',$2::text,'requestedVersion','01','WorkerCleanup',jsonb_build_object('State','earlier','Code','kept'),'workerCleanup',jsonb_build_object('state','pending'),'ServerCleanup',jsonb_build_object('Code','detail'),'serverCleanup',jsonb_build_object('state','pending')) WHERE id=$1`, original.ID, uuid.NewString())
+	full, err = f.reader.Bot(t.Context(), original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = f.reader.BotsBounded(t.Context(), f.principal.UserID, &original.WorkerID, store.Page{Limit: 1})
+	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].Deletion, full.Deletion) {
+		t.Fatalf("deletion alias merge differs: %+v %v", page, err)
+	}
+}
+
+func TestBoundedBotProjectionMatchesReusedArgsSlices(t *testing.T) {
+	f := newFixture(t)
+	item := f.ready(t, f.candidate)
+	for _, aliases := range []string{
+		`jsonb_build_object('ARGS',jsonb_build_array('x','y'),'Args',jsonb_build_array('z'),'args',jsonb_build_array(NULL,NULL))`,
+		`jsonb_build_object('ARGS',jsonb_build_array('x','y'),'Args',NULL,'args',jsonb_build_array(NULL,NULL))`,
+		`jsonb_build_object('ARGS',jsonb_build_array('x','y'),'Args','[]'::jsonb,'args',jsonb_build_array(NULL,NULL))`,
+		`jsonb_build_object('ARGS',jsonb_build_array('x','y'),'Args',jsonb_build_array('z'),'args',NULL)`,
+	} {
+		exec(t, f.tx, `UPDATE bots SET resolved_configuration=(resolved_configuration-'args') || `+aliases+` WHERE id=$1`, item.ID)
+		full, err := f.reader.Bot(t.Context(), item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 1})
+		if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].ResolvedConfiguration.Args, full.ResolvedConfiguration.Args) {
+			t.Fatalf("args differ for %s: got=%+v want=%+v err=%v", aliases, page, full.ResolvedConfiguration.Args, err)
+		}
+		exec(t, f.tx, `UPDATE bots SET resolved_configuration=resolved_configuration-'ARGS'-'Args'-'args' WHERE id=$1`, item.ID)
+	}
+}
+
+func TestBoundedBotQuotedVersionNullMatchesFullRead(t *testing.T) {
+	f := newFixture(t)
+	item := f.ready(t, f.candidate)
+	for _, versions := range []string{
+		`jsonb_build_object('requestedVersion','null')`,
+		`jsonb_build_object('RequestedVersion','5','requestedVersion','null')`,
+		`jsonb_build_object('RequestedVersion','null','requestedVersion','5')`,
+	} {
+		exec(t, f.tx, `UPDATE bots SET deletion=jsonb_build_object('deletionId',$2::text,'workerCleanup',jsonb_build_object('state','pending'),'serverCleanup',jsonb_build_object('state','pending')) || `+versions+` WHERE id=$1`, item.ID, uuid.NewString())
+		full, err := f.reader.Bot(t.Context(), item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := f.reader.BotsBounded(t.Context(), f.principal.UserID, &item.WorkerID, store.Page{Limit: 1})
+		if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].Deletion, full.Deletion) {
+			t.Fatalf("quoted version differs for %s: got=%+v want=%+v err=%v", versions, page, full.Deletion, err)
+		}
+	}
+}

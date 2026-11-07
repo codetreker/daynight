@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -116,6 +117,50 @@ func evaluate(ctx context.Context, n *tasksearch.Node, title, description string
 		return Evidence{}, nil
 	}
 	if n.Kind == tasksearch.Or && !left.Matches && !right.Matches {
+		return Evidence{}, nil
+	}
+	e := Evidence{Matches: true}
+	if left.Matches {
+		e.Title, e.Description = left.Title, left.Description
+		e.DescriptionTerms = append(e.DescriptionTerms, left.DescriptionTerms...)
+	}
+	if right.Matches {
+		e.Title = e.Title || right.Title
+		e.Description = e.Description || right.Description
+		e.DescriptionTerms = append(e.DescriptionTerms, right.DescriptionTerms...)
+	}
+	return e, nil
+}
+
+// EvaluateHits applies the same expression semantics to DAO-projected hits.
+func EvaluateHits(ctx context.Context, n *tasksearch.Node, hits map[tasksearch.Atom]Evidence) (Evidence, error) {
+	if err := ctx.Err(); err != nil {
+		return Evidence{}, err
+	}
+	if n.Kind == tasksearch.Leaf {
+		e, ok := hits[n.Atom]
+		if !ok {
+			return Evidence{}, errors.New("search evidence is missing an atom")
+		}
+		matched := e.Title || e.Description
+		if n.Negated {
+			return Evidence{Matches: !matched}, nil
+		}
+		e.Matches = matched
+		if e.Description {
+			e.DescriptionTerms = []string{n.Atom.Term}
+		}
+		return e, nil
+	}
+	left, err := EvaluateHits(ctx, n.Left, hits)
+	if err != nil {
+		return Evidence{}, err
+	}
+	right, err := EvaluateHits(ctx, n.Right, hits)
+	if err != nil {
+		return Evidence{}, err
+	}
+	if n.Kind == tasksearch.And && (!left.Matches || !right.Matches) || n.Kind == tasksearch.Or && !left.Matches && !right.Matches {
 		return Evidence{}, nil
 	}
 	e := Evidence{Matches: true}

@@ -114,10 +114,7 @@ func (h *workersHandler) list(w http.ResponseWriter, request *http.Request, prin
 		httpx.WriteError(w, request, logger, "worker_report", "read", err)
 		return
 	}
-	response := api.WorkerPage{ObservedAt: result.ObservedAt.UTC(), Items: make([]api.WorkerSummary, 0, len(result.Items)), NextCursor: result.NextCursor}
-	for _, worker := range result.Items {
-		response.Items = append(response.Items, workerSummaryResponse(worker))
-	}
+	response := api.WorkerPage{ObservedAt: result.ObservedAt.UTC(), Items: result.Items, NextCursor: result.NextCursor}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 

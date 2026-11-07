@@ -47,9 +47,16 @@ type StepSummary struct {
 
 func validateStepProjection(header model.TaskHeader, item store.TaskStepProjection, summary bool) error {
 	step := item.Step
-	if summary && item.TitleTruncated {
-		// A non-whitespace character can occur beyond the bounded prefix.
+	if item.InvalidTitle {
+		return taskcodec.ValidateTitle("")
+	}
+	if item.Oversized || summary && item.TitleTruncated {
+		// A non-whitespace character can occur beyond the bounded prefix, or
+		// text can be withheld because it cannot fit a page.
 		step.Title = "preview"
+		if item.Oversized {
+			step.Description = ""
+		}
 	}
 	_, err := taskcodec.Item(header, step)
 	return err
@@ -82,10 +89,73 @@ func (s *TaskSteps) ListPage(ctx context.Context, principal model.Principal, pro
 			if err := validateStepProjection(header, item, summary); err != nil {
 				return fmt.Errorf("invalid stored step at position %d: %w", item.Step.Position, err)
 			}
+			if item.Oversized && i < limit {
+				return &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the page budget."}
+			}
 		}
 		page = StepsPage{Header: header, Items: items, HasMore: len(items) > limit}
 		if page.HasMore {
 			page.Items = page.Items[:limit]
+		}
+		return nil
+	})
+	if err != nil {
+		return StepsPage{}, err
+	}
+	return page, nil
+}
+
+// ListPageAdmitted consumes candidates within one snapshot. Admission is called
+// before retaining each row, and a rejected candidate remains available through
+// the cursor on the last accepted row.
+func (s *TaskSteps) ListPageAdmitted(ctx context.Context, principal model.Principal, projectID, taskID string, afterPosition int64, limit int, expectedVersion *int64, summary bool, admit func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error)) (StepsPage, error) {
+	if afterPosition < -1 || limit < 1 || limit > 100 || (expectedVersion != nil && *expectedVersion < 1) || admit == nil {
+		return StepsPage{}, &model.Fault{Code: "invalid_input", Message: "Invalid Step page bounds or version."}
+	}
+	var page StepsPage
+	err := s.read(ctx, principal, projectID, taskID, func(reader store.TaskReader, header model.TaskHeader) error {
+		if err := taskcodec.ValidateHeader(header); err != nil {
+			return err
+		}
+		if expectedVersion != nil {
+			if err := taskcore.RequireVersion(header.Version, *expectedVersion); err != nil {
+				return err
+			}
+		}
+		page = StepsPage{Header: header, Items: make([]store.TaskStepProjection, 0, limit)}
+		after := afterPosition
+		for len(page.Items) < limit {
+			items, err := reader.TaskStepPage(ctx, header.ID, after, 2, summary)
+			if err != nil {
+				return err
+			}
+			if len(items) == 0 {
+				break
+			}
+			for i, candidate := range items {
+				if candidate.Step.Position != after+int64(i)+1 {
+					return errors.New("stored step positions are not dense and ordered")
+				}
+				if err := validateStepProjection(header, candidate, summary); err != nil {
+					return fmt.Errorf("invalid stored step at position %d: %w", candidate.Step.Position, err)
+				}
+			}
+			item := items[0]
+			more := len(items) > 1
+			accepted, err := admit(header, item, more)
+			if err != nil {
+				return err
+			}
+			if !accepted {
+				page.HasMore = true
+				break
+			}
+			page.Items = append(page.Items, item)
+			after = item.Step.Position
+			page.HasMore = more
+			if !more {
+				break
+			}
 		}
 		return nil
 	})
@@ -194,6 +264,47 @@ func (s *TaskSteps) Get(ctx context.Context, principal model.Principal, projectI
 			return err
 		}
 		document.Resource, document.JSON, err = taskcodec.EncodeItem(header, step)
+		return err
+	})
+	if err != nil {
+		return StepDocument{}, err
+	}
+	return document, nil
+}
+
+// GetBounded reads one full Step for MCP without transferring historical text
+// that cannot fit even the largest Step response budget.
+func (s *TaskSteps) GetBounded(ctx context.Context, principal model.Principal, projectID, taskID, stepID string) (StepDocument, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return StepDocument{}, err
+	}
+	id, err := tasksteps.CanonicalID(stepID)
+	if err != nil {
+		return StepDocument{}, err
+	}
+	var document StepDocument
+	err = s.read(ctx, principal, projectID, taskID, func(reader store.TaskReader, header model.TaskHeader) error {
+		summary, err := reader.TaskStepSummary(ctx, header.ID, id)
+		if errors.Is(err, model.ErrNotFound) {
+			return tasksteps.NotFound(header.Version, err)
+		}
+		if err != nil {
+			return err
+		}
+		items, err := reader.TaskStepPage(ctx, header.ID, summary.Step.Position-1, 1, false)
+		if err != nil {
+			return err
+		}
+		if len(items) != 1 || items[0].Step.ID != id {
+			return errors.New("stored step changed within snapshot")
+		}
+		if err := validateStepProjection(header, items[0], false); err != nil {
+			return fmt.Errorf("invalid stored step at position %d: %w", items[0].Step.Position, err)
+		}
+		if items[0].Oversized {
+			return &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the single resource budget."}
+		}
+		document.Resource, err = taskcodec.Item(header, items[0].Step)
 		return err
 	})
 	if err != nil {

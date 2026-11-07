@@ -109,6 +109,125 @@ func TestTaskStepsBoundedPagesAndVersionFence(t *testing.T) {
 	}
 }
 
+func TestTaskStepsAdmittedPageBoundsHistoricalProjection(t *testing.T) {
+	tasks, database, project, _, principal := taskService(t)
+	parent := createTask(t, tasks, principal, project.ID, "Parent")
+	steps := taskservice.NewTaskSteps(database)
+	ctx := context.Background()
+	for i, description := range []string{"first", strings.Repeat("x", 4<<20), "last"} {
+		_, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
+ VALUES($1,$2,$3,'step',$4,'todo',clock_timestamp(),clock_timestamp())`, parent.ID, fmt.Sprintf("%08x", i), i, description)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ordinary, err := steps.ListPage(ctx, principal, project.ID, parent.ID, -1, 1, nil, false)
+	if err != nil || len(ordinary.Items) != 1 || !ordinary.HasMore {
+		t.Fatalf("ordinary page lost oversized lookahead: %+v %v", ordinary, err)
+	}
+	_, err = steps.ListPage(ctx, principal, project.ID, parent.ID, 0, 1, nil, false)
+	requireThreadFault(t, err, "resource_limit_exceeded")
+	first, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+	if err != nil || len(first.Items) != 1 || !first.HasMore {
+		t.Fatalf("oversized lookahead should remain reachable: %+v %v", first, err)
+	}
+	var seen []string
+	page, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 3, nil, false, func(_ model.TaskHeader, item store.TaskStepProjection, more bool) (bool, error) {
+		seen = append(seen, item.Step.ID)
+		if item.Oversized {
+			if item.Step.Title != "" || item.Step.Description != "" {
+				t.Fatal("oversized text crossed database boundary")
+			}
+			return false, nil
+		}
+		return true, nil
+	})
+	if err != nil || len(page.Items) != 1 || !page.HasMore || len(seen) != 2 || seen[1] != "00000001" {
+		t.Fatalf("page: %+v seen=%v err=%v", page, seen, err)
+	}
+	version := page.Header.Version
+	_, err = steps.GetBounded(ctx, principal, project.ID, parent.ID, "00000001")
+	requireThreadFault(t, err, "resource_limit_exceeded")
+	last, err := steps.GetBounded(ctx, principal, project.ID, parent.ID, "00000002")
+	if err != nil || last.Resource.Step.Description != "last" || last.Resource.Version != version {
+		t.Fatalf("last: %+v %v", last, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET version=version+1 WHERE id=$1`, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, 0, 3, &version, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) {
+		t.Fatal("stale cursor reached admission")
+		return false, nil
+	})
+	requireThreadFault(t, err, "version_conflict")
+}
+
+func TestTaskStepsAdmittedPageRejectsCorruptLookahead(t *testing.T) {
+	tasks, database, project, _, principal := taskService(t)
+	parent := createTask(t, tasks, principal, project.ID, "Parent")
+	steps := taskservice.NewTaskSteps(database)
+	ctx := context.Background()
+	for i, title := range []string{"valid", "   "} {
+		_, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
+ VALUES($1,$2,$3,$4,'body','todo',clock_timestamp(),clock_timestamp())`, parent.ID, fmt.Sprintf("%08x", i), i, title)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, summary := range []bool{false, true} {
+		page, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+		if err == nil || len(page.Items) != 0 {
+			t.Fatalf("corrupt lookahead became a successful prefix: %+v %v", page, err)
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE task_steps SET title='valid',position=2 WHERE task_id=$1 AND id='00000001'`, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+	if err == nil {
+		t.Fatal("position gap in lookahead was accepted")
+	}
+}
+
+func TestTaskStepsOversizedTextDoesNotHideInvalidTitle(t *testing.T) {
+	tasks, database, project, _, principal := taskService(t)
+	parent := createTask(t, tasks, principal, project.ID, "Parent")
+	steps := taskservice.NewTaskSteps(database)
+	ctx := context.Background()
+	space := "\u0009\u000a\u000b\u000c\u000d\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+	_, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
+ VALUES($1,'00000000',0,$2,repeat('x',4194304),'todo',clock_timestamp(),clock_timestamp())`, parent.ID, space)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, summary := range []bool{false, true} {
+		_, err = steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+		if err == nil {
+			t.Fatal("oversized description hid an invalid first title")
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE task_steps SET position=1,id='00000001' WHERE task_id=$1`, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
+ VALUES($1,'00000000',0,'valid','','todo',clock_timestamp(),clock_timestamp())`, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, summary := range []bool{false, true} {
+		_, err = steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+		if err == nil {
+			t.Fatal("oversized description hid an invalid lookahead title")
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE task_steps SET title=$2 WHERE task_id=$1 AND id='00000001'`, parent.ID, space+"\ufeff"+space); err != nil {
+		t.Fatal(err)
+	}
+	page, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+	if err != nil || len(page.Items) != 1 || !page.HasMore {
+		t.Fatalf("non-whitespace title did not retain continuation: %+v %v", page, err)
+	}
+}
+
 func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	task := createTask(t, tasks, principal, project.ID, "Parent")

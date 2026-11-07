@@ -24,9 +24,9 @@ import (
 var stepReadToolsJSON []byte
 
 type stepReadOperations interface {
-	ListPage(context.Context, model.Principal, string, string, int64, int, *int64, bool) (taskservice.StepsPage, error)
+	ListPageAdmitted(context.Context, model.Principal, string, string, int64, int, *int64, bool, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error)) (taskservice.StepsPage, error)
 	GetSummary(context.Context, model.Principal, string, string, string) (taskservice.StepSummary, error)
-	Get(context.Context, model.Principal, string, string, string) (taskservice.StepDocument, error)
+	GetBounded(context.Context, model.Principal, string, string, string) (taskservice.StepDocument, error)
 }
 type stepReadInput struct {
 	ProjectID string  `json:"projectId"`
@@ -167,11 +167,10 @@ func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations
 		after = parsed.Position
 		version = &v
 	}
-	page, err := steps.ListPage(ctx, actor.Principal, project, task, after, limit, version, view == "summary")
-	if err != nil {
-		return ToolResult{}, err
+	budget := 16 << 10
+	if view == "full" {
+		budget = 4 << 20
 	}
-	cursor.Version = Decimal(page.Header.Version)
 	out := struct {
 		ProjectID  string  `json:"projectId"`
 		TaskID     string  `json:"taskId"`
@@ -179,33 +178,51 @@ func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations
 		Projection string  `json:"projection"`
 		Items      []any   `json:"items"`
 		NextCursor *string `json:"nextCursor"`
-	}{project, task, cursor.Version, view, make([]any, 0, len(page.Items)), nil}
-	for i, item := range page.Items {
-		out.Items = append(out.Items, projectStep(item, view == "summary"))
-		if i < len(page.Items)-1 || page.HasMore {
+	}{project, task, "", view, make([]any, 0, limit), nil}
+	itemsBytes := 0
+	page, err := steps.ListPageAdmitted(ctx, actor.Principal, project, task, after, limit, version, view == "summary", func(header model.TaskHeader, item store.TaskStepProjection, more bool) (bool, error) {
+		cursor.Version = Decimal(header.Version)
+		out.Version = cursor.Version
+		previousCursor := out.NextCursor
+		projected := projectStep(item, view == "summary")
+		if more {
 			cursor.Position = item.Step.Position
 			next := encodeStepCursor(cursor)
 			out.NextCursor = &next
 		} else {
 			out.NextCursor = nil
 		}
-		encoded, err := json.Marshal(envelope{Data: out, Meta: &envelopeMeta{RequestID: actor.RequestID}})
+		// Measure the same envelope and individual item encoding used by the
+		// final output without re-encoding the entire growing page each time.
+		empty := out
+		empty.Items = []any{}
+		encoded, err := json.Marshal(envelope{Data: empty, Meta: &envelopeMeta{RequestID: actor.RequestID}})
 		if err != nil {
-			return ToolResult{}, err
+			return false, err
 		}
-		if len(encoded) > 16<<10 {
-			out.Items = out.Items[:len(out.Items)-1]
+		encodedItem, err := json.Marshal(projected)
+		if err != nil {
+			return false, err
+		}
+		candidateBytes := itemsBytes + len(encodedItem)
+		if len(out.Items) > 0 {
+			candidateBytes++
+		}
+		if item.Oversized || len(encoded)+candidateBytes > budget {
+			out.NextCursor = previousCursor
 			if len(out.Items) == 0 {
-				cursor.Position = item.Step.Position
-				next := encodeStepCursor(cursor)
-				return ToolResult{Refs: map[string]any{"projectId": project, "taskId": task, "stepId": item.Step.ID, "version": cursor.Version, "readTool": "task_step_show", "nextCursor": next}}, &model.Fault{Code: "resource_conflict", Message: "Step exceeds the page budget; use task_step_show and continue with nextCursor."}
+				return false, &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the page budget."}
 			}
-			cursor.Position = page.Items[i-1].Step.Position
-			next := encodeStepCursor(cursor)
-			out.NextCursor = &next
-			break
+			return false, nil
 		}
+		itemsBytes = candidateBytes
+		out.Items = append(out.Items, projected)
+		return true, nil
+	})
+	if err != nil {
+		return ToolResult{}, err
 	}
+	out.Version = Decimal(page.Header.Version)
 	return ToolResult{Data: out}, nil
 }
 func showStep(ctx context.Context, actor RequestActor, steps stepReadOperations, in stepReadInput) (ToolResult, error) {
@@ -214,7 +231,7 @@ func showStep(ctx context.Context, actor RequestActor, steps stepReadOperations,
 	var err error
 	if in.View == "full" {
 		var doc taskservice.StepDocument
-		doc, err = steps.Get(ctx, actor.Principal, in.ProjectID, in.TaskID, in.StepID)
+		doc, err = steps.GetBounded(ctx, actor.Principal, in.ProjectID, in.TaskID, in.StepID)
 		if err == nil {
 			data = map[string]any{"projectId": doc.Resource.ProjectID, "taskId": doc.Resource.TaskID, "version": Decimal(doc.Resource.Version), "projection": "full", "step": doc.Resource.Step}
 		}
@@ -231,6 +248,15 @@ func showStep(ctx context.Context, actor RequestActor, steps stepReadOperations,
 			refs["version"] = Decimal(absence.Version)
 		}
 		return ToolResult{Refs: refs}, err
+	}
+	if in.View == "full" {
+		encoded, encodeErr := json.Marshal(envelope{Data: data, Meta: &envelopeMeta{RequestID: actor.RequestID}})
+		if encodeErr != nil {
+			return ToolResult{}, encodeErr
+		}
+		if len(encoded) > 512<<10 {
+			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the single resource budget."}
+		}
 	}
 	return ToolResult{Data: data}, nil
 }

@@ -5,6 +5,7 @@ import (
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -192,5 +193,40 @@ func TestTaskWorkerInventoryRejectsInvalidFilterAndPreservesReadFailures(t *test
 	var stored *store.Error
 	if !errors.As(err, &stored) || errors.Unwrap(err) == nil {
 		t.Fatalf("invalid stored ownership became a successful empty inventory: %v", err)
+	}
+}
+
+func TestWorkerInventorySkipsOversizedUnrelatedClaim(t *testing.T) {
+	tasks, database, project, _, owner := taskService(t)
+	workerID := uuid.NewString()
+	add := func(id string) model.Task {
+		descriptor := workerDescriptor()
+		descriptor.WorkerID = id
+		return claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
+	}
+	first := add(workerID)
+	unrelated := add(uuid.NewString())
+	second := add(workerID)
+	var worker map[string]any
+	if err := json.Unmarshal(unrelated.Properties["worker"], &worker); err != nil {
+		t.Fatal(err)
+	}
+	worker["machine"].(map[string]any)["name"] = strings.Repeat("w", 5<<20)
+	raw, err := json.Marshal(worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_properties SET value=$2 WHERE task_id=$1 AND name='worker'`, unrelated.ID, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID}
+	page, err := tasks.List(context.Background(), owner, project.ID, request)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != first.ID || page.NextCursor == nil {
+		t.Fatalf("first page: %+v %v", page.NextCursor, err)
+	}
+	request.Cursor = page.NextCursor
+	page, err = tasks.List(context.Background(), owner, project.ID, request)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != second.ID || page.NextCursor != nil {
+		t.Fatalf("second page: %+v %v", page.NextCursor, err)
 	}
 }

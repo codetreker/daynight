@@ -418,3 +418,25 @@ func TestWorkerInventoryFilteringAndThreadSource(t *testing.T) {
 		t.Fatalf("thread source worker: %+v", decoded)
 	}
 }
+
+func TestBoundedTaskPageWithholdsHistoricalText(t *testing.T) {
+	f := newFixture(t)
+	w := task.NewWriter(f.tx, f.project)
+	r := task.NewReader(f.tx)
+	first := mustTask(t, w, store.TaskWrite{Title: "First"})
+	second := mustTask(t, w, store.TaskWrite{Title: "Second"})
+	_, err := f.tx.Exec(t.Context(), `UPDATE tasks SET description=repeat('x', 12582912) WHERE id=$1`, second.ID)
+	mustOK(t, err)
+	query := store.TaskQuery{Page: store.Page{Limit: 1}, BoundedText: true}
+	page, err := r.Tasks(t.Context(), f.project, query)
+	mustOK(t, err)
+	if len(page.Items) != 1 || page.Items[0].ID != first.ID || page.Oversized || !page.HasMore {
+		t.Fatalf("first page: %+v", page)
+	}
+	query.Page.After = &store.Position{CreatedAt: first.CreatedAt, ID: first.ID}
+	page, err = r.Tasks(t.Context(), f.project, query)
+	mustOK(t, err)
+	if len(page.Items) != 1 || page.Items[0].ID != second.ID || !page.Oversized || page.Items[0].Description != "" {
+		t.Fatalf("candidate was not withheld: %+v", page)
+	}
+}

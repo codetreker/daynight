@@ -106,6 +106,7 @@ project 不存在、task 不属于该 project 或目标附件不存在时返回�
 
 文件列表使用现有 limit/cursor、items/nextCursor 约定，按 path 的确定顺序分页；
 cursor 绑定列表类型、project 和 task。分页不保证多次请求属于同一快照。
+REST 页完整编码最多 2 MiB，包含转义、cursor 和末尾换行；字节上限提前结束时从最后返回路径继续。历史首项无法装入一页时返回 409 `resource_limit_exceeded`。
 CLI 完整列表只在所有页面读取成功后输出；Web 可以保留已加载页，但不能把失败
 当作文件不存在。文件读写不经过仅接受 JSON 的请求体或响应解析通道。
 

@@ -2,8 +2,11 @@ package tasksearch
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +58,22 @@ func (f *searchFixture) Matches(context.Context, string, store.TaskSearchQuery) 
 	}
 	return f.rows, nil
 }
+func (f *searchFixture) MatchesEach(ctx context.Context, project string, input store.TaskSearchQuery, accept func(int64, store.TaskSearchRow) (bool, error)) (int64, bool, error) {
+	page, err := f.Matches(ctx, project, input)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, row := range page.Items {
+		ok, err := accept(page.Total, row)
+		if err != nil {
+			return 0, false, err
+		}
+		if !ok {
+			return page.Total, true, nil
+		}
+	}
+	return page.Total, page.HasMore, nil
+}
 func (f *searchFixture) ContextSize(context.Context, string, []string) (store.TaskSearchSize, error) {
 	if f.failurePhase == "size" {
 		return store.TaskSearchSize{}, f.failure
@@ -67,6 +86,9 @@ func (f *searchFixture) ContextGraph(context.Context, string, []string) (store.T
 		return store.TaskSearchGraph{}, f.failure
 	}
 	return f.graph, nil
+}
+func (f *searchFixture) ContextRepresentative(context.Context, string, string) (string, bool, error) {
+	return root, true, nil
 }
 func (f *searchFixture) Titles(context.Context, string, []string) (map[string]string, error) {
 	if f.onTitles != nil {
@@ -289,5 +311,100 @@ func TestSearchCursorValidation(t *testing.T) {
 	valid.Position.UpdatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := encodeCursor(valid); err == nil {
 		t.Fatal("unencodable time accepted")
+	}
+}
+
+func TestSearchPageEncodedBudgetAndContinuation(t *testing.T) {
+	f := testFixture()
+	f.size = store.TaskSearchSize{NodeCount: 2}
+	f.graph = store.TaskSearchGraph{Nodes: []store.TaskSearchNode{{ID: child}, {ID: root}}}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	large := "cache" + strings.Repeat("\x01", 180000)
+	f.rows = store.TaskSearchPage{Total: 2, Items: []store.TaskSearchRow{
+		{ID: child, Title: large, Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true},
+		{ID: root, Title: large, Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true},
+	}}
+	page, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 2})
+	if err != nil || len(page.Items) != 1 || page.NextCursor == nil {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	encoded, err := json.Marshal(page)
+	if err != nil || len(encoded)+1 > MaxPageResponseJSONBytes {
+		t.Fatalf("response size=%d err=%v", len(encoded)+1, err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(*page.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursor cursor
+	if err := json.Unmarshal(raw, &cursor); err != nil || cursor.Position.ID != child {
+		t.Fatalf("cursor=%+v err=%v", cursor, err)
+	}
+	f.rows.Items = f.rows.Items[1:]
+	second, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 2, Cursor: page.NextCursor})
+	if err != nil || len(second.Items) != 1 || second.Items[0].ID != root || second.NextCursor != nil {
+		t.Fatalf("next=%+v err=%v", second, err)
+	}
+	f.rows.Items[0].Title = "cache" + strings.Repeat("\x01", 360000)
+	_, err = Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 2})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("oversized first item: %v", err)
+	}
+}
+
+type contextBoundaryFixture struct {
+	*searchFixture
+	oversizedID string
+	secondTitle string
+}
+
+func (f *contextBoundaryFixture) ReadTaskSearch(_ context.Context, fn func(store.TaskSearchSnapshot) error) error {
+	return fn(f)
+}
+func (f *contextBoundaryFixture) ContextSize(_ context.Context, _ string, ids []string) (store.TaskSearchSize, error) {
+	if len(ids) != 1 {
+		return store.TaskSearchSize{}, errors.New("expected one candidate")
+	}
+	if ids[0] == f.oversizedID {
+		return store.TaskSearchSize{NodeCount: MaxNodes + 1}, nil
+	}
+	return f.size, nil
+}
+func (f *contextBoundaryFixture) ContextRepresentative(context.Context, string, string) (string, bool, error) {
+	return "66666666-6666-4666-8666-666666666666", true, nil
+}
+func (f *contextBoundaryFixture) Titles(context.Context, string, []string) (map[string]string, error) {
+	return map[string]string{root: strings.Repeat("<", 300000), "66666666-6666-4666-8666-666666666666": f.secondTitle}, nil
+}
+
+func TestSearchPagesBeforeLaterOversizedContext(t *testing.T) {
+	f := &contextBoundaryFixture{searchFixture: testFixture(), oversizedID: "55555555-5555-4555-8555-555555555555", secondTitle: strings.Repeat("<", 300000)}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	f.rows = store.TaskSearchPage{Total: 2, Items: []store.TaskSearchRow{
+		{ID: child, Title: "Cache", Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true},
+		{ID: f.oversizedID, Title: "Cache", Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true},
+	}}
+	request := Request{Query: "cache", Limit: 2}
+	page, err := Search(context.Background(), f, principal(), projectID, request)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != child || page.NextCursor == nil {
+		t.Fatalf("prefix: %d cursor=%v err=%v", len(page.Items), page.NextCursor, err)
+	}
+	f.secondTitle = "small"
+	_, smallErr := Search(context.Background(), f, principal(), projectID, request)
+	var smallFault *model.Fault
+	if !errors.As(smallErr, &smallFault) || smallFault.Code != "search_context_limit_exceeded" || smallFault.GraphLimit == nil || smallFault.GraphLimit.NodeCount != MaxNodes+3 {
+		t.Fatalf("fitting over-limit graph: %v", smallErr)
+	}
+	decoded, err := decodeCursor(*page.NextCursor, cursorScope{Version: 1, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte("cache"))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}})
+	if err != nil || decoded.Position.ID != child || decoded.Fence != f.fence {
+		t.Fatalf("cursor: %+v %v", decoded, err)
+	}
+	f.rows.Items = f.rows.Items[1:]
+	request.Cursor = page.NextCursor
+	_, err = Search(context.Background(), f, principal(), projectID, request)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "search_context_limit_exceeded" || fault.GraphLimit == nil || fault.GraphLimit.NodeCount != MaxNodes+1 {
+		t.Fatalf("first oversized component: %v", err)
 	}
 }
