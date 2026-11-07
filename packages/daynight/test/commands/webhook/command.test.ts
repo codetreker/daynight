@@ -85,7 +85,7 @@ describe("Webhook command failure boundaries", () => {
     const f = await fixture(), at = issued();
     f.setResponse((_url, init) => {
       const body = String(init?.body); const requestSha256 = createHash("sha256").update(body).digest("hex");
-      const operation = { operationId, kind: "endpoint.delete", issuedAt: at, requestSha256, actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: "2", destinationRevisionAfter: "1", deliveryId: null, generationAfter: null, keyId: null, recordedAt: at, expiresAt: at };
+      const operation = { operationId, kind: "endpoint.delete", issuedAt: at, requestSha256, actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: "2", destinationRevisionAfter: "1", deliveryId: null, generationAfter: null, keyId: null, recordedAt: at, expiresAt: "2099-01-01T00:00:00Z" };
       return reply({ operation, endpoint: { id: endpointId, owner, lifecycle: "deleted", configVersion: "2", deletedAt: at } });
     });
     f.stdoutBytes.mockRejectedValue(new Error("secret https://receiver.test/path?token=hidden"));
