@@ -15,6 +15,7 @@ type Transactions interface {
 	GrantLifecycleWriter
 	WorkerWriter
 	BotWriter
+	WebhookWriter
 	SessionWriter
 	ThreadWriter
 	AttachmentWriter

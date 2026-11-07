@@ -47,6 +47,32 @@ install an OS daemon, migrate conversations automatically or provide Webhook/MCP
 adapters. CLI/Server and production-page browser acceptance are distinct from
 live Provider acceptance.
 
+## Outbound Webhook management
+
+The configuration module stores personal User-owned and shared Team-owned
+endpoints, explicit Project subscriptions, stable event bindings, signing
+material and bounded operation receipts. An independently mounted HTTP module
+uses the real authentication and PostgreSQL contracts. Public application
+registration requires the complete event-capture and delivery composition;
+configuration storage does not start a dispatcher.
+
+Source ACL changes refresh retained subscription authorization in their original
+transaction. Continuous Team-membership/direct-grant handover preserves access;
+an actual gap advances the authorization epoch and requires explicit confirmation.
+Owner management rights still permit restrictive cleanup after Project access
+is lost. Team resources remain Team-owned when their creating administrator leaves.
+
+Configuration effects and receipts commit together. A receipt retains the
+original operation identity, issued time and actual request-body SHA-256,
+alongside its normalized semantic fingerprint. Unknown completion remains
+unknown until the original operation is verified; a missing receipt does not
+establish rollback. Destination configuration and signing keys use recoverable
+AES-256-GCM encryption with an injected immutable keyring and resource-bound
+associated data.
+
+The [subscription design](../../docs/design/outbound-webhook-subscriptions.md)
+owns permission, identity, lock-order, encryption, budget and validation details.
+
 ## Contracts
 
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and

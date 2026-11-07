@@ -18,6 +18,7 @@ type SnapshotScope interface {
 	TaskDAO() TaskReader
 	WorkerDAO() WorkerReader
 	BotDAO() BotReader
+	WebhookDAO() WebhookReadDAO
 	AttachmentDAO() AttachmentReader
 	ObservedAt(context.Context) (time.Time, error)
 }

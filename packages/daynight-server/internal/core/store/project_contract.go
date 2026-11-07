@@ -38,6 +38,7 @@ type ProjectWriteScope interface {
 	ProjectDAO() ProjectWriteDAO
 	TaskDAO() TaskWriteDAO
 	SessionDAO() ProjectSessionDAO
+	WebhookEligibilityDAO() WebhookEligibilityDAO
 }
 
 type ProjectWriteDAO interface {
