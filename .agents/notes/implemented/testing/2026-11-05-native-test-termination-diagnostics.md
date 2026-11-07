@@ -13,14 +13,16 @@ an unresolved defect behind a later passing run.
 
 ## Decision
 
-The ordinary macOS ARM64 job executes its unchanged test command under
+The macOS ARM64 entry in the ordinary `verify` matrix executes its unchanged
+test command under
 [`observe-native-validation.mjs`](../../../../packages/daynight/scripts/observe-native-validation.mjs).
 The observer inherits the command's stdio and environment, records its PID and
 exit code or signal, and propagates failure. It does not change suite selection,
 Vitest concurrency or test deadlines. The
 [independent macOS validation decision](2026-11-07-independent-macos-cli-validation.md)
-owns the ten-minute validation-step limit and twenty-minute outer job limit.
-Ordinary termination diagnostics upload in the ordinary job. Installed
+owns the shared native matrices and their ten-minute job limit. Conditional
+macOS steps select the observer and upload its termination diagnostics; Linux
+and Windows execute the same ordinary test command directly. Installed
 validation prepares its own runner and workspace, so diagnostic collection and
 receipt paths have no cross-phase ordering or reuse requirement.
 

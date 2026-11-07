@@ -36,10 +36,10 @@ suites and the [logical phase responsibilities](../../archived/testing/2026-11-0
 remain. The [single-allocation decision](2026-11-05-single-macos-native-allocation.md)
 subsequently combined the phases to reduce acquisition dependencies. The
 [independent validation decision](2026-11-07-independent-macos-cli-validation.md)
-owns the current two-job topology, with a 20-minute outer limit and a 10-minute
-validation-step limit for each job. Race policy and final checks retain their
-settings. The [development guide](../../../../docs/development.md) owns the current image and
-validation commands. There is no automatic fallback selection mechanism.
+owns the current ordinary and installed matrices, each including `macos-15`
+with the same 10-minute job limit as Linux and Windows. Race policy and final
+checks retain their settings. The [development guide](../../../../docs/development.md)
+owns the current image and validation commands. There is no automatic fallback selection mechanism.
 
 ### Portable identity-swap fixtures
 
