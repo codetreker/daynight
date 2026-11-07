@@ -226,6 +226,16 @@ func EncodeMCPProjection(w io.Writer, task MCPFull, requestID, outcome string, m
 // HTML escaping of the RPC ID is conservative: the SDK disables it for the
 // outer envelope, while the structured result uses the default JSON encoding.
 func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpcID any, modern, full bool, max int64) (int64, error) {
+	var data any = MCPTaskSummary(t)
+	if full {
+		data = mcpTask(t, false)
+	}
+	return EncodeMCPDataResponse(w, data, requestID, outcome, rpcID, modern, max)
+}
+
+// EncodeMCPDataResponse measures the SDK's complete success response for a
+// protocol data value, including the JSON-RPC ID and version-specific fields.
+func EncodeMCPDataResponse(w io.Writer, data any, requestID, outcome string, rpcID any, modern bool, max int64) (int64, error) {
 	type content struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -240,10 +250,6 @@ func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpc
 		JSONRPC string `json:"jsonrpc"`
 		ID      any    `json:"id,omitempty"`
 		Result  result `json:"result"`
-	}
-	var data any = MCPTaskSummary(t)
-	if full {
-		data = mcpTask(t, false)
 	}
 	r := result{Content: []content{{Type: "text", Text: "Completed."}}, StructuredContent: MCPEnvelope{Data: data, Meta: &MCPMeta{RequestID: requestID, Outcome: outcome}}}
 	if modern {

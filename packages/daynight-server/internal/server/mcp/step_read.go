@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -139,6 +142,24 @@ func RegisterStepReadTools(e *Entry, steps stepReadOperations) error {
 	}
 	return nil
 }
+
+// stepResponseSize measures an individual SDK JSON-RPC success response. The
+// SDK disables HTML escaping for single-response IDs, whereas batch responses
+// re-encode IDs with the default escaping.
+func stepResponseSize(actor RequestActor, data any) (int64, error) {
+	if actor.rpcResponseID == nil {
+		return 0, &model.Fault{Code: "resource_limit_exceeded", Message: "Step response could not be bounded."}
+	}
+	n, err := taskprotocol.EncodeMCPDataResponse(io.Discard, data, actor.RequestID, "", actor.rpcResponseID, actor.rpcModern, math.MaxInt64)
+	if err != nil {
+		return 0, err
+	}
+	if id, ok := actor.rpcResponseID.(string); ok && !actor.rpcBatch {
+		n -= int64(5 * (strings.Count(id, "<") + strings.Count(id, ">") + strings.Count(id, "&")))
+	}
+	return n, nil
+}
+
 func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations, in stepReadInput) (ToolResult, error) {
 	project, err := model.CanonicalID(in.ProjectID)
 	if err != nil {
@@ -179,6 +200,17 @@ func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations
 		Items      []any   `json:"items"`
 		NextCursor *string `json:"nextCursor"`
 	}{project, task, "", view, make([]any, 0, limit), nil}
+	// Compute the SDK wrapper once; the structured content uses the same JSON
+	// settings as the final handler, while the RPC ID can itself be large.
+	baseEnvelope, err := json.Marshal(envelope{Data: struct{}{}, Meta: &envelopeMeta{RequestID: actor.RequestID}})
+	if err != nil {
+		return ToolResult{}, err
+	}
+	baseResponse, err := stepResponseSize(actor, struct{}{})
+	if err != nil {
+		return ToolResult{}, err
+	}
+	wrapperBytes := baseResponse - int64(len(baseEnvelope))
 	itemsBytes := 0
 	page, err := steps.ListPageAdmitted(ctx, actor.Principal, project, task, after, limit, version, view == "summary", func(header model.TaskHeader, item store.TaskStepProjection, more bool) (bool, error) {
 		cursor.Version = Decimal(header.Version)
@@ -208,7 +240,7 @@ func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations
 		if len(out.Items) > 0 {
 			candidateBytes++
 		}
-		if item.Oversized || len(encoded)+candidateBytes > budget {
+		if item.Oversized || wrapperBytes+int64(len(encoded)+candidateBytes) > int64(budget) {
 			out.NextCursor = previousCursor
 			if len(out.Items) == 0 {
 				return false, &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the page budget."}
@@ -223,6 +255,15 @@ func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations
 		return ToolResult{}, err
 	}
 	out.Version = Decimal(page.Header.Version)
+	if len(out.Items) == 0 {
+		encoded, err := json.Marshal(envelope{Data: out, Meta: &envelopeMeta{RequestID: actor.RequestID}})
+		if err != nil {
+			return ToolResult{}, err
+		}
+		if wrapperBytes+int64(len(encoded)) > int64(budget) {
+			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the page budget."}
+		}
+	}
 	return ToolResult{Data: out}, nil
 }
 func showStep(ctx context.Context, actor RequestActor, steps stepReadOperations, in stepReadInput) (ToolResult, error) {
@@ -250,11 +291,11 @@ func showStep(ctx context.Context, actor RequestActor, steps stepReadOperations,
 		return ToolResult{Refs: refs}, err
 	}
 	if in.View == "full" {
-		encoded, encodeErr := json.Marshal(envelope{Data: data, Meta: &envelopeMeta{RequestID: actor.RequestID}})
+		size, encodeErr := stepResponseSize(actor, data)
 		if encodeErr != nil {
 			return ToolResult{}, encodeErr
 		}
-		if len(encoded) > 512<<10 {
+		if size > 512<<10 {
 			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the single resource budget."}
 		}
 	}

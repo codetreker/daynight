@@ -13,7 +13,8 @@ today's input limits, so admission alone cannot bound every read.
 
 Read responses are measured using their actual protocol projections before
 headers are committed. Existing paginated readers consume bounded candidates
-within a snapshot and account for the envelope, cursor and REST newline. A
+within a snapshot and account for the envelope, cursor and REST newline. MCP
+Step limits include the individual JSON-RPC success response and its request ID. A
 candidate that does not fit remains reachable after the last returned item;
 an unreturnable first item fails explicitly. Task mutations retain their
 transactional response admission and report post-commit delivery failures with
