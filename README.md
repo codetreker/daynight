@@ -16,7 +16,7 @@ or run your own service. The interface supports English and Simplified Chinese.
 ## What you can do
 
 - **Organize repository work.** Associate projects with Git repositories, create
-  Markdown tasks, link pull requests and track `todo`, `in_progress` and `done`.
+  Markdown tasks, link pull requests and track `todo`, `in_progress`, `done` and `cancelled`.
 - **Understand what can start.** Model prerequisites, find ready and blocked
   tasks, and distinguish dependencies within a task chain from dependencies on
   other chains. Both kinds must be completed before dependent work starts.

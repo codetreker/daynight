@@ -55,7 +55,7 @@ describe("ordinary dependency components", () => {
     { root: "done", child: "done", done: 2, status: "done" },
   ] as const)("derives chain status $status from root $root and child $child", ({ root, child, done, status }) => {
     const index = buildGraphIndex(graph([{ id: A, status: root }, { id: B, status: child, dependsOn: [A] }]));
-    expect(index.components.get(A)!.progress).toEqual({ total: 2, done, status });
+    expect(index.components.get(A)!.progress).toEqual({ total: 2, done, cancelled: 0, ended: done, status });
   });
 
   it("counts diamond members once and retains a finished root's unfinished component", () => {
@@ -66,7 +66,7 @@ describe("ordinary dependency components", () => {
     expect(index.representativeIds).toEqual([A]);
     expect(index.successors.get(A)).toEqual([B, C]);
     expect(index.successors.get(D)).toEqual([]);
-    expect(index.components.get(A)!.progress).toEqual({ total: 4, done: 3, status: "in_progress" });
+    expect(index.components.get(A)!.progress).toEqual({ total: 4, done: 3, cancelled: 0, ended: 3, status: "in_progress" });
     const projection = projectChain(index, A);
     expect(projection.mainIds).toEqual(new Set([A, B, C, D]));
     expect(projection.externalIds.size).toBe(0);
@@ -84,8 +84,8 @@ describe("ordinary dependency components", () => {
     ]));
     expect(index.representativeIds).toEqual([A, G]);
     expect(index.components.get(A)!.memberIds).toEqual(new Set([A, B, C, D, E, F]));
-    expect(index.components.get(A)!.progress).toEqual({ total: 6, done: 4, status: "in_progress" });
-    expect(index.components.get(G)!.progress).toEqual({ total: 1, done: 0, status: "in_progress" });
+    expect(index.components.get(A)!.progress).toEqual({ total: 6, done: 4, cancelled: 0, ended: 4, status: "in_progress" });
+    expect(index.components.get(G)!.progress).toEqual({ total: 1, done: 0, cancelled: 0, ended: 0, status: "in_progress" });
     expect(index.componentByTask.size).toBe(7);
     for (const member of [A, B, C, D, E, F]) expect(index.componentByTask.get(member)).toBe(A);
     expect([...index.components.values()].reduce((total, component) => total + component.memberIds.size, 0)).toBe(index.nodes.size);
@@ -141,7 +141,7 @@ describe("ordinary dependency components", () => {
     expect(dependencies.reduce((total, items) => total + items.length, 0)).toBe(61);
     expect(index.representativeIds).toEqual([names[0]!, ...singletonPositions.map((position) => names[position]!)]);
     expect(index.components.get(names[0]!)!.memberIds).toEqual(new Set(names.filter((_, position) => !singletonPositions.includes(position))));
-    expect(index.components.get(names[0]!)!.progress).toEqual({ total: 23, done: 0, status: "todo" });
+    expect(index.components.get(names[0]!)!.progress).toEqual({ total: 23, done: 0, cancelled: 0, ended: 0, status: "todo" });
     expect(projectChain(index, names[0]!).edges).toHaveLength(61);
     for (const position of singletonPositions) expect(index.components.get(names[position]!)!.memberIds.size).toBe(1);
   });
@@ -153,7 +153,7 @@ describe("ordinary dependency components", () => {
       { id: E, status: "todo", dependsOn: [D] },
     ]);
     const index = buildGraphIndex(input);
-    expect(input.summary).toEqual({ total: 5, todo: 4, inProgress: 0, done: 1, ready: 2, blocked: 2 });
+    expect(input.summary).toEqual({ total: 5, todo: 4, inProgress: 0, done: 1, cancelled: 0, ready: 2, blocked: 2 });
     expect(index.nodes.get(A)).toMatchObject({ ready: true, blockedBy: [] });
     expect(index.nodes.get(B)).toMatchObject({ ready: false, blockedBy: [A] });
     expect(index.nodes.get(E)).toMatchObject({ ready: true, blockedBy: [] });
@@ -170,8 +170,8 @@ describe("ordinary dependency components", () => {
     expect(input).toEqual(original);
     expect(index.nodes.get(A)).toBe(input.tasks[0]);
     const later = buildGraphIndex(graph([{ id: A, status: "done" }]));
-    expect(later.components.get(A)!.progress).toEqual({ total: 1, done: 1, status: "done" });
-    expect(index.components.get(A)!.progress).toEqual({ total: 3, done: 0, status: "todo" });
+    expect(later.components.get(A)!.progress).toEqual({ total: 1, done: 1, cancelled: 0, ended: 1, status: "done" });
+    expect(index.components.get(A)!.progress).toEqual({ total: 3, done: 0, cancelled: 0, ended: 0, status: "todo" });
   });
 
   it("follows an ordinary chain and counts each member once", () => {
@@ -181,7 +181,7 @@ describe("ordinary dependency components", () => {
     }));
     const index = buildGraphIndex(graph(seeds));
     expect(projectChain(index, seeds[0]!.id).mainIds.size).toBe(8);
-    expect(index.components.get(seeds[0]!.id)!.progress).toEqual({ total: 8, done: 0, status: "todo" });
+    expect(index.components.get(seeds[0]!.id)!.progress).toEqual({ total: 8, done: 0, cancelled: 0, ended: 0, status: "todo" });
   });
 });
 
@@ -212,7 +212,7 @@ describe("direct external prerequisite projection", () => {
     expect(projection.externalIds).toEqual(new Set([E, F]));
     expect(projection.externalIds.has(I)).toBe(false);
     expect(projection.completed).toBe(2);
-    expect(index.components.get(A)!.progress).toEqual({ total: 4, done: 2, status: "in_progress" });
+    expect(index.components.get(A)!.progress).toEqual({ total: 4, done: 2, cancelled: 0, ended: 2, status: "in_progress" });
     expect(projection.edges).toEqual([
       { source: A, target: D, external: false }, { source: D, target: G, external: false },
       { source: E, target: G, external: true }, { source: F, target: G, external: true },
@@ -243,8 +243,8 @@ describe("direct external prerequisite projection", () => {
     ]));
     expect(projectChain(index, A).mainIds).toEqual(new Set([A, C, D]));
     expect(projectChain(index, A).externalIds).toEqual(new Set([B]));
-    expect(index.components.get(A)!.progress).toEqual({ total: 3, done: 0, status: "todo" });
-    expect(index.components.get(B)!.progress).toEqual({ total: 2, done: 0, status: "todo" });
+    expect(index.components.get(A)!.progress).toEqual({ total: 3, done: 0, cancelled: 0, ended: 0, status: "todo" });
+    expect(index.components.get(B)!.progress).toEqual({ total: 2, done: 0, cancelled: 0, ended: 0, status: "todo" });
   });
 
   it("permits shared external context without overlapping actual membership", () => {
@@ -264,8 +264,8 @@ describe("direct external prerequisite projection", () => {
   it.each(["done", "in_progress"] as const)("excludes an external %s prerequisite from the chain's status", (status) => {
     const index = buildGraphIndex(graph([{ id: A }, { id: B, status }, { id: C, dependsOn: [A, B], externalDependsOn: [B] }]));
     expect(projectChain(index, A).externalIds).toEqual(new Set([B]));
-    expect(index.components.get(A)!.progress).toEqual({ total: 2, done: 0, status: "todo" });
-    expect(index.components.get(B)!.progress).toEqual({ total: 1, done: status === "done" ? 1 : 0, status });
+    expect(index.components.get(A)!.progress).toEqual({ total: 2, done: 0, cancelled: 0, ended: 0, status: "todo" });
+    expect(index.components.get(B)!.progress).toEqual({ total: 1, done: status === "done" ? 1 : 0, cancelled: 0, ended: status === "done" ? 1 : 0, status });
   });
 
   it("keeps shared completed ancestors out of the projection and component counters", () => {
@@ -284,7 +284,7 @@ describe("direct external prerequisite projection", () => {
     expect(projection.externalIds).toEqual(new Set([B, C]));
     expect(projection.edges).toHaveLength(3);
     expect(projection.completed).toBe(0);
-    expect(index.components.get(A)!.progress).toEqual({ total: 2, done: 0, status: "todo" });
+    expect(index.components.get(A)!.progress).toEqual({ total: 2, done: 0, cancelled: 0, ended: 0, status: "todo" });
     expect(projection.edges.filter((edge) => edge.external)).toHaveLength(2);
   });
 
@@ -305,7 +305,7 @@ describe("complete prerequisite inspection", () => {
     const index = buildGraphIndex(input);
     expect(tracePrerequisites(index, D)).toEqual(new Set([D, B, C, A]));
     expect(tracePrerequisites(index, A)).toEqual(new Set([A]));
-    expect(index.components.get(A)!.progress).toEqual({ total: 6, done: 2, status: "in_progress" });
+    expect(index.components.get(A)!.progress).toEqual({ total: 6, done: 2, cancelled: 0, ended: 2, status: "in_progress" });
     expect(input.tasks.find((task) => task.id === D)!.dependsOn).toEqual([B, C]);
   });
 
@@ -400,4 +400,14 @@ describe("invalid graph snapshots", () => {
     expect(() => buildGraphIndex(oversized)).toThrow("exceeds the supported size");
     expect(() => buildGraphIndex(graph(Array.from({ length: 1001 }, (_, position) => ({ id: String(position) }))))).toThrow("exceeds the supported size");
   });
+});
+
+it("distinguishes delivered, cancelled and mixed terminal Goal outcomes while retaining dependency edges", () => {
+  const mixed = graph([{ id: A, status: "done" }, { id: B, status: "cancelled", dependsOn: [A] }]);
+  const direct = buildGraphIndex(mixed);
+  expect(direct.components.get(A)!.progress).toEqual({ total: 2, done: 1, cancelled: 1, ended: 2, status: "ended" });
+  expect(projectChain(direct, A).edges).toEqual([{ source: A, target: B, external: false }]);
+  expect(buildGraphIndex(graph([{ id: A, status: "cancelled" }, { id: B, status: "cancelled", dependsOn: [A] }])).components.get(A)!.progress)
+    .toEqual({ total: 2, done: 0, cancelled: 2, ended: 2, status: "cancelled" });
+  expect(buildGraphIndex(graph([{ id: A }, { id: B, status: "cancelled", dependsOn: [A] }])).nodes.get(B)!.blockedBy).toEqual([A]);
 });

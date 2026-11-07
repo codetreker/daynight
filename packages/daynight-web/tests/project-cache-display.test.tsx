@@ -162,7 +162,7 @@ it.each([new ApiError("network"), new ApiError("server", 400, "invalid_input"), 
 });
 
 it("displays a cached empty project before sync and atomically replaces history when the epoch changes", async () => {
-  const empty = { ...graph(), tasks: [], summary: { total: 0, todo: 0, done: 0, inProgress: 0, ready: 0, blocked: 0 } };
+  const empty = { ...graph(), tasks: [], summary: { total: 0, todo: 0, done: 0, cancelled: 0, inProgress: 0, ready: 0, blocked: 0 } };
   await seed(empty); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
   const { result } = mount();
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));

@@ -123,7 +123,7 @@ describe('progressive task graph visibility', () => {
     const index = indexOf(chain(80), 'done'); const projection = projectChain(index, 'n0'); const visible = createGraphOverview(index, projection);
     const view = projectVisibleTasks(projection, visible);
     expect(projection.mainIds.size).toBe(80); expect(view.mainIds.size).toBe(50);
-    expect(view.completed).toBe(80); expect(index.components.get('n0')!.progress).toEqual({ total: 80, done: 80, status: 'done' });
+    expect(view.completed).toBe(80); expect(index.components.get('n0')!.progress).toEqual({ total: 80, done: 80, cancelled: 0, ended: 80, status: 'done' });
   });
 
   it('retains waiting ancestors and hidden todo members in the full-chain progress', () => {
@@ -136,7 +136,7 @@ describe('progressive task graph visibility', () => {
     expect(projection.externalIds).toEqual(new Set(['external'])); expect(projection.mainIds.size).toBe(80);
     expect(getTaskExpansion(index, projection, visible, 'n49', 'successors')).toEqual({ ids: ['n50'], totalHidden: 1, addedEdges: 1 });
     expect(projectVisibleTasks(projection, visible).completed).toBe(0);
-    expect(index.components.get('n0')!.progress).toEqual({ total: 80, done: 0, status: 'todo' });
+    expect(index.components.get('n0')!.progress).toEqual({ total: 80, done: 0, cancelled: 0, ended: 0, status: 'todo' });
   });
 
   it('prunes disconnected retained nodes after refresh without adding a new connecting path or new neighbors', () => {

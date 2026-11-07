@@ -36,6 +36,7 @@ type graphNode struct {
 	UpdatedAt         time.Time           `json:"updatedAt"`
 	StartedAt         *time.Time          `json:"startedAt"`
 	CompletedAt       *time.Time          `json:"completedAt"`
+	CancelledAt       *time.Time          `json:"cancelledAt"`
 }
 
 type graphData struct {
@@ -60,6 +61,7 @@ type graphSummary struct {
 	Todo       int64 `json:"todo"`
 	InProgress int64 `json:"inProgress"`
 	Done       int64 `json:"done"`
+	Cancelled  int64 `json:"cancelled"`
 	Ready      int64 `json:"ready"`
 	Blocked    int64 `json:"blocked"`
 }
@@ -85,7 +87,9 @@ func graphTool(ctx context.Context, actor RequestActor, in graphInput, reader gr
 		view = "summary"
 	}
 	s := graph.Summary
-	result := graphData{Projection: view, Project: MapProject(graph.Project), ObservedAt: graph.ObservedAt.UTC(), Summary: graphSummary{s.Total, s.Todo, s.InProgress, s.Done, s.Ready, s.Blocked}, Tasks: make([]any, 0, len(graph.Tasks)), ReturnedNodes: len(graph.Tasks), TotalNodes: len(graph.Tasks)}
+	result := graphData{Projection: view, Project: MapProject(graph.Project), ObservedAt: graph.ObservedAt.UTC(),
+		Summary: graphSummary{Total: s.Total, Todo: s.Todo, InProgress: s.InProgress, Done: s.Done, Cancelled: s.Cancelled, Ready: s.Ready, Blocked: s.Blocked},
+		Tasks:   make([]any, 0, len(graph.Tasks)), ReturnedNodes: len(graph.Tasks), TotalNodes: len(graph.Tasks)}
 	if view == "summary" {
 		result.Truncated = true
 		result.TotalNodes = len(graph.Tasks)
@@ -98,7 +102,10 @@ func graphTool(ctx context.Context, actor RequestActor, in graphInput, reader gr
 		if in.DependsOnly {
 			item = dependencyNode{task.ID, deps, ext}
 		} else {
-			item = graphNode{task.ID, task.TitlePreview, task.TitleTruncated, task.Status, deps, ext, append([]string{}, task.BlockedBy...), task.RequiredPlatform, task.AssignedTo, task.AllowAgents, task.Ready, task.CreatedAt.UTC(), task.UpdatedAt.UTC(), utcTime(task.StartedAt), utcTime(task.CompletedAt)}
+			item = graphNode{ID: task.ID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: task.Status,
+				DependsOn: deps, ExternalDependsOn: ext, BlockedBy: append([]string{}, task.BlockedBy...),
+				RequiredPlatform: task.RequiredPlatform, AssignedTo: task.AssignedTo, AllowAgents: task.AllowAgents, Ready: task.Ready,
+				CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(), StartedAt: utcTime(task.StartedAt), CompletedAt: utcTime(task.CompletedAt), CancelledAt: utcTime(task.CancelledAt)}
 		}
 		if view == "summary" {
 			encodedItem, err := json.Marshal(item)

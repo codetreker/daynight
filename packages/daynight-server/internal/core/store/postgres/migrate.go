@@ -138,6 +138,9 @@ var oauthCleanupCursorSQL string
 //go:embed migrations/045_bot_native_preferences.sql
 var botNativePreferencesSQL string
 
+//go:embed migrations/046_task_cancelled.sql
+var taskCancelledSQL string
+
 //go:embed migrations/043_upload_chunks.sql
 var uploadChunksSQL string
 
@@ -197,11 +200,18 @@ var schemaMigrations = []migration{
 	{version: 43, sql: uploadChunksSQL},
 	{version: 44, sql: projectSoftDeleteSQL},
 	{version: 45, sql: botNativePreferencesSQL},
+	{version: 46, sql: taskCancelledSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
 
-func migrate(ctx context.Context, pool *pgxpool.Pool, migrations []migration) (err error) {
+func migrate(ctx context.Context, pool *pgxpool.Pool, migrations []migration) error {
+	return withMigrationLock(ctx, pool, func(conn *pgxpool.Conn) error {
+		return replayMigrations(ctx, conn, migrations)
+	})
+}
+
+func withMigrationLock(ctx context.Context, pool *pgxpool.Pool, operation func(*pgxpool.Conn) error) (err error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return err
@@ -210,7 +220,11 @@ func migrate(ctx context.Context, pool *pgxpool.Pool, migrations []migration) (e
 	if _, err = conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLock); err != nil {
 		return err
 	}
-	if _, err = conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	return operation(conn)
+}
+
+func replayMigrations(ctx context.Context, conn *pgxpool.Conn, migrations []migration) error {
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version bigint PRIMARY KEY,
 		checksum text NOT NULL CHECK (length(checksum) = 64),
 		applied_at timestamptz NOT NULL DEFAULT statement_timestamp()
@@ -226,7 +240,7 @@ func migrate(ctx context.Context, pool *pgxpool.Pool, migrations []migration) (e
 		if beginErr != nil {
 			return beginErr
 		}
-		if err = transact(ctx, tx, func(tx pgx.Tx) error {
+		if err := transact(ctx, tx, func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, next.sql); err != nil {
 				return err
 			}

@@ -60,6 +60,9 @@ func TestWireTaskProjectionsPreserveRawProperties(t *testing.T) {
 	if !strings.Contains(string(encoded), `"version":"9007199254740993"`) || !strings.Contains(string(encoded), `"version":9007199254740993`) {
 		t.Fatalf("precision lost: %s", encoded)
 	}
+	if !strings.Contains(string(encoded), `"cancelledAt":null`) {
+		t.Fatalf("missing nullable cancellation time: %s", encoded)
+	}
 	original.Properties["value"][0] = '['
 	if string(full.Properties["value"]) != property {
 		t.Fatal("full projection aliases source properties")
@@ -69,7 +72,7 @@ func TestWireTaskProjectionsPreserveRawProperties(t *testing.T) {
 		t.Fatalf("invalid summary: %+v", result)
 	}
 	encoded, err = json.Marshal(result)
-	if err != nil || len(encoded) > 16*1024 || strings.Contains(string(encoded), "description") || strings.Contains(string(encoded), "properties") {
+	if err != nil || len(encoded) > 16*1024 || strings.Contains(string(encoded), "description") || strings.Contains(string(encoded), "properties") || strings.Contains(string(encoded), "cancelledAt") {
 		t.Fatalf("summary = %s, error %v", encoded, err)
 	}
 }

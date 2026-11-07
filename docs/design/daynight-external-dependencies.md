@@ -81,7 +81,7 @@ core、`TaskWrite`、完整任务与图任务增加 `ExternalDependsOn`。
 `taskCandidate`、普通编辑及 `task_lifecycle.go` 的 `TaskWrite` 重建都必须携带 `E`，
 包括 set-status 的全部生命周期写入。
 分类变化参与语义比较；仅排序变化不增加版本，过期同值仍先冲突。
-状态不变时沿现有 SQL 保持 `startedAt`、`completedAt`；分类写入不成为新的执行起点。
+状态不变时沿现有 SQL 保持 `startedAt`、`completedAt`、`cancelledAt`；分类写入不成为新的执行起点。
 
 ## API 契约
 
@@ -125,7 +125,7 @@ core、`TaskWrite`、完整任务与图任务增加 `ExternalDependsOn`。
 
 HTTP 严格对象解析在创建和 PATCH 白名单中接受 externalDependsOn，并校验数组类型及内容。
 未知或重复字段、显式 `null`、非法或重复 ID、自引用、外部子集越界、缺失或跨项目前置返回 `invalid_input` / 400。
-任意普通、外部或混合环返回 `dependency_cycle` / 409；未完成真实前置返回 `dependency_unsatisfied` / 409；
+任意普通、外部或混合环返回 `dependency_cycle` / 409；未满足真实前置返回 `dependency_unsatisfied` / 409；
 过期版本返回 `version_conflict` / 409。现有身份、成员隐藏与权限结果保持原样。
 数据库、取消和响应失败沿现有错误链处理，不变成空分类或成功结果。
 
@@ -188,7 +188,11 @@ X ─外部→ C             X 不加入该分量
 独立任务行复用现有 `graph-blocked-badge` 显示“被阻塞” / “Blocked”，
 避免只有状态和 ready 标签时无法看出外部前置正在阻塞它。详情继续提供具体阻塞关系。
 分量状态沿当前全成员聚合规则计算，统计成员一次；
-外部上下文不改变该链的完成数、状态或筛选，项目统计继续按完整任务集合计数。
+全部普通成员为 done/cancelled 时进度计为已结束，并保留两种结果的数量；全部 done、
+全部 cancelled 与混合终态分别汇总为 done、cancelled 和仅供 UI 使用的 ended。
+外部上下文不改变该链的完成数、取消数、状态或筛选，项目统计继续按完整任务集合计数。
+普通和外部前置均以 done/cancelled 作为满足状态，取消自身不要求前置满足；
+[任务状态设计](daynight-task-status.md)拥有共享谓词与生命周期规则。
 
 ## 投影、样式与局部交互
 

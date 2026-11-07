@@ -35,7 +35,7 @@ const apply = async (scope: TaskCacheScope, detail: TaskDetail, snapshot = false
 const applyAbsentSnapshot = async (scope: TaskCacheScope, withSurvivor = false) => {
   const graph = graphFixture([body()]);
   const empty = withSurvivor ? graphFixture([detailFixture(projectId, "20000000-0000-4000-8000-000000000002")])
-    : { ...graph, tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } };
+    : { ...graph, tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } };
   const ticket = await scope.beginSync(projectId, signal());
   return scope.applySync(ticket, taskSyncFromGraph(empty, { epoch: "30000000-0000-4000-8000-000000000003", versionForTask: () => 1n }), signal());
 };

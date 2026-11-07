@@ -54,16 +54,38 @@ warnings. Use its refresh button to reload; a failed read retains the previous
 list and displays the error. Select an offline or failed assistant to inspect its
 actual reason.
 
-Choose Create assistant beside the list title to open the inline name form.
-Advanced settings optionally select a Worker, ordinary absolute working directory
-and Agent. Name-only creation uses server-resolved defaults; changing Worker
-reloads its defaults and clears incompatible directory and Agent overrides.
-Unavailable, unsupported, offline or stale choices retain their actual reasons.
-Before submission, Cancel or Escape closes the form and returns focus to its
-opener without creating an assistant; submission disables cancellation and
-duplicate requests. A confirmed rejection keeps the input for correction. If creation
-has an unknown result, use Check creation to read the original Bot ID; do not
-create a replacement to find out whether the first request succeeded.
+Choose Create assistant beside the list title to open a compact, name-first
+dialog. Its summary identifies the actual Worker and Agent; expand it to read
+full paths, effective model and reasoning effort, and their configuration sources.
+Adjust settings optionally selects a Worker, ordinary absolute working directory,
+Agent, Model and Reasoning effort. Defaults stay implicit in the request; local,
+cloud and successful-preference values are not described as native defaults.
+
+Browse opens the selected Worker's directory view in the same dialog. Navigate
+using the reported paths, filter loaded entries, show hidden directories or load
+another page. Select directory applies the path and binds that Worker; Cancel,
+Escape or the browse close button returns to the retained form without applying a
+selection. Manual absolute paths remain available when browsing is unsupported.
+Model choices and supported reasoning efforts come from the target Worker's
+native capabilities. Unknown capabilities and actual failures do not produce
+invented options.
+
+Explicit directory, Agent, Model or effort choices bind the resolved Worker.
+Changing Worker clears all machine-specific choices; changing Agent clears Model
+and effort; changing Model clears the form's effort override and resolves its
+default again. Individual default choices remove their overrides, and Reset all
+defaults also releases the Worker binding. Unavailable, unsupported, offline or
+stale choices retain their actual reasons. Initial loading keeps the name editable;
+background checks and retries retain the draft.
+
+Before submission, Cancel or Escape closes the dialog and restores its opener's
+focus without creating an assistant. Submission blocks cancellation and duplicate
+requests; IME composition cannot submit. A confirmed rejection keeps input for
+correction. For an unknown result, Check creation reads the original Bot ID,
+including after closing and reopening; it never creates a replacement to discover
+the outcome. The dialog follows the visible viewport, keeps its actions reachable
+with an independently scrolling body, and leaves the existing Session, draft and
+reading position intact.
 
 The conversation has one header for its name, Agent, Session state and controls.
 Display selects Conversation (the default) or Standard; approvals, errors and
@@ -610,13 +632,29 @@ while old-history ownership cannot carry forward. Clock-only responses retain th
 latest `GraphSnapshot.observedAt` and its paired `receivedMonotonic`. No settings
 edit changes task time or graph geometry.
 
+## Project deletion
+
+Project Settings offers owner Team administrators a deletion preview and exact
+name confirmation. The preview identifies the Project, its observed counts and
+active Worker claims; those observations are not DELETE conditions. Names with
+control characters use reversible JSON escaping. A confirmed receipt withdraws
+the original cache generation and preserves a success notice across navigation.
+Cache cleanup and navigation can be retried independently. A dispatched request
+with an unknown outcome is never replayed, and a later 404 does not prove that
+the deletion succeeded. Settings saves, ownership transfers and deletion share
+a synchronous management guard. The [Web design](../../docs/design/daynight-web.md#项目删除)
+owns the operation and identity boundaries.
+
 ## Persistent task summaries
 
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 8 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Upgrading schema 7 clears its Session
+schema 9 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Schema 9 rebuilds incompatible project,
+summary and detail records and their watermarks for required nullable cancelledAt,
+while preserving unchanged profile and compatible Session-history formats. Missing
+fields are not filled with null. Upgrading schema 7 clears its Session
 records, which lack the complete-empty proof, and preserves compatible project,
 task, profile and lifecycle data. Upgrading schema 6 adds the Session records
 store while retaining compatible task and profile data and lifecycle.
@@ -637,7 +675,7 @@ bounded LRU and business-version-driven detail reads.
 `beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
 `applySync` validates the transaction's complete durable set and atomically saves
 changed summaries with that watermark. Every snapshot/delta record contains its
-required nullable assignedTo and complete current properties from the task row's
+required nullable assignedTo/cancelledAt and complete current properties from the task row's
 database snapshot. Higher task
 versions replace whole summaries and property maps; missing keys remove old
 values without property tombstones or ordinary epoch changes. Equal-version
@@ -846,7 +884,7 @@ withdraw admission even after presentation changes; stale histories cannot
 withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md) records the rationale for the versioning, HTTP cache and scan-cost trade-offs.
 
 The task lists share assignee and status filters. Assignee supports All, Assigned
-to me, Unassigned and a person; status supports all, todo, in progress and done.
+to me, Unassigned and a person; status supports all, todo, in progress, done and cancelled.
 Both conditions must match the same task before pagination. Standalone rows match
 directly; a chain with any matching ordinary member retains its real representative
 and all ordinary children. Changing either filter resets both lists to page one.
@@ -1067,8 +1105,10 @@ unsubscribe and provider unmount release timer/listener work. There is no new
 blur listener, per-card request or server worker. Clock samples and settings stay
 outside graph-index, projection and layout dependencies.
 
-Task cards, standalone rows and Goal child rows show live elapsed or frozen
-completed duration. Todo tasks and incomplete intervals show no inferred duration.
+Task cards, standalone rows and Goal child rows show live elapsed or a frozen
+original execution duration for done and cancelled records. Todo tasks and
+incomplete intervals show no inferred duration; cancelledAt never supplies an
+execution endpoint.
 On cards and standalone rows, running tasks with `allowAgents=true` use an exact
 millisecond comparison strictly above saved minutes to add amber treatment,
 icon and Possibly stuck / 可能卡住了 while retaining the running status. Tasks
@@ -1187,20 +1227,23 @@ reload, browser back/forward and a generic not-found page. All resource reads us
 the current authenticated identity. A project without a saved section preference
 opens Overview, with six statistics and an overall progress list from the complete
 snapshot. Its recent rows include every unfinished ordinary task-chain component
-and completed components from the latest seven local calendar days. A row shows
-the representative title, completed/total count and a floored integer percentage.
-A Goal completes only when all ordinary members are done; its last member
-completion determines recency, with external prerequisites excluded. The latest
-known member completion supplies evidence when some historical times are unknown;
-without known recent evidence, completed Goals remain available in the task list.
+and ended components from the latest seven local calendar days. A row shows
+the representative title, ended/total count, separate done and cancelled counts,
+and a floored integer percentage. A Goal ends only when all ordinary members
+are done or cancelled; all done means successful completion, all cancelled means
+cancellation, and mixed terminal results use the UI-only ended outcome. Its
+latest member terminal time determines recency: completedAt for done and
+cancelledAt for cancelled, with external prerequisites excluded. Known recent
+member times supply evidence when some historical times are unknown; without
+known recent evidence, ended Goals remain available in the task list.
 The standalone aggregate row combines every unfinished standalone task with known
-completions in the same window. It remains visible at 100% when only recent
-completions remain, as do recent completed Goals. Project statistic cards retain
-full-history totals.
+terminal results in the same window. It remains visible at 100% when only recent
+ended tasks remain, as do recent ended Goals, and preserves the result breakdown.
+Project statistic cards retain full-history totals.
 
 The window includes today and the previous six days in the browser's local time
 zone, starting at local midnight six dates ago. For example, October 27 includes
-completions from October 21 at 00:00 onward. Local date arithmetic preserves
+terminal results from October 21 at 00:00 onward. Local date arithmetic preserves
 calendar-day semantics across daylight-saving changes. Current time advances
 from the server sample and monotonic elapsed time after synchronization;
 local-only summaries use their provisional client-time anchor. One project-owned
@@ -1211,7 +1254,7 @@ snapshot.
 Overview displays 20 top-level entries per page; Task chains and Standalone
 tasks each display 15. A whole Goal is one entry regardless of expanded children; the single
 standalone aggregate is one Overview entry. All display sequences sort by
-`in_progress`, `todo`, then `done` before pagination, using individual status for
+`in_progress`, `todo`, then terminal outcomes before pagination, using individual status for
 standalone tasks and complete component status for chains. Within a status,
 exact newest-first order remains stable; the standalone aggregate follows
 matching-status chains.
@@ -1270,26 +1313,30 @@ execution consistency and full prerequisite inspection.
 Standalone rows are compact native detail triggers with title, individual
 status, ID, creation time, automation permission and known execution timing. The
 clock and duration follow creation time in the same wrapping information line. An
-unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. A Goal row
+unsatisfied prerequisite produces an explicit Blocked / 被阻塞 badge; done and
+cancelled prerequisites are satisfied. A Goal row
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
 ordinary-component member exactly once, with `in_progress` first, then `todo`,
-then `done`. Completed children use exact `completedAt` descending order, with
-unknown completion times last. Equal completion times and unknown-time ties retain
-snapshot order, as do children in other status groups. Fresh snapshots recalculate
-this order. Top-level Goal ordering remains independent. Other starting tasks in a merge are
-included, while external prerequisite context is excluded. The
-list always retains `done`, `in_progress` and `todo` children; completed tasks
-remain visible. Filters determine whole-chain visibility and never remove children. Child rows show their own status,
-applicable ready/blocked markers and known execution duration after the title,
-and open the shared task dialog. The expanded heading offers the representative task's own
-details. Aggregate progress still includes that representative. Chain rows
-aggregate only component members: all done means done; otherwise any done or
-in-progress member means in progress; otherwise any todo member means pending;
-otherwise all members are todo. A completed representative with unfinished
-members stays visible. External prerequisite context does not contribute to
-chain progress or status. The former shared-membership badge is removed: a task
-can recur as context while its actual component membership remains unique.
+then terminal outcomes. Terminal children use exact completedAt for done or
+cancelledAt for cancelled in descending order, with unknown times last. Equal
+terminal times and unknown-time ties retain snapshot order, as do children in
+other status groups. Fresh snapshots recalculate this order. Top-level Goal
+ordering remains independent. Other starting tasks in a merge are included,
+while external prerequisite context is excluded. The list retains all four
+statuses; filters determine whole-chain visibility and never remove children.
+Child rows show their own status, applicable ready/blocked markers and known
+execution duration after the title, and open the shared task dialog. Cancelled
+records retain their original execution interval; cancelledAt never substitutes
+for a missing execution endpoint. The expanded heading offers the representative
+task's own details. Aggregate progress still includes that representative.
+Chain rows aggregate only component members: all done means done; all cancelled
+means cancelled; mixed terminal results mean ended. An unfinished chain with any
+terminal or in-progress member means in progress; otherwise it means todo.
+A terminal representative with unfinished members stays visible. External
+prerequisite context does not contribute to chain progress or status. The former
+shared-membership badge is removed: a task can recur as context while its actual
+component membership remains unique.
 
 Both categories share assignee and status filters and the current
 task-list page position; category switching does not restore an older offset. Chain
@@ -1307,19 +1354,28 @@ The [task view decision](../../.agents/notes/archived/feature/2026-10-22-project
 and [chain status decision](../../.agents/notes/archived/bug-fix/2026-10-22-task-chain-status.md)
 record their current rules and original rationale.
 
-The runtime accepts todo, in_progress and done. The graph summary has six
-counts: total, todo, inProgress, done, ready and blocked. They satisfy
-`total = todo + inProgress + done` and `todo = ready + blocked`. Creation uses todo.
-All-done chains are done; any done or in-progress member makes an unfinished
-chain in progress; other chains are todo. External context does not affect progress.
+The runtime accepts todo, in_progress, done and cancelled. The graph summary
+has seven counts: total, todo, inProgress, done, cancelled, ready and blocked.
+They satisfy `total = todo + inProgress + done + cancelled` and
+`todo = ready + blocked`. Creation uses todo. All-done Goals have the done
+aggregate outcome, all-cancelled Goals have cancelled, and mixed terminal Goals
+have the UI-only ended outcome. Ended is not a fifth TaskStatus. Progress counts
+done + cancelled while preserving each result count. External context does not
+affect progress.
 
 The actual task title is the common dialog header and accessible name, with a
 copy icon immediately to its right. The ID and its copy control belong to Overview.
-The three-item status menu begins the shared state row beside the assignee
+The four-state submission menu for non-cancelled tasks begins the shared state row beside the assignee
 control, followed by platform and readiness, with automatic execution at the right.
 Status, assignee and platform controls share a compact 24px height; the left group can wrap
 on narrow screens. The menu remains available on every content tab, marks the current
-item and permits selecting it. Arrow/Home/End, activation and
+item and permits selecting it for the original states. Cancelled records have a
+distinct readable status and no reopen, resume or withdraw action. The cancelled
+target uses the existing state confirmation with Confirm cancellation / 确认取消,
+describing irreversibility, retained readability, preserved execution times and
+dependency satisfaction. Active claims mark the option aria-disabled and show the
+release reason on hover or keyboard focus without dispatching a request; no remote
+stop action or reason form is added. Arrow/Home/End, activation and
 Escape preserve keyboard access and focus. Confirmation shows the full task name,
 current/target states and timing consequences. Cancel is initially focused;
 Cancel/close/Escape submits nothing. Long title and confirmation text have bounded
@@ -1330,7 +1386,11 @@ mutation owner. Operations that require confirmation share one confirmation unio
 Reviewed identity/status/version and material inputs remain frozen; observed
 changes invalidate confirmation. Exact bigint version survives JSON numeric
 serialization without rounding. Same-state requires +0; actual change requires +1.
-Same-state may return fresh derived readiness at the same version. Generation and
+Same-state may return fresh derived readiness at the same version. Actual
+cancellation requires a non-null cancelledAt while preserving startedAt,
+completedAt and all other materials. Its result uses ordinary status installation,
+not the deletion path; malformed results reconcile through GET without replay.
+Generation and
 confirmed-version floor prevent older reads from restoring stale state.
 
 Pending, stale, unknown or failed reconciliation blocks all task writes. Closing or
@@ -1381,16 +1441,13 @@ the returned reset while preserving other materials and refreshes the graph.
 Conflicts require a fresh review; uncertain outcomes use GET-only reconciliation
 without replay. This action does not require the original worker to be online.
 
-Both lists use newest creation first, with descending IDs breaking equal-time
-ties. Presentation reverses the exact API sequence without reducing timestamp
-precision; updates do not move older tasks. Completed standalone tasks and
-whole completed Goal chains are hidden by default in their respective
-categories. Expanded child lists include all task statuses independently of
-that filter. Each tab has its own completed-count checkbox,
-visible/total count and per-project visibility preference. An empty category,
-hidden all-complete items and a truly empty project have distinct states.
-Revealing completed items focuses the persistent checkbox before the
-empty-state action disappears. Long titles grow naturally in compact native
+Both lists apply the shared status priority before exact newest creation order,
+with descending IDs breaking equal-time ties. Updates do not move an entry
+unless its sorting status changes. Both categories default to all statuses and
+include historical done and cancelled tasks. Assignee and status filters control
+whole entries, while expanded child lists retain every ordinary member. Each
+category shows visible/total counts and distinguishes an empty category, no
+matching entries and a truly empty project. Long titles grow naturally in compact native
 controls. Goal headers retain 7px row gaps and responsive progress widths; the
 graph action can wrap on narrow screens. Desktop header titles stay 13px and
 narrow-screen titles 12px. Child tasks use compact rows with visible individual
@@ -2032,7 +2089,7 @@ records the division.
 The [Bot viewport suite](tests/navigation/bots-viewport.browser.ts) and
 [assistant presentation suite](tests/navigation/assistant-modern.browser.ts) run
 the production application, Session host and timeline against controlled HTTP and
-Session API responses. Together they cover responsive navigation, inline creation,
+Session API responses. Together they cover responsive navigation, assistant creation,
 search, unified controls, details, Focus mode, retained DOM/drafts/reading anchors,
 long history and pagination, empty suggestions, errors, archives and identity
 pause. Cases include English and Simplified Chinese, desktop and phone widths,

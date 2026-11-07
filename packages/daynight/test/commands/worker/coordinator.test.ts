@@ -63,7 +63,7 @@ afterEach(async () => {
   for (const store of stores.splice(0)) store.close();
   await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-const task = (projectId: string, id: string): Task => ({ id, projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+const task = (projectId: string, id: string): Task => ({ id, projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const eventually = (check: () => void) => vi.waitFor(check, { timeout: 3500, interval: 10 });
 it("preserves native polling values, asynchronous settlement and cancellation", async () => {
   const value = { polling: "value" };
@@ -1740,7 +1740,7 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.store.listTasks()[0]?.sessionId).toEqual(expect.any(String)));
     const row = f.store.listTasks()[0]!;
     const original = f.grants.get(row.claimId)!;
-    const withdrawn: Task = { ...original, status: "todo", allowAgents: false, startedAt: null, completedAt: null, version: original.version + 1n, properties: Object.fromEntries(Object.entries(original.properties).filter(([name]) => name !== "worker")) };
+    const withdrawn: Task = { ...original, status: "todo", allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, version: original.version + 1n, properties: Object.fromEntries(Object.entries(original.properties).filter(([name]) => name !== "worker")) };
     f.grants.clear(); f.candidates.splice(0);
     vi.mocked(f.remote.readTask).mockResolvedValue(withdrawn);
     await f.coordinator.tick();

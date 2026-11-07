@@ -58,7 +58,7 @@ func (s *Reader) TaskGraphProjectionSize(ctx context.Context, projectID, taskID 
 
 func (s *Reader) TaskGraphTasks(ctx context.Context, projectID, taskID string, selection store.TaskGraphSelection, previewCharacters int) ([]model.GraphTask, error) {
 	rows, err := s.tx.Query(ctx, taskGraphSelection+`SELECT t.id::text, left(t.title, $7), char_length(t.title) > $7,
-		t.status, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`, `+pg.TaskBlockedBy+`, `+pg.TaskReady+`
+		t.status, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`, `+pg.TaskBlockedBy+`, `+pg.TaskReady+`
 		FROM tasks t JOIN selected ON selected.id = t.id WHERE t.project_id = $1 AND (NOT $6::boolean OR t.deleted_at IS NULL) ORDER BY t.created_at, t.id`, projectID, taskID, selection.OrdinaryPrerequisites, selection.OrdinaryDependents, selection.DirectExternal, selection.LiveOnly, previewCharacters)
 	if err != nil {
 		return nil, pg.QueryError("read task graph", err)
@@ -68,7 +68,7 @@ func (s *Reader) TaskGraphTasks(ctx context.Context, projectID, taskID string, s
 	for rows.Next() {
 		var task model.GraphTask
 		if err := rows.Scan(&task.ID, &task.TitlePreview, &task.TitleTruncated, &task.Status,
-			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn, &task.BlockedBy, &task.Ready); err != nil {
+			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn, &task.BlockedBy, &task.Ready); err != nil {
 			return nil, pg.QueryError("read task graph", err)
 		}
 		if !task.Status.Valid() {
@@ -78,6 +78,7 @@ func (s *Reader) TaskGraphTasks(ctx context.Context, projectID, taskID string, s
 		task.UpdatedAt = task.UpdatedAt.UTC()
 		task.StartedAt = pg.UTCTime(task.StartedAt)
 		task.CompletedAt = pg.UTCTime(task.CompletedAt)
+		task.CancelledAt = pg.UTCTime(task.CancelledAt)
 		tasks = append(tasks, task)
 	}
 	if err := rows.Err(); err != nil {

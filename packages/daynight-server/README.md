@@ -60,7 +60,7 @@ The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
 producers carry it. Native assignee filtering and project-scoped people reads
-are implemented. The Web consumes assignment with schema-6 persistent profile
+are implemented. The Web consumes assignment with independent persistent profile
 content, strict task parsing, people presentation, mutation and local list filters. The CLI consumes the required
 nullable field and supports assignment/clearing, current-ID output and explicit
 list filters.
@@ -176,9 +176,10 @@ properties fail the complete request with 400 invalid_input. Database and
 transaction-completion faults remain 500 internal_error and take precedence over
 a saved property validation refusal. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
-summaries and details and replaces them atomically after an epoch change. Its
-schema-6 upgrade adds a separate profiles store while retaining valid schema-5
-task data, required Project ownership and user fences. Upgrades from versions 1,
+summaries and details and replaces them atomically after an epoch change. Its schema-9 upgrade explicitly rebuilds incompatible task caches for required
+cancelledAt while preserving separate profiles and compatible Session history.
+The historical schema-6 upgrade added profiles while retaining schema-5 task
+data, Project ownership and user fences. Upgrades from versions 1,
 2, 3 or 4 still rebuild incompatible project, summary and detail stores, rotate
 user fences and clear old watermarks before a complete snapshot. Profile content is reusable after reload
 only after current identity/project admission and version matching; access stays
@@ -298,9 +299,24 @@ opening one local file root and one PostgreSQL resource. `service.App` assembles
 and owns the shared modules and resources; `server.New` registers their HTTP
 routes. The runtime stops admission and drains HTTP and WebSocket work before
 the application closes the Session engine, files and pool. A cleanup timeout
-retains resources for another close attempt. Startup applies the embedded migrations before accepting requests.
-One pinned connection holds a session advisory lock across version checks and all
-migration transactions; unknown versions, gaps and checksum mismatches stop startup.
+retains resources for another close attempt. Startup validates the embedded
+format snapshot and prepares the target PostgreSQL schema before accepting
+requests. One pinned connection holds the migration advisory lock while
+inspecting the target namespace and initializing or upgrading its format.
+
+An empty namespace receives the current snapshot, required initial rows and the
+complete original migration-checksum ledger in one transaction. Historical SQL
+and Go transforms do not execute on that path. SQL, initial-data, ledger and
+deferred-constraint commit failures roll back the complete initialization. A
+lost commit acknowledgment preserves an unknown outcome and the original error;
+initialization remains all-or-nothing, and the next startup inspects the actual
+namespace and ledger. A namespace containing user objects follows the existing
+ordered migration path, even when it has no
+migration ledger; objects in another schema do not affect that choice. Unknown
+versions, gaps and checksum mismatches stop startup. Reopening an initialized
+schema preserves its existing data and ledger timestamps. The
+[initialization decision](../../.agents/notes/implemented/architecture/2026-11-06-postgres-schema-bootstrap.md)
+owns the namespace, transaction and concurrency guarantees.
 
 Migration `032_personal_project_ownership.sql` creates the Personal Team/member
 and Project ownership records and renames the existing member table, sequence,
@@ -427,7 +443,8 @@ on the host; valid authentication settings remain mandatory. The [deployment gui
 prerequisites, API examples, port selection and persistence/teardown commands.
 The gateway publishes host `127.0.0.1:8787` and forwards TCP to the server's
 loopback listener in their shared network namespace; the database has no
-published host port. Startup uses this module's embedded migrations. Open
+published host port. Startup initializes or upgrades the database with this
+module's embedded format snapshot and migrations. Open
 `http://127.0.0.1:8787/` for projects and task graphs. The
 [dev-ci deployment](../../deployment/dev-ci/README.md) reuses the production
 Dockerfile and gateway in a unique disposable project for tests.
@@ -589,6 +606,90 @@ prepares the pinned UniAuth fixture, and runs module tests and coverage. The
 optional `--coverage` argument selects the same check. A production build uses
 the real Web assets described under [Build and run](#build-and-run).
 
+### Business rules and DAO mocks
+
+Business-rule unit tests construct domain facts directly and use narrow mocks
+of the `core/store` DAO interfaces when a rule needs query results or storage
+errors. Check arguments, expected calls, results and error chains; unconfigured
+access must fail immediately. Pure functions need no storage mock. Keep these
+rule selections runnable without `DAYNIGHT_TEST_DATABASE_URL`, rather than
+preparing PostgreSQL merely to obtain fixed model data.
+
+PostgreSQL integration tests own real SQL, constraints, locking, commit and
+rollback, persisted readback and authority or version changes across operations.
+HTTP and process tests retain their composition and protocol boundaries. Moving
+a rule matrix does not remove these proofs or replace them with a single mock
+call. Do not mock SQL strings or implement a second in-memory database to test
+business rules.
+
+The Session control catalog, activity and argument rules call the authorization
+function with ordinary Task facts, a matching active Worker and fence, and a
+controlled clock. Positive commands establish that the fixture admits valid
+inputs. Real Submit/outsider, durable operation and offer/dispatch recheck tests
+retain the storage boundary. The
+[control-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-control-rule-isolation.md)
+records the proof split. The [server organization rules](../../docs/daynight-server.md#测试职责)
+own the stable test-layer policy.
+
+Session command and interaction admission tests use `SessionDAO` query mocks
+that check context, identity arguments, call counts and error propagation.
+Ordinary Task rules and independent Test Session first-input rules keep separate
+fixtures. A real timeline-upsert, Submit, operation-readback and duplicate-callback
+witness retains the persisted interaction-ID mapping. The
+[command-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-command-rule-isolation.md)
+records that split.
+
+Session load-state tests control `LockSession` through its DAO interface and
+observe local live-state and pending-content behavior for valid bindings,
+mismatches, missing records and operational errors. Actual row deletion, DAO
+missing-row mapping and Bot deletion/revocation barriers retain PostgreSQL. The
+[load-state decision](../../.agents/notes/implemented/testing/2026-11-06-session-load-state-isolation.md)
+records the error and invalidation expectations.
+
+Bot registration preflight tests use valid frozen-role, configuration and
+registration facts with the existing runner boundary. Invalid inputs must never
+enter the runner, and a valid-input sentinel proves the fixture can reach it.
+The PG frozen-configuration test first verifies an invalid registration created
+no Session or binding changes, then retains its real authority and version
+checks. The [Bot preflight decision](../../.agents/notes/implemented/testing/2026-11-06-bot-registration-preflight-isolation.md)
+records the shared-fixture and no-partial-write guarantees.
+
+Project request validation uses a valid synthetic principal and a fail-on-access
+store for UUID, creation input, pagination and entropy refusals that precede
+storage. Real creation, readback, keyset paging and operational-error tests keep
+PostgreSQL. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
+records the input and error-chain guarantees.
+
+Task request tests separate service preflight from candidates that require a
+stored Task. Preflight rejects before storage; `PrepareUpdate` and `PrepareStatus`
+tests use `TaskWriteDAO` expectations for reads, version order, results and error
+chains. Real scope, refusal-without-mutation, graph, rollback, concurrency and
+all-status-pair/version observations remain PostgreSQL integration proofs. The
+[Task validation decision](../../.agents/notes/implemented/testing/2026-11-06-task-request-candidate-isolation.md)
+records the read-before-validation distinction.
+
+Attachment migration manifest, stage, receipt, path and inventory tests use a
+fixed `AttachmentMaintenance` snapshot with real temporary files and the real
+migration runner. Database-shape validation, command/root failures, maintenance
+queries and process crash recovery retain their PostgreSQL boundaries. The
+[record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
+records which storage facts are mocked and which durable operations remain real.
+
+### TaskSync lock and time windows
+
+TaskSync lock-wait regressions use a named 20-millisecond test overlap with real
+PostgreSQL transactions. After observing the blocked writer, they poll the
+database clock with a bounded deadline until that overlap has elapsed before
+releasing the Project lock. The old snapshot must retain committed versions
+while its observation time crosses the uncommitted write's window; subsequent
+delta reads must include both committed writes in timestamp order. Initial
+fixture rows share a database timestamp so setup latency cannot exclude either
+row from the short baseline window.
+
+The production overlap and the independent 10-second, 30-second and nanosecond
+window cases remain separate. The [timing decision](../../.agents/notes/implemented/testing/2026-11-06-task-sync-lock-window.md)
+records why database clocks and lock observations are required together.
+
 ### HTTP scenario ownership
 
 Domain packages own their HTTP integration scenarios, including those that
@@ -607,7 +708,9 @@ records the distinction and preservation requirements.
 format produced by the complete embedded migration history. It includes the
 migration-ledger table definition, required initial rows and sequence state;
 it does not freeze migration-ledger rows or their application timestamps.
-Runtime startup continues to apply the historical migrations.
+Runtime startup uses the snapshot for an empty target namespace and retains
+historical migrations for existing namespaces. A stale snapshot version stops
+startup before initialization or upgrade, exposing an incomplete format update.
 
 The ordinary module check compares a fresh historical database with a fresh
 snapshot database through PostgreSQL catalogs and initial table data. It checks
@@ -1200,7 +1303,7 @@ version/status input. Every project member can write tasks; administrator role
 additionally manages members, invitations and project settings. Status PUT and
 method-refusal handlers authenticate, require exact Cookie Origin and use no-store.
 
-Creation uses todo, version 1, nullable execution endpoints, allowAgents=false
+Creation uses todo, version 1, nullable execution/cancellation timestamps, allowAgents=false
 and unrestricted requiredPlatform=null unless explicitly supplied. Its
 assignedTo defaults to null; an explicitly supplied UUID must identify a current
 project member in the creation transaction.
@@ -1213,26 +1316,29 @@ requiredPlatform and assignedTo accept null to clear; other JSON null input is
 rejected.
 Dependencies are canonical sorted UUIDs, checked for duplicate identity,
 self-reference, missing/cross-project tasks and cycles. Active/done metadata
-candidates require all predecessors done; todo may have unfinished predecessors.
+candidates require all predecessors done or cancelled; todo and cancelled may have unfinished predecessors.
 
-Ordinary tasks without active/released worker ownership accept all nine pairs
-across todo/in_progress/done. The project write
+Ordinary tasks without active/released worker ownership retain the original
+transitions across todo/in_progress/done and may enter irreversible cancelled. The project write
 transaction acquires the project lock, rechecks membership, compares the exact
 version and only then handles same-state. A current same-state request returns
 the full current Task without a stored write; stale same-state conflicts. Actual
 change increments once. Entering active/done requires all direct predecessors
-done, including external edges; reopening done refuses sorted direct active/done
+done or cancelled, including external edges; reopening done refuses sorted direct active/done
 dependent IDs. No dependent is changed. Status preserves requiredPlatform, assignedTo, PRs,
 other task fields, dependency classifications and attachments. Claim-bound done atomically marks
 the current worker completed; its owner and claim ID must match. Active execution
-returns to todo only through release. Released tasks begin a new execution through eligible automatic acquisition or
+returns to todo only through release. Released tasks may become cancelled without
+new execution; cancelled tasks cannot resume or withdraw to todo. Released todo tasks begin a new execution through eligible automatic acquisition or
 explicit owner/admin resume, with fresh claim and worktree IDs. The
 old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
 uses statement_timestamp() after the lock and clears the end; return to todo
 clears both. In-progress to done preserves its nullable start and records an end;
-todo to done records an end with null start. Metadata and same-state preserve time.
+todo to done records an end with null start. Cancellation records `cancelledAt`
+and preserves both execution endpoints; done-to-cancelled does not erase its
+completion time. Metadata and same-state preserve time.
 No missing historical start is inferred. State, timing, version and update time
 commit atomically. Details are owned by the [status architecture](../../docs/design/daynight-task-status.md).
 
@@ -1307,8 +1413,8 @@ dependents are not added. Tasks outside the component that externally depend on
 a member are not selected. A standalone task forms its own component.
 
 The response remains `{project, summary, tasks, observedAt}`. Each selected task
-counts once; the summary requires total, todo, inProgress, done, ready and blocked,
-including zero values. `total = todo + inProgress + done` and
+counts once; the summary requires total, todo, inProgress, done, cancelled, ready and blocked,
+including zero values. `total = todo + inProgress + done + cancelled` and
 `todo = ready + blocked`. Only todo contributes to ready/blocked; readiness still
 uses every original direct prerequisite, including prerequisites outside this
 projection. Graph reads do not change stored status, revisions or timestamps.
@@ -1317,7 +1423,7 @@ Nodes contain `id`, `titlePreview`, `titleTruncated`, `status`, `dependsOn`,
 `externalDependsOn`, `blockedBy`, `ready`, required boolean `allowAgents`, required
 nullable enum `requiredPlatform`, required nullable user UUID `assignedTo`,
 UTC creation/update timestamps and explicit
-nullable `startedAt`/`completedAt`. SQL produces at most 160 Unicode code points
+nullable `startedAt`/`completedAt`/`cancelledAt`. SQL produces at most 160 Unicode code points
 of each title without selecting descriptions, properties or full titles. Use the
 task detail endpoint for complete content. Node order is `(createdAt, id)`;
 dependency arrays are sorted and empty collections encode as `[]`.
@@ -1611,7 +1717,8 @@ while retaining the explicit manual eligibility exception. Force withdrawal acce
 the exact version and matching active/released claim ID from its original owner
 or a project admin who remains a member. It atomically clears worker, returns
 todo, clears execution timing and sets allowAgents=false, preserving other
-materials. It requires no stoppedConfirmed and does not guarantee immediate
+materials. Cancelled tasks explicitly refuse withdrawal; retained released
+history cannot restore a cancelled task. It requires no stoppedConfirmed and does not guarantee immediate
 remote process stopping; the original worker discovers absence through its
 complete own-claim inventory and performs terminal cleanup.
 Deprecated continuityConfirmed input is rejected rather than ignored. The
@@ -1694,7 +1801,7 @@ Task responses contain identity, project, title, description, status, required
 boolean `allowAgents`, nullable enum `requiredPlatform`, explicit nullable user
 UUID `assignedTo`, version,
 UTC creation/update timestamps, explicit nullable execution timestamps
-`startedAt`/`completedAt`, sorted `dependsOn`/`externalDependsOn`/`blockedBy` arrays, `ready` and complete
+`startedAt`/`completedAt`/`cancelledAt`, sorted `dependsOn`/`externalDependsOn`/`blockedBy` arrays, `ready` and complete
 `properties` with its actual present keys. An empty object means no properties,
 and an explicit `pullRequests: []` remains distinct from absence. A missing
 project or a task outside the specified project returns 404. The initialized

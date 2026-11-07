@@ -13,21 +13,21 @@ const localDate = (day: number, hour = 0): string => new Date(2026, 9, day, hour
 const observedAt = localDate(26, 12).replace(".000Z", ".123456789Z");
 const cutoff = localDate(20);
 const beforeCutoff = new Date(Date.parse(cutoff) - 1_000).toISOString().replace(".000Z", ".999999999Z");
-type Seed = { readonly id: string; readonly status: TaskStatus; readonly completedAt?: string | null;
+type Seed = { readonly id: string; readonly status: TaskStatus; readonly completedAt?: string | null; readonly cancelledAt?: string | null;
   readonly dependsOn?: readonly string[]; readonly externalDependsOn?: readonly string[]; readonly titleTruncated?: boolean };
 const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphSnapshot, { observedAt: string }> => {
   const tasks: GraphTask[] = seeds.map((seed) => {
     const dependsOn = seed.dependsOn === undefined ? [] : seed.dependsOn;
-    const blockedBy = dependsOn.filter((id) => seeds.find((task) => task.id === id)!.status !== "done");
+    const blockedBy = dependsOn.filter((id) => seeds.find((task) => task.id === id)!.status !== "done" && seeds.find((task) => task.id === id)!.status !== "cancelled");
     return { assignedTo: null, id: seed.id, titlePreview: `Title ${seed.id}`, titleTruncated: seed.titleTruncated === true, status: seed.status,
       dependsOn, externalDependsOn: seed.externalDependsOn === undefined ? [] : seed.externalDependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, allowAgents: false, requiredPlatform: null,
-      startedAt: null, completedAt: seed.completedAt === undefined ? null : seed.completedAt, createdAt: beforeCutoff, updatedAt: observed };
+      startedAt: null, completedAt: seed.completedAt === undefined ? null : seed.completedAt, cancelledAt: seed.cancelledAt === undefined ? null : seed.cancelledAt, createdAt: beforeCutoff, updatedAt: observed };
   });
   const graph: TaskGraph = { observedAt: observed,
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: "project", name: "Project", repoUrl: "https://example.com/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: cutoff, updatedAt: observed },
     tasks, summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
-      inProgress: tasks.filter((task) => task.status === "in_progress").length, done: tasks.filter((task) => task.status === "done").length,
+      inProgress: tasks.filter((task) => task.status === "in_progress").length, done: tasks.filter((task) => task.status === "done").length, cancelled: tasks.filter((task) => task.status === "cancelled").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.ready === false && task.status === "todo").length } };
   return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: observed, receivedMonotonic: 0, receivedAt: 0, revision: 1 };
 };
@@ -76,8 +76,8 @@ describe("overview and task-list visibility", () => {
 
   it("keeps unfinished components whole and derives the same standalone row set used by its aggregate", () => {
     const result = project(mixed());
-    expect(result.chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: true, done: 1, total: 4, percent: 25, status: "in_progress" }]);
-    expect(result.standalone).toEqual({ done: 2, total: 5, percent: 40, status: "in_progress" });
+    expect(result.chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: true, done: 1, cancelled: 0, ended: 1, total: 4, percent: 25, status: "in_progress" }]);
+    expect(result.standalone).toEqual({ done: 2, cancelled: 0, ended: 2, total: 5, percent: 40, status: "in_progress" });
     expect(result.recentStandaloneIds).toEqual(["boundary", "recent", "external", "running", "todo"]);
     expect(result.nextUpdateAt).toBe(timestampNanoseconds(localDate(27)));
   });
@@ -87,15 +87,15 @@ describe("overview and task-list visibility", () => {
     const value = snapshot([{ id: "todo", status: "todo" }, { id: "boundary", status: "done", completedAt: cutoff },
       { id: "old", status: "done", completedAt: beforeCutoff }, { id: "future", status: "done", completedAt: future }, { id: "unknown", status: "done" }]);
     const now = timestampNanoseconds(observedAt);
-    expect(project(value, now).standalone).toEqual({ done: 1, total: 2, percent: 50, status: "in_progress" });
+    expect(project(value, now).standalone).toEqual({ done: 1, cancelled: 0, ended: 1, total: 2, percent: 50, status: "in_progress" });
     expect(project(value, now).nextUpdateAt).toBe(now + 1n);
-    expect(project(value, now + 1n).standalone).toEqual({ done: 2, total: 3, percent: 66, status: "in_progress" });
+    expect(project(value, now + 1n).standalone).toEqual({ done: 2, cancelled: 0, ended: 2, total: 3, percent: 66, status: "in_progress" });
     expect(project(value, timestampNanoseconds(localDate(27))).recentStandaloneIds).toEqual(["future", "todo"]);
   });
 
   it("shows a fully complete recent standalone aggregate and excludes all-unknown or old completed inventory", () => {
     expect(project(snapshot([{ id: "done", status: "done", completedAt: observedAt }]))).toEqual({ chains: [],
-      standalone: { done: 1, total: 1, percent: 100, status: "done" }, recentStandaloneIds: ["done"], nextUpdateAt: timestampNanoseconds(localDate(27)) });
+      standalone: { done: 1, cancelled: 0, ended: 1, total: 1, percent: 100, status: "done" }, recentStandaloneIds: ["done"], nextUpdateAt: timestampNanoseconds(localDate(27)) });
     expect(project(snapshot([{ id: "unknown", status: "done" }, { id: "old", status: "done", completedAt: beforeCutoff }])).standalone).toBeNull();
   });
 
@@ -128,7 +128,7 @@ describe("overview and task-list visibility", () => {
       { id: "root", status: "done", completedAt: beforeCutoff },
       { id: "child", status: "todo", dependsOn: ["root"] },
     ]);
-    expect(project(reopened).chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: false, done: 1, total: 2, percent: 50, status: "in_progress" }]);
+    expect(project(reopened).chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: false, done: 1, cancelled: 0, ended: 1, total: 2, percent: 50, status: "in_progress" }]);
     expect(project(reopened).nextUpdateAt).toBeNull();
   });
 
@@ -162,9 +162,9 @@ describe("shared local calendar clock", () => {
     const cached: GraphSnapshot = { ...live, observedAt: null, receivedAt: null, revision: 0, localTime: new Date(2026, 10, 2, 12).getTime() };
     const { chainIds, standaloneIds } = categories(live);
     const { result, rerender, unmount } = renderHook(({ value }: { value: GraphSnapshot }) => useOverviewProgress(value, chainIds, standaloneIds, true), { initialProps: { value: cached as GraphSnapshot } });
-    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0, status: "todo" });
+    expect(result.current.standalone).toEqual({ done: 0, cancelled: 0, ended: 0, total: 1, percent: 0, status: "todo" });
     rerender({ value: live });
-    expect(result.current.standalone).toEqual({ done: 1, total: 2, percent: 50, status: "in_progress" });
+    expect(result.current.standalone).toEqual({ done: 1, cancelled: 0, ended: 1, total: 2, percent: 50, status: "in_progress" });
     unmount(); expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -178,7 +178,7 @@ describe("shared local calendar clock", () => {
     expect(result.current.recentStandaloneIds).toEqual(["done", "todo"]);
     act(() => { monotonic = 1; vi.advanceTimersByTime(1); });
     expect(result.current.chains).toEqual([]);
-    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0, status: "todo" });
+    expect(result.current.standalone).toEqual({ done: 0, cancelled: 0, ended: 0, total: 1, percent: 0, status: "todo" });
     expect(result.current.recentStandaloneIds).toEqual(["todo"]);
     unmount(); expect(vi.getTimerCount()).toBe(0);
   });
@@ -241,4 +241,22 @@ describe("project overview progress presentation", () => {
     view.rerender(<ProjectOverview onOpenTask={vi.fn()} {...presentation(snapshot([{ id: "old", status: "done", completedAt: beforeCutoff }]))} onNavigate={vi.fn()} />);
     expect(within(screen.getByRole("region", { name: "整体进度" })).queryByRole("button")).toBeNull();
   });
+});
+
+it("uses cancellation time for mixed and cancelled terminal Goals without replacing historical completion", () => {
+  const value = snapshot([
+    { id: "root", status: "done", completedAt: beforeCutoff },
+    { id: "cancelled", status: "cancelled", completedAt: beforeCutoff, cancelledAt: localDate(25, 12), dependsOn: ["root"] },
+    { id: "cancelled-only", status: "cancelled", cancelledAt: cutoff },
+    { id: "old-cancelled", status: "cancelled", cancelledAt: beforeCutoff },
+  ]);
+  const progress = project(value);
+  expect(progress.chains[0]).toMatchObject({ taskId: "root", done: 1, cancelled: 1, ended: 2, total: 2, percent: 100, status: "ended" });
+  expect(progress.standalone).toMatchObject({ done: 0, cancelled: 1, ended: 1, total: 1, percent: 100, status: "cancelled" });
+  expect(progress.recentStandaloneIds).toEqual(["cancelled-only"]);
+  const view = renderWithLocale(<ProjectOverview snapshot={value} progress={progress} pagination={{ page: 1, pageCount: 1, total: 2, start: 1, end: 2, onPageChange: vi.fn() }} onNavigate={vi.fn()} onOpenTask={vi.fn()} />, { locale: "en" });
+  expect(screen.getByRole("button", { name: /Title root, 2 \/ 2 ended, 1 completed, 1 cancelled/ })).toBeInTheDocument();
+  expect(screen.getByText("Ended", { selector: ".stat-label" })).toBeInTheDocument();
+  expect(value.index.nodes.get("cancelled")!.completedAt).toBe(beforeCutoff);
+  view.unmount();
 });

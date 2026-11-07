@@ -15,13 +15,13 @@ import { renderWithLocale } from "./helpers/renderWithLocale";
 const start = "2026-10-20T00:00:00.123456789Z";
 const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [],
   id, titlePreview: id, titleTruncated: false, status: "done", dependsOn: [], blockedBy: [], ready: false,
-  startedAt: null, completedAt: null, createdAt: start, updatedAt: start, ...changes,
+  startedAt: null, completedAt: null, cancelledAt: null, createdAt: start, updatedAt: start, ...changes,
 });
 const graph: TaskGraphData = {
   observedAt: "2026-10-20T00:59:59.123Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: "project", name: "Project", repoUrl: "https://github.com/example/repo", createdAt: start, updatedAt: start,
     settings: { version: 1n, executionWarningMinutes: 60 } },
-  summary: { total: 3, todo: 0, inProgress: 1, done: 2, ready: 0, blocked: 0 },
+  summary: { total: 3, todo: 0, inProgress: 1, done: 2, cancelled: 0, ready: 0, blocked: 0 },
   tasks: [task("A"), task("B"), task("C", { titlePreview: "A deliberately long shared task title preserving the existing card controls", titleTruncated: true,
     status: "in_progress", allowAgents: true, startedAt: start, dependsOn: ["A", "B"] })],
 };

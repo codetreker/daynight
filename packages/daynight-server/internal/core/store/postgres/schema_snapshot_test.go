@@ -2,14 +2,12 @@ package postgres
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"unicode"
@@ -17,9 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-//go:embed schema/current.sql
-var currentSchemaSnapshot string
 
 var updateSchemaSnapshot = flag.Bool("update-schema-snapshot", false, "Regenerate schema/current.sql from the complete migration history.")
 var schemaSnapshotPGDump = flag.String("schema-snapshot-pg-dump", "pg_dump", "PostgreSQL 18 pg_dump executable used to regenerate the schema snapshot.")
@@ -126,11 +121,8 @@ SELECT pg_catalog.setval('"generated_schema"."counter"', 7, true);
 
 func assertSchemaSnapshotVersion(t *testing.T, sql string) {
 	t.Helper()
-	line, _, _ := strings.Cut(sql, "\n")
-	value, ok := strings.CutPrefix(line, "-- Schema snapshot version: ")
-	version, err := strconv.ParseInt(value, 10, 64)
-	if !ok || err != nil || version != schemaMigrations[len(schemaMigrations)-1].version {
-		t.Fatalf("schema snapshot version %q does not match latest migration %d; regenerate schema/current.sql", line, schemaMigrations[len(schemaMigrations)-1].version)
+	if err := validateSchemaSnapshot(sql, schemaMigrations); err != nil {
+		t.Fatal(err)
 	}
 }
 

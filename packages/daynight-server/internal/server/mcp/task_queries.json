@@ -1,7 +1,7 @@
 [
   {
     "name": "task_list",
-    "description": "Read a page ordered in-progress, ready todo, blocked todo, done; default excludes done. Summary is default; request full list resources explicitly.",
+    "description": "Read a page ordered in-progress, ready todo, blocked todo, then done or cancelled; default excludes both terminal statuses. Summary is default; request full list resources explicitly.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -26,7 +26,8 @@
           "enum": [
             "todo",
             "in_progress",
-            "done"
+            "done",
+            "cancelled"
           ]
         },
         "assignedTo": {

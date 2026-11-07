@@ -6,6 +6,7 @@ import type { PaginationState } from "../projects/usePagination";
 import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { GraphTask, WorkerClaim } from '../../api/types';
 import { compareTaskStatus } from '../projects/task-order';
+import { isTerminalStatus, taskEndedAt } from '../../api/task-status';
 import { timestampNanoseconds } from '../projects/task-visibility';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskExecution } from '../task-execution/TaskExecutionClock';
@@ -84,11 +85,13 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, open, onOpenC
     return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
       .toSorted((left, right) => {
         const status = compareTaskStatus(left.status, right.status);
-        if (status !== 0 || left.status !== 'done') return status;
-        if (left.completedAt === null) return right.completedAt === null ? 0 : 1;
-        if (right.completedAt === null) return -1;
-        const leftTime = timestampNanoseconds(left.completedAt);
-        const rightTime = timestampNanoseconds(right.completedAt);
+        if (status !== 0 || !isTerminalStatus(left.status)) return status;
+        const leftEndedAt = taskEndedAt(left);
+        const rightEndedAt = taskEndedAt(right);
+        if (leftEndedAt === null) return rightEndedAt === null ? 0 : 1;
+        if (rightEndedAt === null) return -1;
+        const leftTime = timestampNanoseconds(leftEndedAt);
+        const rightTime = timestampNanoseconds(rightEndedAt);
         return leftTime > rightTime ? -1 : leftTime < rightTime ? 1 : 0;
       });
   }, [index, rootId]);
@@ -101,7 +104,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, open, onOpenC
           <span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span><TaskPauseCount count={pausedCount} />{pausedTaskIds.has(rootId) && <TaskPausedBadge />}</span>
           <span className="task-assignee-row-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span>
         </span>
-        <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.done / progress.total * 100}%` }} /></span></span>
+        <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.ended / progress.total * 100}%` }} /></span></span>
       </button>
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={`goal-children-${rootId}`}
         {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />

@@ -50,6 +50,9 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 	for _, table := range []string{"users", "projects", "tasks", "task_attachments", "project_invitations", "personal_access_tokens", grants} {
 		var value string
 		projection := `to_jsonb(t)`
+		if table == "tasks" {
+			projection = preCancellationTaskJSON
+		}
 		if table == "projects" {
 			// Later lifecycle migrations add a nullable field; compare all original
 			// columns while checking that field separately after the full upgrade.
@@ -97,6 +100,7 @@ func TestPersonalOwnershipMigrationPreservesFactsAndSequence(t *testing.T) {
 			if !reflect.DeepEqual(before, ownershipMigrationFacts(t, s, "project_grants")) {
 				t.Fatal("later migrations changed retained grants, invitations, identity or project content")
 			}
+			assertHistoricalTasksHaveNoCancellationTime(t, s)
 			var allLive bool
 			if err := s.Pool.QueryRow(ctx, `SELECT bool_and(deleted_at IS NULL) FROM projects`).Scan(&allLive); err != nil || !allLive {
 				t.Fatalf("existing projects are not live after lifecycle migration: %v %v", allLive, err)

@@ -18,6 +18,7 @@ type TaskViewRecord struct {
 	UpdatedAt         time.Time
 	StartedAt         *time.Time
 	CompletedAt       *time.Time
+	CancelledAt       *time.Time
 }
 
 type TaskSync struct {

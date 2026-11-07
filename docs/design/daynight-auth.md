@@ -386,7 +386,7 @@ HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由�
 | POST /api/v1/auth/device/inspect、POST .../decision | 仅主站会话及精确 Origin 检查、明确批准或拒绝；Daynight envelope。 |
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
-| PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与三状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
+| PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与四状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
 | POST .../projects/{id}/transfer-preview、POST .../transfer | owner Team admin；最小目标预览及按 ownership/目标版本确认转移。 |
 | GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |
@@ -421,7 +421,7 @@ Web 的 me 入口单独向共用 request 传入 cache:no-cache，其他端点保
 TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详情关闭/重开
 保持 project/task 的状态操作身份与结果，401 或身份变化时丢弃旧用户状态；同一
 用户核验与语言切换不重建 Provider。状态设置依赖当前完整详情的精确版本，冲突与未知
-结果遵守[三状态设计](daynight-task-status.md)。
+结果遵守[状态设计](daynight-task-status.md)。
 它通过 /me 取得身份，401 进入带有效目标的独立登录流程；资源 404 不退出全局会话。
 登录地址的有效目标仍是相应邀请路径时保留现有 tab 内凭据，fragment 在请求之前捕获
 并移出地址。离开到公开页会卸载认证分支，因此 Application 同时负责离开邀请时的清理

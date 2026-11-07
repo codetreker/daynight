@@ -122,12 +122,13 @@ func TestErrorResultFallbackWithIncompatibleSchema(t *testing.T) {
 
 func TestMapTaskFullConvertsOptionalTimeToUTC(t *testing.T) {
 	started := time.Date(2026, 11, 6, 9, 10, 11, 123, time.FixedZone("test", 3*60*60))
-	task := model.Task{StartedAt: &started}
+	task := model.Task{StartedAt: &started, CancelledAt: &started}
 	got := MapTaskFull(task)
-	if got.StartedAt == nil || got.StartedAt.Location() != time.UTC || !got.StartedAt.Equal(started) || got.CompletedAt != nil {
+	if got.StartedAt == nil || got.StartedAt.Location() != time.UTC || !got.StartedAt.Equal(started) || got.CompletedAt != nil ||
+		got.CancelledAt == nil || got.CancelledAt.Location() != time.UTC || !got.CancelledAt.Equal(started) {
 		t.Fatalf("unexpected optional timestamps: %+v", got)
 	}
-	if task.StartedAt.Location() == time.UTC {
+	if task.StartedAt.Location() == time.UTC || task.CancelledAt.Location() == time.UTC {
 		t.Fatal("mapper changed the source timestamp")
 	}
 }

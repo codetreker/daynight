@@ -1,6 +1,6 @@
 # Task 负责人契约
 
-状态：服务端负责人字段、HTTP 读写与查询、CLI 负责人命令、Web 负责人交互和 schema 6 持久人员缓存，以及本人自动领取规则已实现。本文拥有责任归属的数据、事务、查询与界面行为；[设计](../design/daynight-task-assignment.md)拥有机制。
+状态：服务端负责人字段、HTTP 读写与查询、CLI 负责人命令、Web 负责人交互和 独立持久人员缓存，以及本人自动领取规则已实现。本文拥有责任归属的数据、事务、查询与界面行为；[设计](../design/daynight-task-assignment.md)拥有机制。
 
 ## 数据与读取
 
@@ -65,7 +65,7 @@ name 和 avatarUrl 保留实际 nullable 资料，不补姓名或邮箱；响应
 
 ### 完整目录
 
-没有 userId 参数时返回当前有效项目成员，与本项目未软删除任务仍引用的负责人之并集；包括没有任务的成员，以及仍被 todo/in_progress/done 引用的离开成员。仅被软删除任务引用不保留资格。条目按规范 UUID 排序并去重，unresolvedUserIds 为空；不静默截断。完整目录保留给明确要求完整资料的调用方；Web 选择器使用 task-sync 的完整人员版本清单与按需资料读取，遵守下述持久缓存规则。
+没有 userId 参数时返回当前有效项目成员，与本项目未软删除任务仍引用的负责人之并集；包括没有任务的成员，以及仍被 todo/in_progress/done/cancelled引用的离开成员。仅被软删除任务引用不保留资格。条目按规范 UUID 排序并去重，unresolvedUserIds 为空；不静默截断。完整目录保留给明确要求完整资料的调用方；Web 选择器使用 task-sync 的完整人员版本清单与按需资料读取，遵守下述持久缓存规则。
 
 ### 限定解析
 
@@ -101,7 +101,7 @@ name 和 avatarUrl 保留实际 nullable 资料，不补姓名或邮箱；响应
 
 列表、详情和具体人员筛选共享资料所有者；重复打开任务、多个组件请求同一人、重复同步和选择器普通重开不重复传输匹配版本资料。并发需求合并并复用在途读取；同一身份和项目历史下有效结果不因组件卸载而丢弃。人员 GET 返回其自身快照实际观察的 version；若它已晚于先前清单，保留真实版本，不能标记为旧版本，也不能因这次差异立即循环重查。超前资料和临时 unresolved 的复用例外只持续到下一次新的成功 graph receipt 观测，即使清单内容版本未变也重新核验；重复 receipt 与普通展示变化保留当前观测。请求捕获所属观测，旧响应不能在新观测中恢复冲突例外。普通匹配版本的缓存资料继续复用，不因此重新读取。
 
-IndexedDB schema 6 使用独立 profiles store 保存资料内容，不写入 Task 版本或任务记录。schema 5 升级只增加资料 store，保留已有真实 Project ownership 的任务记录和 userFence；schema 1/2/3/4 仍重建缺少当前必填字段的不兼容任务数据。普通页面卸载保留持久资料。观察到项目 generation 或 userFence 更替时，立即撤回旧人员显示、资格、访问标记和候选目录的 ready 状态；即使跨标签页先安装了 assigneeVersions:null 的新投影，也不能保留旧清单或把未知清单当作成功空目录。已请求的目录等待当前在线清单，未请求的目录保持 idle；Task.assignedTo 原值不变。同一 userFence 下的原始资料内容可保留，只有新在线清单匹配后才恢复显示；userFence 更替不复用旧内容，旧响应不得跨 generation 发布。退出、换号、身份失效或项目撤权同步释放相应内存准入，并沿既有作用域清理持久资料。缓存与读取失败保留明确错误和 Retry，不伪装成成功、空人员或丢失访问权。
+IndexedDB使用独立profiles store保存资料内容，不写入 Task 版本或任务记录。历史schema5→6升级只增加资料store，保留当时兼容的Task和userFence；当前schema9为必需cancelledAt重建不兼容Task记录及水位，profiles内容仍独立保留。schema1/2/3/4历史格式的重建规则由缓存需求拥有。普通页面卸载保留持久资料。观察到项目 generation 或 userFence 更替时，立即撤回旧人员显示、资格、访问标记和候选目录的 ready 状态；即使跨标签页先安装了 assigneeVersions:null 的新投影，也不能保留旧清单或把未知清单当作成功空目录。已请求的目录等待当前在线清单，未请求的目录保持 idle；Task.assignedTo 原值不变。同一 userFence 下的原始资料内容可保留，只有新在线清单匹配后才恢复显示；userFence 更替不复用旧内容，旧响应不得跨 generation 发布。退出、换号、身份失效或项目撤权同步释放相应内存准入，并沿既有作用域清理持久资料。缓存与读取失败保留明确错误和 Retry，不伪装成成功、空人员或丢失访问权。
 
 可信同用户的项目 404 沿当前 scope/ticket 撤销项目准入，不能因菜单关闭、需求变化或身份正向门禁等待而丢失；旧历史拒绝不能撤销新历史。人员资料和清单只服务显示与候选选择，不能授予 Task 写权限。
 
@@ -111,6 +111,6 @@ Web Task、summary 和 GraphTask 严格要求 assignedTo:null 或规范 UUID，�
 
 ## 当前交付边界与验证
 
-本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 6 持久资料缓存已实现。CLI 已消费必填 nullable assignedTo，创建时省略负责人默认使用当前认证账号，显式 UUID 可指定其他人；服务端不强制这个默认值。CLI 还支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离的历史取舍见[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)。
+本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 独立持久资料缓存已实现。CLI 已消费必填 nullable assignedTo，创建时省略负责人默认使用当前认证账号，显式 UUID 可指定其他人；服务端不强制这个默认值。CLI 还支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离的历史取舍见[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)。
 
 验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。完整规模的查询计划和响应样本由显式本地压力入口运行，绑定被测修订；常规 CI 保留查询正确性验证，不把样本量当作生产容量上限。Web 还验证 schema 6 的持久资料复用、缺失/变化项读取、访问状态单独变化、schema 5 无损升级与 schema 1/2/3/4 重建、跨标签页 generation 更替且新在线清单尚未取得时撤回旧人员/访问标记/ready 目录并在新清单验证后复用内容、迟到与失权 fence、未知结果只读核对、完整图筛选及双语桌面/390px/320px交互。CLI 验证严格 nullable 字段、设置/清空参数、list 筛选与逐页 principal 绑定、精确版本和 JSON/可读输出。适用 Go、CLI 与 Web 门禁，以及 Go 严格大于 90% 的总语句覆盖率由仓库验证命令拥有。

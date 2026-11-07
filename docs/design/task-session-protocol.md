@@ -129,6 +129,26 @@ runtime 从已读回 ticket 条件构造 `ProviderOptions.instructions`，新建
 
 生成新 generation 的生产者负责携带已冻结的原文。journal 保存整份 ticket hash 和原执行/停止/native 身份，不增加角色副本或角色变更机制；它不能独立判断生产者是否在两代间换了模板。Bot 的版本化模板、首次准备与服务端冻结不由这个共享层承担。三种 Provider 的原生追加映射也有各自实现与运行验收；共享透传不宣称原生追加或完整 Bot 托管已经可用。取舍见[角色传递决策](../../.agents/notes/archived/architecture/2026-11-04-controller-role-instructions.md)。
 
+### Codex 初始设置持久化
+
+新建 Codex Provider 先通过 `thread/start` 应用明确 model 与 `config.model_reasoning_effort`，读取能力并完成现有选择校验，再执行 `thread/read(includeTurns: true)` 物化空线程。原生空线程读取可能已经写入 rollout，却返回 code 为 `-32601`、message 为 `list_turns is not supported yet` 的 `NativeRpcError`；有明确初始选择时仅兼容这一精确组合。其他读取拒绝立即终止初始化，不继续更新设置：写盘失败后 `thread/settings/update` 仍可能返回 `{}`，不足以证明 rollout 存在。双省略沿用原有原生读取错误兼容行为；传输错误继续终止初始化。
+
+完成读取后，仅当存在明确初始选择时调用一次 `thread/settings/update`，patch 只包含 `threadId`、实际指定的 model 和解析后的 effort。不能将更新前移到空线程读取之前：原生尚未物化 rollout 时的更新不足以让无输入线程冷恢复保留设置。双省略不新增更新，也不使用 controls 的模型默认 effort 或目录默认值构造 patch。
+
+同值更新可能返回合法空对象而不发送 `thread/settings/updated`，而成功 RPC 回执只证明更新已排队。因此 `codex-initial-settings.ts` 在派发前打开 `thread/start` 返回的 `thread.path`，要求普通文件位于本次 native home 的真实 `sessions` 路径内，核对唯一 `session_meta` 的 id 与真实 cwd，并保存当前字节位置。只使用原生给出的路径，不扫描历史、不推算文件名、不写原生记录。路径缺失、越界、符号链接逃逸或身份无法核实均拒绝初始化。
+
+派发一次更新并核对对象回执后，屏障只读观察该文件的追加内容。基线之后完整换行记录中的 `event_msg/thread_settings_applied` 必须属于原 thread，且明确字段匹配；这只是历史文件确认，尚不足以允许 idle 或返回 Provider handle。启用启动选择校验时，model 使用通过既有校验的启动回执有效值；未启用时使用明确请求值，不接受未经校验的错误启动值。effort 读取 `thread_settings.collaboration_mode.settings.reasoning_effort`，省略字段不参与匹配，目录默认与 controls 显示回退不作为持久证据。基线之前的同值记录及基线已开始的半行均不能确认本次更新。
+
+原生先追加 JSONL，再更新 SQLite metadata；另一个原生客户端正常读取空线程即可提前建立缺少 model/effort 的旧行。若只观察 JSONL 就就绪，在 SQLite 提交前进程退出，冷恢复仍可能用旧 metadata 覆盖历史设置。因此 `codex-settings-metadata.ts` 还须确认 SQLite 的已提交行。派发更新前读取 `config/read` 和 `configRequirements/read`，按 managed `requirements.sqliteHome` 的本地文件 URI、有效 `config.sqlite_home` 的绝对路径、实际子进程环境 `CODEX_SQLITE_HOME`、native home 的顺序确定 SQLite 目录；环境相对路径按本次 cwd 解析。只支持已核实的 `state_5.sqlite` 布局，不扫描目录选择数据库，不把父进程未传入的环境值补给子进程。
+
+历史记录满足条件后，每次用现有 `better-sqlite3` 打开只读、必须存在、busy timeout 为 0 的连接，以一次 SELECT 读取原 ID 的 `rollout_path`、`cwd`、model 和 reasoning_effort，随后立即关闭连接。必须核对同一原生路径和真实 cwd，且同一已提交行中的明确字段匹配。查询前后校验普通文件、真实路径与文件身份；替换或归属不符立即失败。读锁冲突、缺文件、缺行或字段尚未匹配在总期限内重查；未知 schema、损坏或未知路径配置失败，不允许仅凭 JSONL 成功。不保持跨轮询事务，不使用 `immutable` 跳过 WAL，不迁移、checkpoint 或直接修改原生数据库。metadata 确认后再次核对历史文件没有新增未处理内容，再允许就绪。
+
+屏障先以 `lstat` 拒绝非普通文件，打开后以 `fstat` 再核对同一文件身份；可用的 `O_NOFOLLOW` / `O_NONBLOCK` 进一步防止检查后被替换为链接或 FIFO，但不替代前后身份校验。屏障持有同一只读文件句柄，以 64 KiB 块读取并保留未完成尾行，每 20 ms 至多读取一次新增内容。总文件预算为 16 MiB，配置读取、唯一设置更新与双层观察共享 30 秒总期限；不支持的持久化格式、损坏完整记录、文件身份替换、截断、路径消失或预算超限均失败。错误 owner 或值不能满足屏障，后续完整正确事件仍可确认；超时保留持久化结果未知。原生异步 error、退出及关闭会取消观察，所有出口释放文件和计时器。拒绝、畸形回执及断流同样沿初始化异常路径关闭拥有的进程并传播错误，不重试或抹掉已观察的 native ID。此屏障证明原生冷恢复所用历史与 metadata 已可读，不承诺断电耐久性或排除其他客户端后续修改。
+
+此确认依赖 fresh 初始化阶段只有一个设置 writer：Provider handle 返回之前不能接收交互 controls，原生 fresh 启动也不自发提交 `ThreadSettings` 操作，因此基线后的匹配设置记录可归属于本次唯一更新，而不需要伪造 operationId。若原生事件来源或初始化 writer 数量改变，必须重新验证这项归属条件。
+
+`thread/resume` 和双省略不新增配置读取或进入双层屏障。恢复不重写初始选择，用户会话内变更继续由原生持久设置拥有。取舍与固定原生源码依据见[空线程初始设置决策](../../.agents/notes/implemented/bug-fix/2026-11-07-codex-empty-thread-settings.md)。
+
 ### Codex 原生角色映射
 
 Codex 适配器在 `thread/start` 与 `thread/resume` 共用的参数构造中，仅当 `ProviderOptions.instructions` 存在时设置 `developerInstructions`，不改写原文，不设置 `baseInstructions`。使用独立的 developer 层可保留原生基础提示；Codex 会以提供的文本覆盖该层配置，并不会自动拼接已有的 `developer_instructions`。新建仍按既有条件选择 model、sandbox、approvalPolicy，恢复仍使用原 threadId 与 excludeTurns；CLI alias 和 native PATH override 保持在原 config 合并路径中。角色本身不调用 send，也不改变首个真实用户请求的 effort 选择。
@@ -408,9 +428,11 @@ read、invalid、write issue 只在打开的菜单内按当前语言映射说明
 
 `SessionFullscreenContext` 允许共享视图向 `TaskDetailSurface` 登记 owner、原 section 和退出操作。登记期间 Surface 使用独立 Session 全屏样式占满 viewport，隐藏任务 chrome、Tabs 和通知；原 `DetailFullscreen.active` 不变。取消登记按 owner 核对，旧视图清理不能撤销新视图的登记。Surface 禁止自身 Escape/Tab 与 Session 的键盘边界竞争。Test 入口直接使用共享视图的 viewport 样式，不需要任务容器或另一份 Session。既有 section、portal、key 和 DOM 层级不变；任务容器同时展开并取消入场 transform，避免固定定位被祖先 containing block 或裁剪边界限制。首次进入 Session 全屏后，同一 Surface 挂载周期不再重播入场 transform 动画，防止退出时的动画几何污染阅读位置。
 
-全屏 hook 沿 Session 到 body 的祖先链将旁支设为 `inert`，记录并恢复原值，且覆盖全屏期间新增的背景节点；不能使包含 Session 的共同祖先 inert。背景隔离和 `useBodyScrollLock` 均有所有权计数，退出仅释放当前视图的计数，不提前解除外层 modal 的背景锁。Tab 在 Session 内按实际可聚焦控件循环，无可用控件时聚焦 section；外部焦点被限制回会话。内层菜单先在自己的冒泡处理器消费 Escape，Session 再消费尚未处理的 Escape 并退出，外层任务不处理同一次按键。显式退出使用 `preventScroll` 恢复仍连接且未隐藏或 inert 的入口；失效身份清理不将焦点抢回旧视图。
+全屏 hook 沿 Session 到 body 的祖先链将旁支设为 `inert`，记录并恢复原值，且覆盖全屏期间新增的背景节点；不能使包含 Session 的共同祖先 inert。背景隔离和 `useBodyScrollLock` 均有所有权计数。Session 以 `freezePosition=true` 额外取得根页面定位锁：首个定位 owner 保存 window 坐标、body 定位和 html 滚动样式，以负偏移固定 body；末个定位 owner 释放时恢复这些属性及原坐标。定位计数与普通 overflow 计数独立，Session 退出后外层 modal 的 overflow 锁继续生效。只恢复本机制修改的属性及优先级，保留其他属性变更；坐标恢复使用 instant，避免页面 smooth scrolling 延迟复位。Tab 在 Session 内按实际可聚焦控件循环，无可用控件时聚焦 section；外部焦点被限制回会话。内层菜单先在自己的冒泡处理器消费 Escape，Session 再消费尚未处理的 Escape 并退出，外层任务不处理同一次按键。显式退出使用 `preventScroll` 恢复仍连接且未隐藏或 inert 的入口；失效身份清理不将焦点抢回旧视图。
 
-共享全屏样式使用 CSS viewport，不调用原生 Fullscreen API。`visualViewport` 存在时监听尺寸和偏移变化，以 `--session-viewport-width/height/top/left` 使全屏布局跟随可见区域；否则使用窗口 viewport。退出恢复原样式值并移除监听。输入框宽度观察回调将高度调整合并到下一 animation frame，并在清理时取消待执行帧，避免在 ResizeObserver 交付期间改变被观察尺寸；首次布局及文本变化仍同步调整。工具栏保持独立可见空间，内容保留各自滚动所有权；长文本、窄容器和较短可见高度不能把退出按钮推到不可达区域。布局与生命周期选择理由见[Session 全屏决策](../../.agents/notes/archived/feature/2026-11-04-session-fullscreen.md)。
+共享全屏样式使用 CSS viewport，不调用原生 Fullscreen API。不透明全屏根固定覆盖完整 layout viewport；`visualViewport` 存在时监听尺寸和偏移变化，以 `--session-viewport-width/height/top/left` 计算根的 padding，将原有 flex 内容区限制在可见矩形，避免白色表面随软件键盘一起缩小。缺失 API 时使用窗口 viewport。Bot 根复用相同几何并保留 16px 内边距，独立任务页将删除结果高度计入底部预留，结果槽在不透明表面之上保持可操作。退出恢复原样式值并移除监听。Display popover 的宽高和位置同样限制在 visual viewport 内，监听其 scroll/resize，避免键盘平移后菜单脱离可见区域。输入框宽度观察回调将高度调整合并到下一 animation frame，并在清理时取消待执行帧，避免在 ResizeObserver 交付期间改变被观察尺寸；首次布局及文本变化仍同步调整。工具栏保持独立可见空间，内容保留各自滚动所有权；长文本、窄容器和较短可见高度不能把退出按钮推到不可达区域。布局与生命周期选择理由见[Session 全屏决策](../../.agents/notes/archived/feature/2026-11-04-session-fullscreen.md)。
+
+`containSessionScroll` 在 document 冒泡阶段按全屏根及其独立任务结果槽过滤 touch/wheel；React 时间线先处理阅读意图和历史加载，再决定是否阻止默认滚动。单指手势沿主方向检查边界内可滚动祖先的剩余空间；不能由内部消费的边界拖动才被取消，不允许借用任务背景祖先。多指缩放、缩放 wheel 与文本选区交给浏览器；隐藏或 inert 的 Session 不干预上层 modal。退出和卸载移除监听。textarea 和菜单保留局部 overscroll 隔离，代码块不设置双轴 contain，以允许其纵向手势交给时间线。实现取舍见[全屏覆盖与滚动隔离决策](../../.agents/notes/implemented/bug-fix/2026-11-07-session-keyboard-scroll-isolation.md)。受控视口与合成手势证明这些浏览器机制，不能证明原设备的键盘动画、系统附件栏合成或 IME 行为。
 
 ## 关闭与清理
 

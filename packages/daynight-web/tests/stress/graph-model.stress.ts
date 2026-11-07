@@ -13,7 +13,7 @@ describe("complete graph-model capacity", () => {
     }));
     const index = buildGraphIndex(graph(seeds));
     expect(projectChain(index, seeds[0]!.id).mainIds.size).toBe(1000);
-    expect(index.components.get(seeds[0]!.id)!.progress).toEqual({ total: 1000, done: 0, status: "todo" });
+    expect(index.components.get(seeds[0]!.id)!.progress).toEqual({ total: 1000, done: 0, cancelled: 0, ended: 0, status: "todo" });
   });
   it("limits external context to one hop while tracing deep shared ancestors iteratively", () => {
     const ancestors = Array.from({ length: 996 }, (_, position) => ({
@@ -32,7 +32,7 @@ describe("complete graph-model capacity", () => {
     expect(tracePrerequisites(index, D)).toEqual(new Set([A, B, C, D, ...ancestors.map(({ id }) => id)]));
     expect(projection.edges).toHaveLength(3);
     expect(projection.completed).toBe(0);
-    expect(index.components.get(A)!.progress).toEqual({ total: 2, done: 0, status: "todo" });
+    expect(index.components.get(A)!.progress).toEqual({ total: 2, done: 0, cancelled: 0, ended: 0, status: "todo" });
     expect(projection.edges.filter((edge) => edge.external)).toHaveLength(2);
   });
 

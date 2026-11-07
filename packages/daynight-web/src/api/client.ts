@@ -27,6 +27,7 @@ export class ApiError extends Error {
   readonly graphLimit: GraphLimitDetails | undefined;
   readonly serverMessage: string | undefined;
   readonly stepsLimit: { readonly encodedBytes: number; readonly maxEncodedBytes: number } | undefined;
+  readonly writeOutcome: "not_committed" | undefined;
 
   constructor(
     kind: ApiError["kind"],
@@ -37,6 +38,7 @@ export class ApiError extends Error {
     cause?: unknown,
     serverMessage?: string,
     stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number },
+    writeOutcome?: "not_committed",
   ) {
     const message = kind === "network"
       ? "Unable to connect to the server. Please try again."
@@ -52,6 +54,7 @@ export class ApiError extends Error {
     this.graphLimit = graphLimit;
     this.serverMessage = serverMessage;
     this.stepsLimit = stepsLimit;
+    this.writeOutcome = writeOutcome;
   }
 }
 
@@ -171,7 +174,7 @@ export const json = async <T>(response: Response, signal: AbortSignal, parse: (d
   try {
     if (response.ok) return parse(body);
     const serverError = parseServerError(body, includeStepsError);
-    throw new ApiError("server", response.status, serverError.code, serverError.requestId, serverError.graphLimit, undefined, serverError.serverMessage, serverError.stepsLimit);
+    throw new ApiError("server", response.status, serverError.code, serverError.requestId, serverError.graphLimit, undefined, serverError.serverMessage, serverError.stepsLimit, serverError.writeOutcome);
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError("protocol", response.status, "protocol", null, undefined, error);
@@ -282,7 +285,7 @@ export const setTaskStatus = async (
 ): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
-  if (!isTaskVersion(exactVersion) || !["todo", "in_progress", "done"].includes(status)) throw new ApiError("protocol");
+  if (!isTaskVersion(exactVersion) || !["todo", "in_progress", "done", "cancelled"].includes(status)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/status`, signal, {
     method: "PUT", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, status }),

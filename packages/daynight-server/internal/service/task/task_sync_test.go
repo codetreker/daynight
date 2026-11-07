@@ -16,6 +16,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
 func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
@@ -188,6 +189,29 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	}
 }
 
+const taskSyncLockTestOverlap = 20 * time.Millisecond
+
+func waitForTaskSyncDatabaseTime(ctx context.Context, database *postgres.Store, boundary time.Time) (time.Time, error) {
+	poll, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var observed time.Time
+		if err := database.Pool.QueryRow(poll, "SELECT clock_timestamp()").Scan(&observed); err != nil {
+			return time.Time{}, fmt.Errorf("read database clock while holding the Project lock: %w", err)
+		}
+		if observed.After(boundary) {
+			return observed, nil
+		}
+		select {
+		case <-poll.Done():
+			return time.Time{}, fmt.Errorf("database clock did not cross the TaskSync overlap: %w", poll.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	a := createTask(t, tasks, principal, project.ID, "Lock holder")
@@ -196,6 +220,7 @@ func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	var first, later model.Task
+	var afterWait time.Time
 	err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
 		go func() {
 			var err error
@@ -206,10 +231,20 @@ func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 		barrier, finishBarrier := context.WithTimeout(ctx, 5*time.Second)
 		defer finishBarrier()
 		waitForTaskWriters(t, barrier, database, 1)
-		if _, err := database.Pool.Exec(ctx, "SELECT pg_sleep(11)"); err != nil {
+		var waitingSince time.Time
+		if err := database.Pool.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&waitingSince); err != nil {
 			return err
 		}
-		var err error
+		observed, err := waitForTaskSyncDatabaseTime(ctx, database, waitingSince.Add(taskSyncLockTestOverlap))
+		if err != nil {
+			return err
+		}
+		afterWait = observed
+		select {
+		case err := <-result:
+			return fmt.Errorf("second writer crossed the held Project lock: %v", err)
+		default:
+		}
 		first, err = tx.TaskDAO().UpdateTask(ctx, a.ID, store.TaskWrite{Title: "First", Status: model.TaskTodo})
 		return err
 	})
@@ -224,15 +259,18 @@ func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	if !first.UpdatedAt.After(afterWait) {
+		t.Fatalf("holder used a timestamp before its delayed write: observed %v first %v", afterWait, first.UpdatedAt)
+	}
 	if !later.UpdatedAt.After(first.UpdatedAt) {
 		t.Fatalf("waiter used an earlier transaction timestamp: first %v later %v", first.UpdatedAt, later.UpdatedAt)
 	}
-	baseline, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
+	baseline, err := taskservice.NewTaskSync(database, taskSyncLockTestOverlap).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	delta, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &first.UpdatedAt})
-	if err != nil || len(delta.Tasks) != 2 || delta.Tasks[1].ID != b.ID || delta.Tasks[1].Version != later.Version {
+	delta, err := taskservice.NewTaskSync(database, taskSyncLockTestOverlap).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &first.UpdatedAt})
+	if err != nil || len(delta.Tasks) != 2 || delta.Tasks[0].ID != a.ID || delta.Tasks[0].Version != first.Version || delta.Tasks[1].ID != b.ID || delta.Tasks[1].Version != later.Version {
 		t.Fatalf("long waiter skipped by window: %#v %v", delta, err)
 	}
 }
@@ -243,7 +281,20 @@ func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) 
 	b := createTask(t, tasks, principal, project.ID, "Waiting")
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	sync := taskservice.NewTaskSync(database, 10*time.Second)
+	// The baseline window contains both committed fixture rows regardless of setup latency.
+	aligned, err := database.Pool.Exec(ctx, "UPDATE tasks SET updated_at=statement_timestamp() WHERE project_id=$1 AND id=ANY($2::uuid[])", project.ID, []string{a.ID, b.ID})
+	if err != nil || aligned.RowsAffected() != 2 {
+		t.Fatalf("align initial Task watermarks: rows=%d error=%v", aligned.RowsAffected(), err)
+	}
+	a, err = tasks.Get(ctx, principal, project.ID, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err = tasks.Get(ctx, principal, project.ID, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sync := taskservice.NewTaskSync(database, taskSyncLockTestOverlap)
 	baseline, err := sync.Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +319,11 @@ func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) 
 		barrier, finishBarrier := context.WithTimeout(ctx, 5*time.Second)
 		defer finishBarrier()
 		waitForTaskWriters(t, barrier, database, 1)
-		if _, err := database.Pool.Exec(ctx, "SELECT pg_sleep(11)"); err != nil {
+		var waitingSince time.Time
+		if err := database.Pool.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&waitingSince); err != nil {
+			return err
+		}
+		if _, err := waitForTaskSyncDatabaseTime(ctx, database, waitingSince.Add(taskSyncLockTestOverlap)); err != nil {
 			return err
 		}
 		heldFor = time.Since(started)
@@ -276,7 +331,7 @@ func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		if len(old.Tasks) != 2 || old.Tasks[0].Version != a.Version || old.Tasks[1].Version != b.Version || old.Tasks[0].UpdatedAt != a.UpdatedAt || !old.ObservedAt.After(first.UpdatedAt.Add(10*time.Second)) {
+		if len(old.Tasks) != 2 || old.Tasks[0].Version != a.Version || old.Tasks[1].Version != b.Version || old.Tasks[0].UpdatedAt != a.UpdatedAt || old.Tasks[1].UpdatedAt != b.UpdatedAt || !old.ObservedAt.After(first.UpdatedAt.Add(taskSyncLockTestOverlap)) {
 			return fmt.Errorf("uncommitted task leaked into the old snapshot: %#v", old)
 		}
 		select {
@@ -298,7 +353,7 @@ func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) 
 		t.Fatal(ctx.Err())
 	}
 	delta, err := sync.Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &since})
-	if err != nil || heldFor < 11*time.Second || !later.UpdatedAt.After(first.UpdatedAt) || len(delta.Tasks) != 2 || delta.Tasks[0].Version != first.Version || delta.Tasks[1].Version != later.Version {
+	if err != nil || !later.UpdatedAt.After(first.UpdatedAt) || len(delta.Tasks) != 2 || delta.Tasks[0].ID != a.ID || delta.Tasks[0].Version != first.Version || delta.Tasks[1].ID != b.ID || delta.Tasks[1].Version != later.Version {
 		t.Fatalf("long uncommitted write skipped: held %s, first %v, later %v, delta %#v, error %v", heldFor, first.UpdatedAt, later.UpdatedAt, delta, err)
 	}
 	t.Logf("project lock held after task write for %s; old snapshot retained versions %d/%d; committed timestamps %s then %s", heldFor, a.Version, b.Version, first.UpdatedAt.Format(time.RFC3339Nano), later.UpdatedAt.Format(time.RFC3339Nano))
