@@ -3,12 +3,15 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func stepRPCRequest(t *testing.T, endpoint, version, name string, value any) []byte {
@@ -233,5 +236,19 @@ func TestStepRPCBatchUsesEachIDForBudget(t *testing.T) {
 	bad, content = stepWireResult(t, escaped[0])
 	if !bad || object(t, content["error"])["code"] != "resource_limit_exceeded" {
 		t.Fatalf("batch escaped ID: %+v", content)
+	}
+}
+
+// A read cannot claim to fit if its RPC identity is unavailable or its data
+// cannot be encoded; these failures must remain distinguishable.
+func TestStepResponseSizeRejectsMissingIDAndUnencodableData(t *testing.T) {
+	_, err := stepResponseSize(RequestActor{RequestID: "request"}, map[string]any{"step": "value"})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("missing response ID: %v", err)
+	}
+	_, err = stepResponseSize(RequestActor{RequestID: "request", rpcResponseID: int64(1)}, map[string]any{"step": make(chan int)})
+	if err == nil || errors.As(err, &fault) {
+		t.Fatalf("unencodable response was hidden or misclassified: %v", err)
 	}
 }
