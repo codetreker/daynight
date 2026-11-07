@@ -20,4 +20,4 @@ A short FIFO claim is followed by a separate authorization and Attempt transacti
 
 ## Consequences
 
-The system retains durable attempts and performs a current authorization transaction before each send. Retry budgets and receiver waits remain bounded by the original deadline. Receivers must still deduplicate stable event IDs because recovery can repeat an external request. Public application composition, manual redelivery and retention maintenance remain separate responsibilities.
+The system retains durable attempts and performs a current authorization transaction before each send. Retry budgets and receiver waits remain bounded by the original deadline. Receivers must still deduplicate stable event IDs because recovery can repeat an external request. The [retention decision](2026-11-08-webhook-retention.md) describes reclamation; public application composition and manual redelivery remain separate responsibilities.

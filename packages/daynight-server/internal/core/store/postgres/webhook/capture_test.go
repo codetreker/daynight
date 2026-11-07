@@ -81,6 +81,11 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	d = New(tx)
+	// Production capture follows a source write; allocate its transaction ID
+	// here because this fixture reads an already committed source.
+	if _, err = tx.Exec(ctx, `SELECT pg_current_xact_id()`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = NewProjectCapture(tx, projectID).FreezeAudience(ctx, uuid.NewString(), []string{"task.created"}); err == nil {
 		t.Fatal("accepted an audience for another project")
 	}
