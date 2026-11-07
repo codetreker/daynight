@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -136,5 +137,19 @@ func TestRegisterRepositoryScansAllVisiblePages(t *testing.T) {
 		t.Fatal("ambiguity across pages accepted")
 	} else {
 		requireFault(t, err, "resource_conflict")
+	}
+}
+
+func TestRegisterRepositoryRejectsOversizedFieldsBeforeMatching(t *testing.T) {
+	principal := model.Principal{Kind: model.SessionCredential, UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CredentialID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+	projects := NewProjects(nil)
+	prefix := "https://example.com/"
+	for _, input := range []core.CreateProject{
+		{Name: strings.Repeat("a", 257), RepoURL: "host:repo", ExpectedUserID: principal.UserID},
+		{Name: strings.Repeat("😀", 256) + "a", RepoURL: "host:repo", ExpectedUserID: principal.UserID},
+		{Name: "Project", RepoURL: prefix + strings.Repeat("r", 4097-len(prefix)), ExpectedUserID: principal.UserID},
+	} {
+		_, _, err := projects.RegisterRepository(context.Background(), principal, input, true)
+		requireFault(t, err, "invalid_input")
 	}
 }

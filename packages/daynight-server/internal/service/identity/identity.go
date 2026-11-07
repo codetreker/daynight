@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"io"
 	"net/url"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
@@ -57,18 +59,28 @@ func (s *Identity) run(ctx context.Context, operation func(store.IdentityScope) 
 	}
 	return rejection
 }
-func (s *Identity) StartLogin(ctx context.Context, provider, returnPath string) (core.LoginStart, error) {
+func (s *Identity) ValidateLogin(provider, returnPath string) error {
+	return s.module.ValidateLogin(provider, returnPath)
+}
+
+func (s *Identity) StartLogin(ctx context.Context, provider, returnPath, browserScope string) (core.LoginStart, error) {
 	now := s.now().UTC()
 	result, pending, err := s.module.StartLogin(provider, returnPath, now)
 	if err != nil {
 		return core.LoginStart{}, err
 	}
+	if !secret.Valid(browserScope, "") {
+		return core.LoginStart{}, &model.Fault{Code: "invalid_input", Message: "Invalid login browser scope."}
+	}
+	pending.ScopeHash = secret.Hash(browserScope)
 	result.AuthorizationURL, err = s.client.AuthorizationURL(uniauth.AuthorizationRequest{Provider: uniauth.Provider(provider), RedirectURI: s.CallbackURL(), State: result.State})
 	if err != nil {
 		return core.LoginStart{}, err
 	}
 	err = s.run(ctx, func(scope store.IdentityScope) error {
-		return s.module.CreateLogin(ctx, scope.IdentityDAO(), pending, s.now().UTC())
+		var err error
+		result.ExpiresAt, err = s.module.CreateLogin(ctx, scope.IdentityDAO(), pending, s.now().UTC())
+		return err
 	})
 	if err != nil {
 		return core.LoginStart{}, err
@@ -103,17 +115,29 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	defer cancel()
 	profile, err := s.client.Retrieve(claim, code)
 	if err != nil {
+		var protocol *uniauth.ProtocolError
+		if errors.As(err, &protocol) {
+			return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
+		}
 		return partial, err
 	}
 	if err := core.ValidateProvider(pending.Provider, string(profile.Provider), &uniauth.ProtocolError{Reason: "provider_mismatch"}); err != nil {
 		return partial, err
+	}
+	normalized := profileprotocol.Profile{ID: profile.ID, Email: profile.Email, EmailVerified: profile.EmailVerified, Name: profile.Name, AvatarURL: profile.AvatarURL}
+	user := profileprotocol.User(normalized)
+	if err := core.AdmitProfileFields(user); err != nil {
+		return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
+	}
+	if _, err := profileprotocol.Encode(io.Discard, normalized, core.MaxProfileJSONBytes); err != nil {
+		return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
 	}
 	now := s.now().UTC()
 	session, value := s.module.NewSession(now)
 	result := core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, Secret: value, Session: session}
 	err = s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result.User, err = s.module.CompleteLogin(ctx, scope.IdentityDAO(), profileprotocol.User(profileprotocol.Profile{ID: profile.ID, Email: profile.Email, EmailVerified: profile.EmailVerified, Name: profile.Name, AvatarURL: profile.AvatarURL}), now)
+		result.User, err = s.module.CompleteLogin(ctx, scope.IdentityDAO(), user, now)
 		if err != nil {
 			return err
 		}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,8 +97,68 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 		}
 		return m
 	}
+	// Exercise the same domain limits through the production MCP tools and verify
+	// rejected requests leave the complete organization state untouched.
+	teamResponse, failed := call(0, "team_create", map[string]any{"name": strings.Repeat("😀", 256), "confirm": true})
+	if failed {
+		t.Fatalf("boundary Team: %+v", teamResponse)
+	}
+	teamID := obj(teamResponse["data"])["id"].(string)
+	asciiName := strings.Repeat("a", 256)
+	if response, failed := call(0, "team_create", map[string]any{"name": asciiName, "confirm": true}); failed {
+		t.Fatalf("256-code-point Team: %+v", response)
+	}
+	if response, failed := call(0, "project_create", map[string]any{"name": asciiName, "repoUrl": "host:boundary", "team": "personal", "confirm": true}); failed {
+		t.Fatalf("256-code-point Project: %+v", response)
+	}
+	prefix := "https://example.com/"
+	maxURL := prefix + strings.Repeat("r", 4096-len(prefix))
+	maxArgs := map[string]any{"name": strings.Repeat("😀", 256), "repoUrl": maxURL, "team": "personal", "confirm": true}
+	createdMax, failed := call(0, "project_create", maxArgs)
+	if failed {
+		t.Fatalf("boundary Project: %+v", createdMax)
+	}
+	maxID := obj(obj(createdMax["data"])["project"])["id"]
+	delete(maxArgs, "confirm")
+	reusedMax, failed := call(0, "project_create", maxArgs)
+	if failed || obj(reusedMax["data"])["created"] != false || obj(obj(reusedMax["data"])["project"])["id"] != maxID {
+		t.Fatalf("boundary repository reuse: %+v", reusedMax)
+	}
+	snapshot := func() string {
+		t.Helper()
+		var state string
+		err := database.Pool.QueryRow(t.Context(), `SELECT jsonb_build_object('teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY team_id,user_id) FROM team_members m),'projects',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),'ownership',(SELECT jsonb_agg(to_jsonb(o) ORDER BY project_id) FROM project_ownership o),'grants',(SELECT jsonb_agg(to_jsonb(g) ORDER BY project_id,user_id) FROM project_grants g))::text`).Scan(&state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := snapshot()
+	for _, name := range []string{strings.Repeat("a", 257), strings.Repeat("😀", 256) + "a"} {
+		for _, request := range []struct {
+			tool string
+			args map[string]any
+		}{
+			{"team_create", map[string]any{"name": name, "confirm": true}},
+			{"team_rename", map[string]any{"team": teamID, "name": name, "ifVersion": "1", "confirm": true}},
+			{"project_create", map[string]any{"name": name, "repoUrl": "host:repo", "team": "personal", "confirm": true}},
+		} {
+			response, failed := call(0, request.tool, request.args)
+			if !failed || obj(response["error"])["code"] != "invalid_input" {
+				t.Fatalf("%s: %+v", request.tool, response)
+			}
+		}
+	}
+	response, failed := call(0, "project_create", map[string]any{"name": "Project", "repoUrl": maxURL + "r", "team": "personal", "confirm": true})
+	if !failed || obj(response["error"])["code"] != "invalid_input" {
+		t.Fatalf("oversized repository: %+v", response)
+	}
+	if after := snapshot(); after != before {
+		t.Fatal("rejected MCP writes changed organization rows or versions")
+	}
+
 	args := map[string]any{"name": "Project", "repoUrl": "https://github.com/acme/test.git", "team": "personal"}
-	response, failed := call(0, "project_create", args)
+	response, failed = call(0, "project_create", args)
 	if !failed || obj(response["error"])["code"] != "invalid_input" {
 		t.Fatalf("confirmation: %+v", response)
 	}
@@ -125,7 +186,11 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 		t.Fatalf("stale transfer: %+v", response)
 	}
 	memberships := projectservice.NewMemberships(database)
-	_, err = memberships.RemoveGrant(t.Context(), principals[0], id, principals[0].UserID, coreproject.RemoveProjectMember{Version: 1, ExpectedUserID: principals[0].UserID})
+	var grantVersion int64
+	if err := database.Pool.QueryRow(t.Context(), `SELECT version FROM project_grants WHERE project_id=$1 AND user_id=$2`, id, principals[0].UserID).Scan(&grantVersion); err != nil {
+		t.Fatal(err)
+	}
+	_, err = memberships.RemoveGrant(t.Context(), principals[0], id, principals[0].UserID, coreproject.RemoveProjectMember{Version: grantVersion, ExpectedUserID: principals[0].UserID})
 	if err != nil {
 		t.Fatal(err)
 	}

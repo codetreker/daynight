@@ -11,7 +11,8 @@ import (
 )
 
 func (s *Store) WriteIdentity(ctx context.Context, operation func(store.IdentityScope) error) (store.Completion, error) {
-	tx, err := s.Pool.Begin(ctx)
+	// Admission checks must see the preceding lock holder's committed insert.
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.AuthQueryError("begin identity operation", err)
 	}

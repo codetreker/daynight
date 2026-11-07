@@ -286,7 +286,11 @@ func location(t testing.TB, response *http.Response) *url.URL {
 
 func Login(t testing.TB, browser *http.Client, origin, persona string) {
 	t.Helper()
-	authorize := location(t, request(t, browser, http.MethodGet, origin+"/api/v1/auth/login?provider=github", "", http.StatusSeeOther))
+	loginURL := origin + "/api/v1/auth/login?provider=github"
+	authorize := location(t, request(t, browser, http.MethodGet, loginURL, "", http.StatusSeeOther))
+	if authorize.String() == loginURL {
+		authorize = location(t, request(t, browser, http.MethodGet, loginURL, "", http.StatusSeeOther))
+	}
 	provider := location(t, request(t, browser, http.MethodGet, authorize.String(), "", http.StatusFound))
 	if provider.Scheme != "https" || provider.Host != "github.com" || provider.Path != "/login/oauth/authorize" || provider.Query().Get("code_challenge_method") != "S256" || provider.Query().Get("code_challenge") == "" {
 		t.Fatal("real GitHub provider authorization or PKCE challenge changed")

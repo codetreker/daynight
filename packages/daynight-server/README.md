@@ -83,7 +83,14 @@ handoff, local users, browser sessions, personal access tokens and project
 membership. The identity module implements persistent users, browser-bound login
 transactions, sessions, PATs and callable HTTP handlers;
 NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The
-membership module provides NewMemberships/NewMembershipRoutes, transaction-scoped
+[identity admission](../../docs/design/daynight-auth.md#uniauth-一次性交接) limits the
+decompressed upstream response to 2 MiB and retains the 15-second deadline. It
+checks the external ID, name and email at 1024 UTF-8 bytes each, the avatar URL
+at 512 KiB, and the complete normalized profile JSON at 1 MiB. Invalid or
+oversized upstream identity returns 502 `identity_unavailable` without changing
+the user, Personal Team or session; the already consumed login remains consumed.
+Nullable values and data URLs are preserved without truncation.
+The membership module provides NewMemberships/NewMembershipRoutes, transaction-scoped
 access checks, private project creation, filtered project lists, administrator
 changes and invitations. The
 [identity foundation](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)

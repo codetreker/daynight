@@ -226,6 +226,9 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusBadGateway
 		case "resource_busy":
 			status = http.StatusTooManyRequests
+		case "capacity_exhausted":
+			status = http.StatusServiceUnavailable
+			w.Header().Set("Retry-After", "60")
 		case "rate_limited":
 			status = http.StatusTooManyRequests
 			w.Header().Set("Retry-After", "60")
@@ -237,7 +240,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusServiceUnavailable
 		case "configuration_not_initialized", "search_changed":
 			status = http.StatusConflict
-		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict":
+		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict":
 			status = http.StatusConflict
 		}
 		if status != http.StatusInternalServerError {
