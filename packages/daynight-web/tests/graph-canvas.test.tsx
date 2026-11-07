@@ -56,13 +56,14 @@ const ready = async (container: HTMLElement) => {
 beforeEach(installGraphMeasurements);
 
 describe('task dependency canvas', () => {
-  it('omits the entire expansion footer for fully visible tasks and sizes every card to its body', async () => {
+  it('sizes visible ordinary cards to their bodies and external cards to their navigation footers', async () => {
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await ready(view.container);
-    expect(view.container.querySelector('.task-node-expansions')).toBeNull();
+    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(2);
+    expect(view.container.querySelector('.task-node-expand[data-direction]')).toBeNull();
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
       expect(node.style.width).toBe('220px');
-      expect(node.style.height).toBe('96px');
+      expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '96px' : '136px');
     }
   });
 
@@ -349,7 +350,7 @@ describe('task dependency canvas', () => {
     expect(screen.queryByRole('button', { name: /^独立任务，/ })).toBeNull();
   });
 
-  it('renders the entire external ancestor closure with its own count and keeps card details behavior', async () => {
+  it('renders direct external context and keeps its details separate from navigation', async () => {
     const completed = graph.tasks[1]!;
     const externalGraph: TaskGraphData = {
       ...graph, summary: { total: 6, todo: 3, inProgress: 0, done: 3, cancelled: 0, ready: 2, blocked: 1 },
@@ -364,16 +365,16 @@ describe('task dependency canvas', () => {
     };
     const onOpenTask = vi.fn();
     const { container } = render(<TaskGraph index={buildGraphIndex(externalGraph)} rootId="A" onOpenTask={onOpenTask} />);
-    await waitFor(() => { expect(container.querySelectorAll('.react-flow__node')).toHaveLength(5); });
-    expect(screen.getByText('链内 3 · 外部 2 · 任务 5/5 · 依赖 4/4')).toBeTruthy();
-    expect(nodeShell('已完成外部祖先')).toHaveClass('task-node-external', 'task-node-done');
+    await waitFor(() => { expect(container.querySelectorAll('.react-flow__node')).toHaveLength(4); });
+    expect(screen.getByText('链内 3 · 外部 1 · 任务 4/4 · 依赖 3/3')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /已完成外部祖先/ })).toBeNull();
     expect(nodeButton('已完成外部前置')).toHaveAccessibleName('已完成外部前置，已完成，外部前置');
     expect(screen.queryByRole('button', { name: /外部前置的无关后续/ })).toBeNull();
     const externalRoute = container.querySelector('[data-id="P->B"] .react-flow__edge-path');
-    expect(externalRoute).toHaveAttribute('data-external', 'false');
+    expect(externalRoute).toBeNull();
     expect(container.querySelector('[data-id="P->B"] .task-dependency-paint-piece')).toBeNull();
-    fireEvent.click(detailsButton('已完成外部祖先'));
-    expect(onOpenTask).toHaveBeenCalledWith('P', detailsButton('已完成外部祖先'));
+    fireEvent.click(detailsButton('已完成外部前置'));
+    expect(onOpenTask).toHaveBeenCalledWith('B', detailsButton('已完成外部前置'));
     expect(screen.getByText('实线：普通依赖 · 虚线：外部依赖 · 虚线卡片：链外前置')).toBeTruthy();
   });
 
@@ -382,12 +383,12 @@ describe('task dependency canvas', () => {
       { ...graph.tasks[0]!, id: 'A', titlePreview: 'A' },
       { ...graph.tasks[0]!, id: 'X', titlePreview: 'X' },
       { ...graph.tasks[0]!, id: 'Y', titlePreview: 'Y', dependsOn: ['X'] },
-      { ...graph.tasks[0]!, id: 'B', titlePreview: 'B', dependsOn: ['A', 'Y'], externalDependsOn: ['Y'] },
+      { ...graph.tasks[0]!, id: 'B', titlePreview: 'B', dependsOn: ['A', 'X', 'Y'], externalDependsOn: ['X', 'Y'] },
       { ...graph.tasks[5]!, id: 'C', titlePreview: 'C', dependsOn: ['A', 'B'], externalDependsOn: ['A'] },
     ];
     const snapshot = { ...graph, tasks, summary: { total: 5, todo: 1, inProgress: 0, done: 4, cancelled: 0, ready: 1, blocked: 0 } };
     const view = render(<TaskGraph index={buildGraphIndex(snapshot)} rootId="A" onOpenTask={noop} />);
-    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__edge-path')).toHaveLength(5));
+    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__edge-path')).toHaveLength(6));
     await waitFor(() => expect(viewport(view.container).style.transform).not.toBe('translate(0px,0px) scale(1)'));
     const edge = (id: string) => view.container.querySelector<SVGPathElement>(`[data-id="${id}"] .react-flow__edge-path`)!;
     expect(edge('A->C')).toHaveAttribute('data-external', 'true');
@@ -421,7 +422,7 @@ describe('task dependency canvas', () => {
     const expected = layoutModule.layoutGraph({ rootId: 'A', mainIds: new Set(['A', 'C', 'D']), externalIds: new Set(['B', 'F']), edges: [
       { source: 'A', target: 'C', external: false }, { source: 'B', target: 'C', external: true },
       { source: 'C', target: 'D', external: false }, { source: 'F', target: 'D', external: true },
-    ], completed: 1 });
+    ], completed: 1 }, new Map([['A', 96], ['B', 136], ['C', 96], ['D', 96], ['F', 136]]));
     const { container } = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await waitFor(() => { expect(container.querySelectorAll('.react-flow__edge-path')).toHaveLength(expected.edges.length); });
     const actualPaths = [...container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'));
@@ -537,7 +538,7 @@ describe('task dependency canvas', () => {
       ...graph,
       tasks: graph.tasks.map((task) => task.id === 'D' ? { ...task, dependsOn: ['C'], externalDependsOn: [], blockedBy: ['C'] } : task),
     });
-    const expected = layoutModule.layoutGraph(projectChain(updated, 'A'));
+    const expected = layoutModule.layoutGraph(projectChain(updated, 'A'), new Map([['A', 96], ['B', 136], ['C', 96], ['D', 96]]));
     const retainedPath = svg.querySelector('[data-id="A->C"] path');
     view.rerender(<TaskGraph index={updated} rootId="A" onOpenTask={noop} />);
     await waitFor(() => { expect(svg.querySelectorAll('.react-flow__edge-path')).toHaveLength(3); });
@@ -575,7 +576,7 @@ describe('task dependency canvas', () => {
       expect(node.getAttribute('tabindex')).toBeNull();
       expect(node.classList.contains('draggable')).toBe(false);
       expect(node.classList.contains('selectable')).toBe(false);
-      expect(node.querySelectorAll('button')).toHaveLength(2);
+      expect(node.querySelectorAll('button')).toHaveLength(node.querySelector('.task-node-external') === null ? 2 : 3);
     }
     for (const edge of container.querySelectorAll('.react-flow__edge')) {
       expect(edge.getAttribute('tabindex')).toBeNull();
@@ -837,10 +838,11 @@ describe('progressive task visibility', () => {
     expect(rootBody.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('96px');
     fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
     await rendered(view.container, 101, 100);
-    expect(view.container.querySelectorAll('.task-node-expand')).toHaveLength(0);
-    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.task-node-expand[data-direction]')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.task-node-navigate')).toHaveLength(40);
+    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(40);
     await waitFor(() => { expect(joinBody).toHaveFocus(); });
-    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe('96px');
+    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '96px' : '136px');
     expect(progressiveIndex.components.get(rootId)!.progress).toEqual({ total: 61, done: 0, cancelled: 0, ended: 0, status: 'todo' });
     signal.throwIfAborted();
     await user.click(reset);

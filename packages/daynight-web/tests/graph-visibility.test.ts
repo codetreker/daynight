@@ -59,7 +59,7 @@ describe('progressive task graph visibility', () => {
     const main = Array.from({ length: 60 }, (_, index) => ({ id: `m${index}`, dependsOn: index === 0 ? ['root', 'e4'] : [`m${index - 1}`], externalDependsOn: index === 0 ? ['e4'] : [] }));
     const index = indexOf([...external, { id: 'root' }, ...main]); const projection = projectChain(index, 'root');
     const visible = createGraphOverview(index, projection);
-    expect([...visible].slice(0, 6)).toEqual(['root', 'm0', 'm1', 'e4', 'm2', 'e3']);
+    expect([...visible].slice(0, 6)).toEqual(['root', 'm0', 'm1', 'e4', 'm2', 'm3']);
     expect(visible.size).toBe(50); expect([...projection.externalIds].every((id) => visible.has(id))).toBe(true);
   });
 

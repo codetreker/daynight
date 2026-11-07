@@ -429,8 +429,8 @@ generation 和 confirmed-version floor 防止旧读取覆盖确认结果。
 
 ```text
 M = representative 所属的普通边弱连通分量
-P = M ∪ ancestors_all(M)
-C = P − M
+C = union(externalDependsOn(m), m∈M) − M
+P = M ∪ C
 S ⊆ P，包含代表，当前实际可见 ID
 可见边 = P 中两端均在 S 的全部真实依赖
 虚线边 = 终点任务 externalDependsOn 中包含起点的关系
@@ -440,15 +440,17 @@ S ⊆ P，包含代表，当前实际可见 ID
 ```
 
 `buildGraphIndex` 验证完整快照并保存分量、componentByTask 和成员进度。
-`projectChain` 从分量全体成员补齐所有前置，排除链外任务的无关后续。
+`projectChain` 从普通分量全体成员只补齐直接 external 前置并去重，不沿链外任务
+继续追溯普通或 external 祖先，也排除其无关后续。投影保留两端均在 P 的全部真实边。
 普通上下文边实线；即使另有普通路径连接两端，显式外部捷径仍虚线。共享成员集合及徽标被移除，
 相同链外前置仍可在多个画布作为上下文出现。主集合及统计不受 S 影响。
-完整上下文与渐进数据的原始理由见[上下文决策](../../.agents/notes/archived/feature/2026-10-22-complete-prerequisite-context.md)
-和[渐进图决策](../../.agents/notes/archived/feature/2026-10-22-progressive-task-graph.md)。
+当前上下文与资源跳转由[一层 external 决策](../../.agents/notes/implemented/feature/2026-11-07-external-graph-navigation.md)记录；
+完整祖先阅读的原始理由保留在[历史上下文决策](../../.agents/notes/archived/feature/2026-10-22-complete-prerequisite-context.md)，
+有界概览的理由见[渐进图决策](../../.agents/notes/archived/feature/2026-10-22-progressive-task-graph.md)。
 
 `visibility.ts` 的 `createGraphOverview(index, P)` 在 P≤50任务且≤100依赖时全显；否则从代表任务按快照稳定顺序无向 BFS，先后续再前置。只有加入后实际诱导图仍满足50/100才接纳，只从接纳者继续。`projectVisibleTasks(P,S)` 提供当前布局输入和全部诱导边，不画捷径或聚合节点。
 
-`getTaskExpansion` 按指定方向选 P 内前20个隐藏直接邻居，不递归，返回本批ID、新增诱导边和剩余数；新增边包含批内关系，无手动边上限。卡片宽220px，两方向都无可展开邻居时高96px（94px主体、2px边框），不渲染footer或分隔线；至少一方向有控件时高136px，包含40px双列footer，另一空方向保留列位置。主体切换检查，Details 与方向控件为兄弟原生按钮。每个可见快照只派生一次展开数据，布局、React Flow、视口适配与键盘揭示共用实际卡片尺寸。显式展开在新布局以当前缩放居中锚点并聚焦主体；全局reset重算/定位概览并保留控件焦点。
+`getTaskExpansion` 为普通成员按指定方向选 P 内前20个隐藏直接邻居，不递归，返回本批ID、新增诱导边和剩余数；新增边包含批内关系，无手动边上限。链外卡片使用独立“展开”按钮，不提供原地的方向展开。ProjectPage 按其 task ID 解析当前 `componentByTask`；多成员目标调整遮挡筛选及分页后替换打开 Goal 图，使用目标代表的布局方向偏好；单成员目标关闭原图并打开现有任务详情。完整依赖检查 H 仍从完整 index 计算，隐藏数为 H−S，包括 P 外祖先。卡片宽220px，普通成员两方向都无可展开邻居时高96px（94px主体、2px边框），不渲染footer或分隔线；至少一方向有控件时高136px，包含40px双列footer，另一空方向保留列位置。链外卡片高136px，footer 提供独立展开入口。主体切换检查，Details 与展开控件为兄弟原生按钮。每个可见快照只派生一次展开数据，布局、React Flow、视口适配与键盘揭示共用实际卡片尺寸。显式展开在新布局以当前缩放居中锚点并聚焦主体；全局reset重算/定位概览并保留控件焦点。
 
 `reconcileVisibleTasks` 在同一成员/代表作用域的成功刷新保留旧实际 S 中仍属于新 P 的任务，
 加代表后仅留对应诱导无向连通部分，不自动并入新基线。刷新保持视口，失败保留旧视图。
@@ -524,7 +526,7 @@ declare const layoutGraph: (
 `total = todo + inProgress + done + cancelled` 与 `todo = ready + blocked`。只有 todo 计入 ready/blocked；in_progress
 和done需要前置全部为done/cancelled，cancelled本身可有未满足前置。无效数据整体拒绝，不能靠默认空数组或删除坏边继续展示。
 
-完整索引构建为 `O(V+E)`：全边验证及普通分量遍历各处理有限次节点和边，成员进度在分量遍历中累计。单链祖先投影为 `O(V+E)`；使用迭代栈、队列和 Set 防止重复路径及深链递归溢出。当前快照保存分量映射及进度，布局只为当前打开的链生成，不再预计算可重叠根的成员与共享归属。替换快照时整体释放索引、投影缓存与旧布局，不保存跨快照可变图。
+完整索引构建为 `O(V+E)`：全边验证及普通分量遍历各处理有限次节点和边，成员进度在分量遍历中累计。单链投影扫描成员直接 external 前置并筛选诱导边，不递归遍历上下文；完整上游检查仍为 `O(V+E)`，使用迭代栈、队列和 Set 防止重复路径及深链递归溢出。当前快照保存分量映射及进度，布局只为当前打开的链生成，不再预计算可重叠根的成员与共享归属。替换快照时整体释放索引、投影缓存与旧布局，不保存跨快照可变图。
 
 ## 技术选型
 
@@ -636,7 +638,7 @@ packages/daynight-server/
 | workers hooks/observation | 页面内完整 Worker 集合或运行观测、整轮分页刷新、陈旧状态和一个服务端锚定时钟 | 调用 typed 观测 API；只复用 scope 认证生命周期，不写项目缓存 |
 | workers/configuration | 独立配置资源、编辑基线、原始草稿、提交快照及逐项应用结果 | 调用 typed 配置 API；不借用观测时钟，不写 Task/claim 或项目缓存 |
 | task-cache | schema、用户/项目 fence、当前持久集合合并、摘要版本与提交后发布 | 网络与解码在事务外；纯投影复用 model，不拥有页面交互 |
-| task-graph/model | 全边验证、普通分量、派生代表、成员进度与全前置闭包 | 仅依赖 DTO 类型与标准集合 |
+| task-graph/model | 完整项目全边验证、普通分量、派生代表、成员进度与一层 external 投影 | 仅依赖 DTO 类型与标准集合 |
 | task-graph/visibility | 概览BFS、直接邻居批次、实际S协调和完整诱导投影 | 依赖完整model数据，不调用API |
 | task-graph/layout | 将投影映射为确定的节点坐标和边 | 依赖 model 与 Dagre |
 | React Flow 组件 | 视口、只读节点、缩放、平移和节点选择 | 接收布局与 onSelectTask，不调用 API |
@@ -682,7 +684,7 @@ flowchart LR
 - 项目目录 Provider 在 Workspace 的认证身份边界拥有当前已加载页、nextCursor 和下一页错误；`useProjects` 在 Provider 内管理请求，`useProjectList` 向侧栏及项目列表提供同一份状态和操作。首次请求、加载更多和刷新有各自状态；范围切换或刷新使旧游标及旧请求失效，卸载取消请求，身份变化重建目录。项目切换与侧栏折叠不重建目录或增加轮询。
 - `useTaskGraph(projectId)` 拥有完整派生 TaskGraph、接收时间、独立数据库样本、成功 receipt revision、请求序号、refresh 与可见页面轮询。身份核验后先发布经生命周期与完整性验证的本地摘要，后台同步；本地 snapshot 的 revision=0，成功接收与服务端时钟字段为空，不增加在线授权。没有有效缓存时保持加载态，同步普通失败保留已显示摘要，可信撤权清除内容。严格解析 task-sync 后立即捕获 receivedMonotonic，早于 IDB 应用和索引计算；每次成功同步成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。TaskCacheScope 在一个事务内按业务版本合并当前完整持久集合，再提交摘要与最大 updatedAt；相等/旧版行不写入。仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。设置版本保持 bigint。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本；磁盘或其他标签页不能提供它。
 - `TaskExecutionClockProvider` 按项目拥有稳定 context/store，将最新服务端时间、单调接收时间和已保存阈值在 layout effect 一起发布。useTaskExecution 仅让已知起点的运行任务订阅一个可见页一秒 ticker；完成任务只订阅设置说明，未知任务无活动订阅。隐藏时暂停，恢复可见立即发布单调差值；正常轮询独立刷新锚点，最后运行订阅与 provider 卸载清理 timer/listener。计时局部更新不进入 GraphIndex、投影、布局或边路由；既有身份 guard 继续约束 API，没有新增失焦监听或网络轮询。
-- `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、概览近期投影、共享负责人及状态筛选和分页、共享任务列表浏览位置。`ChainList` 消费当前页的代表序列，并以完整筛选条目数显示工具栏数量；完整 `GraphIndex` 保存全部成员、关系上下文与项目统计。概览导航的 task witness 经 `componentByTask` 解析到最新代表，再在完整筛选序列中确定目标页。图入口的 witness 不因代表变化覆盖仍有效的任务定位值，当前页入口不可见时关闭图。详情始终绑定 task ID，分类、筛选和翻页不关闭仍存在的详情。
+- `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、概览近期投影、共享负责人及状态筛选和分页、共享任务列表浏览位置。`ChainList` 消费当前页的代表序列，并以完整筛选条目数显示工具栏数量；完整 `GraphIndex` 保存全部成员、关系上下文与项目统计。概览及 external 卡片导航的 task witness 经 `componentByTask` 解析到最新代表，再在完整筛选序列中确定目标页；external 的多成员目标替换当前 Goal 图，单成员目标关闭原图并进入既有任务详情。图入口的 witness 不因代表变化覆盖仍有效的任务定位值，当前页入口不可见时关闭图。详情始终绑定 task ID，分类、筛选和翻页不关闭仍存在的详情。
 - `useTaskDetail(projectId, taskId)` 消费 TaskDetailSession 中该键的详情与状态操作状态，
   在本挂载成功同步后以匹配持久正文加速打开，再 live GET。摘要业务版本、项目 generation 和恢复需要驱动读取，正常重复 receipt 不 GET；相同版本的前置变化只物化派生字段。相同活动资源且同 cacheGeneration 保留正文与附件，活动 GET 不被自动触发中断，必要后续读取合并；显式重试仍有优先权。revision 与
   loadedRevision 记录请求和成功 GET 起始上下文；requiresFreshRead 根据任务描述符、
@@ -921,7 +923,8 @@ Project Settings 在归属区域后提供删除入口，仅当前 owner Team adm
 生产页面通过 task-sync 读取任务摘要，合并完整本地集合后物化 `TaskGraph`，不调用
 服务端 task-graph。`task-cache/projection.ts` 从完整摘要计算 blockedBy、ready 和六项
 summary，显式去掉 version 与 properties 后形成保留 assignedTo 的图节点；完整属性保留在摘要 map 中，`pausedTaskIds` 单独承载从摘要派生的暂停展示集合。摘要解析严格要求 nullable assignedTo、合法的可选 paused 布尔值并复用 parseTaskProperties，sameSummary 比较与详情 summaryOf 保留 assignedTo 和完整属性并使用 sameTaskProperties 比较全部键与 JSON 值，不因对象键序产生同版本差异。随后由既有 `buildGraphIndex` 验证依赖、状态、容量、统计与无环条件。所有依赖
-必须在本地完整集合中可解析；完整上游闭包供 Web 链图使用，不采用 CLI 的一层外部前置边界。
+必须在本地完整集合中可解析；完整项目索引供全边校验、统计和完整上游检查使用。
+Web 画布从该索引独立投影普通成员及其一层直接 external 前置，不能以 CLI 的按任务返回集合替代完整项目快照。
 [时间窗口架构](daynight-task-sync.md)拥有同步、持久化、版本、水位、身份和发布机制。
 
 本地图保留以下结构，供页面、统计和图模型共同使用；Project.settings 的版本使用
@@ -962,7 +965,7 @@ type TaskGraph = {
 
 服务端 `GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}` 使用相同的轻量
 节点字段，但返回目标的完整普通链及一层直接 external 前置。其外部上下文节点可以引用
-返回集合外的任务，不能直接交给要求全前置闭包的 Web 图模型。该接口的选择、容量、
+返回集合外的任务，不能直接交给要求完整项目依赖可解析的 Web 索引校验器。该接口的选择、容量、
 同快照读取和错误由[服务端需求](../spec/daynight-server.md#任务链图查询)与
 [服务端设计](daynight-server.md#任务链图查询)拥有。
 
@@ -1051,6 +1054,6 @@ Web 覆盖率采集包含所有 `src/**/*.{ts,tsx}` 产品文件。独立 checke
 
 - 大量共享节点会重复出现在不同根图中；通过去重统计和同时只打开一个图浮层控制成本。需要同时比较多条图时再重审交互。
 - 1,000/5,000 是明确的保护上限。长虚线绘制分解已交付；旧回执不能替代当前源码的 CI 证据。布局归一化成本取决于 rank 跨距，不能把固定矩阵的结果宣称为任意 DAG 的相同耗时保证。
-- 完整上游可能使一条链接近完整项目规模；外部前置必须保留显式标记与独立计数，避免把上下文误认为链内进度。历史容量矩阵包含外部祖先密集场景，当前模块压力测试不能替代其浏览器时延证据。
+- 普通分量及其直接 external 前置仍可能使一条链接近完整项目规模；外部前置必须保留显式标记与独立计数，避免把上下文误认为链内进度。完整上游检查独立于一层画布投影，隐藏祖先仍准确计数。历史容量矩阵包含外部祖先密集输入，当前投影只保留直接前置；当前模块压力测试不能替代浏览器时延证据。
 - Node 成为 Go 二进制的构建前置；固定构建顺序与干净 checkout 验证，运行时仍只有 Go 与 PostgreSQL。
 - 只有本机访问需求。出现远程访问要求时必须先补齐身份与授权设计。

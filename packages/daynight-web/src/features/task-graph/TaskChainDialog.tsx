@@ -13,11 +13,12 @@ type TaskChainDialogProps = {
   readonly index: GraphIndex;
   readonly rootId: string;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
+  readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
   readonly onClose: () => void;
   readonly onRestoreFocus: () => void;
 };
 
-export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onClose, onRestoreFocus }: TaskChainDialogProps) => {
+export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onNavigateExternalTask, onClose, onRestoreFocus }: TaskChainDialogProps) => {
   const { messages: { graph: m, common } } = useI18n();
   const { direction, onDirectionChange, issue } = useGraphDirection(projectId, rootId);
   const task = index.nodes.get(rootId)!;
@@ -101,7 +102,7 @@ export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onClose,
         </div>
         <button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </header>
-      <TaskGraph direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} index={index} rootId={rootId} onOpenTask={onOpenTask} fullscreen={fullscreenControl} />
+      <TaskGraph direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} index={index} rootId={rootId} onOpenTask={onOpenTask} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} fullscreen={fullscreenControl} />
     </section>
   </div>;
 };

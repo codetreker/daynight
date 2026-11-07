@@ -160,14 +160,7 @@ export const projectChain = (index: GraphIndex, rootId: string): ChainProjection
   if (component === undefined) return rejectGraph();
   const mainIds = new Set([...index.nodes.keys()].filter((id) => component.memberIds.has(id)));
   const visibleIds = new Set(mainIds);
-  const pending = [...mainIds];
-  while (pending.length > 0) {
-    for (const source of index.nodes.get(pending.pop()!)!.dependsOn) {
-      if (visibleIds.has(source)) continue;
-      visibleIds.add(source);
-      pending.push(source);
-    }
-  }
+  for (const id of mainIds) for (const source of index.nodes.get(id)!.externalDependsOn) visibleIds.add(source);
   const externalIds = new Set<string>();
   const edges: ProjectionEdge[] = [];
   for (const task of index.nodes.values()) {
@@ -175,6 +168,7 @@ export const projectChain = (index: GraphIndex, rootId: string): ChainProjection
     if (!mainIds.has(task.id)) externalIds.add(task.id);
     const external = new Set(task.externalDependsOn);
     for (const source of task.dependsOn) {
+      if (!visibleIds.has(source)) continue;
       edges.push({ source, target: task.id, external: external.has(source) });
     }
   }

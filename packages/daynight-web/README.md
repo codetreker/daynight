@@ -1105,8 +1105,10 @@ unsubscribe and provider unmount release timer/listener work. There is no new
 blur listener, per-card request or server worker. Clock samples and settings stay
 outside graph-index, projection and layout dependencies.
 
-Task cards, standalone rows and Goal child rows show live elapsed or frozen
-completed duration. Todo tasks and incomplete intervals show no inferred duration.
+Task cards, standalone rows and Goal child rows show live elapsed or a frozen
+original execution duration for done and cancelled records. Todo tasks and
+incomplete intervals show no inferred duration; cancelledAt never supplies an
+execution endpoint.
 On cards and standalone rows, running tasks with `allowAgents=true` use an exact
 millisecond comparison strictly above saved minutes to add amber treatment,
 icon and Possibly stuck / 可能卡住了 while retaining the running status. Tasks
@@ -1225,20 +1227,23 @@ reload, browser back/forward and a generic not-found page. All resource reads us
 the current authenticated identity. A project without a saved section preference
 opens Overview, with six statistics and an overall progress list from the complete
 snapshot. Its recent rows include every unfinished ordinary task-chain component
-and completed components from the latest seven local calendar days. A row shows
-the representative title, completed/total count and a floored integer percentage.
-A Goal completes only when all ordinary members are done; its last member
-completion determines recency, with external prerequisites excluded. The latest
-known member completion supplies evidence when some historical times are unknown;
-without known recent evidence, completed Goals remain available in the task list.
+and ended components from the latest seven local calendar days. A row shows
+the representative title, ended/total count, separate done and cancelled counts,
+and a floored integer percentage. A Goal ends only when all ordinary members
+are done or cancelled; all done means successful completion, all cancelled means
+cancellation, and mixed terminal results use the UI-only ended outcome. Its
+latest member terminal time determines recency: completedAt for done and
+cancelledAt for cancelled, with external prerequisites excluded. Known recent
+member times supply evidence when some historical times are unknown; without
+known recent evidence, ended Goals remain available in the task list.
 The standalone aggregate row combines every unfinished standalone task with known
-completions in the same window. It remains visible at 100% when only recent
-completions remain, as do recent completed Goals. Project statistic cards retain
-full-history totals.
+terminal results in the same window. It remains visible at 100% when only recent
+ended tasks remain, as do recent ended Goals, and preserves the result breakdown.
+Project statistic cards retain full-history totals.
 
 The window includes today and the previous six days in the browser's local time
 zone, starting at local midnight six dates ago. For example, October 27 includes
-completions from October 21 at 00:00 onward. Local date arithmetic preserves
+terminal results from October 21 at 00:00 onward. Local date arithmetic preserves
 calendar-day semantics across daylight-saving changes. Current time advances
 from the server sample and monotonic elapsed time after synchronization;
 local-only summaries use their provisional client-time anchor. One project-owned
@@ -1249,7 +1254,7 @@ snapshot.
 Overview displays 20 top-level entries per page; Task chains and Standalone
 tasks each display 15. A whole Goal is one entry regardless of expanded children; the single
 standalone aggregate is one Overview entry. All display sequences sort by
-`in_progress`, `todo`, then `done` before pagination, using individual status for
+`in_progress`, `todo`, then terminal outcomes before pagination, using individual status for
 standalone tasks and complete component status for chains. Within a status,
 exact newest-first order remains stable; the standalone aggregate follows
 matching-status chains.
@@ -1308,26 +1313,30 @@ execution consistency and full prerequisite inspection.
 Standalone rows are compact native detail triggers with title, individual
 status, ID, creation time, automation permission and known execution timing. The
 clock and duration follow creation time in the same wrapping information line. An
-unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. A Goal row
+unsatisfied prerequisite produces an explicit Blocked / 被阻塞 badge; done and
+cancelled prerequisites are satisfied. A Goal row
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
 ordinary-component member exactly once, with `in_progress` first, then `todo`,
-then `done`. Completed children use exact `completedAt` descending order, with
-unknown completion times last. Equal completion times and unknown-time ties retain
-snapshot order, as do children in other status groups. Fresh snapshots recalculate
-this order. Top-level Goal ordering remains independent. Other starting tasks in a merge are
-included, while external prerequisite context is excluded. The
-list always retains `done`, `in_progress` and `todo` children; completed tasks
-remain visible. Filters determine whole-chain visibility and never remove children. Child rows show their own status,
-applicable ready/blocked markers and known execution duration after the title,
-and open the shared task dialog. The expanded heading offers the representative task's own
-details. Aggregate progress still includes that representative. Chain rows
-aggregate only component members: all done means done; otherwise any done or
-in-progress member means in progress; otherwise any todo member means pending;
-otherwise all members are todo. A completed representative with unfinished
-members stays visible. External prerequisite context does not contribute to
-chain progress or status. The former shared-membership badge is removed: a task
-can recur as context while its actual component membership remains unique.
+then terminal outcomes. Terminal children use exact completedAt for done or
+cancelledAt for cancelled in descending order, with unknown times last. Equal
+terminal times and unknown-time ties retain snapshot order, as do children in
+other status groups. Fresh snapshots recalculate this order. Top-level Goal
+ordering remains independent. Other starting tasks in a merge are included,
+while external prerequisite context is excluded. The list retains all four
+statuses; filters determine whole-chain visibility and never remove children.
+Child rows show their own status, applicable ready/blocked markers and known
+execution duration after the title, and open the shared task dialog. Cancelled
+records retain their original execution interval; cancelledAt never substitutes
+for a missing execution endpoint. The expanded heading offers the representative
+task's own details. Aggregate progress still includes that representative.
+Chain rows aggregate only component members: all done means done; all cancelled
+means cancelled; mixed terminal results mean ended. An unfinished chain with any
+terminal or in-progress member means in progress; otherwise it means todo.
+A terminal representative with unfinished members stays visible. External
+prerequisite context does not contribute to chain progress or status. The former
+shared-membership badge is removed: a task can recur as context while its actual
+component membership remains unique.
 
 Both categories share assignee and status filters and the current
 task-list page position; category switching does not restore an older offset. Chain
@@ -1432,16 +1441,13 @@ the returned reset while preserving other materials and refreshes the graph.
 Conflicts require a fresh review; uncertain outcomes use GET-only reconciliation
 without replay. This action does not require the original worker to be online.
 
-Both lists use newest creation first, with descending IDs breaking equal-time
-ties. Presentation reverses the exact API sequence without reducing timestamp
-precision; updates do not move older tasks. Completed standalone tasks and
-whole completed Goal chains are hidden by default in their respective
-categories. Expanded child lists include all task statuses independently of
-that filter. Each tab has its own completed-count checkbox,
-visible/total count and per-project visibility preference. An empty category,
-hidden all-complete items and a truly empty project have distinct states.
-Revealing completed items focuses the persistent checkbox before the
-empty-state action disappears. Long titles grow naturally in compact native
+Both lists apply the shared status priority before exact newest creation order,
+with descending IDs breaking equal-time ties. Updates do not move an entry
+unless its sorting status changes. Both categories default to all statuses and
+include historical done and cancelled tasks. Assignee and status filters control
+whole entries, while expanded child lists retain every ordinary member. Each
+category shows visible/total counts and distinguishes an empty category, no
+matching entries and a truly empty project. Long titles grow naturally in compact native
 controls. Goal headers retain 7px row gaps and responsive progress widths; the
 graph action can wrap on narrow screens. Desktop header titles stay 13px and
 narrow-screen titles 12px. Child tasks use compact rows with visible individual
@@ -1567,8 +1573,13 @@ requires the external set to be a subset; missing or null fields are protocol
 errors. Graph equality and detail freshness include classification, so a
 marker-only change invalidates the corresponding content without inventing a
 new timestamp. Clock-only samples still retain graph/index identity. Chain
-membership uses ordinary-edge weak components; relationship labels and dashed
-edges use the persisted marker independently of outside-component card context.
+membership uses ordinary-edge weak components. A Goal projection contains all
+ordinary members plus their direct external prerequisites, deduplicated by task
+ID, and all real edges whose endpoints are in that projection. It does not follow
+ordinary or external ancestry from contextual tasks. Complete prerequisite
+inspection still uses the project index and counts hidden ancestors beyond this
+one-hop projection. Relationship labels and dashed edges use the persisted
+marker independently of outside-component card context.
 The complete model is specified in the
 [external dependency design](../../docs/design/daynight-external-dependencies.md).
 
@@ -1631,7 +1642,12 @@ unmount order restores the original scrolling state. Neither dialog opening nor
 fullscreen is saved as a browsing preference. The [graph-dialog
 decision](../../.agents/notes/archived/feature/2026-10-26-task-chain-graph-dialog.md) records the rationale for graph presentation and preserves the original [fullscreen
 rationale](../../.agents/notes/archived/feature/2026-10-22-task-graph-fullscreen.md).
-Each node has sibling native inspection, Details and direction controls. A long
+Each node has sibling native inspection, Details and expansion controls.
+Ordinary members retain progressive direction controls. An external card has an
+Expand button that opens its ordinary-component Goal graph, or closes the origin
+graph and opens the existing task reader for a standalone task. Goal navigation
+locates the destination page, clears only filters hiding it and uses its own graph
+direction. External ancestry is not added to the origin canvas. A long
 graph starts with its root visible at readable zoom; keyboard focus brings
 offscreen nodes into view. In normal mode, the centered body-portal dialog has
 a 960px maximum width, 24px viewport gutters (12px at 600px and below), and a
@@ -2159,19 +2175,24 @@ API errors expose fixed safe text and a validated request ID; raw response bodie
 and server diagnostics do not reach the page. Project names and addresses render
 as text. The API parser verifies DTO shape and resource identity. The implemented graph
 model separately verifies dependency closure, acyclicity, status/readiness and
-summary consistency. It projects root descendants plus their complete ancestor
-closure, excluding unrelated descendants of contextual tasks. `mainIds` retains
-chain membership; `externalIds` identifies additional ancestors. Complete projection P retains every required dependency. Visibility selects
-S and all real edges with both endpoints in S; external classification still
-depends on source membership in P−M. It derives distinct root progress and aggregate chain status from main
-tasks in the same traversal, and marks shared tasks. The Dagre
+summary consistency. It derives ordinary-edge weak components and their current
+representatives. `mainIds` contains the complete ordinary component;
+`externalIds` contains only its direct external prerequisites outside that
+component, deduplicated by task ID. Projection P is their union and retains every
+real edge whose endpoints are in P; context does not recurse. Visibility selects
+S and all real edges with both endpoints in S. Edge classification comes from the
+persisted `externalDependsOn` marker, including external shortcuts within an
+ordinary component. Progress and aggregate chain status count main members only,
+and each task has one ordinary-component membership. Complete ancestry remains
+available to inspection through the full project index. The Dagre
 adapter returns finite left-to-right or top-to-bottom node positions and routed edge points for
-220px-wide visible cards with 96px compact or 136px expandable heights. The
+220px-wide visible cards with 96px compact or 136px action-footer heights.
+External cards retain the 136px footer for their independent Expand action. The
 read-only React Flow canvas consumes these results without changing domain
 objects. React Flow owns task nodes with those exact dimensions, native ResizeObserver measurement,
 keyboard behavior, viewport and controls. One memoized SVG in its public
 ViewportPortal renders every planned M/L/C path, with stable edge identity,
-arrowheads, external-context dashes and accessibility semantics. It shares the viewport's
+arrowheads, explicit external-edge dashes and accessibility semantics. It shares the viewport's
 transform, so selection/pan/zoom reuse geometry without per-edge reactive state.
 Canonical routes retain native arrow markers and the full planned geometry.
 Passages use cubic Bézier curves entirely within empty rank gaps, with controls on the gap midpoint at the respective endpoint cross-axis coordinates. Tangents follow the selected direction and join free passages through intermediate ranks, which retain sixteen units of clearance from cards. The

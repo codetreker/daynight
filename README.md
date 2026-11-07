@@ -21,8 +21,9 @@ or run your own service. The interface supports English and Simplified Chinese.
   tasks, and distinguish dependencies within a task chain from dependencies on
   other chains. Both kinds must be completed before dependent work starts.
 - **See project progress.** Browse project statistics, task-chain progress and
-  standalone tasks. Explore interactive dependency graphs with upstream context,
-  task details and fullscreen reading.
+  standalone tasks. Explore interactive dependency graphs with direct external
+  prerequisites, card navigation to their tasks or Goals, task details and
+  fullscreen reading.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.

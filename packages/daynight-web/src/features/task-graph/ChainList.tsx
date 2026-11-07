@@ -28,6 +28,7 @@ type ChainListProps = {
   readonly onOpenChain: (id: string, trigger: HTMLElement) => void;
   readonly onCloseChain: () => void;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
+  readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
   readonly pagination?: PaginationState;
 };
@@ -128,7 +129,7 @@ const focusAvailable = (element: HTMLElement | null | undefined) => {
   return true;
 };
 
-export const ChainList = ({ projectId, index, workerMachines, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession, pagination }: ChainListProps) => {
+export const ChainList = ({ projectId, index, workerMachines, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onNavigateExternalTask, onOpenSession, pagination }: ChainListProps) => {
   const { messages: { graph: m, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
@@ -142,6 +143,16 @@ export const ChainList = ({ projectId, index, workerMachines, representativeIds,
     openedTask.current = id;
     onOpenChain(id, trigger);
   }, [onOpenChain]);
+  const navigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
+    opener.current = null;
+    openedTask.current = id;
+    if (onNavigateExternalTask !== undefined) onNavigateExternalTask(id, trigger);
+    else {
+      const representative = index.componentByTask.get(id)!;
+      if (index.components.get(representative)!.memberIds.size > 1) onOpenChain(representative, trigger);
+      else { onCloseChain(); onOpenTask(id, trigger); }
+    }
+  }, [index, onNavigateExternalTask, onOpenChain, onCloseChain, onOpenTask]);
   const restoreListFocus = useCallback((witness: string | null) => {
     const { index, representativeIds } = state.current;
     const representative = witness === null ? undefined : index.componentByTask.get(witness);
@@ -173,6 +184,6 @@ export const ChainList = ({ projectId, index, workerMachines, representativeIds,
       : representativeIds.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
         : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     {pagination !== undefined && <ListPagination label={m.chainList} {...pagination} />}
-    {openChainId !== null && <TaskChainDialog projectId={projectId} index={index} rootId={openChainId} onOpenTask={onOpenTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
+    {openChainId !== null && <TaskChainDialog projectId={projectId} index={index} rootId={openChainId} onOpenTask={onOpenTask} onNavigateExternalTask={navigateExternalTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
   </section>;
 };

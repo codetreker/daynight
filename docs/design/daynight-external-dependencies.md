@@ -18,7 +18,7 @@ Web 读取和呈现这些性质，不提供依赖编辑器。
 | [写事务](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/core/store/project_tx.go#L29-L44)锁定项目行；[任务更新](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/core/store/project_tx.go#L97-L129)删除并重建完整依赖。 | 性质必须进入完整候选及重建路径，普通编辑也不能丢失它。 |
 | [生命周期](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/service/task_lifecycle.go#L38-L56)从当前任务重建 `TaskWrite`；[验证](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/service/task_policy.go#L11-L54)检查全部引用、可达性和未完成前置。 | 新字段必须随生命周期候选保留，执行检查继续使用全边图。 |
 | [Web 模型](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/src/features/task-graph/model.ts#L115-L159)用 `reachable(successors, root)` 得到主集合，并按 `!mainIds.has(source)` 推导边的 `external`。 | 当前“外部”是投影角色，不是关系性质；成员算法和边性质需要分别重构。 |
-| [概览](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/src/features/task-graph/visibility.ts#L3-L48)具有 50/100 初始预算和 20 邻居批次。 | 普通分量及祖先闭包连通，可复用现有方向展开，不增加组成员展开机制。 |
+| [概览](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/src/features/task-graph/visibility.ts#L3-L48)具有 50/100 初始预算和 20 邻居批次。 | 普通分量及其直接 external 上下文连通，可复用有界概览与普通成员的方向展开；外部卡片提供独立资源跳转。 |
 
 此前按根可达性计算，同一后续任务可属于多个根投影。
 2026-10-23 的历史 worker 样本含六个重复成员，来源是处理角色任务同时依赖 worker 架构、认证和审批成果。
@@ -41,9 +41,9 @@ flowchart LR
   All --> Execution[环、阻塞、就绪与执行]
   Normal --> Components[普通弱连通分量]
   Components --> Main[链成员与进度]
-  All --> Ancestors[完整前置闭包]
-  Main --> Projection[完整投影 P]
-  Ancestors --> Projection
+  Main --> Context[成员直接 external 前置]
+  Main --> Projection[一层上下文投影 P]
+  Context --> Projection
   Projection --> Canvas[有界概览与显式展开]
 ```
 
@@ -81,7 +81,7 @@ core、`TaskWrite`、完整任务与图任务增加 `ExternalDependsOn`。
 `taskCandidate`、普通编辑及 `task_lifecycle.go` 的 `TaskWrite` 重建都必须携带 `E`，
 包括 set-status 的全部生命周期写入。
 分类变化参与语义比较；仅排序变化不增加版本，过期同值仍先冲突。
-状态不变时沿现有 SQL 保持 `startedAt`、`completedAt`；分类写入不成为新的执行起点。
+状态不变时沿现有 SQL 保持 `startedAt`、`completedAt`、`cancelledAt`；分类写入不成为新的执行起点。
 
 ## API 契约
 
@@ -125,7 +125,7 @@ core、`TaskWrite`、完整任务与图任务增加 `ExternalDependsOn`。
 
 HTTP 严格对象解析在创建和 PATCH 白名单中接受 externalDependsOn，并校验数组类型及内容。
 未知或重复字段、显式 `null`、非法或重复 ID、自引用、外部子集越界、缺失或跨项目前置返回 `invalid_input` / 400。
-任意普通、外部或混合环返回 `dependency_cycle` / 409；未完成真实前置返回 `dependency_unsatisfied` / 409；
+任意普通、外部或混合环返回 `dependency_cycle` / 409；未满足真实前置返回 `dependency_unsatisfied` / 409；
 过期版本返回 `version_conflict` / 409。现有身份、成员隐藏与权限结果保持原样。
 数据库、取消和响应失败沿现有错误链处理，不变成空分类或成功结果。
 
@@ -168,7 +168,7 @@ GraphTask 和完整详情保留必填 `externalDependsOn`，共享 API 解码器
 随后仅时钟样本变化仍复用身份。完整依赖用于验证与上下文，普通子集决定成员分量。
 
 先验证完整资源的唯一任务、全部引用、外部子集、状态、阻塞、就绪、全边无环和图上限。
-构造全边有向邻接供执行一致性、前置检查和方向展开使用；
+构造全边有向邻接供执行一致性和完整前置检查使用；方向展开只读取当前投影内的邻居。
 另对普通边建立无向邻接，以线性遍历计算弱连通分量。
 每个任务恰好进入一个分量，不再存储可重叠的根成员集合或共享成员标记。
 
@@ -188,13 +188,18 @@ X ─外部→ C             X 不加入该分量
 独立任务行复用现有 `graph-blocked-badge` 显示“被阻塞” / “Blocked”，
 避免只有状态和 ready 标签时无法看出外部前置正在阻塞它。详情继续提供具体阻塞关系。
 分量状态沿当前全成员聚合规则计算，统计成员一次；
-外部上下文不改变该链的完成数、状态或筛选，项目统计继续按完整任务集合计数。
+全部普通成员为 done/cancelled 时进度计为已结束，并保留两种结果的数量；全部 done、
+全部 cancelled 与混合终态分别汇总为 done、cancelled 和仅供 UI 使用的 ended。
+外部上下文不改变该链的完成数、取消数、状态或筛选，项目统计继续按完整任务集合计数。
+普通和外部前置均以 done/cancelled 作为满足状态，取消自身不要求前置满足；
+[任务状态设计](daynight-task-status.md)拥有共享谓词与生命周期规则。
 
 ## 投影、样式与局部交互
 
-对分量 C，主集合 `M=C`，完整数据投影 `P=M ∪ ancestors_all(M)`，上下文为 `P−M`。
-从每个成员沿全部依赖迭代加入祖先，保留终点在 P 的全部真实关系。
-闭包保证其前置也属于 P，无关外部后续不会进入。
+对分量 C，主集合 `M=C`，上下文 `X=union(E(m), m∈M)−M`，投影 `P=M∪X`。
+`projectChain` 只从普通成员读取直接 external 前置并按 ID 去重，不从 X 继续遍历。
+保留两端均属于 P 的全部真实关系；X 中任务的其他普通或 external 前置及无关后续不进入 P。
+完整项目索引仍保存所有关系，依赖检查的完整祖先 H 独立于当前投影。
 一条标为外部的边可以通过另一条普通路径使两端处于同一分量；分类仍保留，不能因当前成员关系改写。
 
 节点角色和边性质是不同输入。卡片为上下文时使用虚线边框及“外部前置”；
@@ -208,11 +213,19 @@ X ─外部→ C             X 不加入该分量
 详情新鲜度描述与图等价比较纳入外部子集，性质单独变化能刷新标签和路线。
 Details 继续与检查主体分离，导航只改变所读资源；本范围没有 Web 依赖编辑器。
 
-普通分量通过普通边连通，所有补入祖先通过某条前置路径连接到成员，所以 P 连通。
-复用现有稳定、后续优先的无向 BFS 概览、50 任务/100 诱导边限制和 20 直接邻居展开即可访问全部 P。
-不引入无连线组成员或第二种展开入口。诱导边必须包含所有可见真实关系，不能仅画遍历树。
-选择只改高亮，不重排、不移动视口；展开、reset、全屏、模态、附件和焦点继续使用现有生命周期。
-保留当前卡片 220×96/136 几何、双语和任务计时字段，不新增计时 UI。
+普通分量通过普通边连通，每个 X 中任务直接连接到成员，因此 P 连通。
+复用稳定、后续优先的无向 BFS 概览及 50 任务/100 诱导边限制。普通成员的方向展开
+每次加入最多 20 个 P 内隐藏直接邻居，诱导边包含所有可见真实关系，不能仅画遍历树。
+
+链外卡片的独立“展开”按钮传递实际 task ID，由 ProjectPage 通过 `componentByTask`
+解析到当前普通分量。多成员目标定位任务链类别、可见筛选序列和目标页，再替换打开的图；
+只有遮挡目标的条件被清除，目标使用自身代表的布局方向偏好。单成员目标关闭原图并调用
+既有任务详情入口。上下文卡片不提供原地的前置/后续展开，原画布不会追加外部祖先。
+
+选择从完整索引计算 H，只改高亮并按 ID 计算 `H−S`，不重排、不移动视口；
+Details、reset、全屏、模态、附件和焦点继续使用现有生命周期。卡片宽 220px；
+普通紧凑卡片高 96px，含方向控件的卡片和含独立展开入口的链外卡片高 136px。
+双语、任务计时字段与现有计时 UI 保持一致。
 
 ## 刷新、合并拆分与偏好
 
@@ -258,7 +271,8 @@ Go 服务与嵌入 Web 一起部署；
 
 本设计不增加远程请求轮次或公开命令组，只增加一个关系子集字段及声明选项。
 图仍一次读取完整的 1,000/5,000 有界快照；任务列表继续当前完整分页。
-分类不增加任务或真实边，普通分量索引为 O(V+E)，单链祖先闭包仍为 O(V+E)。
+分类不增加任务或真实边，普通分量索引为 O(V+E)。单链投影扫描成员直接 external 前置并
+筛选两端属于 P 的真实边，不递归遍历上下文；完整上游检查仍为 O(V+E)。
 
 以本次已捕获的真实图 JSON 紧凑序列化测量字段开销，不重新请求服务：
 
@@ -284,7 +298,8 @@ Go 服务与嵌入 Web 一起部署；
 成功读写使用现有 `type=resource`、`component=task`、`phase=get/create/update` 和 request ID。
 任务链图查询保持 `component=task_graph` 及返回任务、依赖引用数；计数继续包括外部边与
 外部节点指向投影外任务的引用。其一层 external 选择由
-[服务端图查询](../spec/daynight-server.md#任务链图查询)拥有，Web 的完整上游闭包不变。
+[服务端图查询](../spec/daynight-server.md#任务链图查询)拥有。Web 仍从完整项目快照验证全边及计算完整上游检查，
+画布独立选择普通成员与一层直接 external 前置。
 新校验失败使用现有 Fault 代码和安全消息，数据库与取消保留可解包原因。
 [错误管线](../../packages/daynight-server/internal/server/httpx/logging.go)
 通过 `type=operation_error` 记录 `component`、`phase`、`cause`、`error_code`、安全 `diagnostic` 和 `request_id`；
@@ -342,7 +357,7 @@ jq -c --arg rid "$REQUEST_ID" \
 | 迁移与 store | 旧边全普通、字段与端点保持、幂等账本、读子集正确、更新及生命周期不丢性质、事务取消与错误链。新 store 逻辑有直接包内测试。 |
 | 服务与 HTTP | 部分 PATCH 表、性质单独更新、无变化、过期版本、并发与锁后权限、外部/混合环、外部阻塞、严格字段及错误身份。 |
 | CLI 与安装产物 | 两类依赖编译为完整替换、外部单独选项语义、清空互斥、重复拒绝、所有读取保留性质、精确版本、预算、help/completion 和六份 skill。 |
-| Web 模型与交互 | 多普通根一链、外部边分隔、链内外部捷径仍虚线、完整前置闭包、进度、独立任务行的外部阻塞徽标、合并拆分定位、性质刷新、Details 各方向标签及现有局部交互。 |
+| Web 模型与交互 | 多普通根一链、外部边分隔、链内外部捷径仍虚线、一层直接 external 上下文、外部卡片的 Goal/独立任务跳转及跨页筛选定位、完整隐藏上游计数、进度、独立任务行的外部阻塞徽标、合并拆分定位、性质刷新、Details 各方向标签及现有局部交互。 |
 | 独立整体验收 | 真实 PostgreSQL、构建进程、打包安装 CLI、生产嵌入 Web、重启、故障与并发、完整容量以及当前既有边的只读审计。 |
 
 原型覆盖混合图、多普通起点、显式链内外部边、外部阻塞的独立任务、完成链、加载、空、错误、禁用、长内容和 320px 视口。
