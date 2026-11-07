@@ -35,7 +35,7 @@ Worker 资源键为认证账号与规范 workerId 的组合。workerId、machine
 | versions | `{daynight,herdr,codex,copilot}`；daynight 为非空白版本文本，其余为下述探测结果 |
 | taskInventory | 显式 null，或完整 `{observedAt,claims}` 对象 |
 
-文本必须是无 NUL 的有效 UTF-8。日期使用有效、非零的 RFC3339 时刻，响应转换为 UTC。客户端 sampledAt、checkedAt 和 inventory observedAt 只说明数据来源，不决定在线状态。
+文本必须是无 NUL 的有效 UTF-8。machine.name 最多 256 字节，workingDirectory 最多 4096 字节，Daynight、Herdr 和 Agent 版本各最多 256 字节；OS type/arch 各最多 64 字节，release 最多 256 字节，version 最多 1024 字节，CPU model 最多 512 字节。字节均按解码后 UTF-8 计量。日期使用有效、非零的 RFC3339 时刻，响应转换为 UTC。客户端 sampledAt、checkedAt 和 inventory observedAt 只说明数据来源，不决定在线状态。
 
 ### 探测结果
 
@@ -81,13 +81,15 @@ model 为 null 或最多 256 UTF-8 字节的非空白文本；args 为显式数�
 
 ### 任务清单
 
-非 null 的 taskInventory 必须包含有效 observedAt 和显式 claims 数组；空数组表示已知无任务，null/missing claims 无效。每项仅包含必填 `{projectId,taskId,claimId}`，同一规范化 taskId 不得重复。
+非 null 的 taskInventory 必须包含有效 observedAt 和显式 claims 数组；空数组表示已知无任务，null/missing claims 无效。每项仅包含必填 `{projectId,taskId,claimId}`，同一规范化 taskId 不得重复，最多 256 个不同任务引用。
 
 服务端根据这些引用读取当前任务，只接受认证账号与 workerId 拥有的相同 active claim，且 task 为 in_progress、未删除、账号仍有项目权限。任务标题、项目名、status、phase 和 agent 均取服务端数据，客户端不能提供这些权威字段。已完成、已撤回、转交或失权的普通竞态省略对应引用；不存在与不可访问的目标不通过省略差异泄漏给调用者。
 
 报告发送的是完整观测清单，不按 maxConcurrent 截断。恢复清单可以大于当前并发设置；既有 1 MiB 传输上限仍适用，超限明确失败。
 
 ## 最新快照与时间
+
+telemetry 和完整 Worker 单项分别受 4 MiB 规范化 JSON 编码预算约束；字段和集合上限同时生效，不保证各字段可同时填满。完整 Worker 以合并后实际存储的快照计量，包括 unavailable 报告保留的旧 stale 任务。超限为 400 invalid_input，事务不提交。
 
 一次成功报告原子保存服务端 observation 时间、telemetry 和规范化任务快照。lastReportedAt 是取得账号准入锁后采集的数据库时间，不是客户端时刻；目标原有时间位于未来时，成功报告以本次数据库时间更新它。响应 observedAt 是服务端时间样本。
 

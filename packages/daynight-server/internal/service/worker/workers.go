@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 )
 
 type workerStore interface {
@@ -50,6 +52,9 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
+	if _, err := workerprotocol.EncodeTelemetry(io.Discard, input.Telemetry, workercore.MaxTelemetryJSONBytes); err != nil {
+		return WorkerReportResult{}, workercore.InputLimit(err)
+	}
 	if input.Configuration != nil {
 		raw, marshalErr := json.Marshal(input.Configuration)
 		if marshalErr != nil {
@@ -86,10 +91,25 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 		if err != nil {
 			return err
 		}
+		if _, err := workerprotocol.EncodeItem(io.Discard, stored, workercore.MaxWorkerJSONBytes); err != nil {
+			return workercore.InputLimit(err)
+		}
 		if input.Configuration != nil {
 			result.Configuration, err = workercore.ExchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
 			if err != nil {
 				return err
+			}
+			if result.Configuration.ObservationAccepted {
+				configuration, err := tx.WorkerConfiguration(ctx, principal.UserID, workerID)
+				if err != nil {
+					return err
+				}
+				if configuration.Observation == nil {
+					return fmt.Errorf("accepted worker configuration observation is missing")
+				}
+				if _, err := workerprotocol.EncodeObservation(io.Discard, *configuration.Observation, workercore.MaxConfigurationJSONBytes); err != nil {
+					return workercore.InputLimit(err)
+				}
 			}
 		}
 		result.LastReportedAt = stored.LastReportedAt

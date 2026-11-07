@@ -93,6 +93,22 @@ it("keeps a claim grant unknown until a complete inventory establishes its obser
   await reporter.stop();
 });
 
+it("marks an oversized inventory unavailable without truncation and resumes after a complete bounded observation", async () => {
+  const f = fixture(), reporter = f.start(); await settle();
+  const claims = Array.from({ length: 256 }, (_, n) => claim(String(n)));
+  reporter.publishInventory({ observedAt: timestamp, claims }); await settle();
+  expect(f.send.mock.lastCall![0].taskInventory?.claims).toHaveLength(256);
+  reporter.recordClaim(claim("new")); await settle();
+  expect(f.send.mock.lastCall![0].taskInventory).toBeNull();
+  expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" }));
+  reporter.publishInventory({ observedAt: timestamp, claims: [...claims, claim("new")] }); await settle();
+  expect(f.send.mock.lastCall![0].taskInventory).toBeNull();
+  reporter.publishInventory({ observedAt: timestamp, claims }); await settle();
+  expect(f.send.mock.lastCall![0].taskInventory?.claims).toEqual(claims);
+  expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_recovered" }));
+  await reporter.stop();
+});
+
 it("invalidates a complete observation during partial coverage until coverage is restored", async () => {
   const f = fixture(), reporter = f.start(); await settle();
   reporter.publishInventory({ observedAt: timestamp, claims: [claim("old")] }); await settle();

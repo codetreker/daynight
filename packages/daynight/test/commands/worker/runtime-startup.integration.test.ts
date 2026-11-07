@@ -45,7 +45,7 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { maxConcurrent, pollIntervalMs: 1, recoveryLimit: 3, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
 const resource = (target: WorkerCloudDesired | null): WorkerCloudResource => ({ desired: target, observationRevision: "0", observation: null });
 const fixture = async (warm = false, configured = true) => {
@@ -110,6 +110,72 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("continues retained-project reconciliation after a full observation is acknowledged and after restart", async () => {
+    const f = await fixture(true, false), target = desired([]), ids = [uuid(10_000), uuid(10_001)];
+    for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });
+    const stored = (key: Record<string, string>, appliedValue: unknown) => ({ value: { key, targetRevision: "1", appliedValue, state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
+    const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "native" }, target.value.native)];
+    for (let n = 0; n < 1019; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(20_000 + n) }, true));
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 1, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: target, observationRevision: "0", nextFailureId: 1, items }));
+    let revision = 0n, reporterOptions: ReporterOptions | undefined;
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(revision), observation: null }));
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { reporterOptions = options; return reporter(); });
+    const stopProject = vi.fn(async (_projectId: string, _signal: AbortSignal) => {}), tick = vi.fn(async () => {});
+    mocks.coordinator.mockImplementation(() => ({ stopProject, tick, updateConfiguration: vi.fn(), shutdown: vi.fn(async () => true) }));
+    for (let pass = 0; pass < 2; pass++) {
+      reporterOptions = undefined; stopProject.mockClear(); tick.mockClear();
+      const { cancellation, running } = start(f);
+      await vi.waitFor(() => {
+        expect(reporterOptions).toBeDefined();
+        expect(stopProject).toHaveBeenCalledTimes(pass === 0 ? 1 : 2);
+        expect(reporterOptions!.configuration!.capture().observation!.items.filter(item => item.key.kind === "projectRemoval" && item.state === "applied")).toHaveLength(pass === 0 ? 1020 : 2);
+        if (pass === 0) expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("capacity") }) }));
+      }, { timeout: 10_000, interval: 50 });
+      const firstBatch = reporterOptions!.configuration!.capture();
+      await reporterOptions!.configuration!.accept(firstBatch, { desired: target, observationRevision: String(++revision), observationAccepted: true });
+      if (pass === 0) {
+        await vi.waitFor(() => {
+          expect(stopProject).toHaveBeenCalledTimes(2);
+          expect(reporterOptions!.configuration!.capture().observation!.items).toEqual(expect.arrayContaining([expect.objectContaining({ key: { kind: "projectRemoval", projectId: ids[1] }, state: "applied" })]));
+        }, { timeout: 10_000, interval: 50 });
+        const lastBatch = reporterOptions!.configuration!.capture();
+        await reporterOptions!.configuration!.accept(lastBatch, { desired: target, observationRevision: String(++revision), observationAccepted: true });
+      }
+      expect(new Set(stopProject.mock.calls.map(([id]) => id))).toEqual(new Set(ids));
+      await vi.waitFor(() => expect(tick).toHaveBeenCalled(), { timeout: 10_000, interval: 100 });
+      cancellation.abort(); await running;
+    }
+  }, 30_000);
+  it("starts reporting a full cache and adopts a deferred target after acknowledged removal", async () => {
+    const f = await fixture(true, false), cancellation = new AbortController(); cancellations.add(cancellation);
+    const old = desired([]), next: WorkerCloudDesired = { ...desired([uuid(10)]), revision: "2" };
+    const stored = (key: Record<string, string>, appliedValue: unknown, state = "applied", started = false) => ({ value: { key, targetRevision: "1", appliedValue, state, error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started });
+    const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "native" }, old.value.native)];
+    for (let n = 0; n < 1020; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(10 + n) }, n < 2 ? true : null, n < 2 ? "applied" : "pending", n === 0));
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 1, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: old, observationRevision: "0", nextFailureId: 1, items }));
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(next));
+    let assertionFailure: unknown;
+    mocks.reporter.mockImplementation((options: ReporterOptions) => {
+      queueMicrotask(() => { void (async () => {
+        try {
+          const sent = options.configuration!.capture();
+          expect(sent.observation?.items).toHaveLength(1024);
+          expect(sent.observation?.desiredRevision).toBe("1");
+          await options.configuration!.accept(sent, { desired: next, observationRevision: "1", observationAccepted: true });
+          const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8"));
+          expect(saved.desired.revision).toBe("2");
+          expect(saved.items.some((entry: { value: { key: { kind: string; projectId?: string } } }) => entry.value.key.kind === "projectRemoval" && entry.value.key.projectId === uuid(10))).toBe(false);
+        } catch (error) { assertionFailure = error; }
+        finally { cancellation.abort(); }
+      })(); });
+      return reporter();
+    });
+    await runWorker({ ...f, signal: cancellation.signal });
+    if (assertionFailure !== undefined) throw assertionFailure;
+    expect(mocks.reporter).toHaveBeenCalledOnce();
+  }, 30_000);
   it("applies persistent local overrides to registered cloud targets without rewriting desired", async () => {
     const f = await fixture(), cancellation = new AbortController();
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, agentControlMode: "web", agentModel: "local-model", agentReasoningEffort: "high" } }));
@@ -129,7 +195,7 @@ describe("worker cloud-first startup", () => {
   it.each([true, false])("retains unavailable local IDs and reports fallback sources with local overrides=%s", async overrides => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
-    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", model: "local-model", args: ["-c", 'model_reasoning_effort="low"'], ...(overrides ? { agentModel: "local-model", agentReasoningEffort: "high" } : {}), repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1 } }));
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", model: "local-model", args: ["-c", 'model_reasoning_effort="low"'], ...(overrides ? { agentModel: "local-model", agentReasoningEffort: "high" } : {}), repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1000 } }));
     let available = false;
     const unavailable = new ApiError({ operation: "project.show" }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -194,7 +260,7 @@ describe("worker cloud-first startup", () => {
   it("invalidates an unavailable fallback project before another project's lookup finishes", async () => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
-    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1 } }));
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1000 } }));
     const unavailable = new ApiError({ operation: "project.show", projectId: uuid(1) }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
     let firstAvailable = false, blockSecond = false, entered = false;
     let release!: () => void;

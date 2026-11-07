@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
@@ -304,6 +305,9 @@ func workerInventoryInput(raw json.RawMessage) (*model.WorkerTaskInventory, erro
 	var claims []json.RawMessage
 	if json.Unmarshal(fields["claims"], &claims) != nil {
 		return nil, httpx.InvalidInput("claims must be an array")
+	}
+	if len(claims) > workercore.MaxInventoryClaims {
+		return nil, httpx.InvalidInput("taskInventory.claims must contain at most 256 items")
 	}
 	inventory := &model.WorkerTaskInventory{ObservedAt: observedAt, Claims: make([]model.WorkerTaskReference, 0, len(claims))}
 	for _, raw := range claims {
