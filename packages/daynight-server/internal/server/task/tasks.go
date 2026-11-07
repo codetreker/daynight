@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+
 	"time"
+
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
@@ -52,32 +55,7 @@ func TaskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *authhttp.Authent
 }
 
 func taskResponse(task model.Task, request *http.Request) (api.Task, error) {
-	result := api.Task{ID: task.ID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
-		Properties: propertiesResponse(task.Properties), Status: string(task.Status), Version: task.Version, CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(),
-		StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt), CancelledAt: timestampResponse(task.CancelledAt),
-		DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), BlockedBy: append([]string{}, task.BlockedBy...), Ready: task.Ready, AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform), AssignedTo: task.AssignedTo}
-	if extendedWorkerProtocol(request) {
-		return result, nil
-	}
-	worker, err := taskproperties.Worker(task.Properties)
-	if err != nil {
-		return api.Task{}, err
-	}
-	if !legacyWorkerCompatible(worker) {
-		delete(result.Properties, "worker")
-	} else if worker != nil {
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(result.Properties["worker"], &fields); err != nil {
-			return api.Task{}, err
-		}
-		delete(fields, "agentControlMode")
-		value, err := json.Marshal(fields)
-		if err != nil {
-			return api.Task{}, err
-		}
-		result.Properties["worker"] = value
-	}
-	return result, nil
+	return taskprotocol.RESTTask(task, extendedWorkerProtocol(request))
 }
 
 func propertiesResponse(properties model.TaskProperties) api.TaskProperties {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
@@ -187,7 +188,7 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 }
 
 func userResponse(user model.User) api.User {
-	return api.User{ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL, PersonalTeam: httpx.TeamRefResponse(user.PersonalTeam)}
+	return profileprotocol.UserResponse(user)
 }
 func tokenResponse(c model.PersonalAccessToken) api.PersonalAccessToken {
 	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt)}

@@ -15,10 +15,11 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
-const MaxJSONBody = 1 << 20
+const MaxJSONBody = transport.MaxRESTJSONBodyBytes
 
 func InvalidInput(message string) error {
 	return &model.Fault{Code: "invalid_input", Message: message}

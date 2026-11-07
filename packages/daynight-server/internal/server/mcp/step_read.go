@@ -14,6 +14,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -84,7 +85,7 @@ func encodeStepCursor(c stepCursor) string {
 }
 func decodeStepCursor(raw string, expected stepCursor) (stepCursor, int64, error) {
 	invalid := &model.Fault{Code: "invalid_input", Message: "Cursor is invalid for this Step list."}
-	if len(raw) > 2048 {
+	if len(raw) > taskcodec.MaxMCPStepCursorBytes {
 		return stepCursor{}, 0, invalid
 	}
 	data, err := base64.RawURLEncoding.Strict().DecodeString(raw)

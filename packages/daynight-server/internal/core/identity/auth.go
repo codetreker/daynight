@@ -179,7 +179,7 @@ func ValidateCreatePAT(p model.Principal, input CreatePAT, now time.Time) (*time
 	if err := ValidateSession(p); err != nil {
 		return nil, err
 	}
-	if !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) || strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > 100 {
+	if !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) || strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > MaxPATNameCodePoints {
 		return nil, invalidInput("Token name must contain 1 to 100 UTF-8 characters without NUL.")
 	}
 	return validatedTokenExpiry(input.ExpiresAt, now.Truncate(time.Microsecond))

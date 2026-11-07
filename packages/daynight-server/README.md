@@ -56,6 +56,10 @@ modifying, or reviewing daynight-server.
 The TypeScript review command retains its separate configuration, storage and
 lifecycle. The client HTTP foundation targets this service's API.
 
+The [candidate input limits](../../docs/spec/daynight-api-input-limits.md) and
+[measurement design](../../docs/design/daynight-api-input-limits.md) describe
+pure admission and protocol measurement. New online limits remain inactive.
+
 The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph

@@ -71,7 +71,7 @@ func NormalizeBotRequest(input CreateBot) (CreateBot, string, error) {
 		return input, "", invalidInput("Bot name must be valid Unicode without control characters.")
 	}
 	input.Name = strings.TrimSpace(input.Name)
-	if count := utf8.RuneCountInString(input.Name); count < 1 || count > 40 {
+	if count := utf8.RuneCountInString(input.Name); count < 1 || count > MaxNameCodePoints {
 		return input, "", invalidInput("Bot name must contain 1 to 40 characters.")
 	}
 	if input.Overrides.WorkerID != nil {
