@@ -14,6 +14,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	attachmentprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
@@ -39,8 +40,7 @@ func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachmen
 }
 
 func attachmentResponse(attachment model.Attachment) api.Attachment {
-	return api.Attachment{Path: attachment.Path, ContentType: attachment.ContentType,
-		SizeBytes: attachment.SizeBytes, CreatedAt: attachment.CreatedAt.UTC(), UpdatedAt: attachment.UpdatedAt.UTC()}
+	return attachmentprotocol.REST(attachment)
 }
 
 func (h *attachmentHandler) resource(request *http.Request, principal model.Principal) (string, string, *slog.Logger, error) {
@@ -63,7 +63,7 @@ func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, p
 		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return
 	}
-	page, err := h.attachments.List(request.Context(), principal, projectID, taskID, input)
+	page, err := h.attachments.ListREST(request.Context(), principal, projectID, taskID, input)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return

@@ -5,6 +5,7 @@ import (
 )
 
 type BotPage struct {
-	Items   []model.Bot
-	HasMore bool
+	Items          []model.Bot
+	HasMore        bool
+	OversizedBotID string
 }

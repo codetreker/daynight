@@ -2,12 +2,18 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 )
 
 func (s *Reader) TaskCacheEpoch(ctx context.Context, projectID string) (string, error) {
@@ -58,16 +64,25 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 		return nil, pg.QueryError("read task sync", err)
 	}
 	rows.Close()
-	ids := make([]string, len(tasks))
+	var used int64
 	for index := range tasks {
-		ids[index] = tasks[index].ID
-	}
-	properties, err := pg.LoadTaskProperties(ctx, s.tx, ids)
-	if err != nil {
-		return nil, pg.QueryError("read task sync properties", err)
-	}
-	for index := range tasks {
-		tasks[index].Properties = properties[tasks[index].ID]
+		properties, err := pg.LoadTaskPropertiesBounded(ctx, s.tx, tasks[index].ID, taskcore.MaxSyncResponseJSONBytes-used, false)
+		if err != nil {
+			return nil, pg.QueryError("read task sync properties", err)
+		}
+		tasks[index].Properties = properties
+		// The complete response also contains an envelope, commas and assignees.
+		// A task-only excess is therefore a definite overflow, and permits early
+		// refusal before materializing the remaining task properties.
+		n, err := measure.JSON(io.Discard, "task sync", taskcore.MaxSyncResponseJSONBytes-used, taskprotocol.RESTSyncRecord(tasks[index]), false)
+		var violation *limit.Violation
+		if errors.As(err, &violation) {
+			return nil, &model.Fault{Code: "resource_limit_exceeded", Message: "Task sync exceeds the encoded resource limit.", Cause: err}
+		}
+		if err != nil {
+			return nil, err
+		}
+		used += n
 	}
 	return tasks, nil
 }

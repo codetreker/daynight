@@ -264,7 +264,7 @@ Steps workspace 按 Task 身份保存一个新增或编辑表单、草稿、预�
 
 已交付 CLI list/show 各读取一次完整资源。Steps 正文的有效单响应上限取配置预算与 64 MiB 资源上限的较小值，恰好达到上限允许；共享 transport 的单响应 128 MiB/操作总量 256 MiB 默认值与更严格的配置限制保持。CLI Add/Update/Set-status/Move/Delete 的显式 project/version 为一次对应写入，默认版本为一次 GET 加一次写入；unknown 仅在同一仍有效操作内额外读取至多一次，全部消耗共享期限和累计字节。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
 
-MCP 提供七项 Steps 读取与写入工具。列表使用有界 DAO 投影及绑定父版本的游标；summary 不读取完整描述，显式 full 可读取完整内容。写入复用上述原子用例，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
+MCP 提供七项 Steps 读取与写入工具。列表使用有界 DAO 投影及绑定父版本的游标；summary 不读取完整描述，显式 full 可读取完整内容。按实际协议编码的单个 JSON-RPC 成功响应计量，包括请求 ID、内容外壳和协议版本字段；summary 列表限 16 KiB、full 列表限 4 MiB、full show 限 512 KiB。批量调用按各自的 ID 计量；列表在单快照中逐项计量，cursor 指向最后返回项。写入复用上述原子用例，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
 
 ## 迁移与部署
 

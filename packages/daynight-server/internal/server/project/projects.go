@@ -1,6 +1,8 @@
 package project
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -136,16 +138,24 @@ func (h *projectHandler) list(w http.ResponseWriter, request *http.Request, prin
 		}
 		input.Shared = true
 	}
-	result, err := h.projects.ListScoped(request.Context(), principal, input)
+	result, err := h.projects.ListAdmitted(request.Context(), principal, input, func(items []model.Project, cursor *string) error {
+		response := projectPageResponse(items, cursor)
+		_, err := measure.JSON(io.Discard, "project.page", coreproject.MaxPageResponseJSONBytes, response, true)
+		return err
+	})
 	if err != nil {
 		httpx.WriteError(w, request, logger, "project", "list", err)
 		return
 	}
-	response := api.ProjectPage{Items: make([]api.Project, 0, len(result.Items)), NextCursor: result.NextCursor}
-	for _, project := range result.Items {
+	httpx.WriteJSON(w, request, logger, http.StatusOK, projectPageResponse(result.Items, result.NextCursor))
+}
+
+func projectPageResponse(items []model.Project, cursor *string) api.ProjectPage {
+	response := api.ProjectPage{Items: make([]api.Project, 0, len(items)), NextCursor: cursor}
+	for _, project := range items {
 		response.Items = append(response.Items, ProjectResponse(project))
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
+	return response
 }
 
 func (h *projectHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {

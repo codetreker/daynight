@@ -7,12 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
+	"io"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -71,36 +71,6 @@ type teamMemberWithProfile struct {
 type teamListData[T any] struct {
 	Items      []T     `json:"items"`
 	NextCursor *string `json:"nextCursor"`
-}
-
-// teamListBudget bounds the encoded default result without cutting an item.
-const teamListBudget = 16 << 10
-
-func fitTeamPage[T any](items []T, next *string, cursor func(int) (string, error), refs func(int) map[string]any) (teamListData[T], ToolResult, error) {
-	page := teamListData[T]{Items: make([]T, 0, len(items)), NextCursor: next}
-	encodedBytes := 0
-	for i, item := range items {
-		encoded, err := json.Marshal(item)
-		if err != nil {
-			return page, ToolResult{}, err
-		}
-		// Reserve space for the envelope, cursor, punctuation and request ID.
-		size := encodedBytes + len(encoded) + len(page.Items)
-		if size > teamListBudget-1024 {
-			if i == 0 {
-				return page, ToolResult{Refs: refs(0)}, &model.Fault{Code: "payload_too_large", Message: "The first item exceeds the list response budget; the page cannot be returned. Resource identifiers are in refs."}
-			}
-			c, err := cursor(i - 1)
-			if err != nil {
-				return page, ToolResult{}, err
-			}
-			page.NextCursor = &c
-			return page, ToolResult{}, nil
-		}
-		page.Items = append(page.Items, item)
-		encodedBytes += len(encoded)
-	}
-	return page, ToolResult{}, nil
 }
 
 func checkTeamBody(value any) error {
@@ -190,23 +160,23 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		return ToolResult{Data: MapTeam(t), Outcome: "changed", WriteOutcome: "confirmed", Refs: map[string]any{"teamId": t.ID}}, nil
 	}
 	if name == "team_list" {
-		result, err := teams.ListBounded(ctx, p, a.page(), teamListBudget)
+		project := func(teams []model.Team, cursor *string) teamListData[Team] {
+			page := teamListData[Team]{Items: make([]Team, 0, len(teams)), NextCursor: cursor}
+			for _, team := range teams {
+				page.Items = append(page.Items, MapTeam(team))
+			}
+			return page
+		}
+		result, err := teams.ListAdmitted(ctx, p, a.page(), func(items []model.Team, cursor *string) error {
+			_, err := measure.JSON(io.Discard, "team.page", coreteam.MaxPageResponseJSONBytes, envelope{Data: project(items, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
+			return err
+		})
 		if err != nil {
 			return ToolResult{}, err
 		}
-		items := make([]Team, 0, len(result.Items))
-		for _, t := range result.Items {
-			items = append(items, MapTeam(t))
-		}
-		page, facts, err := fitTeamPage(items, result.NextCursor, func(i int) (string, error) {
-			t := result.Items[i]
-			return query.EncodeListCursor(query.ListScope{Kind: "teams", UserID: p.UserID}, t.CreatedAt, t.ID)
-		}, func(i int) map[string]any { return map[string]any{"teamId": items[i].ID} })
-		if err != nil {
-			return facts, err
-		}
-		return ToolResult{Data: page}, nil
+		return ToolResult{Data: project(result.Items, result.NextCursor)}, nil
 	}
+
 	// Failures before a business mutation starts establish that this tool did
 	// not commit a write, even if a separate read transaction is uncertain.
 	preflight := ToolResult{}
@@ -264,36 +234,40 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		}
 		return ToolResult{Data: map[string]any{"teamId": id, "deleted": true}, Outcome: "changed", WriteOutcome: "confirmed", Refs: map[string]any{"teamId": id}}, nil
 	case "team_projects":
+		project := func(items []model.Project, cursor *string) teamListData[Project] {
+			page := teamListData[Project]{Items: make([]Project, 0, len(items)), NextCursor: cursor}
+			for _, item := range items {
+				page.Items = append(page.Items, MapProject(item))
+			}
+			return page
+		}
 		scope := coreproject.ProjectListRequest{Page: a.page(), TeamID: &id}
-		result, err := projects.ListScopedBounded(ctx, p, scope, teamListBudget)
+		result, err := projects.ListAdmitted(ctx, p, scope, func(items []model.Project, cursor *string) error {
+			_, err := measure.JSON(io.Discard, "project.page", coreproject.MaxPageResponseJSONBytes, envelope{Data: project(items, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
+			return err
+		})
 		if err != nil {
 			return ToolResult{}, err
 		}
-		items := make([]Project, 0, len(result.Items))
-		for _, project := range result.Items {
-			items = append(items, MapProject(project))
-		}
-		page, facts, err := fitTeamPage(items, result.NextCursor, func(i int) (string, error) {
-			return query.EncodeProjectCursor(result.Items[i], p.UserID, store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: id})
-		}, func(i int) map[string]any { return map[string]any{"projectId": items[i].ID} })
-		if err != nil {
-			return facts, err
-		}
-		return ToolResult{Data: page}, nil
+		return ToolResult{Data: project(result.Items, result.NextCursor)}, nil
+
 	case "team_member_list":
-		result, err := teams.MembersPage(ctx, p, id, a.page())
+		project := func(members []model.TeamMemberProfile, cursor *string) teamListData[teamMemberWithProfile] {
+			page := teamListData[teamMemberWithProfile]{Items: make([]teamMemberWithProfile, 0, len(members)), NextCursor: cursor}
+			for _, m := range members {
+				page.Items = append(page.Items, teamMemberWithProfile{TeamMember: mapTeamMember(m.Membership), Profile: teamMemberProfile{Name: m.Profile.Name, Email: m.Profile.Email, AvatarURL: m.Profile.AvatarURL}})
+			}
+			return page
+		}
+		result, err := teams.MembersAdmitted(ctx, p, id, a.page(), func(members []model.TeamMemberProfile, cursor *string) error {
+			_, err := measure.JSON(io.Discard, "team.members.page", coreteam.MaxPageResponseJSONBytes, envelope{Data: project(members, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
+			return err
+		})
 		if err != nil {
 			return ToolResult{}, err
 		}
-		items := make([]teamMemberWithProfile, 0, len(result.Items))
-		for _, m := range result.Items {
-			items = append(items, teamMemberWithProfile{TeamMember: mapTeamMember(m.Membership), Profile: teamMemberProfile{Name: m.Profile.Name, Email: m.Profile.Email, AvatarURL: m.Profile.AvatarURL}})
-		}
-		page, facts, err := fitTeamPage(items, result.NextCursor, func(i int) (string, error) { return coreteam.EncodeMemberCursor(p, id, result.Items[i]) }, func(i int) map[string]any { return map[string]any{"teamId": id, "userId": items[i].UserID} })
-		if err != nil {
-			return facts, err
-		}
-		return ToolResult{Data: page}, nil
+		return ToolResult{Data: project(result.Items, result.NextCursor)}, nil
+
 	case "team_leave", "team_member_set_role", "team_member_remove":
 		target := a.UserID
 		if name == "team_leave" {

@@ -92,9 +92,9 @@ func injectBatchMeta(params []byte, key, value string) ([]byte, bool, error) {
 	return append(append(bytes.Clone(params[:last[0]]), updated...), params[last[1]:]...), false, nil
 }
 
-func taskWriteName(name string) bool {
+func budgetedToolName(name string) bool {
 	switch name {
-	case "task_create", "task_update", "task_set_status", "task_set_property", "task_remove_property":
+	case "task_create", "task_update", "task_set_status", "task_set_property", "task_remove_property", "task_step_list", "task_step_show":
 		return true
 	}
 	return false
@@ -102,7 +102,7 @@ func taskWriteName(name string) bool {
 
 // prepareRPCIDs preserves SDK decoding for single calls. For legacy batches,
 // an unguessable temporary metadata key correlates each handler with its own
-// decoded ID; all user JSON remains byte-for-byte unchanged apart from insertion.
+// decoded ID for budgeted tools; all user JSON remains byte-for-byte unchanged apart from insertion.
 func prepareRPCIDs(body []byte) ([]byte, any, string, map[string]batchRPCID) {
 	if !json.Valid(body) {
 		return body, nil, "", nil
@@ -169,7 +169,7 @@ func prepareRPCIDs(body []byte) ([]byte, any, string, map[string]batchRPCID) {
 				break
 			}
 		}
-		if !valid || !taskWriteName(name) {
+		if !valid || !budgetedToolName(name) {
 			continue
 		}
 		fields, err := objectFields(raw, "params")

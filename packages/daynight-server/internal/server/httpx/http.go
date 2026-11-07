@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -171,9 +172,22 @@ func WriteJSON(w http.ResponseWriter, request *http.Request, logger *slog.Logger
 	if request.Context().Err() != nil {
 		return
 	}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(value); err != nil {
+		w.Header().Del("Location")
+		WriteError(w, request, logger, "server", "response encoding", err)
+		return
+	}
+	if request.Context().Err() != nil {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(value); err != nil {
+	n, err := w.Write(body.Bytes())
+	if err == nil && n != body.Len() {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
 		LogFailure(logger, request.Context(), "server", "response", err)
 	}
 }

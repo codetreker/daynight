@@ -390,7 +390,8 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 下一页时后者为 `null`。
 task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
-普通列表保留 SQL limit；指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属，收集到 page limit+1 个匹配项或结束。最终分页和 lookahead 在归属筛选后计算，cursor 来自最后返回的匹配项。选中任务再批量加载全部属性，保持一致快照；不通过 SQL JSON 转换 PR 文本，也不引入独立 claim 权威表。
+普通列表按原 keyset 在同一快照逐项读取并用实际 REST 投影计量，4 MiB 页上限包含外壳、cursor 和换行。指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属；分页和 lookahead 在归属筛选后计算。字节限制提前结束时 cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。
+编码预算与分页的取舍见[响应预算决策](../../.agents/notes/implemented/architecture/2026-11-07-encoded-response-budgets.md)。
 
 项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
 

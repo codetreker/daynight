@@ -28,7 +28,7 @@ func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
 	var after model.Task
 	writes := 0
 	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool {
-		return strings.Contains(sql, "SELECT task_id::text,name,value FROM task_properties")
+		return strings.Contains(sql, "SELECT substring(value FROM")
 	}, start: func() {
 		writes++
 		var writeErr error

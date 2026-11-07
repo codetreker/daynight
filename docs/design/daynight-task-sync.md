@@ -124,9 +124,9 @@ type TaskSync = {
 `RequireProjectRead` 返回值保存在必填 `actorAccess`，再读取 Project/epoch、精确容量、
 匹配摘要、完整属性、完整 assigneeVersions 和 observedAt。GET access 与该字段共用
 [本人权限投影](daynight-auth.md)；即使空 delta 也返回同一快照的实际角色与 grant，
-同一快照内的 assigneeVersions 复用项目人员资格查询，只输出规范 userId、资料内容 version 和当前 hasProjectAccess，按 UUID 排序去重；资格、版本与失败规则由[负责人设计](daynight-task-assignment.md)拥有。每轮读取并散列合格人员资料，CPU/数据库读取成本为 O(人员数 + 资料总字节)，清单传输为 O(人员数)；它不传姓名或头像，也不依赖登录更新时间、Task version 或访问状态来伪造内容变化。清单失败使整个同步失败。全部状态都参与同步。assignedTo 由同一任务行直接投影，字段必填且明确为 null 或规范 UUID，不依赖用户资料或属性解码。store 先读取任务行并完成 rows.Err()/关闭 rows，再使用共同 loadTaskProperties 对已准入的任务 ID 批量读取 task_properties；空集合不查询属性，没有属性行的任务得到 {}。属性和父任务版本来自同一快照，查询次数不随任务或属性数量线性增长。容量检查在属性读取之前完成，不向未授权请求读取属性。
+同一快照内的 assigneeVersions 复用项目人员资格查询，只输出规范 userId、资料内容 version 和当前 hasProjectAccess，按 UUID 排序去重；资格、版本与失败规则由[负责人设计](daynight-task-assignment.md)拥有。每轮读取并散列合格人员资料，CPU/数据库读取成本为 O(人员数 + 资料总字节)，清单传输为 O(人员数)；它不传姓名或头像，也不依赖登录更新时间、Task version 或访问状态来伪造内容变化。清单失败使整个同步失败。全部状态都参与同步。assignedTo 由同一任务行直接投影，字段必填且明确为 null 或规范 UUID，不依赖用户资料或属性解码。store 在同一快照逐任务读取属性并按协议编码累计，空属性为 {}。授权和图容量检查先于属性读取。
 
-属性读取复用定义注册表的校验与规范化。服务层在只读回调内用 propertyValidationFault 识别纯属性拒绝并保存 refusal；先处理 ReadSnapshot 实际错误，再返回 refusal。不能在事务退出后仅凭宽泛 errors.As 把事务完成或回滚故障连同坏值错误改成 400。delta 仅校验本次窗口选中的任务，不额外读取窗口外属性。节点/边容量不约束属性总字节，完整响应的成本见第 10 节；协议不引入分页或中间发布。每次检查容量，不能保留旧修订号方案的“序号相等即跳过计数”优化。
+属性读取复用定义注册表的校验与规范化。服务层在只读回调内用 propertyValidationFault 识别纯属性拒绝并保存 refusal；先处理 ReadSnapshot 实际错误，再返回 refusal。不能在事务退出后仅凭宽泛 errors.As 把事务完成或回滚故障连同坏值错误改成 400。delta 仅校验本次窗口选中的任务，不额外读取窗口外属性。完整响应按实际 JSON 及换行限制为 64 MiB，超限整体拒绝；协议不引入分页或中间发布。完整 assigneeVersions 仍先物化，最终编码上限不构成该清单的固定内存上限。每次检查容量，不能保留旧修订号方案的“序号相等即跳过计数”优化。
 
 TaskStatus为todo/in_progress/done/cancelled四态，cancelledAt为必需nullable字段；仅cancelled有值。摘要必须保留 GraphTask 的 assignedTo（明确可空 UUID）、requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。任务摘要 version 字符串严格解码为 bigint；Project.settings.version、Project.ownership.version，以及 actorAccess 中的 ownership.version 与
 directGrant.version 的 JSON number 分别在已知子树中无损解码。Project 内在字段必含

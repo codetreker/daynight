@@ -102,19 +102,49 @@ func (s *searchSnapshot) ContextGraph(ctx context.Context, projectID string, ids
 	return graph, nil
 }
 
+// ContextRepresentative projects a component's existing representative without
+// loading its graph. It is used only to decide whether an over-limit candidate
+// already cannot fit the page; cyclic components have no representative.
+func (s *searchSnapshot) ContextRepresentative(ctx context.Context, projectID, id string) (string, bool, error) {
+	var count int64
+	var root *string
+	err := s.tx.QueryRow(ctx, searchClosure+`SELECT (SELECT count(*) FROM chain),
+      (SELECT t.id::text FROM chain c JOIN tasks t ON t.id=c.id AND t.project_id=$1
+       WHERE NOT EXISTS (SELECT 1 FROM task_dependencies d JOIN chain prerequisite ON prerequisite.id=d.depends_on_task_id
+         WHERE d.project_id=$1 AND d.task_id=c.id AND NOT d.external)
+       ORDER BY t.created_at,t.id LIMIT 1)`, projectID, []string{id}).Scan(&count, &root)
+	if err != nil {
+		return "", false, searchError("read task search representative", err)
+	}
+	if count == 1 {
+		return "", true, nil
+	}
+	if count == 0 || root == nil {
+		return "", false, nil
+	}
+	return *root, true, nil
+}
+
 func (s *searchSnapshot) Titles(ctx context.Context, projectID string, ids []string) (map[string]string, error) {
-	rows, err := s.tx.Query(ctx, `SELECT id::text,title FROM tasks WHERE project_id=$1 AND deleted_at IS NULL AND id=ANY($2::uuid[])`, projectID, ids)
+	rows, err := s.tx.Query(ctx, `SELECT id::text,CASE WHEN octet_length(title)>2097152 THEN NULL ELSE title END FROM tasks WHERE project_id=$1 AND deleted_at IS NULL AND id=ANY($2::uuid[])`, projectID, ids)
 	if err != nil {
 		return nil, searchError("read task search titles", err)
 	}
 	defer rows.Close()
 	titles := make(map[string]string, len(ids))
 	for rows.Next() {
-		var id, title string
+		var id string
+		var title *string
 		if err := rows.Scan(&id, &title); err != nil {
 			return nil, searchError("read task search titles", err)
 		}
-		titles[id] = title
+		if title == nil {
+			// PostgreSQL text cannot contain NUL; this marker means the title
+			// alone is larger than the encoded Search page budget.
+			titles[id] = "\x00"
+		} else {
+			titles[id] = *title
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, searchError("read task search titles", err)

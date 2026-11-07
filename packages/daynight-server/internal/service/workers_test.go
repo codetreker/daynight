@@ -118,7 +118,7 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 		t.Fatalf("revoked membership leaked old titles: %+v, %v", detail, err)
 	}
 	page, err := workers.List(ctx, owner, model.PageRequest{Limit: 50})
-	if err != nil || len(page.Items) != 1 || len(page.Items[0].TaskSnapshot.Items) != 0 {
+	if err != nil || len(page.Items) != 1 || page.Items[0].ActiveTaskCount == nil || *page.Items[0].ActiveTaskCount != 0 {
 		t.Fatalf("list and detail permission filters disagree: %+v, %v", page, err)
 	}
 	if _, err := workers.Report(ctx, owner, descriptor.WorkerID, report); err != nil {

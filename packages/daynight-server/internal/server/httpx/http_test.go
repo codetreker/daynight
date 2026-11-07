@@ -20,6 +20,25 @@ import (
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+func TestWriteJSONEncodesBeforeCommittingHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	w := httptest.NewRecorder()
+	WriteCreated(w, req, quietLogger(), "/created", make(chan int))
+	if w.Code != http.StatusInternalServerError || w.Header().Get("Location") != "" {
+		t.Fatalf("status=%d location=%q", w.Code, w.Header().Get("Location"))
+	}
+	var response api.ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Error.Code != "internal_error" {
+		t.Fatalf("body=%q err=%v", w.Body.String(), err)
+	}
+
+	w = httptest.NewRecorder()
+	WriteJSON(w, req, quietLogger(), http.StatusOK, map[string]string{"value": "<"})
+	if w.Code != http.StatusOK || w.Body.String() != "{\"value\":\"\\u003c\"}\n" {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
 func TestDecodeObjectContract(t *testing.T) {
 	for _, tc := range []struct {
 		name, contentType, body string
@@ -228,7 +247,7 @@ func TestResponseAndMutationFailures(t *testing.T) {
 	var encodingLogs bytes.Buffer
 	w = httptest.NewRecorder()
 	WriteJSON(w, req, slog.New(slog.NewJSONHandler(&encodingLogs, nil)), 200, make(chan int))
-	if w.Code != 200 || w.Body.Len() != 0 || !strings.Contains(encodingLogs.String(), `"phase":"response"`) {
+	if w.Code != 500 || !strings.Contains(w.Body.String(), `"code":"internal_error"`) || !strings.Contains(encodingLogs.String(), `"phase":"response encoding"`) {
 		t.Fatalf("encoding failure: %d %s %s", w.Code, w.Body, &encodingLogs)
 	}
 	w = httptest.NewRecorder()
