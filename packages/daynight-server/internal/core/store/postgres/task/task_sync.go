@@ -30,7 +30,7 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 		lower = &boundary
 	}
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, left(t.title, $2), char_length(t.title) > $2,
-		t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`
+		t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`
 		FROM tasks t WHERE t.project_id = $1 AND t.deleted_at IS NULL AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
 		ORDER BY t.created_at, t.id`, projectID, previewCharacters, lower)
 	if err != nil {
@@ -41,7 +41,7 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 	for rows.Next() {
 		var task model.TaskViewRecord
 		if err := rows.Scan(&task.ID, &task.TitlePreview, &task.TitleTruncated, &task.Status, &task.Version,
-			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn); err != nil {
+			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn); err != nil {
 			return nil, pg.QueryError("read task sync", err)
 		}
 		if !task.Status.Valid() {
@@ -51,6 +51,7 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 		task.UpdatedAt = task.UpdatedAt.UTC()
 		task.StartedAt = pg.UTCTime(task.StartedAt)
 		task.CompletedAt = pg.UTCTime(task.CompletedAt)
+		task.CancelledAt = pg.UTCTime(task.CancelledAt)
 		tasks = append(tasks, task)
 	}
 	if err := rows.Err(); err != nil {

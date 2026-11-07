@@ -13,7 +13,7 @@ type Command = Extract<ParsedCommand, { readonly kind: "run" }>;
 
 // Both renderers consume the same explicit projection, independently of wire additions.
 const projectResults = (items: readonly TaskSearchItem[]): TaskSearchItem[] => items.map((item) => ({
-  id: item.id, projectId: item.projectId, title: item.title, status: item.status,
+  id: item.id, projectId: item.projectId, title: item.title, status: item.status, cancelledAt: item.cancelledAt,
   context: item.context === null ? null : { taskId: item.context.taskId, title: item.context.title },
   match: { fields: [...item.match.fields], descriptionSnippet: item.match.descriptionSnippet },
 }));

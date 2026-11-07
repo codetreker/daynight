@@ -6,6 +6,7 @@ import { isNonemptyText, isText } from "../../platform/text.js";
 import type { resolveProject } from "../../repository/index.js";
 import type { runServerCommand } from "../server/runtime.js";
 import { taskDefinition } from "./definition.js";
+import { isTerminalTaskStatus } from "../../task/status.js";
 
 export type TaskCommandDependencies = {
   runServerCommand: typeof runServerCommand;
@@ -176,7 +177,7 @@ export const runTaskCommand = async (
     if (command.command.name === "list") {
       const filters: TaskFilters = { ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
       const tasks = (await api.listTasks(project.id, filters))
-        .filter((task) => all || status !== undefined || task.status !== "done")
+        .filter((task) => all || status !== undefined || !isTerminalTaskStatus(task.status))
         .toSorted((left, right) => taskPriority(left) - taskPriority(right));
       operation.check();
       return command.options.has("--json") ? renderTaskListJson(tasks) : renderTaskSummaryList(tasks);

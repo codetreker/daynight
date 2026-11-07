@@ -13,13 +13,13 @@ const otherTask = '20000000-0000-4000-8000-000000000002';
 const dependency = '20000000-0000-4000-8000-000000000003';
 const version = 9007199254740993n;
 const stamp = '2026-10-22T00:00:00Z'; const nextStamp = '2026-10-22T00:01:00Z';
-const initial: TaskDetail = { assignedTo: null, requiredPlatform: 'linux', allowAgents: false, externalDependsOn: [dependency], startedAt: null, completedAt: null, id: task, projectId: project, version,
+const initial: TaskDetail = { assignedTo: null, requiredPlatform: 'linux', allowAgents: false, externalDependsOn: [dependency], startedAt: null, completedAt: null, cancelledAt: null, id: task, projectId: project, version,
   title: 'Reviewed task', description: 'Complete original description', properties: { pullRequests: [{ title: 'Original PR', url: 'https://example.com/pr/1' }] },
   status: 'todo', dependsOn: [dependency], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp };
-const source = (status: TaskStatus): TaskDetail => ({ ...initial, status, ready: status === 'todo', startedAt: status === 'todo' ? null : stamp, completedAt: status === 'done' ? stamp : null });
+const source = (status: TaskStatus): TaskDetail => ({ ...initial, status, ready: status === 'todo', startedAt: status === 'todo' ? null : stamp, completedAt: status === 'done' ? stamp : null, cancelledAt: null });
 const result = (previous: TaskDetail, status: TaskStatus): TaskDetail => previous.status === status ? previous : ({ ...previous, status, ready: status === 'todo', version: previous.version + 1n, updatedAt: nextStamp,
   startedAt: status === 'in_progress' ? nextStamp : status === 'todo' || previous.status === 'todo' ? null : previous.startedAt,
-  completedAt: status === 'done' ? nextStamp : null });
+  completedAt: status === 'done' ? nextStamp : null, cancelledAt: null });
 const reads = vi.mocked(getTask); const writes = vi.mocked(setTaskStatus); const permissions = vi.mocked(setTaskAgentPermission);
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 const worlds = new Map<TaskDetailSessions, ReturnType<typeof createTaskSessionWorld>>();

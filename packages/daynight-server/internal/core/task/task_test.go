@@ -77,6 +77,44 @@ func TestStatusCandidateHonorsNoopAndReopenProtection(t *testing.T) {
 	faultCode(t, err, "dependency_unsatisfied")
 }
 
+func TestCancellationSeparatesEndingFromPrerequisiteDelivery(t *testing.T) {
+	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
+		t.Run(string(status), func(t *testing.T) {
+			current := model.Task{ID: "task", Title: "Preserved", Description: "Original", Status: status, AllowAgents: true,
+				DependsOn: []string{"missing-output"}, ExternalDependsOn: []string{"missing-output"}, BlockedBy: []string{"missing-output"},
+				Properties: model.TaskProperties{"custom": []byte(`{"kept":true}`)}}
+			values, changed, err := StatusCandidate(t.Context(), nil, model.Principal{}, current, SetTaskStatus{Status: model.TaskCancelled}, nil)
+			want := CurrentWrite(current)
+			want.Status = model.TaskCancelled
+			if err != nil || !changed || !reflect.DeepEqual(values, want) {
+				t.Fatalf("cancel must preserve materials without reading predecessor or dependent delivery: values=%#v changed=%v err=%v", values, changed, err)
+			}
+		})
+	}
+	current := model.Task{Status: model.TaskCancelled, BlockedBy: []string{"missing-output"}}
+	for _, target := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
+		_, _, err := StatusCandidate(t.Context(), nil, model.Principal{}, current, SetTaskStatus{Status: target}, nil)
+		faultCode(t, err, "invalid_transition")
+	}
+	if _, changed, err := StatusCandidate(t.Context(), nil, model.Principal{}, current, SetTaskStatus{Status: model.TaskCancelled}, nil); err != nil || changed {
+		t.Fatalf("cancelled same-state request changed data: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestCandidateAcceptsCancelledPrerequisitesButDoesNotRequireThemForCancellation(t *testing.T) {
+	const predecessor = "00000000-0000-4000-8000-000000000002"
+	dao := taskDAO{tasks: []model.Task{{ID: predecessor, Status: model.TaskCancelled}}}
+	for _, target := range []model.TaskStatus{model.TaskInProgress, model.TaskDone} {
+		if err := ValidateCandidate(t.Context(), dao, "task", store.TaskWrite{Status: target, DependsOn: []string{predecessor}}); err != nil {
+			t.Fatalf("cancelled prerequisite did not satisfy %s: %v", target, err)
+		}
+	}
+	dao.tasks[0].Status = model.TaskTodo
+	if err := ValidateCandidate(t.Context(), dao, "task", store.TaskWrite{Status: model.TaskCancelled, DependsOn: []string{predecessor}}); err != nil {
+		t.Fatalf("cancellation required an unneeded predecessor output: %v", err)
+	}
+}
+
 func TestAssignmentTransition(t *testing.T) {
 	alice, bob := "alice", "bob"
 	for _, tc := range []struct {

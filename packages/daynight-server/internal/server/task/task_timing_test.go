@@ -21,7 +21,7 @@ func TestTaskHTTPTimingIsServerOwnedFrozenAndSharedAcrossResources(t *testing.T)
 	if err := json.Unmarshal(created.Body.Bytes(), &fields); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"startedAt", "completedAt"} {
+	for _, name := range []string{"startedAt", "completedAt", "cancelledAt"} {
 		if !bytes.Equal(fields[name], []byte("null")) {
 			t.Fatalf("new task omitted unknown %s or invented timing: %s", name, created.Body)
 		}

@@ -62,3 +62,14 @@ it('rejects non-object success and error bodies without scanning them as JSON ob
     await expect(read()).rejects.toMatchObject({ kind: 'protocol' });
   }
 });
+
+it('requires cancellation time on search items and retains cancelled results', async () => {
+  const body = JSON.parse(fixture('first-page'));
+  const cancelled = { ...body, items: [{ ...body.items[0], status: 'cancelled', cancelledAt: '2026-11-06T00:00:00Z' }] };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(JSON.stringify(cancelled))));
+  await expect(searchTasks(project, 'cancelled', { status: 'cancelled', assignedTo: '' }, null, new AbortController().signal, admission)).resolves.toMatchObject({ items: [{ status: 'cancelled', cancelledAt: '2026-11-06T00:00:00Z' }] });
+  for (const change of [{ cancelledAt: undefined }, { cancelledAt: null }, { status: 'done' }]) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(JSON.stringify({ ...cancelled, items: [{ ...cancelled.items[0], ...change }] }))));
+    await expect(read('cancelled')).rejects.toMatchObject({ kind: 'protocol' });
+  }
+});

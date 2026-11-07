@@ -1,7 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncFixture, taskSyncQuery, taskSyncEpoch, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import type { TaskDetail } from '../../src/api/types';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const taskId = '00000000-0000-4000-8000-000000000041';
@@ -11,8 +12,9 @@ const time = '2026-10-20T09:00:00Z';
 const step = { id: '00000001', title: 'Review', description: 'Read this', status: 'todo', createdAt: time, updatedAt: time };
 const longName = 'Alexandra Person With A Very Long Name For Narrow Assignment Layout';
 
-async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }) {
-  let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}) });
+async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}) {
+  const epoch = taskSyncEpoch(projectId);
+  let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
   const previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n });
   const graph = () => graphFixture([task, previous]);
   let steps = large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
@@ -21,13 +23,13 @@ async function install(page: Page, running = false, linked = false, large = fals
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const send = (body: unknown, status = 200, headers: Readonly<Record<string, string>> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...headers } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph().project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { query: taskSyncQuery(url), versionForTask: row => row.id === taskId ? task.version : previous.version, propertiesForTask: row => row.id === taskId ? task.properties : previous.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), versionForTask: row => row.id === taskId ? task.version : previous.version, propertiesForTask: row => row.id === taskId ? task.properties : previous.properties }));
     if (path === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
       const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: true };
@@ -56,7 +58,7 @@ async function install(page: Page, running = false, linked = false, large = fals
     }
     for (const detail of [task, previous]) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
-      if (path === base) return send(detail);
+      if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': epoch });
       if (path === `${base}/steps`) return send({ projectId, taskId: detail.id, version: detail.version, steps: detail.id === taskId ? steps : [] });
       if (path === `${base}/sessions` || path === `${base}/attachments`) return send({ items: [], nextCursor: null });
     }
@@ -344,5 +346,22 @@ test('locked automatic execution explains its state on focus and Escape dismisse
   await page.keyboard.press('Escape'); await expect(platformGroup.locator('.task-control-tip-bubble')).toHaveCount(0);
   await expect(dialog).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toEqual([]);
+});
+
+test('cancelled tasks retain readable details and Steps without a status restoration control on narrow screens', async ({ page }) => {
+  const writes = await install(page, false, false, false, false, false, undefined, { status: 'cancelled', cancelledAt: time, ready: false, description: 'Readable cancelled materials' });
+  await page.setViewportSize({ width: 320, height: 844 });
+  const observedTask = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}`);
+  const synchronized = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  const dialog = await openDialog(page);
+  expect((await observedTask).headers()['daynight-task-epoch']).toBe((await (await synchronized).json()).epoch);
+  await expect(dialog.locator('.task-status-trigger')).toHaveText('Cancelled');
+  await expect(dialog.locator('.task-status-trigger')).toBeDisabled();
+  await expect(dialog.getByText('Readable cancelled materials')).toBeVisible();
+  await expect(dialog.getByRole('complementary', { name: 'Task relationships and metadata' }).getByRole('alert')).toHaveCount(0);
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toEqual([]);
 });

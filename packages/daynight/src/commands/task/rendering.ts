@@ -36,6 +36,7 @@ export const renderTask = (task: Task): string => [
   ...taskDependencies(task),
   `Created: ${terminalText(task.createdAt)}`,
   `Updated: ${terminalText(task.updatedAt)}`,
+  ...(task.cancelledAt === null ? [] : [`Cancelled at: ${terminalText(task.cancelledAt)}`]),
   "",
 ].join("\n");
 
@@ -63,6 +64,7 @@ const renderGraphTask = (task: GraphTask): string => [
   ...taskDependencies(task),
   `Created: ${terminalText(task.createdAt)}`,
   `Updated: ${terminalText(task.updatedAt)}`,
+  ...(task.cancelledAt === null ? [] : [`Cancelled at: ${terminalText(task.cancelledAt)}`]),
   "",
 ].join("\n");
 
@@ -78,6 +80,7 @@ export const renderTaskGraph = (graph: TaskGraph): string => [
   `Todo: ${graph.summary.todo}`,
   `In progress: ${graph.summary.inProgress}`,
   `Done: ${graph.summary.done}`,
+  `Cancelled: ${graph.summary.cancelled}`,
   `Ready: ${graph.summary.ready}`,
   `Blocked: ${graph.summary.blocked}`,
   "",

@@ -259,16 +259,16 @@ func ValidateCandidate(ctx context.Context, dao store.TaskWriteDAO, id string, v
 	if len(cycles) > 0 {
 		return &model.Fault{Code: "dependency_cycle", Message: "Task dependencies would create a cycle.", TaskIDs: cycles}
 	}
-	if values.Status == model.TaskInProgress || values.Status == model.TaskDone {
+	if values.Status.RequiresSatisfiedPrerequisites() {
 		blocked := make([]string, 0)
 		for _, prerequisite := range prerequisites {
-			if prerequisite.Status != model.TaskDone {
+			if !prerequisite.Status.SatisfiesDependency() {
 				blocked = append(blocked, prerequisite.ID)
 			}
 		}
 		if len(blocked) > 0 {
 			slices.Sort(blocked)
-			return &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: blocked}
+			return &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done or cancelled.", TaskIDs: blocked}
 		}
 	}
 	return nil

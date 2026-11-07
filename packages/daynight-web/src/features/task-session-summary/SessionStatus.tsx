@@ -1,12 +1,12 @@
 import { useId, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
-import type { TaskStatus } from '../../api/types';
+import type { TaskProgressStatus } from '../../api/task-status';
 import { useI18n } from '../../i18n/LocaleProvider';
 
 type Indicator = 'working' | 'notice' | 'warning';
 type Props = {
   readonly title: string;
-  readonly status: TaskStatus;
+  readonly status: TaskProgressStatus;
   readonly indicator: Indicator | null;
   readonly onActivate?: (event: MouseEvent<HTMLButtonElement>) => void;
   readonly chain?: boolean;

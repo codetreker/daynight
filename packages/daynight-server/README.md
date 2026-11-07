@@ -86,7 +86,7 @@ The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
 producers carry it. Native assignee filtering and project-scoped people reads
-are implemented. The Web consumes assignment with schema-6 persistent profile
+are implemented. The Web consumes assignment with independent persistent profile
 content, strict task parsing, people presentation, mutation and local list filters. The CLI consumes the required
 nullable field and supports assignment/clearing, current-ID output and explicit
 list filters.
@@ -202,9 +202,10 @@ properties fail the complete request with 400 invalid_input. Database and
 transaction-completion faults remain 500 internal_error and take precedence over
 a saved property validation refusal. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
-summaries and details and replaces them atomically after an epoch change. Its
-schema-6 upgrade adds a separate profiles store while retaining valid schema-5
-task data, required Project ownership and user fences. Upgrades from versions 1,
+summaries and details and replaces them atomically after an epoch change. Its schema-9 upgrade explicitly rebuilds incompatible task caches for required
+cancelledAt while preserving separate profiles and compatible Session history.
+The historical schema-6 upgrade added profiles while retaining schema-5 task
+data, Project ownership and user fences. Upgrades from versions 1,
 2, 3 or 4 still rebuild incompatible project, summary and detail stores, rotate
 user fences and clear old watermarks before a complete snapshot. Profile content is reusable after reload
 only after current identity/project admission and version matching; access stays
@@ -1330,7 +1331,7 @@ version/status input. Every project member can write tasks; administrator role
 additionally manages members, invitations and project settings. Status PUT and
 method-refusal handlers authenticate, require exact Cookie Origin and use no-store.
 
-Creation uses todo, version 1, nullable execution endpoints, allowAgents=false
+Creation uses todo, version 1, nullable execution/cancellation timestamps, allowAgents=false
 and unrestricted requiredPlatform=null unless explicitly supplied. Its
 assignedTo defaults to null; an explicitly supplied UUID must identify a current
 project member in the creation transaction.
@@ -1343,26 +1344,29 @@ requiredPlatform and assignedTo accept null to clear; other JSON null input is
 rejected.
 Dependencies are canonical sorted UUIDs, checked for duplicate identity,
 self-reference, missing/cross-project tasks and cycles. Active/done metadata
-candidates require all predecessors done; todo may have unfinished predecessors.
+candidates require all predecessors done or cancelled; todo and cancelled may have unfinished predecessors.
 
-Ordinary tasks without active/released worker ownership accept all nine pairs
-across todo/in_progress/done. The project write
+Ordinary tasks without active/released worker ownership retain the original
+transitions across todo/in_progress/done and may enter irreversible cancelled. The project write
 transaction acquires the project lock, rechecks membership, compares the exact
 version and only then handles same-state. A current same-state request returns
 the full current Task without a stored write; stale same-state conflicts. Actual
 change increments once. Entering active/done requires all direct predecessors
-done, including external edges; reopening done refuses sorted direct active/done
+done or cancelled, including external edges; reopening done refuses sorted direct active/done
 dependent IDs. No dependent is changed. Status preserves requiredPlatform, assignedTo, PRs,
 other task fields, dependency classifications and attachments. Claim-bound done atomically marks
 the current worker completed; its owner and claim ID must match. Active execution
-returns to todo only through release. Released tasks begin a new execution through eligible automatic acquisition or
+returns to todo only through release. Released tasks may become cancelled without
+new execution; cancelled tasks cannot resume or withdraw to todo. Released todo tasks begin a new execution through eligible automatic acquisition or
 explicit owner/admin resume, with fresh claim and worktree IDs. The
 old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
 uses statement_timestamp() after the lock and clears the end; return to todo
 clears both. In-progress to done preserves its nullable start and records an end;
-todo to done records an end with null start. Metadata and same-state preserve time.
+todo to done records an end with null start. Cancellation records `cancelledAt`
+and preserves both execution endpoints; done-to-cancelled does not erase its
+completion time. Metadata and same-state preserve time.
 No missing historical start is inferred. State, timing, version and update time
 commit atomically. Details are owned by the [status architecture](../../docs/design/daynight-task-status.md).
 
@@ -1437,8 +1441,8 @@ dependents are not added. Tasks outside the component that externally depend on
 a member are not selected. A standalone task forms its own component.
 
 The response remains `{project, summary, tasks, observedAt}`. Each selected task
-counts once; the summary requires total, todo, inProgress, done, ready and blocked,
-including zero values. `total = todo + inProgress + done` and
+counts once; the summary requires total, todo, inProgress, done, cancelled, ready and blocked,
+including zero values. `total = todo + inProgress + done + cancelled` and
 `todo = ready + blocked`. Only todo contributes to ready/blocked; readiness still
 uses every original direct prerequisite, including prerequisites outside this
 projection. Graph reads do not change stored status, revisions or timestamps.
@@ -1447,7 +1451,7 @@ Nodes contain `id`, `titlePreview`, `titleTruncated`, `status`, `dependsOn`,
 `externalDependsOn`, `blockedBy`, `ready`, required boolean `allowAgents`, required
 nullable enum `requiredPlatform`, required nullable user UUID `assignedTo`,
 UTC creation/update timestamps and explicit
-nullable `startedAt`/`completedAt`. SQL produces at most 160 Unicode code points
+nullable `startedAt`/`completedAt`/`cancelledAt`. SQL produces at most 160 Unicode code points
 of each title without selecting descriptions, properties or full titles. Use the
 task detail endpoint for complete content. Node order is `(createdAt, id)`;
 dependency arrays are sorted and empty collections encode as `[]`.
@@ -1741,7 +1745,8 @@ while retaining the explicit manual eligibility exception. Force withdrawal acce
 the exact version and matching active/released claim ID from its original owner
 or a project admin who remains a member. It atomically clears worker, returns
 todo, clears execution timing and sets allowAgents=false, preserving other
-materials. It requires no stoppedConfirmed and does not guarantee immediate
+materials. Cancelled tasks explicitly refuse withdrawal; retained released
+history cannot restore a cancelled task. It requires no stoppedConfirmed and does not guarantee immediate
 remote process stopping; the original worker discovers absence through its
 complete own-claim inventory and performs terminal cleanup.
 Deprecated continuityConfirmed input is rejected rather than ignored. The
@@ -1824,7 +1829,7 @@ Task responses contain identity, project, title, description, status, required
 boolean `allowAgents`, nullable enum `requiredPlatform`, explicit nullable user
 UUID `assignedTo`, version,
 UTC creation/update timestamps, explicit nullable execution timestamps
-`startedAt`/`completedAt`, sorted `dependsOn`/`externalDependsOn`/`blockedBy` arrays, `ready` and complete
+`startedAt`/`completedAt`/`cancelledAt`, sorted `dependsOn`/`externalDependsOn`/`blockedBy` arrays, `ready` and complete
 `properties` with its actual present keys. An empty object means no properties,
 and an explicit `pullRequests: []` remains distinct from absence. A missing
 project or a task outside the specified project returns 404. The initialized

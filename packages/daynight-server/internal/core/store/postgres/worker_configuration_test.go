@@ -38,12 +38,13 @@ func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
 	mustQueryExec(t, database, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, projectID, teamID)
 	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, projectID, ownerID)
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,description,status) VALUES($1,$2,'Task','Description','in_progress')`, taskID, projectID)
-	before := currentTaskFactsFixture(t, database)
+	before := preCancellationTaskFactsFixture(t, database)
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
+	assertHistoricalTasksHaveNoCancellationTime(t, database)
 	after := readWorkerSnapshot(t, database, userID, workerID, stamp)
-	if !reflect.DeepEqual(original, after) || !reflect.DeepEqual(before, currentTaskFactsFixture(t, database)) {
+	if !reflect.DeepEqual(original, after) || !reflect.DeepEqual(before, preCancellationTaskFactsFixture(t, database)) {
 		t.Fatal("configuration migration changed telemetry or Task facts")
 	}
 	var resource model.WorkerConfigurationResource

@@ -12,7 +12,7 @@ const epoch = Date.parse(start);
 const at = (milliseconds: number) => new Date(epoch + milliseconds).toISOString();
 const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status: 'done', dependsOn: ['Goal'], externalDependsOn: [],
-  blockedBy: [], ready: false, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+  blockedBy: [], ready: false, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   createdAt: start, updatedAt: start, ...changes,
 });
 const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot => {
@@ -22,7 +22,7 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
     observedAt: at(elapsed), tasks: [task('Goal', { dependsOn: [] }), ...tasks],
     summary: { total: tasks.length + 1, todo: tasks.filter((item) => item.status === 'todo').length,
       inProgress: tasks.filter((item) => item.status === 'in_progress').length,
-      done: tasks.filter((item) => item.status === 'done').length + 1,
+      done: tasks.filter((item) => item.status === 'done').length + 1, cancelled: 0,
       ready: tasks.filter((item) => item.ready).length, blocked: 0 },
   };
   return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };

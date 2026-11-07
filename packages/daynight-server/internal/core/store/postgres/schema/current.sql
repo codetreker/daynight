@@ -1,4 +1,4 @@
--- Schema snapshot version: 46
+-- Schema snapshot version: 47
 
 CREATE TABLE "bot_configuration_preferences" (
     "user_id" "uuid" NOT NULL,
@@ -538,8 +538,10 @@ CREATE TABLE "tasks" (
     "required_platform" "text",
     "deleted_at" timestamp with time zone,
     "assigned_to" "uuid",
+    "cancelled_at" timestamp with time zone,
+    CONSTRAINT "tasks_cancelled_at_check" CHECK ((("status" = 'cancelled'::"text") = ("cancelled_at" IS NOT NULL))),
     CONSTRAINT "tasks_required_platform_check" CHECK (("required_platform" = ANY (ARRAY['windows'::"text", 'linux'::"text", 'macos'::"text"]))),
-    CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['todo'::"text", 'in_progress'::"text", 'done'::"text"]))),
+    CONSTRAINT "tasks_status_check" CHECK (("status" = ANY (ARRAY['todo'::"text", 'in_progress'::"text", 'done'::"text", 'cancelled'::"text"]))),
     CONSTRAINT "tasks_title_check" CHECK (("btrim"("title") <> ''::"text")),
     CONSTRAINT "tasks_version_check" CHECK (("version" > 0))
 );

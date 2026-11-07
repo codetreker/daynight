@@ -87,8 +87,8 @@ func (tx *Writer) CreateTask(ctx context.Context, id string, values TaskWrite) (
 		return model.Task{}, pg.QueryError("validate task properties", err)
 	}
 	values.Properties = properties
-	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
+	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to, cancelled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $5 = 'cancelled' THEN statement_timestamp() ELSE NULL END)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
 		return model.Task{}, pg.QueryError("create task", err)
 	}
@@ -117,7 +117,10 @@ func (tx *Writer) UpdateTask(ctx context.Context, id string, values TaskWrite) (
 			WHEN status <> $5 AND $5 = 'done' THEN statement_timestamp()
 			WHEN status <> $5 AND $5 IN ('todo', 'in_progress') THEN NULL
 			ELSE completed_at END,
-		version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
+		cancelled_at = CASE
+            WHEN status <> $5 AND $5 = 'cancelled' THEN statement_timestamp()
+            ELSE cancelled_at END,
+        version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
 		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
 		return model.Task{}, pg.QueryError("update task", err)

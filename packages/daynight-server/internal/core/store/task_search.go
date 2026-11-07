@@ -46,6 +46,7 @@ type TaskSearchRow struct {
 	ID, Title, Description string
 	Status                 model.TaskStatus
 	AssignedTo             *string
+	CancelledAt            *time.Time
 	UpdatedAt              time.Time
 	TitlePriority          bool
 }

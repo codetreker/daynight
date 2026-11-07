@@ -1,6 +1,6 @@
 # Task 负责人设计
 
-状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 schema 6 持久资料缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/archived/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 独立持久资料缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/archived/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -87,7 +87,7 @@ TaskDetailSession 继续唯一拥有所有 Task mutation，assignedTo action 复
 
 HTTP200确认后才能抬高已提交版本下限；响应读取失败或未知结果沿既有GET核对队列，不重放PATCH。更高版本完整当前值可替代原意图，旧历史/旧owner不能发布结果。确认、摘要同步与详情持久化继续属于现有ticket/generation边界。
 
-Web 所有 Task/detail/summary/graph 解析和比较纳入 assignedTo。原生负责人最初通过 schema 4 进入缓存，真实 Project ownership 在 schema 5 引入时要求重建旧格式。当前 schema 6 增加独立 profiles store：从 schema 5 升级保留兼容任务内容及 userFence；1/2/3/4 升级仍清除不兼容 projects/summaries/details、清水位并轮换 userFence，不把缺字段解释为 null。完整升级范围由[缓存设计](daynight-task-sync.md)拥有。可变人员内容按自身 version 独立持久化，不进入 Task version 或任务记录。
+Web 所有 Task/detail/summary/graph 解析和比较纳入 assignedTo。原生负责人最初通过 schema 4 进入缓存，真实 Project ownership 在 schema 5 引入时要求重建旧格式。schema6引入独立profiles store时，从schema5升级保留当时兼容Task内容及userFence，1/2/3/4重建不兼容任务数据。当前schema9为cancelledAt重建Task记录及水位，profiles格式不变；不把缺字段解释为null。完整升级范围由[缓存设计](daynight-task-sync.md)拥有。可变人员内容按自身 version 独立持久化，不进入 Task version 或任务记录。
 
 ## Web 人员与界面所有者
 
