@@ -421,41 +421,36 @@ func (d *DAO) admissionSources(ctx context.Context, id, expectedEndpoint string,
 // Reconcile a disappearing Event against the retention state under the
 // Delivery lock. A still-open history missing its immutable Event is corrupt.
 func (d *DAO) missingAdmissionEvent(ctx context.Context, id string, management bool) error {
+	if !management {
+		// The runner owns claim/lease reconciliation and must make that
+		// decision under its usual Delivery lock before treating this as loss.
+		return pg.QueryError("read webhook original event", pgx.ErrNoRows)
+	}
 	delivery, err := d.LockDelivery(ctx, id)
 	if err != nil {
-		if management && errors.Is(err, model.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return &store.WebhookAdmissionEventError{Cause: err}
 		}
 		return err
 	}
 	if delivery.PurgingAt != nil {
-		err := pg.QueryError("read reclaimed webhook delivery", pgx.ErrNoRows)
-		if management {
-			return &store.WebhookAdmissionEventError{Cause: err}
-		}
+		return &store.WebhookAdmissionEventError{Cause: pg.QueryError("read reclaimed webhook delivery", pgx.ErrNoRows)}
+	}
+	// Late writers take only their Attempt lock, so inspect their activity
+	// after locking all attempts in the documented Delivery-first order.
+	attempts, err := d.LockAttempts(ctx, id)
+	if err != nil {
 		return err
 	}
-	if management {
-		// Late writers take only their Attempt lock, so inspect their activity
-		// after locking all attempts in the documented Delivery-first order.
-		attempts, err := d.LockAttempts(ctx, id)
-		if err != nil {
-			return err
-		}
-		now, err := d.ObservedAt(ctx)
-		if err != nil {
-			return err
-		}
-		if !store.WebhookHistoryRetained(delivery, attempts, now) {
-			return &store.WebhookAdmissionEventError{Cause: pg.QueryError("read expired webhook delivery", pgx.ErrNoRows)}
-		}
-		if !now.Before(delivery.PayloadExpiresAt) {
-			return &store.WebhookAdmissionEventError{Cause: &model.Fault{Code: "payload_expired", Message: "Webhook payload has expired."}}
-		}
+	now, err := d.ObservedAt(ctx)
+	if err != nil {
+		return err
 	}
-	err = &store.Error{Phase: "webhook original event integrity", Cause: fmt.Errorf("webhook original event missing")}
-	if management {
-		return &store.WebhookAdmissionEventError{Cause: err}
+	if !store.WebhookHistoryRetained(delivery, attempts, now) {
+		return &store.WebhookAdmissionEventError{Cause: pg.QueryError("read expired webhook delivery", pgx.ErrNoRows)}
 	}
-	return err
+	if !now.Before(delivery.PayloadExpiresAt) {
+		return &store.WebhookAdmissionEventError{Cause: &model.Fault{Code: "payload_expired", Message: "Webhook payload has expired."}}
+	}
+	return &store.WebhookAdmissionEventError{Cause: &store.Error{Phase: "webhook original event integrity", Cause: fmt.Errorf("webhook original event missing")}}
 }
