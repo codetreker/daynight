@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 )
 
@@ -172,6 +174,15 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 		http.SetCookie(w, h.cookie(h.bindingCookieName(values.Get("state")), "", time.Unix(1, 0), -1))
 	}
 	if err != nil {
+		var identityFailure *model.IdentityProviderError
+		if errors.As(err, &identityFailure) && identityFailure.Code == "identity_unavailable" {
+			var violation *limit.Violation
+			if errors.As(err, &violation) {
+				logger = logger.With("size_bytes", violation.Actual, "max_bytes", violation.Max, "size_lower_bound", violation.LowerBound)
+			}
+			httpx.WriteError(w, request, logger, "auth", "callback", err)
+			return
+		}
 		if result.LoginID != "" {
 			httpx.LogFailure(logger, request.Context(), "auth", "callback", err)
 			if request.Context().Err() == nil {

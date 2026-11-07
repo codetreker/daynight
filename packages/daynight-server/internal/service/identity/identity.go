@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"io"
 	"net/url"
 	"time"
 
@@ -103,17 +104,29 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	defer cancel()
 	profile, err := s.client.Retrieve(claim, code)
 	if err != nil {
+		var protocol *uniauth.ProtocolError
+		if errors.As(err, &protocol) {
+			return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
+		}
 		return partial, err
 	}
 	if err := core.ValidateProvider(pending.Provider, string(profile.Provider), &uniauth.ProtocolError{Reason: "provider_mismatch"}); err != nil {
 		return partial, err
+	}
+	normalized := profileprotocol.Profile{ID: profile.ID, Email: profile.Email, EmailVerified: profile.EmailVerified, Name: profile.Name, AvatarURL: profile.AvatarURL}
+	user := profileprotocol.User(normalized)
+	if err := core.AdmitProfileFields(user); err != nil {
+		return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
+	}
+	if _, err := profileprotocol.Encode(io.Discard, normalized, core.MaxProfileJSONBytes); err != nil {
+		return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
 	}
 	now := s.now().UTC()
 	session, value := s.module.NewSession(now)
 	result := core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, Secret: value, Session: session}
 	err = s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result.User, err = s.module.CompleteLogin(ctx, scope.IdentityDAO(), profileprotocol.User(profileprotocol.Profile{ID: profile.ID, Email: profile.Email, EmailVerified: profile.EmailVerified, Name: profile.Name, AvatarURL: profile.AvatarURL}), now)
+		result.User, err = s.module.CompleteLogin(ctx, scope.IdentityDAO(), user, now)
 		if err != nil {
 			return err
 		}

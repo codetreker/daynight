@@ -45,7 +45,13 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 入口。完整 provider-qualified id 映射到本地 UUID，不同身份不按同邮箱自动合并。
 资料更新不改变本地用户和成员关系。每个用户恰有一个 Personal Team，包含其真实 owner admin 行；
 规范用户建立、Personal 初始化与浏览器 session 原子提交。重复及并发登录复用相同归属，
-已有 Personal 关系损坏明确失败。登录页只能展示当前 UniAuth App 同时允许且
+已有 Personal 关系损坏明确失败。身份领取的实际解压响应最多 2097152 bytes，期限为 15 秒。
+外部身份 ID、姓名和邮箱各最多 1024 UTF-8 bytes，头像 URL 最多 524288 UTF-8 bytes；
+完整规范化 profile JSON 还须不超过 1048576 bytes，字段上限与整体上限同时生效。
+可空字段保持原值；头像 data URL 原样保存，不增加 scheme 限制。上游响应非法或超限时
+返回 502 `identity_unavailable`，不提交新用户、资料、Personal Team 或 session，既有资料不变。
+已消费的一次性登录事务保持消费，必须重新登录，不能重试同一 code。
+登录页只能展示当前 UniAuth App 同时允许且
 已启用的 provider。前端通过 `GET /api/v1/auth/providers` 读取 `{providers:[ids]}`；
 读取失败显示可重试错误，空列表显示无可用登录方式，不能硬编码 provider 或以
 全局启用状态代替 App 范围。服务使用固定版本的 UniAuth SDK 实时读取当前 App
