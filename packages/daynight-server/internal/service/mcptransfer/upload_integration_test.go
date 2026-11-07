@@ -805,19 +805,6 @@ func (g *firstReadGate) OpenTransfer(ctx context.Context, n filestorage.Transfer
 	return g.TransferStorage.OpenTransfer(ctx, n, id)
 }
 
-type observedPrivateGate struct {
-	filestorage.Storage
-	count  atomic.Int32
-	second chan struct{}
-}
-
-func (g *observedPrivateGate) AcquireGate(ctx context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
-	if domain == filestorage.PrivateGate && g.count.Add(1) == 2 {
-		close(g.second)
-	}
-	return g.Storage.AcquireGate(ctx, domain, key)
-}
-
 func TestConcurrentCommitReturnsOriginalReceiptWithoutReplay(t *testing.T) {
 	f, s, attachments := uploadFixture(t)
 	id := uuid.NewString()
@@ -825,9 +812,7 @@ func TestConcurrentCommitReturnsOriginalReceiptWithoutReplay(t *testing.T) {
 	runUpload(t, s, f, f.actor, UploadInput{Action: "begin", TransferID: id, Path: "concurrent", ContentType: "text/plain"})
 	runUpload(t, s, f, f.actor, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: base64.StdEncoding.EncodeToString(content)})
 	read := &firstReadGate{TransferStorage: f.files, entered: make(chan struct{}), release: make(chan struct{})}
-	gate := &observedPrivateGate{Storage: f.files, second: make(chan struct{})}
 	s.files = read
-	f.lifecycle.files = gate
 	type commitResult struct {
 		data map[string]any
 		err  error
@@ -845,27 +830,30 @@ func TestConcurrentCommitReturnsOriginalReceiptWithoutReplay(t *testing.T) {
 		t.Fatal("first commit did not begin streaming")
 	}
 	go commit(second)
+	var b commitResult
 	select {
-	case <-gate.second:
+	case b = <-second:
 	case <-time.After(5 * time.Second):
 		close(read.release)
-		t.Fatal("second commit did not reach private gate")
+		t.Fatal("second commit did not reject promptly")
+	}
+	var busy *model.Fault
+	if !errors.As(b.err, &busy) || busy.Code != "resource_busy" || b.data["writeOutcome"] != "not_committed" {
+		close(read.release)
+		t.Fatalf("concurrent commit: %+v %v", b.data, b.err)
 	}
 	close(read.release)
-	var a, b commitResult
+	var a commitResult
 	select {
 	case a = <-first:
 	case <-time.After(10 * time.Second):
 		t.Fatal("first commit did not finish")
 	}
-	select {
-	case b = <-second:
-	case <-time.After(10 * time.Second):
-		t.Fatal("second commit did not finish")
-	}
 	if a.err != nil || a.data["writeOutcome"] != "confirmed" || a.data["operationId"] == nil {
 		t.Fatalf("first commit: %+v %v", a.data, a.err)
 	}
+	commit(second)
+	b = <-second
 	if b.err == nil || b.data["writeOutcome"] != "confirmed" || b.data["operationId"] != a.data["operationId"] {
 		t.Fatalf("second commit: %+v %v", b.data, b.err)
 	}

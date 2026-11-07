@@ -32,7 +32,13 @@ func (s *Storage) OpenTransfer(ctx context.Context, namespace filestorage.Transf
 	return s.Open(ctx, transferBucket, path)
 }
 
-func (s *Storage) PublishTransferAttachment(ctx context.Context, namespace filestorage.TransferNamespace, objectID string, target filestorage.TransferAttachmentTarget) error {
+func (s *Storage) PublishTransferAttachment(ctx context.Context, namespace filestorage.TransferNamespace, objectID string, target filestorage.TransferAttachmentTarget) (result error) {
+	outcome := filestorage.NotPublished
+	defer func() {
+		if result != nil {
+			result = &filestorage.PublicationError{Outcome: outcome, Cause: result}
+		}
+	}()
 	object, err := namespace.ObjectPath(objectID)
 	if err != nil {
 		return err
@@ -74,9 +80,11 @@ func (s *Storage) PublishTransferAttachment(ctx context.Context, namespace files
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	outcome = filestorage.PublicationUnknown
 	if err := s.root.Rename(source, destination); err != nil {
 		return err
 	}
+	outcome = filestorage.Published
 	// The source removal and destination publication both need durable entries.
 	for _, name := range []string{source, destination} {
 		for directory := path.Dir(name); ; directory = path.Dir(directory) {

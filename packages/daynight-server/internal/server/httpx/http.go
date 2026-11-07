@@ -224,6 +224,8 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusTooManyRequests
 		case "content_unavailable":
 			status = http.StatusBadGateway
+		case "resource_busy":
+			status = http.StatusTooManyRequests
 		case "capacity_exhausted":
 			status = http.StatusServiceUnavailable
 			w.Header().Set("Retry-After", "60")

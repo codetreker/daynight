@@ -84,7 +84,8 @@ func (t TransferAttachmentTarget) Path() string { return t.path }
 
 // TransferAttachmentPublisher atomically moves a staged transfer object into
 // an attachment target. The caller holds the private and target gates for the
-// entire operation. Any error can follow publication and is not a rollback.
+// entire operation. PublicationOutcome reports whether an error occurred before
+// publication or whether the target may have changed; it does not imply rollback.
 type TransferAttachmentPublisher interface {
 	PublishTransferAttachment(context.Context, TransferNamespace, string, TransferAttachmentTarget) error
 }
