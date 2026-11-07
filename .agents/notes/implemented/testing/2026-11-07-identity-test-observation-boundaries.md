@@ -10,7 +10,9 @@ sampling interval adds idle time between those observations. A readiness loop
 that repeatedly yields and catches semantic-query errors also spends work
 rediscovering a presentation before its cache and identity operations complete.
 Cached task content and a disabled control cannot identify which opening's live
-read has been admitted while an independent pending write retains its lock.
+read has been admitted while an independent pending write retains its lock. Broad
+status-button discovery also repeats synchronous DOM work while live cache
+admission and reconciliation still need to progress.
 
 ## Decision
 
@@ -35,6 +37,11 @@ after the later opening, then jointly checks fresh ready state for that live
 version and the still-visible, still-disabled control. The pending request must
 remain un-aborted and unique. Only then is its held response resolved. A fresh
 read does not settle the independent retired write or authorize another write.
+After its response is resolved, one DOM-readiness predicate first checks the
+matching cache summary and fresh live detail, then queries the actual status
+picker for the visible, enabled control. The original readiness deadline is not
+extended; state sampling avoids repeated broad semantic-query work while real
+I/O is still pending.
 
 Navigation and token queries use their actual current owners. Stable Team menu
 phases retain exact visible radio order and identity, accessible names,

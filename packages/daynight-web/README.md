@@ -2048,7 +2048,9 @@ fixtures observe actual cache commits, sync-principal inspection and recovery
 request dispatch before checking presentation; they do not substitute timer
 advancement for IndexedDB or React completion. A later task opening must admit
 its live read before a held write is settled, while the independent retired
-write still keeps controls locked. Stable navigation phases query the current
+write still keeps controls locked. Status completion checks sample matching
+cache and live versions before querying the actual status picker within one DOM
+readiness bound. Stable navigation phases query the current
 owner and retain visibility, identity, ordering and duplicate-control checks.
 The [identity observation decision](../../.agents/notes/implemented/testing/2026-11-07-identity-test-observation-boundaries.md)
 records these boundaries and their limits.

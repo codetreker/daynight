@@ -1262,8 +1262,15 @@ describe("authenticated application shell", () => {
       expect(fetcher.mock.calls.filter(([url]) => url === `${taskUrl}/status`)).toHaveLength(1);
       started = true;
       await act(async () => finishStatus(json(detail())));
-      await within(dialog).findByRole("button", { name: "进行中" });
-      await waitFor(() => expect(within(dialog).getByRole("button", { name: "进行中" })).toBeEnabled());
+      // Admission is checked before semantic queries so sampling does not delay its I/O.
+      await waitFor(() => {
+        expect(reopenedSessions!.summaryVersion(projectId, taskId)).toBe(8n);
+        expect(reopenedSessions!.snapshot(projectId, taskId)).toMatchObject({ status: "ready", refreshing: false, requiresFreshRead: false, error: null, detail: { id: taskId, version: 8n, status: "in_progress" } });
+        expect(dialog.isConnected).toBe(true);
+        const status = within(dialog.querySelector<HTMLElement>(".task-status-picker")!).getByRole("button", { name: "进行中" });
+        expect(status).toBeVisible();
+        expect(status).toBeEnabled();
+      });
     } finally { view.unmount(); root.remove(); }
   });
 
