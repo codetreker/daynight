@@ -1,7 +1,9 @@
 import type { WorkerSummary } from '../../api/workers';
 
-export const isWorkerOnline = (worker: { readonly lastReportedAt: string }, serverMilliseconds: number): boolean =>
-  serverMilliseconds - Date.parse(worker.lastReportedAt) < 120_000;
+export const isWorkerOnline = (worker: { readonly lastReportedAt: string }, serverMilliseconds: number): boolean => {
+  const age = serverMilliseconds - Date.parse(worker.lastReportedAt);
+  return age >= 0 && age < 120_000;
+};
 export const isWorkerRecent = (worker: { readonly lastReportedAt: string }, serverMilliseconds: number): boolean =>
   serverMilliseconds - Date.parse(worker.lastReportedAt) <= 72 * 60 * 60 * 1_000;
 // Input retains the service's (created_at, worker_id) order, including across pages.

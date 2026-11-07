@@ -98,6 +98,16 @@ describe("remote worker observed telemetry", () => {
 });
 
 describe("remote worker rendering", () => {
+  it.each([
+    ["2026-11-04T10:00:00.001Z", "offline"],
+    ["2026-11-04T10:00:00.000Z", "online"],
+    ["2026-11-04T09:58:00.001Z", "online"],
+    ["2026-11-04T09:58:00.000Z", "offline"],
+    ["2026-11-04T09:57:59.999Z", "offline"],
+  ])("classifies a report at %s relative to server observation", (lastReportedAt, connection) => {
+    const parsed = parseWorkerPage({ ...page, items: [{ ...summary, lastReportedAt }] });
+    expect(renderWorkerList(parsed)).toContain(`Connection: ${connection} (at observation)`);
+  });
   it("shows online as an observation and unknown inventory as unknown", () => {
     const output = renderWorkerDetail(parseWorkerDetail(detail, workerId));
     expect(output).toContain("Connection: online (at observation)");

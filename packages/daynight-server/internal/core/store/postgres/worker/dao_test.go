@@ -83,8 +83,8 @@ func TestWorkerDAOSnapshotRetentionVisibilityAndPagination(t *testing.T) {
 	}
 	original.LastReportedAt = stamp
 	older, err := writer.UpsertWorker(ctx, original)
-	if err != nil || !reflect.DeepEqual(older, stale) {
-		t.Fatalf("older snapshot overwrote saved state: %+v %v", older, err)
+	if err != nil || !older.LastReportedAt.Equal(stamp) || !reflect.DeepEqual(older.TaskSnapshot, stale.TaskSnapshot) {
+		t.Fatalf("upsert did not persist its supplied timestamp: %+v %v", older, err)
 	}
 	execute(t, tx, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, hiddenID)
 	got, err := reader.Worker(ctx, user, original.WorkerID, stamp)

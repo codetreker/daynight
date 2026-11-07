@@ -150,7 +150,7 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 		{"unsupported_native_selection", 409}, {"unsupported_selection", 409}, {"unknown_default", 409}, {"stale_configuration", 409},
 		{"capability_error", 503}, {"cleanup_unknown", 503}, {"io_error", 503}, {"offline", 503}, {"unsupported", 501}, {"timeout", 504}, {"cancelled", 409}, {"busy", 429}, {"limit_exceeded", 413}, {"invalid_cursor", 400}, {"invalid_path", 400},
 		{"content_unavailable", 502}, {"rate_limited", 429}, {"capacity_exhausted", 503}, {"task_deleted", 410}, {"not_found", 404}, {"write_outcome_unknown", 503},
-		{"configuration_not_initialized", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
+		{"configuration_not_initialized", 409}, {"active_worker_limit_exceeded", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			w := httptest.NewRecorder()

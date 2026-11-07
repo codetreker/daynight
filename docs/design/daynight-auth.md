@@ -215,7 +215,16 @@ login_transactions 保存随机 state、每笔浏览器绑定及独立浏览器 
 
 升级时必须停止旧版本创建登录交易，允许旧 callback 完成或等待十分钟到期。迁移对仍有效的旧 pending 明确失败并保留记录；旧记录全部消费或到期后，迁移清理过期记录并建立非空 scope 摘要合同，不伪造 scope。
 callback 在同一事务验证绑定/state/provider/期限并消费 pending；提交后才通过 SDK
-执行一次 Retrieve，继承请求 context 和有界 deadline。
+执行一次 Retrieve，继承请求 context 和 15 秒期限。专用 HTTP client 禁止重定向，
+在底层 transport 解压之后限制 response body 的实际读取量为 2097152 bytes；读取到
+上限后再探测一个 byte，超限即返回错误并停止读取，不依赖 Content-Length。读取、取消和
+关闭仍遵循响应 body 的生命周期，错误原因保留在服务内部，日志不记录 code、token 或资料正文。
+
+领取成功且 provider 匹配后，identity 领域校验外部 ID、姓名和邮箱各最多 1024 UTF-8 bytes，
+头像 URL 最多 524288 UTF-8 bytes；纯 profile codec 按实际规范化 JSON 编码计量完整对象，
+上限 1048576 bytes。转义可能使字段分别合规但整体超限。所有校验在本地用户、Personal Team
+和 session 的写事务之前完成；拒绝映射为 502 `identity_unavailable`，保留已经提交的 pending
+消费事实，旧资料不变。null、false 和头像 data URL 保持原值，不添加头像 scheme 限制。
 
 合法 provider error 结束 pending；错误绑定不领取。网络断连、取消、协议错误或
 领取响应丢失都重新登录，不能重试可能已消费的 code。用户以完整 UniAuth id 唯一
@@ -267,9 +276,10 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认端口，使配置值与浏览器
 Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精确主站 Origin，PAT 写
 请求按其 header 凭据验证。数据 API 401
-始终 JSON，Web 发起登录导航。已验证并消费的 callback 若失败，清除绑定 Cookie、
-记录清洗后的错误并 303 到固定主站 `/login?authError=login_failed`；已知事务同时带回
-经过验证的 `returnPath`，包括身份领取后本地 session 创建失败。错误/未绑定 callback
+始终 JSON，Web 发起登录导航。已验证并消费的 callback 若失败，清除绑定 Cookie 并
+记录清洗后的错误；上游响应协议错误及 profile 准入失败返回 502 `identity_unavailable`，
+其他失败 303 到固定主站 `/login?authError=login_failed`，带回经过验证的 `returnPath`，
+包括身份领取后本地 session 创建失败。错误/未绑定 callback
 保留 JSON 拒绝。登录壳读取并清除通用标记，保留目标与重试入口，不带回原始 code/错误。
 主站默认 HTTPS，使用 __Host- 会话/绑定 Cookie；显式 HTTP 主站测试配置使用不带
 该前缀和 Secure 的测试名称，仍为 host-only、HttpOnly、Lax。SDK gateway 的

@@ -89,7 +89,11 @@ model 为 null 或最多 256 UTF-8 字节的非空白文本；args 为显式数�
 
 ## 最新快照与时间
 
-一次有效报告原子保存服务端 observation 时间、telemetry 和规范化任务快照。lastReportedAt 是数据库采集的报告 observation，不是客户端时刻；迟到的较旧 observation 不能覆盖较新内容或使 lastReportedAt 倒退。响应 observedAt 是服务端时间样本。
+一次成功报告原子保存服务端 observation 时间、telemetry 和规范化任务快照。lastReportedAt 是取得账号准入锁后采集的数据库时间，不是客户端时刻；目标原有时间位于未来时，成功报告以本次数据库时间更新它。响应 observedAt 是服务端时间样本。
+
+每个账号跨服务实例最多准入 100 个 active Worker。以同一数据库时刻 T 为准，只有 `T - 120s < lastReportedAt <= T` 才是 active，恰好 120 秒及未来时间均不计入。满 100 个时已有 active Worker 可以续报，新 Worker 或 inactive Worker 恢复返回 `409 active_worker_limit_exceeded`。如果完整 active 数已超过 100，任何报告都返回该错误，包括已有 active 的续报；已保存的成功时间自然过期后，按当时计数重新准入。
+
+额度拒绝、非法报告及确认回滚的事务不更新目标的成功时间、机器或任务快照、配置和应用观测；提交结果未知不能推断已回滚。准入不改写其他 Worker 的时间、不驱逐执行，也不限制历史 inactive 记录数量。active 与是否持有任务无关；所有成功报告入口遵循同一账号准入。
 
 | taskInventory 情况 | taskObservationState 与任务结果 |
 |---|---|
@@ -99,7 +103,7 @@ model 为 null 或最多 256 UTF-8 字节的非空白文本；args 为显式数�
 
 连续 null 不会把从未同步的 Worker 变成已知空闲。inventoryObservedAt 是客户端清单来源时间；taskObservedAt 是服务端生成该任务快照的时间；lastReportedAt 是本次机器报告时间。stale 的硬件数据可以较新，任务观测仍带原时间。
 
-读取不会刷新 lastReportedAt。近期条件为 `lastReportedAt >= observedAt - 72h`，恰好 72 小时仍可见。在线状态由 `observedAt - lastReportedAt < 120s` 派生，恰好 120 秒为 offline；接口提供时间事实，不持久化或返回可续活的在线标记。
+读取不会刷新 lastReportedAt。近期条件为 `lastReportedAt >= observedAt - 72h`，恰好 72 小时仍可见。在线状态采用同一 active 时间规则，恰好 120 秒或未来时间为 offline；接口提供时间事实，不持久化或返回可续活的在线标记。
 
 离线和移出近期列表只影响观测可见性，不释放/撤回 claim、不改变 task 状态、版本、执行计时或本机数据。新资源只由有效报告登记，不从旧 claim 或任务更新时间合成活跃记录。
 
@@ -124,6 +128,6 @@ activeTaskCount 是当前有权限访问的快照任务数。它不是实时任�
 
 ## 错误与可观察结果
 
-格式与约束错误沿用 `400 invalid_input`，未认证为 401，未知/他人/超窗详情为 404，存储失败为清洗后的 500。失败响应保留既有 requestId，SQL、连接串、完整遥测、原生命令输出和凭据不进入诊断。
+格式与约束错误沿用 `400 invalid_input`，未认证为 401，未知/他人/超窗详情为 404，active 名额拒绝为 `409 active_worker_limit_exceeded`，存储失败为清洗后的 500。失败响应保留既有 requestId，SQL、连接串、完整遥测、原生命令输出和凭据不进入诊断。
 
-必须能够观察账号隔离、null/空/旧清单、部分采集错误、乱序报告、当前权限变化、完成后的历史任务、时间窗口和稳定分页。存储失败保留错误链，不能伪装成成功或空列表。
+必须能够观察账号隔离、null/空/旧清单、部分采集错误、并发报告、当前权限变化、完成后的历史任务、时间窗口和稳定分页。以独立服务实例和受控时间验证 99、100、101 个 active 时的续报、新建及恢复、锁等待后重新取时、取消和失败回滚；同时验证拒绝不改写报告或配置，并在自然过期后恢复准入。存储失败保留错误链，不能伪装成成功或空列表。
