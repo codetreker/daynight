@@ -384,7 +384,8 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 				}
 			}
 		}
-		if _, e = sc.LockCredential(ctx, p); e != nil {
+		credential, e := sc.LockCredential(ctx, p)
+		if e != nil {
 			if errors.Is(e, model.ErrNotFound) {
 				return model.Unauthenticated(e)
 			}
@@ -393,6 +394,9 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		now, e = sc.ObservedAt(ctx)
 		if e != nil {
 			return e
+		}
+		if credential.ExpiresAt != nil && !credential.ExpiresAt.After(now) {
+			return model.Unauthenticated(model.ErrNotFound)
 		}
 		if e = checkTime(m.IssuedAt, now, policy); e != nil {
 			return e
@@ -482,6 +486,9 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		body = map[string]any{"operation": opView(cur), "endpoint": view}
 		return nil
 	})
+	if err != nil && !replay {
+		return Result{}, &model.Fault{Code: "write_outcome_unknown", Message: "The write committed but its response could not be verified. Check the original operation.", Cause: err}
+	}
 	return Result{Body: body, Replay: replay}, err
 }
 func destinationOrigin(value string) string { origin, _ := core.ValidateURL(value); return origin }
