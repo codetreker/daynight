@@ -256,7 +256,7 @@ func TestWebhookInvalidAuthorizationStructureRollsBackMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	var constraint string
-	if err = f.database.Pool.QueryRow(ctx, `SELECT conname FROM pg_constraint WHERE conrelid='webhook_subscriptions'::regclass AND pg_get_constraintdef(oid) LIKE '%authorization_state%'`).Scan(&constraint); err != nil {
+	if err = f.database.Pool.QueryRow(ctx, `SELECT conname FROM pg_constraint WHERE conrelid='webhook_subscriptions'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%authorization_state%'`).Scan(&constraint); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = f.database.Pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE webhook_subscriptions DROP CONSTRAINT %q`, constraint)); err != nil {
@@ -302,7 +302,7 @@ func TestWebhookInvalidEpochRollsBackMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	var constraint string
-	if err = f.database.Pool.QueryRow(ctx, `SELECT conname FROM pg_constraint WHERE conrelid='webhook_subscriptions'::regclass AND pg_get_constraintdef(oid) LIKE '%authorization_epoch%'`).Scan(&constraint); err != nil {
+	if err = f.database.Pool.QueryRow(ctx, `SELECT conname FROM pg_constraint WHERE conrelid='webhook_subscriptions'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%authorization_epoch%'`).Scan(&constraint); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = f.database.Pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE webhook_subscriptions DROP CONSTRAINT %q`, constraint)); err != nil {
