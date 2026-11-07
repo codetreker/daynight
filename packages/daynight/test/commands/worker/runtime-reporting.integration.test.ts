@@ -186,7 +186,7 @@ describe("worker runtime configuration reporting", () => {
   });
 
   it("captures a fresh bootstrap after an unknown report is confirmed not to have created the Worker", async () => {
-    const f = await fixture(), order: string[] = [];
+    const f = await fixture(), order: string[] = [], secondEntered = deferred<void>(), releaseSecond = deferred<void>();
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockImplementation(async () => {
       order.push("GET");
@@ -194,22 +194,29 @@ describe("worker runtime configuration reporting", () => {
     });
     collect.mockResolvedValueOnce({ telemetry: workerTelemetry, issues: [] });
     collect.mockResolvedValue({ telemetry: { ...workerTelemetry, sampledAt: "2026-10-29T00:00:30.000Z" }, issues: [] });
-    let reports = 0;
+    let reports = 0, imported: WorkerCloudDesired | undefined;
     report.mockImplementation(async (_workerId, _body, configuration) => {
       order.push("POST"); reports++;
       if (reports === 1) throw new ApiError({ operation: "worker.reportConfiguration" }, "request", { cause: new Error("Report outcome unknown."), outcomeUnconfirmed: true });
-      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: { ...target, value: configuration.bootstrap! }, observationRevision: "0", observationAccepted: false } };
+      if (reports === 2) { imported = { ...target, value: configuration.bootstrap! }; secondEntered.resolve(); await releaseSecond.promise; }
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: imported!, observationRevision: "0", observationAccepted: false } };
     });
     const running = start(f);
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
     expect(report).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(30_000);
-    await eventually(() => expect(report).toHaveBeenCalledTimes(2));
+    await secondEntered.promise;
+    expect(report).toHaveBeenCalledTimes(2);
     expect(order).toEqual(["GET", "POST", "GET", "POST"]);
     expect(report.mock.calls[0]![1].sampledAt).toBe(workerTelemetryTime);
     expect(report.mock.calls[1]![1].sampledAt).toBe("2026-10-29T00:00:30.000Z");
     for (const [, , configuration] of report.mock.calls) { expect(configuration.bootstrap!.maxConcurrent).toBe(9); expect(configuration.observation).toBeNull(); }
     expect(report.mock.calls[1]![2]).not.toBe(report.mock.calls[0]![2]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(report).toHaveBeenCalledTimes(2);
+    expect(order).toEqual(["GET", "POST", "GET", "POST"]);
+    releaseSecond.resolve();
+    await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_recovered" })));
     f.signal.abort(); await running;
   });
 
