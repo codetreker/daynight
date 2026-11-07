@@ -10,6 +10,7 @@ import (
 	"math"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
@@ -131,6 +132,36 @@ type MCPFull struct {
 
 // MapTaskFull copies each raw property value without rewriting arbitrary JSON numbers.
 func MCPTask(t model.Task) MCPFull { return mcpTask(t, true) }
+
+type MCPSummary struct {
+	Projection       string              `json:"projection"`
+	ID               string              `json:"id"`
+	ProjectID        string              `json:"projectId"`
+	TitlePreview     string              `json:"titlePreview"`
+	TitleTruncated   bool                `json:"titleTruncated"`
+	Status           model.TaskStatus    `json:"status"`
+	Version          string              `json:"version"`
+	Ready            bool                `json:"ready"`
+	BlockedByCount   int                 `json:"blockedByCount"`
+	RequiredPlatform *model.TaskPlatform `json:"requiredPlatform"`
+	AssignedTo       *string             `json:"assignedTo"`
+	AllowAgents      bool                `json:"allowAgents"`
+}
+
+const MCPTitlePreviewBytes = 512
+
+func MCPTaskSummary(t model.Task) MCPSummary {
+	title := t.Title
+	truncated := len(title) > MCPTitlePreviewBytes
+	if truncated {
+		end := MCPTitlePreviewBytes
+		for end > 0 && !utf8.RuneStart(title[end]) {
+			end--
+		}
+		title = title[:end]
+	}
+	return MCPSummary{Projection: "summary", ID: t.ID, ProjectID: t.ProjectID, TitlePreview: title, TitleTruncated: truncated, Status: t.Status, Version: strconv.FormatInt(t.Version, 10), Ready: t.Ready, BlockedByCount: len(t.BlockedBy), RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents}
+}
 func mcpTask(t model.Task, copyValues bool) MCPFull {
 	properties := properties(t.Properties, copyValues)
 	return MCPFull{Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Title: t.Title, Description: t.Description, Properties: properties,
@@ -157,6 +188,37 @@ func EncodeMCP(w io.Writer, t model.Task, requestID, outcome string, max int64) 
 // EncodeMCPProjection encodes the structured content for an already projected Task.
 func EncodeMCPProjection(w io.Writer, task MCPFull, requestID, outcome string, max int64) (int64, error) {
 	return measure.JSON(w, "task", max, MCPEnvelope{Data: task, Meta: &MCPMeta{RequestID: requestID, Outcome: outcome}}, false)
+}
+
+// EncodeMCPResponse measures the JSON-RPC success object emitted by the SDK.
+// HTML escaping of the RPC ID is conservative: the SDK disables it for the
+// outer envelope, while the structured result uses the default JSON encoding.
+func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpcID any, modern, full bool, max int64) (int64, error) {
+	type content struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type result struct {
+		Meta              map[string]any `json:"_meta,omitempty"`
+		Content           []content      `json:"content"`
+		StructuredContent MCPEnvelope    `json:"structuredContent"`
+		ResultType        string         `json:"resultType,omitempty"`
+	}
+	type response struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      any    `json:"id,omitempty"`
+		Result  result `json:"result"`
+	}
+	var data any = MCPTaskSummary(t)
+	if full {
+		data = mcpTask(t, false)
+	}
+	r := result{Content: []content{{Type: "text", Text: "Completed."}}, StructuredContent: MCPEnvelope{Data: data, Meta: &MCPMeta{RequestID: requestID, Outcome: outcome}}}
+	if modern {
+		r.Meta = map[string]any{"io.modelcontextprotocol/serverInfo": map[string]any{"name": "daynight", "version": "1"}}
+		r.ResultType = "complete"
+	}
+	return measure.JSON(w, "task", max, response{JSONRPC: "2.0", ID: rpcID, Result: r}, false)
 }
 
 // Admission borrows existing immutable values to avoid copying large historical

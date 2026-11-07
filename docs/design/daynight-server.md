@@ -261,7 +261,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 3. 元数据更新构造完整候选；状态设置先检查版本，再判断同状态。实际改变检查全部前置及受保护后继，
    不满足时使用 dependency_unsatisfied。in_progress 实际许可、平台或负责人变化继续使用 invalid_transition。
 4. 原子写入任务、依赖集合与执行起止；存在真实变更时，将版本加 1，并更新 `updatedAt`。
-5. 提交后返回资源；失败回滚，原始错误链保留至顶层错误处理。
+5. DAO 返回最终资源后、提交前以实际协议编码检查成功响应容量；超限作为事务错误回滚。提交后返回资源；提交或发送故障保留实际完成事实与原始错误链。
 
 同 project 的 task 写入由 project 行锁串行化，不同 project 可以并行。获得锁与读取
 任务不能合并为一个依赖同一旧快照的 SQL 语句：等待锁结束后，后续查询需要看到刚
@@ -367,7 +367,7 @@ status 是输入错误，含其他合法字段也不写入。HTTP 与日志保�
 
 省略可更新字段表示保持原值；`description: ""` 清空描述，`dependsOn: []` 清空
 依赖，`properties.pullRequests: []` 清空 PR 引用。`allowAgents` 使用可选布尔输入保留 omitted/false 的区别，创建严格拒绝该字段。`requiredPlatform` 使用明确的字段存在性和可空值区分省略、设置与清除：PATCH 省略保持、枚举设置、null 清除；创建省略或 null 均不限制。`model.TaskPlatform.Valid()` 验证枚举，`model.PlatformCompatible(required, actual)` 以 null/同值规则匹配，不读取服务进程的平台。PATCH 的双层指针明确区分未提供和显式 null，不把清除转换为省略。属性数组按序比较并整体替换，
-具体记录只有字符串 `url` 和 `title`；内容不做业务校验。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台和负责人字段允许清除外，显式 `null`、嵌套未知或
+具体记录只有字符串 `url` 和 `title`；保留原始文本语义并执行各自字节额度。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台和负责人字段允许清除外，显式 `null`、嵌套未知或
 重复字段、不合理的类型及非法枚举均为输入错误。`id`、
 `projectId`、创建时间及更新时间不可由调用者写入。任务返回结构包含模型字段及
 `dependsOn`、`externalDependsOn`、`blockedBy`、`ready`；外部子集是必填读取字段，也是创建/PATCH 的可选分类输入。

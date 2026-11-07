@@ -343,13 +343,7 @@ func TestMCPTaskPropertyBudgetFollowsMode(t *testing.T) {
 
 func TestMCPTaskBusinessJSONLimit(t *testing.T) {
 	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
-	// The REST create body is the corresponding business JSON; transport-only
-	// projectId and returnView fields do not consume its one MiB allowance.
-	base, err := json.Marshal(map[string]any{"title": "Limit", "description": ""})
-	if err != nil {
-		t.Fatal(err)
-	}
-	description := strings.Repeat("x", (1<<20)-len(base))
+	description := strings.Repeat("x", 65536)
 	data := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Limit", "description": description})
 	got, err := tasks.Get(context.Background(), principal, project, data["id"].(string))
 	if err != nil || got.Description != description {
@@ -431,11 +425,7 @@ func TestMCPTaskPropertyBusinessLimitCountsEncodedText(t *testing.T) {
 
 func TestMCPTaskBusinessLimitDoesNotEscapeRawHTML(t *testing.T) {
 	_, project, principal, tasks, _, _, server := taskResourceClient(t)
-	base, err := json.Marshal(map[string]any{"title": "HTML", "description": ""})
-	if err != nil {
-		t.Fatal(err)
-	}
-	description := strings.Repeat("<", (1<<20)-len(base))
+	description := strings.Repeat("<", 65536)
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_create","arguments":{"projectId":%q,"title":"HTML","description":"%s"}}}`, project, description)
 	req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(body))
 	if err != nil {
@@ -550,7 +540,7 @@ func TestMCPTaskExternalDependenciesCountCompiledBusinessPayload(t *testing.T) {
 	}
 	result, envelope := callTaskResource(t, client, "task_create", map[string]any{"projectId": project, "title": "Large", "externalDependsOn": dependencies})
 	failure := object(t, envelope["error"])
-	if !result.IsError || failure["code"] != "invalid_input" || !strings.Contains(failure["message"].(string), "1 MiB") {
+	if !result.IsError || failure["code"] != "invalid_input" {
 		t.Fatalf("compiled payload not rejected at size limit: %#v", envelope)
 	}
 	var count int
@@ -591,5 +581,27 @@ func TestMCPRejectsUnknownToolBudgetClass(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("unknown budget class registered")
+	}
+}
+
+func TestMCPTaskWriteAdmission(t *testing.T) {
+	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
+	title := strings.Repeat("界", 341) + "x"
+	created := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": title, "description": strings.Repeat("d", 65536), "returnView": "full"})
+	id := created["id"].(string)
+	before, err := tasks.Get(context.Background(), principal, project, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskError(t, client, "task_create", map[string]any{"projectId": project, "title": title + "x"}, "invalid_input")
+	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "description": strings.Repeat("d", 65537)}, "invalid_input")
+	deps := make([]string, 16)
+	for i := range deps {
+		deps[i] = uuid.NewString()
+	}
+	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "dependsOn": deps}, "invalid_input")
+	after, err := tasks.Get(context.Background(), principal, project, id)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("rejected updates changed task: %v", err)
 	}
 }

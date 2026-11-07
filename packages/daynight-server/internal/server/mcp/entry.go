@@ -34,12 +34,15 @@ type AuthorityRef struct {
 	ID   string
 }
 type RequestActor struct {
-	Principal    model.Principal
-	AuthorityRef AuthorityRef
-	RequestID    string
-	Context      context.Context
-	Budget       *Budget
-	admitContent func(context.Context) error
+	Principal     model.Principal
+	AuthorityRef  AuthorityRef
+	RequestID     string
+	Context       context.Context
+	Budget        *Budget
+	admitContent  func(context.Context) error
+	rpcResponseID any
+	rpcBatch      bool
+	rpcModern     bool
 }
 
 type scopeKey struct{}
@@ -49,6 +52,8 @@ type requestScope struct {
 	httpDone bool
 	handlers int
 	releases []func()
+	batchKey string
+	batchIDs map[string]batchRPCID
 }
 
 func (s *requestScope) begin()     { s.mu.Lock(); s.handlers++; s.mu.Unlock() }
@@ -104,7 +109,10 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 	sdkLogger := slog.New(safeSDKLog{handler: logger.Handler()})
 	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: sdkLogger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
 	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), input: make(chan struct{}, transport.MaxMCPInputOperations), ctx: ctx, cancel: cancel}
-	e.http = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: transport.MaxMCPJSONBodyBytes, Logger: sdkLogger, DisableLocalhostProtection: true})
+	// Raw input is limited before SDK dispatch. Batch correlation adds fewer
+	// than 80 bytes per Task call, each of which occupies over 50 input bytes.
+	// Four times the raw limit therefore bounds the transformed SDK input.
+	e.http = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 4 * transport.MaxMCPJSONBodyBytes, Logger: sdkLogger, DisableLocalhostProtection: true})
 	return e, nil
 }
 
@@ -241,6 +249,8 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 			httpx.WriteBodyError(w, r, e.logger, "mcp", "read", err)
 			return
 		}
+		body, s.actor.rpcResponseID, s.batchKey, s.batchIDs = prepareRPCIDs(body)
+		s.actor.rpcBatch = s.batchKey != ""
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	} else {
 		httpx.CloseUnreadBody(w, r)

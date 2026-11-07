@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,7 +47,8 @@ func TestMaximumTaskFieldsFitResponseBudgets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	properties, err := taskproperty.Normalize(model.TaskProperties{"pullRequests": prs, "worker": rawWorker, "paused": json.RawMessage(`true`)})
+	startup := json.RawMessage(`{"schemaVersion":1,"source":"worker","sessionId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","claimId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","executionGeneration":"9223372036854775807","controllerInstanceId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","revision":"9223372036854775807","observedAt":"2026-01-01T00:00:00.123456789Z","startup":{"state":"unknown","reasonCode":"native_transport_unknown"},"recovery":{"state":"blocked","reasonCode":"native_identity_missing"}}`)
+	properties, err := taskproperty.Normalize(model.TaskProperties{"pullRequests": prs, "worker": rawWorker, "paused": json.RawMessage(`true`), "sessionStartup": startup})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,17 +67,31 @@ func TestMaximumTaskFieldsFitResponseBudgets(t *testing.T) {
 	if err = taskcore.AdmitDependencies(deps); err != nil {
 		t.Fatal(err)
 	}
-	task := model.Task{ID: id, ProjectID: id, Title: title, Description: description, Properties: properties, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, DependsOn: deps, ExternalDependsOn: deps, BlockedBy: deps}
+	platform := model.PlatformLinux
+	task := model.Task{ID: id, ProjectID: id, Title: title, Description: description, Status: model.TaskInProgress, Properties: properties, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, StartedAt: &now, CompletedAt: &now, CancelledAt: &now, AssignedTo: &id, RequiredPlatform: &platform, DependsOn: deps, ExternalDependsOn: deps, BlockedBy: deps}
 	for _, extended := range []bool{false, true} {
-		n, err := taskprotocol.EncodeREST(io.Discard, task, extended, taskcore.MaxTaskResponseJSONBytes)
+		var encoded, production bytes.Buffer
+		n, err := taskprotocol.EncodeREST(&encoded, task, extended, taskcore.MaxTaskResponseJSONBytes)
 		t.Logf("REST extended=%v bytes=%d", extended, n)
 		if err != nil || n > taskcore.MaxTaskResponseJSONBytes {
 			t.Fatalf("REST extended=%v size=%d error=%v", extended, n, err)
 		}
+		value, err := taskprotocol.RESTTask(task, extended)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.NewEncoder(&production).Encode(value); err != nil || !bytes.Equal(encoded.Bytes(), production.Bytes()) {
+			t.Fatalf("REST production encoding differs: %v", err)
+		}
 	}
-	n, err := taskprotocol.EncodeMCP(io.Discard, task, id, "changed", taskcore.MaxTaskResponseJSONBytes)
+	var encoded bytes.Buffer
+	n, err := taskprotocol.EncodeMCP(&encoded, task, id, "changed", taskcore.MaxTaskResponseJSONBytes)
 	if err != nil || n > taskcore.MaxTaskResponseJSONBytes {
 		t.Fatalf("MCP size=%d error=%v", n, err)
+	}
+	production, err := json.Marshal(taskprotocol.MCPEnvelope{Data: taskprotocol.MCPTask(task), Meta: &taskprotocol.MCPMeta{RequestID: id, Outcome: "changed"}})
+	if err != nil || !bytes.Equal(encoded.Bytes(), production) {
+		t.Fatalf("MCP production encoding differs: %v", err)
 	}
 }
 

@@ -132,7 +132,7 @@ func AcquireWorker(current model.Task, userID string, descriptor WorkerDescripto
 	values.Status = model.TaskInProgress
 	var err error
 	values.Properties, err = properties.WithWorker(values.Properties, &model.WorkerClaim{ClaimID: descriptor.ClaimID, State: model.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: model.WorkerPreparing, ClaimedAt: claimedAt})
-	return values, err
+	return values, PropertyInputError(err)
 }
 
 func ValidateWorkerUpdate(input UpdateWorker) (string, error) {
@@ -213,13 +213,21 @@ func WorkerUpdateCandidate(current model.Task, worker *model.WorkerClaim, claimI
 	var err error
 	values.Properties, err = properties.WithWorker(values.Properties, &next)
 	if err != nil {
-		return store.TaskWrite{}, false, err
+		return store.TaskWrite{}, false, PropertyInputError(err)
 	}
 	if reportChanged {
-		values.Properties["sessionStartup"], err = json.Marshal(input.StartupReport)
+		raw, err := json.Marshal(input.StartupReport)
 		if err != nil {
 			return store.TaskWrite{}, false, err
 		}
+		value, err := taskproperty.NormalizeValue("sessionStartup", raw)
+		if err != nil {
+			return store.TaskWrite{}, false, PropertyInputError(err)
+		}
+		if err := taskproperty.AdmitValue("sessionStartup", value); err != nil {
+			return store.TaskWrite{}, false, PropertyInputError(err)
+		}
+		values.Properties["sessionStartup"] = value
 	}
 	return values, true, nil
 }
@@ -245,7 +253,7 @@ func ReleaseCandidate(current model.Task, worker *model.WorkerClaim) (store.Task
 	values.Status = model.TaskTodo
 	var err error
 	values.Properties, err = properties.WithWorker(values.Properties, &next)
-	return values, err
+	return values, PropertyInputError(err)
 }
 
 func WithdrawCandidate(current model.Task) (store.TaskWrite, error) {

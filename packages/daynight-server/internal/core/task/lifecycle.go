@@ -77,7 +77,7 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 		var err error
 		values.Properties, err = properties.WithWorker(values.Properties, &next)
 		if err != nil {
-			return store.TaskWrite{}, false, err
+			return store.TaskWrite{}, false, PropertyInputError(err)
 		}
 	} else {
 		if input.ClaimID != nil {
