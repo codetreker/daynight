@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { waitFor } from "@testing-library/react";
+import { waitForState as waitFor } from "./helpers/waitForState";
 import { getTaskObservation, pauseAuthRequests } from "../src/api/client";
 import { createTaskCacheScope, TaskCacheLifecycleChanged, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { TaskCacheError, TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA } from "../src/features/task-cache/database";
@@ -24,6 +24,15 @@ const world = () => {
   const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
   sessions.subscribe(project, task, () => {});
   return { scope, sessions };
+};
+const reopenWithSteps = async (sessions: TaskDetailSessions, version: bigint) => {
+  sessions.releaseRead(project, task);
+  sessions.openDirect(project, task);
+  // A parent-check fault must not intercept the reads that reopen the Steps collection.
+  await waitFor(() => {
+    expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", refreshing: false, detail: { version } });
+    expect(sessions.stepsSnapshot(project, task)).toMatchObject({ status: "ready", refreshing: false, stale: false, resource: { version } });
+  });
 };
 afterEach(() => { for (const { sessions, scope } of worlds.splice(0)) { sessions.dispose(); scope.dispose(); } vi.unstubAllGlobals(); });
 
@@ -1267,7 +1276,7 @@ it("verifies a retired Step 404 against the parent and withdraws a denied parent
   sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
   sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
   sessions.deleteStep(project, task, step.id, 1n); await waitFor(() => expect(writes).toBe(1));
-  sessions.releaseRead(project, task); sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready")); checking = true;
+  await reopenWithSteps(sessions, 1n); checking = true;
   write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "step" } }, null, 404));
   await waitFor(() => expect(checks).toBe(1));
   expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
@@ -1292,7 +1301,7 @@ it("keeps a retired Step refusal locked after a failed parent check and retries 
   sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
   sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
   sessions.deleteStep(project, task, step.id, 1n); await waitFor(() => expect(writes).toBe(1));
-  sessions.releaseRead(project, task); sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready")); checking = true;
+  await reopenWithSteps(sessions, 1n); checking = true;
   write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "step" } }, null, 404));
   await waitFor(() => expect(checks).toBe(1));
   const retired = (sessions as unknown as { retiredMutations: Map<unknown, { reconciling: boolean }> }).retiredMutations;
@@ -1315,7 +1324,7 @@ it("does not let a late retired Step parent denial withdraw a replacement histor
   sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
   sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
   sessions.deleteStep(project, task, step.id, 1n); await waitFor(() => expect(writes).toBe(1));
-  sessions.releaseRead(project, task); sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready")); checking = true;
+  await reopenWithSteps(sessions, 1n); checking = true;
   write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "step" } }, null, 404));
   await waitFor(() => expect(checks).toBe(1)); replaced = true;
   const fence = await scope.beginTaskRead(project, task, 0, 0, signal());
