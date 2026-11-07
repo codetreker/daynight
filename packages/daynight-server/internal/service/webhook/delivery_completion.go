@@ -72,6 +72,13 @@ func (r *Runner) finalizeOnce(ctx context.Context, own store.WebhookAttempt, dis
 			stale = true
 			return nil
 		}
+		// Reclaimed history may have already lost its Attempts. Check ownership
+		// before requiring the current Attempt; late observations use only the
+		// retained own row and never recreate deleted history.
+		if d.PurgingAt != nil || d.State != "leased" || d.LeaseToken == nil || *d.LeaseToken != own.LeaseToken || d.Generation != own.Generation || d.CurrentAttemptID == nil || *d.CurrentAttemptID != own.ID {
+			stale = true
+			return nil
+		}
 		attempts, err := sc.LockAttempts(ctx, d.ID)
 		if err != nil {
 			return err
@@ -85,10 +92,6 @@ func (r *Runner) finalizeOnce(ctx context.Context, own store.WebhookAttempt, dis
 		}
 		if a == nil {
 			return fmt.Errorf("webhook admitted attempt missing")
-		}
-		if d.State != "leased" || d.LeaseToken == nil || *d.LeaseToken != own.LeaseToken || d.Generation != own.Generation || d.CurrentAttemptID == nil || *d.CurrentAttemptID != own.ID {
-			stale = true
-			return nil
 		}
 		if a.FinishedAt != nil || a.RetentionClosedAt != nil {
 			return fmt.Errorf("webhook attempt already closed")
