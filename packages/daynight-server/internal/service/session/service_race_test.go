@@ -239,15 +239,31 @@ func TestProductionArchiveDeletionSerializesBothOrders(t *testing.T) {
 					_, err := f.service.PutArchive(ctx, f.owner, "", "", out.Session.SessionID, data)
 					upload <- err
 				}()
-				waitErr := waitServiceBotLock(ctx, f)
+				// A committed deletion may be rejected by the unlocked archive
+				// preflight before the upload reaches the Bot lock. Either way,
+				// deletion cleanup must finish without a late archive write.
+				waitCtx, stopWait := context.WithCancel(ctx)
+				waited := make(chan error, 1)
+				go func() { waited <- waitServiceBotLock(waitCtx, f) }()
+				var uploadErr, waitErr error
+				var uploadFinished bool
+				select {
+				case uploadErr = <-upload:
+					uploadFinished = true
+				case waitErr = <-waited:
+				case <-ctx.Done():
+					waitErr = ctx.Err()
+				}
+				stopWait()
 				release()
-				if err := <-cleanup; err != nil {
-					t.Fatal(err)
+				cleanupErr := <-cleanup
+				if !uploadFinished {
+					uploadErr = <-upload
 				}
-				requireServiceError(t, <-upload, "resource_conflict")
-				if waitErr != nil {
-					t.Fatal(waitErr)
+				if waitErr != nil || cleanupErr != nil {
+					t.Fatalf("delete-first ordering: wait=%v cleanup=%v", waitErr, cleanupErr)
 				}
+				requireServiceError(t, uploadErr, "resource_conflict")
 			}
 			if _, err = os.Stat(filepath.Join(root, sessionarchive.Bucket, namespace.Directory())); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("namespace retained: %v", err)
