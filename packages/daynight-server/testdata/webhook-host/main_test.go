@@ -852,3 +852,147 @@ func TestDropCommitReplyLostObservesAbsentSchema(t *testing.T) {
 		t.Fatalf("schema remains=%t err=%v", exists, err)
 	}
 }
+
+type rollbackStallTracer struct {
+	armed, stalled, observed atomic.Bool
+	verify                   *pgxpool.Pool
+	schema                   string
+	expectPresent            bool
+}
+
+func (x *rollbackStallTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, q pgx.TraceQueryStartData) context.Context {
+	if strings.EqualFold(strings.TrimSpace(q.SQL), "rollback") {
+		x.armed.Store(true)
+	}
+	return ctx
+}
+func (*rollbackStallTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+type rollbackStallConn struct {
+	net.Conn
+	trace  *rollbackStallTracer
+	buffer []byte
+}
+
+func (c *rollbackStallConn) Read(p []byte) (int, error) {
+	if len(c.buffer) > 0 {
+		n := copy(p, c.buffer)
+		c.buffer = c.buffer[n:]
+		return n, nil
+	}
+	var hdr [5]byte
+	if _, err := io.ReadFull(c.Conn, hdr[:]); err != nil {
+		return 0, err
+	}
+	n := int(binary.BigEndian.Uint32(hdr[1:]))
+	if n < 4 || n > 1<<20 {
+		return 0, errors.New("invalid PostgreSQL frame")
+	}
+	payload := make([]byte, n-4)
+	if _, err := io.ReadFull(c.Conn, payload); err != nil {
+		return 0, err
+	}
+	if hdr[0] == 'C' && bytes.Equal(payload, []byte("ROLLBACK\x00")) && c.trace.armed.CompareAndSwap(true, false) {
+		for {
+			if _, err := io.ReadFull(c.Conn, hdr[:]); err != nil {
+				return 0, err
+			}
+			size := int(binary.BigEndian.Uint32(hdr[1:]))
+			if size < 4 || size > 1<<20 {
+				return 0, errors.New("invalid PostgreSQL frame")
+			}
+			frame := make([]byte, size-4)
+			if _, err := io.ReadFull(c.Conn, frame); err != nil {
+				return 0, err
+			}
+			if hdr[0] == 'Z' {
+				break
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		var exists bool
+		err := c.trace.verify.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)`, c.trace.schema).Scan(&exists)
+		cancel()
+		c.trace.observed.Store(err == nil && exists == c.trace.expectPresent)
+		c.trace.stalled.Store(true)
+		// The actual ROLLBACK and ReadyForQuery are withheld. The socket remains
+		// idle until the client's rollback context expires and closes the connection.
+		return c.Conn.Read(p)
+	}
+	c.buffer = append(hdr[:], payload...)
+	n = copy(p, c.buffer)
+	c.buffer = c.buffer[n:]
+	return n, nil
+}
+func TestRollbackReplyStallIsBounded(t *testing.T) {
+	for _, kind := range []string{"create", "drop"} {
+		t.Run(kind, func(t *testing.T) {
+			dbURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
+			if dbURL == "" {
+				t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			verify, err := pgxpool.New(ctx, dbURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer verify.Close()
+			schema := "webhook_fixture_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+			if kind == "drop" {
+				if _, err = verify.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					c, stop := context.WithTimeout(context.Background(), 5*time.Second)
+					defer stop()
+					_, _ = verify.Exec(c, "DROP SCHEMA IF EXISTS "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+				}()
+				marker := pgx.Identifier{schema, "__webhook_fixture_owner"}.Sanitize()
+				if _, err = verify.Exec(ctx, "CREATE TABLE "+marker+" (owner_id uuid PRIMARY KEY)"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = verify.Exec(ctx, "INSERT INTO "+marker+" VALUES($1)", uuid.NewString()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			trace := &rollbackStallTracer{verify: verify, schema: schema, expectPresent: kind == "drop"}
+			cfg, err := pgxpool.ParseConfig(dbURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.MaxConns = 1
+			cfg.ConnConfig.TLSConfig = nil
+			cfg.ConnConfig.Fallbacks = nil
+			cfg.ConnConfig.Tracer = trace
+			cfg.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+				c, e := (&net.Dialer{}).DialContext(ctx, network, address)
+				if e != nil {
+					return nil, e
+				}
+				return &rollbackStallConn{Conn: c, trace: trace}, nil
+			}
+			pool, err := pgxpool.NewWithConfig(ctx, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			f := &fixture{admin: pool, schema: schema, schemaOwner: "not-a-uuid", schemaCreated: kind == "drop"}
+			started := time.Now()
+			if kind == "create" {
+				err = f.createSchema(ctx)
+			} else {
+				err = f.dropSchema(ctx)
+			}
+			elapsed := time.Since(started)
+			var issue *schemaIssue
+			if err == nil || !errors.As(err, &issue) || !errors.Is(err, context.DeadlineExceeded) || !trace.stalled.Load() || !trace.observed.Load() || elapsed < time.Second || elapsed > 5*time.Second {
+				t.Fatalf("kind=%s err=%v stalled=%t observed=%t elapsed=%s", kind, err, trace.stalled.Load(), trace.observed.Load(), elapsed)
+			}
+			var exists bool
+			if err = verify.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)`, schema).Scan(&exists); err != nil || exists != (kind == "drop") {
+				t.Fatalf("kind=%s exists=%t err=%v", kind, exists, err)
+			}
+		})
+	}
+}

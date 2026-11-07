@@ -328,12 +328,18 @@ func (e *schemaIssue) Error() string {
 	return "fixture schema " + e.schema + " retained or cleanup could not be confirmed"
 }
 
-func (f *fixture) createSchema(ctx context.Context) error {
+func (f *fixture) createSchema(ctx context.Context) (result error) {
 	tx, err := f.admin.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(context.Background())
+	defer func() {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if rollbackErr := tx.Rollback(rollbackCtx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			result = errors.Join(result, &schemaIssue{schema: f.schema}, fmt.Errorf("rollback cleanup failed: %w", rollbackErr))
+		}
+	}()
 	schema := pgx.Identifier{f.schema}.Sanitize()
 	marker := pgx.Identifier{f.schema, "__webhook_fixture_owner"}.Sanitize()
 	if _, err = tx.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
@@ -383,12 +389,18 @@ func (f *fixture) ownsSchema(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (f *fixture) dropSchema(ctx context.Context) error {
+func (f *fixture) dropSchema(ctx context.Context) (result error) {
 	tx, err := f.admin.Begin(ctx)
 	if err != nil {
 		return &schemaIssue{schema: f.schema}
 	}
-	defer tx.Rollback(context.Background())
+	defer func() {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if rollbackErr := tx.Rollback(rollbackCtx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			result = errors.Join(result, &schemaIssue{schema: f.schema}, fmt.Errorf("rollback cleanup failed: %w", rollbackErr))
+		}
+	}()
 	var exists bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)`, f.schema).Scan(&exists); err != nil {
 		return &schemaIssue{schema: f.schema}
@@ -496,6 +508,8 @@ func (f *fixture) close(ctx context.Context) error {
 	return err
 }
 func main() {
+	// Let the readiness write report a closed pipe so cleanup can run.
+	signal.Ignore(syscall.SIGPIPE)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	f, err := start(ctx, os.Getenv("DAYNIGHT_TEST_DATABASE_URL"), os.Getenv("DAYNIGHT_WEBHOOK_FIXTURE_TOKEN"), os.Getenv("DAYNIGHT_WEBHOOK_FIXTURE_PAT"), os.Getenv("DAYNIGHT_WEBHOOK_FIXTURE_MEMBER_TOKEN"), os.Getenv("DAYNIGHT_WEBHOOK_FIXTURE_MEMBER_PAT"))
@@ -511,7 +525,9 @@ func main() {
 	if err = json.NewEncoder(os.Stdout).Encode(f.info); err != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = f.close(cleanup)
+		if cleanupErr := f.close(cleanup); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "webhook fixture cleanup could not be confirmed; schema %s may remain\n", f.schema)
+		}
 		os.Exit(1)
 	}
 	select {
