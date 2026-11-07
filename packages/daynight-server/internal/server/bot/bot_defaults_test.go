@@ -193,3 +193,21 @@ func TestBotDefaultsHTTPBrowserCreationRequiresOrigin(t *testing.T) {
 	assertProjectError(t, h.Request("POST", "/api/v1/me/bots", body, []*http.Cookie{cookie}, nil, h.Origin), 409, "resource_conflict")
 	decodeResponse[api.BotDefaults](t, h.Request("GET", "/api/v1/me/bots/defaults", "", []*http.Cookie{cookie}, nil, ""), 200)
 }
+
+func TestBotCreationHTTPSelectionRefusals(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	worker := uuid.NewString()
+	reportBotHostHTTP(t, handler, worker)
+	foreign := uuid.NewString()
+	body := `{"id":"` + uuid.NewString() + `","name":"foreign","overrides":{"workerId":"` + foreign + `"}}`
+	assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 403, "forbidden")
+	_, err := database.Pool.Exec(context.Background(), `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
+ SELECT user_id,gen_random_uuid(),created_at,last_seen_at,telemetry,task_snapshot FROM workers CROSS JOIN generate_series(1,100)
+ WHERE user_id=$1 AND worker_id=$2`, handler.principal.UserID, worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = `{"id":"` + uuid.NewString() + `","name":"overflow"}`
+	assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 409, "active_worker_limit_exceeded")
+}

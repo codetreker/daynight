@@ -9,8 +9,17 @@ import (
 )
 
 func readNativePreferences(ctx context.Context, tx pgx.Tx, ownerID string, preferences map[string]model.BotWorkerPreference) error {
-	rows, err := tx.Query(ctx, `SELECT worker_id::text,provider,model,NULL::text FROM bot_model_preferences WHERE user_id=$1
- UNION ALL SELECT worker_id::text,provider,model,reasoning_effort FROM bot_effort_preferences WHERE user_id=$1`, ownerID)
+	return readNativePreferencesQuery(ctx, tx, `SELECT worker_id::text,provider,model,NULL::text FROM bot_model_preferences WHERE user_id=$1
+ UNION ALL SELECT worker_id::text,provider,model,reasoning_effort FROM bot_effort_preferences WHERE user_id=$1`, preferences, ownerID)
+}
+
+func readNativePreferencesForWorker(ctx context.Context, tx pgx.Tx, ownerID, workerID string, preferences map[string]model.BotWorkerPreference) error {
+	return readNativePreferencesQuery(ctx, tx, `SELECT worker_id::text,provider,model,NULL::text FROM bot_model_preferences WHERE user_id=$1 AND worker_id=$2
+ UNION ALL SELECT worker_id::text,provider,model,reasoning_effort FROM bot_effort_preferences WHERE user_id=$1 AND worker_id=$2`, preferences, ownerID, workerID)
+}
+
+func readNativePreferencesQuery(ctx context.Context, tx pgx.Tx, query string, preferences map[string]model.BotWorkerPreference, args ...any) error {
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return pg.QueryError("read bot native preferences", err)
 	}
