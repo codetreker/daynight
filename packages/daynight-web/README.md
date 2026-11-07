@@ -2055,6 +2055,12 @@ to the catalogue request signal. Menu, relation, focus and confirmation cases
 retain the full surface. The [catalogue fixture decision](../../.agents/notes/implemented/testing/2026-11-07-direct-catalogue-fixture.md)
 records the ownership and isolation trade-off.
 
+Status and attachment continuity cases that do not exercise graph presentation
+open the child through the real expanded chain row. Graph state, graph failures,
+obsolete responses and App route isolation retain their original entry paths.
+The [status entry decision](../../.agents/notes/implemented/testing/2026-11-07-status-chain-entry.md)
+records the test ownership.
+
 Authenticated-shell and Team-navigation integration tests use the state waiter
 for request counters, request bodies and storage observations. Rendered controls
 and mixed state/presentation predicates retain the DOM waiter. Identity-mismatch
