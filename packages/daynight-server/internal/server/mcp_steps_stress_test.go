@@ -106,6 +106,13 @@ func TestStressMCPStepsCapacityAndConcurrentSummaryHeap(t *testing.T) {
 	sizes := make([]int, len(items))
 	for i := range items {
 		size := min(remaining, 524288)
+		// The updated target must satisfy the current per-Step text budget.
+		// Keep the exact collection size by placing its bytes in the last row.
+		if i == 0 {
+			size = 0
+		} else if i == len(items)-1 {
+			size = remaining
+		}
 		sizes[i] = size
 		remaining -= size
 		_, err := pool.Exec(t.Context(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,'A',repeat('X',$4),'todo',$5,$5)`, task.ID, items[i].ID, i, size, stamp)
