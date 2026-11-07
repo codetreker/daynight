@@ -44,9 +44,6 @@ type RetainedArchive struct {
 }
 
 func (r *RetainedArchive) Close() error {
-	if r == nil {
-		return nil
-	}
 	return r.operation.Close()
 }
 
@@ -61,9 +58,6 @@ type ArchivePreflightReservation struct {
 }
 
 func (s *Execution) TryReserveArchivePreflight() (*ArchivePreflightReservation, error) {
-	if len(s.archiveSlots) != 0 {
-		return nil, archiveBusy()
-	}
 	select {
 	case s.archivePreflightSlots <- struct{}{}:
 	default:

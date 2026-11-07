@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync/atomic"
 	"testing"
@@ -344,5 +345,278 @@ func TestArchivePreflightReservationConcurrentClaimAndClose(t *testing.T) {
 			t.Fatalf("reservation leaked: %v", err)
 		}
 		_ = next.Close()
+	}
+}
+
+func TestArchiveContentRejectsBusyBeforeReading(t *testing.T) {
+	s := archiveAdmissionFixture(t, t.TempDir())
+	p := model.Principal{UserID: uuid.NewString()}
+	op, err := s.BeginArchive(context.Background(), p, "", "", "", ArchiveV1Upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer op.Close()
+	for _, read := range []func() error{
+		func() error { _, err := s.ArchiveContent(context.Background(), p, "", "", ""); return err },
+		func() error { _, err := s.TerminalArchiveContent(context.Background(), p, "", "", ""); return err },
+	} {
+		requireArchiveBusy(t, read())
+	}
+}
+
+func TestArchiveOperationRejectsWrongModeAndClosed(t *testing.T) {
+	s := archiveAdmissionFixture(t, t.TempDir())
+	op, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = op.PutArchive(context.Background(), nil); err == nil {
+		t.Fatal("read operation used for upload")
+	}
+	if _, err = op.PutTerminalArchive(context.Background(), nil); err == nil {
+		t.Fatal("read operation used for terminal upload")
+	}
+	if err = op.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = op.PutArchive(context.Background(), nil); err == nil {
+		t.Fatal("closed operation reused")
+	}
+}
+
+type archiveErrorGate struct {
+	filestorage.Storage
+	err error
+}
+
+func (g archiveErrorGate) TryAcquireResidency(context.Context, string) (io.Closer, error) {
+	return nil, g.err
+}
+
+func TestArchiveGateBusyClassification(t *testing.T) {
+	busy := filestorage.ErrGateBusy
+	failure := errors.New("close failure")
+	for _, tc := range []struct {
+		name string
+		err  error
+		busy bool
+	}{
+		{"busy", busy, true}, {"wrapped busy", fmt.Errorf("gate: %w", busy), true}, {"joined busy", errors.Join(busy), true},
+		{"busy and cleanup", errors.Join(busy, failure), false}, {"failure", failure, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := archiveAdmissionFixture(t, t.TempDir())
+			s.files = archiveErrorGate{Storage: s.files, err: tc.err}
+			_, err := s.BeginArchive(context.Background(), model.Principal{UserID: uuid.NewString()}, "", "", "", ArchiveV1Read)
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("lost cause: %v", err)
+			}
+			var f *model.Fault
+			if got := errors.As(err, &f) && f.Code == "resource_busy"; got != tc.busy {
+				t.Fatalf("wrong busy classification: %v", err)
+			}
+		})
+	}
+}
+
+type preflightDAO struct {
+	store.SessionDAO
+	metadata                       store.ArchiveMetadata
+	metadataErr, projectErr        error
+	credentials                    map[string]error
+	expectedPrincipal              model.Principal
+	expectedProject, parent, owner string
+	steps                          []string
+}
+
+func (d *preflightDAO) next(name string) {
+	if len(d.steps) == 0 || d.steps[0] != name {
+		panic("unexpected preflight call: " + name)
+	}
+	d.steps = d.steps[1:]
+}
+func (d *preflightDAO) ArchiveMetadata(_ context.Context, id string) (store.ArchiveMetadata, error) {
+	d.next("metadata")
+	if id != "id" {
+		panic("unexpected session identifier")
+	}
+	return d.metadata, d.metadataErr
+}
+func (d *preflightDAO) ReadCredential(_ context.Context, p model.Principal, _ time.Time) error {
+	if p == d.expectedPrincipal {
+		d.next("credential")
+	} else {
+		d.next("parent")
+	}
+	if p != d.expectedPrincipal && !(p.Kind == model.PATCredential && p.CredentialID == d.parent && p.UserID == d.owner) {
+		panic("unexpected credential")
+	}
+	return d.credentials[p.CredentialID]
+}
+func (d *preflightDAO) ProjectAccess(_ context.Context, user, project string) (model.ProjectAccess, error) {
+	d.next("project")
+	if user != d.expectedPrincipal.UserID || project != d.expectedProject || project == "" {
+		panic("unexpected project access")
+	}
+	return model.ProjectAccess{Role: model.ProjectAdmin}, d.projectErr
+}
+
+type preflightScope struct {
+	store.SessionScope
+	dao store.SessionDAO
+}
+
+func (s preflightScope) SessionDAO() store.SessionDAO { return s.dao }
+
+func TestArchivePreflightRejectsUntrustedOrRevokedAuthority(t *testing.T) {
+	owner, other, cred, parent := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	p := model.Principal{Kind: model.PATCredential, UserID: owner, CredentialID: cred}
+	project, task := uuid.NewString(), uuid.NewString()
+	normal := store.ArchiveMetadata{Owner: owner, Project: project, Task: task, Backend: "web", TaskExists: true, ProjectLive: true, BotValid: true}
+	standalone := store.ArchiveMetadata{Owner: owner, Backend: "web", Test: true, BotValid: true, Parent: parent}
+	failure := errors.New("credential lookup failed")
+	cases := []struct {
+		name          string
+		principal     model.Principal
+		project, task string
+		mode          ArchiveMode
+		dao           preflightDAO
+		code          string
+		cause         error
+	}{
+		{"normal", p, project, task, ArchiveV1Read, preflightDAO{metadata: normal}, "", nil},
+		{"unsupported credential", model.Principal{}, project, task, ArchiveV1Read, preflightDAO{}, "forbidden", nil},
+		{"revoked credential", p, project, task, ArchiveV1Read, preflightDAO{credentials: map[string]error{cred: model.ErrNotFound}}, "unauthenticated", nil},
+		{"credential read failure", p, project, task, ArchiveV1Read, preflightDAO{credentials: map[string]error{cred: failure}}, "", failure},
+		{"removed membership", p, project, task, ArchiveV1Read, preflightDAO{projectErr: model.ErrNotFound}, "forbidden", nil},
+		{"metadata failure", p, project, task, ArchiveV1Read, preflightDAO{metadataErr: failure}, "", failure},
+		{"wrong protocol", p, project, task, ArchiveV2Read, preflightDAO{metadata: normal}, "session_conflict", nil},
+		{"wrong task", p, project, uuid.NewString(), ArchiveV1Read, preflightDAO{metadata: normal}, "session_conflict", nil},
+		{"task missing", p, project, task, ArchiveV1Read, preflightDAO{metadata: func() store.ArchiveMetadata { m := normal; m.TaskExists = false; return m }()}, "not_found", nil},
+		{"deleted task read", p, project, task, ArchiveV1Read, preflightDAO{metadata: func() store.ArchiveMetadata { m := normal; m.TaskDeleted = true; return m }()}, "not_found", nil},
+		{"deleted task owner upload", p, project, task, ArchiveV1Upload, preflightDAO{metadata: func() store.ArchiveMetadata { m := normal; m.TaskDeleted = true; return m }()}, "", nil},
+		{"deleted bot", p, project, task, ArchiveV1Read, preflightDAO{metadata: func() store.ArchiveMetadata { m := normal; m.BotValid = false; return m }()}, "resource_conflict", nil},
+		{"standalone other user", model.Principal{Kind: model.PATCredential, UserID: other, CredentialID: cred}, "", "", ArchiveV1Read, preflightDAO{metadata: standalone}, "forbidden", nil},
+		{"parent revoked", p, "", "", ArchiveV1Read, preflightDAO{metadata: standalone, credentials: map[string]error{parent: model.ErrNotFound}}, "unauthenticated", nil},
+		{"parent lookup failure", p, "", "", ArchiveV1Read, preflightDAO{metadata: standalone, credentials: map[string]error{parent: failure}}, "", failure},
+		{"standalone parent valid", p, "", "", ArchiveV1Read, preflightDAO{metadata: standalone}, "", nil},
+		{"nonowner upload", model.Principal{Kind: model.PATCredential, UserID: other, CredentialID: cred}, project, task, ArchiveV1Upload, preflightDAO{metadata: normal}, "forbidden", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.dao.expectedPrincipal = tc.principal
+			tc.dao.expectedProject = tc.project
+			tc.dao.parent = parent
+			tc.dao.owner = owner
+			if tc.name != "unsupported credential" {
+				tc.dao.steps = append(tc.dao.steps, "credential")
+				if tc.name != "revoked credential" && tc.name != "credential read failure" {
+					if tc.project != "" {
+						tc.dao.steps = append(tc.dao.steps, "project")
+					}
+					if tc.name != "removed membership" {
+						tc.dao.steps = append(tc.dao.steps, "metadata")
+						if tc.name == "parent revoked" || tc.name == "parent lookup failure" || tc.name == "standalone parent valid" {
+							tc.dao.steps = append(tc.dao.steps, "parent")
+						}
+					}
+				}
+			}
+			engine := NewEngine(nil)
+			op, err := engine.BeginOperation()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer op.Close()
+			got, err := op.ArchivePreflight(context.Background(), preflightScope{dao: &tc.dao}, tc.principal, tc.project, tc.task, "id", tc.mode)
+			if len(tc.dao.steps) != 0 {
+				t.Fatalf("missing preflight calls: %v", tc.dao.steps)
+			}
+			if tc.code != "" {
+				var f *model.Fault
+				if !errors.As(err, &f) || f.Code != tc.code {
+					t.Fatalf("want %s, got %v", tc.code, err)
+				}
+				return
+			}
+			if tc.cause != nil {
+				if !errors.Is(err, tc.cause) {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err != nil || got != owner {
+				t.Fatalf("owner=%s err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestTerminalArchiveRejectsChangedOwnerAndCompleteness(t *testing.T) {
+	f, m, doc := terminalArchiveFixture(t)
+	finalizeFixture(t, f, m, doc)
+	ctx := context.Background()
+	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, encode(doc)); err != nil {
+		t.Fatal(err)
+	}
+	preflight := f.s.archivePreflightRun
+	f.s.SetArchivePreflight(func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error) {
+		return uuid.NewString(), nil
+	})
+	if _, err := f.s.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID); err == nil {
+		t.Fatal("archive read under changed owner")
+	}
+	f.s.SetArchivePreflight(preflight)
+	other := "partial"
+	if doc.Completeness == other {
+		other = "complete"
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE session_archives SET completeness=$2 WHERE session_id=$1`, m.SessionID, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID); err == nil {
+		t.Fatal("archive completeness mismatch accepted")
+	}
+}
+
+func TestArchivePreflightFailuresReleaseReservation(t *testing.T) {
+	ctx := context.Background()
+	p := model.Principal{UserID: uuid.NewString()}
+	s := archiveAdmissionFixture(t, t.TempDir())
+	fail := errors.New("preflight failed")
+	for _, tc := range []struct {
+		name  string
+		setup func()
+		want  error
+	}{
+		{"preflight failure", func() {
+			s.SetArchivePreflight(func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error) {
+				return "", fail
+			})
+		}, fail},
+		{"invalid owner", func() {
+			s.SetArchivePreflight(func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error) {
+				return "invalid", nil
+			})
+		}, nil},
+		{"unavailable gate", func() {
+			s.SetArchivePreflight(func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error) {
+				return p.UserID, nil
+			})
+			s.files = nil
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup()
+			_, err := s.BeginArchive(ctx, p, "", "", "", ArchiveV1Read)
+			if err == nil || tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("unexpected result: %v", err)
+			}
+			r, err := s.TryReserveArchivePreflight()
+			if err != nil {
+				t.Fatalf("reservation leaked: %v", err)
+			}
+			_ = r.Close()
+		})
 	}
 }
