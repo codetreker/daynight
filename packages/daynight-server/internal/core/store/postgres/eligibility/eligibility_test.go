@@ -118,11 +118,25 @@ func TestEligibilityReadsSourcesAndRefreshesLockedSubscriptions(t *testing.T) {
 	if _, err = dao.ReadEligibility(ctx, personalOwner, broken, user); err == nil {
 		t.Fatal("missing ownership was treated as revoked")
 	}
-	if _, err = tx.Exec(ctx, `ALTER TABLE webhook_subscriptions ALTER COLUMN authorization_epoch DROP NOT NULL`); err != nil { t.Fatal(err) }
-	if _, err = tx.Exec(ctx, `UPDATE webhook_subscriptions SET authorization_epoch=NULL WHERE id=$1`, personal); err != nil { t.Fatal(err) }
-	if _, err = dao.LockAffected(ctx, store.WebhookEligibilityFilter{ProjectID: project}); err == nil { t.Fatal("invalid epoch scan was accepted") }
-	if _, err = tx.Exec(ctx, `ALTER TABLE webhook_subscriptions DROP CONSTRAINT webhook_subscriptions_authorization_epoch_check`); err != nil { t.Fatal(err) }
-	if _, err = tx.Exec(ctx, `UPDATE webhook_subscriptions SET authorization_epoch=0 WHERE id=$1`, personal); err != nil { t.Fatal(err) }
-	if _, err = dao.LockAffected(ctx, store.WebhookEligibilityFilter{ProjectID: project}); err == nil { t.Fatal("invalid epoch was accepted") }
-	if _, err = dao.LockAffected(ctx, store.WebhookEligibilityFilter{ProjectID: "not-a-uuid"}); err == nil { t.Fatal("invalid database query was accepted") }
+	if _, err = tx.Exec(ctx, `ALTER TABLE webhook_subscriptions ALTER COLUMN authorization_epoch DROP NOT NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE webhook_subscriptions SET authorization_epoch=NULL WHERE id=$1`, personal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = dao.LockAffected(ctx, store.WebhookEligibilityFilter{ProjectID: project}); err == nil {
+		t.Fatal("invalid epoch scan was accepted")
+	}
+	if _, err = tx.Exec(ctx, `ALTER TABLE webhook_subscriptions DROP CONSTRAINT webhook_subscriptions_authorization_epoch_check`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE webhook_subscriptions SET authorization_epoch=0 WHERE id=$1`, personal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = dao.LockAffected(ctx, store.WebhookEligibilityFilter{ProjectID: project}); err == nil {
+		t.Fatal("invalid epoch was accepted")
+	}
+	if _, err = dao.LockAffected(ctx, store.WebhookEligibilityFilter{ProjectID: "not-a-uuid"}); err == nil {
+		t.Fatal("invalid database query was accepted")
+	}
 }
