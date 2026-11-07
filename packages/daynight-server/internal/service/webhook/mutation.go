@@ -17,6 +17,7 @@ type mutation struct {
 	operation        webhookcore.Operation
 	kind             webhookmodel.OperationKind
 	target           string
+	ifVersion        int64
 	input            any
 	projectIDs       func(webhookmodel.Endpoint) []string
 	requiredProjects func(webhookmodel.Endpoint) []string
@@ -58,7 +59,7 @@ func (s *Manager) Patch(ctx context.Context, principal model.Principal, owner we
 		return MutationResult{}, err
 	}
 	return s.mutate(ctx, principal, owner, mutation{
-		operation: input.Operation, kind: webhookmodel.EndpointPatch, target: endpointID, input: input,
+		operation: input.Operation, kind: webhookmodel.EndpointPatch, target: endpointID, ifVersion: input.IfVersion, input: input,
 		projectIDs: func(current webhookmodel.Endpoint) []string {
 			ids := append(webhookcore.ProjectIDs(current), input.ConfirmProjectIDs...)
 			if input.Subscriptions != nil {
@@ -90,7 +91,7 @@ func (s *Manager) Delete(ctx context.Context, principal model.Principal, owner w
 		return MutationResult{}, err
 	}
 	return s.mutate(ctx, principal, owner, mutation{
-		operation: input.Operation, kind: webhookmodel.EndpointDelete, target: endpointID, input: input,
+		operation: input.Operation, kind: webhookmodel.EndpointDelete, target: endpointID, ifVersion: input.IfVersion, input: input,
 		projectIDs:       webhookcore.ProjectIDs,
 		requiredProjects: func(webhookmodel.Endpoint) []string { return nil },
 		expansion:        func(webhookmodel.Endpoint) bool { return false },
@@ -109,7 +110,7 @@ func (s *Manager) Rotate(ctx context.Context, principal model.Principal, owner w
 		return MutationResult{}, err
 	}
 	return s.mutate(ctx, principal, owner, mutation{
-		operation: input.Operation, kind: webhookmodel.SecretRotate, target: endpointID, input: input,
+		operation: input.Operation, kind: webhookmodel.SecretRotate, target: endpointID, ifVersion: input.IfVersion, input: input,
 		projectIDs:       webhookcore.ProjectIDs,
 		requiredProjects: func(webhookmodel.Endpoint) []string { return nil },
 		expansion:        func(webhookmodel.Endpoint) bool { return false },
@@ -198,6 +199,17 @@ func (s *Manager) mutate(ctx context.Context, principal model.Principal, owner w
 		if !errors.Is(err, model.ErrNotFound) {
 			return err
 		}
+		if err := webhookcore.RequireOwner(owner, principal.UserID, access, true); err != nil {
+			return err
+		}
+		if request.target != "" {
+			if preimage.ID == "" || preimage.DeletedAt != nil {
+				return model.ErrNotFound
+			}
+			if request.ifVersion != preimage.ConfigVersion {
+				return &model.Fault{Code: "version_conflict", Message: "The Webhook configuration version has changed."}
+			}
+		}
 		policy, err := dao.Policy(ctx)
 		if err != nil {
 			return err
@@ -231,6 +243,11 @@ func (s *Manager) mutate(ctx context.Context, principal model.Principal, owner w
 			current, err = dao.Endpoint(ctx, owner, request.target)
 			if err != nil {
 				return err
+			}
+			// Source locks were planned from this preimage. A concurrent version
+			// cannot turn retained selections into unfenced new bindings.
+			if current.ConfigVersion != preimage.ConfigVersion {
+				return &model.Fault{Code: "version_conflict", Message: "The Webhook configuration version has changed."}
 			}
 		}
 		projects, err := dao.Projects(ctx, owner, principal.UserID, request.projectIDs(current))

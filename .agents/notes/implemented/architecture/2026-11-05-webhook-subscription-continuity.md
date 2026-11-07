@@ -12,6 +12,8 @@ Endpoint ownership, selected Projects, persistent authorization epochs and stabl
 
 The configuration module uses neutral scoped DAO contracts and a PostgreSQL backend. Source-container locks precede endpoint/subscription locks; a post-wait refresh reads the effective permission union in a fresh Read Committed statement without acquiring new source locks. Project deletion has its own scope. Team-owned subscriptions remain Team resources when their creator leaves.
 
+After an original receipt is absent, current management authority is required before a new invocation acquires source locks. The advisory pre-read version also fences the lock plan: caller version, observed planning version and locked current version must agree. An anticipated future version cannot admit a newly expanded selection using an older restrictive lock plan. Existing receipt recovery retains its narrower current read authority.
+
 Configuration effects and bounded operation receipts commit together. Receipt identity includes the original issuedAt and server-calculated request-body SHA-256 as well as a canonical semantic fingerprint. Existing receipts are checked before new-operation freshness. An absent receipt or an uncertain COMMIT cannot establish rollback.
 
 Each non-ciphertext metadata record, including its parent identities and public destination origin, must fit the serialized 2 KiB billing envelope. Ciphertext adds its actual persisted byte length. A syntactically valid destination must still pass this accounting boundary before reservation; variable public metadata cannot be hidden inside the fixed charge.

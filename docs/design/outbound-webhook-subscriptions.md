@@ -26,6 +26,8 @@ Subscription 有稳定 UUID、不可编辑的 projectId 和持久化的授权 ep
 
 配置扩大或重新确认先锁 Project 根、ownership、排序的 Team 根与真实成员/grant，再锁 endpoint、subscription/binding 和升序配额桶。来源容器锁保护缺失关系和新订阅的并发插入；仅锁已存在关系不足以证明资格。
 
+预读取只用于规划锁集合。新操作在旧回执不存在后先检查管理权；目标写入的调用者版本必须与规划时观察的版本相同，取得 endpoint 锁后还要再次核对当前版本与规划版本。规划已经失效时拒绝该操作，不能因为调用者猜中了新的版本而使用旧锁集合增加订阅，也不能在 endpoint 或订阅锁之后补取来源锁。已保留回执仍先按原身份核对，读回原操作不重新要求曾经的管理权。
+
 ACL 刷新先沿用来源事务锁，再按 ID 排序锁保留订阅，等待结束后用新的 Read Committed 语句重新读取有效权限并集。该语句不取得新的来源锁；在订阅锁之后调用会锁 ownership/member/grant 的授权 helper 会倒置顺序。Project 删除使用独立删除作用域，Thread 的独立事务和 Task-first 锁序保持。
 
 ## 配置版本与操作回执
