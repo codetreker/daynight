@@ -13,18 +13,14 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
-type requestIDKey struct{}
-
-func RequestID(ctx context.Context) string {
-	value, _ := ctx.Value(requestIDKey{}).(string)
-	return value
-}
+func RequestID(ctx context.Context) string { return requestid.From(ctx) }
 
 func ValidRequestID(value string) bool {
 	if len(value) == 0 || len(value) > 64 {
@@ -155,7 +151,7 @@ func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 		if !ValidRequestID(id) {
 			id = rand.Text()
 		}
-		request = request.WithContext(context.WithValue(request.Context(), requestIDKey{}, id))
+		request = request.WithContext(requestid.With(request.Context(), id))
 		if request.Body != nil && request.Body != http.NoBody {
 			body := &trackedRequestBody{ReadCloser: request.Body}
 			request = request.WithContext(context.WithValue(request.Context(), bodyCompletionKey{}, body))

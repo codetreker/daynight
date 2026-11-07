@@ -18,9 +18,14 @@ type StepsStore interface {
 	store.ProjectWriter
 }
 
-type TaskSteps struct{ store StepsStore }
+type TaskSteps struct {
+	store    StepsStore
+	capturer Capturer
+}
 
-func NewTaskSteps(database StepsStore) *TaskSteps { return &TaskSteps{store: database} }
+func NewTaskSteps(database StepsStore, capture ...Capturer) *TaskSteps {
+	return &TaskSteps{store: database, capturer: capturer(capture)}
+}
 
 type StepsDocument struct {
 	Resource taskcodec.StepsResource
@@ -305,7 +310,10 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if err := tx.TaskDAO().InsertTaskStep(ctx, taskID, mutation.Candidate[mutation.To]); err != nil {
 			return err
 		}
-		return tx.TaskDAO().TouchTask(ctx, taskID, observed)
+		if err := tx.TaskDAO().TouchTask(ctx, taskID, observed); err != nil {
+			return err
+		}
+		return s.captureStep(ctx, tx, projectID, taskID, step.ID, "created", observed, nil, nil, nil, nil)
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

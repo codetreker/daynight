@@ -131,7 +131,8 @@ func TestWriterPersistenceDependenciesAndDeletion(t *testing.T) {
 	if observed.IsZero() || observed.Location() != time.UTC {
 		t.Fatalf("clock: %v", observed)
 	}
-	mustOK(t, w.DeleteTask(ctx, a.ID, true))
+	_, e = w.DeleteTask(ctx, a.ID, true)
+	mustOK(t, e)
 	updated, e = w.Task(ctx, b.ID)
 	mustOK(t, e)
 	if len(updated.DependsOn) != 0 || updated.Version != b.Version+2 {
@@ -145,7 +146,7 @@ func TestWriterPersistenceDependenciesAndDeletion(t *testing.T) {
 	if _, e = r.Task(ctx, f.project, a.ID); !errors.Is(e, model.ErrNotFound) {
 		t.Fatalf("deleted read: %v", e)
 	}
-	if e = w.DeleteTask(ctx, a.ID, false); !errors.Is(e, model.ErrNotFound) {
+	if _, e = w.DeleteTask(ctx, a.ID, false); !errors.Is(e, model.ErrNotFound) {
 		t.Fatalf("repeat delete: %v", e)
 	}
 	if _, e = w.UpdateTask(ctx, uuid.NewString(), store.TaskWrite{Status: model.TaskTodo}); !errors.Is(e, model.ErrNotFound) {

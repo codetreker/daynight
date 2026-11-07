@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	WebhookKeyringFile   string
 	PublicOrigin         string
 	MCPAllowedOrigins    []string
 	OAuthClients         map[string][]byte
@@ -66,6 +67,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		address = "127.0.0.1:8787"
 	}
 	config := Config{
+		WebhookKeyringFile:   getenv("DAYNIGHT_WEBHOOK_KEYRING_FILE"),
 		PublicOrigin:         getenv("DAYNIGHT_PUBLIC_ORIGIN"),
 		MCPAllowedOrigins:    splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
 		OAuthClients:         clients,

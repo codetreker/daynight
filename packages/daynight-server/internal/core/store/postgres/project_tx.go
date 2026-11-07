@@ -7,6 +7,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/webhook"
 
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 
@@ -37,7 +38,10 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 
 func (tx *ProjectTx) ProjectDAO() ProjectWriteDAO           { return project.NewWriter(tx.tx, tx.projectID) }
 func (tx *ProjectTx) EligibilityDAO() WebhookEligibilityDAO { return eligibility.New(tx.tx) }
-func (tx *ProjectTx) TaskDAO() TaskWriteDAO                 { return task.NewWriter(tx.tx, tx.projectID) }
+func (tx *ProjectTx) CaptureDAO() WebhookCaptureDAO {
+	return webhook.NewProjectCapture(tx.tx, tx.projectID)
+}
+func (tx *ProjectTx) TaskDAO() TaskWriteDAO { return task.NewWriter(tx.tx, tx.projectID) }
 func (tx *ProjectTx) SessionDAO() ProjectSessionDAO {
 	return session.NewProjectDAO(tx.tx, tx.projectID)
 }

@@ -52,7 +52,7 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(ids, []string{dependent.ID}) {
 			t.Fatalf("direct dependent lookup: %v %v", ids, err)
 		}
-		if err := tx.TaskDAO().DeleteTask(ctx, queryID(99), false); !errors.Is(err, model.ErrNotFound) {
+		if _, err := tx.TaskDAO().DeleteTask(ctx, queryID(99), false); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing delete swallowed: %v", err)
 		}
 		return nil
@@ -60,14 +60,15 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
-		if err := tx.TaskDAO().DeleteTask(ctx, dependent.ID, false); err != nil {
+		if _, err := tx.TaskDAO().DeleteTask(ctx, dependent.ID, false); err != nil {
 			return err
 		}
 		ids, err := tx.TaskDAO().DependentIDs(ctx, pre.ID)
 		if err != nil || len(ids) != 0 {
 			t.Fatalf("deleted sources retained as live dependents: %v %v", ids, err)
 		}
-		return tx.TaskDAO().DeleteTask(ctx, pre.ID, false)
+		_, err = tx.TaskDAO().DeleteTask(ctx, pre.ID, false)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +83,8 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 	}
 	for _, operation := range []func() error{
 		func() error { _, err := expired.TaskDAO().DependentIDs(ctx, pre.ID); return err },
-		func() error { return expired.TaskDAO().DeleteTask(ctx, pre.ID, false) },
-		func() error { return expired.TaskDAO().DeleteTask(ctx, pre.ID, true) },
+		func() error { _, err := expired.TaskDAO().DeleteTask(ctx, pre.ID, false); return err },
+		func() error { _, err := expired.TaskDAO().DeleteTask(ctx, pre.ID, true); return err },
 	} {
 		err := operation()
 		var failure *Error
@@ -102,7 +103,8 @@ func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
 	source := queryTask(t, database, project.ID, 12, model.TaskTodo, target.ID, root.ID)
 	foreign := queryTask(t, database, other.ID, 13, model.TaskTodo)
 	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
-		return tx.TaskDAO().DeleteTask(ctx, target.ID, true)
+		_, err := tx.TaskDAO().DeleteTask(ctx, target.ID, true)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}

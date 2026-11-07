@@ -220,7 +220,7 @@ func TestArchiveWaitsForDeletionCommitThenFinalizes(t *testing.T) {
 			if _, err := tx.TaskDAO().Task(ctx, f.task); err != nil {
 				return err
 			}
-			if err := tx.TaskDAO().DeleteTask(ctx, f.task, false); err != nil {
+			if _, err := tx.TaskDAO().DeleteTask(ctx, f.task, false); err != nil {
 				return err
 			}
 			close(deleted)

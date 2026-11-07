@@ -174,7 +174,8 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 						return err
 					}
 					if mutation == "delete" {
-						return tx.TaskDAO().DeleteTask(ctx, task.ID, false)
+						_, err := tx.TaskDAO().DeleteTask(ctx, task.ID, false)
+						return err
 					}
 					_, err := tx.(*ProjectTx).tx.Exec(ctx, `UPDATE tasks SET status='in_progress' WHERE id=$1`, task.ID)
 					return err
