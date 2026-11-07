@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -14,7 +15,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration026"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	corewebhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
@@ -31,7 +31,7 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if len(schemaMigrations) != 50 || schemaMigrations[48].version != 49 || schemaMigrations[49].version != 50 {
+	if len(schemaMigrations) < 51 || schemaMigrations[48].version != 49 || schemaMigrations[49].version != 50 || schemaMigrations[50].version != 51 {
 		t.Fatal("unexpected migration boundary")
 	}
 	if err = migrate(ctx, pool, schemaMigrations[:49]); err != nil {
@@ -64,18 +64,31 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldStore := &Store{Pool: pool}
 	principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
-	manager := &webhook.Service{DB: oldStore, Keys: keys, ConfigurationExpansionAvailable: true}
-	name, enabled := "receiver", true
-	request := webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: user, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/hook"}, HasSubscriptions: true, Subscriptions: []corewebhook.SubscriptionInput{{ProjectID: project, EventTypes: []string{"task.created"}}}}
-	if _, err = manager.Mutate(ctx, principal, webhook.Owner{Kind: "personal", ID: user}, request); err != nil {
+	// This is the persisted T02 shape. Current management code also writes the
+	// T04 wait table, which does not exist on the 49 schema under test.
+	endpoint, key, originalSubscription, originalBinding := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	const originalEpoch int64 = 1
+	destination, err := keys.Seal([]byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://receiver.example/hook"}}`), []string{"personal", user, endpoint, "endpoint-current", "1"}, rand.Reader)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var originalSubscription, originalBinding string
-	var originalEpoch int64
-	if err = pool.QueryRow(ctx, `SELECT s.id::text,b.id::text,s.authorization_epoch FROM webhook_subscriptions s JOIN webhook_bindings b ON b.subscription_id=s.id WHERE s.project_id=$1 AND b.event_type='task.created'`, project).Scan(&originalSubscription, &originalBinding, &originalEpoch); err != nil {
+	secret, err := keys.Seal(bytes.Repeat([]byte{9}, 32), []string{"personal", user, endpoint, "signing-key", key}, rand.Reader)
+	if err != nil {
 		t.Fatal(err)
+	}
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO webhook_endpoints(id,owner_kind,owner_id,name,enabled,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,active_key_id,created_at,updated_at) VALUES($1,'personal',$2,'receiver',true,1,1,'http',1,1,'https://receiver.example',$3,$4,$5,$6,$7,now(),now())`, []any{endpoint, user, destination.Version, destination.MasterKeyID, destination.Nonce, destination.Ciphertext, key}},
+		{`INSERT INTO webhook_signing_keys(id,endpoint_id,slot,envelope_version,master_key_id,nonce,ciphertext,created_at) VALUES($1,$2,'current',$3,$4,$5,$6,now())`, []any{key, endpoint, secret.Version, secret.MasterKeyID, secret.Nonce, secret.Ciphertext}},
+		{`INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'active',1,now(),now())`, []any{originalSubscription, endpoint, project, user}},
+		{`INSERT INTO webhook_bindings(id,subscription_id,event_type,created_at) VALUES($1,$2,'task.created',now())`, []any{originalBinding, originalSubscription}},
+	} {
+		if _, err = pool.Exec(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
 	}
 	snapshot := func() string {
 		var value string
@@ -93,11 +106,10 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 		return value
 	}
 	before := snapshot()
-	upgraded, err := Open(ctx, url)
-	if err != nil {
+	if err = migrate(ctx, pool, schemaMigrations[:50]); err != nil {
 		t.Fatal(err)
 	}
-	defer upgraded.Close()
+	upgraded := &Store{Pool: pool}
 	if after := snapshot(); after != before {
 		t.Fatalf("T02 data or old ledger changed: before=%s after=%s", before, after)
 	}
@@ -154,5 +166,19 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 			t.Fatalf("original match digest differs: %x", matchHash)
 		}
 		previous = queue
+	}
+	// Advance a populated 50 schema to 51 and prove the new wait is backfilled
+	// without altering the capture rows or any existing ledger entries.
+	var before51 string
+	if err = pool.QueryRow(ctx, `SELECT jsonb_build_object('ledger',(SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m),'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY id) FROM webhook_events e),'deliveries',(SELECT jsonb_agg(to_jsonb(d) ORDER BY id) FROM webhook_deliveries d),'matches',(SELECT jsonb_agg(to_jsonb(m) ORDER BY delivery_id,subscription_id,binding_id) FROM webhook_delivery_matches m))::text`).Scan(&before51); err != nil {
+		t.Fatal(err)
+	}
+	if err = migrate(ctx, pool, schemaMigrations[:51]); err != nil {
+		t.Fatal(err)
+	}
+	var after51 string
+	var waitCount int
+	if err = pool.QueryRow(ctx, `SELECT jsonb_build_object('ledger',(SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m WHERE version<=50),'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY id) FROM webhook_events e),'deliveries',(SELECT jsonb_agg(to_jsonb(d) ORDER BY id) FROM webhook_deliveries d),'matches',(SELECT jsonb_agg(to_jsonb(m) ORDER BY delivery_id,subscription_id,binding_id) FROM webhook_delivery_matches m))::text,(SELECT count(*) FROM webhook_endpoint_waits WHERE endpoint_id=$1 AND destination_revision=1 AND owner_kind='personal' AND owner_id=$2 AND not_before IS NULL)`, endpoint, user).Scan(&after51, &waitCount); err != nil || before51 != after51 || waitCount != 1 {
+		t.Fatalf("51 upgrade changed capture or old ledger: wait=%d err=%v", waitCount, err)
 	}
 }

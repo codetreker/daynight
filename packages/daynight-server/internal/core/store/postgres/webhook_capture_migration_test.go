@@ -10,7 +10,10 @@ import (
 func TestWebhookCaptureMigrationAndConstraints(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	before := schemaMigrations[:len(schemaMigrations)-1]
+	if len(schemaMigrations) < 50 || schemaMigrations[48].version != 49 || schemaMigrations[49].version != 50 {
+		t.Fatal("unexpected capture migration boundary")
+	}
+	before := schemaMigrations[:49]
 	if err := migrate(ctx, pool, before); err != nil {
 		t.Fatal(err)
 	}
@@ -18,7 +21,7 @@ func TestWebhookCaptureMigrationAndConstraints(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&ledger); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:50]); err != nil {
 		t.Fatal(err)
 	}
 	var after string
