@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
+
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -418,7 +421,14 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return e.errorResult(output, actor, failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
-		encoded, err := json.Marshal(value)
+		var encoded []byte
+		if task, ok := result.Data.(TaskFull); ok {
+			var output bytes.Buffer
+			_, err = taskprotocol.EncodeMCPProjection(&output, task, actor.RequestID, result.Outcome, math.MaxInt64)
+			encoded = output.Bytes()
+		} else {
+			encoded, err = json.Marshal(value)
+		}
 		if err == nil && len(encoded) <= 128<<20 {
 			err = validateJSON(output, encoded)
 		} else if err == nil {

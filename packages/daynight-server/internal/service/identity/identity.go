@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"time"
 
+	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
+
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -97,7 +99,7 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	if callbackErr != nil {
 		return partial, core.CallbackFailure(callbackErr)
 	}
-	claim, cancel := context.WithTimeout(ctx, 15*time.Second)
+	claim, cancel := context.WithTimeout(ctx, core.UpstreamTimeout)
 	defer cancel()
 	profile, err := s.client.Retrieve(claim, code)
 	if err != nil {
@@ -111,7 +113,7 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	result := core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, Secret: value, Session: session}
 	err = s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result.User, err = s.module.CompleteLogin(ctx, scope.IdentityDAO(), model.User{UniAuthID: profile.ID, Email: profile.Email, EmailVerified: profile.EmailVerified, Name: profile.Name, AvatarURL: profile.AvatarURL}, now)
+		result.User, err = s.module.CompleteLogin(ctx, scope.IdentityDAO(), profileprotocol.User(profileprotocol.Profile{ID: profile.ID, Email: profile.Email, EmailVerified: profile.EmailVerified, Name: profile.Name, AvatarURL: profile.AvatarURL}), now)
 		if err != nil {
 			return err
 		}
@@ -241,7 +243,7 @@ func (s *Identity) UpdatePATExpiry(ctx context.Context, p model.Principal, id st
 	return result, nil
 }
 func (s *Identity) Providers(ctx context.Context) ([]string, error) {
-	discovery, cancel := context.WithTimeout(ctx, 15*time.Second)
+	discovery, cancel := context.WithTimeout(ctx, core.UpstreamTimeout)
 	defer cancel()
 	providers, err := s.client.Providers(discovery, s.CallbackURL())
 	code := "identity_unavailable"

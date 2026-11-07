@@ -90,7 +90,7 @@ func (s *Execution) CurrentTerminal(ctx context.Context, p model.Principal, proj
 type terminalHistoryCursor struct{ Project, Task, Created, ID string }
 
 func (s *Execution) TerminalHistory(ctx context.Context, p model.Principal, project, taskID, token string, limit int) (map[string]any, error) {
-	if limit < 1 || limit > 200 || len(token) > 1024 {
+	if limit < 1 || limit > 200 || len(token) > v2.MaxHistoryCursorBytes {
 		return nil, fault("invalid_payload", "Invalid Session history page.")
 	}
 	var position terminalHistoryCursor
