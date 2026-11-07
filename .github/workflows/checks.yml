@@ -166,7 +166,7 @@ jobs:
           retention-days: 30
 
   verify-macos:
-    name: verify (macOS ARM64)
+    name: verify (CLI tests, macOS ARM64)
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.cli == 'true' }}
     runs-on: macos-15
@@ -233,18 +233,42 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
-      - name: Clear installed CLI evidence paths
-        id: installed-evidence
-        if: ${{ !cancelled() && steps.preparation.outcome == 'success' && steps.architecture.outcome == 'success' }}
-        run: |
-          node --input-type=module -e "import { rm } from 'node:fs/promises'; await Promise.all(['.tmp/validation-environment.json', '.tmp/validation-probes.json'].map((path) => rm(path, { force: true })));"
+
+  verify-macos-installed:
+    name: verify (installed CLI, macOS ARM64)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Install native CLI dependencies
+        id: preparation
+        run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        id: architecture
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
       - name: Record installed CLI environment
         id: installed-environment
-        if: ${{ !cancelled() && steps.preparation.outcome == 'success' && steps.architecture.outcome == 'success' && steps.installed-evidence.outcome == 'success' }}
         run: node packages/daynight/scripts/validation-environment.ts
       - name: Verify installed CLI
         id: installed-validation
-        if: ${{ !cancelled() && steps.installed-environment.outcome == 'success' }}
         timeout-minutes: 10
         run: |
           pnpm build
@@ -261,7 +285,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Upload installed CLI probe diagnostics
-        if: ${{ always() && steps.installed-evidence.outcome == 'success' && steps.installed-environment.outcome != 'skipped' }}
+        if: ${{ always() && steps.installed-environment.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: daynight-cli-installed-probes-macos-15
@@ -493,7 +517,7 @@ jobs:
 
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, verify-macos, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web-browser]
+    needs: [detect-changes, verify, verify-installed, verify-macos, verify-macos-installed, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web-browser]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:

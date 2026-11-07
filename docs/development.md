@@ -45,13 +45,13 @@ pnpm daynight --version
 
 `pnpm check` runs type checking and tests. Standalone `pnpm test` and
 `pnpm acceptance` build the package before exercising the compiled CLI. Native CI
-runs ordinary tests and installed acceptance independently on Linux and Windows.
-macOS uses one allocation for the same two complete phases in sequence. Both
-logical phases retain all three platforms, their own validation build and
-outcome, and 10-minute validation bounds; the ordinary phase also typechecks and
-tests the local development installer. The macOS job shares dependency setup and
-has a 20-minute outer limit. Ordinary suites exclude `.stress.ts` files; explicit
-local stress commands select those workloads separately, as described in
+runs ordinary tests and installed acceptance in independent jobs on Linux,
+Windows and macOS ARM64. Each job prepares its own dependencies, builds the CLI
+and records its own outcome. The ordinary jobs also typecheck and test the local
+development installer. Linux and Windows jobs have 10-minute limits; each macOS
+job has a 20-minute outer limit and a 10-minute validation-step limit. Ordinary
+suites exclude `.stress.ts` files; explicit local stress commands select those
+workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
 package's `dist/`, compiles
 `packages/daynight/dist/main.js`, then runs `scripts/copy-resources.ts`. That step
@@ -250,8 +250,9 @@ loading guarantees.
 Native development and validation support Linux, Windows and Apple Silicon
 (ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
 build and tests on native Linux, macOS 15 ARM64 and Windows runners. macOS uses
-the standard `macos-15` label for one `verify-macos` allocation, retaining Darwin
-ARM64 verification and the complete ordinary and installed phases. The [platform decision](../.agents/notes/archived/testing/2026-11-04-macos-arm64-support.md) records the rationale for the support boundary; the [image availability decision](../.agents/notes/implemented/testing/2026-11-05-macos-ci-image-availability.md)
+the standard `macos-15` label for independent `verify-macos` ordinary and
+`verify-macos-installed` installed jobs. Both verify Darwin ARM64 and execute
+their complete phase workload. The [platform decision](../.agents/notes/archived/testing/2026-11-04-macos-arm64-support.md) records the rationale for the support boundary; the [image availability decision](../.agents/notes/implemented/testing/2026-11-05-macos-ci-image-availability.md)
 records the explicit image selection and its limits. Hosted capacity failures
 require diagnosis within this ARM64 runner policy, and a supported label still
 requires real allocation and complete native test results.
@@ -269,15 +270,14 @@ PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs both phases on every
 native platform, the runtime compatibility matrix and the dedicated Linux shell
-completion job. Both Linux/Windows matrices and the macOS job need only module
-detection. Within macOS, installed validation runs after ordinary validation even
-if the latter fails, provided shared preparation and architecture checks passed
-and the job was not cancelled. Ordinary environment/probe uploads run before the
-fixed receipt paths are cleared and the installed recorder starts. Each phase
-retains its own outcome, artifacts, build and cleanup; an ordinary failure still
-fails the job and final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
-records the original parallel model; the [single macOS allocation decision](../.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
-owns its partial replacement, failure handling and budget trade-off.
+completion job. Both Linux/Windows matrices and both macOS jobs need only module
+detection, so ordinary validation does not gate installed validation. Each job
+owns its checkout, toolchain, dependencies, environment recorder, build, fixtures,
+cleanup and artifacts. The two macOS jobs use separate workspaces, so their fixed
+receipt paths need no phase handoff or clearing. A failure or cancellation in
+either job fails the final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
+records the original parallel model; the [independent macOS validation decision](../.agents/notes/implemented/testing/2026-11-07-independent-macos-cli-validation.md)
+owns the current macOS topology and its allocation trade-off.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -293,8 +293,8 @@ receipts and diagnostics use `daynight-cli-installed-*` and
 curated acceptance outputs and canonical preparation/cleanup result. Every
 native version and both complete phase workloads remain required whenever CLI
 validation is selected. Linux/Windows phases each have a 600-second job gate;
-macOS retains a 600-second limit per validation phase inside one 1200-second
-job, including shared setup and uploads. The
+each macOS job retains a 600-second validation-step limit inside its own
+1200-second job limit, including setup and uploads. The
 [cold-start decision](../.agents/notes/archived/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 records the measurements, deadline semantics and remaining limits.
 
@@ -772,9 +772,10 @@ jobs selected by other paths.
 CLI selection runs ordinary and installed phases on Linux, Windows and macOS
 ARM64, a Node compatibility matrix, and the Linux shell-completion job. The
 ordinary Ubuntu job supplies the runtime package. macOS runs its ordinary and
-installed phases in sequence with separate builds, outcomes and artifacts. Go
-has its own PostgreSQL service and uploads the raw coverage profile. Web selection
-starts two jobs that depend only on module detection. `verify-web-quality` runs
+installed phases as independent jobs with separate preparation, builds, outcomes
+and artifacts. Both jobs contribute to the final gate. Go has its own PostgreSQL
+service and uploads the raw coverage profile. Web selection starts two jobs that
+depend only on module detection. `verify-web-quality` runs
 full Web typechecking, the harness, the actual localhost Dockerfile's `web`
 target, Vitest coverage and the source-inventory checker with bounded stages,
 then uploads coverage evidence. The build target verifies production compilation
