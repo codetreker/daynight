@@ -14,8 +14,9 @@ after the cross-product acceptance harness is removed.
 The Go module check selects all listed production packages for `-coverpkg` and
 enforces package, function and unrounded total coverage gates. Critical-block
 failure is disabled by the checked-in configuration.
-It runs with race detection locally and without race detection in PR and main
-CI. CI overrides an inherited race flag. The coverage comparator's own tests
+The original gate ran race detection locally and disabled it in both PR and main
+CI. The [race policy](2026-11-07-go-coverage-streaming.md) now retains race
+instrumentation on main while PR CI overrides an inherited race flag. The coverage comparator's own tests
 run as part of the check. Package concurrency is limited to two because the
 isolated schemas share the database-wide migration advisory lock. Stress
 workloads remain a separate local entry.

@@ -777,8 +777,8 @@ owns the rationale and proof boundary.
 
 ### Race instrumentation
 
-The coverage check enables race instrumentation locally. PR and main CI run it
-without race; that coverage path also overrides an inherited `GOFLAGS=-race`.
+The coverage check enables race instrumentation locally and on main CI. PR CI
+runs without race and overrides an inherited `GOFLAGS=-race`.
 The separate
 `bash scripts/stress.sh` entry uses `-race` for local-only stress tests.
 The fresh-process attachment test uses its test's race setting for the child
@@ -794,6 +794,8 @@ package and function thresholds are 85% and 80%; production packages, files and
 functions are not excluded. `critical_blocks.fail` is false, so the check does
 not analyze or fail on critical blocks. The raw `coverage.out` profile passes
 an exact statement comparison strictly greater than 90%; exactly 90% fails.
+The comparator reads the profile incrementally, deduplicating coverage blocks
+without loading the entire profile into one string.
 The check selects all listed production packages for `-coverpkg`, so a module
 test also attributes its calls to other production packages. Tests and their
 database state require the isolated PostgreSQL instance; preparation failures
