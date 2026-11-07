@@ -23,7 +23,7 @@ const project = '00000000-0000-4000-8000-000000000100';
 const otherProject = '00000000-0000-4000-8000-000000000200';
 const canonicalTask = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
+const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null,
   id, titlePreview: `任务 ${id}`, titleTruncated: false, status, dependsOn, blockedBy: [], ready: false,
   createdAt: timestamp, updatedAt: timestamp,
 });
@@ -35,7 +35,7 @@ const snapshot = (items = seeds, id = project): TaskGraph => {
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id, repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
-      done: tasks.filter((item) => item.status === 'done').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
+      done: tasks.filter((item) => item.status === 'done').length, cancelled: 0, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
 };
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();

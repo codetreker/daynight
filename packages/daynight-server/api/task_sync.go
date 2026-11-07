@@ -18,6 +18,7 @@ type TaskViewRecord struct {
 	UpdatedAt         time.Time      `json:"updatedAt"`
 	StartedAt         *time.Time     `json:"startedAt"`
 	CompletedAt       *time.Time     `json:"completedAt"`
+	CancelledAt       *time.Time     `json:"cancelledAt"`
 }
 
 type TaskSync struct {

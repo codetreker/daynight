@@ -22,10 +22,11 @@ type queryStub struct {
 	principal    model.Principal
 	err          error
 	graphErr     error
+	graph        model.TaskGraph
 }
 
 func (s *queryStub) Graph(context.Context, model.Principal, string, string) (model.TaskGraph, error) {
-	return model.TaskGraph{}, s.graphErr
+	return s.graph, s.graphErr
 }
 func (s *queryStub) MCPList(_ context.Context, principal model.Principal, _ string, request taskcore.MCPListRequest, visit func(store.TaskPriorityItem, string, bool) bool) error {
 	s.request, s.principal = request, principal
@@ -92,6 +93,32 @@ func TestTaskListProjectionAndContinuationBudget(t *testing.T) {
 	}
 }
 
+func TestTaskGraphCancellationTimeAndDependencyProjection(t *testing.T) {
+	stamp := time.Date(2026, 11, 7, 1, 2, 3, 456789123, time.FixedZone("test", 3*60*60))
+	stub := &queryStub{graph: model.TaskGraph{
+		Summary: model.TaskGraphSummary{Total: 1, Cancelled: 1},
+		Tasks:   []model.GraphTask{{ID: "cancelled", Status: model.TaskCancelled, CancelledAt: &stamp, DependsOn: []string{"prerequisite"}}},
+	}}
+	result, err := graphTool(t.Context(), RequestActor{RequestID: "request"}, graphInput{View: "full"}, stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := result.Data.(graphData)
+	node := data.Tasks[0].(graphNode)
+	if data.Summary.Cancelled != 1 || data.Summary.Done != 0 || node.CancelledAt == nil || !node.CancelledAt.Equal(stamp) || node.CancelledAt.Location() != time.UTC || stamp.Location() == time.UTC {
+		t.Fatalf("cancellation graph projection: %#v %#v", data.Summary, node)
+	}
+	result, err = graphTool(t.Context(), RequestActor{RequestID: "request"}, graphInput{View: "full", DependsOnly: true}, stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = result.Data.(graphData)
+	encoded, err := json.Marshal(data.Tasks[0])
+	if err != nil || strings.Contains(string(encoded), "cancelledAt") || strings.Contains(string(encoded), "status") {
+		t.Fatalf("dependency projection contains unrelated fields: %s, %v", encoded, err)
+	}
+}
+
 func TestTaskQueryRegistrationAndProtocolValidation(t *testing.T) {
 	f := newEntryFixture(t)
 	stub := &queryStub{items: []store.TaskPriorityItem{{Task: model.Task{ID: "id", ProjectID: "project", Title: "title", Version: 7, CreatedAt: time.Now(), Properties: model.TaskProperties{}}, BlockedByCount: 2}}}
@@ -126,6 +153,10 @@ func TestTaskQueryRegistrationAndProtocolValidation(t *testing.T) {
 		if object(t, structured(t, result)["meta"])["requestId"] != "test-request" {
 			t.Fatalf("%s missing request ID", name)
 		}
+	}
+	filtered, err := client.CallTool(ctx, &sdk.CallToolParams{Name: "task_list", Arguments: map[string]any{"projectId": "c450e1ca-60a7-42d7-a17a-a112bc71fd8a", "status": "cancelled"}})
+	if err != nil || filtered.IsError || stub.request.Status == nil || *stub.request.Status != model.TaskCancelled {
+		t.Fatalf("cancelled status schema or query: %#v %v", filtered, err)
 	}
 	stub.err = &model.Fault{Code: "list_changed", Message: "Tasks changed during this list; restart the list."}
 	changed, err := client.CallTool(ctx, &sdk.CallToolParams{Name: "task_list", Arguments: map[string]any{"projectId": "c450e1ca-60a7-42d7-a17a-a112bc71fd8a"}})

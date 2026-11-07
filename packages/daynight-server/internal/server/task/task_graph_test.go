@@ -58,7 +58,7 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 			!slices.Equal(task.DependsOn, expected.DependsOn) || !slices.Equal(task.ExternalDependsOn, expected.ExternalDependsOn) || !slices.Equal(task.BlockedBy, expected.BlockedBy) ||
 			task.DependsOn == nil || task.BlockedBy == nil || task.CreatedAt != expected.CreatedAt || task.UpdatedAt != expected.UpdatedAt ||
 			task.CreatedAt.Location() != time.UTC || task.UpdatedAt.Location() != time.UTC ||
-			!reflect.DeepEqual(task.StartedAt, expected.StartedAt) || !reflect.DeepEqual(task.CompletedAt, expected.CompletedAt) {
+			!reflect.DeepEqual(task.StartedAt, expected.StartedAt) || !reflect.DeepEqual(task.CompletedAt, expected.CompletedAt) || !reflect.DeepEqual(task.CancelledAt, expected.CancelledAt) {
 			t.Fatalf("task projection %d differs: %+v want %+v", index, task, expected)
 		}
 		if task.ID == ready.ID {
@@ -76,11 +76,11 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if len(raw.Summary) != 6 {
-		t.Fatalf("summary must expose exactly six three-state counts: %+v", raw.Summary)
+	if len(raw.Summary) != 7 {
+		t.Fatalf("summary must expose exactly seven four-state counts: %+v", raw.Summary)
 	}
 	for _, task := range raw.Tasks {
-		if len(task) != 15 {
+		if len(task) != 16 {
 			t.Fatalf("graph task exposes unexpected fields: %+v", task)
 		}
 		for _, field := range []string{"title", "description", "version", "projectId"} {

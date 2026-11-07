@@ -138,6 +138,9 @@ var oauthCleanupCursorSQL string
 //go:embed migrations/045_bot_native_preferences.sql
 var botNativePreferencesSQL string
 
+//go:embed migrations/046_task_cancelled.sql
+var taskCancelledSQL string
+
 //go:embed migrations/043_upload_chunks.sql
 var uploadChunksSQL string
 
@@ -197,6 +200,7 @@ var schemaMigrations = []migration{
 	{version: 43, sql: uploadChunksSQL},
 	{version: 44, sql: projectSoftDeleteSQL},
 	{version: 45, sql: botNativePreferencesSQL},
+	{version: 46, sql: taskCancelledSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

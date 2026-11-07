@@ -78,6 +78,7 @@ type Task struct {
 	UpdatedAt         time.Time      `json:"updatedAt"`
 	StartedAt         *time.Time     `json:"startedAt"`
 	CompletedAt       *time.Time     `json:"completedAt"`
+	CancelledAt       *time.Time     `json:"cancelledAt"`
 	DependsOn         []string       `json:"dependsOn"`
 	ExternalDependsOn []string       `json:"externalDependsOn"`
 	BlockedBy         []string       `json:"blockedBy"`

@@ -54,7 +54,7 @@ type TaskPriorityPosition struct {
 type TaskPriorityQuery struct {
 	AssignedTo         model.TaskAssignmentFilter
 	Status             *model.TaskStatus
-	ExcludeDone        bool
+	ExcludeTerminal    bool
 	Ready, AllowAgents *bool
 	CompatiblePlatform *model.TaskPlatform
 	After              *TaskPriorityPosition

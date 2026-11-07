@@ -13,7 +13,7 @@ import { parseProjectOwnership } from "./team-parse";
 import { isTaskVersion } from "./json";
 
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
-import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, status, string, timestamp } from "./validation";
+import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, taskStatusFields, string, timestamp } from "./validation";
 import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim } from "./task-properties";
 
 const projectSettings = (value: unknown): Project["settings"] => {
@@ -60,7 +60,7 @@ const graphTask = (value: unknown): GraphTask => {
     id: id(data.id),
     titlePreview: string(data.titlePreview),
     titleTruncated: boolean(data.titleTruncated),
-    status: status(data.status),
+    ...taskStatusFields(data),
     ...taskDependencies(data),
     blockedBy: ids(data.blockedBy),
     ready: boolean(data.ready),
@@ -81,10 +81,11 @@ const summary = (value: unknown): TaskGraphSummary => {
     todo: count(data.todo),
     inProgress: count(data.inProgress),
     done: count(data.done),
+    cancelled: count(data.cancelled),
     ready: count(data.ready),
     blocked: count(data.blocked),
   };
-  if (parsed.total !== parsed.todo + parsed.inProgress + parsed.done || parsed.todo !== parsed.ready + parsed.blocked) return malformed();
+  if (parsed.total !== parsed.todo + parsed.inProgress + parsed.done + parsed.cancelled || parsed.todo !== parsed.ready + parsed.blocked) return malformed();
   return parsed;
 };
 
@@ -107,7 +108,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     title: nonemptyString(data.title),
     description: string(data.description),
     properties: parseTaskProperties(data.properties),
-    status: status(data.status),
+    ...taskStatusFields(data),
     version,
     ...taskDependencies(data),
     blockedBy: ids(data.blockedBy),
@@ -125,7 +126,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
   readTaskPaused(parsed.properties);
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
-  if (worker?.state === "released" && parsed.status !== "todo") return malformed();
+  if (worker?.state === "released" && parsed.status !== "todo" && parsed.status !== "cancelled") return malformed();
   return parsed;
 };
 

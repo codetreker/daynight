@@ -86,7 +86,7 @@ Task UUID 已全局唯一，步骤行不重复 project ID。授权先定位父�
 
 ## 资源与 HTTP
 
-领域状态与 Task 三状态分别定义，`skipped` 不进入 TaskStatus。位置只体现在数组顺序中。
+领域状态与Task四状态分别定义，`skipped` 不进入 TaskStatus。位置只体现在数组顺序中。
 
 ```ts
 type TaskStep = {

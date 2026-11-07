@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 )
 
 type atomKey struct {
@@ -123,9 +124,7 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 	match, priority := c.expression(input.Expression)
 	sql := `WITH folded AS MATERIALIZED (SELECT ` + strings.Join(folded, ", ") + ` FROM tasks t
  WHERE t.project_id=$1 AND t.deleted_at IS NULL AND ($2::text IS NULL OR t.status=$2)
- AND ($3::boolean IS NULL OR (t.status='todo' AND NOT EXISTS (
- SELECT 1 FROM task_dependencies d WHERE d.project_id=t.project_id AND d.task_id=t.id
- AND NOT EXISTS (SELECT 1 FROM tasks p WHERE p.project_id=d.project_id AND p.id=d.depends_on_task_id AND p.status='done')))=$3)
+ AND ($3::boolean IS NULL OR ` + pg.TaskReady + `=$3)
  AND ($4::boolean IS NULL OR t.allow_agents=$4)
  AND ($5::text IS NULL OR t.required_platform IS NULL OR t.required_platform=$5)
  AND ($6::text='' OR ($6='unassigned' AND t.assigned_to IS NULL) OR ($6='user' AND t.assigned_to=$7::uuid))),
@@ -135,7 +134,7 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
  page AS (SELECT * FROM matched WHERE $8::boolean IS NULL OR title_priority < $8 OR
  (title_priority=$8 AND (updated_at < $9::timestamptz OR (updated_at=$9 AND id > $10::uuid)))
  ORDER BY title_priority DESC,updated_at DESC,id ASC LIMIT $11)
- SELECT total.total,t.id::text,t.title,t.description,t.status,t.assigned_to::text,p.updated_at,p.title_priority
+ SELECT total.total,t.id::text,t.title,t.description,t.status,t.assigned_to::text,t.cancelled_at,p.updated_at,p.title_priority
  FROM total LEFT JOIN page p ON true LEFT JOIN tasks t ON t.id=p.id AND t.project_id=$1
  ORDER BY p.title_priority DESC,p.updated_at DESC,p.id ASC`
 	rows, err := s.tx.Query(ctx, sql, args...)
@@ -147,9 +146,9 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 	for rows.Next() {
 		var id, title, description, status *string
 		var assigned *string
-		var updated *time.Time
+		var updated, cancelled *time.Time
 		var titlePriority *bool
-		if err := rows.Scan(&result.Total, &id, &title, &description, &status, &assigned, &updated, &titlePriority); err != nil {
+		if err := rows.Scan(&result.Total, &id, &title, &description, &status, &assigned, &cancelled, &updated, &titlePriority); err != nil {
 			return store.TaskSearchPage{}, searchError("read task search", err)
 		}
 		if id == nil {
@@ -158,7 +157,7 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 		if title == nil || description == nil || status == nil || updated == nil || titlePriority == nil {
 			return store.TaskSearchPage{}, fmt.Errorf("incomplete task search row")
 		}
-		row := store.TaskSearchRow{ID: *id, Title: *title, Description: *description, Status: model.TaskStatus(*status), AssignedTo: assigned, UpdatedAt: updated.UTC(), TitlePriority: *titlePriority}
+		row := store.TaskSearchRow{ID: *id, Title: *title, Description: *description, Status: model.TaskStatus(*status), AssignedTo: assigned, CancelledAt: pg.UTCTime(cancelled), UpdatedAt: updated.UTC(), TitlePriority: *titlePriority}
 		if !row.Status.Valid() {
 			return store.TaskSearchPage{}, fmt.Errorf("invalid task search status")
 		}

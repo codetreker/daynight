@@ -19,12 +19,19 @@ func TestTaskHTTPStatusPairsAndStaleVersions(t *testing.T) {
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, projectTestStore(t), &logs)
 	project := taskProject(t, handler)
-	for _, from := range []string{"todo", "in_progress", "done"} {
-		for _, to := range []string{"todo", "in_progress", "done"} {
+	for _, from := range []string{"todo", "in_progress", "done", "cancelled"} {
+		for _, to := range []string{"todo", "in_progress", "done", "cancelled"} {
 			t.Run(from+"_to_"+to, func(t *testing.T) {
 				task := setHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "private-title-secret"), from)
 				path := taskPath(task) + "/status"
 				assertProjectError(t, projectRequest(handler, http.MethodPut, path, jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version + 1, Status: to})), http.StatusConflict, "version_conflict")
+				if from == "cancelled" && to != "cancelled" {
+					assertProjectError(t, projectRequest(handler, http.MethodPut, path, jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: to})), http.StatusConflict, "invalid_transition")
+					if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
+						t.Fatal("cancelled recovery changed persistent task")
+					}
+					return
+				}
 				after := setHTTPTask(t, handler, task, to)
 				delta := int64(1)
 				if from == to {

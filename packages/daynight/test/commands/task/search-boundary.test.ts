@@ -30,7 +30,7 @@ it("prints ordered projected search JSON only after all pages, preserving the qu
   expect(await f.run([query, "--project", projectId, "--status", "done", "--assigned-to", "me", "--ready", "--allow-agents", "false", "--compatible-platform", "linux", "--json"])).toBe(0);
   const output = JSON.parse(f.context.stdout.mock.calls[0]![0]);
   expect(output.map((item: any) => item.id)).toEqual([first.items[0].id, next.items[0].id]);
-  expect(Object.keys(output[0])).toEqual(["id", "projectId", "title", "status", "context", "match"]);
+  expect(Object.keys(output[0])).toEqual(["id", "projectId", "title", "status", "cancelledAt", "context", "match"]);
   expect(f.context.stderr).not.toHaveBeenCalled();
   const bodies = fetch.mock.calls.map(([, init]) => JSON.parse(String(init!.body)));
   expect(bodies[0]).toEqual({ query, status: "done", assignedTo: "me", ready: true, allowAgents: false, compatiblePlatform: "linux", limit: 100 });

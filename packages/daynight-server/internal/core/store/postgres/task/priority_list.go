@@ -29,7 +29,7 @@ func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store
 	if q.After != nil {
 		group, afterTime, afterID = q.After.Group, q.After.CreatedAt, q.After.ID
 	}
-	args := []any{projectID, q.Status, q.ExcludeDone, q.Ready, q.AllowAgents, q.CompatiblePlatform, group, afterTime, afterID, limit + 1}
+	args := []any{projectID, q.Status, q.ExcludeTerminal, q.Ready, q.AllowAgents, q.CompatiblePlatform, group, afterTime, afterID, limit + 1}
 	assignment := ""
 	switch q.AssignedTo.Mode {
 	case model.TaskAssignmentAll:
@@ -49,10 +49,9 @@ func (s *Reader) TaskPriorityList(ctx context.Context, projectID string, q store
 	}
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, left(t.title,513), octet_length(t.title)>512, t.status, t.version,
  t.created_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskReady+`,
- (SELECT count(*) FROM task_dependencies d WHERE d.project_id=t.project_id AND d.task_id=t.id
- AND NOT EXISTS (SELECT 1 FROM tasks p WHERE p.project_id=d.project_id AND p.id=d.depends_on_task_id AND p.status='done'))
+ `+pg.TaskBlockedCount+`
  FROM tasks t WHERE t.project_id=$1 AND t.deleted_at IS NULL
- AND ($2::text IS NULL OR t.status=$2) AND (NOT $3::boolean OR t.status <> 'done')
+ AND ($2::text IS NULL OR t.status=$2) AND (NOT $3::boolean OR t.status NOT IN ('done', 'cancelled'))
  AND ($4::boolean IS NULL OR `+pg.TaskReady+`=$4) AND ($5::boolean IS NULL OR t.allow_agents=$5)
  AND ($6::text IS NULL OR t.required_platform IS NULL OR t.required_platform=$6)`+assignment+`
  AND ($7::int IS NULL OR (`+priorityGroup+`,t.created_at,t.id)>($7,$8::timestamptz,$9::uuid))

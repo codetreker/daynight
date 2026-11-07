@@ -12,6 +12,7 @@ export const TaskStatusMenu = ({ status, disabled, onSelect }: {
   readonly onSelect: (status: TaskStatus) => void;
 }) => {
   const { messages } = useI18n();
+  const unavailable = disabled || status === "cancelled";
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const container = useRef<HTMLDivElement>(null);
@@ -29,7 +30,7 @@ export const TaskStatusMenu = ({ status, disabled, onSelect }: {
     menu.current!.style.left = `${Math.max(8, Math.min(box.right - 174, window.innerWidth - 182))}px`;
     options.current[active]?.focus();
   }, [open, active]);
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  useEffect(() => { if (unavailable) setOpen(false); }, [unavailable]);
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => { if (!container.current!.contains(event.target as Node)) close(false); };
@@ -38,7 +39,7 @@ export const TaskStatusMenu = ({ status, disabled, onSelect }: {
   }, [open]);
   return <div className="task-status-picker" ref={container} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) close(false); }}>
     <button className="task-status-trigger" ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
-      disabled={disabled} onClick={() => open ? close(false) : show(statuses.indexOf(status))}
+      disabled={unavailable} onClick={() => open ? close(false) : show(statuses.indexOf(status))}
       onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(event.key === 'ArrowDown' ? 0 : statuses.length - 1); } }}>
       <i className={`task-detail-dot-${status}`} aria-hidden="true" />{messages.common.status[status]}<svg className="task-status-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg>
     </button>

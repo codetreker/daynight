@@ -149,7 +149,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 | 对象 | 字段与含义 |
 |---|---|
 | Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes）；内部真实 `Ownership` 保存 TeamID、Version、UpdatedAt，公开内在字段必含 `ownership:{teamId,version}`；GET 另含同快照 access |
-| Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt` |
+| Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt`、`cancelledAt` |
 | TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
 | WorkerConfiguration | 同一账号 Worker 行上的独立目标版本、值、应用观测版本与最近结果；[配置设计](daynight-worker-configuration.md) |
@@ -225,18 +225,18 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 
 ## 状态与依赖不变量
 
-Task 只使用 `todo`、`in_progress`、`done`，创建与数据库默认均为 todo。
+Task 使用 `todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 todo。
 `014_task_status_assignment.sql` 将旧 proposed 行归类为 todo，对转换行 version+1、更新 updatedAt，
 保留执行时间及所有其他事实；默认、数据、CHECK 与 ledger 同一事务。已应用历史迁移保持不变。
-[状态架构](daynight-task-status.md)拥有九种状态对、迁移和计时的完整机制与理由。
+[状态架构](daynight-task-status.md)拥有四态转换、迁移和计时的完整机制与理由。
 
 `Tasks.SetStatus` 复用 `Tasks.write`，在项目锁和成员复核后先比较精确版本，再处理同状态 no-op。
-实际进入 in_progress/done 检查全部直接前置，done 退回检查全部直接 active/done 后继；普通与外部边一致。
+实际进入in_progress/done检查全部直接前置为done或cancelled，取消本身不要求前置满足；done退回todo/in_progress检查全部直接active/done后继；done→cancelled保持依赖满足，取消后继不增加重开保护；普通与外部边一致。
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
-同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通 setter 不能释放 active 或开始/完成 released task。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
+同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通setter不能释放active或开始/完成released task；released可以取消，取消后各恢复入口包括withdraw明确拒绝。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
 
 普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人和属性。完整候选校验保证
-in_progress/done 的全部直接前置已 done，todo 允许未完成前置。引用必须同 project 且存在；
+in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
 重复、自身引用、缺失、跨项目和环均拒绝。状态设置与元数据具有单独公开职责。
 
 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
@@ -261,7 +261,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 同 project 的 task 写入由 project 行锁串行化，不同 project 可以并行。获得锁与读取
 任务不能合并为一个依赖同一旧快照的 SQL 语句：等待锁结束后，后续查询需要看到刚
 提交的 project 内写入。任务 UPDATE 依据实际旧/新状态维护时间：进入 in_progress 产生新起点并清空终点，
-退回 todo 清空两端，in_progress→done 保留可空起点并写真实终点，todo→done 起点保持 null。
+退回 todo 清空两端，in_progress→done 保留可空起点并写真实终点，todo→done起点保持null。取消记录cancelledAt并保留原执行起止；同状态和普通编辑不刷新取消时间。
 普通编辑和同状态不改变执行时间。时间使用锁后的 `statement_timestamp()`，不使用可能早于锁等待结束的事务时间。该机制依赖 PostgreSQL 在 `READ COMMITTED` 下为每条命令
 取得新快照的语义，见[事务隔离文档](https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED)
 及[行锁文档](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS)。
@@ -312,7 +312,7 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
 | `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
-| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标三状态，done 可带当前 claimId |
+| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标四状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
 | `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active/released，清除归属并关闭自动执行 |
@@ -349,7 +349,7 @@ Task PATCH 必须提交期望的 `version`，并至少提供 `title`、`descript
 }
 ```
 
-状态 PUT 严格接受正 int64 version 与三状态 status，返回 200 和完整 task。通用 PATCH 中出现
+状态 PUT 严格接受正 int64 version 与四状态 status，返回 200 和完整 task。通用 PATCH 中出现
 status 是输入错误，含其他合法字段也不写入。HTTP 与日志保留 invalid_transition
 用于 in_progress 的实际许可或平台切换拒绝；前置或受保护后继拒绝使用 dependency_unsatisfied。
 严格 request DTO 和具体服务 use case 共用原 project 锁。
@@ -507,7 +507,7 @@ PostgreSQL 实例及隔离数据库或 schema，验证 SQL、锁和事务行为�
 的数据库测试按职责位于对应模块。
 
 覆盖范围包括正常资源操作、非法字段和地址、同 project 限制、自身及重复依赖、环、
-完整依赖替换、三状态九组合、同状态+0/实际改变+1、PATCH status 拒绝、版本冲突、语义空更新、
+完整依赖替换、四态转换与取消不可恢复、同状态+0/实际改变+1、PATCH status 拒绝、版本冲突、语义空更新、
 原子起止时间、未知历史、锁等待后的实际开始、普通编辑保持计时、数据库图时间样本、失败回滚，以及一致的
 `dependsOn`/`blockedBy`/`ready`。并发测试使用协调屏障观察真实锁等待，证明并发
 反向依赖、同版本状态及依赖更新/状态竞争、重开与后继开始/完成竞争最终仍保持不变量，同时证明不同 project 可以并行。

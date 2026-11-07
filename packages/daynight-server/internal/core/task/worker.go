@@ -66,11 +66,11 @@ func CanonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error)
 }
 
 func WorkerReady(current model.Task) error {
-	if current.Status != model.TaskTodo {
+	if !current.Status.IsExecutable() {
 		return &model.Fault{Code: "invalid_transition", Message: "Only a ready todo task may be claimed."}
 	}
 	if len(current.BlockedBy) > 0 {
-		return &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
+		return &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done or cancelled.", TaskIDs: current.BlockedBy}
 	}
 	worker, err := taskproperty.Worker(current.Properties)
 	if err != nil {
@@ -225,6 +225,9 @@ func WorkerUpdateCandidate(current model.Task, worker *model.WorkerClaim, claimI
 }
 
 func WithdrawableWorker(current model.Task, claimID string) (*model.WorkerClaim, error) {
+	if current.Status == model.TaskCancelled {
+		return nil, cancelledTransition()
+	}
 	worker, err := taskproperty.Worker(current.Properties)
 	if err != nil {
 		return nil, err
@@ -246,6 +249,9 @@ func ReleaseCandidate(current model.Task, worker *model.WorkerClaim) (store.Task
 }
 
 func WithdrawCandidate(current model.Task) (store.TaskWrite, error) {
+	if current.Status == model.TaskCancelled {
+		return store.TaskWrite{}, cancelledTransition()
+	}
 	values := CurrentWrite(current)
 	values.Status, values.AllowAgents = model.TaskTodo, false
 	var err error
