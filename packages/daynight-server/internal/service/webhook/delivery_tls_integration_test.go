@@ -292,6 +292,16 @@ func TestDeliveryRetryAfterPreservesBytes(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
 		t.Fatal(err)
 	}
+	var keyID string
+	var env secretbox.Envelope
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT k.id::text,k.envelope_version,k.master_key_id,k.nonce,k.ciphertext FROM webhook_signing_keys k JOIN webhook_endpoints e ON e.active_key_id=k.id WHERE e.id=$1`, endpoint).Scan(&keyID, &env.Version, &env.MasterKeyID, &env.Nonce, &env.Ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	key, err := f.capture.Keys.Open(env, []string{"personal", f.principal.UserID, endpoint, "signing-key", keyID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
@@ -359,6 +369,31 @@ func TestDeliveryRetryAfterPreservesBytes(t *testing.T) {
 	if time.Now().Before(waitUntil) || first.id != second.id || !bytes.Equal(first.body, second.body) || first.timestamp == second.timestamp {
 		t.Fatalf("retry changed event bytes or violated waiting")
 	}
+	for _, request := range []observedRequest{first, second} {
+		mac := hmac.New(sha256.New, key)
+		fmt.Fprintf(mac, "%s.%s.", request.id, request.timestamp)
+		mac.Write(request.body)
+		if request.signature != "v1,"+base64.StdEncoding.EncodeToString(mac.Sum(nil)) {
+			t.Fatal("retry signature did not verify")
+		}
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		var attempts, sameRevision int
+		if err := f.db.Pool.QueryRow(f.ctx, `SELECT d.state,count(a.id),count(a.id) FILTER(WHERE a.destination_revision=d.destination_revision AND d.destination_revision=2) FROM webhook_deliveries d LEFT JOIN webhook_attempts a ON a.delivery_id=d.id GROUP BY d.id`).Scan(&state, &attempts, &sameRevision); err != nil {
+			t.Fatal(err)
+		}
+		if state == "delivered" && attempts == 2 && sameRevision == 2 {
+			return
+		}
+		select {
+		case err := <-runner.Failures():
+			t.Fatalf("runner failure: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	t.Fatal("retry attempts or destination revision not retained")
 }
 
 type heldRemovalStore struct {
