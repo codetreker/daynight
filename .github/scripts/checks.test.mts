@@ -288,7 +288,6 @@ test("Web quality and browser jobs prepare independent runners after module sele
     assert.match(stage, /^    needs: detect-changes$/m);
     assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
     assert.match(stage, /^    runs-on: ubuntu-latest$/m);
-    assert.match(stage, /^    timeout-minutes: 20$/m);
     assert.match(stage, /uses: actions\/checkout@/);
     assert.match(stage, /^          persist-credentials: false$/m);
     assert.match(stage, /^          node-version: 24$/m);
@@ -299,9 +298,11 @@ test("Web quality and browser jobs prepare independent runners after module sele
     assert.match(stage, /XDG_CACHE_HOME: \$\{\{ github.workspace \}\}\/\.tmp\/cache/);
     assert.doesNotMatch(stage, /download-artifact|continue-on-error/);
   }
+  assert.match(webQuality, /^    timeout-minutes: 30$/m);
+  assert.match(webBrowser, /^    timeout-minutes: 20$/m);
 });
 
-test("Web quality owns the complete harness, coverage command and evidence", () => {
+test("Web quality owns types, production build, harness, coverage and evidence", () => {
   assert.match(webQuality, /run: node packages\/daynight-web\/scripts\/ci.mts quality/);
   assert.doesNotMatch(webQuality, /playwright|web-browser|bots-viewport/);
   const uploads = uploadSteps(webQuality);

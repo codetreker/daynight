@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "build": "pnpm typecheck && vite build",
+    "build": "tsc --project tsconfig.build.json && vite build",
     "test": "pnpm test:harness && pnpm test:coverage",
     "test:harness": "node --test scripts/ci.test.mts scripts/coverage.test.mts scripts/dagre.test.mts scripts/publish-assets.test.mts",
     "test:coverage": "vitest run --coverage && node scripts/coverage.mts",

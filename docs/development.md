@@ -596,9 +596,10 @@ pnpm web:test:browser
 
 The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes them into the Go embed directory. A production Go build
-requires generated assets. Web quality runs the module harness, Vitest/V8 suite
-and a statement gate strictly greater than 90%; it does not start the Go service
-or an installed CLI. `pnpm web:test:browser` separately runs the controlled
+requires generated assets. Web quality runs full Web typechecking, the module
+harness, the production Docker Web build, the Vitest/V8 suite and a statement
+gate strictly greater than 90%; it does not start the Go service or an installed
+CLI. `pnpm web:test:browser` separately runs the controlled
 module browser fixtures after Playwright Chromium is installed; see the
 [Web guide](../packages/daynight-web/README.md#validation-and-build). The CI Web quality job contributes its result to the final
 `checks` gate alongside the independent Web browser job; both must succeed when
@@ -774,12 +775,15 @@ ordinary Ubuntu job supplies the runtime package. macOS runs its ordinary and
 installed phases in sequence with separate builds, outcomes and artifacts. Go
 has its own PostgreSQL service and uploads the raw coverage profile. Web selection
 starts two jobs that depend only on module detection. `verify-web-quality` runs
-the harness, Vitest coverage and source-inventory checker with bounded stages,
-then uploads coverage evidence. `verify-web-browser` prepares its own locked
+full Web typechecking, the harness, the actual localhost Dockerfile's `web`
+target, Vitest coverage and the source-inventory checker with bounded stages,
+then uploads coverage evidence. The build target verifies production compilation
+and asset publication in the filtered Docker context without running Go tests
+or starting application services. `verify-web-browser` prepares its own locked
 dependencies and Chromium, runs the configured assistant Playwright suite, and
-uploads JUnit results and browser captures. Each Web job has a 20-minute limit;
-neither waits for the other. The final gate accepts only successful or skipped
-preceding jobs and requires both Web jobs to succeed when selected. Stress
+uploads JUnit results and browser captures. Quality has a 30-minute limit and
+browser validation has a 20-minute limit; neither waits for the other. The final
+gate accepts only successful or skipped preceding jobs and requires both Web jobs to succeed when selected. Stress
 workloads remain local-only.
 
 Workflow concurrency cancels an older PR run for the same ref; main pushes queue

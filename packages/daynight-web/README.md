@@ -1929,8 +1929,12 @@ pnpm web:test
 pnpm web:test:browser
 ```
 
-The build typechecks the package and emits production HTML and hashed assets to
-`packages/daynight-web/dist/`. `scripts/publish-assets.mts` validates the index,
+The build uses `tsconfig.build.json` to typecheck application sources, the Vite
+configuration and their imports, then emits production HTML and hashed assets to
+`packages/daynight-web/dist/`. `pnpm web:typecheck` uses the full `tsconfig.json`
+to check application sources, tests, scripts and tool configurations. Production
+compilation does not require test or acceptance fixtures from other modules.
+`scripts/publish-assets.mts` validates the index,
 its local asset references and ordinary files, prepares a complete staged copy,
 and replaces `packages/daynight-server/internal/service/webui/dist/`. Failed validation
 or publication fails the build; a failed swap attempts to restore previous assets
@@ -1943,9 +1947,13 @@ The existing root `build`, `test` and `acceptance` commands retain their CLI sco
 
 `web:test` serially composes two required package commands. `test:harness` runs
 its Node tooling tests, including the coverage checker and asset publication.
-`scripts/ci.mts quality` runs the tooling suite, Vitest coverage with four workers,
-and the statement checker with respective process limits of 3, 15 and 1 minutes.
-Each limit includes process startup, reporting and exit.
+`scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,
+the real localhost Dockerfile's `web` target, Vitest coverage with four workers,
+and the statement checker with respective process limits of 1, 3, 5, 15 and 1
+minutes. Each limit includes process startup, reporting and exit. The Docker
+stage requires a Linux Docker engine and registry access; it verifies container
+installation, production compilation and asset publication using the actual
+build context. It starts no service or database and does not run Go validation.
 Vitest suppresses console output from passing tests, including diagnostics from
 expected failure scenarios, and retains console output from failing tests.
 `test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
@@ -2037,11 +2045,12 @@ separate mandatory check.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
 The Web selector starts `verify-web-quality` and `verify-web-browser` independently
-after module detection. Each job prepares its own runner and has a 20-minute
-limit; the final gate requires both to succeed when selected. The quality job
-runs the harness, Vitest/V8 collection and coverage checker serially with bounded
-stages and uploads coverage evidence. The browser job runs the assistant suite
-below without depending on the quality job or its artifacts. The module browser
+after module detection. Each job prepares its own runner. Quality has a
+30-minute limit and browser validation has a 20-minute limit; the final gate
+requires both to succeed when selected. The quality job runs full typechecking,
+the harness, the Docker Web build, Vitest/V8 collection and coverage checking
+serially with bounded stages and uploads coverage evidence. The browser job runs
+the assistant suite below without depending on the quality job or its artifacts. The module browser
 entry separately runs the navigation, Team, assistant and other fixture
 configurations.
 

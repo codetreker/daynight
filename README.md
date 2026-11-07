@@ -401,8 +401,9 @@ records the directory policy and its validation boundary.
 CLI validation includes ordinary and installed phases on Linux, Windows and
 macOS ARM64, a Node runtime matrix, and real-shell completion checks. Go has its
 own module job. Web selection starts independent quality and browser jobs; the
-quality job runs the harness and coverage gate, while the browser job runs its
-Playwright regressions. The final gate rejects failed or cancelled jobs and
+quality job runs full Web typechecking, the harness, the production Docker
+Web build and coverage gate, while the browser job runs its Playwright
+regressions. The final gate rejects failed or cancelled jobs and
 requires both selected Web jobs to succeed. A newer PR run cancels its older run;
 main runs queue without cancelling an active run.
 
