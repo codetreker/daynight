@@ -147,15 +147,14 @@ describe('project dialog focus restoration', () => {
     expectModalReleased();
   });
 
-  it('keeps scrolling locked when refresh unmounts fullscreen while the dialog stays open', async () => {
-    const completed = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])].map((item) => ({
-      ...item, status: 'done' as const, ready: false, blockedBy: [],
-    }));
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...completed, ...remainingChain]));
+  it('keeps scrolling locked when a Goal split unmounts its fullscreen graph while task details remain open', async () => {
+    const split = [task(rootId, '原任务链'), task(selectedId, '所选任务')];
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...split, ...remainingChain]));
     const { trigger, dialog } = await openDialog(true, true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(trigger.isConnected).toBe(false));
     expect(document.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expect(dialog).toBeVisible();
     expect(root).toHaveAttribute('inert');
     expect(document.body.style.overflow).toBe('hidden');
@@ -164,19 +163,34 @@ describe('project dialog focus restoration', () => {
     expectModalReleased();
   });
 
-  it.each([true, false])('retains details when completion hides their chain and restores visible focus (remaining=%s)', async (keepRemaining) => {
+  it.each([true, false])('retains both dialog layers when completion filters their Goal from the list and restores visible focus (remaining=%s)', async (keepRemaining) => {
     const completed = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])].map((item) => ({
       ...item, status: 'done' as const, ready: false, blockedBy: [],
     }));
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(keepRemaining ? graph([...completed, ...remainingChain]) : resetSnapshot(graph(completed)));
+    const initial = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId]), ...(keepRemaining ? remainingChain : [])];
+    graphRequest.mockResolvedValueOnce(graph(initial)).mockResolvedValueOnce(graph([...completed, ...(keepRemaining ? remainingChain : [])]));
     const { trigger, dialog } = await openDialog(false, true);
+    const graphDialog = document.querySelector<HTMLElement>('.task-chain-dialog')!;
+    const graphClose = graphDialog.querySelector<HTMLButtonElement>('.task-chain-close')!;
+    const listOpener = document.getElementById(`task-chain-graph-${rootId}`)!;
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    await waitFor(() => expect(trigger.isConnected).toBe(false));
+    await waitFor(() => expect(listOpener.isConnected).toBe(false));
+    expect(trigger.isConnected).toBe(true);
     expect(dialog).toBeVisible();
+    expect(document.querySelector('.task-chain-dialog')).toBe(graphDialog);
     expect(document.getElementById(`task-root-${rootId}`)).toBeNull();
+    expect(within(dialog).getByRole('button', { name: '关闭任务详情' })).toHaveFocus();
+    expect(root).toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
-    await waitFor(() => expect(keepRemaining ? document.getElementById(`task-root-${remainingId}`)! : screen.getByRole('tab', { name: '任务列表' })).toHaveFocus());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(document.querySelector('.task-chain-dialog')).toBe(graphDialog);
+    expect(root).not.toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.click(graphClose);
+    await waitFor(() => expect(document.getElementById(keepRemaining ? `task-root-${remainingId}` : 'project-chain-list')).toHaveFocus());
     expectModalReleased();
+    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
     if (!keepRemaining) {
       fireEvent.change(await screen.findByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
       expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
