@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
@@ -83,6 +84,21 @@ type URITooLongError struct{}
 
 func (*URITooLongError) Error() string { return "request target exceeds its input limit" }
 
+type bodyCompletionKey struct{}
+
+type trackedRequestBody struct {
+	io.ReadCloser
+	complete atomic.Bool
+}
+
+func (b *trackedRequestBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.complete.Store(true)
+	}
+	return n, err
+}
+
 // LimitRequestTarget rejects raw transport input before routing or query decoding.
 func LimitRequestTarget(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +114,9 @@ func LimitRequestTarget(logger *slog.Logger, next http.Handler) http.Handler {
 // post-handler body drain to bytes already buffered by its header reader.
 func CloseUnreadBody(w http.ResponseWriter, r *http.Request) {
 	if r.Body == nil || r.Body == http.NoBody {
+		return
+	}
+	if body, ok := r.Context().Value(bodyCompletionKey{}).(*trackedRequestBody); ok && body.complete.Load() {
 		return
 	}
 	r.Close = true
