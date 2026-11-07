@@ -171,6 +171,7 @@
 .task-detail-relation-arrow { color: #747ca1; flex: none; }
 .task-detail-relation-dot { width: 6px; height: 6px; background: #8f9bad; border-radius: 50%; flex: none; }
 .task-detail-dot-done { background: #5d9b7e; }
+.task-detail-dot-cancelled { background: #705c80; }
 .task-detail-dot-in_progress { background: #6b8bcb; }
 .task-detail-dot-todo { background: #97a2b2; }
 .task-detail-metadata { font-size: 10px; line-height: 1.8; color: #737d8e; }

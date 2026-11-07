@@ -100,7 +100,7 @@ func SelectMCPList(projectID, principalUserID string, request MCPListRequest) (M
 		return MCPListSelection{}, err
 	}
 	scope := mcpListScope{Version: 1, Kind: "task_list", Order: "priority_created_id", Actor: principalUserID, Project: projectID, All: request.All, Status: request.Status, AssignedTo: assignment, AssignmentSource: request.AssignedTo, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, View: request.View}
-	selection := MCPListSelection{scope: scope, query: store.TaskPriorityQuery{AssignedTo: assignment, Status: request.Status, ExcludeDone: !request.All && request.Status == nil, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}}
+	selection := MCPListSelection{scope: scope, query: store.TaskPriorityQuery{AssignedTo: assignment, Status: request.Status, ExcludeTerminal: !request.All && request.Status == nil, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}}
 	if request.Cursor != nil {
 		if len(*request.Cursor) > 16384 {
 			return MCPListSelection{}, mcpInvalidCursor()

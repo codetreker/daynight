@@ -55,13 +55,13 @@ const seeds: readonly Seed[] = [
 const graph = (items = seeds, id = projectId): TaskGraph => {
   const tasks: GraphTask[] = items.map((seed) => {
     const blockedBy = seed.dependsOn.filter((id) => items.find((item) => item.id === id)?.status !== "done");
-    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
+    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, createdAt: time, updatedAt: time };
   });
   return { observedAt: "2026-10-20T12:00:00Z",
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id === projectId ? "核心项目" : "另一个项目", repoUrl: "git@github.com:example/project.git", createdAt: time, updatedAt: time }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
-      done: tasks.filter((task) => task.status === "done").length, inProgress: tasks.filter((task) => task.status === "in_progress").length,
+      done: tasks.filter((task) => task.status === "done").length, cancelled: 0, inProgress: tasks.filter((task) => task.status === "in_progress").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === "todo" && !task.ready).length },
   };
 };
@@ -101,7 +101,7 @@ beforeEach(() => {
   graphRequest.mockReset().mockImplementation(async (id) => servedGraphs.get(id)!); detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
-    if (id === X) return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
+    if (id === X) return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
       id, projectId: project, title: 'New task', description: '文本', properties: { pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
     return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
   });
@@ -110,7 +110,7 @@ beforeEach(() => {
 describe("project dashboard", () => {
   it("keeps search available without a graph and opens a hit with direct observation", async () => {
     graphRequest.mockRejectedValue(new ApiError("network"));
-    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, context: { taskId: A, title: "原任务链" }, match: { fields: ["description"], descriptionSnippet: "匹配描述" } }] });
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["description"], descriptionSnippet: "匹配描述" } }] });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     const input = screen.getByRole("textbox", { name: "搜索任务标题和描述" });
     fireEvent.change(input, { target: { value: "历史" } });
@@ -156,7 +156,7 @@ describe("project dashboard", () => {
   it("retains pagination focus while the next page is loading and after it arrives", async () => {
     graphRequest.mockResolvedValue(graph());
     const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
-    const item = { id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    const item = { id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
     vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 16, items: Array.from({ length: 15 }, (_, index) => ({ ...item, id: `page-one-${index}`, title: index === 0 ? item.title : `第一页 ${index}` })), nextCursor: "next" }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });

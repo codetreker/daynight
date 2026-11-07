@@ -1,6 +1,6 @@
 # Web 任务缓存与时间窗口增量同步架构
 
-状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch 和认证响应归属，以及浏览器 IndexedDB schema 8、本地图投影、15 秒增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
+状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch 和认证响应归属，以及浏览器 IndexedDB schema 9、本地图投影、15 秒增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
 
 [需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。
 
@@ -94,6 +94,7 @@ type TaskViewRecord = {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  cancelledAt: string | null;
 };
 type TaskSync = {
   mode: "snapshot" | "delta";
@@ -127,7 +128,7 @@ type TaskSync = {
 
 属性读取复用定义注册表的校验与规范化。服务层在只读回调内用 propertyValidationFault 识别纯属性拒绝并保存 refusal；先处理 ReadSnapshot 实际错误，再返回 refusal。不能在事务退出后仅凭宽泛 errors.As 把事务完成或回滚故障连同坏值错误改成 400。delta 仅校验本次窗口选中的任务，不额外读取窗口外属性。节点/边容量不约束属性总字节，完整响应的成本见第 10 节；协议不引入分页或中间发布。每次检查容量，不能保留旧修订号方案的“序号相等即跳过计数”优化。
 
-TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须保留 GraphTask 的 assignedTo（明确可空 UUID）、requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。任务摘要 version 字符串严格解码为 bigint；Project.settings.version、Project.ownership.version，以及 actorAccess 中的 ownership.version 与
+TaskStatus为todo/in_progress/done/cancelled四态，cancelledAt为必需nullable字段；仅cancelled有值。摘要必须保留 GraphTask 的 assignedTo（明确可空 UUID）、requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。任务摘要 version 字符串严格解码为 bigint；Project.settings.version、Project.ownership.version，以及 actorAccess 中的 ownership.version 与
 directGrant.version 的 JSON number 分别在已知子树中无损解码。Project 内在字段必含
 ownership:{teamId,version}，owner Team 名称和 actorAccess 不进入 Project 持久记录。
 存在的 grant 必须属于请求项目和已核对的实际用户，role 与 effectiveRole 分别校验。properties 必须是对象，缺失、null 或数组均拒绝，通用 parseTaskProperties 保留客户端未知的全部键；属性内同名 version 保持普通 JSON 值，不递归转成 bigint。缓存字段不得缺省。GET/HEAD、no-store、错误信封与请求取消保持。task-sync 的全项目容量合同独立于[按任务查询的 task-graph](../spec/daynight-server.md#任务链图查询)；后者不能提供完整项目摘要或替代缓存基线。
@@ -161,7 +162,7 @@ cacheGeneration，覆盖仅有磁盘历史或在途首次同步、尚无在线�
 
 采用固定的 `idb@8.0.4` 薄包装，数据库 schema 为 8，保留显式事务所有权。[固定上游 README](https://github.com/jakearchibald/idb/blob/654c746bef13f9fe7f5871e03ac58015cebace5a/README.md)说明事务 active 生命周期与 tx.done；不引入 Dexie live query 或第二个 UI 状态所有者。原生 API 需要自行包装事务完成，idb 复用原生模型且提供类型化 Promise。
 
-属性模型采用缺失键时，schema 1→2 清理了旧 worker:null 或自动生成 PR 空数组的详情；完整属性进入摘要时，schema 3 重建了缺少 properties 的摘要。原生负责人进入全部任务记录时，schema 4 建立了完整 nullable assignedTo 消费。真实归属进入 Project 时，schema 5 重建了缺少 ownership 的记录。schema 6 增加 profiles store：从 schema 5 升级保留兼容的 projects/summaries/details、userFence、epoch 和水位；从 1、2、3、4 升级仍在同一事务清空不兼容任务 store、轮换 userFence、清掉旧 epoch/水位后完整重建。schema 7 增加独立的 sessionHistory store，从兼容 schema 6 升级保留任务和人员数据及其生命周期；schema 8 清除缺少完整空目录证明的 schema 7 Session 目录记录，保留兼容的项目、任务、人员数据和生命周期。旧记录缺少 properties、assignedTo 或 Project ownership 不能补默认值；无新变更的旧任务也必须取得完整字段。旧标签页在 versionchange 关闭连接，旧 fence 的在途响应不能跨升级发布。升级失败回滚，不部分清除旧数据库。
+schema9重建缺少cancelledAt的projects/summaries/details及其水位，保留格式未改变的profiles和兼容Session目录。完整snapshot重新建立Task基线，不在解析器补默认值。属性模型采用缺失键时，schema 1→2 清理了旧 worker:null 或自动生成 PR 空数组的详情；完整属性进入摘要时，schema 3 重建了缺少 properties 的摘要。原生负责人进入全部任务记录时，schema 4 建立了完整 nullable assignedTo 消费。真实归属进入 Project 时，schema 5 重建了缺少 ownership 的记录。schema 6 增加 profiles store：从 schema 5 升级保留兼容的 projects/summaries/details、userFence、epoch 和水位；从 1、2、3、4 升级仍在同一事务清空不兼容任务 store、轮换 userFence、清掉旧 epoch/水位后完整重建。schema 7 增加独立的 sessionHistory store，从兼容 schema 6 升级保留任务和人员数据及其生命周期；schema 8 清除缺少完整空目录证明的 schema 7 Session 目录记录，保留兼容的项目、任务、人员数据和生命周期。旧记录缺少 properties、assignedTo 或 Project ownership 不能补默认值；无新变更的旧任务也必须取得完整字段。旧标签页在 versionchange 关闭连接，旧 fence 的在途响应不能跨升级发布。升级失败回滚，不部分清除旧数据库。
 
 同源数据库 `daynight-task-cache`：
 

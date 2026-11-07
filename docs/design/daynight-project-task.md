@@ -13,7 +13,7 @@ Task 命令与安装产物已实现。[PR #55](https://github.com/codetreker/day
 列表默认值与文本输出见[列表决策](../../.agents/notes/archived/feature/2026-10-22-task-list-defaults.md)，
 JSON 列表字段见[描述省略决策](../../.agents/notes/archived/simplification/2026-10-22-task-list-json-description.md)。
 任务起止字段与图时钟的读取机制由[执行计时架构](daynight-task-timing.md)扩展；
-CLI 同步保留 `startedAt`、`completedAt`、`observedAt`、Project.ownership 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
+CLI同步保留`startedAt`、`completedAt`、`cancelledAt`、`observedAt`、Project.ownership 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。
 [Steps 资源要求](../spec/daynight-task-steps.md)扩展独立的 task step list/show 读取、Add、Update、Set-status 与 Move；它不将完整 Steps 加入普通 Task 投影。
@@ -140,7 +140,7 @@ Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受�
 单响应与 256 MiB 总读取预算，并保留取消。它校验主体、项目、响应字段、总数、
 重复 ID 和 cursor，全部页面成功后才输出；`search_changed` 不自动重放。
 
-文本与 JSON 共用 `id/projectId/title/status/context/match` 显式投影，避免服务端
+文本与JSON来源相同精简搜索结果；JSON显式保留id/projectId/title/status/cancelledAt/context/match，文本保持状态与命中呈现，避免服务端
 新增字段自动泄入输出。标题和链代表标题完整保留，文本使用终端可见转义；描述
 只使用服务端提供的正向命中摘要。搜索不是完整 Task 读取，也不复用普通列表的
 默认状态过滤或重排。[搜索需求](../spec/daynight-project-task.md#项目任务搜索)拥有
@@ -206,7 +206,7 @@ HTTP 层按操作消费 JSON、原始字节或空响应，只接受 API 规定�
 响应继续校验结构，删除必须为 204 且响应体为空。缺失字段、错误类型、未知
 状态值、无效分页 cursor 形态及不完整错误 envelope 作为协议错误暴露。验证可消费
 的已知字段，服务将来添加无冲突字段无需猜测其含义。full task 与图节点读取必填、可空的
-`startedAt`、`completedAt`；图另外读取必填 `observedAt`。`null` 表示未知事实，缺失不能兼容为 `null`；
+`startedAt`、`completedAt`、`cancelledAt`；图另外读取必填 `observedAt`。`null` 表示未知事实，缺失不能兼容为 `null`；
 已知值使用与现有资源相同的合法 UTC `Z` 时间格式验证，秒后允许 1–9 位小数，并保留原始字符串。DTO 的时间、版本、UUID 和
 数组语义与现有服务契约一致。错误保留 cause，并区分网络、期限、主动取消、HTTP
 拒绝和响应结构失败。
@@ -512,21 +512,21 @@ Operation/API/身份内 GET 一次完整集合，只报告当前版本与目标 
 `task list` 的状态选择和展示顺序属于命令层。默认从完整结果中排除 `done`；
 `--all` 保留所有状态，`--status` 使用既有单状态查询，两者互斥并在任何 I/O 前
 拒绝。`--ready` 沿用服务筛选，与所选状态取交集，包含 `--all --ready`。`list`、`ready` 的 `--allow-agents true|false` 直接投影到服务查询；未提供、true、false 各自保留。完整分页保持该筛选，返回项不匹配时拒绝，不在客户端过滤掉一页中的任务。
-命令在全部分页成功后按 `in_progress`、ready、其余 `todo`、`done` 稳定分组，
+命令在全部分页成功后按in_progress、ready、其余todo、done/cancelled终态稳定分组，
 同一组保留服务按 `createdAt ASC, id ASC` 返回的跨页顺序。文本和 JSON 消费
 同一选择结果，因此分页边界不会改变组间优先顺序。此机制复用既有 API 筛选和分页，
 不增加服务排序或多状态查询契约。
 
-API 响应与命令 choices 均只接受 todo、in_progress、done，拒绝旧状态。
+API响应与命令choices接受todo、in_progress、done、cancelled；取消不可恢复，拒绝旧状态。
 graph 参数先验证目标 UUID，缺失或非法值在配置、Git 和网络 I/O 前失败。
 `ApiClient.getTaskGraph(projectId, taskId)` 将规范化 ID 作为 taskId query 提交，解码器同时
 核对请求 project 和目标任务。返回集合必须恰好是目标所在普通依赖无向分量，加上该分量
 成员直接声明的 external 前置；链成员的前置必须完整存在，只有补充的外部上下文节点可以
 引用未返回的前置。解码器仍拒绝重复 ID、错误外部子集、错误 summary、已返回节点之间的环
 及与已知前置状态不符的阻塞字段，不通过补造状态处理缺少上下文任务行的情形。
-graph summary 只返回 total、todo、inProgress、done、ready、blocked，统计所有返回节点；
+graph summary返回total、todo、inProgress、done、cancelled、ready、blocked，统计所有返回节点；
 图文本不显示旧统计。
-列表默认保留未完成任务，按 in_progress、ready todo、其他 todo、done 稳定分组。
+列表默认保留未完成任务，按in_progress、ready todo、其他todo、done/cancelled终态稳定分组。
 元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。删除由专用 delete 提交精确版本，省略版本时只预读一次；可选 --remove-depends 决定是否明确发送 removeDepends=true，未提供时不解除引用。成功无需 Task 正文，不自动重试。已删除资源返回 `410 task_deleted`，业务保护与数据保留由[软删除设计](daynight-task-deletion.md)拥有。
 
 平台 DTO 要求 requiredPlatform 字段存在且为null/windows/linux/macos，不在读取器补默认。

@@ -1,6 +1,7 @@
 import { array, canonicalId, id, malformed, record, text as plainText, timestamp } from "../../api/validation.js";
 import { parseWorkerRuntimeConfiguration } from "../../api/worker-runtime-configuration.js";
 import type { TaskPlatform, TaskStatus, WorkerAgent, WorkerAssistantHost, WorkerAssistantHostReason, WorkerMachine, WorkerPhase, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
+import { taskStatuses } from "../../task/status.js";
 
 const executionPlatform = (value: unknown): TaskPlatform => value === "macos" || value === "linux" || value === "windows" ? value : malformed();
 export type WorkerTaskSnapshot = {
@@ -146,7 +147,7 @@ export const parseWorkerPage = (value: unknown): WorkerPage => {
 const task = (value: unknown): WorkerTaskSnapshot => {
   const data = fields(value, ["projectId", "taskId", "claimId", "title", "projectName", "status", "phase", "agent"]);
   return { projectId: id(data.projectId), taskId: id(data.taskId), claimId: id(data.claimId), title: text(data.title), projectName: text(data.projectName),
-    status: choice<TaskStatus>(data.status, ["todo", "in_progress", "done"]), phase: choice<WorkerPhase>(data.phase, ["preparing", "executing", "verifying", "completing", "waiting", "paused"]), agent: choice<WorkerAgent>(data.agent, ["codex", "copilot", "claude"]) };
+    status: choice<TaskStatus>(data.status, taskStatuses), phase: choice<WorkerPhase>(data.phase, ["preparing", "executing", "verifying", "completing", "waiting", "paused"]), agent: choice<WorkerAgent>(data.agent, ["codex", "copilot", "claude"]) };
 };
 export const parseWorkerDetail = (value: unknown, workerId: string): WorkerDetailResponse => {
   const data = fields(value, ["observedAt", "worker"]);

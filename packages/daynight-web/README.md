@@ -650,8 +650,11 @@ owns the operation and identity boundaries.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 8 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Upgrading schema 7 clears its Session
+schema 9 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Schema 9 rebuilds incompatible project,
+summary and detail records and their watermarks for required nullable cancelledAt,
+while preserving unchanged profile and compatible Session-history formats. Missing
+fields are not filled with null. Upgrading schema 7 clears its Session
 records, which lack the complete-empty proof, and preserves compatible project,
 task, profile and lifecycle data. Upgrading schema 6 adds the Session records
 store while retaining compatible task and profile data and lifecycle.
@@ -672,7 +675,7 @@ bounded LRU and business-version-driven detail reads.
 `beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
 `applySync` validates the transaction's complete durable set and atomically saves
 changed summaries with that watermark. Every snapshot/delta record contains its
-required nullable assignedTo and complete current properties from the task row's
+required nullable assignedTo/cancelledAt and complete current properties from the task row's
 database snapshot. Higher task
 versions replace whole summaries and property maps; missing keys remove old
 values without property tombstones or ordinary epoch changes. Equal-version
@@ -1342,19 +1345,24 @@ The [task view decision](../../.agents/notes/archived/feature/2026-10-22-project
 and [chain status decision](../../.agents/notes/archived/bug-fix/2026-10-22-task-chain-status.md)
 record their current rules and original rationale.
 
-The runtime accepts todo, in_progress and done. The graph summary has six
-counts: total, todo, inProgress, done, ready and blocked. They satisfy
-`total = todo + inProgress + done` and `todo = ready + blocked`. Creation uses todo.
-All-done chains are done; any done or in-progress member makes an unfinished
-chain in progress; other chains are todo. External context does not affect progress.
+The runtime accepts todo, in_progress, done and cancelled. The graph summary
+has seven counts: total, todo, inProgress, done, cancelled, ready and blocked.
+They satisfy `total = todo + inProgress + done + cancelled` and
+`todo = ready + blocked`. Creation uses todo. All-done Goals have the done
+aggregate outcome, all-cancelled Goals have cancelled, and mixed terminal Goals
+have the UI-only ended outcome. Ended is not a fifth TaskStatus. Progress counts
+done + cancelled while preserving each result count. External context does not
+affect progress.
 
 The actual task title is the common dialog header and accessible name, with a
 copy icon immediately to its right. The ID and its copy control belong to Overview.
-The three-item status menu begins the shared state row beside the assignee
+The existing three-state submission menu begins the shared state row beside the assignee
 control, followed by platform and readiness, with automatic execution at the right.
 Status, assignee and platform controls share a compact 24px height; the left group can wrap
 on narrow screens. The menu remains available on every content tab, marks the current
-item and permits selecting it. Arrow/Home/End, activation and
+item and permits selecting it for the original states. Cancelled records have a
+distinct readable status and no reopen, resume or withdraw action; the non-cancelled
+menu does not yet offer cancellation submission. Arrow/Home/End, activation and
 Escape preserve keyboard access and focus. Confirmation shows the full task name,
 current/target states and timing consequences. Cancel is initially focused;
 Cancel/close/Escape submits nothing. Long title and confirmation text have bounded

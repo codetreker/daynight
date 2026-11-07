@@ -125,6 +125,7 @@ type TaskFull struct {
 	UpdatedAt         time.Time                  `json:"updatedAt"`
 	StartedAt         *time.Time                 `json:"startedAt"`
 	CompletedAt       *time.Time                 `json:"completedAt"`
+	CancelledAt       *time.Time                 `json:"cancelledAt"`
 	DependsOn         []string                   `json:"dependsOn"`
 	ExternalDependsOn []string                   `json:"externalDependsOn"`
 	BlockedBy         []string                   `json:"blockedBy"`
@@ -150,7 +151,7 @@ func MapTaskFull(t core.Task) TaskFull {
 	}
 	return TaskFull{Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Title: t.Title, Description: t.Description, Properties: properties,
 		Status: t.Status, Version: Decimal(t.Version), CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
-		StartedAt: utcTime(t.StartedAt), CompletedAt: utcTime(t.CompletedAt), DependsOn: append([]string{}, t.DependsOn...),
+		StartedAt: utcTime(t.StartedAt), CompletedAt: utcTime(t.CompletedAt), CancelledAt: utcTime(t.CancelledAt), DependsOn: append([]string{}, t.DependsOn...),
 		ExternalDependsOn: append([]string{}, t.ExternalDependsOn...), BlockedBy: append([]string{}, t.BlockedBy...),
 		RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents, Ready: t.Ready}
 }

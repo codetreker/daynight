@@ -69,7 +69,7 @@ func TestTaskPriorityListFiltersBeforeLimitAndFence(t *testing.T) {
 	if filtered.HasMore || !reflect.DeepEqual(ids(filtered), []string{ready.ID}) {
 		t.Fatalf("filtered page: %+v", filtered)
 	}
-	withoutDone, _ := read(TaskPriorityQuery{Limit: 10, ExcludeDone: true})
+	withoutDone, _ := read(TaskPriorityQuery{Limit: 10, ExcludeTerminal: true})
 	if !reflect.DeepEqual(ids(withoutDone), []string{active.ID, ready.ID, blocked.ID}) {
 		t.Fatalf("exclude done: %+v", withoutDone)
 	}

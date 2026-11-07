@@ -1,8 +1,8 @@
 # Web 任务缓存与增量同步需求
 
-状态：服务端窗口摘要及完整属性、配置、身份响应头和 epoch，以及浏览器 IndexedDB schema 8、原子合并、本地图投影、按需详情和版本化人员内容缓存已实现。摘要业务版本驱动详情更新，成功同步的时钟 receipt 不单独触发未变化详情 GET。
+状态：服务端窗口摘要及完整属性、配置、身份响应头和 epoch，以及浏览器 IndexedDB schema 9、原子合并、本地图投影、按需详情和版本化人员内容缓存已实现。摘要业务版本驱动详情更新，成功同步的时钟 receipt 不单独触发未变化详情 GET。
 
-[架构](../design/daynight-task-sync.md)拥有协议、缓存与恢复机制。任务生命周期、依赖性质、附件及计时沿用各自现有合同。摘要与浏览器 Task、详情、图投影都包含[负责人契约](daynight-task-assignment.md)的必填 nullable assignedTo，schema 8 保留该字段的严格消费及早期格式重建规则，并独立持久化人员内容和 Session 记录目录。
+[架构](../design/daynight-task-sync.md)拥有协议、缓存与恢复机制。任务生命周期、依赖性质、附件及计时沿用各自现有合同。摘要与浏览器 Task、详情、图投影都包含[负责人契约](daynight-task-assignment.md)的必填 nullable assignedTo，schema9同时严格消费nullable cancelledAt，显式重建不兼容任务内容，并独立保留人员内容和Session记录目录。
 
 ## 已确认范围
 
@@ -24,9 +24,9 @@
 
 ## R3：变化与派生一致性
 
-创建、标题、description、完整 properties、三状态设置、Agent 许可、执行平台要求、负责人 assignedTo、依赖及外部性质变化通过任务摘要的业务 version 被发现。snapshot 和 delta 的每条任务记录都包含同一数据库快照中的 assignedTo 与完整当前 properties 对象；没有属性时为 {}，不补入缺失键。属性设置、删除与 Worker 生命周期变化沿用任务整体 version/updatedAt，普通属性变化不轮换 epoch。
+创建、标题、description、完整 properties、四状态设置、Agent 许可、执行平台要求、负责人 assignedTo、依赖及外部性质变化通过任务摘要的业务 version 被发现。snapshot 和 delta 的每条任务记录都包含同一数据库快照中的 assignedTo 与完整当前 properties 对象；没有属性时为 {}，不补入缺失键。属性设置、删除与 Worker 生命周期变化沿用任务整体 version/updatedAt，普通属性变化不轮换 epoch。
 
-客户端按任务 ID/version 替换整条摘要和属性对象，缺失键自然删除；不使用属性 tombstone。浏览器比较包括 assignedTo 在内的全部自身字段和全部属性键与 JSON 值，对象成员顺序无意义，数组顺序有意义，缺失、空数组与 null 不相等。同版本内容不同是协议错误，较旧响应不能复活已删除属性。图绘制投影去掉 properties，完整属性保留在摘要集合中。任务事实、所有依赖、阻塞列表、可执行性、统计、链成员与进度在一个本地快照中一致。前置完成后，后继即使自身未编辑也正确更新派生状态。
+客户端按任务 ID/version 替换整条摘要和属性对象，缺失键自然删除；不使用属性 tombstone。浏览器比较包括 assignedTo 在内的全部自身字段和全部属性键与 JSON 值，对象成员顺序无意义，数组顺序有意义，缺失、空数组与 null 不相等。同版本内容不同是协议错误，较旧响应不能复活已删除属性。图绘制投影去掉 properties，完整属性保留在摘要集合中。任务事实、所有依赖、阻塞列表、可执行性、统计、链成员与进度在一个本地快照中一致。前置done或cancelled后，后继即使自身未编辑也正确更新派生状态。取消不轮换epoch、不删除节点，也不清空仍可读的详情和附件。
 
 ## R4：原子应用与多标签页
 
@@ -42,7 +42,7 @@
 
 ## R6：失败恢复
 
-缓存缺失、schema 不兼容、结构损坏、数据库异常关闭时允许重新装载完整摘要。schema 8 升级清除缺少完整空证明的 schema 7 Session 记录目录，必须保留兼容的项目、任务、人员内容及其生命周期。schema 7 增加 Session 记录目录 store，兼容 schema 6 的任务与人员内容和生命周期必须保留。schema 5 升级到 6 时增加 profiles store，保留已有真实 Project ownership 的任务内容、userFence 和水位；schema 1、2、3、4 升级到 6 时，在同一升级事务中重建不兼容 projects/summaries/details、轮换 userFence、清掉旧水位并增加 profiles，随后读取完整 snapshot。旧摘要缺少 properties 或 assignedTo、旧 Project 缺少 ownership 均不能补默认值。active 与 invalidated manifest 都必须验证归属、生命周期及对应格式；invalidated 的 epoch/project/水位必须全为 null，任务与边计数全为零，不能把残留 epoch 作为增量基线。用户 fence 损坏时，在一个事务中轮换 fence 并清除或失效该用户可重建任务、人员及 Session 目录内容，不依赖损坏 fence，也不影响其他用户；旧绑定 scope 和 ticket 不能跨修复发布。IndexedDB 打开、升级、配额、修复及写入失败明确进入现有错误/Retry 状态；失败事务保留原持久状态和允许显示的当前快照，不能当作空项目或同步成功。网络、响应解析及属性读取失败不提交局部摘要或推进水位。本次返回集合中的非法存储属性使整个请求返回 400 invalid_input；数据库查询或事务完成故障仍返回 500 internal_error，后者优先于已发现的属性拒绝。重试先读实际存储。
+缓存缺失、schema不兼容、结构损坏、数据库异常关闭时允许重新装载完整摘要。schema9重建缺少必需cancelledAt的projects/summaries/details与相应水位，随后读取完整snapshot；profiles及兼容的Session目录不因Task字段变化清除。旧缓存不能以缺字段→null回退解析。schema 8 升级清除缺少完整空证明的 schema 7 Session 记录目录，必须保留兼容的项目、任务、人员内容及其生命周期。schema 7 增加 Session 记录目录 store，兼容 schema 6 的任务与人员内容和生命周期必须保留。schema 5 升级到 6 时增加 profiles store，保留已有真实 Project ownership 的任务内容、userFence 和水位；schema 1、2、3、4 升级到 6 时，在同一升级事务中重建不兼容 projects/summaries/details、轮换 userFence、清掉旧水位并增加 profiles，随后读取完整 snapshot。旧摘要缺少 properties 或 assignedTo、旧 Project 缺少 ownership 均不能补默认值。active 与 invalidated manifest 都必须验证归属、生命周期及对应格式；invalidated 的 epoch/project/水位必须全为 null，任务与边计数全为零，不能把残留 epoch 作为增量基线。用户 fence 损坏时，在一个事务中轮换 fence 并清除或失效该用户可重建任务、人员及 Session 目录内容，不依赖损坏 fence，也不影响其他用户；旧绑定 scope 和 ticket 不能跨修复发布。IndexedDB 打开、升级、配额、修复及写入失败明确进入现有错误/Retry 状态；失败事务保留原持久状态和允许显示的当前快照，不能当作空项目或同步成功。网络、响应解析及属性读取失败不提交局部摘要或推进水位。本次返回集合中的非法存储属性使整个请求返回 400 invalid_input；数据库查询或事务完成故障仍返回 500 internal_error，后者优先于已发现的属性拒绝。重试先读实际存储。
 
 ## R7：计时、项目设置与当前权限
 

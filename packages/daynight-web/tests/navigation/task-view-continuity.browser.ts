@@ -148,7 +148,7 @@ test('merging chains replaces the representative without stealing an open detail
 
 
 test('narrow graph preserves full dependency geometry and keyboard detail focus', async ({ page }, info) => {
-  const tasks = completeContextGraph.tasks.map(task => detailFixture(projectId, task.id, { title: task.titlePreview, status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt, startedAt: task.startedAt, completedAt: task.completedAt, version: 1n }));
+  const tasks = completeContextGraph.tasks.map(task => detailFixture(projectId, task.id, { title: task.titlePreview, status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt, version: 1n }));
   const state = await install(page, tasks); const root = id(30), prerequisite = id(15), ancestor = id(14);
   const topology = expectedDependencyTopology(graphFixture(tasks).tasks, root);
   await page.setViewportSize({ width: 320, height: 800 }); await page.goto(`/projects/${projectId}`);

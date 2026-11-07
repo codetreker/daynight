@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import type { TaskDetail } from '../../src/api/types';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const taskId = '00000000-0000-4000-8000-000000000041';
@@ -11,8 +12,8 @@ const time = '2026-10-20T09:00:00Z';
 const step = { id: '00000001', title: 'Review', description: 'Read this', status: 'todo', createdAt: time, updatedAt: time };
 const longName = 'Alexandra Person With A Very Long Name For Narrow Assignment Layout';
 
-async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }) {
-  let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}) });
+async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}) {
+  let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
   const previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n });
   const graph = () => graphFixture([task, previous]);
   let steps = large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
@@ -344,5 +345,18 @@ test('locked automatic execution explains its state on focus and Escape dismisse
   await page.keyboard.press('Escape'); await expect(platformGroup.locator('.task-control-tip-bubble')).toHaveCount(0);
   await expect(dialog).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toEqual([]);
+});
+
+test('cancelled tasks retain readable details and Steps without a status restoration control on narrow screens', async ({ page }) => {
+  const writes = await install(page, false, false, false, false, false, undefined, { status: 'cancelled', cancelledAt: time, ready: false, description: 'Readable cancelled materials' });
+  await page.setViewportSize({ width: 320, height: 844 });
+  const dialog = await openDialog(page);
+  await expect(dialog.locator('.task-status-trigger')).toHaveText('Cancelled');
+  await expect(dialog.locator('.task-status-trigger')).toBeDisabled();
+  await expect(dialog.getByText('Readable cancelled materials')).toBeVisible();
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toEqual([]);
 });

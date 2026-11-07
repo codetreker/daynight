@@ -1,3 +1,4 @@
+import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { Project, TaskStatus } from "../../api/types";
@@ -90,7 +91,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     let unfinishedChainTaskCount = 0;
     let unfinishedStandaloneTaskCount = 0;
     for (const task of snapshot.index.nodes.values()) {
-      if (task.status === "done") continue;
+      if (isTerminalStatus(task.status)) continue;
       if (snapshot.index.components.get(snapshot.index.componentByTask.get(task.id)!)!.memberIds.size === 1) unfinishedStandaloneTaskCount++;
       else unfinishedChainTaskCount++;
     }

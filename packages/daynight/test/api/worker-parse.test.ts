@@ -14,7 +14,7 @@ const worker: WorkerClaim = {
 const task: Task = {
   id: taskId, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null, assignedTo: null,
   version: 9_223_372_036_854_775_807n, properties: { pullRequests: [{ url: "\0", title: "\ud800" }], worker },
-  startedAt: time, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
+  startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };
 const malformedWorkers: unknown[] = [
   undefined, null, {}, [], false, { ...worker, state: "expired" }, { ...worker, claimId: "not-id" }, { ...worker, userId: "not-id" },
@@ -46,15 +46,21 @@ describe("worker ownership read DTO", () => {
   it("retains absent ownership and inactive history without creating defaults", () => {
     const neverClaimed = { ...task, properties: { pullRequests: task.properties.pullRequests! } };
     expect(parseTask(neverClaimed, projectId, taskId)).toEqual(neverClaimed);
-    for (const status of ["todo", "in_progress", "done"] as const) {
-      const historical = { ...task, status, ready: status === "todo", properties: { ...task.properties, worker: { ...worker, state: "completed" } } };
+    for (const status of ["todo", "in_progress", "done", "cancelled"] as const) {
+      const historical = { ...task, status, cancelledAt: status === "cancelled" ? time : null, ready: status === "todo", properties: { ...task.properties, worker: { ...worker, state: "completed" } } };
       expect(parseTask(historical, projectId, taskId)).toEqual(historical);
     }
   });
   it.each(malformedWorkers)("rejects missing or malformed protected execution metadata %#", (value) => {
     expect(() => parseTask({ ...task, properties: { ...task.properties, worker: value } }, projectId, taskId)).toThrow("invalid response");
   });
-  it("rejects active ownership outside in_progress and released ownership outside todo", () => {
+  it("retains released history on cancelled tasks and rejects an active claim on them", () => {
+    const cancelled = { ...task, status: "cancelled", ready: false, cancelledAt: time };
+    const released = { ...cancelled, properties: { ...task.properties, worker: { ...worker, state: "released" } } };
+    expect(parseTask(released, projectId, taskId)).toEqual(released);
+    expect(() => parseTask(cancelled, projectId, taskId)).toThrow("invalid response");
+  });
+  it("rejects active ownership outside in_progress and released ownership outside todo or cancelled", () => {
     expect(() => parseTask({ ...task, status: "done" }, projectId, taskId)).toThrow("invalid response");
     expect(() => parseTask({ ...task, properties: { ...task.properties, worker: { ...worker, state: "released" } } }, projectId, taskId)).toThrow("invalid response");
   });

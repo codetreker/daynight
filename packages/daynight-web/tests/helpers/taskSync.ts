@@ -57,7 +57,7 @@ export const taskSyncFixture = (graph: TaskGraph, { assigneeVersions = graphAssi
   const tasks = graph.tasks.filter((task) => lowerBound === null || nanoseconds(task.updatedAt) >= lowerBound).map((task) => ({ assignedTo: task.assignedTo,
     id: task.id, version: versionForTask(task).toString(), properties: propertiesForTask(task), titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
     status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
-    allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt,
+    allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
     createdAt: task.createdAt, updatedAt: task.updatedAt,
   }));
   return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks };

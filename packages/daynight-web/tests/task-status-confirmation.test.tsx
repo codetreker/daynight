@@ -15,21 +15,21 @@ vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAt
 const projectId = '10000000-0000-4000-8000-000000000001'; const taskId = '20000000-0000-4000-8000-000000000001'; const dependencyId = '20000000-0000-4000-8000-000000000002';
 const time = '2026-10-22T00:00:00Z'; const later = '2026-10-22T00:01:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Status project', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const source = (status: TaskStatus = 'todo'): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
+const source = (status: TaskStatus = 'todo'): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, cancelledAt: null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
   status, version: 9007199254740993n, properties: { pullRequests: [] }, dependsOn: [dependencyId], blockedBy: [], ready: status === 'todo', createdAt: time, updatedAt: time });
 const result = (detail: TaskDetail, status: TaskStatus): TaskDetail => detail.status === status ? detail : ({ ...detail, status, version: detail.version + 1n, ready: status === 'todo', updatedAt: later,
-  startedAt: status === 'in_progress' ? later : status === 'todo' || detail.status === 'todo' ? null : detail.startedAt, completedAt: status === 'done' ? later : null });
+  startedAt: status === 'in_progress' ? later : status === 'todo' || detail.status === 'todo' ? null : detail.startedAt, completedAt: status === 'done' ? later : null, cancelledAt: null });
 let world: ReturnType<typeof createTaskSessionWorld>;
 const snapshotDetails = new WeakMap<object, readonly TaskDetail[]>();
 const snapshot = (detail: TaskDetail, revision = 1): GraphSnapshot => {
   const tasks = [detail, { ...source('done'), id: dependencyId, title: 'Prerequisite', dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false }];
   const graph: TaskGraph = { observedAt: time, project, tasks: tasks.map(({ version: _version, projectId: _project, title, description: _description, properties: _properties, ...task }) => ({ ...task, titlePreview: title, titleTruncated: false })),
-    summary: { total: 2, todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, ready: detail.ready ? 1 : 0, blocked: 0 } };
+    summary: { total: 2, todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, cancelled: 0, ready: detail.ready ? 1 : 0, blocked: 0 } };
   const result = { observedAt: time, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
   snapshotDetails.set(result, tasks);
   return result;
 };
-const labels = { todo: 'To do', in_progress: 'In progress', done: 'Done' };
+const labels = { todo: 'To do', in_progress: 'In progress', done: 'Done', cancelled: 'Cancelled' };
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
 let root: HTMLDivElement;
 beforeEach(() => { world = createTaskSessionWorld(); root = document.createElement('div'); root.id = 'root'; document.body.append(root); vi.mocked(getTask).mockReset(); vi.mocked(setTaskStatus).mockReset(); });

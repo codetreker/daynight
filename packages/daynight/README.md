@@ -745,7 +745,7 @@ server's order. Text shows the full Task ID and title, status, chain representat
 or `none`, positive match fields, and a description snippet when present. A
 negative-only match is identified as such; text escapes terminal controls.
 `--json` emits one newline-terminated array whose entries contain only `id`,
-`projectId`, `title`, `status`, `context`, and `match`. Both formats omit the
+`projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
 assignee and update time; use `task show` for complete Task details. An empty
 result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
 expression syntax exit 2; read, permission, protocol, cancellation, budget and
@@ -822,7 +822,9 @@ use and remains stable if another project later shares that repository.
 Creation starts in `todo` with `allowAgents=false` and unrestricted
 `requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
-sets `todo`, `in_progress` or `done`, including reopening and direct completion.
+sets `todo`, `in_progress`, `done` or `cancelled`. The original three states retain
+reopening and direct completion; cancellation is irreversible and does not prove
+delivery. Cancelled records and materials remain readable.
 Every project member may use ordinary status setting. Active worker completion
 requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
@@ -837,10 +839,14 @@ provided worktree, finishes with the explicit claim ID after delivery, and leave
 system worktree cleanup and next-task selection to its controller. Version is
 checked before same-state handling: current same-state keeps
 version, update time and timing unchanged; actual changes increment once.
+Actual cancellation records required nullable `cancelledAt`, preserves existing
+execution times and materials, and satisfies dependencies without deleting edges.
+Active ownership must first be released; cancelled tasks cannot resume or withdraw
+back to todo.
 
 Entering in_progress or done requires all direct prerequisites, ordinary and
-external, to be done. Reopening done requires no direct in-progress or done
-dependents. Refusals return sorted blocking task IDs without cascading changes.
+external, to be done or cancelled. Reopening done requires no direct in-progress or done
+dependents; cancelled dependents do not add a reopen restriction. Refusals return sorted blocking task IDs without cascading changes.
 The project transaction serializes status and dependency writes and preserves
 materials, assignedTo, properties/PRs, permission, both dependency sets and attachments.
 
@@ -850,7 +856,9 @@ preserving every other field, including requiredPlatform and historical executio
 data, CHECK and ledger change atomically. Other rows and applied migrations remain
 unchanged; restart does not repeat the conversion. Runtime readers reject the old state.
 
-Task resources expose required nullable `startedAt` and `completedAt`. Actual entry
+Task resources expose required nullable startedAt, completedAt and cancelledAt.
+Cancellation preserves both execution endpoints and records its own database
+time; a cancelled task never resumes execution or starts a new duration. Actual entry
 into in_progress starts a new interval and clears the end; return to todo clears
 both. In-progress to done preserves a nullable start and records a real end;
 todo to done records only an end, leaving duration unknown. Metadata and same-state
@@ -935,15 +943,15 @@ task-list request with `ready=true`, the chosen limit and optional
 filters, without fetching later pages. Compatibility includes unrestricted tasks
 and tasks requiring that platform. The service applies all filters before
 pagination and binds them to the cursor. The service orders results by creation time and then task ID, both
-ascending. A ready task is `todo` with all direct dependencies `done`. This
+ascending. A ready task is `todo` with all direct dependencies done or cancelled. This
 bounded selection supports choosing the next work without retrieving the whole
 project; `task graph <task-id>` provides the selected chain and one layer of
 external prerequisites. `task list`
-reads every matching page, including with `--ready`, and excludes `done` by
+reads every matching page, including with `--ready`, and excludes done and cancelled by
 default. `--all` includes every status; `--status <status>` selects one status,
 including `done`. These two options conflict. `--ready` intersects the selected
 statuses and can be combined with `--all`. List results place `in_progress`
-first, then ready tasks, other `todo` tasks, and `done`; each group retains
+first, then ready tasks, other todo tasks, and terminal done/cancelled; each group retains
 service order across all pages. This order applies to human and JSON results.
 `task ready` accepts neither `--status` nor `--cursor`. `task list` supports the
 same permission and compatibility filters across every matching page. Both are

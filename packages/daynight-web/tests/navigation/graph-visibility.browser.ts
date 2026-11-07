@@ -12,7 +12,7 @@ async function install(page: Page) {
   const state = { fail: false, tasks: progressiveGraph.tasks.map(task => detailFixture(projectId, task.id, {
     title: task.titlePreview, status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
     blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt,
-    startedAt: task.startedAt, completedAt: task.completedAt, version: 1n,
+    startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt, version: 1n,
   })) };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
