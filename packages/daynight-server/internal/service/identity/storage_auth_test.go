@@ -20,8 +20,8 @@ func TestIdentityStorageConstraintsAndCleanup(t *testing.T) {
 	now := time.Now().UTC()
 	for _, sql := range []string{
 		`INSERT INTO users VALUES ('00000000-0000-0000-0000-000000000001','',NULL,NULL,NULL,NULL,now(),now())`,
-		`INSERT INTO login_transactions VALUES ('00000000-0000-0000-0000-000000000001',decode('00','hex'),decode(repeat('00',32),'hex'),'github','/',now())`,
-		`INSERT INTO login_transactions VALUES ('00000000-0000-0000-0000-000000000001',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),'other','/',now())`,
+		`INSERT INTO login_transactions VALUES ('00000000-0000-0000-0000-000000000001',decode('00','hex'),decode(repeat('00',32),'hex'),'github','/',now(),decode(repeat('00',32),'hex'))`,
+		`INSERT INTO login_transactions VALUES ('00000000-0000-0000-0000-000000000001',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),'other','/',now(),decode(repeat('00',32),'hex'))`,
 		`INSERT INTO sessions VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002',decode(repeat('00',32),'hex'),now(),now())`,
 		`INSERT INTO personal_access_tokens VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002',decode(repeat('00',32),'hex'),' ',now(),now()+interval '1 day')`,
 	} {
@@ -45,12 +45,12 @@ func TestIdentityStorageConstraintsAndCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO login_transactions SELECT md5('id'||n)::uuid,sha256(n::text::bytea),sha256(n::text::bytea),'github','/',$1::timestamptz-interval '1 hour' FROM generate_series(1,120) n`, now)
+	_, err := s.Pool.Exec(ctx, `INSERT INTO login_transactions SELECT md5('id'||n)::uuid,sha256(n::text::bytea),sha256(n::text::bytea),'github','/',$1::timestamptz-interval '1 hour',sha256(n::text::bytea) FROM generate_series(1,120) n`, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := sha256.Sum256([]byte("current"))
-	if err := testCreateLogin(s, ctx, model.LoginTransaction{ID: uuid.NewString(), StateHash: h[:], BrowserBindingHash: h[:], Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(time.Minute)}, now); err != nil {
+	if err := testCreateLogin(s, ctx, model.LoginTransaction{ID: uuid.NewString(), StateHash: h[:], BrowserBindingHash: h[:], ScopeHash: h[:], Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(time.Minute)}, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, table := range []string{"login_transactions", "sessions", "personal_access_tokens"} {
@@ -113,7 +113,7 @@ func TestIdentityStorageOperationalFailures(t *testing.T) {
 			_, p, c := testAuthRecords(t, s)
 			now := time.Now().UTC()
 			hash := sha256.Sum256([]byte("state"))
-			pending := model.LoginTransaction{ID: uuid.NewString(), StateHash: hash[:], BrowserBindingHash: hash[:], Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(time.Minute)}
+			pending := model.LoginTransaction{ID: uuid.NewString(), StateHash: hash[:], BrowserBindingHash: hash[:], ScopeHash: hash[:], Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(time.Minute)}
 			table := "personal_access_tokens"
 			switch phase {
 			case "create-login", "consume-login":

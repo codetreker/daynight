@@ -149,7 +149,7 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 		{"unauthenticated", 401}, {"forbidden", 403}, {"invalid_input", 400}, {"payload_too_large", 413}, {"controller_offline", 503},
 		{"unsupported_native_selection", 409}, {"unsupported_selection", 409}, {"unknown_default", 409}, {"stale_configuration", 409},
 		{"capability_error", 503}, {"cleanup_unknown", 503}, {"io_error", 503}, {"offline", 503}, {"unsupported", 501}, {"timeout", 504}, {"cancelled", 409}, {"busy", 429}, {"limit_exceeded", 413}, {"invalid_cursor", 400}, {"invalid_path", 400},
-		{"content_unavailable", 502}, {"rate_limited", 429}, {"task_deleted", 410}, {"not_found", 404}, {"write_outcome_unknown", 503},
+		{"content_unavailable", 502}, {"rate_limited", 429}, {"capacity_exhausted", 503}, {"task_deleted", 410}, {"not_found", 404}, {"write_outcome_unknown", 503},
 		{"configuration_not_initialized", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
@@ -161,7 +161,7 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 				wantCode = "internal_error"
 			}
 			assertHTTPError(t, w, tc.status, wantCode)
-			if tc.code == "rate_limited" && w.Header().Get("Retry-After") != "60" {
+			if (tc.code == "rate_limited" || tc.code == "capacity_exhausted") && w.Header().Get("Retry-After") != "60" {
 				t.Fatalf("Retry-After=%q", w.Header().Get("Retry-After"))
 			}
 		})

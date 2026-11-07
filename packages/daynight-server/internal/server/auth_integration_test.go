@@ -160,7 +160,11 @@ func identityDecode[T any](t *testing.T, data []byte) T {
 
 func (integration *identityIntegration) start(t *testing.T, browser *http.Client) *url.URL {
 	t.Helper()
-	response, _ := identityRequest(t, browser, http.MethodGet, integration.server.URL+"/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks", "", nil, http.StatusSeeOther)
+	loginURL := integration.server.URL + "/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks"
+	response, _ := identityRequest(t, browser, http.MethodGet, loginURL, "", nil, http.StatusSeeOther)
+	if response.Header.Get("Location") == "/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks" {
+		response, _ = identityRequest(t, browser, http.MethodGet, loginURL, "", nil, http.StatusSeeOther)
+	}
 	authorization, err := response.Location()
 	if err != nil || authorization.Scheme+"://"+authorization.Host != integration.gateway {
 		t.Fatal("Daynight did not redirect to its real UniAuth gateway")

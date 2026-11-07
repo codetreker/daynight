@@ -209,8 +209,11 @@ Origin 检查、角色和业务授权仍由原入口执行；该头只是响应�
 
 ### UniAuth 一次性交接
 
-login_transactions 保存随机 state 摘要、浏览器绑定摘要、provider、主站内返回路径
-和十分钟到期时间。每次登录使用独立的绑定 Cookie，支持同时打开多个登录页。
+login_transactions 保存随机 state、每笔浏览器绑定及独立浏览器 scope 的摘要、provider、主站内返回路径和十分钟到期时间。先验证 provider 和最多 4096 bytes 的 returnPath；有效 scope Cookie 缺失时只设置 32-byte 随机 scope 并以 303 返回原登录 URL，不创建 pending。首次并发请求或清除 Cookie 后的请求不能关联为同一物理浏览器。每次准入成功刷新 scope Cookie，使其覆盖新交易的期限；每笔登录仍使用独立绑定 Cookie，支持同时打开多个登录页。
+
+短数据库事务取得全服务容量锁后读取数据库当前时间，排除过期记录并检查全服务 10000 条及同 scope 5 条上限。仅准入成功后才执行有限清理并插入；拒绝不清理、不插入、不撤销其他交易。锁后时间决定交易期限，避免等待锁使有效期缩短；callback 在取得交易行锁后按数据库时间判断到期，其他凭据仍按服务时钟判断自身期限。scope Cookie 与绑定 Cookie 都使用 host-only、HttpOnly、SameSite=Lax，HTTPS 时带 Secure 和 `__Host-` 前缀。
+
+升级时必须停止旧版本创建登录交易，允许旧 callback 完成或等待十分钟到期。迁移对仍有效的旧 pending 明确失败并保留记录；旧记录全部消费或到期后，迁移清理过期记录并建立非空 scope 摘要合同，不伪造 scope。
 callback 在同一事务验证绑定/state/provider/期限并消费 pending；提交后才通过 SDK
 执行一次 Retrieve，继承请求 context 和有界 deadline。
 
@@ -370,7 +373,7 @@ HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由�
 |---|---|
 | GET /healthz、GET /readyz | 无业务数据的存活/就绪；就绪保留 store 可用性。 |
 | GET /api/v1/auth/providers | 公开 App 范围 provider 发现；真实 SDK 投影当前权威交集。 |
-| GET /api/v1/auth/login?provider=... | 创建 pending 并跳转 UniAuth。 |
+| GET /api/v1/auth/login?provider=... | 校验输入；无有效 scope 时初始化并返回同一 URL，否则按容量创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET/HEAD /api/v1/me | 当前用户最小资料及必填 personalTeam:TeamRef；读取真实 Personal 关系并校验 owner admin，认证及完整资料读取后以强 ETag 重验，成功 200/304 使用 private, no-cache。 |
 | GET/POST /api/v1/teams | 本人成员资格过滤的 Team 分页；原子创建普通 Team 和创建者 admin。 |
