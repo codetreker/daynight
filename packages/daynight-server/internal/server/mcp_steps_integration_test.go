@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +125,59 @@ func TestMCPStepsProductionLifecycle(t *testing.T) {
 					m[k] = v
 				}
 				return m
+			}
+			// These tool calls reach the production TaskSteps service and distinguish
+			// field refusals from the independent MCP business-body limit.
+			limitParent, err := taskservice.NewTasks(database).Create(t.Context(), principal, projectID, taskcore.CreateTask{Title: "Step limits"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version := int64(1)
+			for i, tc := range []struct{ field, valid, excess string }{
+				{"title", strings.Repeat("é", 512), strings.Repeat("é", 512) + "x"},
+				{"description", strings.Repeat("\x01", 65536), strings.Repeat("\x01", 65536) + "x"},
+			} {
+				id := fmt.Sprintf("%08x", i+1)
+				invoke := func(name string, fields map[string]any, wantError bool) {
+					t.Helper()
+					fields["projectId"], fields["taskId"], fields["ifVersion"] = projectID, limitParent.ID, strconv.FormatInt(version, 10)
+					out, failed := call(alice, name, fields)
+					if failed != wantError {
+						t.Fatalf("%s %s: %+v", name, tc.field, out)
+					}
+					if wantError {
+						failure := obj(out["error"])
+						if failure["code"] != "invalid_input" || failure["writeOutcome"] != "not_committed" || !strings.Contains(failure["message"].(string), tc.field) {
+							t.Fatalf("field refusal: %+v", failure)
+						}
+					} else {
+						version++
+						if obj(out["data"])["version"] != strconv.FormatInt(version, 10) {
+							t.Fatalf("version receipt: %+v", out)
+						}
+					}
+				}
+				snapshot := func() []byte {
+					t.Helper()
+					doc, e := taskservice.NewTaskSteps(database).List(t.Context(), principal, projectID, limitParent.ID)
+					if e != nil {
+						t.Fatal(e)
+					}
+					return doc.JSON
+				}
+				before := string(snapshot())
+				invoke("task_step_add", map[string]any{"id": id, "title": "x", tc.field: tc.excess}, true)
+				if string(snapshot()) != before {
+					t.Fatal("rejected MCP add changed state")
+				}
+				invoke("task_step_add", map[string]any{"id": id, "title": "x", tc.field: tc.valid}, false)
+				before = string(snapshot())
+				invoke("task_step_update", map[string]any{"stepId": id, tc.field: tc.excess}, true)
+				if string(snapshot()) != before {
+					t.Fatal("rejected MCP update changed state")
+				}
+				invoke("task_step_update", map[string]any{"stepId": id, tc.field: "short"}, false)
+				invoke("task_step_update", map[string]any{"stepId": id, tc.field: tc.valid}, false)
 			}
 			success := func(name string, extra map[string]any) map[string]any {
 				t.Helper()

@@ -1205,6 +1205,8 @@ daynight task step add <task-id> --title "Review round 2" --id 00abcdef --status
 Add requires a raw nonblank title. Description may be empty; omitted description
 and status mean empty text and todo. Before/after are mutually exclusive Task-local
 anchors; omitting both appends. Input IDs normalize without losing leading zeros.
+The service admits at most 1024 UTF-8 bytes for the title and 65536 for the
+description; the complete encoded collection must also fit its 64 MiB limit.
 Without an explicit ID, the command selects the first eight-hex segment of one
 UUIDv4 before submission. A separate full UUID identifies the POST through
 X-Request-ID. Neither identity is regenerated after a conflict or unknown result.
@@ -1251,6 +1253,8 @@ require a non-Unicode-White_Space character, including a valid standalone U+FEFF
 standalone U+0085 is invalid. All text is preserved without trimming. Status uses
 the separate set-status command and accepts any of the four states directly,
 including the current state, independently from Task status or other Steps.
+The service applies Add's text limits to the complete target, including omitted
+fields, and reports a field limit violation as a confirmed `invalid_input` refusal.
 
 An explicit project/version sends exactly one PATCH for content or one PUT to
 /status. Without --if-version, the command reads complete Steps once before that
