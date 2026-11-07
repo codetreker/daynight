@@ -19,11 +19,12 @@ type Endpoint struct {
 }
 
 type SigningKey struct {
-	EndpointID, ID string
-	Ciphertext     []byte
-	CreatedAt      time.Time
-	OverlapUntil   *time.Time
-	RevokedAt      *time.Time
+	EndpointID, ID                 string
+	Slot                           string
+	Ciphertext                     []byte
+	CreatedAt                      time.Time
+	OverlapStartedAt, OverlapUntil *time.Time
+	RevokedAt                      *time.Time
 }
 
 type Operation struct {
@@ -31,7 +32,20 @@ type Operation struct {
 	ID, ActorID, Kind, TargetID, IssuedAt, RequestSHA256, Fingerprint string
 	Effect                                                            string
 	ConfigVersion, DestinationRevisionAfter                           int64
-	ActiveKeyID                                                       string
+	ActiveKeyID, SigningMode                                          string
 	OverlapUntil                                                      *time.Time
 	RecordedAt, ExpiresAt                                             time.Time
+}
+
+// Policy is an immutable, versioned set of delivery and management rules.
+type Policy struct {
+	Version                                                                      int64
+	MaxAutomaticAttempts, MaxManualOperations                                    int16
+	AutomaticWindowSeconds                                                       int32
+	AutomaticOffsetsSeconds                                                      []int32
+	PayloadRetentionSeconds, MetadataRetentionSeconds, OperationRetentionSeconds int32
+	OperationMaxAgeSeconds, OperationFutureSkewSeconds                           int32
+	HTTPTimeoutSeconds, LeaseSeconds, MinimumFailureWaitSeconds                  int32
+	JitterBasisPoints, JitterMaxSeconds                                          int32
+	KeyOverlapDefaultSeconds, KeyOverlapMaxSeconds                               int32
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"mime"
 	"net/http"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	webhookcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
@@ -83,18 +83,17 @@ func validUnicode(data []byte) bool {
 
 func readBody(w http.ResponseWriter, r *http.Request, allowed ...string) (map[string]json.RawMessage, string, error) {
 	if len(r.Header.Values("Content-Type")) != 1 {
+		httpx.CloseUnreadBody(w, r)
 		return nil, "", httpx.InvalidInput("exactly one Content-Type is required")
 	}
 	media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" || len(params) > 1 || (len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8")) {
+		httpx.CloseUnreadBody(w, r)
 		return nil, "", httpx.InvalidInput("Content-Type must be application/json with UTF-8 encoding")
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+	body, err := httpx.ReadBody(w, r, maxBody, transport.JSONBodyReadTimeout)
 	if err != nil {
-		return nil, "", httpx.InvalidInput("request body could not be read")
-	}
-	if len(body) > maxBody {
-		return nil, "", &model.Fault{Code: "content_too_large", Message: "Request body exceeds 256 KiB."}
+		return nil, "", err
 	}
 	if !validUnicode(body) {
 		return nil, "", httpx.InvalidInput("request body must contain valid Unicode")

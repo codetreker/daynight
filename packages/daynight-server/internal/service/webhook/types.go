@@ -30,8 +30,10 @@ type Result struct {
 	Replay bool
 }
 type Service struct {
-	DB     store.WebhookTransactions
-	Keys   *secretbox.Keyring
-	Random io.Reader
+	DB                              store.WebhookTransactions
+	Keys                            *secretbox.Keyring
+	Random                          io.Reader
+	ConfigurationExpansionAvailable bool
+	DispatchEnabled                 bool
 }
 type Owner = wm.Owner

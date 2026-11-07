@@ -107,7 +107,7 @@ func TestWebhookHTTPCommitReplyLostAfterCommandComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	httpwebhook.RegisterRoutes(mux, httpwebhook.Adapter{Service: &service.Service{DB: &postgres.Store{Pool: pool}, Keys: keys}}, authenticator, logger)
+	httpwebhook.NewRoutes(&service.Service{DB: &postgres.Store{Pool: pool}, Keys: keys, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
 	faultServer := httptest.NewServer(mux)
 	defer faultServer.Close()
 	normalServer := f.server
@@ -122,7 +122,7 @@ func TestWebhookHTTPCommitReplyLostAfterCommandComplete(t *testing.T) {
 	}
 	var endpoints, receipts int
 	var actualHash, target string
-	err = f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_id=$1),request_sha256,target_id::text FROM webhook_operations WHERE owner_id=$1 AND operation_id=$2`, actor.id, op).Scan(&endpoints, &receipts, &actualHash, &target)
+	err = f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_id=$1),encode(request_sha256,'hex'),endpoint_id::text FROM webhook_operations WHERE owner_id=$1 AND operation_id=$2`, actor.id, op).Scan(&endpoints, &receipts, &actualHash, &target)
 	sum := sha256.Sum256([]byte(body))
 	if err != nil || endpoints != 1 || receipts != 1 || actualHash != hex.EncodeToString(sum[:]) {
 		t.Fatalf("effect endpoints=%d receipts=%d hash=%s err=%v", endpoints, receipts, actualHash, err)

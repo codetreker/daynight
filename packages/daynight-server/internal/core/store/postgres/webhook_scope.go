@@ -24,7 +24,7 @@ func (s *webhookScope) LockCredential(ctx context.Context, p model.Principal) (s
 	return pg.ThreadCredential(ctx, s.tx, p, " FOR SHARE")
 }
 func (s *webhookScope) LockAuthority(ctx context.Context, o webhook.Owner, user string) error {
-	if o.Kind == "user" {
+	if o.Kind == "personal" {
 		if o.ID != user {
 			return model.ErrNotFound
 		}
@@ -48,7 +48,7 @@ func (s *Store) ReadWebhookSnapshot(ctx context.Context, operation func(store.We
 func (s *Store) WriteWebhook(ctx context.Context, o webhook.Owner, id string, operation func(store.WebhookWriteScope) error) (store.Completion, error) {
 	ownerID, ownerErr := uuid.Parse(o.ID)
 	operationID, operationErr := uuid.Parse(id)
-	if ownerErr != nil || operationErr != nil || (o.Kind != "user" && o.Kind != "team") {
+	if ownerErr != nil || operationErr != nil || (o.Kind != "personal" && o.Kind != "team") {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, fmt.Errorf("invalid webhook operation identity")
 	}
 	o.ID, id = ownerID.String(), operationID.String()

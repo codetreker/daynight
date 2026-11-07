@@ -19,7 +19,7 @@ func authorize(ctx context.Context, scope store.WebhookReadScope, principal mode
 		return false, err
 	}
 	switch owner.Kind {
-	case "user":
+	case "personal":
 		if owner.ID != principal.UserID {
 			return false, fault("forbidden", "Access to this owner is denied.")
 		}

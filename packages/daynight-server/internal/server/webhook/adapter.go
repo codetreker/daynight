@@ -10,6 +10,10 @@ import (
 // Adapter translates HTTP inputs into the webhook service's domain operations.
 type Adapter struct{ Service *webhookservice.Service }
 
+func (a Adapter) Catalog(ctx context.Context, p model.Principal) (any, error) {
+	return a.Service.Catalog(ctx, p)
+}
+
 func serviceOwner(o Owner) webhookservice.Owner { return webhookservice.Owner{Kind: o.Kind, ID: o.ID} }
 func (a Adapter) List(ctx context.Context, p model.Principal, o Owner, q ListQuery) (any, error) {
 	return a.Service.List(ctx, p, serviceOwner(o), webhookservice.ListQuery{Query: q.Query, Enabled: q.Enabled, Limit: q.Limit, Cursor: q.Cursor})

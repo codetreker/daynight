@@ -8,12 +8,12 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
@@ -98,12 +98,23 @@ func Parse(data []byte) (*Keyring, error) {
 	return &Keyring{active: active, keys: keys}, nil
 }
 
+// Read reads a keyring from its deployment source and preserves read failures.
+func Read(r io.Reader) (*Keyring, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read keyring: %w", err)
+	}
+	return Parse(data)
+}
+
 func validKeyID(id string) bool {
-	if id == "" || !utf8.ValidString(id) {
+	if len(id) == 0 || len(id) > 64 {
 		return false
 	}
-	for _, c := range id {
-		if unicode.IsControl(c) {
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		alnum := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+		if !alnum && (i == 0 || c != '.' && c != '_' && c != '-') {
 			return false
 		}
 	}
@@ -115,10 +126,6 @@ func (k *Keyring) ActiveKeyID() string { return k.active }
 // Seal always uses the runtime's active master key. A nil random source uses
 // crypto/rand; another source allows controlled failure injection.
 func (k *Keyring) Seal(plaintext []byte, binding []string, random io.Reader) (Envelope, error) {
-	aad, err := additionalData(envelopeVersion, k.active, binding)
-	if err != nil {
-		return Envelope{}, err
-	}
 	key := k.keys[k.active]
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
@@ -135,12 +142,16 @@ func (k *Keyring) Seal(plaintext []byte, binding []string, random io.Reader) (En
 	if _, err := io.ReadFull(random, nonce); err != nil {
 		return Envelope{}, fmt.Errorf("generate secretbox nonce: %w", err)
 	}
+	aad, err := additionalData(envelopeVersion, k.active, nonce, binding)
+	if err != nil {
+		return Envelope{}, err
+	}
 	return Envelope{Version: envelopeVersion, MasterKeyID: k.active, Nonce: nonce, Ciphertext: gcm.Seal(nil, nonce, plaintext, aad)}, nil
 }
 
 // Open authenticates the envelope and binding using the named master key.
 func (k *Keyring) Open(e Envelope, binding []string) ([]byte, error) {
-	aad, err := additionalData(e.Version, e.MasterKeyID, binding)
+	aad, err := additionalData(e.Version, e.MasterKeyID, e.Nonce, binding)
 	if err != nil {
 		return nil, err
 	}
@@ -166,17 +177,57 @@ func (k *Keyring) Open(e Envelope, binding []string) ([]byte, error) {
 	return plaintext, nil
 }
 
-func additionalData(version int, id string, binding []string) ([]byte, error) {
-	if version != envelopeVersion || !validKeyID(id) || len(binding) == 0 {
+func additionalData(version int, id string, nonce []byte, binding []string) ([]byte, error) {
+	header, err := envelopeHeader(version, id, nonce)
+	if err != nil || len(binding) == 0 {
 		return nil, ErrInvalidEnvelope
 	}
-	parts := make([]string, 0, len(binding)+3)
-	parts = append(parts, "daynight-secretbox", "1", id)
+	parts := make([]string, 0, len(binding)+2)
+	parts = append(parts, "daynight-secretbox", "1")
 	for _, part := range binding {
 		if part == "" || !utf8.ValidString(part) || strings.ContainsRune(part, '\x00') {
 			return nil, ErrInvalidEnvelope
 		}
 		parts = append(parts, part)
 	}
-	return []byte(strings.Join(parts, "\x00")), nil
+	return append(header, []byte(strings.Join(parts, "\x00"))...), nil
+}
+
+func envelopeHeader(version int, id string, nonce []byte) ([]byte, error) {
+	if version != envelopeVersion || !validKeyID(id) || len(nonce) != 12 {
+		return nil, ErrInvalidEnvelope
+	}
+	header := make([]byte, 3+len(id)+12)
+	binary.BigEndian.PutUint16(header, uint16(version))
+	header[2] = byte(len(id))
+	copy(header[3:], id)
+	copy(header[3+len(id):], nonce)
+	return header, nil
+}
+
+// MarshalBinary encodes the canonical envelope; the authentication tag is
+// already part of Ciphertext.
+func (e Envelope) MarshalBinary() ([]byte, error) {
+	header, err := envelopeHeader(e.Version, e.MasterKeyID, e.Nonce)
+	if err != nil || len(e.Ciphertext) < 16 {
+		return nil, ErrInvalidEnvelope
+	}
+	return append(header, e.Ciphertext...), nil
+}
+
+// ParseEnvelope decodes canonical bytes into independently storable fields.
+func ParseEnvelope(data []byte) (Envelope, error) {
+	if len(data) < 3 {
+		return Envelope{}, ErrInvalidEnvelope
+	}
+	n := int(data[2])
+	if len(data) < 3+n+12+16 {
+		return Envelope{}, ErrInvalidEnvelope
+	}
+	e := Envelope{Version: int(binary.BigEndian.Uint16(data)), MasterKeyID: string(data[3 : 3+n]),
+		Nonce: bytes.Clone(data[3+n : 3+n+12]), Ciphertext: bytes.Clone(data[3+n+12:])}
+	if _, err := envelopeHeader(e.Version, e.MasterKeyID, e.Nonce); err != nil {
+		return Envelope{}, err
+	}
+	return e, nil
 }

@@ -2,9 +2,6 @@ package webhook_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	pgwebhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/webhook"
-	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -24,10 +19,10 @@ type concurrentHTTPResult struct {
 	err    error
 }
 
-func startWebhookCreate(f *httpFixture, actor httpActor, body string) <-chan concurrentHTTPResult {
+func startWebhookPatch(f *httpFixture, actor httpActor, path, body string) <-chan concurrentHTTPResult {
 	result := make(chan concurrentHTTPResult, 1)
 	go func() {
-		req, err := http.NewRequestWithContext(f.ctx, "POST", f.server.URL+"/api/v1/me/webhooks", strings.NewReader(body))
+		req, err := http.NewRequestWithContext(f.ctx, "PATCH", f.server.URL+path, strings.NewReader(body))
 		if err != nil {
 			result <- concurrentHTTPResult{err: err}
 			return
@@ -68,32 +63,60 @@ func waitWebhookBlocked(t *testing.T, f *httpFixture, blocker int32, fragment st
 	}
 }
 
-// T01-A11: the first real HTTP create holds its quota locks while its endpoint
-// INSERT waits at a test-only advisory gate. The second create must then wait
-// behind that first transaction and lose the final protected configuration slot.
-func TestHTTPConcurrentLastConfigurationCapacity(t *testing.T) {
+// T01-A11 exercises an actual receipt INSERT failure and a separately ordered
+// concurrent CAS. Both requests pass through the production HTTP route.
+func TestHTTPReceiptFailureAndConcurrentCAS(t *testing.T) {
 	f := newHTTPFixture(t)
 	actor := f.actor(t)
-	owner := wm.Owner{Kind: "user", ID: actor.id}
-	bucket := pgwebhook.Bucket(owner)
-	if _, err := f.db.Pool.Exec(f.ctx, `INSERT INTO webhook_quota_owners(owner_kind,owner_id,bucket,records,bytes,active_records,active_bytes) VALUES('user',$1,$2,24573,50325504,24573,50325504)`, actor.id, bucket); err != nil {
-		t.Fatal(err)
+	base := "/api/v1/me/webhooks"
+	created := createFields(actor, "original", "https://receiver.example/private")
+	status, _, body := f.request(t, actor, "POST", base, encoded(t, created))
+	mustStatus(t, status, 201, body)
+	id := jsonBody(t, body)["endpoint"].(map[string]any)["id"].(string)
+	path := base + "/" + id
+
+	snapshot := func() (string, string, int) {
+		t.Helper()
+		var endpoint, keys string
+		var receipts int
+		err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT row_to_json(e)::text FROM webhook_endpoints e WHERE e.id=$1), (SELECT coalesce(string_agg(row_to_json(k)::text, ',' ORDER BY k.id),'') FROM webhook_signing_keys k WHERE k.endpoint_id=$1), (SELECT count(*) FROM webhook_operations o WHERE o.endpoint_id=$1)`, id).Scan(&endpoint, &keys, &receipts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return endpoint, keys, receipts
 	}
-	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_quota_buckets SET records=24573,bytes=50325504,active_records=24573,active_bytes=50325504 WHERE bucket=$1`, bucket); err != nil {
-		t.Fatal(err)
-	}
-	gateHash := sha256.Sum256([]byte(actor.id))
-	gate := int64(binary.BigEndian.Uint64(gateHash[:8]))
-	ddl := fmt.Sprintf(`CREATE FUNCTION webhook_capacity_gate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(%d); RETURN NEW; END $$; CREATE TRIGGER webhook_capacity_gate BEFORE INSERT ON webhook_endpoints FOR EACH ROW EXECUTE FUNCTION webhook_capacity_gate()`, gate)
+	beforeEndpoint, beforeKeys, beforeReceipts := snapshot()
+	failed := operationFields(actor)
+	failed["ifVersion"], failed["name"] = "1", "must roll back"
+	ddl := fmt.Sprintf(`CREATE FUNCTION reject_webhook_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.operation_id = '%s'::uuid THEN RAISE EXCEPTION 'injected receipt failure' USING ERRCODE='P1048'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_webhook_receipt BEFORE INSERT ON webhook_operations FOR EACH ROW EXECUTE FUNCTION reject_webhook_receipt()`, failed["operationId"])
 	if _, err := f.db.Pool.Exec(f.ctx, ddl); err != nil {
 		t.Fatal(err)
 	}
-	gateConn, err := f.db.Pool.Acquire(f.ctx)
+	status, _, body = f.request(t, actor, "PATCH", path, encoded(t, failed))
+	mustStatus(t, status, http.StatusServiceUnavailable, body)
+	if jsonBody(t, body)["error"].(map[string]any)["code"] != "dependency_unavailable" {
+		t.Fatalf("SQL failure response: %s", body)
+	}
+	afterEndpoint, afterKeys, afterReceipts := snapshot()
+	if beforeEndpoint != afterEndpoint || beforeKeys != afterKeys || beforeReceipts != afterReceipts {
+		t.Fatal("receipt insertion failure changed endpoint, keys, or receipts")
+	}
+	if _, err := f.db.Pool.Exec(f.ctx, `DROP TRIGGER reject_webhook_receipt ON webhook_operations; DROP FUNCTION reject_webhook_receipt()`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold the first update after it has locked the endpoint so a second
+	// request with the same version demonstrably waits on the first.
+	const gate int64 = 2910385109
+	if _, err := f.db.Pool.Exec(f.ctx, `CREATE FUNCTION hold_webhook_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(2910385109); RETURN NEW; END $$; CREATE TRIGGER hold_webhook_update BEFORE UPDATE ON webhook_endpoints FOR EACH ROW EXECUTE FUNCTION hold_webhook_update()`); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := f.db.Pool.Acquire(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer gateConn.Release()
-	if _, err = gateConn.Exec(f.ctx, `SELECT pg_advisory_lock($1)`, gate); err != nil {
+	defer conn.Release()
+	if _, err := conn.Exec(f.ctx, `SELECT pg_advisory_lock($1)`, gate); err != nil {
 		t.Fatal(err)
 	}
 	released := false
@@ -101,52 +124,37 @@ func TestHTTPConcurrentLastConfigurationCapacity(t *testing.T) {
 		if !released {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_, _ = gateConn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, gate)
+			_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, gate)
 		}
 	}()
 	var gatePID int32
-	if err = gateConn.QueryRow(f.ctx, `SELECT pg_backend_pid()`).Scan(&gatePID); err != nil {
+	if err := conn.QueryRow(f.ctx, `SELECT pg_backend_pid()`).Scan(&gatePID); err != nil {
 		t.Fatal(err)
 	}
-	firstFields := createFields(actor, "first endpoint", "https://first.example/private")
-	secondFields := createFields(actor, "second endpoint", "https://second.example/private")
-	firstBody, secondBody := encoded(t, firstFields), encoded(t, secondFields)
-	first := startWebhookCreate(f, actor, firstBody)
-	firstPID := waitWebhookBlocked(t, f, gatePID, "INSERT INTO webhook_endpoints")
-	second := startWebhookCreate(f, actor, secondBody)
-	secondPID := waitWebhookBlocked(t, f, firstPID, "webhook_quota_buckets")
-	if secondPID == firstPID {
-		t.Fatal("same connection cannot represent the two contenders")
+	one, two := operationFields(actor), operationFields(actor)
+	one["ifVersion"], one["name"] = "1", "first"
+	two["ifVersion"], two["name"] = "1", "second"
+	first := startWebhookPatch(f, actor, path, encoded(t, one))
+	firstPID := waitWebhookBlocked(t, f, gatePID, "webhook_endpoints")
+	second := startWebhookPatch(f, actor, path, encoded(t, two))
+	secondPID := waitWebhookBlocked(t, f, firstPID, "webhook_endpoints")
+	if firstPID == secondPID {
+		t.Fatal("contenders must use distinct database connections")
 	}
-	if _, err = gateConn.Exec(f.ctx, `SELECT pg_advisory_unlock($1)`, gate); err != nil {
+	if _, err := conn.Exec(f.ctx, `SELECT pg_advisory_unlock($1)`, gate); err != nil {
 		t.Fatal(err)
 	}
 	released = true
-	one, two := <-first, <-second
-	if one.err != nil || two.err != nil || one.status != 201 || two.status != 503 {
-		t.Fatalf("first status=%d err=%v; second status=%d err=%v body=%s", one.status, one.err, two.status, two.err, two.body)
+	r1, r2 := <-first, <-second
+	if r1.err != nil || r2.err != nil || r1.status != http.StatusOK || r2.status != http.StatusConflict {
+		t.Fatalf("first=%d %s %v second=%d %s %v", r1.status, r1.body, r1.err, r2.status, r2.body, r2.err)
 	}
-	var failure struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
+	if jsonBody(t, r2.body)["error"].(map[string]any)["code"] != "version_conflict" {
+		t.Fatalf("second request: %s", r2.body)
 	}
-	if err = json.Unmarshal(two.body, &failure); err != nil || failure.Error.Code != "webhook_capacity_unavailable" {
-		t.Fatalf("capacity response: %s (%v)", two.body, err)
-	}
-	var endpoints, keys, receipts, firstReceipt, secondReceipt int
-	var endpointsUsed, records, bytes, activeRecords, activeBytes, operations int64
-	var bucketRecords, bucketBytes, bucketActiveRecords, bucketActiveBytes, bucketOperations, actualCipherBytes int64
-	err = f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_kind='user' AND owner_id=$1), (SELECT count(*) FROM webhook_signing_keys k JOIN webhook_endpoints e ON e.id=k.endpoint_id WHERE e.owner_kind='user' AND e.owner_id=$1), (SELECT count(*) FROM webhook_operations WHERE owner_kind='user' AND owner_id=$1), (SELECT count(*) FROM webhook_operations WHERE owner_kind='user' AND owner_id=$1 AND operation_id=$2), (SELECT count(*) FROM webhook_operations WHERE owner_kind='user' AND owner_id=$1 AND operation_id=$3), (SELECT coalesce(sum(octet_length(e.destination_ciphertext)+octet_length(k.ciphertext)),0) FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.endpoint_id=e.id WHERE e.owner_kind='user' AND e.owner_id=$1)`, actor.id, firstFields["operationId"], secondFields["operationId"]).Scan(&endpoints, &keys, &receipts, &firstReceipt, &secondReceipt, &actualCipherBytes)
-	if err != nil || endpoints != 1 || keys != 1 || receipts != 1 || firstReceipt != 1 || secondReceipt != 0 {
-		t.Fatalf("partial effect endpoints=%d keys=%d receipts=%d first=%d second=%d err=%v", endpoints, keys, receipts, firstReceipt, secondReceipt, err)
-	}
-	err = f.db.Pool.QueryRow(f.ctx, `SELECT endpoints,records,bytes,active_records,active_bytes,operations FROM webhook_quota_owners WHERE owner_kind='user' AND owner_id=$1`, actor.id).Scan(&endpointsUsed, &records, &bytes, &activeRecords, &activeBytes, &operations)
-	if err != nil || endpointsUsed != 1 || records != 24575 || activeRecords != 24575 || bytes != 50325504+4096+actualCipherBytes || bytes > 50331648 || bytes+4096 <= 50331648 || activeBytes != bytes || operations != 1 {
-		t.Fatalf("owner quota: endpoints=%d records=%d bytes=%d active=%d/%d operations=%d err=%v", endpointsUsed, records, bytes, activeRecords, activeBytes, operations, err)
-	}
-	err = f.db.Pool.QueryRow(f.ctx, `SELECT records,bytes,active_records,active_bytes,operations FROM webhook_quota_buckets WHERE bucket=$1`, bucket).Scan(&bucketRecords, &bucketBytes, &bucketActiveRecords, &bucketActiveBytes, &bucketOperations)
-	if err != nil || bucketRecords != records || bucketBytes != bytes || bucketActiveRecords != activeRecords || bucketActiveBytes != activeBytes || bucketOperations != operations {
-		t.Fatalf("bucket quota mismatch: %d %d %d %d %d err=%v", bucketRecords, bucketBytes, bucketActiveRecords, bucketActiveBytes, bucketOperations, err)
+	var name string
+	var version, receipts, failedReceipts, loserReceipts int
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT e.name,e.config_version,(SELECT count(*) FROM webhook_operations WHERE endpoint_id=e.id),(SELECT count(*) FROM webhook_operations WHERE operation_id=$2),(SELECT count(*) FROM webhook_operations WHERE operation_id=$3) FROM webhook_endpoints e WHERE e.id=$1`, id, failed["operationId"], two["operationId"]).Scan(&name, &version, &receipts, &failedReceipts, &loserReceipts); err != nil || name != "first" || version != 2 || receipts != 2 || failedReceipts != 0 || loserReceipts != 0 {
+		t.Fatalf("CAS state name=%q version=%d receipts=%d failed=%d loser=%d err=%v", name, version, receipts, failedReceipts, loserReceipts, err)
 	}
 }

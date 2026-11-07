@@ -41,6 +41,7 @@ type MutationResult struct {
 // Mutation results must already reflect a fresh authorized snapshot after the
 // write transaction has released its connection.
 type Service interface {
+	Catalog(context.Context, model.Principal) (any, error)
 	List(context.Context, model.Principal, Owner, ListQuery) (any, error)
 	Get(context.Context, model.Principal, Owner, string) (any, error)
 	Operation(context.Context, model.Principal, Owner, string) (any, error)

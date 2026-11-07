@@ -61,7 +61,7 @@ func TestHTTPCommittedWriteResponseLoss(t *testing.T) {
 				t.Fatal(err)
 			}
 			mux := http.NewServeMux()
-			httpwebhook.RegisterRoutes(mux, httpwebhook.Adapter{Service: &service.Service{DB: f.db, Keys: keys}}, authenticator, logger)
+			httpwebhook.NewRoutes(&service.Service{DB: f.db, Keys: keys, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
 			destination := "https://receiver.example/private-path?token=private-query"
 			fields := createFields(actor, "response-loss", destination)
 			body := encoded(t, fields)
@@ -80,7 +80,7 @@ func TestHTTPCommittedWriteResponseLoss(t *testing.T) {
 			}
 			var endpoints, receipts int
 			var hash, target string
-			err = f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_id=$1),request_sha256,target_id::text FROM webhook_operations WHERE owner_id=$1 AND operation_id=$2`, actor.id, op).Scan(&endpoints, &receipts, &hash, &target)
+			err = f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_id=$1),encode(request_sha256,'hex'),endpoint_id::text FROM webhook_operations WHERE owner_id=$1 AND operation_id=$2`, actor.id, op).Scan(&endpoints, &receipts, &hash, &target)
 			sum := sha256.Sum256([]byte(body))
 			expected := hex.EncodeToString(sum[:])
 			if err != nil || endpoints != 1 || receipts != 1 || hash != expected {

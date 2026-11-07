@@ -2,31 +2,44 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
+	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 )
 
 type Authenticator interface {
 	Require(httpx.AuthenticatedHandler) http.HandlerFunc
 }
 
-type routes struct {
+type Routes struct {
 	service Service
+	auth    Authenticator
 	logger  *slog.Logger
+}
+
+// NewRoutes composes the management handlers without starting a runner or
+// installing them in the application's mux.
+func NewRoutes(service *webhookservice.Service, auth *authhttp.Authentication, logger *slog.Logger) *Routes {
+	return &Routes{service: Adapter{Service: service}, auth: auth, logger: logger}
 }
 
 // RegisterRoutes attaches the personal and team management resources to mux.
 // Calling it is separate from application route registration.
-func RegisterRoutes(mux *http.ServeMux, service Service, auth Authenticator, logger *slog.Logger) {
-	h := &routes{service: service, logger: logger}
+func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
+	auth, logger := h.auth, h.logger
+	mux.HandleFunc("GET /api/v1/webhook-event-types", auth.Require(h.catalog))
+	mux.HandleFunc("/api/v1/webhook-event-types", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	for _, base := range []string{"/api/v1/me/webhooks", "/api/v1/teams/{teamId}/webhooks"} {
 		mux.HandleFunc("GET "+base, auth.Require(h.list))
 		mux.HandleFunc("POST "+base, auth.Require(h.create))
@@ -44,7 +57,7 @@ func owner(r *http.Request, p model.Principal) (Owner, error) {
 		return Owner{Kind: "team", ID: id}, err
 	}
 	id, err := uuidInput(p.UserID)
-	return Owner{Kind: "user", ID: id}, err
+	return Owner{Kind: "personal", ID: id}, err
 }
 
 func noQuery(r *http.Request) error {
@@ -54,17 +67,41 @@ func noQuery(r *http.Request) error {
 	return nil
 }
 
-func (h *routes) failure(w http.ResponseWriter, r *http.Request, p model.Principal, phase string, err error) {
+func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Principal, phase string, err error) {
 	logger := h.logger.With("user_id", p.UserID)
+	var bodyError *httpx.BodyReadError
+	if errors.As(err, &bodyError) {
+		if bodyError.Status == http.StatusRequestEntityTooLarge {
+			copy := *bodyError
+			copy.Code = "content_too_large"
+			copy.Message = "Request body exceeds 256 KiB."
+			err = &copy
+			// Closing an oversized unread request can cancel its context before
+			// the rejection is written. Keep the 413 response bounded and retain
+			// the request metadata while the connection is being closed.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Second)
+			defer cancel()
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Second))
+			r = r.WithContext(ctx)
+		}
+		httpx.WriteBodyError(w, r, logger, "webhook", phase, err)
+		return
+	}
+	var uriError *httpx.URITooLongError
+	if errors.As(err, &uriError) {
+		httpx.WriteError(w, r, logger, "webhook", phase, err)
+		return
+	}
+	httpx.CloseUnreadBody(w, r)
 	// Only public error codes cross this boundary. Neither database diagnostics
 	// nor a domain error message may disclose a destination or signing secret.
 	statuses := map[string]int{
 		"invalid_input": 400, "invalid_cursor": 400, "invalid_operation_time": 400,
 		"unauthenticated": 401, "forbidden": 403, "permission_denied": 403, "not_found": 404,
 		"identity_mismatch": 409, "version_conflict": 409, "operation_conflict": 409,
-		"version_exhausted": 409, "destination_unsupported": 409, "subscription_capacity": 409,
-		"operation_expired": 410, "content_too_large": 413, "operation_capacity": 429,
-		"webhooks_unavailable": 503, "webhook_capacity_unavailable": 503, "dependency_unavailable": 503,
+		"version_exhausted": 409, "destination_unsupported": 409,
+		"operation_expired": 410, "content_too_large": 413,
+		"webhooks_unavailable": 503, "dependency_unavailable": 503,
 		"write_outcome_unknown": 503,
 	}
 	var f *model.Fault
@@ -98,7 +135,20 @@ func (h *routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 	httpx.WriteJSON(w, r, logger, status, api.ErrorResponse{Error: api.Error{Code: code, Message: http.StatusText(status), RequestID: httpx.RequestID(r.Context())}})
 }
 
-func (h *routes) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *Routes) catalog(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if err := noQuery(r); err != nil {
+		h.failure(w, r, p, "catalog", err)
+		return
+	}
+	value, err := h.service.Catalog(r.Context(), p)
+	if err != nil {
+		h.failure(w, r, p, "catalog", err)
+		return
+	}
+	httpx.WriteJSON(w, r, h.logger, http.StatusOK, value)
+}
+
+func (h *Routes) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	o, err := owner(r, p)
 	var q ListQuery
 	if err == nil {
@@ -114,7 +164,7 @@ func (h *routes) list(w http.ResponseWriter, r *http.Request, p model.Principal)
 	}
 	httpx.WriteJSON(w, r, h.logger, http.StatusOK, value)
 }
-func (h *routes) subresource(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *Routes) subresource(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	kind := ""
 	if r.PathValue("endpointId") == "operations" {
 		kind = "operation"
@@ -131,7 +181,7 @@ func (h *routes) subresource(w http.ResponseWriter, r *http.Request, p model.Pri
 	}
 	h.read(w, r, p, kind)
 }
-func (h *routes) read(w http.ResponseWriter, r *http.Request, p model.Principal, kind string) {
+func (h *Routes) read(w http.ResponseWriter, r *http.Request, p model.Principal, kind string) {
 	o, err := owner(r, p)
 	if err == nil {
 		err = noQuery(r)
@@ -161,7 +211,7 @@ func (h *routes) read(w http.ResponseWriter, r *http.Request, p model.Principal,
 	}
 	httpx.WriteJSON(w, r, h.logger, http.StatusOK, value)
 }
-func (h *routes) endpoint(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *Routes) endpoint(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		h.read(w, r, p, "get")
@@ -173,13 +223,13 @@ func (h *routes) endpoint(w http.ResponseWriter, r *http.Request, p model.Princi
 		httpx.ResourceMethodNotAllowed(h.logger, "GET, HEAD, PATCH, DELETE")(w, r, p)
 	}
 }
-func (h *routes) create(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *Routes) create(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.write(w, r, p, "endpoint.create")
 }
-func (h *routes) rotate(w http.ResponseWriter, r *http.Request, p model.Principal) {
+func (h *Routes) rotate(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.write(w, r, p, "signing.rotate")
 }
-func (h *routes) write(w http.ResponseWriter, r *http.Request, p model.Principal, kind string) {
+func (h *Routes) write(w http.ResponseWriter, r *http.Request, p model.Principal, kind string) {
 	o, err := owner(r, p)
 	if err == nil {
 		err = noQuery(r)

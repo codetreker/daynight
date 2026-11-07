@@ -116,14 +116,22 @@ func CheckIssuedAt(issued, now time.Time) error {
 // CheckIssuedAtText preserves sub-nanosecond fractional precision when comparing
 // the upper boundary. ParseIssuedAt alone cannot represent those extra digits.
 func CheckIssuedAtText(value string, now time.Time) error {
+	return CheckIssuedAtLimits(value, now, 300*time.Second, 60*time.Second)
+}
+
+// CheckIssuedAtLimits applies the selected policy without losing lexical precision.
+func CheckIssuedAtLimits(value string, now time.Time, maxAge, futureSkew time.Duration) error {
 	issued, err := ParseIssuedAt(value)
 	if err != nil {
 		return err
 	}
-	if err := CheckIssuedAt(issued, now); err != nil {
-		return err
+	if issued.Before(now.Add(-maxAge)) {
+		return ErrOperationExpired
 	}
-	if issued.Equal(now.Add(time.Minute)) {
+	if issued.After(now.Add(futureSkew)) {
+		return ErrOperationInFuture
+	}
+	if issued.Equal(now.Add(futureSkew)) {
 		fractionStart := strings.IndexByte(value, '.')
 		if fractionStart >= 0 {
 			fraction := value[fractionStart+1:]

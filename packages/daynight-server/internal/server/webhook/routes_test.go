@@ -47,6 +47,10 @@ type fakeService struct {
 	err      error
 }
 
+func (s *fakeService) Catalog(_ context.Context, _ model.Principal) (any, error) {
+	s.calls++
+	return map[string]any{"items": []any{}, "service": map[string]any{}, "limits": map[string]any{}}, s.err
+}
 func (s *fakeService) List(_ context.Context, _ model.Principal, o Owner, q ListQuery) (any, error) {
 	s.calls++
 	s.owner = o
@@ -82,7 +86,7 @@ func (s *fakeService) Mutate(_ context.Context, _ model.Principal, o Owner, m Mu
 }
 func fixture(s *fakeService, logs io.Writer) http.Handler {
 	mux := http.NewServeMux()
-	RegisterRoutes(mux, s, fakeAuth{}, slog.New(slog.NewJSONHandler(logs, nil)))
+	(&Routes{service: s, auth: fakeAuth{}, logger: slog.New(slog.NewJSONHandler(logs, nil))}).RegisterRoutes(mux)
 	return mux
 }
 func request(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -125,7 +129,7 @@ func TestCreatePreservesOriginalDigestAndNormalizesInput(t *testing.T) {
 	}
 	s.replay = true
 	w = request(h, "POST", "/api/v1/me/webhooks", body)
-	if w.Code != 200 || s.owner != (Owner{Kind: "user", ID: userID}) {
+	if w.Code != 200 || s.owner != (Owner{Kind: "personal", ID: userID}) {
 		t.Fatalf("replay %d owner %#v", w.Code, s.owner)
 	}
 }
@@ -162,6 +166,38 @@ func TestWritesRejectMalformedInputsBeforeService(t *testing.T) {
 				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body, s.calls)
 			}
 		})
+	}
+}
+
+func TestRequestBodyExactByteLimit(t *testing.T) {
+	s := &fakeService{}
+	h := fixture(s, io.Discard)
+	body := createBody("https://example.test/Path")
+	body += strings.Repeat(" ", maxBody-len(body))
+	w := request(h, "POST", "/api/v1/me/webhooks", body)
+	if w.Code != http.StatusCreated || s.calls != 1 {
+		t.Fatalf("exact limit: status=%d calls=%d body=%s", w.Code, s.calls, w.Body)
+	}
+	w = request(h, "POST", "/api/v1/me/webhooks", body+" ")
+	if w.Code != http.StatusRequestEntityTooLarge || code(t, w) != "content_too_large" || s.calls != 1 {
+		t.Fatalf("one byte over: status=%d calls=%d body=%s", w.Code, s.calls, w.Body)
+	}
+}
+
+func TestCatalogRouting(t *testing.T) {
+	s := &fakeService{}
+	h := fixture(s, io.Discard)
+	w := request(h, "GET", "/api/v1/webhook-event-types", "")
+	if w.Code != http.StatusOK || s.calls != 1 || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Daynight-User-ID") != userID {
+		t.Fatalf("catalog: status=%d calls=%d headers=%v", w.Code, s.calls, w.Header())
+	}
+	w = request(h, "GET", "/api/v1/webhook-event-types?unknown=1", "")
+	if w.Code != http.StatusBadRequest || s.calls != 1 {
+		t.Fatalf("catalog query: status=%d calls=%d", w.Code, s.calls)
+	}
+	w = request(h, "POST", "/api/v1/webhook-event-types", "")
+	if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET, HEAD" || w.Header().Get("Daynight-User-ID") != userID || s.calls != 1 {
+		t.Fatalf("catalog method: status=%d headers=%v calls=%d", w.Code, w.Header(), s.calls)
 	}
 }
 
@@ -301,12 +337,11 @@ func TestFailurePreservesCompletionPriorityAndHidesCauses(t *testing.T) {
 		status int
 		code   string
 	}{
-		{&model.Fault{Code: "operation_capacity", Cause: store.ErrWebhookOperationCapacity}, 429, "operation_capacity"},
+		{&model.Fault{Code: "forbidden"}, 403, "forbidden"},
 		{&store.Error{Cause: &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &model.Fault{Code: "operation_expired"}}}, 410, "operation_expired"},
-		{&model.Fault{Code: "webhook_capacity_unavailable", Cause: store.ErrWebhookCapacity}, 503, "webhook_capacity_unavailable"},
 		{&model.Fault{Code: "write_outcome_unknown", Cause: &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: &store.Error{DatabaseFailure: true}}}, 503, "write_outcome_unknown"},
-		{&model.Fault{Code: "operation_capacity", Cause: &store.Error{DatabaseFailure: true}}, 503, "dependency_unavailable"},
-		{&model.Fault{Code: "operation_capacity", Cause: &store.TransactionError{Phase: "rollback", Outcome: store.TransactionUnknown, CleanupFailed: true}}, 500, "internal_error"},
+		{&model.Fault{Code: "forbidden", Cause: &store.Error{DatabaseFailure: true}}, 503, "dependency_unavailable"},
+		{&model.Fault{Code: "forbidden", Cause: &store.TransactionError{Phase: "rollback", Outcome: store.TransactionUnknown, CleanupFailed: true}}, 500, "internal_error"},
 	}
 	for _, tc := range tests {
 		s := &fakeService{err: tc.err}
@@ -333,10 +368,10 @@ var errTestDB = errors.New("test database unavailable")
 
 func TestAdapterUsesServiceOperations(t *testing.T) {
 	db := &unavailableDB{}
-	a := Adapter{Service: &webhookservice.Service{DB: db}}
+	a := Adapter{Service: &webhookservice.Service{DB: db, ConfigurationExpansionAvailable: true}}
 	ctx := context.Background()
 	p := model.Principal{UserID: userID}
-	owner := Owner{Kind: "user", ID: userID}
+	owner := Owner{Kind: "personal", ID: userID}
 	readers := []func() (any, error){func() (any, error) { return a.List(ctx, p, owner, ListQuery{Limit: 10}) }, func() (any, error) { return a.Get(ctx, p, owner, endpointID) }, func() (any, error) { return a.Operation(ctx, p, owner, operationID) }, func() (any, error) { return a.Secret(ctx, p, owner, endpointID) }}
 	for _, read := range readers {
 		if _, err := read(); !errors.Is(err, errTestDB) {

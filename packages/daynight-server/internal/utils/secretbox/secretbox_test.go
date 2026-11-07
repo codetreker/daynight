@@ -42,6 +42,10 @@ func TestParseStrict(t *testing.T) {
 		"base64 newline":        `{"activeKeyId":"active","keys":{"active":"` + master + `\n"}}`,
 		"invalid unicode":       `{"activeKeyId":"\ud800","keys":{}}`,
 		"control id":            `{"activeKeyId":"bad\u0000id","keys":{}}`,
+		"unicode id":            `{"activeKeyId":"密钥","keys":{"密钥":"` + master + `"}}`,
+		"punctuation first":     `{"activeKeyId":"_a","keys":{"_a":"` + master + `"}}`,
+		"id too long":           `{"activeKeyId":"` + strings.Repeat("a", 65) + `","keys":{}}`,
+		"space in id":           `{"activeKeyId":"a b","keys":{}}`,
 		"trailing object":       valid + `{}`,
 		"bad UTF8":              valid + string([]byte{0xff}),
 	}
@@ -52,8 +56,63 @@ func TestParseStrict(t *testing.T) {
 			}
 		})
 	}
-	// Valid Unicode identifiers need not conform to an undocumented ASCII rule.
-	ring(t, `{"activeKeyId":"密钥","keys":{"密钥":"`+master+`"}}`)
+	ring(t, `{"activeKeyId":"a.0_-","keys":{"a.0_-":"`+master+`"}}`)
+	ring(t, `{"activeKeyId":"`+strings.Repeat("a", 64)+`","keys":{"`+strings.Repeat("a", 64)+`":"`+master+`"}}`)
+}
+
+func TestCanonicalEnvelope(t *testing.T) {
+	k := ring(t, `{"activeKeyId":"a.1","keys":{"a.1":"`+master+`"}}`)
+	binding := []string{"personal", "owner", "endpoint", "signing-key", "key"}
+	plain := bytes.Repeat([]byte{9}, 32)
+	e, err := k.Seal(plain, binding, bytes.NewReader(bytes.Repeat([]byte{3}, 12)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := e.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedHeader := append([]byte{0, 1, 3, 'a', '.', '1'}, bytes.Repeat([]byte{3}, 12)...)
+	if len(encoded) != len(expectedHeader)+48 || !bytes.Equal(encoded[:len(expectedHeader)], expectedHeader) {
+		t.Fatalf("unexpected canonical envelope %x", encoded)
+	}
+	decoded, err := ParseEnvelope(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := k.Open(decoded, binding)
+	if err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("open = %x, %v", got, err)
+	}
+	encoded[len(encoded)-1] ^= 1
+	if _, err := k.Open(decoded, binding); err != nil {
+		t.Fatalf("decoder retained input buffer: %v", err)
+	}
+	for _, data := range [][]byte{nil, {0, 1, 0}, {0, 1, 2, 'a'}, append([]byte{0, 2}, encoded[2:]...), append([]byte{0, 1, 1, '!'}, make([]byte, 28)...)} {
+		if _, err := ParseEnvelope(data); !errors.Is(err, ErrInvalidEnvelope) {
+			t.Fatalf("invalid envelope %x: %v", data, err)
+		}
+	}
+	for _, invalid := range []Envelope{{Version: 2, MasterKeyID: "a", Nonce: make([]byte, 12), Ciphertext: make([]byte, 16)}, {Version: 1, MasterKeyID: "a", Nonce: make([]byte, 12), Ciphertext: []byte{1}}} {
+		if _, err := invalid.MarshalBinary(); !errors.Is(err, ErrInvalidEnvelope) {
+			t.Fatalf("invalid envelope: %v", err)
+		}
+	}
+}
+
+type failedReader struct{ err error }
+
+func (r failedReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestRead(t *testing.T) {
+	input := `{"activeKeyId":"a","keys":{"a":"` + master + `"}}`
+	if _, err := Read(strings.NewReader(input)); err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("read failure")
+	if _, err := Read(failedReader{want}); !errors.Is(err, want) {
+		t.Fatalf("read cause: %v", err)
+	}
 }
 
 func TestSealOpenAuthenticationAndRotation(t *testing.T) {

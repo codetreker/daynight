@@ -24,8 +24,8 @@ func (s *Service) decrypt(data []byte, b []string) ([]byte, error) {
 	if s.Keys == nil {
 		return nil, secretbox.ErrMissingKey
 	}
-	var e secretbox.Envelope
-	if err := json.Unmarshal(data, &e); err != nil {
+	e, err := secretbox.ParseEnvelope(data)
+	if err != nil {
 		return nil, err
 	}
 	return s.Keys.Open(e, b)
@@ -38,7 +38,7 @@ func (s *Service) encrypt(data []byte, b []string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(e)
+	return e.MarshalBinary()
 }
 func notFound(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
@@ -47,17 +47,33 @@ func notFound(err error) error {
 	return err
 }
 func version(v int64) string { return strconv.FormatInt(v, 10) }
+func utcTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	v := t.UTC()
+	return &v
+}
+func wireOperationKind(kind string) string {
+	switch kind {
+	case "endpoint.update":
+		return "endpoint.patch"
+	case "signing.rotate":
+		return "signing-secret.rotate"
+	}
+	return kind
+}
 func opView(o wm.Operation) map[string]any {
 	var key any
 	if o.ActiveKeyID != "" {
 		key = o.ActiveKeyID
 	}
-	return map[string]any{"operationId": o.ID, "kind": o.Kind, "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": nil, "generationAfter": nil, "keyId": key, "recordedAt": o.RecordedAt, "expiresAt": o.ExpiresAt}
+	return map[string]any{"operationId": o.ID, "kind": wireOperationKind(o.Kind), "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": nil, "generationAfter": nil, "keyId": key, "recordedAt": o.RecordedAt.UTC(), "expiresAt": o.ExpiresAt.UTC()}
 }
 func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope, e wm.Endpoint, manage bool) (map[string]any, error) {
 	owner := map[string]any{"kind": e.Owner.Kind, "id": e.Owner.ID}
 	if e.DeletedAt != nil {
-		return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "deleted", "configVersion": version(e.ConfigVersion), "deletedAt": e.DeletedAt}, nil
+		return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "deleted", "configVersion": version(e.ConfigVersion), "deletedAt": utcTime(e.DeletedAt)}, nil
 	}
 	var url any
 	display := e.Origin + "/…"
@@ -66,8 +82,12 @@ func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope
 		if err != nil {
 			return nil, err
 		}
-		url = string(b)
-		display = string(b)
+		destination, err := decodeDestination(b)
+		if err != nil {
+			return nil, err
+		}
+		url = destination.URL
+		display = destination.URL
 	}
 	keys, err := scope.WebhookDAO().SigningKeys(ctx, e.ID)
 	if err != nil {
@@ -80,10 +100,10 @@ func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope
 	}
 	for _, k := range keys {
 		if k.ID != e.ActiveKeyID && k.RevokedAt == nil && k.OverlapUntil != nil && k.OverlapUntil.After(now) {
-			overlap = k.OverlapUntil
+			overlap = utcTime(k.OverlapUntil)
 		}
 	}
-	return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "active", "name": e.Name, "enabled": e.Enabled, "configVersion": version(e.ConfigVersion), "destinationRevision": version(e.DestinationRevision), "destination": map[string]any{"kind": e.DestinationKind, "adapterVersion": e.AdapterVersion, "url": url, "displayUrl": display}, "signing": map[string]any{"scheme": "standard-webhooks-v1", "activeKeyId": e.ActiveKeyID, "overlapUntil": overlap}, "subscriptions": []any{}, "capabilities": map[string]any{"manage": manage, "readSecret": manage, "redeliver": manage}, "createdAt": e.CreatedAt, "updatedAt": e.UpdatedAt, "deletedAt": nil}, nil
+	return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "active", "name": e.Name, "enabled": e.Enabled, "configVersion": version(e.ConfigVersion), "destinationRevision": version(e.DestinationRevision), "destination": map[string]any{"kind": e.DestinationKind, "adapterVersion": e.AdapterVersion, "url": url, "displayUrl": display}, "signing": map[string]any{"scheme": "standard-webhooks-v1", "activeKeyId": e.ActiveKeyID, "overlapUntil": overlap}, "subscriptions": []any{}, "capabilities": map[string]any{"manage": manage, "readSecret": manage, "redeliver": manage}, "createdAt": e.CreatedAt.UTC(), "updatedAt": e.UpdatedAt.UTC(), "deletedAt": nil}, nil
 }
 func (s *Service) Get(ctx context.Context, p model.Principal, o Owner, id string) (any, error) {
 	var v any
@@ -221,7 +241,7 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 				more = true
 				break
 			}
-			items = append(items, map[string]any{"id": ep.ID, "owner": v["owner"], "name": ep.Name, "enabled": ep.Enabled, "configVersion": version(ep.ConfigVersion), "destination": dest, "projectCount": 0, "eventTypeCount": 0, "latestResult": nil, "latestResultAt": nil})
+			items = append(items, map[string]any{"id": ep.ID, "owner": v["owner"], "name": ep.Name, "enabled": ep.Enabled, "configVersion": version(ep.ConfigVersion), "destination": dest, "projectCount": 0, "eventTypeCount": 0, "lastResult": nil, "lastAttemptAt": nil})
 			last = ep.ID
 			lastTime = ep.CreatedAt
 		}

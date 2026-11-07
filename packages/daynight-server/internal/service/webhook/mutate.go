@@ -3,7 +3,9 @@ package webhook
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"time"
@@ -14,6 +16,41 @@ import (
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/google/uuid"
 )
+
+// destinationDocument is the canonical v1 plaintext stored under encryption.
+type destinationDocument struct {
+	Kind           string `json:"kind"`
+	AdapterVersion string `json:"adapterVersion"`
+	Configuration  struct {
+		URL string `json:"url"`
+	} `json:"configuration"`
+}
+
+func encodeDestination(d Destination) ([]byte, error) {
+	v := destinationDocument{Kind: d.Kind, AdapterVersion: d.AdapterVersion}
+	v.Configuration.URL = d.URL
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 256*1024 {
+		return nil, fault("invalid_input", "Destination configuration exceeds its limit.")
+	}
+	return b, nil
+}
+func decodeDestination(b []byte) (Destination, error) {
+	var v destinationDocument
+	if err := json.Unmarshal(b, &v); err != nil {
+		return Destination{}, fmt.Errorf("decode stored destination: %w", err)
+	}
+	if v.Kind != "http" || v.AdapterVersion != "1" {
+		return Destination{}, fmt.Errorf("invalid stored destination")
+	}
+	if _, err := core.ValidateURL(v.Configuration.URL); err != nil {
+		return Destination{}, fmt.Errorf("invalid stored destination: %w", err)
+	}
+	return Destination{Kind: v.Kind, AdapterVersion: v.AdapterVersion, URL: v.Configuration.URL}, nil
+}
 
 func (s *Service) random() io.Reader {
 	if s.Random != nil {
@@ -36,8 +73,8 @@ func fingerprint(p model.Principal, o Owner, m Mutation) (string, error) {
 	}
 	return core.Fingerprint(core.Intent{OperationID: m.OperationID, ActorID: p.UserID, OwnerKind: o.Kind, OwnerID: o.ID, Kind: m.Kind, TargetID: m.EndpointID, IssuedAt: m.IssuedAt, IfVersion: ifVersion, Name: m.Name, Enabled: m.Enabled, Destination: dest, HasSubscriptions: m.HasSubscriptions, Mode: m.Mode})
 }
-func checkTime(issued string, now time.Time) error {
-	switch err := core.CheckIssuedAtText(issued, now); {
+func checkTime(issued string, now time.Time, policy wm.Policy) error {
+	switch err := core.CheckIssuedAtLimits(issued, now, time.Duration(policy.OperationMaxAgeSeconds)*time.Second, time.Duration(policy.OperationFutureSkewSeconds)*time.Second); {
 	case errors.Is(err, core.ErrOperationExpired):
 		return fault("operation_expired", "Operation has expired.")
 	case errors.Is(err, core.ErrOperationInFuture):
@@ -112,11 +149,15 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if !initialManage {
 			return fault("forbidden", "Webhook management permission is required.")
 		}
+		policy, e := w.Policy(ctx, 1)
+		if e != nil {
+			return e
+		}
 		now, e := sc.ObservedAt(ctx)
 		if e != nil {
 			return e
 		}
-		if e = checkTime(m.IssuedAt, now); e != nil {
+		if e = checkTime(m.IssuedAt, now, policy); e != nil {
 			return e
 		}
 		authorityErr := sc.LockAuthority(ctx, o, p.UserID)
@@ -161,7 +202,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if e != nil {
 			return e
 		}
-		if e = checkTime(m.IssuedAt, now); e != nil {
+		if e = checkTime(m.IssuedAt, now, policy); e != nil {
 			return e
 		}
 		if endpointErr != nil {
@@ -180,17 +221,15 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			}
 		}
 		oldEP := ep
-		oldCount := int64(len(oldKeys))
-		oldBytes := int64(len(ep.DestinationCiphertext))
-		for _, k := range oldKeys {
-			oldBytes += int64(len(k.Ciphertext))
-		}
 		keys := append([]wm.SigningKey(nil), oldKeys...)
 		changed := false
 		deleted := false
 		var overlap *time.Time
 		switch m.Kind {
 		case "endpoint.create":
+			if !s.ConfigurationExpansionAvailable {
+				return fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
+			}
 			if m.Name == nil || m.Enabled == nil || m.Destination == nil || !m.HasSubscriptions {
 				return fault("invalid_input", "Missing endpoint configuration.")
 			}
@@ -207,7 +246,11 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 				return e
 			}
 			ep = wm.Endpoint{ID: id, Owner: o, Name: *m.Name, Enabled: *m.Enabled, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: m.Destination.Kind, AdapterVersion: m.Destination.AdapterVersion, Origin: destinationOrigin(m.Destination.URL), ActiveKeyID: keyID, CreatedAt: now, UpdatedAt: now}
-			ep.DestinationCiphertext, e = s.encrypt([]byte(m.Destination.URL), binding(ep, "endpoint-current", "1"))
+			document, e := encodeDestination(*m.Destination)
+			if e != nil {
+				return e
+			}
+			ep.DestinationCiphertext, e = s.encrypt(document, binding(ep, "endpoint-current", "1"))
 			if e != nil {
 				return e
 			}
@@ -215,7 +258,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			if e != nil {
 				return e
 			}
-			keys = []wm.SigningKey{{EndpointID: id, ID: keyID, Ciphertext: cipher, CreatedAt: now}}
+			keys = []wm.SigningKey{{EndpointID: id, ID: keyID, Ciphertext: cipher, CreatedAt: now, Slot: "current"}}
 			changed = true
 		case "endpoint.update":
 			if m.Name != nil && *m.Name != ep.Name {
@@ -223,6 +266,9 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 				changed = true
 			}
 			if m.Enabled != nil && *m.Enabled != ep.Enabled {
+				if *m.Enabled && !s.ConfigurationExpansionAvailable {
+					return fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
+				}
 				ep.Enabled = *m.Enabled
 				changed = true
 			}
@@ -230,8 +276,15 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			if e != nil {
 				return e
 			}
-			newURL := string(original)
+			originalDestination, e := decodeDestination(original)
+			if e != nil {
+				return e
+			}
+			newURL := originalDestination.URL
 			if m.Destination != nil && (m.Destination.URL != newURL || m.Destination.Kind != ep.DestinationKind || m.Destination.AdapterVersion != ep.AdapterVersion) {
+				if !s.ConfigurationExpansionAvailable {
+					return fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
+				}
 				if ep.DestinationRevision == math.MaxInt64 {
 					return fault("version_exhausted", "Destination version exhausted.")
 				}
@@ -243,7 +296,11 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 				changed = true
 			}
 			if changed {
-				ep.DestinationCiphertext, e = s.encrypt([]byte(newURL), binding(ep, "endpoint-current", version(ep.DestinationRevision)))
+				document, e := encodeDestination(Destination{Kind: ep.DestinationKind, AdapterVersion: ep.AdapterVersion, URL: newURL})
+				if e != nil {
+					return e
+				}
+				ep.DestinationCiphertext, e = s.encrypt(document, binding(ep, "endpoint-current", version(ep.DestinationRevision)))
 				if e != nil {
 					return e
 				}
@@ -251,7 +308,8 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		case "endpoint.delete":
 			ep.DeletedAt = &now
 			ep.Enabled = false
-			ep.DestinationCiphertext = []byte{}
+			ep.DestinationCiphertext = nil
+			ep.Name, ep.DestinationKind, ep.AdapterVersion, ep.Origin = "", "", "", ""
 			ep.ActiveKeyID = ""
 			keys = nil
 			changed = true
@@ -268,8 +326,10 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			var keep []wm.SigningKey
 			for _, k := range keys {
 				if k.ID == ep.ActiveKeyID && m.Mode == "overlap" {
-					until := now.Add(24 * time.Hour)
+					until := now.Add(time.Duration(policy.KeyOverlapDefaultSeconds) * time.Second)
 					k.OverlapUntil = &until
+					k.OverlapStartedAt = &now
+					k.Slot = "overlap"
 					overlap = &until
 					keep = append(keep, k)
 				}
@@ -286,7 +346,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			if e != nil {
 				return e
 			}
-			keys = append(keep, wm.SigningKey{EndpointID: ep.ID, ID: keyID, Ciphertext: cipher, CreatedAt: now})
+			keys = append(keep, wm.SigningKey{EndpointID: ep.ID, ID: keyID, Ciphertext: cipher, CreatedAt: now, Slot: "current"})
 			ep.ActiveKeyID = keyID
 			changed = true
 		default:
@@ -324,29 +384,6 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 				}
 			}
 		}
-		records := int64(len(keys)) - oldCount
-		bytes := int64(len(ep.DestinationCiphertext)) - oldBytes
-		for _, k := range keys {
-			bytes += int64(len(k.Ciphertext))
-		}
-		endpointDelta := int64(0)
-		if m.Kind == "endpoint.create" {
-			endpointDelta = 1
-			records++
-		}
-		if deleted {
-			endpointDelta = -1
-		}
-		bytes += records * 2048
-		activeRecords, activeBytes := records, bytes
-		if deleted {
-			activeRecords = -(1 + oldCount)
-			activeBytes = -(oldBytes + (1+oldCount)*2048)
-		}
-		reserveErr := w.Reserve(ctx, o, endpointDelta, records, bytes, activeRecords, activeBytes, true)
-		if reserveErr != nil && !errors.Is(reserveErr, store.ErrWebhookCapacity) && !errors.Is(reserveErr, store.ErrWebhookOperationCapacity) && !errors.Is(reserveErr, store.ErrWebhookMetadataTooLarge) {
-			return reserveErr
-		}
 		if _, e = sc.LockCredential(ctx, p); e != nil {
 			if errors.Is(e, model.ErrNotFound) {
 				return model.Unauthenticated(e)
@@ -357,11 +394,8 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if e != nil {
 			return e
 		}
-		if e = checkTime(m.IssuedAt, now); e != nil {
+		if e = checkTime(m.IssuedAt, now, policy); e != nil {
 			return e
-		}
-		if reserveErr != nil {
-			return capacityError(reserveErr)
 		}
 		if changed {
 			ep.UpdatedAt = now
@@ -377,21 +411,22 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 						keys[i].CreatedAt = now
 					}
 					if m.Kind == "signing.rotate" && m.Mode == "overlap" && keys[i].ID == oldEP.ActiveKeyID {
-						until := now.Add(24 * time.Hour)
+						until := now.Add(time.Duration(policy.KeyOverlapDefaultSeconds) * time.Second)
 						keys[i].OverlapUntil = &until
+						keys[i].OverlapStartedAt = &now
 						overlap = &until
 					}
 				}
 			}
 			if e = w.PutEndpoint(ctx, ep); e != nil {
-				return capacityError(e)
+				return e
 			}
 			if e = w.DeleteSigningKeys(ctx, ep.ID); e != nil {
 				return e
 			}
 			for _, k := range keys {
 				if e = w.PutSigningKey(ctx, k); e != nil {
-					return capacityError(e)
+					return e
 				}
 			}
 		}
@@ -399,12 +434,13 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if changed {
 			effect = "applied"
 		}
-		op = wm.Operation{Owner: o, ID: m.OperationID, ActorID: p.UserID, Kind: m.Kind, TargetID: ep.ID, IssuedAt: m.IssuedAt, RequestSHA256: m.RequestSHA256, Fingerprint: fp, Effect: effect, ConfigVersion: ep.ConfigVersion, DestinationRevisionAfter: ep.DestinationRevision, RecordedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)}
+		op = wm.Operation{Owner: o, ID: m.OperationID, ActorID: p.UserID, Kind: m.Kind, TargetID: ep.ID, IssuedAt: m.IssuedAt, RequestSHA256: m.RequestSHA256, Fingerprint: fp, Effect: effect, ConfigVersion: ep.ConfigVersion, DestinationRevisionAfter: ep.DestinationRevision, RecordedAt: now, ExpiresAt: now.Add(time.Duration(policy.OperationRetentionSeconds) * time.Second)}
 		if m.Kind == "signing.rotate" {
 			op.ActiveKeyID = ep.ActiveKeyID
+			op.SigningMode = m.Mode
 			op.OverlapUntil = overlap
 		}
-		return capacityError(w.PutOperation(ctx, op))
+		return w.PutOperation(ctx, op)
 	})
 	if err != nil {
 		if completion.Outcome == store.TransactionUnknown {
@@ -432,7 +468,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			return fault("operation_conflict", "Operation ID was already used for a different intent.")
 		}
 		if m.Kind == "signing.rotate" {
-			body = map[string]any{"operation": opView(cur), "signing": map[string]any{"activeKeyId": cur.ActiveKeyID, "overlapUntil": cur.OverlapUntil}}
+			body = map[string]any{"operation": opView(cur), "signing": map[string]any{"activeKeyId": cur.ActiveKeyID, "overlapUntil": utcTime(cur.OverlapUntil)}}
 			return nil
 		}
 		ep, e := sc.WebhookDAO().Endpoint(ctx, o, cur.TargetID)
@@ -448,17 +484,4 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 	})
 	return Result{Body: body, Replay: replay}, err
 }
-func capacityError(err error) error {
-	switch {
-	case errors.Is(err, store.ErrWebhookCapacity):
-		return &model.Fault{Code: "webhook_capacity_unavailable", Message: "Webhook capacity is unavailable.", Cause: err}
-	case errors.Is(err, store.ErrWebhookOperationCapacity):
-		return &model.Fault{Code: "operation_capacity", Message: "Operation capacity is exhausted.", Cause: err}
-	case errors.Is(err, store.ErrWebhookMetadataTooLarge):
-		return &model.Fault{Code: "invalid_input", Message: "Webhook metadata exceeds its limit.", Cause: err}
-	default:
-		return err
-	}
-}
-
 func destinationOrigin(value string) string { origin, _ := core.ValidateURL(value); return origin }

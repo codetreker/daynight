@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -51,7 +51,7 @@ func newFixture(t *testing.T, singleConnection bool) *fixture {
 	}
 	t.Cleanup(db.Close)
 	keys := keyring(t, "old")
-	return &fixture{ctx: ctx, db: db, svc: &Service{DB: db, Keys: keys}}
+	return &fixture{ctx: ctx, db: db, svc: &Service{DB: db, Keys: keys, ConfigurationExpansionAvailable: true}}
 }
 
 func keyring(t *testing.T, active string) *secretbox.Keyring {
@@ -118,9 +118,17 @@ func expectFault(t *testing.T, err error, code string) {
 }
 func (f *fixture) ciphertext(t *testing.T, id string) ([]byte, []byte, time.Time) {
 	t.Helper()
-	var dest, key []byte
+	var d, k secretbox.Envelope
 	var updated time.Time
-	err := f.db.Pool.QueryRow(f.ctx, `SELECT e.destination_ciphertext,k.ciphertext,e.updated_at FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.endpoint_id=e.id AND k.id=e.active_key_id WHERE e.id=$1`, id).Scan(&dest, &key, &updated)
+	err := f.db.Pool.QueryRow(f.ctx, `SELECT e.destination_envelope_version,e.destination_master_key_id,e.destination_nonce,e.destination_ciphertext,k.envelope_version,k.master_key_id,k.nonce,k.ciphertext,e.updated_at FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.endpoint_id=e.id AND k.id=e.active_key_id WHERE e.id=$1`, id).Scan(&d.Version, &d.MasterKeyID, &d.Nonce, &d.Ciphertext, &k.Version, &k.MasterKeyID, &k.Nonce, &k.Ciphertext, &updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest, err := d.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := k.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,11 +136,11 @@ func (f *fixture) ciphertext(t *testing.T, id string) ([]byte, []byte, time.Time
 }
 func masterID(t *testing.T, b []byte) string {
 	t.Helper()
-	var envelope secretbox.Envelope
-	if err := json.Unmarshal(b, &envelope); err != nil {
+	e, err := secretbox.ParseEnvelope(b)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return envelope.MasterKeyID
+	return e.MasterKeyID
 }
 
 // A02/A05/A08/A09: actual PostgreSQL operation receipts, full int64 versions,
@@ -141,7 +149,7 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	f := newFixture(t, true)
 	p := f.principal(t)
 	other := f.principal(t)
-	owner := Owner{Kind: "user", ID: p.UserID}
+	owner := Owner{Kind: "personal", ID: p.UserID}
 	const target = "https://receiver.example/Secret?token=private"
 	m := createMutation(p, "First", target)
 	result, err := f.svc.Mutate(f.ctx, p, owner, m)
@@ -342,7 +350,7 @@ func TestPostgresTeamDemotionAndMemberVisibility(t *testing.T) {
 func TestPostgresCryptoFailuresRollback(t *testing.T) {
 	f := newFixture(t, true)
 	p := f.principal(t)
-	owner := Owner{Kind: "user", ID: p.UserID}
+	owner := Owner{Kind: "personal", ID: p.UserID}
 	created, err := f.svc.Mutate(f.ctx, p, owner, createMutation(p, "initial", "https://receiver.example/path"))
 	if err != nil {
 		t.Fatal(err)
@@ -383,12 +391,13 @@ func TestPostgresCryptoFailuresRollback(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_id=$1`, p.UserID).Scan(&receipts); err != nil || receipts != 1 || !bytes.Equal(dest, afterDest) || !bytes.Equal(key, afterKey) || !updated.Equal(afterUpdated) {
 		t.Fatalf("failure left effects: receipts=%d err=%v", receipts, err)
 	}
-	var envelope secretbox.Envelope
-	if err := json.Unmarshal(dest, &envelope); err != nil {
+	envelope, err := secretbox.ParseEnvelope(dest)
+	if err != nil {
 		t.Fatal(err)
 	}
 	envelope.Ciphertext[0] ^= 1
-	corrupt, err := json.Marshal(envelope)
+	corrupt := envelope.Ciphertext
+	_, err = envelope.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +412,7 @@ func TestPostgresCryptoFailuresRollback(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_id=$1`, p.UserID).Scan(&receipts); err != nil || receipts != 1 {
 		t.Fatalf("tamper left receipt: %d %v", receipts, err)
 	}
-	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET destination_ciphertext=$2 WHERE id=$1`, id, []byte("{")); err != nil {
+	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET destination_ciphertext=$2 WHERE id=$1`, id, bytes.Repeat([]byte{1}, 16)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.Get(f.ctx, p, owner, id); err == nil {
@@ -419,7 +428,7 @@ func TestPostgresCryptoFailuresRollback(t *testing.T) {
 func TestPostgresCredentialRevocationPreventsWritesAndReplay(t *testing.T) {
 	f := newFixture(t, true)
 	p := f.principal(t)
-	owner := Owner{Kind: "user", ID: p.UserID}
+	owner := Owner{Kind: "personal", ID: p.UserID}
 	original := createMutation(p, "initial", "https://receiver.example/path")
 	if _, err := f.svc.Mutate(f.ctx, p, owner, original); err != nil {
 		t.Fatal(err)
@@ -497,10 +506,10 @@ func waitOutcome(t *testing.T, ctx context.Context, result <-chan mutationOutcom
 	return mutationOutcome{}
 }
 
-func (f *fixture) quotaFacts(t *testing.T, owner Owner) string {
+func (f *fixture) receiptFacts(t *testing.T, owner Owner) string {
 	t.Helper()
 	var facts string
-	err := f.db.Pool.QueryRow(f.ctx, `SELECT row_to_json(o)::text || row_to_json(b)::text FROM webhook_quota_owners o JOIN webhook_quota_buckets b USING(bucket) WHERE owner_kind=$1 AND owner_id=$2`, owner.Kind, owner.ID).Scan(&facts)
+	err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*)::text FROM webhook_operations WHERE owner_kind=$1 AND owner_id=$2`, owner.Kind, owner.ID).Scan(&facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,7 +563,7 @@ func TestPostgresReplayAfterDemotionAndURLChangeWhileFenced(t *testing.T) {
 	if _, err := aux.Exec(f.ctx, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, team, admin.UserID); err != nil {
 		t.Fatal(err)
 	}
-	second := &Service{DB: &postgres.Store{Pool: aux}, Keys: f.svc.Keys}
+	second := &Service{DB: &postgres.Store{Pool: aux}, Keys: f.svc.Keys, ConfigurationExpansionAvailable: true}
 	update := mutation(replacement, "endpoint.update", id, 1)
 	update.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/new-secret?key=private"}
 	if _, err := second.Mutate(f.ctx, replacement, owner, update); err != nil {
@@ -582,14 +591,14 @@ func TestPostgresWaitingWriteRevocationAndExpiry(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			f := newFixture(t, true)
 			p := f.principal(t)
-			owner := Owner{Kind: "user", ID: p.UserID}
+			owner := Owner{Kind: "personal", ID: p.UserID}
 			created, err := f.svc.Mutate(f.ctx, p, owner, createMutation(p, "original", "https://receiver.example/path"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, ep := body(t, created)
 			id := ep["id"].(string)
-			before := f.quotaFacts(t, owner)
+			before := f.receiptFacts(t, owner)
 			dest, key, updated := f.ciphertext(t, id)
 			aux := f.auxiliaryPool(t)
 			lock, err := aux.Begin(f.ctx)
@@ -641,7 +650,7 @@ func TestPostgresWaitingWriteRevocationAndExpiry(t *testing.T) {
 			if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_kind=$1 AND owner_id=$2`, owner.Kind, owner.ID).Scan(&receipts); err != nil {
 				t.Fatal(err)
 			}
-			if receipts != 1 || before != f.quotaFacts(t, owner) || !bytes.Equal(dest, afterDest) || !bytes.Equal(key, afterKey) || !updated.Equal(afterUpdated) {
+			if receipts != 1 || before != f.receiptFacts(t, owner) || !bytes.Equal(dest, afterDest) || !bytes.Equal(key, afterKey) || !updated.Equal(afterUpdated) {
 				t.Fatalf("waiting %s operation left effect or charge", scenario)
 			}
 		})
@@ -740,43 +749,7 @@ func TestPostgresReadsAndCursorAuthorization(t *testing.T) {
 
 // Capacity refusals and oversized metadata happen within a real transaction,
 // leaving existing endpoint, account and receipt facts unchanged.
-func TestPostgresCapacityAndOversizedMetadataRollback(t *testing.T) {
-	for _, scenario := range []string{"operation", "configuration", "metadata"} {
-		t.Run(scenario, func(t *testing.T) {
-			f := newFixture(t, true)
-			p := f.principal(t)
-			owner := Owner{Kind: "user", ID: p.UserID}
-			if _, err := f.svc.Mutate(f.ctx, p, owner, createMutation(p, "first", "https://receiver.example/path")); err != nil {
-				t.Fatal(err)
-			}
-			var err error
-			switch scenario {
-			case "operation":
-				_, err = f.db.Pool.Exec(f.ctx, `UPDATE webhook_quota_owners SET operations=1024 WHERE owner_kind='user' AND owner_id=$1`, p.UserID)
-			case "configuration":
-				_, err = f.db.Pool.Exec(f.ctx, `UPDATE webhook_quota_owners SET records=32768 WHERE owner_kind='user' AND owner_id=$1`, p.UserID)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			before := f.quotaFacts(t, owner)
-			url := "https://receiver.example/path"
-			if scenario == "metadata" {
-				url = "https://" + strings.Repeat("a", 2100) + ".example/path"
-			}
-			_, err = f.svc.Mutate(f.ctx, p, owner, createMutation(p, "second", url))
-			want := map[string]string{"operation": "operation_capacity", "configuration": "webhook_capacity_unavailable", "metadata": "invalid_input"}[scenario]
-			expectFault(t, err, want)
-			var endpoints, receipts int
-			if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_id=$1)`, p.UserID).Scan(&endpoints, &receipts); err != nil || endpoints != 1 || receipts != 1 || before != f.quotaFacts(t, owner) {
-				t.Fatalf("%s left effect: endpoints=%d receipts=%d err=%v", scenario, endpoints, receipts, err)
-			}
-		})
-	}
-}
 
-// A new intent must recheck management authority after the operation fence and
-// reject a demoted actor before exposing the operation's expiry outcome.
 func TestPostgresNewIntentDemotionPrecedesExpiryAfterFence(t *testing.T) {
 	f := newFixture(t, true)
 	admin := f.principal(t)
@@ -823,17 +796,17 @@ func TestPostgresNewIntentDemotionPrecedesExpiryAfterFence(t *testing.T) {
 	finished := waitOutcome(t, f.ctx, out)
 	expectFault(t, finished.err, "forbidden")
 	var endpoints, receipts, accounts int
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_id=$1),(SELECT count(*) FROM webhook_quota_owners WHERE owner_id=$1)`, team).Scan(&endpoints, &receipts, &accounts); err != nil || endpoints != 0 || receipts != 0 || accounts != 0 {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints WHERE owner_id=$1),(SELECT count(*) FROM webhook_operations WHERE owner_id=$1),0`, team).Scan(&endpoints, &receipts, &accounts); err != nil || endpoints != 0 || receipts != 0 || accounts != 0 {
 		t.Fatalf("demoted intent left effect: endpoints=%d receipts=%d accounts=%d err=%v", endpoints, receipts, accounts, err)
 	}
 }
 
 // Invalid intents, bad owner scopes and unusable randomness must fail before
-// any receipt or quota account can be persisted.
+// any receipt can be persisted.
 func TestPostgresRejectsInvalidIntentsAndOwners(t *testing.T) {
 	f := newFixture(t, true)
 	p := f.principal(t)
-	owner := Owner{Kind: "user", ID: p.UserID}
+	owner := Owner{Kind: "personal", ID: p.UserID}
 	base := createMutation(p, "valid", "https://receiver.example/path")
 	cases := []struct {
 		name, code string
@@ -883,7 +856,7 @@ func TestPostgresRejectsInvalidIntentsAndOwners(t *testing.T) {
 		t.Fatalf("random ID failure: %v", err)
 	}
 	var endpoints, receipts, accounts int
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints),(SELECT count(*) FROM webhook_operations),(SELECT count(*) FROM webhook_quota_owners)`).Scan(&endpoints, &receipts, &accounts); err != nil || endpoints != 0 || receipts != 0 || accounts != 0 {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints),(SELECT count(*) FROM webhook_operations),0`).Scan(&endpoints, &receipts, &accounts); err != nil || endpoints != 0 || receipts != 0 || accounts != 0 {
 		t.Fatalf("refusal left effects: endpoints=%d receipts=%d accounts=%d err=%v", endpoints, receipts, accounts, err)
 	}
 }
@@ -892,7 +865,7 @@ func TestPostgresRejectsInvalidIntentsAndOwners(t *testing.T) {
 func TestPostgresVersionExhaustionRollsBack(t *testing.T) {
 	f := newFixture(t, true)
 	p := f.principal(t)
-	owner := Owner{Kind: "user", ID: p.UserID}
+	owner := Owner{Kind: "personal", ID: p.UserID}
 	created, err := f.svc.Mutate(f.ctx, p, owner, createMutation(p, "original", "https://receiver.example/path"))
 	if err != nil {
 		t.Fatal(err)
@@ -902,7 +875,7 @@ func TestPostgresVersionExhaustionRollsBack(t *testing.T) {
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET config_version=9223372036854775807 WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	before := f.quotaFacts(t, owner)
+	before := f.receiptFacts(t, owner)
 	change := mutation(p, "endpoint.update", id, math.MaxInt64)
 	name := "changed"
 	change.Name = &name
@@ -915,10 +888,7 @@ func TestPostgresVersionExhaustionRollsBack(t *testing.T) {
 	change.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/changed"}
 	// The old destination's AAD must match the database revision for the test
 	// to reach version overflow, so re-encrypt it against that revision.
-	var ciphertext []byte
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT destination_ciphertext FROM webhook_endpoints WHERE id=$1`, id).Scan(&ciphertext); err != nil {
-		t.Fatal(err)
-	}
+	ciphertext, _, _ := f.ciphertext(t, id)
 	plain, err := f.svc.decrypt(ciphertext, []string{owner.Kind, owner.ID, id, "endpoint-current", "1"})
 	if err != nil {
 		t.Fatal(err)
@@ -927,82 +897,66 @@ func TestPostgresVersionExhaustionRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET destination_ciphertext=$2 WHERE id=$1`, id, rebound); err != nil {
+	reboundEnvelope, err := secretbox.ParseEnvelope(rebound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET destination_envelope_version=$2,destination_master_key_id=$3,destination_nonce=$4,destination_ciphertext=$5 WHERE id=$1`, id, reboundEnvelope.Version, reboundEnvelope.MasterKeyID, reboundEnvelope.Nonce, reboundEnvelope.Ciphertext); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.svc.Mutate(f.ctx, p, owner, change)
 	expectFault(t, err, "version_exhausted")
 	var receipts int
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_id=$1`, p.UserID).Scan(&receipts); err != nil || receipts != 1 || before != f.quotaFacts(t, owner) {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_id=$1`, p.UserID).Scan(&receipts); err != nil || receipts != 1 || before != f.receiptFacts(t, owner) {
 		t.Fatalf("version exhaustion left effects: receipts=%d err=%v", receipts, err)
 	}
 }
 
 func TestFailureClassificationPreservesCauses(t *testing.T) {
 	cause := errors.New("database failure")
-	if !errors.Is(notFound(cause), cause) || !errors.Is(capacityError(cause), cause) {
+	if !errors.Is(notFound(cause), cause) {
 		t.Fatal("unexpected failure was masked")
 	}
-	if err := checkTime("invalid", time.Now()); err == nil {
+	if err := checkTime("invalid", time.Now(), wm.Policy{OperationMaxAgeSeconds: 300, OperationFutureSkewSeconds: 60}); err == nil {
 		t.Fatal("invalid timestamp accepted")
 	}
 }
 
-// A rotation waiting for quota must start its 24-hour overlap at the fresh DB
-// observation after that wait, not at an earlier pre-lock observation.
-func TestPostgresRotationOverlapStartsAfterCapacityWait(t *testing.T) {
+func TestConfigurationExpansionSwitch(t *testing.T) {
 	f := newFixture(t, true)
 	p := f.principal(t)
-	owner := Owner{Kind: "user", ID: p.UserID}
-	created, err := f.svc.Mutate(f.ctx, p, owner, createMutation(p, "original", "https://receiver.example/path"))
+	owner := Owner{Kind: "personal", ID: p.UserID}
+	original := createMutation(p, "endpoint", "https://example.test/a")
+	created, err := f.svc.Mutate(f.ctx, p, owner, original)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, ep := body(t, created)
 	id := ep["id"].(string)
-	aux := f.auxiliaryPool(t)
-	lock, err := aux.Begin(f.ctx)
-	if err != nil {
+	f.svc.ConfigurationExpansionAvailable = false
+	_, err = f.svc.Mutate(f.ctx, p, owner, createMutation(p, "new", "https://example.test/"))
+	expectFault(t, err, "webhooks_unavailable")
+	replay, err := f.svc.Mutate(f.ctx, p, owner, original)
+	if err != nil || !replay.Replay {
+		t.Fatalf("replay: %+v %v", replay, err)
+	}
+	change := mutation(p, "endpoint.update", id, 1)
+	change.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://example.test/b"}
+	_, err = f.svc.Mutate(f.ctx, p, owner, change)
+	expectFault(t, err, "webhooks_unavailable")
+	disabled := false
+	change = mutation(p, "endpoint.update", id, 1)
+	change.Enabled = &disabled
+	if _, err = f.svc.Mutate(f.ctx, p, owner, change); err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Rollback(f.ctx)
-	var blocker int32
-	if err := lock.QueryRow(f.ctx, `SELECT pg_backend_pid()`).Scan(&blocker); err != nil {
+	enabled := true
+	change = mutation(p, "endpoint.update", id, 2)
+	change.Enabled = &enabled
+	_, err = f.svc.Mutate(f.ctx, p, owner, change)
+	expectFault(t, err, "webhooks_unavailable")
+	deleted := mutation(p, "endpoint.delete", id, 2)
+	if _, err = f.svc.Mutate(f.ctx, p, owner, deleted); err != nil {
 		t.Fatal(err)
-	}
-	var bucket int16
-	if err := lock.QueryRow(f.ctx, `SELECT bucket FROM webhook_quota_owners WHERE owner_kind='user' AND owner_id=$1`, p.UserID).Scan(&bucket); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := lock.Exec(f.ctx, `SELECT bucket FROM webhook_quota_buckets WHERE bucket=$1 FOR UPDATE`, bucket); err != nil {
-		t.Fatal(err)
-	}
-	rotation := mutation(p, "signing.rotate", id, 1)
-	rotation.Mode = "overlap"
-	out := make(chan mutationOutcome, 1)
-	go func() { result, err := f.svc.Mutate(f.ctx, p, owner, rotation); out <- mutationOutcome{result, err} }()
-	waitBlocked(t, f.ctx, aux, blocker)
-	var before time.Time
-	if err := lock.QueryRow(f.ctx, `SELECT clock_timestamp()`).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-	if err := lock.Commit(f.ctx); err != nil {
-		t.Fatal(err)
-	}
-	finished := waitOutcome(t, f.ctx, out)
-	if finished.err != nil {
-		t.Fatal(finished.err)
-	}
-	var after time.Time
-	if err := aux.QueryRow(f.ctx, `SELECT clock_timestamp()`).Scan(&after); err != nil {
-		t.Fatal(err)
-	}
-	signing := finished.result.Body.(map[string]any)["signing"].(map[string]any)
-	until, ok := signing["overlapUntil"].(*time.Time)
-	if !ok || until == nil {
-		t.Fatalf("missing overlap: %#v", signing)
-	}
-	if until.Before(before.Add(24*time.Hour)) || until.After(after.Add(24*time.Hour)) {
-		t.Fatalf("overlap %s did not start after lock release observation %s to %s", until, before, after)
 	}
 }
