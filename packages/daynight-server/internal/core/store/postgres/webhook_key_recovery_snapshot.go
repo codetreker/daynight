@@ -20,7 +20,9 @@ func (s *Store) OpenWebhookRecoverySnapshot(ctx context.Context) (store.WebhookR
 }
 func (s *webhookRecoverySnapshot) RecoveryIdentity(ctx context.Context) (store.WebhookRecoveryIdentity, error) {
 	var id store.WebhookRecoveryIdentity
-	err := s.tx.QueryRow(ctx, `SELECT (pg_control_system()).system_identifier::text, oid FROM pg_database WHERE datname=current_database()`).Scan(&id.ClusterID, &id.DatabaseOID)
+	// Recovery DSNs can select writable schemas; none may shadow the system
+	// functions, catalog, type, or equality operator used for this identity.
+	err := s.tx.QueryRow(ctx, `SELECT (pg_catalog.pg_control_system()).system_identifier::pg_catalog.text, oid FROM pg_catalog.pg_database WHERE datname OPERATOR(pg_catalog.=) pg_catalog.current_database()`).Scan(&id.ClusterID, &id.DatabaseOID)
 	if err != nil {
 		return id, pg.QueryError("read webhook recovery database identity", err)
 	}
