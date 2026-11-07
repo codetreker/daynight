@@ -1,4 +1,4 @@
--- Schema snapshot version: 46
+-- Schema snapshot version: 47
 
 CREATE TABLE "bot_configuration_preferences" (
     "user_id" "uuid" NOT NULL,
@@ -603,6 +603,101 @@ CREATE TABLE "users" (
     CONSTRAINT "users_uniauth_id_check" CHECK (("length"("uniauth_id") > 0))
 );
 
+CREATE TABLE "webhook_endpoints" (
+    "id" "uuid" NOT NULL,
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "name" "text" NOT NULL,
+    "enabled" boolean NOT NULL,
+    "deleted_at" timestamp with time zone,
+    "config_version" bigint NOT NULL,
+    "destination_revision" bigint NOT NULL,
+    "destination_kind" "text" NOT NULL,
+    "adapter_version" "text" NOT NULL,
+    "origin" "text" NOT NULL,
+    "destination_ciphertext" "bytea" NOT NULL,
+    "active_key_id" "text" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL,
+    CONSTRAINT "webhook_endpoints_config_version_check" CHECK (("config_version" > 0)),
+    CONSTRAINT "webhook_endpoints_destination_revision_check" CHECK (("destination_revision" > 0)),
+    CONSTRAINT "webhook_endpoints_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['user'::"text", 'team'::"text"])))
+);
+
+CREATE TABLE "webhook_operations" (
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "actor_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "target_id" "uuid" NOT NULL,
+    "issued_at" "text" NOT NULL,
+    "request_sha256" "text" NOT NULL,
+    "fingerprint" "text" NOT NULL,
+    "effect" "text" NOT NULL,
+    "config_version" bigint NOT NULL,
+    "destination_revision_after" bigint NOT NULL,
+    "active_key_id" "text" NOT NULL,
+    "overlap_until" timestamp with time zone,
+    "recorded_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    CONSTRAINT "webhook_operations_config_version_check" CHECK (("config_version" > 0)),
+    CONSTRAINT "webhook_operations_destination_revision_after_check" CHECK (("destination_revision_after" > 0)),
+    CONSTRAINT "webhook_operations_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['user'::"text", 'team'::"text"])))
+);
+
+CREATE TABLE "webhook_policies" (
+    "version" bigint NOT NULL,
+    "parameters" "jsonb" NOT NULL,
+    "digest" "text" NOT NULL,
+    CONSTRAINT "webhook_policies_digest_check" CHECK (("length"("digest") = 64)),
+    CONSTRAINT "webhook_policies_version_check" CHECK (("version" = 1))
+);
+
+CREATE TABLE "webhook_quota_buckets" (
+    "bucket" smallint NOT NULL,
+    "records" bigint DEFAULT 0 NOT NULL,
+    "bytes" bigint DEFAULT 0 NOT NULL,
+    "active_records" bigint DEFAULT 0 NOT NULL,
+    "active_bytes" bigint DEFAULT 0 NOT NULL,
+    "operations" bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT "webhook_quota_buckets_active_bytes_check" CHECK ((("active_bytes" >= 0) AND ("active_bytes" <= 134217728))),
+    CONSTRAINT "webhook_quota_buckets_active_records_check" CHECK ((("active_records" >= 0) AND ("active_records" <= 32768))),
+    CONSTRAINT "webhook_quota_buckets_bucket_check" CHECK ((("bucket" >= 0) AND ("bucket" < 16))),
+    CONSTRAINT "webhook_quota_buckets_bytes_check" CHECK ((("bytes" >= 0) AND ("bytes" <= 268435456))),
+    CONSTRAINT "webhook_quota_buckets_operations_check" CHECK ((("operations" >= 0) AND ("operations" <= 8192))),
+    CONSTRAINT "webhook_quota_buckets_records_check" CHECK ((("records" >= 0) AND ("records" <= 65536)))
+);
+
+CREATE TABLE "webhook_quota_owners" (
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "bucket" smallint NOT NULL,
+    "endpoints" bigint DEFAULT 0 NOT NULL,
+    "records" bigint DEFAULT 0 NOT NULL,
+    "bytes" bigint DEFAULT 0 NOT NULL,
+    "active_records" bigint DEFAULT 0 NOT NULL,
+    "active_bytes" bigint DEFAULT 0 NOT NULL,
+    "operations" bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT "webhook_quota_owners_active_bytes_check" CHECK ((("active_bytes" >= 0) AND ("active_bytes" <= 50331648))),
+    CONSTRAINT "webhook_quota_owners_active_records_check" CHECK ((("active_records" >= 0) AND ("active_records" <= 24576))),
+    CONSTRAINT "webhook_quota_owners_bucket_check" CHECK ((("bucket" >= 0) AND ("bucket" < 16))),
+    CONSTRAINT "webhook_quota_owners_bytes_check" CHECK ((("bytes" >= 0) AND ("bytes" <= 67108864))),
+    CONSTRAINT "webhook_quota_owners_endpoints_check" CHECK ((("endpoints" >= 0) AND ("endpoints" <= 20))),
+    CONSTRAINT "webhook_quota_owners_operations_check" CHECK ((("operations" >= 0) AND ("operations" <= 1024))),
+    CONSTRAINT "webhook_quota_owners_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['user'::"text", 'team'::"text"]))),
+    CONSTRAINT "webhook_quota_owners_records_check" CHECK ((("records" >= 0) AND ("records" <= 32768)))
+);
+
+CREATE TABLE "webhook_signing_keys" (
+    "endpoint_id" "uuid" NOT NULL,
+    "id" "text" NOT NULL,
+    "ciphertext" "bytea" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "overlap_until" timestamp with time zone,
+    "revoked_at" timestamp with time zone
+);
+
 CREATE TABLE "workers" (
     "user_id" "uuid" NOT NULL,
     "worker_id" "uuid" NOT NULL,
@@ -824,6 +919,24 @@ ALTER TABLE ONLY "users"
 ALTER TABLE ONLY "users"
     ADD CONSTRAINT "users_uniauth_id_key" UNIQUE ("uniauth_id");
 
+ALTER TABLE ONLY "webhook_endpoints"
+    ADD CONSTRAINT "webhook_endpoints_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "webhook_operations"
+    ADD CONSTRAINT "webhook_operations_pkey" PRIMARY KEY ("owner_kind", "owner_id", "operation_id");
+
+ALTER TABLE ONLY "webhook_policies"
+    ADD CONSTRAINT "webhook_policies_pkey" PRIMARY KEY ("version");
+
+ALTER TABLE ONLY "webhook_quota_buckets"
+    ADD CONSTRAINT "webhook_quota_buckets_pkey" PRIMARY KEY ("bucket");
+
+ALTER TABLE ONLY "webhook_quota_owners"
+    ADD CONSTRAINT "webhook_quota_owners_pkey" PRIMARY KEY ("owner_kind", "owner_id");
+
+ALTER TABLE ONLY "webhook_signing_keys"
+    ADD CONSTRAINT "webhook_signing_keys_pkey" PRIMARY KEY ("endpoint_id", "id");
+
 ALTER TABLE ONLY "workers"
     ADD CONSTRAINT "workers_pkey" PRIMARY KEY ("user_id", "worker_id");
 
@@ -913,6 +1026,10 @@ CREATE UNIQUE INDEX "test_session_execution" ON "task_sessions" USING "btree" ("
 
 CREATE UNIQUE INDEX "test_session_registration" ON "task_sessions" USING "btree" ("owner_user_id", "registration_id") WHERE ("scope" = 'test'::"text");
 
+CREATE INDEX "webhook_endpoints_owner" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "webhook_operations_expiry" ON "webhook_operations" USING "btree" ("expires_at", "owner_kind", "owner_id");
+
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
 
 ALTER TABLE ONLY "bot_configuration_preferences"
@@ -947,6 +1064,40 @@ INSERT INTO "oauth_authorization_cleanup_cursor" ("singleton", "next_kind") VALU
 INSERT INTO "oauth_credential_cleanup_cursor" ("singleton", "next_kind") VALUES (true, 0);
 
 INSERT INTO "private_transfer_ledger" ("singleton", "reserved_bytes", "outstanding_bytes") VALUES (true, 0, 0);
+
+INSERT INTO "webhook_policies" ("version", "parameters", "digest") VALUES (1, '{"buckets": 16, "version": 1, "ownerBytes": 67108864, "ownerQueue": 1024, "bucketBytes": 268435456, "bucketQueue": 4096, "fanoutLimit": 256, "attemptBytes": 2048, "bindingLimit": 6, "ownerRecords": 32768, "bucketRecords": 65536, "endpointLimit": 20, "endpointQueue": 256, "operationBytes": 4096, "ownerOperations": 1024, "bucketOperations": 8192, "ownerActiveBytes": 50331648, "bucketActiveBytes": 134217728, "subscriptionLimit": 50, "maxDeliveryRecords": 63, "ownerActiveRecords": 24576, "bucketActiveRecords": 32768, "automaticAttemptSlots": 10, "configurationMetadataBytes": 2048}', 'b2b44b7d8da24e4214d02ddf85fa8168e1bd0b502fe6d7fef84ebfdcc4d81c4d');
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (0, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (1, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (2, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (3, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (4, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (5, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (6, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (7, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (8, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (9, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (10, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (11, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (12, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (13, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (14, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records", "bytes", "active_records", "active_bytes", "operations") VALUES (15, 0, 0, 0, 0, 0);
 
 SELECT pg_catalog.setval('"bots_creation_order_seq"', 1, false);
 
