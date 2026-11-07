@@ -7,6 +7,8 @@ import { getTask, setTaskStatus } from '../src/api/client';
 import type { Project, TaskDetail, TaskGraph, TaskStatus } from '../src/api/types';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { TaskDetailDialog, type TaskDetailDialogProps } from '../src/features/task-detail/TaskDetailDialog';
+import * as taskDetailHook from '../src/features/task-detail/useTaskDetail';
+import * as taskReading from '../src/features/task-detail/TaskDetailReading';
 import { buildGraphIndex } from '../src/features/task-graph/model';
 import { renderWithLocale } from './helpers/renderWithLocale';
 vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), setTaskStatus: vi.fn() }));
@@ -66,7 +68,30 @@ describe('status menu and reviewed confirmation', () => {
     await user.keyboard(' '); expect(screen.getByRole('alertdialog', { name: 'Set task status' })).toBeVisible(); expect(screen.getByText(/status and execution times will remain unchanged/)).toBeVisible();
     expect(setTaskStatus).not.toHaveBeenCalled();
   });
-  it.each((['todo', 'in_progress', 'done'] as const).flatMap((from) => (['todo', 'in_progress', 'done'] as const).map((to) => ({ from, to }))))('submits captured $from → $to once and preserves the exact result', async ({ from, to }) => {
+  it.each((['todo', 'in_progress', 'done'] as const).flatMap((from) => (['todo', 'in_progress', 'done'] as const).map((to) => ({ from, to }))))('routes the reviewed $from → $to and version to the session', ({ from, to }) => {
+    const detail = source(from);
+    const setStatus = vi.fn();
+    const noOp = vi.fn();
+    const state = {
+      revision: 1, loadedRevision: 1, detail, status: 'ready', refreshing: false, requiresFreshRead: false, graphMismatch: false, error: null,
+      mutation: { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null },
+      historyGeneration: 1, displayRequiresFreshRead: false, assignmentUncertain: false, sessionCurrent: false,
+      canDisplayAssignee: true, canDisplayStatus: true, canDisplayDelete: true, canDisplayAgentPermission: true, canDisplayRequiredPlatform: true, canDisplayWithdrawClaim: false,
+      canUnpause: false, canWithdrawClaim: false, canDelete: true, canSetAssignedTo: true, canSetRequiredPlatform: true, canSetAgentPermission: true, canSetStatus: true,
+      retry: noOp, unpause: noOp, deleteTask: noOp, withdrawClaim: noOp, setStatus, setAgentPermission: noOp, setAssignedTo: noOp, setRequiredPlatform: noOp, reconcile: noOp,
+    } as const;
+    vi.spyOn(taskDetailHook, 'useTaskDetail').mockReturnValue(state);
+    vi.spyOn(taskReading, 'TaskDetailReading').mockReturnValue(<></>);
+    const props: TaskDetailDialogProps = { projectId, taskId, snapshot: snapshot(detail), onClose: vi.fn(), onRestoreFocus: vi.fn(), onRefreshGraph: vi.fn(), onSelectTask: vi.fn() };
+    renderWithLocale(<TaskDetailDialog {...props} />, { locale: 'en', container: root, taskCache: { scope: world.scope } });
+    const confirmation = select(screen.getByRole('dialog'), from, to);
+    expect(confirmation.querySelector('.task-status-route')).toHaveTextContent(`${labels[from]}→${labels[to]}`);
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Confirm status' }));
+    expect(setStatus).toHaveBeenCalledExactlyOnceWith(to, detail.version);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+  it('submits once through the real session, disables pending status and re-enables it after confirmation', async () => {
+    const from = 'todo'; const to = 'in_progress';
     const detail = source(from); const saved = result(detail, to); const pending = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(pending.promise); const { dialog, sync } = await open(detail);
     const confirmation = select(dialog, from, to); expect(confirmation.querySelector('.task-status-route')).toHaveTextContent(`${labels[from]}→${labels[to]}`); const confirm = within(confirmation).getByRole('button', { name: 'Confirm status' }); fireEvent.click(confirm); fireEvent.click(confirm);
     await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(projectId, taskId, to, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) })); expect(screen.queryByRole('alertdialog')).toBeNull(); expect(within(dialog).getByRole('button', { name: labels[from] })).toBeDisabled();
