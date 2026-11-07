@@ -2,6 +2,9 @@
 
 本页描述 Task Session 的执行模式和页面行为。Herdr 的[Session v2 协议要求](session-v2.md)另行定义终端内容、控制和归档的生产消费保证。
 
+
+Session 消息、归档、长轮询、SSE 和 WebSocket 保留各自的协议额度及生命周期，不套用普通 JSON 的 1 MiB 或 15 秒期限。废弃的 `PUT /api/v1/controller-resources/{resourceId}` 不读取上传正文；有效资源继续使用现有 Controller 资源流程。
+
 ## 目标与模式
 
 任务执行采用 `herdr` 或 `web` 中的一种控制方式。两者复用现有任务资格、认领、worktree、managed assignment、进度及完成规则。模式在执行开始前确定，同一 claim 不热切换、不双启动，也不因连接失败自动降级。

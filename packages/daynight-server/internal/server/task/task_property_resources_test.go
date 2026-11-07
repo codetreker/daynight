@@ -181,7 +181,7 @@ func TestTaskPropertyResourceWireLimitAndDatabaseFailure(t *testing.T) {
 	if !reflect.DeepEqual(atLimit, initial) {
 		t.Fatal("exact-limit no-op changed values")
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodPut, path+"/pullRequests", body+" "), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, projectRequest(handler, http.MethodPut, path+"/pullRequests", body+" "), http.StatusRequestEntityTooLarge, "payload_too_large")
 	if _, err := database.Pool.Exec(context.Background(), "ALTER TABLE task_properties RENAME TO private_property_table_secret"); err != nil {
 		t.Fatal(err)
 	}

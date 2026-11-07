@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 const MaxNodes int64 = 20000
@@ -79,7 +80,7 @@ func invalidCursor() error {
 	return &model.Fault{Code: "invalid_input", Message: "Cursor is invalid for this search."}
 }
 func decodeCursor(encoded string, scope cursorScope) (cursor, error) {
-	if len(encoded) > 16384 {
+	if len(encoded) > transport.MaxEncodedCursorBytes {
 		return cursor{}, invalidCursor()
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)

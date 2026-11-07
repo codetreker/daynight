@@ -161,9 +161,12 @@ func TestDeviceHTTPValidationAndBrowserOrigin(t *testing.T) {
 		}
 	}
 	for _, input := range []struct{ body, contentType string }{
-		{"client_id=daynight-cli", "application/json"}, {"client_id=daynight-cli", "application/x-www-form-urlencoded;charset=latin1"}, {"client_id=daynight-cli&client_id=daynight-cli", "application/x-www-form-urlencoded"}, {"client_id=%zz", "application/x-www-form-urlencoded"}, {"client_id=\xff", "application/x-www-form-urlencoded"}, {"client_id=" + strings.Repeat("a", 4096), "application/x-www-form-urlencoded"}, {"", "application/x-www-form-urlencoded"},
+		{"client_id=daynight-cli", "application/json"}, {"client_id=daynight-cli", "application/x-www-form-urlencoded;charset=latin1"}, {"client_id=daynight-cli&client_id=daynight-cli", "application/x-www-form-urlencoded"}, {"client_id=%zz", "application/x-www-form-urlencoded"}, {"client_id=\xff", "application/x-www-form-urlencoded"}, {"", "application/x-www-form-urlencoded"},
 	} {
 		deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/code", input.body, input.contentType), 400, "invalid_request")
+	}
+	if w := deviceHTTPForm(h, "/api/v1/auth/device/code", "client_id="+strings.Repeat("a", 4096), "application/x-www-form-urlencoded"); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized device form: %d %s", w.Code, w.Body)
 	}
 	deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/code?client_id=x", "client_id=daynight-cli", "application/x-www-form-urlencoded"), 400, "invalid_request")
 	deviceHTTPOAuthError(t, deviceHTTPForm(h, "/api/v1/auth/device/code", "client_id=other", "application/x-www-form-urlencoded"), 400, "invalid_client")

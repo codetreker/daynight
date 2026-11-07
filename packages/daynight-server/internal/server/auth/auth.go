@@ -104,6 +104,7 @@ func (h *Authentication) Require(next httpx.AuthenticatedHandler) http.HandlerFu
 		w.Header().Set("Cache-Control", "no-store")
 		principal, err := h.AuthenticateRequest(request)
 		if err != nil {
+			httpx.CloseUnreadBody(w, request)
 			httpx.WriteError(w, request, h.logger, "auth", "authenticate", err)
 			return
 		}

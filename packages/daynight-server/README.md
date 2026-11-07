@@ -58,7 +58,8 @@ lifecycle. The client HTTP foundation targets this service's API.
 
 The [candidate input limits](../../docs/spec/daynight-api-input-limits.md) and
 [measurement design](../../docs/design/daynight-api-input-limits.md) describe
-pure admission and protocol measurement. New online limits remain inactive.
+pure domain admission, protocol measurement, and the active HTTP input limits.
+Domain online admission is owned by each respective implementation.
 
 The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable

@@ -33,12 +33,12 @@ func (h *taskStepsHandler) move(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	fields, err := httpx.DecodeObject(w, request, "version", "before", "after", "position")
-	if request.Context().Err() != nil {
-		refuse(request.Context().Err())
-		return
-	}
 	if err != nil {
 		refuse(err)
+		return
+	}
+	if request.Context().Err() != nil {
+		refuse(request.Context().Err())
 		return
 	}
 	input, err := moveStepInput(fields)
