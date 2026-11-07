@@ -212,6 +212,11 @@ ssh://git@git.example.com/team/repo.git
 git@git.example.com:team/repo.git
 ```
 
+Team 与 Project 的共同领域准入分别检查原始名称的有效性，以及最多 256 个 Unicode code points
+和 1024 个 UTF-8 bytes；普通 Team 创建和改名、Project 创建及仓库注册共用这些规则。
+Project `repoUrl` 在 URL/SCP 解析和仓库匹配前检查最多 4096 个 UTF-8 bytes；容量失败
+映射为 `invalid_input`，发生在创建或修改任何持久数据之前，不截断输入。
+
 解析器校验协议、主机及非空仓库路径等语法，拒绝控制字符、嵌入密码、HTTPS userinfo、
 query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；私钥、口令、token 等
 认证材料不得出现在保存的地址中。地址处理不限定 GitHub 或其他 provider，不进行

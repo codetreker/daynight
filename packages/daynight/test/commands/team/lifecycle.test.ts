@@ -19,7 +19,7 @@ const version = 9_007_199_254_740_993n;
 const team = (name = " Team ") => ({ id: teamId, kind: "ordinary" as const, name, version, createdAt: time, updatedAt: time, membership: { teamId, userId, role: "admin" as const, version: 1n, createdAt: time, updatedAt: time } });
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
-const fixture = async (options: { name?: string; answer?: string; interactive?: boolean; failure?: string; failureText?: string; malformedBody?: string; principal?: string; writeOutputFails?: boolean; releaseFails?: boolean; badReceipt?: boolean; badLocation?: boolean; personal?: boolean } = {}) => {
+const fixture = async (options: { name?: string; answer?: string; interactive?: boolean; failure?: string; failureText?: string; failureStatus?: number; malformedBody?: string; principal?: string; writeOutputFails?: boolean; releaseFails?: boolean; badReceipt?: boolean; badLocation?: boolean; personal?: boolean } = {}) => {
   const base = path.resolve("../../.tmp"); await mkdir(base, { recursive: true });
   const dir = await mkdtemp(path.join(base, "team-lifecycle-")); dirs.push(dir); vi.stubEnv("DN_CONFIG_DIR", dir);
   await writeFile(path.join(dir, "config.yml"), "serverUrl: http://localhost:8787\nserverToken: test-token\n");
@@ -32,7 +32,7 @@ const fixture = async (options: { name?: string; answer?: string; interactive?: 
     if (method === "GET") return new Response(stringifyApiJson(pathname.endsWith("/me") ? me : observed), { headers });
     if (options.failure === "lost") throw new Error(options.failureText ?? "connection lost");
     if (options.malformedBody) return new Response(options.malformedBody, { status: method === "POST" ? 201 : 200, headers });
-    if (options.failure) return new Response(JSON.stringify({ error: { code: options.failure, message: "rejected", requestId: "request" } }), { status: 409, headers });
+    if (options.failure) return new Response(JSON.stringify({ error: { code: options.failure, message: options.failureText ?? "rejected", requestId: "request" } }), { status: options.failureStatus ?? 409, headers });
     if (method === "POST" && pathname.endsWith("/invitations")) return new Response(JSON.stringify({ id: invitationId, teamId, createdBy: userId, createdAt: time, expiresAt: "2026-11-11T00:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link: `http://localhost:8787/team-invitations#${invitationSecret}` }), { status: 201, headers });
     if (method === "DELETE") {
       const response = new Response(JSON.stringify({ teamId: options.badReceipt ? otherId : teamId, deleted: true }), { headers });
@@ -101,6 +101,22 @@ describe("Team lifecycle", () => {
     const f = await fixture({ failure });
     await expect(runTeamCommand(["delete", "--team", teamId, "--confirm"], f.context, f.dependencies)).rejects.toMatchObject({ code: failure, outcomeUnconfirmed: false });
     expect(f.calls.map(x => x.method)).toEqual(["GET", "GET", "DELETE"]);
+  });
+  it.each(["create", "rename"])("shows a confirmed %s capacity refusal without replay", async (action) => {
+    const message = "name: 257 code points exceeds maximum 256";
+    const f = await fixture({ failure: "invalid_input", failureText: message, failureStatus: 400 });
+    const args = [action, "a".repeat(257), ...(action === "rename" ? ["--team", teamId] : []), "--confirm"];
+    const exit = await runCli(["team", ...args], f.context, [{
+      ...teamDefinition,
+      load: async () => ({ run: (commandArgs, context) => runTeamCommand(commandArgs, context, f.dependencies) }),
+    }]);
+    const stderr = f.context.stderr.mock.calls.map(([value]) => value).join("");
+    expect(exit).toBe(1);
+    expect(stderr).toContain(`invalid_input: ${message}`);
+    expect(stderr).not.toContain("outcome is unknown");
+    expect(f.context.stdout).not.toHaveBeenCalled();
+    expect(f.stdoutBytes).not.toHaveBeenCalled();
+    expect(f.calls.map(x => x.method)).toEqual(action === "create" ? ["GET", "POST"] : ["GET", "GET", "PATCH"]);
   });
   it.each(["rename", "delete"])("rejects %s of Personal Team before confirmation or write", async (action) => {
     const f = await fixture({ personal: true });

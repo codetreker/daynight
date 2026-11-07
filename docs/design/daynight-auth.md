@@ -141,8 +141,9 @@ server 统一映射创建、分页、详情和改名的 Team DTO；有限删除�
 
 `core/team` 接受显式 Principal 并拥有 Team 业务规则；`service/team` 选择事务或快照并处理
 完成结果，`server/team` 负责 HTTP 适配。管理输入先严格核对 expectedUserId，再进入任何领域查询或
-事务；JSON 字符串先验证原始 Unicode 转义，core 同时验证合法 Unicode、无 NUL 和非全
-Unicode `White_Space`。名称按原文存储，重复名称合法。资源 ID 和 expectedUserId 使用规范
+事务；JSON 字符串先验证原始 Unicode 转义，core 验证合法 Unicode、无 NUL 和非全
+Unicode `White_Space`，并对名称同时执行 256 code points 和 1024 UTF-8 bytes 的准入。
+名称按原文存储，重复名称合法；容量拒绝不修改 Team 或成员关系。资源 ID 和 expectedUserId 使用规范
 小写 UUID，正 int64 元数据版本在 no-op 比较之前校验。
 
 创建作用域先锁定创建者 user，再在单一事务写入普通 Team 与创建者 admin 行；不预锁不存在的

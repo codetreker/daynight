@@ -178,8 +178,9 @@ Team API 使用既有 session/PAT、Cookie 写请求 Origin 校验、`Daynight-U
 
 任意登录用户可创建普通 Team；Team 与创建者的真实 admin 行原子提交。普通名称必须是合法
 Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原始文字及首尾空白完整保存，
-允许重名，不增加字符数上限。通用请求大小限制保持。未知、重复、缺失、null、错误类型字段，
-非法 Unicode 转义、非规范 UUID，以及非正或越界版本返回 `400 invalid_input`。
+允许重名，且同时不超过 256 个 Unicode code points 和 1024 个 UTF-8 bytes。通用请求大小限制保持。
+超限名称、未知、重复、缺失、null、错误类型字段、非法 Unicode 转义、非规范 UUID，以及非正或越界版本
+返回 `400 invalid_input`；名称拒绝不改变 Team、成员关系或版本。
 
 所有 Team 管理写入在任何领域 SQL 前核对 expectedUserId 与实际 principal；错主体返回
 `409 identity_mismatch`，Team、成员和 ownership 行及版本均不变。读取权不包含管理权，
