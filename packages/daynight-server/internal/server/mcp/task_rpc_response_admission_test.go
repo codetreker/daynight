@@ -165,7 +165,7 @@ func TestTaskRPCBatchUsesEachCallID(t *testing.T) {
 	}
 	args := map[string]any{"projectId": project, "taskId": id, "title": before.Title, "ifVersion": Decimal(before.Version), "returnView": "full"}
 	rpcID := strings.Repeat("<", 30000)
-	batch := []any{rpcTaskCall(rpcID, "", "task_update", args), rpcTaskCall("small", "", "task_show", map[string]any{"projectId": project, "taskId": id})}
+	batch := []any{rpcTaskCall(rpcID, "", "task_update", args), rpcTaskCall("small", "", "task_properties", map[string]any{"mode": "schema"})}
 	resp, body := rpcTaskRequest(t, server.URL, "", batch)
 	if resp.StatusCode != 200 {
 		t.Fatalf("batch status=%d body=%s", resp.StatusCode, body[:min(500, len(body))])
@@ -188,18 +188,23 @@ func TestTaskRPCBatchUsesEachCallID(t *testing.T) {
 	}
 	var result struct {
 		Result struct {
-			IsError bool `json:"isError"`
+			IsError           bool `json:"isError"`
+			StructuredContent struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			} `json:"structuredContent"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(actual, &result) != nil || result.Result.IsError {
-		t.Fatalf("batch update: %s", actual)
+	if err := json.Unmarshal(actual, &result); err != nil || result.Result.IsError {
+		t.Fatalf("batch update: isError=%v code=%s parse=%v", result.Result.IsError, result.Result.StructuredContent.Error.Code, err)
 	}
 	n, err := taskprotocol.EncodeMCPResponse(io.Discard, before, "rpc-test", "unchanged", rpcID, false, true, math.MaxInt64)
 	if err != nil || n != int64(len(actual)) || !bytes.Contains(actual, []byte(`\u003c`)) {
 		t.Fatalf("batch bound=%d actual=%d err=%v", n, len(actual), err)
 	}
 	args["title"] = "Rejected"
-	batch = []any{rpcTaskCall("small", "", "task_update", args), rpcTaskCall(strings.Repeat("<", 90000), "", "task_show", map[string]any{"projectId": project, "taskId": id})}
+	batch = []any{rpcTaskCall("small", "", "task_update", args), rpcTaskCall(strings.Repeat("<", 90000), "", "task_properties", map[string]any{"mode": "schema"})}
 	resp, body = rpcTaskRequest(t, server.URL, "", batch)
 	if resp.StatusCode != 200 || json.Unmarshal(body, &messages) != nil {
 		t.Fatalf("oversized batch: status=%d", resp.StatusCode)
@@ -233,7 +238,7 @@ func TestTaskRPCBatchUsesEachCallID(t *testing.T) {
 	}
 	args["title"], args["ifVersion"] = "Must roll back", Decimal(after.Version)
 	large := strings.Repeat("<", 90000)
-	batch = []any{rpcTaskCall(large, "", "task_update", args), rpcTaskCall("small", "", "task_show", map[string]any{"projectId": project, "taskId": id})}
+	batch = []any{rpcTaskCall(large, "", "task_update", args), rpcTaskCall("small", "", "task_properties", map[string]any{"mode": "schema"})}
 	resp, body = rpcTaskRequest(t, server.URL, "", batch)
 	if resp.StatusCode != 200 || json.Unmarshal(body, &messages) != nil {
 		t.Fatalf("oversized call: status=%d", resp.StatusCode)
@@ -317,7 +322,7 @@ func TestTaskRPCBatchExactItemBoundary(t *testing.T) {
 	args := map[string]any{"projectId": project, "taskId": id, "title": before.Title, "ifVersion": Decimal(before.Version), "returnView": "full"}
 	call := func(rpcID string) (json.RawMessage, bool) {
 		t.Helper()
-		batch := []any{rpcTaskCall(rpcID, "", "task_update", args), rpcTaskCall("other", "", "task_show", map[string]any{"projectId": project, "taskId": id})}
+		batch := []any{rpcTaskCall(rpcID, "", "task_update", args), rpcTaskCall("other", "", "task_properties", map[string]any{"mode": "schema"})}
 		resp, raw := rpcTaskRequest(t, server.URL, "", batch)
 		var messages []json.RawMessage
 		if resp.StatusCode != 200 || json.Unmarshal(raw, &messages) != nil {
