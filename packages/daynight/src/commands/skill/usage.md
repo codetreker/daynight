@@ -74,7 +74,8 @@ receipts or matching current values do not prove rollback or success.
 
 Resume using `--resume-operation <path>` on the original write leaf, with the
 same owner, targets, versions, mode and input. The CLI verifies the record and
-exact request hash before reading the receipt. A matching receipt confirms the
+exact request hash before reading the receipt. A receipt at or past its expiry
+according to the local clock cannot confirm the operation. A matching receipt confirms the
 original operation without another write. If the receipt is missing, complete
 original input, explicit `--confirm` and an issued time within the admission
 window (five minutes past, sixty seconds future) permit at most one identical
@@ -89,7 +90,7 @@ retention can leave history incomplete. Secret show returns metadata unless
 success confirms registration, not delivery. Payload defaults to exact bytes
 without LF; `--json` returns the validated Base64 wrapper and `--output` publishes
 a private file without overwriting an existing target. File publication requires
-Linux with procfs; these options conflict.
+Linux with procfs and glibc; these options conflict.
 The service independently enforces payload authorization and retention.
 
 ## Create and Query Tasks

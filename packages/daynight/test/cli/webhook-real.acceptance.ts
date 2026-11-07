@@ -156,7 +156,7 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) if (/^(?:GIT_|GH_|GITHUB_|COPILOT_|NODE_OPTIONS$|DAYNIGHT_|DN_)/i.test(key)) delete env[key];
   Object.assign(env, { HOME: home, USERPROFILE: home, DN_CONFIG_DIR: config, XDG_CONFIG_HOME: path.join(fixture, "xdg"), XDG_CACHE_HOME: path.join(fixture, "cache"), TMPDIR: temporary, TMP: temporary, TEMP: temporary, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(fixture, "gitconfig"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
-  const invoke = async (args: string[], alias = false, input?: string, closeOutput = false, preload?: string) => {
+  const invoke = async (args: string[], alias = false, input?: string | Uint8Array, closeOutput = false, preload?: string) => {
     const launcher = alias ? path.join(path.dirname(receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn") : receipt.launcherPath;
     const child = crossSpawn(launcher, args, { cwd: fixture, env: preload === undefined ? env : { ...env, NODE_OPTIONS: `--require=${JSON.stringify(preload)}` }, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
     const out: Buffer[] = [], err: Buffer[] = [];
@@ -316,6 +316,25 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
       expect(refused.stdout.length).toBe(0);
       expect(records.filter(record => record.path.includes("/webhook"))).toHaveLength(before);
     }
+    const opaqueEndpoint = randomUUID(), opaqueDelivery = randomUUID();
+    const ownerLeaves = [
+      ["list"], ["show", opaqueEndpoint], ["create", "--stdin", "--confirm"],
+      ["update", opaqueEndpoint, "--stdin", "--if-version", "1", "--confirm"],
+      ...["enable", "disable", "delete"].map(name => [name, opaqueEndpoint, "--if-version", "1", "--confirm"]),
+      ["subscription", "list", opaqueEndpoint], ["subscription", "replace", opaqueEndpoint, "--stdin", "--if-version", "1", "--confirm"],
+      ["subscription", "reconfirm", opaqueEndpoint, "--project", hostInfo.projectId, "--if-version", "1", "--confirm"],
+      ["secret", "show", opaqueEndpoint], ["secret", "rotate", opaqueEndpoint, "--mode", "immediate", "--if-version", "1", "--confirm"],
+      ["delivery", "list", opaqueEndpoint], ["delivery", "show", opaqueEndpoint, opaqueDelivery], ["delivery", "payload", opaqueEndpoint, opaqueDelivery],
+      ["delivery", "redeliver", opaqueEndpoint, opaqueDelivery, "--if-version", "1", "--if-generation", "1", "--confirm"],
+      ["attempt", "list", opaqueEndpoint, opaqueDelivery], ["operation", "show", randomUUID()],
+    ];
+    for (const leaf of ownerLeaves) for (const selector of [[], ["--personal", "--team", hostInfo.teamId], ["--personal", "--personal"], ["--team", "personal"]]) {
+      const before = records.length;
+      const refused = await invoke(["webhook", ...leaf, ...selector], false, "[]");
+      expect(refused.status, `${leaf.join(" ")} owner selector`).toBe(2);
+      expect(refused.stdout.length).toBe(0);
+      expect(records.slice(before)).toHaveLength(0);
+    }
     if (process.platform !== "win32") {
       const pty = await import("node-pty");
       for (const answer of ["n", "y"]) {
@@ -453,21 +472,34 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
       else expect(JSON.parse(retry.stderr.toString()).error.operationOutcome).toBe("unknown");
     }
     const writesBeforeBadInput = records.filter(record => record.method !== "GET").length;
-    for (const invalid of ['{"name":"canary-private","name":"duplicate"}', '{"operationId":"canary-private"}', '{"name":null}', '{"unknown":"canary-private"}', '{"name":' + '['.repeat(33) + '0' + ']'.repeat(33) + '}', '{"name":"' + 'x'.repeat(262_090) + '"}']) {
-      const refused = await invoke(["webhook", "update", id, "--personal", "--stdin", "--if-version", "1", "--confirm", "--json"], false, invalid);
-      expect(refused.status).not.toBe(0);
-      expect(refused.stdout.length).toBe(0);
-      expect(refused.stderr.toString()).not.toContain("canary-private");
+    const invalidObjectInputs = [
+      '{"name":"canary-private","name":"duplicate"}', '{"operationId":"canary-private"}', '{"name":null}', '{"unknown":"canary-private"}',
+      '{"name":' + '['.repeat(33) + '0' + ']'.repeat(33) + '}', '{"name":"' + 'x'.repeat(262_090) + '"}',
+      Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]),
+    ];
+    const invalidArrayInputs = [
+      '[{"id":null,"id":null,"projectId":"' + hostInfo.projectId + '","eventTypes":["task.created"]}]',
+      '[{"id":null,"projectId":"' + hostInfo.projectId + '","eventTypes":["task.created"],"operationId":"canary-private"}]',
+      '[null]', '[{"unknown":"canary-private"}]', '['.repeat(33) + '0' + ']'.repeat(33), '[' + ' '.repeat(262_144) + ']',
+      Buffer.from([0x5b, 0x22, 0xff, 0x22, 0x5d]),
+    ];
+    for (const leaf of ["create", "update", "replace"] as const) for (const mode of ["stdin", "file"] as const) {
+      const values = leaf === "replace" ? invalidArrayInputs : invalidObjectInputs;
+      for (let index = 0; index < values.length; index++) {
+        const source = values[index]!, inputPath = path.join(fixture, `invalid-${leaf}-${mode}-${index}.json`);
+        if (mode === "file") await writeFile(inputPath, source);
+        const args = leaf === "create" ? ["create"] : leaf === "update" ? ["update", id, "--if-version", "1"] : ["subscription", "replace", id, "--if-version", "1"];
+        const refused = await invoke(["webhook", ...args, "--personal", ...(mode === "file" ? ["--file", inputPath] : ["--stdin"]), "--confirm", "--json"], false, mode === "stdin" ? source : undefined);
+        expect(refused.status).not.toBe(0); expect(refused.stdout.length).toBe(0);
+        expect(refused.stderr.toString()).not.toContain("canary-private");
+      }
     }
-    const invalidUtf8 = path.join(fixture, "invalid-utf8.json");
-    await writeFile(invalidUtf8, Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]));
-    const invalidFile = await invoke(["webhook", "update", id, "--personal", "--file", invalidUtf8, "--if-version", "1", "--confirm", "--json"]);
-    expect(invalidFile.status).not.toBe(0); expect(invalidFile.stdout.length).toBe(0);
     if (process.platform !== "win32") {
       const fifo = path.join(fixture, "input.fifo");
       execFileSync("mkfifo", [fifo], { timeout: 2_000 });
-      for (const special of [fifo, "/dev/null"]) {
-        const refused = await invoke(["webhook", "update", id, "--personal", "--file", special, "--if-version", "1", "--confirm", "--json"]);
+      for (const special of [fifo, "/dev/null"]) for (const leaf of ["create", "update", "replace"] as const) {
+        const args = leaf === "create" ? ["create"] : leaf === "update" ? ["update", id, "--if-version", "1"] : ["subscription", "replace", id, "--if-version", "1"];
+        const refused = await invoke(["webhook", ...args, "--personal", "--file", special, "--confirm", "--json"]);
         expect(refused.status).not.toBe(0); expect(refused.stdout.length).toBe(0);
       }
     }
@@ -599,11 +631,16 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
     expect(both.status).toBe(2); expect(both.stdout.length).toBe(0);
     expect(records.slice(beforeExclusive).filter(record => record.path.endsWith("/payload"))).toHaveLength(0);
     for (const fault of ["base64", "bytes", "hash", "media", "encoding", "owner", "endpoint", "delivery", "event", "oversize"]) {
-      payloadFault = fault;
-      const beforePayloadFault = records.length;
-      const damaged = await invoke(["webhook", "delivery", "payload", id, deliveryId, "--personal", ...(fault === "hash" ? ["--json"] : [])]);
-      expect(payloadFault).toBeUndefined(); expect(damaged.status).toBe(1); expect(damaged.stdout.length).toBe(0);
-      expect(records.slice(beforePayloadFault).filter(record => record.path.endsWith("/payload"))).toHaveLength(1);
+      for (const outputMode of ["raw", "json", "file"] as const) {
+        const target = path.join(fixture, `invalid-${fault}.bin`);
+        payloadFault = fault;
+        const beforePayloadFault = records.length;
+        const option = outputMode === "json" ? ["--json"] : outputMode === "file" ? ["--output", target] : [];
+        const damaged = await invoke(["webhook", "delivery", "payload", id, deliveryId, "--personal", ...option]);
+        expect(payloadFault).toBeUndefined(); expect(damaged.status).toBe(1); expect(damaged.stdout.length).toBe(0);
+        expect(records.slice(beforePayloadFault).filter(record => record.path.endsWith("/payload"))).toHaveLength(1);
+        if (outputMode === "file") await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+      }
     }
     payloadFault = "boundary";
     const boundary = await invoke(["webhook", "delivery", "payload", id, deliveryId, "--personal"]);

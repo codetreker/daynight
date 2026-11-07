@@ -22,6 +22,13 @@ const states = new Set(["pending", "leased", "delivered", "failed", "suppressed"
 type Phase = "input" | "auth" | "confirm" | "prepare" | "read" | "submit" | "reconcile" | "output";
 type Outcome = "not_submitted" | "rejected" | "unknown" | "confirmed" | "read_failed";
 type Receipt = ReturnType<typeof parseWebhookReceipt>;
+class ExpiredReceiptError extends Error {
+  constructor() { super("The operation receipt has expired."); }
+}
+const requireCurrentReceipt = (receipt: Receipt): Receipt => {
+  if (Date.parse(receipt.expiresAt) <= Date.now()) throw new ExpiredReceiptError();
+  return receipt;
+};
 
 const safeHuman = (value: unknown, reveal = false): unknown => {
   if (Array.isArray(value)) return value.map((v) => safeHuman(v, reveal));
@@ -47,6 +54,7 @@ const sameReceipt = (receipt: Receipt, prepared: PreparedOperation): void => {
     if (prepared.kind === "delivery.redeliver" ? after !== before : after !== before + (receipt.effect === "unchanged" ? 0n : 1n)) throw new Error("operation_receipt_mismatch");
   } else if (receipt.configVersionAfter !== "1") throw new Error("operation_receipt_mismatch");
   if (prepared.ifGeneration !== null && (receipt.generationAfter === null || BigInt(receipt.generationAfter) !== BigInt(prepared.ifGeneration) + 1n)) throw new Error("operation_receipt_mismatch");
+  requireCurrentReceipt(receipt);
 };
 
 export const runWebhookCommand = async (args: readonly string[], context: CliContext): Promise<void> => {
@@ -119,7 +127,7 @@ export const runWebhookCommand = async (args: readonly string[], context: CliCon
             cursor = page.nextCursor; if (cursor !== null) { if (cursors.has(cursor)) throw new Error("Repeated endpoint cursor."); cursors.add(cursor); }
           } while (cursor !== null);
           result = { items };
-        } else if (action === "operation show") result = await get(`${base}/operations/${lookup}`, (v) => parseWebhookReceipt(v, owner, lookup));
+        } else if (action === "operation show") result = requireCurrentReceipt(await get(`${base}/operations/${lookup}`, (v) => parseWebhookReceipt(v, owner, lookup)));
         else if (action === "show" || action === "subscription list" || action === "secret show" && !options.has("--reveal")) {
           const view = await get(`${base}/${endpoint}`, (v) => parseWebhookEndpoint(v, owner, endpoint));
           if (action === "show") result = view;
@@ -213,12 +221,13 @@ ${rendered}` : rendered;
         if (error instanceof ApiError && error.status !== undefined && error.status >= 400 && error.status < 500 && error.status !== 408 && error.code !== "write_outcome_unknown" && error.phase === "response") { invocation = "rejected"; operationOutcome = error.code === "operation_conflict" || prior !== undefined ? "unknown" : "rejected"; throw error; }
         invocation = "unknown"; operationOutcome = "unknown"; phase = "reconcile";
         try { return confirmedOutput({ operation: await receipt() }); }
-        catch (reconcileError) { if (reconcileError instanceof Error && reconcileError.message === "operation_receipt_mismatch") { code = "operation_receipt_mismatch"; throw reconcileError; } throw error; }
+        catch (reconcileError) { if (reconcileError instanceof ExpiredReceiptError || reconcileError instanceof Error && reconcileError.message === "operation_receipt_mismatch") throw reconcileError; throw error; }
       }
     }, { operationLimits: { responseBytes: 1_048_576, totalBytes: 268_435_456 } });
   } catch (error) {
     if (error instanceof PublicDiagnosticError) throw error;
     if (error instanceof ApiError) { requestId = error.requestId ?? null; if (error.code !== undefined) code = error.code; }
+    if (error instanceof ExpiredReceiptError) code = "operation_expired";
     if (error instanceof Error && error.message === "operation_receipt_mismatch") code = "operation_receipt_mismatch";
     if ((phase as Phase) === "output" && (operationOutcome as string | null) === "confirmed") { invocation = "confirmed"; code = "output_failed"; }
     const message = error instanceof PayloadCleanupError ? `Could not remove temporary payload file ${JSON.stringify(error.path)}.` : (operationOutcome as string | null) === "confirmed" ? "The operation was confirmed, but local output failed." : (invocation as Outcome) === "unknown" || resume !== undefined ? "The original operation outcome remains unknown." : "Webhook command failed.";

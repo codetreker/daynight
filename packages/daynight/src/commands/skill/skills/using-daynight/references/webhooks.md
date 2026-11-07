@@ -28,7 +28,8 @@ does not prove rollback or success.
 
 To resume, use `--resume-operation <path>` on the original write leaf and supply
 the same owner, targets, versions, mode and original input. The CLI checks the
-record and exact request hash before reading the receipt. A matching receipt
+record and exact request hash before reading the receipt. A receipt at or past its expiry
+according to the local clock cannot confirm the operation. A matching receipt
 confirms the original operation without writing again. A missing receipt allows
 at most one identical submission only with complete input, `--confirm` and an
 issued time within the original admission window: five minutes in the past or
@@ -43,5 +44,5 @@ metadata unless `--reveal` is explicit; rotation does not reveal the new secret.
 Redelivery success confirms registration, not delivery. Payload defaults to the
 exact bytes without LF; `--json` returns the validated Base64 wrapper, while
 `--output` publishes a private file without overwriting an existing target. File
-publication requires Linux with procfs. The two options are mutually exclusive. Payload authorization and retention are
+publication requires Linux with procfs and glibc. The two options are mutually exclusive. Payload authorization and retention are
 enforced separately by the service.

@@ -781,7 +781,8 @@ identity and is never automatically replayed. Inspect the original receipt with
 the original outcome. To resume, use `--resume-operation <path>` on the original
 write command and supply the same owner, targets, versions, mode and input. It
 verifies the record and exact request hash before reading the receipt. A matching
-receipt confirms the original operation without another write. A missing receipt
+receipt confirms the original operation without another write. The CLI rejects a
+receipt whose expiry is at or before the local clock. A missing receipt
 permits at most one identical submission only with `--confirm`, complete original
 input and an issued time within the service's admission window (five minutes
 past and sixty seconds future). An inaccessible receipt or expired window leaves
@@ -797,7 +798,7 @@ registers it and does not mean delivery has completed.
 Payload output defaults to the exact original bytes without an added newline.
 `--json` returns its validated Base64 wrapper; `--output <path>` writes a private
 file after validation and never overwrites an existing target. File publication
-requires Linux with procfs; it fails when inode-bound publication is unavailable.
+requires Linux with procfs and glibc; it fails when inode-bound publication is unavailable.
 These two options are mutually exclusive. Payload access and retention are independently enforced
 by the service. Normal JSON output is one value followed by LF. Runtime errors
 with `--json` go to stderr and distinguish invocation from original operation

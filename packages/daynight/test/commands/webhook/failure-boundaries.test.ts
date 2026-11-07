@@ -16,7 +16,7 @@ const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).dige
 const reply = (value: unknown, status = 200, principal = actor) => new Response(typeof value === "string" ? value : JSON.stringify(value), { status, headers: { "content-type": "application/json", "Daynight-User-ID": principal } });
 const refusal = (code: string, status: number) => reply({ error: { code, message: "injected fault", requestId: operation } }, status);
 const diagnostic = (error: unknown) => JSON.parse((error as Error).message).error as Record<string, unknown>;
-const receipt = (at: string, sha: string, overrides: Record<string, unknown> = {}) => ({ operationId: operation, kind: "endpoint.patch", issuedAt: at, requestSha256: sha, actorUserId: actor, owner, endpointId: endpoint, effect: "applied", configVersionAfter: "2", destinationRevisionAfter: "1", deliveryId: null, generationAfter: null, keyId: null, recordedAt: at, expiresAt: at, ...overrides });
+const receipt = (at: string, sha: string, overrides: Record<string, unknown> = {}) => ({ operationId: operation, kind: "endpoint.patch", issuedAt: at, requestSha256: sha, actorUserId: actor, owner, endpointId: endpoint, effect: "applied", configVersionAfter: "2", destinationRevisionAfter: "1", deliveryId: null, generationAfter: null, keyId: null, recordedAt: at, expiresAt: "2099-01-01T00:00:00Z", ...overrides });
 const body = (at: string) => JSON.stringify({ operationId: operation, issuedAt: at, expectedUserId: actor, ifVersion: "1", enabled: true });
 const prepared = (at: string, overrides: Record<string, unknown> = {}) => ({ formatVersion: 1, serverOrigin: "http://localhost:8787", actorUserId: actor, owner, kind: "endpoint.patch", operationId: operation, issuedAt: at, endpointId: endpoint, deliveryId: null, ifVersion: "1", ifGeneration: null, requestSha256: hash(body(at)), ...overrides });
 const freshArgs = (at: string) => ["enable", endpoint, "--personal", "--if-version", "1", "--confirm", "--json", "--operation-id", operation, "--issued-at", at];
@@ -56,6 +56,20 @@ describe("Webhook transport fault boundaries", () => {
     f.setResponse((_url, init) => { if (init?.method === "PATCH") throw new Error("lost response"); return refusal(code, status); });
     const error = await runWebhookCommand(freshArgs(at), f.context).catch((e: unknown) => e);
     expect(diagnostic(error)).toMatchObject({ invocationOutcome: "unknown", operationOutcome: "unknown" }); expect(f.calls.map((c) => c.method)).toEqual(["GET", "PATCH", "GET"]);
+  });
+  it("keeps an expired matching receipt unknown without resubmitting", async () => {
+    const f = await makeFixture(); const at = new Date().toISOString(), file = path.join(f.dir, "prepared.json"); await writeFile(file, JSON.stringify(prepared(at)));
+    f.setResponse(() => reply(receipt(at, hash(body(at)), { expiresAt: "2020-01-01T00:00:00Z" })));
+    const error = await runWebhookCommand(resumeArgs(file), f.context).catch((e: unknown) => e);
+    expect(diagnostic(error)).toMatchObject({ code: "operation_expired", invocationOutcome: "not_submitted", operationOutcome: "unknown" });
+    expect(f.calls.map((c) => c.method)).toEqual(["GET", "GET"]);
+  });
+  it("reports a receipt mismatch even when that receipt has expired", async () => {
+    const f = await makeFixture(); const at = new Date().toISOString(), file = path.join(f.dir, "prepared.json"); await writeFile(file, JSON.stringify(prepared(at)));
+    f.setResponse(() => reply(receipt(at, "1".repeat(64), { expiresAt: "2020-01-01T00:00:00Z" })));
+    const error = await runWebhookCommand(resumeArgs(file), f.context).catch((e: unknown) => e);
+    expect(diagnostic(error)).toMatchObject({ code: "operation_receipt_mismatch", invocationOutcome: "not_submitted", operationOutcome: "unknown" });
+    expect(f.calls.map((c) => c.method)).toEqual(["GET", "GET"]);
   });
   it("resends identical bytes once after an authenticated 404 within the original window", async () => {
     const f = await makeFixture(); const at = new Date().toISOString(), file = path.join(f.dir, "prepared.json"); await writeFile(file, JSON.stringify(prepared(at)));
