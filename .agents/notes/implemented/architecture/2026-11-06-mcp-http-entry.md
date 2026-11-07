@@ -27,10 +27,11 @@ Separate control and large-object permits are selected by internal materializati
 not the returned view. Permits remain held through handler and response delivery.
 Shutdown cancels and waits for MCP handlers before stopping the shared relay. It
 then waits for the remaining handlers and database cancellation before closing
-borrowed storage. An HTTP drain timeout remains an error. A separate five-second
-cleanup budget waits for actual work; if it expires, the application retains its
-resources for a further close attempt. The [application lifecycle decision](2026-11-06-server-application-lifecycle.md)
-owns this bounded cleanup and resource ownership.
+borrowed storage. An HTTP drain timeout remains an error; if work has not stopped,
+the application retains its resources for a further close attempt. The
+[webhook runtime decision](2026-11-08-webhook-application-runtime.md) sets the
+shared shutdown budget; the [application lifecycle decision](2026-11-06-server-application-lifecycle.md)
+records resource ownership.
 
 ## Alternatives
 
@@ -42,11 +43,7 @@ preserve the same error contract for valid tool calls.
 independent business instances per connection would complicate per-request
 credential revocation and risk divergent relay or authorization state.
 
-**Return while cleanup runs in the background.** The executable exits when the
-runtime returns, terminating asynchronous PostgreSQL cancellation before a
-blocked transaction has necessarily stopped. Waiting for cleanup preserves the
-outcome and shared-resource lifetime; bounded failure retains ownership when work
-has not stopped.
+**Return while cleanup runs in the background.** At this decision, the executable could exit before asynchronous PostgreSQL cancellation finished, so waiting preserved the outcome and shared-resource lifetime. The later [shared deadline](2026-11-08-webhook-application-runtime.md) bounds process shutdown while retaining dependencies when work has not stopped; forced exit can leave an unknown outcome.
 
 ## Consequences
 

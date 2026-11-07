@@ -54,16 +54,19 @@ install an OS daemon, migrate conversations automatically or provide Webhook/MCP
 adapters. CLI/Server and production-page browser acceptance are distinct from
 live Provider acceptance.
 
-## Webhook capture
+## Webhooks
 
 Task, Step and Thread writes capture eligible notification responsibilities in
-their source transactions. The [capture design](../../docs/design/webhook-capture.md)
-describes the fixed audience, stored request bytes, match proof and keyring
-requirements. The [delivery design](../../docs/design/webhook-delivery.md) describes the
-explicitly started sender, authorization and recovery. The [retention design](../../docs/design/webhook-retention.md)
-and [key maintenance design](../../docs/design/webhook-key-maintenance.md) cover
-bounded reclamation and recovery. Public application composition and management
-route mounting remain separate.
+their source transactions. The application exposes authenticated management,
+history and redelivery routes and starts the sender and retention workers after
+composition. `DAYNIGHT_WEBHOOK_ENABLED` defaults to `0`: existing subscriptions
+continue to capture, but new or expanded configuration and network claims are
+refused; authorized reads and restrictive cleanup remain available. Recovery and
+retention continue. The [runtime design](../../docs/design/webhook-runtime.md)
+contains deployment, rollback and recovery procedures. The [capture](../../docs/design/webhook-capture.md),
+[delivery](../../docs/design/webhook-delivery.md), [retention](../../docs/design/webhook-retention.md)
+and [key maintenance](../../docs/design/webhook-key-maintenance.md) designs own
+their respective data and transaction rules.
 
 ## Contracts
 
@@ -463,11 +466,10 @@ separately from CI:
 go test -race -tags=stress ./internal/server -run '^TestStressMCPStepsCapacityAndConcurrentSummaryHeap$' -count=1 -timeout=10m
 ```
 
-The application rejects and cancels MCP requests during shutdown before stopping
-the shared relay. A drain timeout cancels active requests, but the runtime waits
-for handlers, the relay and database cleanup within a separate five-second
-cleanup budget before closing shared storage. If cleanup times out, it retains
-resources and returns an error; a caller can retry close.
+The application stops webhook claims and rejects new HTTP work before draining
+requests and the Session relay. HTTP, Sessions, webhook attempts, maintenance
+and dependency release share the shutdown budget. On timeout it cancels work,
+retains dependencies still in use and returns an error; a caller can retry close.
 
 ## Local Docker deployment
 
@@ -532,6 +534,8 @@ diagnostics and cause categories.
 | Environment variable | Meaning | Default |
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
+| `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
+| `DAYNIGHT_WEBHOOK_KEYRING_FILE` | Private keyring file; required when enabled or retained ciphertext needs a key | Empty |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
@@ -546,14 +550,14 @@ diagnostics and cause categories.
 | `DAYNIGHT_ALLOW_LOOPBACK_HTTP` | Separate SDK permission for a literal loopback UniAuth HTTP gateway (`0` or `1`) | `0` |
 | `DAYNIGHT_LISTEN_ADDR` | Numeric loopback IP and port, including IPv6 syntax | `127.0.0.1:8787` |
 | `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration for database connection and listener startup | `10s` |
-| `DAYNIGHT_SHUTDOWN_TIMEOUT` | Positive Go duration for draining HTTP requests | `10s` |
+| `DAYNIGHT_SHUTDOWN_TIMEOUT` | Shared positive shutdown duration, at most 10 seconds | `10s` |
 | `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
 
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
 `/mcp`, `/login`, `/setup`, `/teams` and every descendant path, together with the
-`/api/v1/teams` API namespace. If an existing callback occupies that
+`/api/v1/teams` API namespace and `/api/v1/webhook-event-types`. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
 starting the server. Login return loops, including `/login`, are rejected before a
 login transaction is created. An absent return target defaults to `/projects`; a
@@ -564,7 +568,8 @@ other. The exact `/setup` page uses the normal embedded HTML GET/HEAD handler,
 no-store policy, 405/Allow response and request logging. Its public static guide mounts
 outside the browser authentication flow and makes no API requests.
 `/healthz` and `/readyz` are public GET/HEAD endpoints; readiness checks
-only PostgreSQL, so it does not establish UniAuth connectivity or login success.
+PostgreSQL and webhook worker failures, but does not establish UniAuth
+connectivity or login success.
 Port `0` requests an ephemeral loopback port; the bound address appears
 in the startup log. Invalid timeout values fail validation.
 

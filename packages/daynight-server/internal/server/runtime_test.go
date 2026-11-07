@@ -595,14 +595,57 @@ func TestCloseRetriesTimedOutHTTPDrainWithoutClosingApp(t *testing.T) {
 		t.Fatalf("lost grace timeout: %v", err)
 	}
 	await(t, clientDone)
-	if calls.Load() != 1 {
-		t.Fatalf("application close count: %d", calls.Load())
+	if calls.Load() != 0 {
+		t.Fatalf("application closed after the runtime budget: %d", calls.Load())
 	}
 	if err := runtime.Close(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("retry lost grace timeout: %v", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("application closed more than once: %d", calls.Load())
+	}
+}
+
+type shutdownOrderHandler struct {
+	http.Handler
+	stop func()
+}
+
+func (h shutdownOrderHandler) BeginShutdown() { h.stop() }
+
+func TestRunUsesOneDeadlineForShutdownAndResourceRelease(t *testing.T) {
+	stopClaims := make(chan struct{})
+	relayStarted := make(chan struct{})
+	var closed atomic.Int32
+	handler := shutdownOrderHandler{Handler: http.NotFoundHandler(), stop: func() { close(stopClaims) }}
+	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, 80*time.Millisecond, testLogger(), handler,
+		func(ctx context.Context) error {
+			select {
+			case <-stopClaims:
+			default:
+				t.Error("relay shutdown preceded claim stop")
+			}
+			close(relayStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		}, nil, nil, func(context.Context) error { closed.Add(1); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- runtime.Run(root) }()
+	start := time.Now()
+	cancel()
+	await(t, relayStarted)
+	if err := await(t, result); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lost shutdown deadline: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("shutdown exceeded shared budget: %s", elapsed)
+	}
+	if closed.Load() != 0 {
+		t.Fatal("released dependencies without confirming relay drain")
 	}
 }
 

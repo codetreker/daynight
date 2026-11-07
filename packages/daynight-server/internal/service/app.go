@@ -28,6 +28,8 @@ type App struct {
 	*application.Application
 	Web              *webresources.Resources
 	Ready            func(context.Context) error
+	Webhooks         *webhook.Service
+	webhookRuntime   *webhookRuntime
 	OAuthProfile     *OAuthProfile
 	OAuthError       error
 	oauthMaintenance *oauthservice.MaintenanceRunner
@@ -137,21 +139,13 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 			return nil, errors.Join(&config.ConfigurationError{Field: "DAYNIGHT_WEBHOOK_KEYRING_FILE", Rule: "must contain a valid keyring", Cause: readErr}, files.Close())
 		}
 	}
-	refs, ok := database.Transactions.(store.WebhookMasterReferences)
-	if !ok {
+	if c.WebhookEnabled && keys == nil {
 		database.Close()
-		return nil, errors.Join(errors.New("webhook master key reference scan unavailable"), files.Close())
+		return nil, errors.Join(secretbox.ErrMissingKey, files.Close())
 	}
-	ids, err := refs.WebhookMasterKeyIDs(startup)
-	if err != nil {
+	if err := validateWebhookStartup(startup, database.Transactions, keys); err != nil {
 		database.Close()
 		return nil, errors.Join(err, files.Close())
-	}
-	for _, id := range ids {
-		if !keys.HasKey(id) {
-			database.Close()
-			return nil, errors.Join(secretbox.ErrMissingKey, files.Close())
-		}
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -159,14 +153,22 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	capture := &webhook.Capturer{Keys: keys, Logger: logger, RequestID: requestid.From}
 	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
 	app.files, app.persistence = files, database
+	failOpen := func(cause error) (*App, error) {
+		cleanup, done := context.WithTimeout(context.Background(), c.ShutdownTimeout)
+		defer done()
+		return nil, errors.Join(cause, app.Close(cleanup))
+	}
+	if err := app.assembleWebhooks(database.Transactions, keys, c.WebhookEnabled, logger); err != nil {
+		return failOpen(err)
+	}
 	if app.PrivateContent == nil {
-		return nil, errors.Join(errors.New("private transfer storage is unavailable"), app.Close(context.Background()))
+		return failOpen(errors.New("private transfer storage is unavailable"))
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if app.OAuthProfile == nil {
-		return nil, errors.Join(errors.New("OAuth public profile is unavailable"), app.OAuthError, app.Close(context.Background()))
+		return failOpen(errors.Join(errors.New("OAuth public profile is unavailable"), app.OAuthError))
 	}
 	app.oauthMaintenance = oauthservice.StartMaintenance(app.OAuthProfile.Maintenance, func(error) {
 		logger.Error("OAuth maintenance failed", "component", "oauth", "operation", "maintain")
@@ -175,7 +177,7 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	if err := app.PrivateContent.Start(func(error) {
 		logger.Error("private transfer maintenance failed", "component", "mcptransfer", "operation", "maintain")
 	}); err != nil {
-		return nil, errors.Join(err, app.Close(context.Background()))
+		return failOpen(err)
 	}
 	return app, nil
 }
@@ -196,6 +198,9 @@ func (a *App) Close(ctx context.Context) error {
 	}
 	if a.closed {
 		return a.closeErr
+	}
+	if err := a.Drain(ctx); err != nil {
+		return err
 	}
 	if a.oauthMaintenance != nil {
 		if err := a.oauthMaintenance.Stop(ctx); err != nil {

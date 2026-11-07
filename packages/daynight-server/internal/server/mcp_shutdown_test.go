@@ -95,10 +95,11 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	started := time.Now()
 	cancel()
 	await(t, canceled)
-	select {
-	case err := <-runtimeDone:
-		t.Fatalf("runtime returned before the canceled MCP handler exited: %v", err)
-	case <-time.After(150 * time.Millisecond):
+	if err := await(t, runtimeDone); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected bounded shutdown deadline, got %v", err)
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Fatal("runtime waited beyond the shared shutdown budget")
 	}
 	probe, stopProbe := context.WithTimeout(context.Background(), time.Second)
 	defer stopProbe()
@@ -118,11 +119,10 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	operation.Close()
 
 	releaseWork()
-	if err := await(t, runtimeDone); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected forced shutdown deadline, got %v", err)
-	}
-	if time.Since(started) > 5*time.Second {
-		t.Fatal("runtime did not finish after the MCP handler exited")
+	cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCleanup()
+	if err := runtime.Close(cleanup); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup retry lost original shutdown deadline: %v", err)
 	}
 	await(t, clientDone)
 	read, stopRead := context.WithTimeout(context.Background(), 5*time.Second)
@@ -157,8 +157,8 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 }
 
 // A canceled database query may finish locally before pgx's asynchronous
-// CancelRequest reaches PostgreSQL. Runtime must join pool cleanup before
-// returning to a caller that can terminate the process.
+// CancelRequest reaches PostgreSQL. After the shared budget expires, an
+// explicit cleanup retry must join the pool before reporting it released.
 func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 	config := testConfig(t)
 	config.ShutdownTimeout = 30 * time.Millisecond
@@ -205,6 +205,11 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 	if err := await(t, queryDone); !errors.Is(err, context.Canceled) {
 		t.Fatalf("database operation did not observe cancellation: %v", err)
 	}
+	cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCleanup()
+	if err := runtime.Close(cleanup); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup retry lost original shutdown deadline: %v", err)
+	}
 	probe, stop := context.WithTimeout(context.Background(), 3*time.Second)
 	defer stop()
 	observer, err := pgx.Connect(probe, config.DatabaseURL)
@@ -217,7 +222,7 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	if active != 0 {
-		t.Fatal("runtime returned before PostgreSQL stopped the canceled query")
+		t.Fatal("cleanup released the pool before PostgreSQL stopped the canceled query")
 	}
 	await(t, clientDone)
 }

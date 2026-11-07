@@ -113,7 +113,7 @@ packages/daynight-server/
                 └── migrations/
 ```
 
-`cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。优雅期限由 `DAYNIGHT_SHUTDOWN_TIMEOUT` 控制；超时后取消请求、通知 Operation 停止并强关 transport；断连收尾仍可启动所需事务，再用独立的五秒清理期限等待实际工作。只有全部使用者退出后应用才关闭文件和数据库；清理超时保留资源供关闭重试，已发生的优雅超时仍作为错误返回。
+`cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。HTTP、Session、Webhook 工作与依赖释放共用 `DAYNIGHT_SHUTDOWN_TIMEOUT`，上限十秒。超时后取消请求、通知 Operation 停止并强关 transport；已准入 transport 的断连收尾仍可启动所需事务。只有全部使用者退出后应用才关闭文件和数据库，未确认停止时保留资源供关闭重试并返回错误。Webhook 的监督和关闭顺序见[运行设计](webhook-runtime.md)。
 `api` 拥有 HTTP 请求、响应和错误
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、
 HTTP 错误映射和服务生命周期。`internal/service` 拥有 project/task 用例、业务
@@ -476,7 +476,7 @@ TCP 网关组合启动，Go 服务同时提供内嵌任务看板和 JSON API。�
 转发不解析 HTTP，响应、请求大小限制和错误语义继续由服务处理。数据库通过内部
 Compose 网络访问，PostgreSQL 18 数据卷挂到 `/var/lib/postgresql`。
 服务等待数据库健康后启动，由既有流程执行迁移；两条 HTTP 健康检查分别通过
-服务回环端口和网关访问公开 `/readyz`，只验证数据库就绪；`/healthz` 提供进程存活
+服务回环端口和网关访问公开 `/readyz`，验证数据库与 Webhook 后台工作状态；`/healthz` 提供进程存活
 响应，二者均支持 HEAD，不要求登录。网关配置或网络拓扑变化时整体
 重建容器并保留数据卷。部署脚本每次重新构建并整体重建容器，用相同命令完成启动、
 源码更新及转发恢复；数据卷持续保留。网关意外单独重启时，Docker 不会自动重启
@@ -506,8 +506,8 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 及监听资源。没有依赖后台任务去补齐图状态或引用。
 
 请求 context 贯穿 server、service 和 store，数据库查询及锁等待遵守取消和截止
-时间。服务关闭时停止接受新连接，在有界时间内等待请求，随后取消剩余请求并关闭
-连接池。`main` 拥有根 context、HTTP server 和 pool 的关闭顺序；请求代码只拥有
+时间。服务关闭时停止接受新连接，在共享期限内等待请求和后台工作，并在使用者停止后关闭
+连接池；超时未确认停止时保留连接池并返回错误。`main` 拥有根 context、HTTP server 和 pool 的关闭顺序；请求代码只拥有
 自身事务。错误回滚及资源释放不得覆盖原始失败；若清理也失败，保留两者的错误信息。
 
 ## 验证设计
@@ -548,13 +548,13 @@ Go 模块须使用实际构建的服务及固定的真实 UniAuth gateway 夹具
 
 当前 `bash scripts/check.sh` 要求隔离的 `DAYNIGHT_TEST_DATABASE_URL`，使用
 单测资源 overlay 构建和 vet，准备固定 UniAuth fixture，清除 Go 测试缓存后调用
-`go-cov` v0.1.4 运行模块测试。配置不排除生产 package、文件或函数，但未通过 `-coverpkg` 统计跨包调用；
+`go-cov` v0.1.4 运行模块测试。配置不排除生产 package、文件或函数，并通过 `-coverpkg` 统计跨包调用；
 package 和 function 门槛分别为 85% 和 80%。原始 `coverage.out`
 另按语句数精确检查 `covered * 10 > total * 9`，恰好 90% 失败。
 
-需求 V8 仍要求本地与 main CI 开启 race、PR CI 关闭并阻断关键代码块缺口；
-当前 `.go-cov.toml` 设置 `test.race = false` 和 `critical_blocks.fail = false`，
-入口未按事件选择 race，因此现有检查不满足这些要求。配置、实际入口及本地
+需求 V8 要求本地与 main CI 开启 race、PR CI 关闭并阻断关键代码块缺口。
+入口按事件选择 race；当前 `.go-cov.toml` 的 `critical_blocks.fail = false`
+不分析关键代码块，因此该部分要求仍未满足。配置、实际入口及本地
 stress 命令由[服务端验证说明](../../packages/daynight-server/README.md#validate)维护。
 覆盖率不替代并发、回滚、实际进程或调用方行为证据。
 

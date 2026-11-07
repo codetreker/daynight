@@ -624,7 +624,7 @@ callback 的 returnPath，防止回调循环。
 | DAYNIGHT_ALLOW_LOOPBACK_HTTP=1 | 仅允许 SDK gateway 为 literal localhost/numeric-loopback HTTP，其他 gateway 仍需 HTTPS。 |
 
 HTTPS 主站和回环 HTTP gateway 可以独立组合。普通运行不存在 auth-disable 分支。
-/healthz 返回无业务数据的存活状态；/readyz 只验证数据库就绪，不查询项目、登录
+/healthz 返回无业务数据的存活状态；/readyz 验证数据库与 Webhook 后台工作，不查询项目、登录
 上游或 provider 健康。两套 Compose 均使用 readyz。
 
 [localhost 部署](../../deployment/localhost/README.md)要求从 .env.example 创建私有

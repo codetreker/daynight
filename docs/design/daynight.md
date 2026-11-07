@@ -564,7 +564,7 @@ fixture 不能通过当前 store 生成基线，从而避免现有实现为自�
 GitHub Actions 在 Linux、macOS、Windows 执行普通 CLI 测试与安装产物检查，
 并在独立 Linux 作业执行真实 shell 接入。当前入口不运行 project/task 安装
 行为矩阵或跨产品服务验收。Go 模块检查独立执行 build、vet 和覆盖率门槛，
-其当前 race 与关键代码块配置未满足既有要求；详见
+其当前关键代码块配置未满足既有要求；详见
 [服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)。
 期限和字节边界的完整要求及证据分工由
 [project/task 设计](daynight-project-task.md#验证与交付证据)与相应需求拥有。

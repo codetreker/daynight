@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	WebhookEnabled       bool
 	WebhookKeyringFile   string
 	PublicOrigin         string
 	MCPAllowedOrigins    []string
@@ -62,11 +63,16 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	webhookEnabled, err := loadFlag(getenv, "DAYNIGHT_WEBHOOK_ENABLED")
+	if err != nil {
+		return Config{}, err
+	}
 	address := getenv("DAYNIGHT_LISTEN_ADDR")
 	if address == "" {
 		address = "127.0.0.1:8787"
 	}
 	config := Config{
+		WebhookEnabled:       webhookEnabled,
 		WebhookKeyringFile:   getenv("DAYNIGHT_WEBHOOK_KEYRING_FILE"),
 		PublicOrigin:         getenv("DAYNIGHT_PUBLIC_ORIGIN"),
 		MCPAllowedOrigins:    splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
@@ -140,6 +146,9 @@ func loadDuration(getenv func(string) string, field string) (time.Duration, erro
 }
 
 func (c Config) Validate() error {
+	if c.WebhookEnabled && strings.TrimSpace(c.WebhookKeyringFile) == "" {
+		return &ConfigurationError{Field: "DAYNIGHT_WEBHOOK_KEYRING_FILE", Rule: "is required when webhooks are enabled"}
+	}
 	if err := validateOAuthClients(c.OAuthClients); err != nil {
 		return err
 	}
@@ -180,8 +189,8 @@ func (c Config) Validate() error {
 	if err != nil || number < 0 || number > 65535 || strconv.Itoa(number) != port {
 		return &ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must use a port from 0 to 65535"}
 	}
-	if c.StartupTimeout <= 0 || c.ShutdownTimeout <= 0 {
-		return &ConfigurationError{Field: "timeouts", Rule: "startup and shutdown must be positive"}
+	if c.StartupTimeout <= 0 || c.ShutdownTimeout <= 0 || c.ShutdownTimeout > 10*time.Second {
+		return &ConfigurationError{Field: "timeouts", Rule: "startup and shutdown must be positive and shutdown must not exceed 10 seconds"}
 	}
 	if c.TaskSyncOverlap <= 0 {
 		return &ConfigurationError{Field: "DAYNIGHT_TASK_SYNC_OVERLAP", Rule: "must be a positive Go duration"}

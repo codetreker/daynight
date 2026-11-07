@@ -1,7 +1,7 @@
 # daynight-server 任务管理需求
 
 状态：Go 服务、事务存储、project/task 用例与 HTTP 接口已实现。当前 Go 检查的
-race 和关键代码块配置未满足下文 V8；完整进程证据须按被测源码另行提供。
+关键代码块配置未满足下文 V8；完整进程证据须按被测源码另行提供。
 [服务端验证说明](../../packages/daynight-server/README.md#validate)记录当前入口与限制；
 逐次运行结果随对应 PR 与 CI 保存。
 
@@ -406,14 +406,14 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 和同 origin 的 callback URL，要求见[鉴权需求](daynight-auth.md)，操作配置由
 [部署指南](../../deployment/localhost/README.md)拥有。生产公开 origin 使用 HTTPS；
 受控 HTTP 测试例外与 UniAuth loopback HTTP 例外分别显式配置，不提供关闭鉴权模式。
-`/healthz` 和 `/readyz` 公开可读，后者仅检查数据库可用性，不检查用户登录或 UniAuth。
+`/healthz` 和 `/readyz` 公开可读；后者检查数据库可用性和 Webhook 后台工作故障，不检查用户登录或 UniAuth。
 [本地 Docker Compose 部署](../../deployment/localhost/README.md)提供一条命令构建
 并启动内嵌任务看板、API 和 PostgreSQL，等待数据库及完整 readiness 转发路径健康后返回。
 页面和 API 共用服务 origin，宿主机 HTTP 端口只发布到 `127.0.0.1`，数据库不发布宿主机端口；容器重建和普通停止必须
 保留项目与任务，删除持久卷须使用单独的显式命令。
 项目、任务及身份/成员状态由 PostgreSQL 持久化，启动失败必须非零退出。
 附件扩展将文件内容保存到独立存储，其非原子性边界由附件需求记录。
-关闭时停止接收新请求，在有界期限内排空请求，再关闭数据库连接。
+关闭时停止新请求和 Webhook 领取，在共享期限内排空使用者并释放依赖；无法确认使用者停止时返回错误并保留依赖。
 
 本文的任务管理接口范围不包含自动任务执行、PR 关联、review 调度、跨 project
 依赖或 project/task 删除接口。任务链图查询由本文定义，浏览器页面及内嵌交付要求由

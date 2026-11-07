@@ -289,6 +289,7 @@ func (h *Routes) write(w http.ResponseWriter, r *http.Request, p model.Principal
 	}
 	var result MutationResult
 	if err == nil {
+		h.logOperation(r, p, o, mutation.OperationID, kind)
 		result, err = h.service.Mutate(r.Context(), p, o, mutation)
 	}
 	if err != nil {
@@ -300,4 +301,16 @@ func (h *Routes) write(w http.ResponseWriter, r *http.Request, p model.Principal
 		status = http.StatusCreated
 	}
 	httpx.WriteMutationJSON(w, r, h.logger, "webhook", status, result.Body)
+}
+
+func (h *Routes) logOperation(r *http.Request, p model.Principal, o Owner, id, kind string) {
+	fields := []any{"component", "webhook", "phase", kind,
+		"request_id", httpx.RequestID(r.Context()), "operation_id", id,
+		"user_id", p.UserID, "owner_kind", o.Kind, "owner_id", o.ID}
+	for _, field := range []struct{ path, attribute string }{{"endpointId", "endpoint_id"}, {"deliveryId", "delivery_id"}} {
+		if value, err := uuidInput(r.PathValue(field.path)); err == nil {
+			fields = append(fields, field.attribute, value)
+		}
+	}
+	h.logger.InfoContext(r.Context(), "webhook operation", fields...)
 }
