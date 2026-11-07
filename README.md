@@ -52,9 +52,10 @@ or run your own service. The interface supports English and Simplified Chinese.
   values, partial failures and Project preparation or removal outcomes. Saved
   targets remain distinct from applied results, and configuration is independent
   of the recent-report window.
-- **Control a task session in the browser.** With `worker.agentControlMode: web`,
-  view native messages, reasoning and tool results, send text, stop a turn, and
-  answer supported approvals, questions and forms in the task’s Session tab.
+- **Read and control task sessions in the browser.** Project members can view
+  Session content. With `worker.agentControlMode: web`, the Session owner can send
+  text, stop a turn, and answer supported approvals, questions and forms; other
+  administrators and members are read-only.
 - **Keep an assistant available.** Open Assistants in the workspace and create one
   with just a name. A compatible online Worker supplies the directory and Agent;
   advanced settings allow explicit choices. Switch conversations, inspect details

@@ -20,7 +20,7 @@ function fixture() {
     current: vi.fn(async () => current), timeline: vi.fn(async () => page), archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused',
     channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; disconnect = onClose; return { close: vi.fn() }; }),
   };
-  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn() });
+  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId: userId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn() });
   clients.push(client);
   return { s, page, api, client, disconnect: (error?: unknown) => disconnect(error), current: (value: CurrentSessionResponse) => { current = value; }, receive: (snapshot: TaskSessionSnapshot) => receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot, cursor: 'zero' }), event: (snapshot: TaskSessionSnapshot, eventSeq: string) => receive({ protocol: s.protocol, type: 'event', cursor: eventSeq, event: { protocol: s.protocol, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: snapshot.executionGeneration, connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq, kind: 'snapshot', payload: snapshot } }) };
 }

@@ -6,17 +6,33 @@ import { parseTerminalSessionState, terminalEnvelope, type TerminalSessionApi, t
 const fixture = (name: string) => JSON.parse(readFileSync(`../daynight/test/session/fixtures/v2/${name}.json`, 'utf8'));
 const r = fixture('valid-registration'), owner = r.payload.owner, browser = '00000000-0000-4000-8000-000000000012';
 function state(): TerminalSessionState { return parseTerminalSessionState({ status: 'registered', ...terminalEnvelope(r), owner, binding: r.payload.binding, connectionEpoch: '1', connected: true, capabilities: r.payload.capabilities, control: { ...fixture('valid-control').payload, state: 'automation', lease: null, availableActions: ['acquire_control'] }, snapshot: fixture('valid-snapshot').payload, ledger: fixture('valid-active-ledger').payload, archive: fixture('valid-status-pending').payload, recording: [] }, owner.projectId, owner.taskId, owner.serverOrigin); }
-function harness(isCurrent?: () => boolean, nativeSessionId?: string | null) {
+function harness(isCurrent?: () => boolean, nativeSessionId?: string | null, userId = owner.ownerUserId) {
   const initialState = () => { const initial = state(); if (nativeSessionId !== undefined) { initial.binding.nativeSessionId = nativeSessionId; initial.snapshot!.binding.nativeSessionId = nativeSessionId; } return initial; };
   let current = initialState(); let receive: (s: TerminalSessionState) => void = () => {}; let disconnect: (e?: unknown) => void = () => {};
   const close = vi.fn();
   const result = (operationId: string): TerminalResult => ({ ...terminalEnvelope(current), type: 'operation_result', payload: { operationId, state: 'queued', errorCode: null } });
   const api: TerminalSessionApi = { current: vi.fn(async () => current), state: vi.fn(async () => current), history: vi.fn(), archive: vi.fn(), nativeArchive: vi.fn(), command: vi.fn(async (_id, _browser, m) => result(m.payload.operationId)), operation: vi.fn(async (_id, id) => result(id)), channel: vi.fn((_id, _browser, onState, onClose) => { receive = onState; disconnect = onClose; return { close }; }) };
-  const client = new TerminalSessionClient({ api, claimId: r.claimId, userId: owner.ownerUserId, browserClientId: browser, ...(isCurrent ? { isCurrent } : {}) });
+  const client = new TerminalSessionClient({ api, claimId: r.claimId, userId, browserClientId: browser, ...(isCurrent ? { isCurrent } : {}) });
   return { client, api, close, publish(next = current) { current = next; receive(next); }, disconnect(error?: unknown) { disconnect(error); }, state: () => current, manual() { const next = initialState(); next.control = fixture('valid-control').payload; next.control!.lease!.expiresAt = '2099-01-01T00:00:00Z'; next.control!.availableActions = ['paste', 'keys', 'release_control', 'renew_control']; current = next; receive(next); } };
 }
 afterEach(() => { vi.useRealTimers(); window.sessionStorage.clear(); });
 describe('terminal client control ownership', () => {
+  it('keeps another project member connected without granting controls or accepting a forged lease', async () => {
+    const other = '00000000-0000-4000-8000-000000000099';
+    const h = harness(undefined, undefined, other);
+    h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.publish();
+    await h.client.control('acquire_control');
+    const manual = h.state(); manual.control = fixture('valid-control').payload;
+    manual.control!.lease!.holderUserId = other; manual.control!.lease!.browserClientId = browser; manual.control!.lease!.expiresAt = '2099-01-01T00:00:00Z';
+    manual.control!.availableActions = ['acquire_control', 'renew_control', 'release_control', 'paste', 'keys', 'resume_automation', 'resolve_initial_assignment']; h.publish(manual);
+    for (const action of ['acquire_control', 'renew_control', 'release_control', 'resume_automation', 'resolve_initial_assignment'] as const) await h.client.control(action, { draftHandled: true, initialUnknownDisposition: 'delivered_continue' });
+    await h.client.paste('hello'); await h.client.key('Enter');
+    expect(h.api.command).not.toHaveBeenCalled();
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'connected', inputReady: false, ownsControl: false });
+    expect(h.client.getSnapshot().session?.snapshot).not.toBeNull();
+    await h.client.refresh(); expect(h.api.state).toHaveBeenCalled(); h.client.close();
+  });
+
   it('keeps discovery stable and requires a fresh channel before admitting input after registration', async () => {
     vi.useFakeTimers(); const h = harness();
     vi.mocked(h.api.current).mockResolvedValueOnce({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });

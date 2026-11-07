@@ -44,7 +44,7 @@ func (s *Execution) CurrentWithStartup(ctx context.Context, p model.Principal, p
 
 func (s *Execution) current(ctx context.Context, p model.Principal, project, taskID string, includeStartup bool) (map[string]any, error) {
 	var out map[string]any
-	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, admin bool, load func(string) (*Access, error)) error {
+	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, load func(string) (*Access, error)) error {
 		_, tx := op.scoped(scope)
 		t := task.task
 		w := t.Worker
@@ -72,7 +72,7 @@ func (s *Execution) current(ctx context.Context, p model.Principal, project, tas
 		if err := s.archiveExpired(ctx, tx, r); err != nil {
 			return err
 		}
-		out = map[string]any{"status": "registered", "session": permissions(r, (admin || r.Owner == p.UserID) && active(t, r), s.now())}
+		out = map[string]any{"status": "registered", "session": permissions(r, r.Owner == p.UserID && active(t, r), s.now())}
 		if includeStartup {
 			out["startupReport"] = nil
 			report := t.StartupReport

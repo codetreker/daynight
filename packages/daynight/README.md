@@ -2400,9 +2400,11 @@ uses the bundled Agent SDK, and Copilot uses the bundled SDK with
 its own headless runtime. Provider arguments are checked for that backend before
 claiming. The service must advertise the matching Session protocol and provider.
 Keep authentication in the native provider profile; credentials never enter a
-Session URL. Open the task's Session tab for messages, tools, model and permission
-settings, supported slash commands, native steer, interrupt and current approvals.
-Unsupported native controls remain unavailable.
+Session URL. Project members can read the task's Session tab for messages and tools.
+Only the persisted Session owner can send input, change model or permission
+settings, execute supported slash commands, steer, interrupt or answer current
+approvals; other administrators and members are read-only. Unsupported native
+controls remain unavailable.
 
 Copilot Web bundles SDK 1.0.11 and the `@github/copilot` 1.0.105 package, with token-authenticated loopback
 transport to its private runtime. `COPILOT_HOME` chooses the native profile;

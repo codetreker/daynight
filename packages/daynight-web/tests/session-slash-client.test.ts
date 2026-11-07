@@ -27,7 +27,7 @@ function fixture(kind: 'task' | 'test') {
     resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _cursor, next, close) => { receive = next; disconnect = close; return { close: vi.fn() }; }),
   };
   const client = new TaskSessionClient({ api, userId, isCurrent: () => current, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage: null,
-    ...(kind === 'task' ? { projectId: task.identity.projectId, taskId: task.identity.taskId, claimId: task.claimId } : { testSessionId: s.sessionId }),
+    ...(kind === 'task' ? { projectId: task.identity.projectId, taskId: task.identity.taskId, claimId: task.claimId , ownerUserId: userId} : { testSessionId: s.sessionId }),
   });
   clients.push(client);
   const publish = (next = s, principal = userId) => receive({ protocol: next.protocol, type: 'snapshot', userId: principal, snapshot: next, cursor: 'zero' });

@@ -125,15 +125,14 @@ func (s *fixtureCoordinator) browser(ctx context.Context, principal model.Princi
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		access, err := loadSession(ctx, op, scope, id)
 		if err != nil {
 			return err
 		}
-		if err = op.BindTaskBrowser(ctx, access, task, principal, project, taskID, admin); err != nil {
+		if err = op.BindTaskBrowser(ctx, access, task, principal, project, taskID); err != nil {
 			return err
 		}
 		return work(access)
@@ -174,7 +173,7 @@ func (s *fixtureCoordinator) controller(ctx context.Context, fence sp.Controller
 			if err = op.LockCredential(ctx, scope, owner); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, owner, authority.ProjectID); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, owner, authority.ProjectID); err != nil {
 				return err
 			}
 		}
@@ -200,7 +199,7 @@ func (s *fixtureCoordinator) archive(ctx context.Context, principal model.Princi
 			if err = op.LockCredential(ctx, scope, principal); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, principal, project); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 				return err
 			}
 		}
@@ -234,15 +233,14 @@ func (s *fixtureCoordinator) terminal(ctx context.Context, principal model.Princ
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		access, err := op.LoadTerminal(ctx, scope, id)
 		if err != nil {
 			return err
 		}
-		if err = op.BindTerminal(access, task, principal, project, taskID, deleted, admin); err != nil {
+		if err = op.BindTerminal(access, task, principal, project, taskID, deleted); err != nil {
 			return err
 		}
 		return work(access)
@@ -266,7 +264,7 @@ func (s *fixtureCoordinator) registerTask(ctx context.Context, p model.Principal
 		if err = op.LockCredential(ctx, scope, p); err != nil {
 			return err
 		}
-		if _, err = op.ProjectAdmin(ctx, scope, p, project); err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, p, project); err != nil {
 			return err
 		}
 		if err = op.CheckRegistration(task, p, input); err != nil {
@@ -356,7 +354,7 @@ func (s *fixtureCoordinator) controllerGrant(ctx context.Context, hash []byte, w
 			if err = op.LockCredential(ctx, scope, parent); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, parent, authority.ProjectID); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, parent, authority.ProjectID); err != nil {
 				return err
 			}
 		}
@@ -367,7 +365,7 @@ func (s *fixtureCoordinator) controllerGrant(ctx context.Context, hash []byte, w
 	})
 }
 
-func (s *fixtureCoordinator) taskQuery(ctx context.Context, principal model.Principal, project, taskID string, work func(*Operation, store.SessionScope, *TaskAccess, bool, func(string) (*Access, error)) error) error {
+func (s *fixtureCoordinator) taskQuery(ctx context.Context, principal model.Principal, project, taskID string, work func(*Operation, store.SessionScope, *TaskAccess, func(string) (*Access, error)) error) error {
 	op, err := s.engine.BeginOperation()
 	if err != nil {
 		return err
@@ -381,12 +379,11 @@ func (s *fixtureCoordinator) taskQuery(ctx context.Context, principal model.Prin
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		load := func(id string) (*Access, error) { return loadSession(ctx, op, scope, id) }
-		return work(op, scope, task, admin, load)
+		return work(op, scope, task, load)
 	})
 }
 
@@ -484,30 +481,30 @@ func (s *fixtureCoordinator) registerTerminal(ctx context.Context, p model.Princ
 		if err = op.LockCredential(ctx, scope, p); err != nil {
 			return err
 		}
-		if _, err = op.ProjectAdmin(ctx, scope, p, project); err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, p, project); err != nil {
 			return err
 		}
 		return work(op, scope, task)
 	})
 }
 
-func (s *fixtureCoordinator) authorize(ctx context.Context, op *Operation, scope store.SessionScope, p model.Principal, authority Authority) (bool, error) {
+func (s *fixtureCoordinator) authorize(ctx context.Context, op *Operation, scope store.SessionScope, p model.Principal, authority Authority) error {
 	if err := op.LockCredential(ctx, scope, p); err != nil {
-		return false, err
+		return err
 	}
 	if !authority.Test {
-		return op.ProjectAdmin(ctx, scope, p, authority.ProjectID)
+		return op.CheckProjectAccess(ctx, scope, p, authority.ProjectID)
 	}
 	if p.UserID != authority.OwnerID {
-		return false, &model.Fault{Code: "forbidden", Message: "Session access is not available."}
+		return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
 	}
 	if authority.ParentCredentialID != "" {
 		parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
 		if err := op.LockCredential(ctx, scope, parent); err != nil {
-			return false, err
+			return err
 		}
 	}
-	return true, nil
+	return nil
 }
 
 func testTransact(s *Execution, db store.SessionWriter, ctx context.Context, fn func(*operationTx) error) error {
