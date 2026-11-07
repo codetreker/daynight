@@ -78,6 +78,42 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 	if err != nil || policy.MaxAutomaticAttempts != 10 || policy.OperationMaxAgeSeconds != 300 || len(policy.AutomaticOffsetsSeconds) != 10 || policy.KeyOverlapMaxSeconds != 604800 {
 		t.Fatalf("policy=%+v err=%v", policy, err)
 	}
+	invalid := ep
+	invalid.DestinationCiphertext = []byte{1}
+	if err := d.PutEndpoint(ctx, invalid); !errors.Is(err, secretbox.ErrInvalidEnvelope) {
+		t.Fatalf("invalid envelope cause: %v", err)
+	}
+	invalid = ep
+	invalid.AdapterVersion = "invalid"
+	if err := d.PutEndpoint(ctx, invalid); err == nil {
+		t.Fatal("invalid adapter version accepted")
+	}
+	invalid = ep
+	invalid.Owner.ID = uuid.NewString()
+	invalid.Name = "other owner"
+	if err := d.PutEndpoint(ctx, invalid); err == nil {
+		t.Fatal("endpoint owner changed")
+	}
+	unchanged, err := d.Endpoint(ctx, owner, ep.ID)
+	if err != nil || unchanged.Name != ep.Name || !bytes.Equal(unchanged.DestinationCiphertext, ep.DestinationCiphertext) {
+		t.Fatalf("rejected writes changed endpoint: %+v, %v", unchanged, err)
+	}
+	// PostgreSQL rejects a bad row; the original SQLSTATE remains observable.
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid = ep
+	invalid.ID = uuid.NewString()
+	invalid.Name = ""
+	err = New(savepoint).PutEndpoint(ctx, invalid)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("constraint failure cause: %v", err)
+	}
+	if err := savepoint.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
 	ep.Enabled = false
 	ep.DeletedAt = &now
 	if err = d.PutEndpoint(ctx, ep); err != nil {

@@ -346,3 +346,19 @@ func TestHTTPConfigurationByteBoundaries(t *testing.T) {
 		t.Fatalf("boundary rejection changed persisted state: endpoints=%d receipts=%d err=%v", endpoints, receipts, err)
 	}
 }
+
+func TestHTTPCatalogFailsWhenPolicyQueryFails(t *testing.T) {
+	f := newHTTPFixture(t)
+	actor := f.actor(t)
+	if _, err := f.db.Pool.Exec(f.ctx, `ALTER TABLE webhook_policies RENAME TO unavailable_webhook_policies`); err != nil {
+		t.Fatal(err)
+	}
+	status, headers, body := f.request(t, actor, "GET", "/api/v1/webhook-event-types", "")
+	if status != http.StatusServiceUnavailable || headers.Get("Daynight-User-ID") != actor.id || headers.Get("Cache-Control") != "no-store" {
+		t.Fatalf("catalog failure status=%d headers=%v body=%s", status, headers, body)
+	}
+	result := jsonBody(t, body)
+	if result["error"].(map[string]any)["code"] != "dependency_unavailable" || result["items"] != nil || strings.Contains(string(body), "webhook_policies") {
+		t.Fatalf("policy query failure returned an invalid response: %s", body)
+	}
+}
