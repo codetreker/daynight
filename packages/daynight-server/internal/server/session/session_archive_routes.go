@@ -43,6 +43,11 @@ type archiveReservationKey struct{}
 
 func (h *Routes) archivePreflight(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Downloads do not consume request bodies. Prevent net/http from
+		// draining an incomplete body before writing the response or after it.
+		if r.Method == http.MethodGet {
+			httpx.CloseUnreadBody(w, r)
+		}
 		reservation, err := h.service.TryReserveArchivePreflight()
 		if err != nil {
 			httpx.CloseUnreadBody(w, r)
