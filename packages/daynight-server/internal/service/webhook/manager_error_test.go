@@ -556,3 +556,77 @@ func TestServiceEntryRefusesInvalidIdentityBeforePersistence(t *testing.T) {
 		})
 	}
 }
+
+func TestMutationEntryRejectsInvalidPrincipalAndOwnerBeforePersistence(t *testing.T) {
+	for _, kind := range []string{"create", "patch", "delete", "rotate"} {
+		for _, invalid := range []string{"principal", "owner"} {
+			t.Run(kind+"/"+invalid, func(t *testing.T) {
+				f := newBoundaryFixture(t)
+				f.database.read = nil
+				f.database.write = nil
+				code := "unauthenticated"
+				if invalid == "principal" {
+					f.principal = model.Principal{}
+				} else {
+					f.owner.Kind = "invalid"
+					code = "invalid_input"
+				}
+				result, err := f.writeCall(kind)
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != code || result.Operation.OperationID != "" {
+					t.Fatalf("invalid mutation identity reached persistence: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestPrecheckDependencyFailuresCannotStartAWrite(t *testing.T) {
+	for _, stage := range []string{"snapshot", "credential", "owner", "endpoint", "owner refusal"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newBoundaryFixture(t)
+			f.database.write = nil
+			cause := errors.New("precheck dependency unavailable")
+			switch stage {
+			case "snapshot":
+				f.database.read = func(context.Context, func(store.SnapshotScope) error) error { return cause }
+			case "credential":
+				f.read.credential.read = func(context.Context, model.Principal) (store.ThreadCredential, error) {
+					return store.ThreadCredential{}, cause
+				}
+			case "owner":
+				f.read.dao.owner = func(context.Context, webhookmodel.Owner, string) (webhookmodel.OwnerAccess, error) {
+					return webhookmodel.OwnerAccess{}, cause
+				}
+			case "endpoint":
+				f.read.dao.endpoint = func(context.Context, webhookmodel.Owner, string) (webhookmodel.Endpoint, error) {
+					return webhookmodel.Endpoint{}, cause
+				}
+			case "owner refusal":
+				f.read.dao.owner = func(context.Context, webhookmodel.Owner, string) (webhookmodel.OwnerAccess, error) {
+					return webhookmodel.OwnerAccess{}, nil
+				}
+			}
+			result, err := f.writeCall("patch")
+			if result.Operation.OperationID != "" {
+				t.Fatal("failed precheck returned a confirmed operation")
+			}
+			if stage == "owner refusal" {
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != "forbidden" {
+					t.Fatalf("definite precheck owner refusal: %v", err)
+				}
+			} else if !errors.Is(err, cause) {
+				t.Fatalf("precheck failure lost its cause: %v", err)
+			}
+		})
+	}
+}
+
+func TestCorruptStoredTimestampCannotProduceContinuationCursor(t *testing.T) {
+	endpoint := webhookmodel.Endpoint{ID: boundaryEndpointID, CreatedAt: time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	cursor, err := nextCursor(cursorScope{PrincipalID: boundaryUserID, Owner: webhookmodel.Owner{Kind: webhookmodel.PersonalOwner, ID: boundaryUserID}}, endpoint)
+	if err == nil || cursor != "" {
+		t.Fatal("unencodable stored timestamp produced a false continuation cursor")
+	}
+}

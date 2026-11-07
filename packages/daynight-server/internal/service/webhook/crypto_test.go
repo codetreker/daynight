@@ -2,6 +2,8 @@ package webhook
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -223,5 +225,41 @@ func TestChangedConfigurationRewrapsRetainedRecordsButNoopAndDeleteDoNotDecrypt(
 	}
 	if secret, err := old.signingSecret(created.Endpoint, created.Endpoint.SigningKeys[0]); err != nil || len(secret) != 32 {
 		t.Fatal("new key was not generated as a recoverable secret")
+	}
+}
+
+type boundaryEntropyFailure struct{ cause error }
+
+func (r boundaryEntropyFailure) Read([]byte) (int, error) { return 0, r.cause }
+
+func TestEntropyFailureCannotProduceCiphertextOrReachMutationReservations(t *testing.T) {
+	cause := errors.New("entropy source unavailable")
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	data := []byte(`{"activeKeyId":"test","keys":{"test":"` + key + `"}}`)
+	// New captures the reader for this keyring. Restore the process reader
+	// before encryption or any mutation can generate independent identifiers.
+	ring, err := func() (*secretbox.Keyring, error) {
+		original := rand.Reader
+		rand.Reader = boundaryEntropyFailure{cause: cause}
+		defer func() { rand.Reader = original }()
+		return secretbox.New(data)
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{keys: ring}
+	ciphertext, err := manager.encrypt([]byte("private value"), []byte("context"))
+	if !errors.Is(err, cause) || len(ciphertext) != 0 || strings.Contains(err.Error(), "private value") {
+		t.Fatalf("entropy failure was hidden or produced ciphertext: %v", err)
+	}
+	f := newBoundaryFixture(t)
+	f.manager.keys = ring
+	f.write.dao.reserveOperation = func(context.Context, webhookmodel.Owner, time.Time) error {
+		t.Fatal("entropy failure reached operation reservation")
+		return nil
+	}
+	result, err := f.writeCall("create")
+	if !errors.Is(err, cause) || result.Operation.OperationID != "" || f.write.dao.insertCalls != 0 || f.write.dao.receiptCalls != 0 {
+		t.Fatal("entropy failure exposed or persisted a prepared mutation")
 	}
 }
