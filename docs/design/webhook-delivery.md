@@ -10,7 +10,7 @@
 
 ## 请求、结果与恢复
 
-`protocol` 对捕获的原 body 生成 Standard Webhooks v1 HMAC-SHA256 签名；有效的当前和重叠密钥分别签名，尝试时间与事件内容分离。通用 HTTP 的 2xx 表示接收确认而非外部业务完成；410 结束该责任，429/503 可携带 `Retry-After`。不保存原响应正文或认证头。
+`protocol` 对捕获的原 body 生成 Standard Webhooks v1 HMAC-SHA256 签名；有效的当前和重叠密钥分别签名，尝试时间与事件内容分离。通用 HTTP 的 2xx 表示接收确认而非外部业务完成；410 结束该责任，429/503 可携带 `Retry-After`。非 100–599 的 HTTP 状态作为传输失败记录，不保存非法状态；101 升级响应立即关闭，不读取升级后的双向流。不保存原响应正文或认证头。
 
 受控 HTTPS 客户端不继承代理、不跟随跳转、不复用连接。每次连接解析候选并按固定 IANA special-purpose 数据及地址规则过滤，再直接拨获准 IP，同时以原 hostname 验证证书和 SNI。请求 URL 上限 4 KiB、body 上限 64 KiB，响应头上限 16 KiB、分类正文读取上限 2 KiB；连接及 TLS 各限五秒，响应头限十秒，总限十五秒。生产 endpoint 不能自行放宽地址策略或 TLS 校验。
 

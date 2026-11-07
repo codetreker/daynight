@@ -97,6 +97,11 @@ func (c *Client) Do(ctx context.Context, target string, body []byte, headers htt
 	}
 	defer resp.Body.Close()
 	out.Status = resp.StatusCode
+	// A 101 body is an upgraded bidirectional stream, not an HTTP response
+	// body. It may ignore request cancellation, so close it without reading.
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		return out, nil
+	}
 	// Retry-After is needed only for these statuses and is bounded by the header cap.
 	if resp.StatusCode == 429 || resp.StatusCode == 503 {
 		out.RetryAfter = strings.Join(resp.Header.Values("Retry-After"), ", ")

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
@@ -31,11 +33,52 @@ func (r *Runner) admit(ctx context.Context, claimed store.WebhookDelivery) (*pre
 		if err != nil {
 			return err
 		}
+		if claimed.LeaseUntil == nil {
+			return fmt.Errorf("invalid webhook claim lease")
+		}
+		if !now.Before(*claimed.LeaseUntil) {
+			return nil
+		}
 		sources, err := sc.AdmissionSources(ctx, claimed.ID, now)
 		if err != nil {
+			if errors.Is(err, model.ErrNotFound) {
+				// A delayed claimant can outlive retention. Reconcile under the
+				// Delivery lock before distinguishing cleanup from corruption.
+				d, lockErr := sc.LockDelivery(ctx, claimed.ID)
+				if errors.Is(lockErr, model.ErrNotFound) {
+					now, clockErr := sc.ObservedAt(ctx)
+					if clockErr != nil {
+						return clockErr
+					}
+					if claimed.LeaseUntil != nil && !now.Before(*claimed.LeaseUntil) {
+						return nil
+					}
+					return lockErr
+				}
+				if lockErr != nil {
+					return lockErr
+				}
+				now, clockErr := sc.ObservedAt(ctx)
+				if clockErr != nil {
+					return clockErr
+				}
+				if d.PurgingAt != nil || !sameLease(d, claimed) || d.LeaseUntil == nil || !now.Before(*d.LeaseUntil) || d.CurrentAttemptID != nil {
+					return nil
+				}
+			}
 			return err
 		}
 		d, err := sc.LockDelivery(ctx, claimed.ID)
+		if errors.Is(err, model.ErrNotFound) {
+			now, clockErr := sc.ObservedAt(ctx)
+			if clockErr != nil {
+				return clockErr
+			}
+			if claimed.LeaseUntil != nil && !now.Before(*claimed.LeaseUntil) {
+				return nil
+			}
+			return err
+		}
 		if err != nil {
 			return err
 		}

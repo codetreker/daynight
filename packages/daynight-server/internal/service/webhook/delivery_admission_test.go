@@ -165,6 +165,17 @@ func TestAdmissionDoesNotConfuseInternalFailureWithRevocation(t *testing.T) {
 	}
 }
 
+func TestAdmissionSkipsExpiredClaimBeforeReadingSources(t *testing.T) {
+	r, s, now := admissionFixture(t)
+	until := now.Add(-time.Second)
+	claim := s.d
+	claim.LeaseUntil = &until
+	s.sourceError = errors.New("source temporarily unavailable")
+	if a, err := r.admit(context.Background(), claim); err != nil || a != nil || len(s.a) != 0 {
+		t.Fatalf("expired claimant read sources: %v %v", a, err)
+	}
+}
+
 func TestAdmissionOldTokenAndBudget(t *testing.T) {
 	r, s, now := admissionFixture(t)
 	claim := s.d

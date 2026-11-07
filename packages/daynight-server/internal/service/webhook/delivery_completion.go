@@ -33,6 +33,11 @@ func observe(elapsed time.Duration, finished time.Time, response httpoutbound.Re
 		o.outcome, o.errorCode = "unknown", &code
 		return o
 	}
+	if response.Status < 100 || response.Status > 599 {
+		code := "invalid_http_status"
+		o.outcome, o.errorCode = "transport_error", &code
+		return o
+	}
 	status := int16(response.Status)
 	o.status = &status
 	result := protocol.Classify(response.Status, response.RetryAfter, finished)
