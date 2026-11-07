@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 )
@@ -261,5 +262,89 @@ func TestAdmissionManualIntentPreservesAutomaticBudget(t *testing.T) {
 	s.d.Trigger = "manual"
 	if a, err := r.admit(context.Background(), s.d); err == nil || a != nil || len(s.a) != 0 {
 		t.Fatalf("missing manual identity: %v %v", a, err)
+	}
+}
+
+type admissionFaultScope struct {
+	*admissionScope
+	clockCalls   int
+	clockTimes   []time.Time
+	clockFailure int
+	lockError    error
+	attemptError error
+}
+
+func (s *admissionFaultScope) ObservedAt(context.Context) (time.Time, error) {
+	s.clockCalls++
+	if s.clockCalls == s.clockFailure {
+		return time.Time{}, errors.New("database clock unavailable")
+	}
+	if len(s.clockTimes) >= s.clockCalls {
+		return s.clockTimes[s.clockCalls-1], nil
+	}
+	return s.now, nil
+}
+func (s *admissionFaultScope) LockDelivery(context.Context, string) (store.WebhookDelivery, error) {
+	return s.d, s.lockError
+}
+func (s *admissionFaultScope) LockAttempts(context.Context, string) ([]store.WebhookAttempt, error) {
+	return s.a, s.attemptError
+}
+
+type admissionFaultDB struct{ scope store.WebhookDeliveryScope }
+
+func (db admissionFaultDB) WriteWebhookDelivery(_ context.Context, fn func(store.WebhookDeliveryScope) error) (store.Completion, error) {
+	err := fn(db.scope)
+	if err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
+
+func TestAdmissionFailsClosedOnStorageErrors(t *testing.T) {
+	for _, fault := range []struct {
+		name      string
+		configure func(*admissionFaultScope)
+	}{
+		{"clock", func(s *admissionFaultScope) { s.clockFailure = 1 }},
+		{"delivery lock", func(s *admissionFaultScope) { s.lockError = errors.New("delivery lock unavailable") }},
+		{"attempt history", func(s *admissionFaultScope) { s.attemptError = errors.New("attempt history unavailable") }},
+		{"clock after source locks", func(s *admissionFaultScope) { s.clockFailure = 2 }},
+		{"clock after wait lock", func(s *admissionFaultScope) { s.clockFailure = 3 }},
+		{"source reconciliation lock", func(s *admissionFaultScope) {
+			s.sourceError = model.ErrNotFound
+			s.lockError = errors.New("delivery lock unavailable")
+		}},
+		{"source reconciliation clock", func(s *admissionFaultScope) { s.sourceError = model.ErrNotFound; s.clockFailure = 2 }},
+		{"missing delivery reconciliation clock", func(s *admissionFaultScope) {
+			s.sourceError = model.ErrNotFound
+			s.lockError = model.ErrNotFound
+			s.clockFailure = 2
+		}},
+		{"delivery removed after source read", func(s *admissionFaultScope) { s.lockError = model.ErrNotFound; s.clockFailure = 2 }},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			r, base, _ := admissionFixture(t)
+			scope := &admissionFaultScope{admissionScope: base}
+			fault.configure(scope)
+			r.DB = admissionFaultDB{scope: scope}
+			if attempt, err := r.admit(context.Background(), base.d); err == nil || attempt != nil || len(base.a) != 0 {
+				t.Fatalf("storage failure admitted: %v %v", attempt, err)
+			}
+		})
+	}
+}
+
+func TestAdmissionLeaseCanExpireWhileReconcilingMissingRows(t *testing.T) {
+	for _, sourceMissing := range []bool{false, true} {
+		r, base, now := admissionFixture(t)
+		scope := &admissionFaultScope{admissionScope: base, lockError: model.ErrNotFound, clockTimes: []time.Time{now, now.Add(time.Minute)}}
+		if sourceMissing {
+			scope.sourceError = model.ErrNotFound
+		}
+		r.DB = admissionFaultDB{scope: scope}
+		if attempt, err := r.admit(context.Background(), base.d); err != nil || attempt != nil || len(base.a) != 0 {
+			t.Fatalf("expired while reconciling sourceMissing=%t: %v %v", sourceMissing, attempt, err)
+		}
 	}
 }
