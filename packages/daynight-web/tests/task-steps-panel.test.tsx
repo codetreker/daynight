@@ -26,6 +26,8 @@ const stepRow = (id: string) => within(document.querySelector(`[data-step-id="${
 const toolbar = () => within(document.querySelector(".steps-toolbar")!);
 const pagination = () => within(screen.getByRole("navigation", { name: "Steps pages" }));
 const confirmation = () => within(screen.getByRole("alertdialog"));
+const draftForm = () => within(document.querySelector(".step-add-form")!);
+const targetDialog = () => within(screen.getByRole("dialog", { name: "Select target" }));
 beforeEach(() => { navigationDraft.current = null; navigationDecision.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canDisplayStatus: true, canSetStatus: true, canAdd: true, canMove: true, canDelete: true, remove: vi.fn().mockReturnValue("request-delete"), move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), edit: vi.fn().mockReturnValue("request-edit"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
 
 describe("Step status", () => {
@@ -451,23 +453,23 @@ describe("Step position", () => {
   it("protects changed position and keeps the draft when an anchor disappears", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
     fireEvent.click(stepRow("00000000").getByRole("button", { name: "More actions for Round 1" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Add after" }));
+    fireEvent.click(stepRow("00000000").getByRole("menuitem", { name: "Add after" }));
     expect(navigationDraft.current?.isDirty()).toBe(false);
-    fireEvent.change(screen.getByLabelText("Placement"), { target: { value: "before" } });
+    fireEvent.change(draftForm().getByLabelText("Placement"), { target: { value: "before" } });
     expect(navigationDraft.current?.isDirty()).toBe(true);
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Draft" } });
+    fireEvent.change(draftForm().getByLabelText("Title"), { target: { value: "Draft" } });
     read.resource = resource(steps.slice(1, 4)); view.rerender(panel());
     expect(screen.getByRole("alert")).toHaveTextContent("target step is no longer available");
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(screen.getByLabelText("Title")).toHaveValue("Draft");
+    expect(draftForm().getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(draftForm().getByLabelText("Title")).toHaveValue("Draft");
     read.resource = resource([{ ...steps[0]!, title: "Recreated" }, ...steps.slice(1, 4)]); view.rerender(panel());
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(draftForm().getByRole("button", { name: "Save" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("target step is no longer available");
-    fireEvent.click(screen.getByRole("button", { name: "Choose target" }));
-    fireEvent.click(screen.getByRole("radio", { name: /Round 2, 00000001/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(draftForm().getByRole("button", { name: "Choose target" }));
+    fireEvent.click(targetDialog().getByRole("radio", { name: /Round 2, 00000001/ }));
+    fireEvent.click(targetDialog().getByRole("button", { name: "Select" }));
+    expect(draftForm().getByRole("button", { name: "Save" })).toBeEnabled();
+    fireEvent.click(draftForm().getByRole("button", { name: "Save" }));
     expect(read.add.mock.calls[0]![5]).toEqual({ before: "00000001" });
   });
   it("requires a fresh anchor choice when the same ID is replaced between reads", () => {
@@ -490,20 +492,20 @@ describe("Step position", () => {
   it("retains frozen insertion fields and requires a new decision after a missing-anchor refusal", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
     fireEvent.click(stepRow("00000000").getByRole("button", { name: "More actions for Round 1" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Add after" }));
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(stepRow("00000000").getByRole("menuitem", { name: "Add after" }));
+    fireEvent.change(draftForm().getByLabelText("Title"), { target: { value: "Draft" } });
+    fireEvent.click(draftForm().getByRole("button", { name: "Save" }));
     const stepId = read.add.mock.calls[0]![0] as string;
     read.mutation = { operation: { action: "stepAdd", stepId, requestId: "request-add" }, phase: "unknown", error: new ApiError("network"), reconciling: false, reconciliationError: null }; view.rerender(panel());
-    expect(screen.getByLabelText("Placement")).toBeDisabled(); expect(screen.getByRole("button", { name: "Choose target" })).toBeDisabled();
+    expect(draftForm().getByLabelText("Placement")).toBeDisabled(); expect(draftForm().getByRole("button", { name: "Choose target" })).toBeDisabled();
     read.mutation = { ...read.mutation, phase: "refused", error: new ApiError("server", 404, "not_found") }; view.rerender(panel());
     expect(screen.getByRole("alert")).toHaveTextContent("target step was not found");
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Read current steps" })); expect(read.retry).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: "Choose target" }));
-    fireEvent.click(screen.getByRole("radio", { name: /Round 2, 00000001/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(draftForm().getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(draftForm().getByRole("button", { name: "Read current steps" })); expect(read.retry).toHaveBeenCalledOnce();
+    fireEvent.click(draftForm().getByRole("button", { name: "Choose target" }));
+    fireEvent.click(targetDialog().getByRole("radio", { name: /Round 2, 00000001/ }));
+    fireEvent.click(targetDialog().getByRole("button", { name: "Select" }));
+    expect(draftForm().getByRole("button", { name: "Save" })).toBeEnabled();
   });
   it("closes a move dialog before a draft navigation decision and returns to the editor on cancellation", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
@@ -837,25 +839,25 @@ describe("deleting a Step", () => {
   it("preserves a relative insertion draft when its anchor is deleted", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
     fireEvent.click(stepRow("00000000").getByRole("button", { name: "More actions for Round 1" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Add before" }));
-    const title = screen.getByRole("textbox", { name: "Title" });
+    fireEvent.click(stepRow("00000000").getByRole("menuitem", { name: "Add before" }));
+    const title = draftForm().getByRole("textbox", { name: "Title" });
     fireEvent.change(title, { target: { value: "Insertion draft" } });
     menu("00000000");
     expect(screen.getByRole("alertdialog")).not.toHaveTextContent("Unsaved changes");
     fireEvent.click(confirmation().getByRole("button", { name: "Delete step" }));
     expect(read.remove).toHaveBeenCalledWith("00000000", 3n);
     read.canAdd = false; phase("pending"); view.rerender(panel());
-    expect(title).toBeEnabled(); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(title).toBeEnabled(); expect(draftForm().getByRole("button", { name: "Save" })).toBeDisabled();
     title.focus(); phase("confirmed"); publish();
     read.resource = { ...resource(steps.slice(1, 4)), version: 4n }; read.canAdd = true; view.rerender(panel());
     expect(title).toHaveValue("Insertion draft"); expect(title).toHaveFocus();
     expect(navigationDraft.current?.isDirty()).toBe(true);
     expect(screen.getByRole("alert")).toHaveTextContent("target step is no longer available");
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Choose target" }));
-    fireEvent.click(screen.getByRole("radio", { name: /Round 2, 00000001/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(draftForm().getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.click(draftForm().getByRole("button", { name: "Choose target" }));
+    fireEvent.click(targetDialog().getByRole("radio", { name: /Round 2, 00000001/ }));
+    fireEvent.click(targetDialog().getByRole("button", { name: "Select" }));
+    fireEvent.click(draftForm().getByRole("button", { name: "Save" }));
     expect(read.add.mock.calls[0]![5]).toEqual({ before: "00000001" });
   });
   it("closes deletion confirmation for a dirty navigation decision without losing insertion", () => {
