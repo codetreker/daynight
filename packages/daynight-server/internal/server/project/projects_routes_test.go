@@ -130,3 +130,33 @@ func TestProjectRoutesDatabaseFailuresRemainSafe(t *testing.T) {
 		t.Fatal("database details leaked in logs")
 	}
 }
+
+func TestProjectHTTPPageEncodedBudgetAndCursor(t *testing.T) {
+	h := projectRoutesHarness(t)
+	var ids []string
+	for _, name := range []string{"Large one", "Large two"} {
+		body := fmt.Sprintf(`{"name":%q,"repoUrl":"host:repo","expectedUserId":%q}`, name, h.adminID)
+		project := decodeResponse[api.ProjectDocument](t, h.call(http.MethodPost, "/api/v1/projects", body, h.admin), http.StatusCreated)
+		ids = append(ids, project.ID)
+		if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE projects SET name=repeat('<',500000) WHERE id=$1`, project.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := h.call(http.MethodGet, "/api/v1/projects?limit=100", "", h.admin)
+	page := decodeResponse[api.ProjectPage](t, first, http.StatusOK)
+	if first.Body.Len() > 4<<20 || page.NextCursor == nil || page.Items[len(page.Items)-1].ID != ids[0] {
+		t.Fatalf("first page: %d %#v", first.Body.Len(), page.NextCursor)
+	}
+	next := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=100&cursor="+*page.NextCursor, "", h.admin), http.StatusOK)
+	if len(next.Items) != 1 || next.Items[0].ID != ids[1] || next.NextCursor != nil {
+		t.Fatal("continuation skipped Project")
+	}
+	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE projects SET name=repeat('<',800000) WHERE id=$1`, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?limit=100&cursor="+*page.NextCursor, "", h.admin), http.StatusConflict, "resource_limit_exceeded")
+	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE projects SET name=repeat('x',5000000) WHERE id=$1`, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?limit=100&cursor="+*page.NextCursor, "", h.admin), http.StatusConflict, "resource_limit_exceeded")
+}

@@ -28,10 +28,12 @@ func seedGraph(t *testing.T, database *postgres.Store, projectID string, nodes, 
 		FROM generate_series(1, $2::int) n`, projectID, nodes); err != nil {
 		t.Fatal(err)
 	}
+	// Triangular offsets select the same ordered prefix without enumerating all pairs.
 	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_dependencies (project_id, task_id, depends_on_task_id)
 		SELECT $1::uuid, md5($1::text || ':' || target)::uuid, md5($1::text || ':' || predecessor)::uuid
-		FROM generate_series(1, $2::int) target CROSS JOIN generate_series(1, $2::int) predecessor
-		WHERE predecessor < target ORDER BY target, predecessor LIMIT $3`, projectID, nodes, edges); err != nil {
+		FROM generate_series(2, $2::bigint) target
+		CROSS JOIN LATERAL generate_series(1::bigint,
+		  LEAST(target - 1, GREATEST(0::bigint, $3::bigint - (target - 1) * (target - 2) / 2))) predecessor`, projectID, nodes, edges); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -49,8 +51,9 @@ func seedConnectedGraph(t *testing.T, database *postgres.Store, projectID string
 	}
 	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_dependencies (project_id, task_id, depends_on_task_id)
   SELECT $1::uuid, md5($1::text || ':' || target)::uuid, md5($1::text || ':' || predecessor)::uuid
-  FROM generate_series(1, $2::int) target CROSS JOIN generate_series(1, $2::int) predecessor
-  WHERE predecessor < target-1 ORDER BY target, predecessor LIMIT $3`, projectID, nodes, edges-(nodes-1)); err != nil {
+  FROM generate_series(3, $2::bigint) target
+  CROSS JOIN LATERAL generate_series(1::bigint,
+    LEAST(target - 2, GREATEST(0::bigint, $3::bigint - (target - 2) * (target - 3) / 2))) predecessor`, projectID, nodes, edges-(nodes-1)); err != nil {
 		t.Fatal(err)
 	}
 	// Graph queries can reach a fresh bulk fixture before autovacuum gathers statistics.
@@ -241,5 +244,56 @@ func TestTaskGraphIgnoresUnrelatedProjectCapacityAndRefusesDeletedRoot(t *testin
 	fault := requireFault(t, err, "task_deleted")
 	if !errors.Is(fault, model.ErrTaskDeleted) || !reflect.DeepEqual(graph, model.TaskGraph{}) {
 		t.Fatalf("deleted root leaked graph: %#v %v", graph, err)
+	}
+}
+
+func TestGraphSeedsPreserveOrderedEdgePrefixes(t *testing.T) {
+	_, database, _, _, principal := taskService(t)
+	ctx := context.Background()
+	for _, test := range []struct {
+		nodes, edges int
+		connected    bool
+	}{
+		{1, 0, false}, {8, 0, false}, {8, 1, false}, {8, 3, false},
+		{8, 5, false}, {8, 28, false}, {8, 7, true}, {8, 8, true},
+		{8, 12, true}, {8, 28, true},
+	} {
+		t.Run(fmt.Sprintf("%d_%d_connected_%t", test.nodes, test.edges, test.connected), func(t *testing.T) {
+			project, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Graph seed", RepoURL: "host:graph-seed"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			extra := test.edges
+			if test.connected {
+				seedConnectedGraph(t, database, project.ID, test.nodes, test.edges)
+				extra -= test.nodes - 1
+			} else {
+				seedGraph(t, database, project.ID, test.nodes, test.edges)
+			}
+			var differences int
+			err = database.Pool.QueryRow(ctx, `WITH expected AS (
+  SELECT md5($1::text || ':' || target)::uuid AS task_id,
+         md5($1::text || ':' || predecessor)::uuid AS depends_on_task_id
+  FROM (
+    SELECT target, predecessor FROM generate_series(1, $2::int) target
+    CROSS JOIN generate_series(1, $2::int) predecessor
+    WHERE predecessor < target - CASE WHEN $4::boolean THEN 1 ELSE 0 END
+    ORDER BY target, predecessor LIMIT $3
+  ) pairs
+  UNION ALL
+  SELECT md5($1::text || ':' || n)::uuid, md5($1::text || ':' || (n-1))::uuid
+  FROM generate_series(2, $2::int) n WHERE $4::boolean
+), actual AS (
+  SELECT task_id, depends_on_task_id FROM task_dependencies WHERE project_id=$1::uuid
+)
+SELECT count(*) FROM (
+  (SELECT * FROM expected EXCEPT SELECT * FROM actual)
+  UNION ALL
+  (SELECT * FROM actual EXCEPT SELECT * FROM expected)
+) difference`, project.ID, test.nodes, extra, test.connected).Scan(&differences)
+			if err != nil || differences != 0 {
+				t.Fatalf("seed differs from ordered edge prefix: differences=%d, error=%v", differences, err)
+			}
+		})
 	}
 }

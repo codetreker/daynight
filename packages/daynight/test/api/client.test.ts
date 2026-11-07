@@ -230,6 +230,14 @@ describe("operation-scoped API access", () => {
     expect(fetch.mock.calls[1]![1]?.body).toBe('{"version":9223372036854775807,"status":"todo"}');
   });
 
+  it("preserves capacity refusals for reads and writes without replay", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => jsonResponse(refusal("resource_limit_exceeded"), 409));
+    const api = client(fetch);
+    await expect(api.listTasks(projectId)).rejects.toMatchObject({ status: 409, code: "resource_limit_exceeded", confirmedRefusal: true });
+    await expect(api.setTaskStatus(projectId, taskId, { version: 1n, status: "todo" })).rejects.toMatchObject({ status: 409, code: "resource_limit_exceeded", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it.each([0n, -1n, 9_223_372_036_854_775_808n])("rejects invalid setter version %s before I/O", (version) => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     expect(() => client(fetch).setTaskStatus(projectId, taskId, { version, status: "todo" })).toThrow("positive int64");

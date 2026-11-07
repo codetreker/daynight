@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -210,4 +212,121 @@ func (s *Reader) filterWorkerTasks(ctx context.Context, userID string, workers [
 		workers[index].TaskSnapshot.Items = tasks
 	}
 	return nil
+}
+
+// WorkerSummaries streams only list fields and counts currently visible tasks in
+// the same snapshot. Large telemetry and task bodies never leave PostgreSQL.
+func (s *Reader) WorkerSummaries(ctx context.Context, userID string, observedAt time.Time, page store.Page, consume func(store.WorkerSummary) (bool, error)) error {
+	afterTime, afterID := pg.PageValues(page)
+	machineID := summaryText("w.telemetry", "machine", "id")
+	machineName := summaryText("w.telemetry", "machine", "name")
+	platform := summaryText("w.telemetry", "platform")
+	state := summaryText("w.task_snapshot", "state")
+	observed := `(` + summaryValue("w.task_snapshot", false, "observedAt") + `#>>'{}')`
+	items := summaryValue("w.task_snapshot", false, "items")
+	selectedItems := `CASE WHEN jsonb_typeof(` + items + `)='array' THEN ` + items + ` ELSE '[]'::jsonb END`
+	taskID := summaryTaskText("w.task_snapshot", "candidate.position", "taskId")
+	countTaskID := summaryTaskText("w.task_snapshot", "item.position", "taskId")
+	countProjectID := summaryTaskText("w.task_snapshot", "item.position", "projectId")
+	malformed := `(` + pg.JSONShapeError("w.telemetry", reflect.TypeOf(model.WorkerTelemetry{})) + ` OR ` + pg.JSONShapeError("w.task_snapshot", reflect.TypeOf(model.WorkerTaskObservation{})) + `)`
+	oversized := `(octet_length(coalesce(` + machineID + `,''))::bigint + octet_length(coalesce(` + machineName + `,''))::bigint + octet_length(coalesce(` + platform + `,''))::bigint + octet_length(coalesce(` + state + `,''))::bigint > 8388608)`
+	rows, err := s.tx.Query(ctx, `SELECT w.worker_id::text, w.created_at, w.last_seen_at,
+        CASE WHEN `+oversized+` THEN '' ELSE coalesce(`+machineID+`,'') END,
+        CASE WHEN `+oversized+` THEN '' ELSE coalesce(`+machineName+`,'') END,
+        CASE WHEN `+oversized+` THEN '' ELSE coalesce(`+platform+`,'') END,
+        CASE WHEN `+oversized+` THEN '' ELSE coalesce(`+state+`,'') END,
+        `+pg.CompactJSONTime(observed)+`, `+oversized+`, `+malformed+`,
+        EXISTS (SELECT 1 FROM generate_series(0,jsonb_array_length(`+selectedItems+`)-1) AS candidate(position)
+                WHERE NOT pg_input_is_valid(coalesce(`+taskID+`,''),'uuid')),
+        (SELECT count(*) FROM generate_series(0,jsonb_array_length(`+selectedItems+`)-1) AS item(position)
+          JOIN tasks t ON t.id::text = `+countTaskID+` AND t.project_id::text = `+countProjectID+` AND t.deleted_at IS NULL
+          WHERE EXISTS (SELECT 1 FROM (`+pg.ProjectAccessRelation+`) a WHERE a.project_id=t.project_id AND a.user_id=$1))
+        FROM workers w
+        WHERE w.user_id=$1 AND w.last_seen_at >= $2::timestamptz - interval '72 hours'
+        AND ($3::timestamptz IS NULL OR (w.created_at,w.worker_id)>($3,$4::uuid))
+        ORDER BY w.created_at,w.worker_id LIMIT $5`, userID, observedAt, afterTime, afterID, page.Limit+1)
+	if err != nil {
+		return pg.QueryError("list worker summaries", err)
+	}
+	defer rows.Close()
+	rowCount := 0
+	for rows.Next() {
+		var item store.WorkerSummary
+		var observed *string
+		var count int
+		var malformed, invalidTaskID bool
+		if err := rows.Scan(&item.WorkerID, &item.CreatedAt, &item.LastReportedAt, &item.Machine.ID, &item.Machine.Name, &item.Platform, &item.TaskObservationState, &observed, &item.Oversized, &malformed, &invalidTaskID, &count); err != nil {
+			return pg.QueryError("list worker summaries", err)
+		}
+		if malformed {
+			return pg.QueryError("decode worker summary", fmt.Errorf("stored worker summary is malformed"))
+		}
+
+		item.CreatedAt, item.LastReportedAt = item.CreatedAt.UTC(), item.LastReportedAt.UTC()
+		if observed != nil {
+			value, err := time.Parse(time.RFC3339Nano, *observed)
+			if err != nil {
+				return pg.QueryError("decode worker observation time", err)
+			}
+			value = value.UTC()
+			item.TaskObservedAt = &value
+		}
+		if item.TaskObservationState != model.WorkerTasksUnavailable {
+			item.ActiveTaskCount = &count
+		}
+		// The original reader decoded and filtered every candidate within the
+		// requested count, even if a later byte budget excludes that item. It
+		// removed the count lookahead before filtering task IDs.
+		if invalidTaskID && rowCount < page.Limit {
+			return pg.QueryError("filter worker task visibility", fmt.Errorf("stored worker task ID is invalid"))
+		}
+		more, err := consume(item)
+		if err != nil {
+			return err
+		}
+		if !more {
+			break
+		}
+		rowCount++
+	}
+	if err := rows.Err(); err != nil {
+		return pg.QueryError("list worker summaries", err)
+	}
+	return nil
+}
+
+// summaryValue follows encoding/json's case-insensitive field matching and
+// JSONB's field order. Struct strings ignore null; pointer and slice values do not.
+func summaryValue(root string, stringsOnly bool, path ...string) string {
+	var from, where, order []string
+	parent := root
+	for i, name := range path {
+		alias := fmt.Sprintf("summary%d", i)
+		source := `jsonb_object_keys(CASE WHEN jsonb_typeof(` + parent + `)='object' THEN ` + parent + ` ELSE '{}'::jsonb END) WITH ORDINALITY AS ` + alias + `(key,ord)`
+		from = append(from, source)
+		where = append(where, pg.JSONFold(alias+".key")+`='`+strings.ToLower(name)+`'`)
+		order = append(order, alias+`.ord DESC`)
+		parent = `(` + parent + `->` + alias + `.key)`
+	}
+	if stringsOnly {
+		where = append(where, `jsonb_typeof(`+parent+`)='string'`)
+	}
+	return `(SELECT ` + parent + ` FROM ` + strings.Join(from, ` CROSS JOIN LATERAL `) + ` WHERE ` + strings.Join(where, ` AND `) + ` ORDER BY ` + strings.Join(order, `, `) + ` LIMIT 1)`
+}
+func summaryText(root string, path ...string) string {
+	return `(` + summaryValue(root, true, path...) + `#>>'{}')`
+}
+
+// summaryTaskText follows slice reuse across differently cased Items keys. A
+// null or empty array resets the slice; otherwise each object updates the
+// existing element at its position, leaving absent or null string fields intact.
+func summaryTaskText(root, position, field string) string {
+	arr := `(` + root + `->aliases.key)`
+	reset := `(SELECT coalesce(max(resets.ord),0) FROM jsonb_object_keys(` + root + `) WITH ORDINALITY AS resets(key,ord)
+        WHERE ` + pg.JSONFold("resets.key") + `='items' AND (jsonb_typeof(` + root + `->resets.key)='null' OR CASE WHEN jsonb_typeof(` + root + `->resets.key)='array' THEN jsonb_array_length(` + root + `->resets.key)=0 ELSE false END))`
+	value := summaryText(`(`+arr+`->`+position+`)`, field)
+	return `(SELECT projected.value FROM jsonb_object_keys(` + root + `) WITH ORDINALITY AS aliases(key,ord)
+        CROSS JOIN LATERAL (SELECT ` + value + ` AS value) projected
+        WHERE ` + pg.JSONFold("aliases.key") + `='items' AND aliases.ord>` + reset + ` AND jsonb_typeof(` + arr + `)='array' AND projected.value IS NOT NULL
+        ORDER BY aliases.ord DESC LIMIT 1)`
 }

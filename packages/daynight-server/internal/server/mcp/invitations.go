@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	teamcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -206,7 +208,22 @@ func (a *invitationAdapter) list(ctx context.Context, actor RequestActor, in inv
 	if limit == 0 {
 		limit = 50
 	}
-	page, err := a.teams.ListInvitationPage(ctx, actor.Principal, id, model.PageRequest{Limit: limit, Cursor: in.Cursor})
+	request := model.PageRequest{Limit: limit, Cursor: in.Cursor}
+	var page teamcore.InvitationPage
+	if reader, ok := a.teams.(interface {
+		InvitationsAdmitted(context.Context, model.Principal, string, model.PageRequest, func([]model.TeamInvitation, *string) error) (teamcore.InvitationPage, error)
+	}); ok {
+		page, err = reader.InvitationsAdmitted(ctx, actor.Principal, id, request, func(items []model.TeamInvitation, cursor *string) error {
+			data := invitationPage{Items: make([]teamInvitation, 0, len(items)), NextCursor: cursor}
+			for _, item := range items {
+				data.Items = append(data.Items, mapTeamInvitation(item))
+			}
+			_, err := measure.JSON(io.Discard, "invitation page", 16<<10, envelope{Data: data, Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
+			return err
+		})
+	} else {
+		page, err = a.teams.ListInvitationPage(ctx, actor.Principal, id, request)
+	}
 	if err != nil {
 		return ToolResult{}, err
 	}
@@ -225,7 +242,7 @@ func (a *invitationAdapter) list(ctx context.Context, actor RequestActor, in inv
 			break
 		}
 		if len(result.Items) <= 1 {
-			return ToolResult{}, errors.New("invitation item exceeds output budget")
+			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Invitation exceeds the encoded page limit."}
 		}
 		result.Items = result.Items[:len(result.Items)-1]
 		last := result.Items[len(result.Items)-1]

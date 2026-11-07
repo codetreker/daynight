@@ -29,6 +29,11 @@ func (s *Reader) TaskSteps(ctx context.Context, taskID string) ([]model.TaskStep
 // very large. 512 characters suffice to construct a 512-byte UTF-8 preview.
 const stepSummaryProjection = `id,position,left(title,512),''::text,status,created_at,updated_at,octet_length(title)>512`
 
+// These are exactly the code points accepted by Go's unicode.IsSpace. Checking
+// the complete title before withholding text prevents an oversized historical
+// record from hiding an invalid all-whitespace title.
+const stepWhitespace = `chr(9)||chr(10)||chr(11)||chr(12)||chr(13)||chr(32)||chr(133)||chr(160)||chr(5760)||chr(8192)||chr(8193)||chr(8194)||chr(8195)||chr(8196)||chr(8197)||chr(8198)||chr(8199)||chr(8200)||chr(8201)||chr(8202)||chr(8232)||chr(8233)||chr(8239)||chr(8287)||chr(12288)`
+
 func (s *Reader) TaskStepSummary(ctx context.Context, taskID, stepID string) (store.TaskStepProjection, error) {
 	row := s.tx.QueryRow(ctx, `SELECT `+stepSummaryProjection+` FROM task_steps WHERE task_id=$1 AND id=$2`, taskID, stepID)
 	var result store.TaskStepProjection
@@ -45,10 +50,16 @@ func (s *Reader) TaskStepPage(ctx context.Context, taskID string, after int64, l
 	if after < -1 || limit < 1 || limit > 101 {
 		return nil, pg.QueryError("read task step page", fmt.Errorf("invalid page bounds"))
 	}
-	projection := pg.TaskStepProjection + `,false`
+	// Do not transfer a historical row whose raw text alone cannot fit the
+	// largest MCP Step page. JSON encoding cannot make these bytes smaller.
+	projection := `id,position,
+		CASE WHEN octet_length(title)+octet_length(description)>4194304 THEN '' ELSE title END,
+		CASE WHEN octet_length(title)+octet_length(description)>4194304 THEN '' ELSE description END,
+		status,created_at,updated_at,false,octet_length(title)+octet_length(description)>4194304`
 	if summary {
-		projection = stepSummaryProjection
+		projection = stepSummaryProjection + `,false`
 	}
+	projection += `,btrim(title,` + stepWhitespace + `)=''`
 	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM task_steps WHERE task_id=$1 AND position>$2 ORDER BY position LIMIT $3`, taskID, after, limit)
 	if err != nil {
 		return nil, pg.QueryError("read task step page", err)
@@ -58,7 +69,7 @@ func (s *Reader) TaskStepPage(ctx context.Context, taskID string, after int64, l
 	for rows.Next() {
 		var item store.TaskStepProjection
 		step := &item.Step
-		if err := rows.Scan(&step.ID, &step.Position, &step.Title, &step.Description, &step.Status, &step.CreatedAt, &step.UpdatedAt, &item.TitleTruncated); err != nil {
+		if err := rows.Scan(&step.ID, &step.Position, &step.Title, &step.Description, &step.Status, &step.CreatedAt, &step.UpdatedAt, &item.TitleTruncated, &item.Oversized, &item.InvalidTitle); err != nil {
 			return nil, pg.QueryError("read task step page", err)
 		}
 		step.CreatedAt, step.UpdatedAt = step.CreatedAt.UTC(), step.UpdatedAt.UTC()

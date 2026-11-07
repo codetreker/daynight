@@ -257,13 +257,18 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 		missing, limit, complete bool
 	}{
 		{"project", "SELECT p.id::text, p.name, p.repo_url", false, false, false}, {"epoch", "SELECT task_cache_epoch::text", false, false, false},
-		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"properties", "SELECT task_id::text,name,value FROM task_properties", false, false, false}, {"people", "FROM candidate_ids candidate", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
+		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"properties", "SELECT CASE WHEN octet_length(name)>64", false, false, false}, {"properties chunk", "SELECT substring(value FROM", false, false, false}, {"people", "FROM candidate_ids candidate", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
 		{"missing completion", "FROM project_grants", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tasks, database, project, url, principal := taskService(t)
-			if test.name == "properties" {
-				createTask(t, tasks, principal, project.ID, "Property read")
+			if strings.HasPrefix(test.name, "properties") {
+				target := createTask(t, tasks, principal, project.ID, "Property read")
+				if test.name == "properties chunk" {
+					if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests','[]')`, target.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if test.limit {
 				seedGraph(t, database, project.ID, 1001, 0)
@@ -309,10 +314,18 @@ func TestTaskSyncIllegalPropertiesPreserveTransactionCompletionPriority(t *testi
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			source := database
+			readChunk, commitAttempted := false, false
 			if completeFailure {
 				traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool {
-					return strings.Contains(sql, "SELECT task_id::text,name,value FROM task_properties")
-				}, end: cancel})
+					if strings.Contains(sql, "SELECT substring(value FROM") {
+						readChunk = true
+					}
+					if strings.EqualFold(strings.TrimSpace(sql), "commit") {
+						commitAttempted = true
+						return true
+					}
+					return false
+				}, start: cancel})
 				source = traced.store
 			}
 			result, err := taskservice.NewTaskSync(source, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
@@ -321,8 +334,9 @@ func TestTaskSyncIllegalPropertiesPreserveTransactionCompletionPriority(t *testi
 			}
 			if completeFailure {
 				assertOperational(t, err)
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("transaction failure was hidden by invalid stored value: %v", err)
+				var completion *store.TransactionError
+				if !readChunk || !commitAttempted || !errors.Is(err, context.Canceled) || !errors.As(err, &completion) || !completion.CommitAttempted || completion.Outcome != store.TransactionUnknown {
+					t.Fatalf("transaction failure was hidden by invalid stored value: read=%t commit=%t completion=%+v err=%v", readChunk, commitAttempted, completion, err)
 				}
 			} else {
 				fault := requireFault(t, err, "invalid_input")

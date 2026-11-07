@@ -92,8 +92,16 @@ func TestMemberPageRejectsOversizedProfilesWithoutSkipping(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A legal maximum avatar must be readable by the real bounded projection.
+	if _, err := db.Pool.Exec(ctx, `UPDATE users SET avatar_url=repeat('a',524288) WHERE id=$1`, other.UserID); err != nil {
+		t.Fatal(err)
+	}
+	legal, err := teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 10})
+	if err != nil || len(legal.Items) != 3 || legal.Items[1].Profile.AvatarURL == nil || len(*legal.Items[1].Profile.AvatarURL) != 524288 {
+		t.Fatalf("maximum avatar: %v", err)
+	}
 	// Neither column exceeds the limit alone; the sum counts UTF-8 bytes.
-	if _, err := db.Pool.Exec(ctx, `UPDATE users SET name=repeat('界',3000), email=repeat('x',8000) WHERE id=$1`, other.UserID); err != nil {
+	if _, err := db.Pool.Exec(ctx, `UPDATE users SET name=repeat('界',3000), email=repeat('x',4194304), avatar_url=NULL WHERE id=$1`, other.UserID); err != nil {
 		t.Fatal(err)
 	}
 	page, err := teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 10})

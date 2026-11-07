@@ -11,7 +11,7 @@ type TeamPage struct {
 }
 
 // TeamMemberProfileByteLimit bounds the profile data materialized for each paged member.
-const TeamMemberProfileByteLimit = 16 << 10
+const TeamMemberProfileByteLimit = 4 << 20
 
 type TeamMemberPage struct {
 	Items           []model.TeamMemberProfile

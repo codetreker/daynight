@@ -39,6 +39,38 @@ type REST struct {
 	Ready             bool                       `json:"ready"`
 }
 
+// SyncRecord is the REST projection shared by sync accounting and output.
+type SyncRecord struct {
+	Properties        map[string]json.RawMessage `json:"properties"`
+	ID                string                     `json:"id"`
+	TitlePreview      string                     `json:"titlePreview"`
+	TitleTruncated    bool                       `json:"titleTruncated"`
+	Status            string                     `json:"status"`
+	Version           string                     `json:"version"`
+	DependsOn         []string                   `json:"dependsOn"`
+	ExternalDependsOn []string                   `json:"externalDependsOn"`
+	RequiredPlatform  *string                    `json:"requiredPlatform"`
+	AssignedTo        *string                    `json:"assignedTo"`
+	AllowAgents       bool                       `json:"allowAgents"`
+	CreatedAt         time.Time                  `json:"createdAt"`
+	UpdatedAt         time.Time                  `json:"updatedAt"`
+	StartedAt         *time.Time                 `json:"startedAt"`
+	CompletedAt       *time.Time                 `json:"completedAt"`
+	CancelledAt       *time.Time                 `json:"cancelledAt"`
+}
+
+func RESTSyncRecord(t model.TaskViewRecord) SyncRecord {
+	var platform *string
+	if t.RequiredPlatform != nil {
+		value := string(*t.RequiredPlatform)
+		platform = &value
+	}
+	return SyncRecord{Properties: properties(t.Properties, false), ID: t.ID, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
+		Status: string(t.Status), Version: strconv.FormatInt(t.Version, 10), DependsOn: array(t.DependsOn, false), ExternalDependsOn: array(t.ExternalDependsOn, false),
+		RequiredPlatform: platform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
+		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt)}
+}
+
 // LegacyWorkerCompatible identifies claims expressible by the older wire format.
 func LegacyWorkerCompatible(worker *model.WorkerClaim) bool {
 	return worker == nil || ((worker.AgentControlMode == "" || worker.AgentControlMode == model.AgentControlModeHerdr) && (worker.Agent == model.AgentCodex || worker.Agent == model.AgentCopilot))
@@ -194,6 +226,16 @@ func EncodeMCPProjection(w io.Writer, task MCPFull, requestID, outcome string, m
 // HTML escaping of the RPC ID is conservative: the SDK disables it for the
 // outer envelope, while the structured result uses the default JSON encoding.
 func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpcID any, modern, full bool, max int64) (int64, error) {
+	var data any = MCPTaskSummary(t)
+	if full {
+		data = mcpTask(t, false)
+	}
+	return EncodeMCPDataResponse(w, data, requestID, outcome, rpcID, modern, max)
+}
+
+// EncodeMCPDataResponse measures the SDK's complete success response for a
+// protocol data value, including the JSON-RPC ID and version-specific fields.
+func EncodeMCPDataResponse(w io.Writer, data any, requestID, outcome string, rpcID any, modern bool, max int64) (int64, error) {
 	type content struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -208,10 +250,6 @@ func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpc
 		JSONRPC string `json:"jsonrpc"`
 		ID      any    `json:"id,omitempty"`
 		Result  result `json:"result"`
-	}
-	var data any = MCPTaskSummary(t)
-	if full {
-		data = mcpTask(t, false)
 	}
 	r := result{Content: []content{{Type: "text", Text: "Completed."}}, StructuredContent: MCPEnvelope{Data: data, Meta: &MCPMeta{RequestID: requestID, Outcome: outcome}}}
 	if modern {

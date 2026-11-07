@@ -58,6 +58,8 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 
 单项结果具有相同 `projectId`、`taskId` 和 `version`，以 `step` 字段返回一个完整记录。空集合必须为 `steps: []`，不能为 `null`、缺失或读取失败的替代结果。Task 的 show/list/ready/graph/task-sync 不内嵌完整 Steps。
 
+MCP Step 列表保留 `summary` 和 `full` 视图及绑定父版本和位置的 cursor。实际编码的单个 JSON-RPC 成功响应（包括请求 ID、协议版本字段和内容外壳）中，summary 页最多 16 KiB、full 页最多 4 MiB，full show 最多 512 KiB；页满时从最后返回项继续，首项无法装入时明确拒绝，不省略内容。
+
 ## Web 阅读
 
 弹窗与独立 Task 详情（含全屏）的页签顺序为概览、附件、Steps、讨论（如有）、Session（如有）。Steps 始终提供，不依赖 Session、自动执行许可或 Task 状态。`tab=steps` 支持独立深链接、刷新和 Back/Forward；保留附件路径的 Steps 链接仍使用同一 Task 身份。页签沿用 roving tabindex，Arrow/Home/End 按可见顺序导航，隐藏面板保持 `inert`。

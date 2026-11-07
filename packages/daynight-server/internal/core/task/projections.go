@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -87,6 +88,10 @@ func ReadSync(ctx context.Context, reader SyncReader, clock SnapshotClock, proje
 	var lower *time.Time
 	result.Mode, lower = projection.SyncWindow(requestedEpoch, result.Epoch, since, overlap)
 	result.Tasks, err = reader.TaskSyncTasks(ctx, projectID, lower, projection.TitlePreviewCharacters)
+	var resourceFault *model.Fault
+	if errors.As(err, &resourceFault) && resourceFault.Code == "resource_limit_exceeded" {
+		return model.TaskSync{}, resourceFault, nil
+	}
 	if fault := PropertyFault(err); fault != nil {
 		return model.TaskSync{}, fault, nil
 	}

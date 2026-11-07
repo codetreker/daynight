@@ -33,6 +33,8 @@ func NewTasks(database taskStore, capture ...Capturer) *Tasks {
 type TaskListRequest struct {
 	AssignedTo *string
 	model.PageRequest
+	// ExtendedWorker selects the Task REST projection used for the byte budget.
+	ExtendedWorker     bool
 	Status             *model.TaskStatus
 	Ready              *bool
 	AllowAgents        *bool

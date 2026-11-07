@@ -151,3 +151,31 @@ func TestBotsHTTPUnconfirmedTransactionRemainsInternalFailure(t *testing.T) {
 		t.Fatalf("uncertain rollback became a definite refusal: %+v", decoded)
 	}
 }
+
+func TestBotsHTTPEncodedPageBudgetAndCursor(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	workerID := uuid.NewString()
+	reportSnapshotHTTP(t, handler, workerID, workerSnapshotReportBody())
+	firstBot := seedHTTPBot(t, database, handler, workerID)
+	secondBot := seedHTTPBot(t, database, handler, workerID)
+	for _, id := range []string{firstBot.ID, secondBot.ID} {
+		if _, err := database.Pool.Exec(context.Background(), `UPDATE bots SET resolved_configuration=jsonb_set(resolved_configuration,'{cwd}',to_jsonb(repeat('<',1000000))) WHERE id=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := projectRequest(handler, "GET", "/api/v1/me/bots?limit=100", "")
+	page := decodeResponse[api.BotPage](t, first, 200)
+	if first.Body.Len() > 8<<20 || len(page.Items) != 1 || page.Items[0].ID != firstBot.ID || page.NextCursor == nil {
+		t.Fatalf("first page: size %d cursor %v", first.Body.Len(), page.NextCursor)
+	}
+	nextPath := "/api/v1/me/bots?limit=100&cursor=" + url.QueryEscape(*page.NextCursor)
+	next := decodeResponse[api.BotPage](t, projectRequest(handler, "GET", nextPath, ""), 200)
+	if len(next.Items) != 1 || next.Items[0].ID != secondBot.ID || next.NextCursor != nil {
+		t.Fatal("continuation skipped Bot")
+	}
+	if _, err := database.Pool.Exec(context.Background(), `UPDATE bots SET resolved_configuration=jsonb_set(resolved_configuration,'{cwd}',to_jsonb(repeat('<',1500000))) WHERE id=$1`, secondBot.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectError(t, projectRequest(handler, "GET", nextPath, ""), 409, "resource_limit_exceeded")
+}

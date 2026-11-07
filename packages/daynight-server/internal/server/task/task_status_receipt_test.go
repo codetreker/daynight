@@ -25,7 +25,7 @@ func TestTaskHTTPStatusCommittedResponseFailureAndReadback(t *testing.T) {
 			request.Header.Set("X-Request-ID", "task-status-lost")
 			writer := &threadFailingWriter{ResponseRecorder: httptest.NewRecorder()}
 			handler.ServeHTTP(writer, request)
-			if writer.Code != http.StatusOK || writer.calls != 1 || !strings.Contains(logs.String(), `"phase":"set_status"`) || !strings.Contains(logs.String(), `"outcome":"changed"`) || strings.Contains(logs.String(), "private response failure") {
+			if writer.Code != http.StatusOK || writer.calls != 1 || !strings.Contains(logs.String(), `"phase":"set_status"`) || !strings.Contains(logs.String(), `"outcome":"changed"`) || !strings.Contains(logs.String(), `"tx_outcome":"committed"`) || !strings.Contains(logs.String(), `"write_outcome":"unknown"`) || strings.Contains(logs.String(), "private response failure") {
 				t.Fatalf("status response failure lost its committed outcome or leaked cause: status=%d calls=%d logs=%s", writer.Code, writer.calls, &logs)
 			}
 			current := readHTTPTask(t, handler, task)

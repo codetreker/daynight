@@ -52,7 +52,7 @@ func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
 	f := newEntryFixture(t)
 	f.entry.auth = validTeamAuth{}
 	db := &listTeamsDB{}
-	for i, name := range []string{strings.Repeat("a", 8000), strings.Repeat("b", 8000), strings.Repeat("<", 3000)} {
+	for i, name := range []string{strings.Repeat("<", 500000), strings.Repeat("<", 500000), strings.Repeat("<", 800000)} {
 		team := testUnknownTeam()
 		team.ID = []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}[i]
 		team.Name = &name
@@ -104,7 +104,7 @@ func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		t.Fatal(err)
 	}
-	if env.Error.Code != "payload_too_large" || env.Error.Refs["teamId"] != db.items[2].ID {
+	if env.Error.Code != "resource_limit_exceeded" {
 		t.Fatalf("oversized: %s", raw)
 	}
 }

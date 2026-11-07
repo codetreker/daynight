@@ -133,33 +133,38 @@ func TestTaskStatusQueryCancellationPreservesCauseAndState(t *testing.T) {
 	for _, action := range []struct{ from, to model.TaskStatus }{
 		{model.TaskTodo, model.TaskInProgress}, {model.TaskInProgress, model.TaskDone}, {model.TaskDone, model.TaskTodo},
 	} {
-		for _, query := range []struct {
-			fragment string
-			after    bool
-		}{{"FROM tasks t", false}, {"UPDATE tasks SET", false}, {"UPDATE tasks SET", true}} {
-			t.Run(fmt.Sprintf("%s_to_%s %s after=%t", action.from, action.to, query.fragment, query.after), func(t *testing.T) {
-				tasks, _, project, databaseURL, principal := taskService(t)
-				predecessor := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Predecessor"))
-				target := createTask(t, tasks, principal, project.ID, "Target", predecessor.ID)
-				target = setStatusTask(t, tasks, principal, target, action.from)
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				trace := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, query.fragment) }}
-				if query.after {
-					trace.end = cancel
-				} else {
-					trace.start = cancel
+		t.Run(fmt.Sprintf("%s_to_%s", action.from, action.to), func(t *testing.T) {
+			tasks, _, project, databaseURL, principal := taskService(t)
+			predecessor := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Predecessor"))
+			target := createTask(t, tasks, principal, project.ID, "Target", predecessor.ID)
+			target = setStatusTask(t, tasks, principal, target, action.from)
+			for _, query := range []struct {
+				fragment string
+				after    bool
+			}{{"FROM tasks t", false}, {"UPDATE tasks SET", false}, {"UPDATE tasks SET", true}} {
+				if !t.Run(fmt.Sprintf("%s after=%t", query.fragment, query.after), func(t *testing.T) {
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					trace := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, query.fragment) }}
+					if query.after {
+						trace.end = cancel
+					} else {
+						trace.start = cancel
+					}
+					traced := tracedTasks(t, databaseURL, trace)
+					_, err := traced.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: action.to})
+					assertOperational(t, err)
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("status cancellation lost cause: %v", err)
+					}
+					assertTaskUnchanged(t, tasks, principal, target)
+					assertTaskUnchanged(t, tasks, principal, predecessor)
+				}) {
+					// Later cases rely on the previous cancellation preserving this fixture.
+					return
 				}
-				traced := tracedTasks(t, databaseURL, trace)
-				_, err := traced.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: action.to})
-				assertOperational(t, err)
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("status cancellation lost cause: %v", err)
-				}
-				assertTaskUnchanged(t, tasks, principal, target)
-				assertTaskUnchanged(t, tasks, principal, predecessor)
-			})
-		}
+			}
+		})
 	}
 }
 
