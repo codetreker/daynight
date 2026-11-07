@@ -33,15 +33,17 @@ type CiOperations = { command: typeof runCiCommand };
 export const runCi = async (mode: string, cancellation: AbortController,
   operations: CiOperations = { command: runCiCommand }): Promise<void> => {
   if (mode !== 'quality') throw new Error(usage);
-  const run = async (args: readonly string[], options: Omit<CommandOptions, 'cwd' | 'signal'>): Promise<void> => {
+  const run = async (file: string, args: readonly string[], options: Omit<CommandOptions, 'cwd' | 'signal'>): Promise<void> => {
     cancellation.signal.throwIfAborted();
-    await operations.command('pnpm', args, { ...options, cwd: repositoryRoot, signal: cancellation.signal });
+    await operations.command(file, args, { ...options, cwd: repositoryRoot, signal: cancellation.signal });
   };
-  await run(['--filter', '@codetreker/daynight-web', 'test:harness'], { timeoutMs: 180_000 });
-  await run(['--filter', '@codetreker/daynight-web', 'exec', 'vitest', 'run', '--coverage'], {
+  await run('pnpm', ['web:typecheck'], { timeoutMs: 60_000 });
+  await run('pnpm', ['--filter', '@codetreker/daynight-web', 'test:harness'], { timeoutMs: 180_000 });
+  await run('docker', ['build', '--progress=plain', '--target', 'web', '--file', 'deployment/localhost/Dockerfile', '.'], { timeoutMs: 300_000 });
+  await run('pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'vitest', 'run', '--coverage'], {
     env: { ...process.env, VITEST_MAX_WORKERS: '4' }, timeoutMs: 900_000,
   });
-  await run(['--filter', '@codetreker/daynight-web', 'exec', 'node', 'scripts/coverage.mts'], { timeoutMs: 60_000 });
+  await run('pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'node', 'scripts/coverage.mts'], { timeoutMs: 60_000 });
 };
 
 const main = async (): Promise<void> => {

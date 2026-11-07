@@ -415,7 +415,7 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.web == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
       XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
@@ -433,7 +433,7 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
-      - name: Verify the complete Web harness and coverage
+      - name: Verify Web types, production build, harness and coverage
         id: web-quality
         run: node packages/daynight-web/scripts/ci.mts quality
       - name: Upload complete web coverage evidence

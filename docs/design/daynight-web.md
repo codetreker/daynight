@@ -745,7 +745,7 @@ GET 沿用 Go 的 HEAD 语义；已知 UI、asset 和图路径不支持的方法
 
 ### 本地构建与开发
 
-生产构建采用 web typecheck → Vite build → 完整产物发布到 Go 的 `internal/service/webui/dist/` → Go build。生成目录忽略 Git；不提交占位页面。发布产物前验证 index 及引用资源存在，以临时目录准备完整新产物后替换旧产物；构建失败必须阻止 Go 构建，不能继续使用旧页面。
+生产构建采用 `tsconfig.build.json` 类型检查 → Vite build → 完整产物发布到 Go 的 `internal/service/webui/dist/` → Go build。生产配置继承严格的公共 TypeScript 选项，只选择应用 `src/`、`vite.config.ts` 及其传递导入。`web:typecheck` 使用完整 `tsconfig.json`，独立检查应用、测试、脚本和工具配置；生产编译不要求其他模块的测试或验收夹具。生成目录忽略 Git；不提交占位页面。发布产物前验证 index 及引用资源存在，以临时目录准备完整新产物后替换旧产物；构建失败必须阻止 Go 构建，不能继续使用旧页面。
 
 ```text
 # 仓库根目录：本地依赖安装
@@ -781,7 +781,7 @@ DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
   → 非 root 运行阶段：仅复制二进制
 ```
 
-`deployment/localhost/compose.yaml` 使用仓库根 context 并显式指定 `deployment/localhost/Dockerfile`。Dockerfile专属`.dockerignore`使用根相对allowlist，纳入workspace/root/web/Go manifests、锁文件、`patches/`中的Dagre运行时与XYFlow声明补丁、实际构建脚本与源码。Web消费的CLI源码通过`packages/daynight/src/api/`、`src/session/`树及精确的`src/platform/text.ts`文件同时纳入context并COPY到前端阶段，使纯Thread parser、文本校验与Session协议的传递依赖完整可用；宿主`node_modules`、`.tmp`、生成dist和无关工作区内容继续排除。安装层只下载 web 所需依赖；镜像内部执行同一 `web:build`，不依赖宿主预构建产物。
+`deployment/localhost/compose.yaml` 使用仓库根 context 并显式指定 `deployment/localhost/Dockerfile`。Dockerfile专属`.dockerignore`使用根相对allowlist，纳入workspace/root/web/Go manifests、锁文件、`patches/`中的Dagre运行时与XYFlow声明补丁、实际构建脚本与源码。共享 CLI 的整个 `packages/daynight/src/` 树同时纳入 context 并 COPY 到前端阶段，支持 API、Thread、Session 与 Task 状态协议的传递依赖，避免重复维护逐目录的依赖清单。TypeScript 只检查生产入口可达的源码，Vite 只打包浏览器导入图；宿主`node_modules`、`.tmp`、生成dist和无关工作区内容继续排除。安装层只下载 web 所需依赖；镜像内部执行同一 `web:build`，不依赖宿主预构建产物。
 
 保留 nginx stream/TCP 转发、服务与 gateway 共享网络命名空间、服务 loopback 监听、宿主 loopback 端口发布、公开 `/readyz` 数据库就绪检查和命名卷。nginx 不增加 SPA fallback，HTML、资源和 API 都由同一个 Go mux 处理。正常重建栈继续保留数据库数据。操作细节由 `deployment/localhost/README.md` 拥有，拓扑与内嵌交付选择分别由[本机部署决策](../../.agents/notes/archived/architecture/2026-10-20-localhost-compose.md)和[内嵌交付决策](../../.agents/notes/archived/architecture/2026-10-20-embedded-dashboard-deployment.md)拥有。
 
@@ -830,8 +830,11 @@ file/project-directory/project-name 参数。使用生产 Dockerfile 构建本�
 
 ### CI 构建归属
 
-Web 质量 job 使用 `scripts/ci.mts quality` 串行运行工具测试、Vitest/V8 覆盖率
-采集及独立的源码清单与严格语句覆盖率检查。各阶段有独立期限，采集使用四个 worker；
+Web 质量 job 使用 `scripts/ci.mts quality` 串行运行完整 Web 类型检查、工具测试、
+实际 localhost Dockerfile 的 `web` 阶段构建、Vitest/V8 覆盖率采集及独立的源码清单与
+严格语句覆盖率检查。各阶段期限分别为 1、3、5、15、1 分钟，采集使用四个 worker；
+质量 job 总期限为 30 分钟，浏览器 job 为 20 分钟。Docker 阶段验证过滤后的 context、
+容器锁文件安装、生产编译与资源发布，不启动服务、数据库或运行 Go 单元验证。
 测试失败、取消或进程清理失败均须传播。已选中的 Web 质量 job 必须成功才能通过
 最终 `checks`。实际选择规则由[仓库 CI 路由](../../README.md#ci-selection)拥有。
 
