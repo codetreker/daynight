@@ -51,6 +51,12 @@ race 和关键代码块配置未满足下文 V8；完整进程证据须按被测
 
 受保护 worker 属性、原子认领/更新/释放/强制撤回和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。账号级运行快照由[快照需求](daynight-worker-snapshots.md)定义，记录认证客户端最近的机器和任务观测。快照读写不改变 claim 或任务状态；服务端不启动执行进程，前台 Worker 与真实资源恢复仍是独立运行时能力。
 
+## HTTP 输入边界
+
+HTTP/1 请求行与请求头初始读取合计不超过 64 KiB，原始 request-target 和 query 分别不超过 48 KiB 和 24 KiB。通用 encoded cursor 在解码前限制为 16 KiB；更小的专用限制保持有效。普通 REST JSON 最大 1 MiB，MCP body 最大 4 MiB。普通短 body 从读取开始限时 15 秒；实际 body 超限返回 413，目标或 query 超限返回 414，头超限返回 431 或安全关闭，读取超时在可写时返回 408 并关闭连接。认证后的 MCP 预读每实例最多 16 个，满额立即返回 429。成功读完 body 后可继续复用连接；拒绝未读 body 不等待客户端发送剩余内容。错误与日志不回显正文或秘密。
+
+附件和归档的读取期限合同分别为 60 秒和 120 秒，由对应入口接入；Session 消息、SSE、WebSocket 和长轮询沿用专用协议及生命周期。[输入与资源额度](daynight-api-input-limits.md)列出领域额度的实施状态。
+
 ## Project
 
 Project 包含以下字段：

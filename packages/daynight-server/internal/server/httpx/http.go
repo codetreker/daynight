@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -28,10 +27,14 @@ func InvalidInput(message string) error {
 func DecodeObject(w http.ResponseWriter, request *http.Request, allowed ...string) (map[string]json.RawMessage, error) {
 	mediaType, parameters, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" || parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8") {
+		CloseUnreadBody(w, request)
 		return nil, InvalidInput("Content-Type must be application/json with UTF-8 encoding")
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, request.Body, MaxJSONBody))
-	if err != nil || !utf8.Valid(body) {
+	body, err := ReadBody(w, request, MaxJSONBody, transport.JSONBodyReadTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if !utf8.Valid(body) {
 		return nil, InvalidInput("request body must be valid JSON within the 1 MiB limit")
 	}
 	fields, err := jsonobject.Decode(body, "request body", allowed...)
@@ -123,6 +126,9 @@ func OptionalStrings(fields map[string]json.RawMessage, key string) (*[]string, 
 }
 
 func QueryValues(request *http.Request, allowed ...string) (url.Values, error) {
+	if len(request.URL.RawQuery) > transport.MaxRawQueryBytes {
+		return nil, &URITooLongError{}
+	}
 	values, err := url.ParseQuery(request.URL.RawQuery)
 	if err != nil {
 		return nil, InvalidInput("query parameters must be valid URL encoding")
@@ -181,6 +187,17 @@ func WriteCreated(w http.ResponseWriter, request *http.Request, logger *slog.Log
 }
 
 func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component, phase string, err error) {
+	if bodyReadFailure(err) != nil {
+		WriteBodyError(w, request, logger, component, phase, err)
+		return
+	}
+	var uriErr *URITooLongError
+	if errors.As(err, &uriErr) {
+		CloseUnreadBody(w, request)
+		WriteJSON(w, request, logger, http.StatusRequestURITooLong, api.ErrorResponse{Error: api.Error{Code: "uri_too_long", Message: "request target exceeds its input limit", RequestID: RequestID(request.Context())}})
+		return
+	}
+	CloseUnreadBody(w, request)
 	LogFailure(logger, request.Context(), component, phase, err)
 	if request.Context().Err() != nil {
 		return

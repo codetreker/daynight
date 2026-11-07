@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -65,8 +66,10 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 	}
 	r.closeLock <- struct{}{}
 	r.http = &http.Server{
-		Handler: httpx.RequestLogging(logger, r.admit(handler)), ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return requests },
+		Handler: httpx.RequestLogging(logger, httpx.LimitRequestTarget(logger, r.admit(handler))), ReadHeaderTimeout: 5 * time.Second,
+		// net/http adds 4096 bytes of read-ahead to MaxHeaderBytes.
+		MaxHeaderBytes: transport.MaxRequestHeadersBytes - 4096,
+		IdleTimeout:    60 * time.Second, BaseContext: func(net.Listener) context.Context { return requests },
 	}
 	return r, nil
 }

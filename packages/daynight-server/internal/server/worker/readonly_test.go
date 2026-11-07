@@ -246,7 +246,7 @@ func TestReadOnlyHTTPBodyReadHasDeadline(t *testing.T) {
 		t.Fatal("stalled body was not terminated", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != 400 {
+	if response.StatusCode != 408 || !response.Close {
 		t.Fatal("stalled body status", response.StatusCode)
 	}
 }

@@ -34,8 +34,11 @@ type testListPosition struct {
 
 func testListCursor(value string, owner string, online bool) (testListPosition, error) {
 	var p testListPosition
+	if len(value) > 512 {
+		return p, fault("invalid_input", "Invalid test session list cursor.")
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || len(value) > 512 || json.Unmarshal(raw, &p) != nil || !bytes.Equal(raw, encode(p)) || p.Kind != "test-sessions" || p.Owner != owner || p.Online != online || p.UpdatedAt.IsZero() {
+	if err != nil || json.Unmarshal(raw, &p) != nil || !bytes.Equal(raw, encode(p)) || p.Kind != "test-sessions" || p.Owner != owner || p.Online != online || p.UpdatedAt.IsZero() {
 		return p, fault("invalid_input", "Invalid test session list cursor.")
 	}
 	id, idErr := uuid.Parse(p.SessionID)

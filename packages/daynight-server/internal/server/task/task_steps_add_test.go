@@ -125,7 +125,7 @@ func TestStepsHTTPAddStrictInputLeavesCompleteStateUnchanged(t *testing.T) {
 	if len(exact) != httpx.MaxJSONBody {
 		t.Fatalf("request boundary fixture %d", len(exact))
 	}
-	assertProjectError(t, projectRequest(handler, "POST", path, exact+" "), 400, "invalid_input")
+	assertProjectError(t, projectRequest(handler, "POST", path, exact+" "), 413, "payload_too_large")
 	read := decodeResponse[api.StepsResource](t, projectRequest(handler, "GET", path, ""), 200)
 	if read.Version != 1 || len(read.Steps) != 0 {
 		t.Fatal("strict refusal changed parent or steps")

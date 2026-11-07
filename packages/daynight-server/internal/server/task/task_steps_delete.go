@@ -33,12 +33,12 @@ func (h *taskStepsHandler) delete(w http.ResponseWriter, request *http.Request, 
 		return
 	}
 	fields, err := httpx.DecodeObject(w, request, "version")
-	if request.Context().Err() != nil {
-		refuse(request.Context().Err())
-		return
-	}
 	if err != nil {
 		refuse(err)
+		return
+	}
+	if request.Context().Err() != nil {
+		refuse(request.Context().Err())
 		return
 	}
 	input, err := deleteStepInput(fields)

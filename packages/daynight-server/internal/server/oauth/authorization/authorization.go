@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	"github.com/google/uuid"
@@ -224,27 +225,36 @@ func (h *AuthorizationHTTP) Inspect(w http.ResponseWriter, r *http.Request) {
 func (h *AuthorizationHTTP) Decide(w http.ResponseWriter, r *http.Request) {
 	safeHeaders(w)
 	if r.Method != http.MethodPost {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("Allow", "POST")
 		writeError(w, http.StatusMethodNotAllowed, "invalid_request")
 		return
 	}
 	if r.URL.RawQuery != "" {
+		httpx.CloseUnreadBody(w, r)
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	p, err := h.session(r, true)
 	if err != nil {
+		httpx.CloseUnreadBody(w, r)
 		sessionError(w, err)
 		return
 	}
 	id := r.PathValue("id")
 	binding, ok := h.binding(r, id)
 	if !validID(id) || !ok {
+		httpx.CloseUnreadBody(w, r)
 		writeError(w, http.StatusNotFound, "invalid_request")
 		return
 	}
 	fields, err := httpx.DecodeObject(w, r, "expectedUserId", "decision")
 	if err != nil {
+		var bodyErr *httpx.BodyReadError
+		if errors.As(err, &bodyErr) {
+			httpx.WriteBodyError(w, r, slog.Default(), "oauth", "decide_body", err)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -274,28 +284,32 @@ func (h *AuthorizationHTTP) RedeemCode(w http.ResponseWriter, r *http.Request) {
 	safeHeaders(w)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if r.Method == http.MethodOptions {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if r.Method != http.MethodPost {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("Allow", "POST, OPTIONS")
 		writeError(w, http.StatusMethodNotAllowed, "invalid_request")
 		return
 	}
 	if r.URL.RawQuery != "" {
+		httpx.CloseUnreadBody(w, r)
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/x-www-form-urlencoded" || len(params) > 1 || (len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8")) {
+		httpx.CloseUnreadBody(w, r)
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, core.MetadataLimit))
+	body, err := httpx.ReadBody(w, r, core.MetadataLimit, transport.JSONBodyReadTimeout)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request")
+		httpx.WriteBodyError(w, r, slog.Default(), "oauth", "redeem_body", err)
 		return
 	}
 	v, ok := singleValues(string(body), "grant_type", "code", "client_id", "redirect_uri", "resource", "code_verifier")

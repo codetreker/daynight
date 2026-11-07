@@ -121,12 +121,12 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 		return
 	}
 	fields, err := httpx.DecodeObject(w, request, "version", "id", "title", "description", "status", "before", "after")
-	if request.Context().Err() != nil {
-		refuse(request.Context().Err())
-		return
-	}
 	if err != nil {
 		refuse(err)
+		return
+	}
+	if request.Context().Err() != nil {
+		refuse(request.Context().Err())
 		return
 	}
 	input, err := addStepInput(fields)
@@ -250,6 +250,11 @@ func stepsErrorResponse(err error) (int, api.Error) {
 }
 
 func writeStepsError(w http.ResponseWriter, request *http.Request, logger *slog.Logger, phase string, err error) {
+	if _, ok := err.(*httpx.BodyReadError); ok {
+		httpx.WriteBodyError(w, request, logger, "task_step", phase, err)
+		return
+	}
+	httpx.CloseUnreadBody(w, request)
 	status, response := stepsErrorResponse(err)
 	cause := httpx.ErrorKind(err)
 	if response.Code == "internal_error" {

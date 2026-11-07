@@ -45,7 +45,7 @@ func TestStepsHTTPDeleteStrictInputScopeAndVersion(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
 	good := `{"version":1}`
-	assertProjectError(t, projectRequest(handler, "DELETE", endpoint, good+strings.Repeat(" ", httpx.MaxJSONBody-len(good)+1)), 400, "invalid_input")
+	assertProjectError(t, projectRequest(handler, "DELETE", endpoint, good+strings.Repeat(" ", httpx.MaxJSONBody-len(good)+1)), 413, "payload_too_large")
 	for _, tc := range []struct{ endpoint, allow string }{{path, "GET, HEAD, POST"}, {path + "/abcdef01/status", "PUT"}, {path + "/abcdef01/position", "PUT"}} {
 		response := projectRequest(handler, "DELETE", tc.endpoint, `{"version":1}`)
 		assertProjectError(t, response, 405, "method_not_allowed")

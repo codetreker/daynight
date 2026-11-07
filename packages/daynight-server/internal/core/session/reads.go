@@ -25,8 +25,11 @@ func EventCursor(v sp.Snapshot, seq string) string {
 }
 func decodeCursor(value string, v sp.Snapshot, kind string) (position, error) {
 	var p position
+	if len(value) > 512 {
+		return p, fault("reset_required", "Cursor does not belong to this session projection.")
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || len(value) > 512 || json.Unmarshal(raw, &p) != nil || p.Session != v.SessionID || p.Epoch != v.HistoryEpoch || p.Kind != kind || number(p.Position) < 0 || number(p.Upper) < 0 || decimal(number(p.Position)) != p.Position || decimal(number(p.Upper)) != p.Upper {
+	if err != nil || json.Unmarshal(raw, &p) != nil || p.Session != v.SessionID || p.Epoch != v.HistoryEpoch || p.Kind != kind || number(p.Position) < 0 || number(p.Upper) < 0 || decimal(number(p.Position)) != p.Position || decimal(number(p.Upper)) != p.Upper {
 		return p, fault("reset_required", "Cursor does not belong to this session projection.")
 	}
 	return p, nil

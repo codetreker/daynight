@@ -156,6 +156,11 @@ func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 			id = rand.Text()
 		}
 		request = request.WithContext(context.WithValue(request.Context(), requestIDKey{}, id))
+		if request.Body != nil && request.Body != http.NoBody {
+			body := &trackedRequestBody{ReadCloser: request.Body}
+			request = request.WithContext(context.WithValue(request.Context(), bodyCompletionKey{}, body))
+			request.Body = body
+		}
 		defer func() {
 			if value := recover(); value != nil {
 				if value == http.ErrAbortHandler {
