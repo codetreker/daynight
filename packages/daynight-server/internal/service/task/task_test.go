@@ -366,11 +366,16 @@ func TestTaskSameStatusUsesCurrentDerivedStateAndExactLargeVersion(t *testing.T)
 }
 
 func TestTaskSetStatusDependencyProtectionAndNoCascade(t *testing.T) {
+	projects, database, _, principal := projectService(t)
+	tasks := taskservice.NewTasks(database)
 	for _, external := range []bool{false, true} {
 		for _, successorStatus := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 			for _, to := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress} {
 				t.Run(fmt.Sprintf("external=%t_successor=%s_to=%s", external, successorStatus, to), func(t *testing.T) {
-					tasks, _, project, _, principal := taskService(t)
+					project, err := projects.Create(context.Background(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Tasks", RepoURL: "git@host:repo"})
+					if err != nil {
+						t.Fatal(err)
+					}
 					predecessor := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Predecessor"))
 					successor := createTask(t, tasks, principal, project.ID, "Successor", predecessor.ID)
 					if external {
