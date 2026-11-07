@@ -7,6 +7,7 @@ import (
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/webhook"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -25,7 +26,7 @@ func (s *Store) CreateTeam(ctx context.Context, userID string, operation func(Te
 	return teamCompletion("create Team", err)
 }
 
-func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(TeamWriteDAO) error) (Completion, error) {
+func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(TeamWriteScope) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Completion{Outcome: TransactionNotCommitted}, pg.QueryError("begin Team write", err)
@@ -35,9 +36,19 @@ func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(Tea
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM teams WHERE id=$1 FOR UPDATE`, teamID).Scan(&id); err != nil {
 			return pg.QueryError("lock Team", err)
 		}
-		return operation(team.NewWriter(tx, teamID))
+		return operation(&teamWriteScope{tx: tx, teamID: teamID})
 	})
 	return teamCompletion("write Team", err)
+}
+
+type teamWriteScope struct {
+	tx     pgx.Tx
+	teamID string
+}
+
+func (s *teamWriteScope) TeamDAO() TeamWriteDAO { return team.NewWriter(s.tx, s.teamID) }
+func (s *teamWriteScope) WebhookEligibilityDAO() WebhookEligibilityDAO {
+	return webhook.NewEligibility(s.tx)
 }
 
 func teamCompletion(operation string, err error) (Completion, error) {

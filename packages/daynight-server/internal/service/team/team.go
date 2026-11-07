@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	webhookmodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
 
@@ -36,12 +37,28 @@ func completed(c store.Completion, err error, refusal *model.Fault) error {
 	}
 	return nil
 }
-func (s *Teams) write(ctx context.Context, id string, op func(store.TeamWriteDAO) error) error {
+func (s *Teams) writeScope(ctx context.Context, id string, op func(store.TeamWriteScope) error, after func(store.TeamWriteScope) error) error {
 	var refusal *model.Fault
-	c, err := s.writer.WriteTeam(ctx, id, func(dao store.TeamWriteDAO) error {
-		return completion.Capture(func() error { return op(dao) }, &refusal)
+	c, err := s.writer.WriteTeam(ctx, id, func(scope store.TeamWriteScope) error {
+		// Eligibility errors must abort the source write; only business refusals
+		// participate in the existing completed-check behavior.
+		if err := completion.Capture(func() error { return op(scope) }, &refusal); err != nil {
+			return err
+		}
+		if refusal != nil || after == nil {
+			return nil
+		}
+		return after(scope)
 	})
 	return completed(c, err, refusal)
+}
+func (s *Teams) write(ctx context.Context, id string, op func(store.TeamWriteDAO) error) error {
+	return s.writeScope(ctx, id, func(scope store.TeamWriteScope) error { return op(scope.TeamDAO()) }, nil)
+}
+func (s *Teams) writeAccess(ctx context.Context, id string, change store.WebhookEligibilityChange, op func(store.TeamWriteDAO) error) error {
+	return s.writeScope(ctx, id, func(scope store.TeamWriteScope) error { return op(scope.TeamDAO()) }, func(scope store.TeamWriteScope) error {
+		return scope.WebhookEligibilityDAO().RefreshAffected(ctx, change)
+	})
 }
 
 // CreationError retains only the allocated identifier when transaction
@@ -189,7 +206,7 @@ func (s *Teams) DeleteBounded(ctx context.Context, p model.Principal, id string,
 	if err != nil {
 		return err
 	}
-	return s.write(ctx, id, func(dao store.TeamWriteDAO) error { return core.Delete(ctx, boundedTeamWriter{dao, limit}, p, input) })
+	return s.writeAccess(ctx, id, store.WebhookEligibilityChange{DeletedOwner: &webhookmodel.Owner{Kind: webhookmodel.TeamOwner, ID: id}}, func(dao store.TeamWriteDAO) error { return core.Delete(ctx, boundedTeamWriter{dao, limit}, p, input) })
 }
 func (s *Teams) changeMemberBounded(ctx context.Context, p model.Principal, id, user string, input core.ChangeTeamMember, remove bool, limit int) (core.TeamMemberResult, error) {
 	id, target, err := core.ValidateMemberChange(p, id, user, input, remove)
@@ -197,7 +214,7 @@ func (s *Teams) changeMemberBounded(ctx context.Context, p model.Principal, id, 
 		return core.TeamMemberResult{}, err
 	}
 	var result core.TeamMemberResult
-	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err = s.writeAccess(ctx, id, store.WebhookEligibilityChange{TeamIDs: []string{id}, UserIDs: []string{target}}, func(dao store.TeamWriteDAO) error {
 		var e error
 		result, e = core.ChangeMember(ctx, boundedTeamWriter{dao, limit}, p, target, input, remove)
 		return e
@@ -235,7 +252,7 @@ func (s *Teams) Delete(ctx context.Context, p model.Principal, id string, input 
 	if err != nil {
 		return err
 	}
-	return s.write(ctx, id, func(dao store.TeamWriteDAO) error { return core.Delete(ctx, dao, p, input) })
+	return s.writeAccess(ctx, id, store.WebhookEligibilityChange{DeletedOwner: &webhookmodel.Owner{Kind: webhookmodel.TeamOwner, ID: id}}, func(dao store.TeamWriteDAO) error { return core.Delete(ctx, dao, p, input) })
 }
 func (s *Teams) Members(ctx context.Context, p model.Principal, id string) ([]model.TeamMemberProfile, error) {
 	id, err := core.ValidateRead(p, id)
@@ -309,7 +326,7 @@ func (s *Teams) changeMember(ctx context.Context, p model.Principal, id, user st
 		return core.TeamMemberResult{}, err
 	}
 	var result core.TeamMemberResult
-	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err = s.writeAccess(ctx, id, store.WebhookEligibilityChange{TeamIDs: []string{id}, UserIDs: []string{target}}, func(dao store.TeamWriteDAO) error {
 		var err error
 		result, err = core.ChangeMember(ctx, dao, p, target, input, remove)
 		return err
@@ -425,7 +442,7 @@ func (s *Teams) AcceptInvitation(ctx context.Context, p model.Principal, secret,
 		return core.TeamInvitationAcceptance{}, err
 	}
 	var result core.TeamInvitationAcceptance
-	err := s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err := s.writeAccess(ctx, id, store.WebhookEligibilityChange{TeamIDs: []string{id}, UserIDs: []string{p.UserID}}, func(dao store.TeamWriteDAO) error {
 		var err error
 		result, err = core.AcceptInvitation(ctx, dao, p, secret, s.now)
 		return err

@@ -1,4 +1,4 @@
--- Schema snapshot version: 45
+-- Schema snapshot version: 46
 
 CREATE TABLE "bot_configuration_preferences" (
     "user_id" "uuid" NOT NULL,
@@ -601,6 +601,132 @@ CREATE TABLE "users" (
     CONSTRAINT "users_uniauth_id_check" CHECK (("length"("uniauth_id") > 0))
 );
 
+CREATE TABLE "webhook_bindings" (
+    "id" "uuid" NOT NULL,
+    "subscription_id" "uuid" NOT NULL,
+    "event_type" "text" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "webhook_bindings_event_type_check" CHECK (("event_type" = ANY (ARRAY['task.created'::"text", 'task.status_changed'::"text", 'task.paused'::"text", 'task.deleted'::"text", 'task.step_updated'::"text", 'task.thread_posted'::"text"])))
+);
+
+CREATE TABLE "webhook_endpoints" (
+    "id" "uuid" NOT NULL,
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "name" "text" NOT NULL,
+    "enabled" boolean NOT NULL,
+    "config_version" bigint NOT NULL,
+    "destination_revision" bigint NOT NULL,
+    "destination_kind" "text" NOT NULL,
+    "adapter_version" bigint NOT NULL,
+    "destination_origin" "text" NOT NULL,
+    "encrypted_destination" "bytea" NOT NULL,
+    "active_key_id" "uuid",
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "webhook_endpoints_adapter_version_check" CHECK (("adapter_version" > 0)),
+    CONSTRAINT "webhook_endpoints_check" CHECK ((("deleted_at" IS NOT NULL) OR (("char_length"("name") >= 1) AND ("char_length"("name") <= 120)))),
+    CONSTRAINT "webhook_endpoints_config_version_check" CHECK (("config_version" > 0)),
+    CONSTRAINT "webhook_endpoints_destination_revision_check" CHECK (("destination_revision" > 0)),
+    CONSTRAINT "webhook_endpoints_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"])))
+);
+
+CREATE TABLE "webhook_operations" (
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "actor_user_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "issued_at" "text" NOT NULL,
+    "request_sha256" "text" NOT NULL,
+    "fingerprint" "bytea" NOT NULL,
+    "endpoint_id" "uuid" NOT NULL,
+    "effect" "text" NOT NULL,
+    "config_version_after" bigint NOT NULL,
+    "destination_revision_after" bigint NOT NULL,
+    "delivery_id" "uuid",
+    "generation_after" bigint,
+    "key_id" "uuid",
+    "signing_overlap_until" timestamp with time zone,
+    "recorded_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    CONSTRAINT "webhook_operations_check" CHECK (("expires_at" > "recorded_at")),
+    CONSTRAINT "webhook_operations_config_version_after_check" CHECK (("config_version_after" > 0)),
+    CONSTRAINT "webhook_operations_destination_revision_after_check" CHECK (("destination_revision_after" > 0)),
+    CONSTRAINT "webhook_operations_effect_check" CHECK (("effect" = ANY (ARRAY['applied'::"text", 'unchanged'::"text"]))),
+    CONSTRAINT "webhook_operations_fingerprint_check" CHECK (("octet_length"("fingerprint") = 32)),
+    CONSTRAINT "webhook_operations_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
+    CONSTRAINT "webhook_operations_request_sha256_check" CHECK (("request_sha256" ~ '^[0-9a-f]{64}$'::"text"))
+);
+
+CREATE TABLE "webhook_policies" (
+    "version" bigint NOT NULL,
+    "parameters" "bytea" NOT NULL,
+    "sha256" "bytea" NOT NULL,
+    CONSTRAINT "webhook_policies_sha256_check" CHECK (("octet_length"("sha256") = 32)),
+    CONSTRAINT "webhook_policies_version_check" CHECK (("version" > 0))
+);
+
+CREATE TABLE "webhook_quota_buckets" (
+    "bucket" smallint NOT NULL,
+    "records_used" bigint DEFAULT 0 NOT NULL,
+    "bytes_used" bigint DEFAULT 0 NOT NULL,
+    "active_records_used" bigint DEFAULT 0 NOT NULL,
+    "active_bytes_used" bigint DEFAULT 0 NOT NULL,
+    "operations_used" bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT "webhook_quota_buckets_active_bytes_used_check" CHECK (("active_bytes_used" >= 0)),
+    CONSTRAINT "webhook_quota_buckets_active_records_used_check" CHECK (("active_records_used" >= 0)),
+    CONSTRAINT "webhook_quota_buckets_bucket_check" CHECK ((("bucket" >= 0) AND ("bucket" <= 15))),
+    CONSTRAINT "webhook_quota_buckets_bytes_used_check" CHECK (("bytes_used" >= 0)),
+    CONSTRAINT "webhook_quota_buckets_operations_used_check" CHECK (("operations_used" >= 0)),
+    CONSTRAINT "webhook_quota_buckets_records_used_check" CHECK (("records_used" >= 0))
+);
+
+CREATE TABLE "webhook_quota_owners" (
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "bucket" smallint NOT NULL,
+    "records_used" bigint DEFAULT 0 NOT NULL,
+    "bytes_used" bigint DEFAULT 0 NOT NULL,
+    "active_records_used" bigint DEFAULT 0 NOT NULL,
+    "active_bytes_used" bigint DEFAULT 0 NOT NULL,
+    "operations_used" bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT "webhook_quota_owners_active_bytes_used_check" CHECK (("active_bytes_used" >= 0)),
+    CONSTRAINT "webhook_quota_owners_active_records_used_check" CHECK (("active_records_used" >= 0)),
+    CONSTRAINT "webhook_quota_owners_bucket_check" CHECK ((("bucket" >= 0) AND ("bucket" <= 15))),
+    CONSTRAINT "webhook_quota_owners_bytes_used_check" CHECK (("bytes_used" >= 0)),
+    CONSTRAINT "webhook_quota_owners_operations_used_check" CHECK (("operations_used" >= 0)),
+    CONSTRAINT "webhook_quota_owners_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
+    CONSTRAINT "webhook_quota_owners_records_used_check" CHECK (("records_used" >= 0))
+);
+
+CREATE TABLE "webhook_signing_keys" (
+    "id" "uuid" NOT NULL,
+    "endpoint_id" "uuid" NOT NULL,
+    "encrypted_secret" "bytea" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone,
+    "revoked_at" timestamp with time zone
+);
+
+CREATE TABLE "webhook_subscriptions" (
+    "id" "uuid" NOT NULL,
+    "endpoint_id" "uuid" NOT NULL,
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "authorization_state" "text" NOT NULL,
+    "authorization_epoch" bigint NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "webhook_subscriptions_authorization_epoch_check" CHECK (("authorization_epoch" > 0)),
+    CONSTRAINT "webhook_subscriptions_authorization_state_check" CHECK (("authorization_state" = ANY (ARRAY['active'::"text", 'confirmation_required'::"text"]))),
+    CONSTRAINT "webhook_subscriptions_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"])))
+);
+
 CREATE TABLE "workers" (
     "user_id" "uuid" NOT NULL,
     "worker_id" "uuid" NOT NULL,
@@ -822,6 +948,30 @@ ALTER TABLE ONLY "users"
 ALTER TABLE ONLY "users"
     ADD CONSTRAINT "users_uniauth_id_key" UNIQUE ("uniauth_id");
 
+ALTER TABLE ONLY "webhook_bindings"
+    ADD CONSTRAINT "webhook_bindings_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "webhook_endpoints"
+    ADD CONSTRAINT "webhook_endpoints_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "webhook_operations"
+    ADD CONSTRAINT "webhook_operations_pkey" PRIMARY KEY ("owner_kind", "owner_id", "operation_id");
+
+ALTER TABLE ONLY "webhook_policies"
+    ADD CONSTRAINT "webhook_policies_pkey" PRIMARY KEY ("version");
+
+ALTER TABLE ONLY "webhook_quota_buckets"
+    ADD CONSTRAINT "webhook_quota_buckets_pkey" PRIMARY KEY ("bucket");
+
+ALTER TABLE ONLY "webhook_quota_owners"
+    ADD CONSTRAINT "webhook_quota_owners_pkey" PRIMARY KEY ("owner_kind", "owner_id");
+
+ALTER TABLE ONLY "webhook_signing_keys"
+    ADD CONSTRAINT "webhook_signing_keys_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "webhook_subscriptions"
+    ADD CONSTRAINT "webhook_subscriptions_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "workers"
     ADD CONSTRAINT "workers_pkey" PRIMARY KEY ("user_id", "worker_id");
 
@@ -911,6 +1061,22 @@ CREATE UNIQUE INDEX "test_session_execution" ON "task_sessions" USING "btree" ("
 
 CREATE UNIQUE INDEX "test_session_registration" ON "task_sessions" USING "btree" ("owner_user_id", "registration_id") WHERE ("scope" = 'test'::"text");
 
+CREATE UNIQUE INDEX "webhook_bindings_active_selection" ON "webhook_bindings" USING "btree" ("subscription_id", "event_type") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "webhook_bindings_subscription" ON "webhook_bindings" USING "btree" ("subscription_id", "id");
+
+CREATE INDEX "webhook_endpoints_owner_list" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "created_at", "id");
+
+CREATE INDEX "webhook_operations_expiry" ON "webhook_operations" USING "btree" ("expires_at", "owner_kind", "owner_id", "operation_id");
+
+CREATE UNIQUE INDEX "webhook_signing_keys_active" ON "webhook_signing_keys" USING "btree" ("endpoint_id") WHERE (("revoked_at" IS NULL) AND ("expires_at" IS NULL));
+
+CREATE INDEX "webhook_signing_keys_endpoint" ON "webhook_signing_keys" USING "btree" ("endpoint_id", "id");
+
+CREATE INDEX "webhook_subscriptions_endpoint" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "id");
+
+CREATE INDEX "webhook_subscriptions_project_owner" ON "webhook_subscriptions" USING "btree" ("project_id", "owner_kind", "owner_id", "authorization_state", "id") WHERE ("deleted_at" IS NULL);
+
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
 
 ALTER TABLE ONLY "bot_configuration_preferences"
@@ -945,6 +1111,40 @@ INSERT INTO "oauth_authorization_cleanup_cursor" ("singleton", "next_kind") VALU
 INSERT INTO "oauth_credential_cleanup_cursor" ("singleton", "next_kind") VALUES (true, 0);
 
 INSERT INTO "private_transfer_ledger" ("singleton", "reserved_bytes", "outstanding_bytes") VALUES (true, 0, 0);
+
+INSERT INTO "webhook_policies" ("version", "parameters", "sha256") VALUES (1, '\x7b2276657273696f6e223a312c22656e64706f696e744c696d6974223a32302c22737562736372697074696f6e73506572456e64706f696e74223a35302c2262696e64696e6773506572537562736372697074696f6e223a362c226d617463686564456e64706f696e747350657250726f6a656374223a3235362c2273746f726167654275636b657473223a31362c226275636b65745265636f72644c696d6974223a36353533362c226275636b657442797465734c696d6974223a3236383433353435362c226275636b65744163746976655265636f72644c696d6974223a33323736382c226275636b657441637469766542797465734c696d6974223a3133343231373732382c226f776e65725265636f72644c696d6974223a33323736382c226f776e657242797465734c696d6974223a36373130383836342c226f776e65724163746976655265636f72644c696d6974223a32343537362c226f776e657241637469766542797465734c696d6974223a35303333313634382c226f7065726174696f6e4f776e65724c696d6974223a313032342c226f7065726174696f6e4275636b65744c696d6974223a383139322c226f7065726174696f6e4279746573223a343039362c226f7065726174696f6e526574656e74696f6e5365636f6e6473223a323539323030302c226f7065726174696f6e4d61784167655365636f6e6473223a3330302c226f7065726174696f6e467574757265536b65775365636f6e6473223a36302c22636f6e66696775726174696f6e5265717565737442797465734c696d6974223a3236323134342c226175746f6d61746963417474656d70744c696d6974223a31302c226175746f6d6174696357696e646f775365636f6e6473223a3235393230302c226175746f6d617469634f6666736574735365636f6e6473223a5b302c36302c3330302c313830302c373230302c32313630302c34333230302c38363430302c3137323830302c3235353630305d2c2272657472794d696e696d756d576169745365636f6e6473223a352c2272657472794a697474657250657263656e74223a31302c2272657472794a69747465724d6178696d756d5365636f6e6473223a313830302c226d616e75616c417474656d70744c696d6974223a332c227061796c6f616457696e646f775365636f6e6473223a3630343830302c226d65746164617461526574656e74696f6e5365636f6e6473223a323539323030302c22676c6f62616c4c656173654c696d6974223a33322c226f776e65724c656173654c696d6974223a342c22656e64706f696e744c656173654c696d6974223a312c22776f726b65727350657250726f63657373223a382c226874747054696d656f75745365636f6e6473223a31352c226c656173655365636f6e6473223a34352c2264624f7065726174696f6e5365636f6e6473223a332c226f776e657241637469766551756575654c696d6974223a313032342c22656e64706f696e7441637469766551756575654c696d6974223a3235362c226275636b657441637469766551756575654c696d6974223a343039362c227369676e696e674f7665726c61705365636f6e6473223a38363430302c227369676e696e674d6178696d756d4f7665726c61705365636f6e6473223a3630343830302c227369676e696e674b65794c696d6974223a322c22676342617463684c696d6974223a3530302c226763576f726b5365636f6e6473223a322c2267634275737944656c61795365636f6e6473223a312c22676349646c6544656c61795365636f6e6473223a36302c22636f6e6e65637454696d656f75745365636f6e6473223a352c22746c7348616e647368616b655365636f6e6473223a352c22726573706f6e73654865616465725365636f6e6473223a31302c2268747470426f647942797465734c696d6974223a36353533362c2268747470526573706f6e736548656164657242797465734c696d6974223a31363338342c2268747470436c617373696669636174696f6e42797465734c696d6974223a323034382c22706572736973746564526573706f6e736542797465734c696d6974223a302c226576656e7442617463684c696d6974223a322c226576656e7442797465734c696d6974223a36353533362c227265636f7264456e76656c6f70654279746573223a323034382c2264656c697665727952657365727665645265636f726473223a36332c226e616d65436861726163746572734c696d6974223a3132302c227175657279436861726163746572734c696d6974223a3230302c226c69737444656661756c744c696d6974223a35302c226c6973744d6178696d756d4c696d6974223a3130302c2275726c42797465734c696d6974223a343039367d', '\x06f151ec945f69c5822e00440f004768f2123eb1ebd6244fa4995337124a5625');
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (0, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (1, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (2, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (3, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (4, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (5, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (6, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (7, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (8, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (9, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (10, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (11, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (12, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (13, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (14, 0, 0, 0, 0, 0);
+
+INSERT INTO "webhook_quota_buckets" ("bucket", "records_used", "bytes_used", "active_records_used", "active_bytes_used", "operations_used") VALUES (15, 0, 0, 0, 0, 0);
 
 SELECT pg_catalog.setval('"bots_creation_order_seq"', 1, false);
 

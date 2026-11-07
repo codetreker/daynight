@@ -332,7 +332,10 @@ func TestEligibilityAndConfigurationCost(t *testing.T) {
 	if eligibility != webhookmodel.OwnerScopeChanged {
 		t.Fatal("ownership transfer was hidden")
 	}
-	cost := ConfigurationCost(endpoint)
+	cost, err := ConfigurationCost(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cost.Records != 5 || cost.Bytes != 5*(2<<10)+int64(len(endpoint.EncryptedDestination)+len(endpoint.SigningKeys[0].EncryptedSecret)) || cost.ActiveRecords != cost.Records {
 		t.Fatalf("configuration byte accounting: %#v", cost)
 	}
@@ -340,7 +343,10 @@ func TestEligibilityAndConfigurationCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retained := ConfigurationCost(deleted.Endpoint)
+	retained, err := ConfigurationCost(deleted.Endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if retained.Records != 4 || retained.ActiveRecords != 0 || retained.ActiveBytes != 0 {
 		t.Fatalf("retired proof accounting: %#v", retained)
 	}

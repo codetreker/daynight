@@ -61,12 +61,28 @@ func read(ctx context.Context, db store.SnapshotReader, op func(store.ProjectRea
 	}
 	return nil
 }
-func write(ctx context.Context, db store.ProjectWriter, id string, op func(store.ProjectWriteDAO) error) error {
+func writeScope(ctx context.Context, db store.ProjectWriter, id string, op func(store.ProjectWriteScope) error, after func(store.ProjectWriteScope) error) error {
 	var refusal *model.Fault
-	c, err := db.WriteProject(ctx, id, func(s store.ProjectWriteScope) error {
-		return completion.Capture(func() error { return op(s.ProjectDAO()) }, &refusal)
+	c, err := db.WriteProject(ctx, id, func(scope store.ProjectWriteScope) error {
+		// Eligibility errors must abort the source write; only business refusals
+		// participate in the existing completed-check behavior.
+		if err := completion.Capture(func() error { return op(scope) }, &refusal); err != nil {
+			return err
+		}
+		if refusal != nil || after == nil {
+			return nil
+		}
+		return after(scope)
 	})
 	return completed(c, err, refusal)
+}
+func write(ctx context.Context, db store.ProjectWriter, id string, op func(store.ProjectWriteDAO) error) error {
+	return writeScope(ctx, db, id, func(scope store.ProjectWriteScope) error { return op(scope.ProjectDAO()) }, nil)
+}
+func writeAccess(ctx context.Context, db store.ProjectWriter, id string, op func(store.ProjectWriteDAO) error) error {
+	return writeScope(ctx, db, id, func(scope store.ProjectWriteScope) error { return op(scope.ProjectDAO()) }, func(scope store.ProjectWriteScope) error {
+		return scope.WebhookEligibilityDAO().RefreshAffected(ctx, store.WebhookEligibilityChange{ProjectIDs: []string{id}})
+	})
 }
 func (s *Projects) Create(ctx context.Context, p model.Principal, input core.CreateProject) (model.Project, error) {
 	project, _, err := s.CreateWithAccess(ctx, p, input)
@@ -215,7 +231,10 @@ func (s *Projects) Transfer(ctx context.Context, p model.Principal, id string, i
 	c, err := s.store.WriteProject(ctx, id, func(scope store.ProjectWriteScope) error {
 		var err error
 		result, err = core.Transfer(ctx, scope.ProjectDAO(), p, id, source, target, input)
-		return err
+		if err != nil {
+			return err
+		}
+		return scope.WebhookEligibilityDAO().RefreshAffected(ctx, store.WebhookEligibilityChange{ProjectIDs: []string{id}})
 	})
 	if err := completed(c, err, nil); err != nil {
 		return core.TransferReceipt{}, err

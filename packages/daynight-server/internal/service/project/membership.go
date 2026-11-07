@@ -26,12 +26,13 @@ func (s *Memberships) read(ctx context.Context, p model.Principal, id string, ad
 		return op(dao, access)
 	})
 }
-func (s *Memberships) write(ctx context.Context, p model.Principal, id string, op func(store.ProjectWriteDAO) error) error {
+func (s *Memberships) writeScoped(ctx context.Context, p model.Principal, id string, op func(store.ProjectWriteDAO) error, refresh bool) error {
 	id, err := core.ValidateRead(p, id)
 	if err != nil {
 		return err
 	}
-	err = write(ctx, s.store, id, func(dao store.ProjectWriteDAO) error {
+	err = writeScope(ctx, s.store, id, func(scope store.ProjectWriteScope) error {
+		dao := scope.ProjectDAO()
 		access, err := core.RequireProjectWrite(ctx, dao, p)
 		if err != nil {
 			return err
@@ -40,8 +41,19 @@ func (s *Memberships) write(ctx context.Context, p model.Principal, id string, o
 			return err
 		}
 		return op(dao)
+	}, func(scope store.ProjectWriteScope) error {
+		if refresh {
+			return scope.WebhookEligibilityDAO().RefreshAffected(ctx, store.WebhookEligibilityChange{ProjectIDs: []string{id}})
+		}
+		return nil
 	})
 	return core.ProjectWriteError(err)
+}
+func (s *Memberships) write(ctx context.Context, p model.Principal, id string, op func(store.ProjectWriteDAO) error) error {
+	return s.writeScoped(ctx, p, id, op, false)
+}
+func (s *Memberships) writeAccess(ctx context.Context, p model.Principal, id string, op func(store.ProjectWriteDAO) error) error {
+	return s.writeScoped(ctx, p, id, op, true)
 }
 func (s *Memberships) List(ctx context.Context, p model.Principal, id string) ([]model.ProjectParticipant, error) {
 	result, err := s.ListWithAccess(ctx, p, id)
@@ -71,7 +83,7 @@ func (s *Memberships) SetRole(ctx context.Context, p model.Principal, projectID,
 		return model.ProjectGrant{}, err
 	}
 	var result model.ProjectGrant
-	err = s.write(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
+	err = s.writeAccess(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
 		var err error
 		result, err = core.SetRole(ctx, dao, id, input)
 		return err
@@ -86,7 +98,7 @@ func (s *Memberships) Remove(ctx context.Context, p model.Principal, projectID, 
 	if err != nil {
 		return err
 	}
-	return s.write(ctx, p, projectID, func(dao store.ProjectWriteDAO) error { return core.Remove(ctx, dao, id, input) })
+	return s.writeAccess(ctx, p, projectID, func(dao store.ProjectWriteDAO) error { return core.Remove(ctx, dao, id, input) })
 }
 func (s *Memberships) SetGrant(ctx context.Context, p model.Principal, projectID, userID string, input core.SetProjectGrant) (core.SetGrantResult, error) {
 	id, err := core.ValidateSetGrant(p, userID, input)
@@ -94,7 +106,7 @@ func (s *Memberships) SetGrant(ctx context.Context, p model.Principal, projectID
 		return core.SetGrantResult{}, err
 	}
 	var result core.SetGrantResult
-	err = s.write(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
+	err = s.writeAccess(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
 		var err error
 		result, err = core.SetGrant(ctx, dao, p, id, input)
 		return err
@@ -114,7 +126,7 @@ func (s *Memberships) RemoveGrant(ctx context.Context, p model.Principal, projec
 		return core.RemoveGrantResult{}, err
 	}
 	var result core.RemoveGrantResult
-	err = s.write(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
+	err = s.writeAccess(ctx, p, projectID, func(dao store.ProjectWriteDAO) error {
 		var err error
 		result, err = core.RemoveGrant(ctx, dao, p, projectID, id, input)
 		return err
@@ -190,7 +202,7 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, p model.Principal, s
 		return core.InvitationAcceptance{}, err
 	}
 	var result core.InvitationAcceptance
-	err := write(ctx, s.store, id, func(dao store.ProjectWriteDAO) error {
+	err := writeAccess(ctx, s.store, id, func(dao store.ProjectWriteDAO) error {
 		var err error
 		result, err = core.AcceptInvitation(ctx, dao, p, id, secret, s.now)
 		return err

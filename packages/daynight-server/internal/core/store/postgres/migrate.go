@@ -144,6 +144,9 @@ var uploadChunksSQL string
 //go:embed migrations/044_project_soft_delete.sql
 var projectSoftDeleteSQL string
 
+//go:embed migrations/046_webhook_configuration.sql
+var webhookConfigurationSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -197,6 +200,7 @@ var schemaMigrations = []migration{
 	{version: 43, sql: uploadChunksSQL},
 	{version: 44, sql: projectSoftDeleteSQL},
 	{version: 45, sql: botNativePreferencesSQL},
+	{version: 46, sql: webhookConfigurationSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

@@ -75,9 +75,9 @@ func (d *confirmedTeamDB) CreateTeam(_ context.Context, _ string, operation func
 	return store.Completion{Outcome: store.TransactionCommitted}, nil
 }
 
-func (d *confirmedTeamDB) WriteTeam(_ context.Context, _ string, operation func(store.TeamWriteDAO) error) (store.Completion, error) {
+func (d *confirmedTeamDB) WriteTeam(_ context.Context, _ string, operation func(store.TeamWriteScope) error) (store.Completion, error) {
 	d.writes++
-	if err := operation(unknownWriter{}); err != nil {
+	if err := operation(unknownTeamScope{db: &d.unknownTeamDB}); err != nil {
 		return store.Completion{}, err
 	}
 	return store.Completion{Outcome: store.TransactionCommitted}, nil

@@ -14,6 +14,8 @@ The configuration module uses neutral scoped DAO contracts and a PostgreSQL back
 
 Configuration effects and bounded operation receipts commit together. Receipt identity includes the original issuedAt and server-calculated request-body SHA-256 as well as a canonical semantic fingerprint. Existing receipts are checked before new-operation freshness. An absent receipt or an uncertain COMMIT cannot establish rollback.
 
+Each non-ciphertext metadata record, including its parent identities and public destination origin, must fit the serialized 2 KiB billing envelope. Ciphertext adds its actual persisted byte length. A syntactically valid destination must still pass this accounting boundary before reservation; variable public metadata cannot be hidden inside the fixed charge.
+
 Authenticated recoverable storage uses an immutable runtime AES-256-GCM keyring. Each write uses a fresh twelve-byte nonce, and associated data binds both envelope metadata and a separate resource context. New ciphertext uses the active master; old keys recover retained records. The current management module is independently mountable, while public application registration requires a complete capture/delivery backend.
 
 The [subscription design](../../../../docs/design/outbound-webhook-subscriptions.md) owns mechanisms, permissions and validation boundaries.
@@ -27,6 +29,8 @@ The [subscription design](../../../../docs/design/outbound-webhook-subscriptions
 **Send configuration changes without operation receipts.** A lost response cannot reveal whether the effect committed. Bounded receipts retain the original request binding without storing a duplicate secret or requiring automatic replay.
 
 **Hash signing secrets.** One-way token hashing cannot recover HMAC key bytes for a later request. Recoverable authenticated encryption protects the stored material and binds it to its intended record. AES key sizes and GCM behavior follow the [Go AES documentation](https://pkg.go.dev/crypto/aes#NewCipher) and [AEAD documentation](https://pkg.go.dev/crypto/cipher#AEAD).
+
+**Cap the entire destination URL at the metadata envelope size.** Only the origin is public record metadata; paths and queries belong to encrypted configuration and are billed by actual ciphertext bytes. A blanket URL cap would remove valid capacity while avoiding the required per-record accounting proof.
 
 ## Consequences
 

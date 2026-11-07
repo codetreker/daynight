@@ -205,6 +205,9 @@ func (s *Projects) Delete(ctx context.Context, p model.Principal, id string) (De
 		if err = session.RetireProject(ctx, scope.SessionDAO(), id); err != nil {
 			return err
 		}
+		if err = scope.WebhookEligibilityDAO().RefreshAffected(ctx, store.WebhookEligibilityChange{ProjectIDs: []string{id}}); err != nil {
+			return err
+		}
 		ticket = s.engine.CaptureProjectRetirement(id)
 		candidate = &DeletionReceipt{ProjectID: id, Deleted: true}
 		return nil

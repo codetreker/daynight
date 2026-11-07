@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -21,12 +22,35 @@ const unknownTarget = "33333333-3333-4333-8333-333333333333"
 type unknownTeamDB struct {
 	store.TeamWriter
 	store.SnapshotReader
-	created string
-	writes  int
+	created   string
+	writes    int
+	refreshes int
 }
 type unknownSnapshot struct{ store.SnapshotScope }
 type unknownReader struct{ store.TeamReader }
 type unknownWriter struct{ store.TeamWriteDAO }
+type unknownTeamScope struct {
+	store.TeamWriteScope
+	db *unknownTeamDB
+}
+
+func (s unknownTeamScope) TeamDAO() store.TeamWriteDAO { return unknownWriter{} }
+func (s unknownTeamScope) WebhookEligibilityDAO() store.WebhookEligibilityDAO {
+	return unknownTeamEligibility{db: s.db}
+}
+
+type unknownTeamEligibility struct{ db *unknownTeamDB }
+
+func (d unknownTeamEligibility) RefreshAffected(_ context.Context, change store.WebhookEligibilityChange) error {
+	membership := len(change.TeamIDs) == 1 && change.TeamIDs[0] == unknownTeam && len(change.UserIDs) == 1 && (change.UserIDs[0] == unknownActor || change.UserIDs[0] == unknownTarget) && len(change.ProjectIDs) == 0 && change.DeletedOwner == nil
+	deleted := len(change.TeamIDs) == 0 && len(change.UserIDs) == 0 && len(change.ProjectIDs) == 0 && change.DeletedOwner != nil && change.DeletedOwner.Kind == "team" && change.DeletedOwner.ID == unknownTeam
+	if !membership && !deleted {
+		return fmt.Errorf("unexpected Team eligibility selection: %#v", change)
+	}
+	d.db.refreshes++
+	return nil
+}
+
 type unknownCreator struct {
 	store.TeamCreationDAO
 	db *unknownTeamDB
@@ -79,9 +103,9 @@ func (d *unknownTeamDB) CreateTeam(_ context.Context, _ string, f func(store.Tea
 	}
 	return store.Completion{Outcome: store.TransactionUnknown}, unknownCommit()
 }
-func (d *unknownTeamDB) WriteTeam(_ context.Context, _ string, f func(store.TeamWriteDAO) error) (store.Completion, error) {
+func (d *unknownTeamDB) WriteTeam(_ context.Context, _ string, f func(store.TeamWriteScope) error) (store.Completion, error) {
 	d.writes++
-	if err := f(unknownWriter{}); err != nil {
+	if err := f(unknownTeamScope{db: d}); err != nil {
 		return store.Completion{}, err
 	}
 	return store.Completion{Outcome: store.TransactionUnknown}, unknownCommit()
@@ -111,6 +135,7 @@ func TestTeamUnknownWritesRetainReferencesInMCPEnvelope(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := db.writes
+			beforeRefresh := db.refreshes
 			result, err := c.CallTool(context.Background(), &sdk.CallToolParams{Name: tc.name, Arguments: tc.args})
 			if err != nil || !result.IsError {
 				t.Fatalf("result=%#v error=%v", result, err)
@@ -138,6 +163,13 @@ func TestTeamUnknownWritesRetainReferencesInMCPEnvelope(t *testing.T) {
 			}
 			if len(envelope.Data) != 0 || envelope.Error.WriteOutcome != "unknown" || envelope.Error.Refs["teamId"] != expected || (tc.user != "" && envelope.Error.Refs["userId"] != tc.user) || db.writes != before+1 {
 				t.Fatalf("unexpected unknown receipt %s writes=%d", raw, db.writes-before)
+			}
+			expectedRefresh := 1
+			if tc.name == "team_create" || tc.name == "team_rename" {
+				expectedRefresh = 0
+			}
+			if db.refreshes != beforeRefresh+expectedRefresh {
+				t.Fatalf("unknown write omitted or invented its ACL refresh: %d", db.refreshes-beforeRefresh)
 			}
 		})
 	}

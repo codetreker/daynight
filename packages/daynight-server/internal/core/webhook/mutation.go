@@ -91,6 +91,9 @@ func PrepareCreate(input CreateInput, owner webhookmodel.Owner, access webhookmo
 		}
 		endpoint.Subscriptions = append(endpoint.Subscriptions, subscription)
 	}
+	if err := ValidateConfigurationMetadata(endpoint); err != nil {
+		return PreparedMutation{}, err
+	}
 	return PreparedMutation{Endpoint: endpoint, Destination: &input.Destination, Changed: true, NewSigningKeyID: keyID}, nil
 }
 
@@ -345,6 +348,9 @@ func PreparePatch(input PatchInput, current webhookmodel.Endpoint, currentDestin
 			return PreparedMutation{}, err
 		}
 	}
+	if err := ValidateConfigurationMetadata(result); err != nil {
+		return PreparedMutation{}, err
+	}
 	return PreparedMutation{Endpoint: result, Destination: destination, Changed: changed}, nil
 }
 
@@ -376,6 +382,9 @@ func PrepareDelete(input DeleteInput, current webhookmodel.Endpoint, access webh
 		}
 	}
 	if err := advanceVersion(&result, false, now); err != nil {
+		return PreparedMutation{}, err
+	}
+	if err := ValidateConfigurationMetadata(result); err != nil {
 		return PreparedMutation{}, err
 	}
 	return PreparedMutation{Endpoint: result, Changed: true}, nil
@@ -419,12 +428,18 @@ func PrepareRotation(input RotateInput, current webhookmodel.Endpoint, access we
 	if err := advanceVersion(&result, false, now); err != nil {
 		return PreparedMutation{}, err
 	}
+	if err := ValidateConfigurationMetadata(result); err != nil {
+		return PreparedMutation{}, err
+	}
 	return PreparedMutation{Endpoint: result, Changed: true, NewSigningKeyID: keyID}, nil
 }
 
 // Every retained configuration row is charged a fixed envelope, with opaque
 // ciphertext bytes added exactly. Retired proofs remain charged until safe GC.
-func ConfigurationCost(endpoint webhookmodel.Endpoint) store.WebhookChangeCost {
+func ConfigurationCost(endpoint webhookmodel.Endpoint) (store.WebhookChangeCost, error) {
+	if err := ValidateConfigurationMetadata(endpoint); err != nil {
+		return store.WebhookChangeCost{}, err
+	}
 	cost := store.WebhookChangeCost{Records: 1, Bytes: 2<<10 + int64(len(endpoint.EncryptedDestination))}
 	if endpoint.DeletedAt == nil {
 		cost.ActiveRecords, cost.ActiveBytes = 1, cost.Bytes
@@ -454,7 +469,7 @@ func ConfigurationCost(endpoint webhookmodel.Endpoint) store.WebhookChangeCost {
 			cost.ActiveBytes += bytes
 		}
 	}
-	return cost
+	return cost, nil
 }
 
 func CostDifference(after, before store.WebhookChangeCost) store.WebhookChangeCost {
