@@ -41,7 +41,7 @@ func (inputValidationDAO) UpdateTask(context.Context, string, store.TaskWrite) (
 	panic("candidate preparation unexpectedly updated a Task")
 }
 
-func (inputValidationDAO) DeleteTask(context.Context, string, bool) error {
+func (inputValidationDAO) DeleteTask(context.Context, string, bool) (model.TaskTombstone, error) {
 	panic("candidate preparation unexpectedly deleted a Task")
 }
 

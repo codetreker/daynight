@@ -54,6 +54,14 @@ install an OS daemon, migrate conversations automatically or provide Webhook/MCP
 adapters. CLI/Server and production-page browser acceptance are distinct from
 live Provider acceptance.
 
+## Webhook capture
+
+Task, Step and Thread writes capture eligible notification responsibilities in
+their source transactions. The [capture design](../../docs/design/webhook-capture.md)
+describes the fixed audience, stored request bytes, match proof and keyring
+requirements. This module does not send notifications or mount the management
+routes in the public application.
+
 ## Contracts
 
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and

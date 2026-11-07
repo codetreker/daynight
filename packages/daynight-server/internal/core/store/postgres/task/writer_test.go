@@ -24,10 +24,18 @@ func (tx *recordingWriterTx) Exec(_ context.Context, _ string, args ...any) (pgc
 	return pgconn.NewCommandTag("UPDATE 1"), nil
 }
 
+type failingRow struct{ err error }
+
+func (r failingRow) Scan(...any) error { return r.err }
+func (tx *recordingWriterTx) QueryRow(_ context.Context, _ string, args ...any) pgx.Row {
+	tx.arguments = append(tx.arguments, args)
+	return failingRow{tx.cause}
+}
+
 func TestDeleteTaskRetainsProjectScopeAndError(t *testing.T) {
 	cause := errors.New("delete failed")
 	tx := &recordingWriterTx{cause: cause}
-	err := NewWriter(tx, "project").DeleteTask(context.Background(), "task", true)
+	_, err := NewWriter(tx, "project").DeleteTask(context.Background(), "task", true)
 	if !errors.Is(err, cause) || len(tx.arguments) != 2 {
 		t.Fatalf("delete returned %v after %d statements", err, len(tx.arguments))
 	}

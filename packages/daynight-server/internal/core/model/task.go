@@ -46,3 +46,11 @@ type Task struct {
 	AllowAgents       bool
 	Ready             bool
 }
+
+// TaskTombstone is the authoritative result of a successful soft deletion.
+type TaskTombstone struct {
+	ProjectID string
+	ID        string
+	Version   int64
+	DeletedAt time.Time
+}

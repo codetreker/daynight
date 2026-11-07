@@ -123,6 +123,15 @@ func validKeyID(id string) bool {
 
 func (k *Keyring) ActiveKeyID() string { return k.active }
 
+// HasKey reports whether a master key reference can be opened by this keyring.
+func (k *Keyring) HasKey(id string) bool {
+	if k == nil {
+		return false
+	}
+	_, ok := k.keys[id]
+	return ok
+}
+
 // Seal always uses the runtime's active master key. A nil random source uses
 // crypto/rand; another source allows controlled failure injection.
 func (k *Keyring) Seal(plaintext []byte, binding []string, random io.Reader) (Envelope, error) {

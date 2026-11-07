@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	threadcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/thread"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
 const threadOperationTimeout = 10 * time.Second
@@ -20,13 +21,14 @@ type TaskThreads struct {
 		store.SnapshotReader
 		store.ThreadWriter
 	}
+	capturer Capturer
 }
 
 func NewTaskThreads(database interface {
 	store.SnapshotReader
 	store.ThreadWriter
-}) *TaskThreads {
-	return &TaskThreads{store: database}
+}, capture ...Capturer) *TaskThreads {
+	return &TaskThreads{store: database, capturer: capturer(capture)}
 }
 
 type CreateThreadMessage struct {
@@ -143,7 +145,8 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 			return err
 		}
 		result = ThreadMessageDocument{Message: message, JSON: encoded}
-		return nil
+		f := protocol.Fact{Type: protocol.ThreadPosted, ProjectID: projectID, TaskID: taskID, MessageID: message.ID, OccurredAt: message.CreatedAt, CreatedAt: &message.CreatedAt, ReplyTo: message.ReplyTo}
+		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), []protocol.Fact{f})
 	})
 	if err == nil && completion.Outcome != store.TransactionCommitted {
 		err = errors.New("thread write did not commit")

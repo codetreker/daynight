@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -14,7 +15,11 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/codetreker/uniauth/sdk/go"
 )
 
@@ -56,9 +61,9 @@ func NewIdentityClient(c config.Config) (*uniauth.Client, error) {
 
 // NewModules assembles modules from already-owned dependencies. Their owner must
 // stop the engine before closing those dependencies.
-func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client) *App {
+func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
 	app := &App{
-		Application: application.New(database, files, client, c.UniAuthCallbackURL, c.TaskSyncOverlap),
+		Application: application.New(database, files, client, c.UniAuthCallbackURL, c.TaskSyncOverlap, capture...),
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
@@ -119,7 +124,40 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	if err != nil {
 		return nil, errors.Join(err, files.Close())
 	}
-	app := NewModules(c, database.Transactions, database.Ready, files, client)
+	var keys *secretbox.Keyring
+	if c.WebhookKeyringFile != "" {
+		data, readErr := os.ReadFile(c.WebhookKeyringFile)
+		if readErr != nil {
+			database.Close()
+			return nil, errors.Join(&config.ConfigurationError{Field: "DAYNIGHT_WEBHOOK_KEYRING_FILE", Rule: "must be readable", Cause: readErr}, files.Close())
+		}
+		keys, readErr = secretbox.Parse(data)
+		if readErr != nil {
+			database.Close()
+			return nil, errors.Join(&config.ConfigurationError{Field: "DAYNIGHT_WEBHOOK_KEYRING_FILE", Rule: "must contain a valid keyring", Cause: readErr}, files.Close())
+		}
+	}
+	refs, ok := database.Transactions.(store.WebhookMasterReferences)
+	if !ok {
+		database.Close()
+		return nil, errors.Join(errors.New("webhook master key reference scan unavailable"), files.Close())
+	}
+	ids, err := refs.WebhookMasterKeyIDs(startup)
+	if err != nil {
+		database.Close()
+		return nil, errors.Join(err, files.Close())
+	}
+	for _, id := range ids {
+		if !keys.HasKey(id) {
+			database.Close()
+			return nil, errors.Join(secretbox.ErrMissingKey, files.Close())
+		}
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	capture := &webhook.Capturer{Keys: keys, Logger: logger, RequestID: requestid.From}
+	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
 	app.files, app.persistence = files, database
 	if app.PrivateContent == nil {
 		return nil, errors.Join(errors.New("private transfer storage is unavailable"), app.Close(context.Background()))

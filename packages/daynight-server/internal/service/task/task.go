@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	"github.com/google/uuid"
 )
 
@@ -21,11 +22,12 @@ type taskStore interface {
 }
 
 type Tasks struct {
-	store taskStore
+	store    taskStore
+	capturer Capturer
 }
 
-func NewTasks(database taskStore) *Tasks {
-	return &Tasks{store: database}
+func NewTasks(database taskStore, capture ...Capturer) *Tasks {
+	return &Tasks{store: database, capturer: capturer(capture)}
 }
 
 type TaskListRequest struct {
@@ -122,20 +124,27 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 			return err
 		}
 		if !mutation.Changed {
-			result, err = taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
+			applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
+			result = applied.Task
 			if err != nil {
 				return err
 			}
 			return admitTaskResponse(ctx, result, false)
 		}
 		if mutation.Delete {
-			if _, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation); err != nil {
+			applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
+			if err != nil {
 				return err
 			}
 			if err := sessioncore.FreezeTaskSessions(ctx, tx.SessionDAO(), mutation.ID, model.TaskTodo, nil); err != nil {
 				return err
 			}
-			return tx.ProjectDAO().InvalidateTaskCache(ctx)
+			if err := tx.ProjectDAO().InvalidateTaskCache(ctx); err != nil {
+				return err
+			}
+			tombstone := applied.Tombstone
+			f := protocol.Fact{Type: protocol.Deleted, ProjectID: tombstone.ProjectID, TaskID: tombstone.ID, TaskVersion: tombstone.Version, OccurredAt: tombstone.DeletedAt, DeletedAt: &tombstone.DeletedAt}
+			return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), []protocol.Fact{f})
 		}
 		mutation, err = enforceAssignmentTransition(ctx, tx, mutation)
 		if err != nil {
@@ -144,14 +153,25 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 			}
 			return err
 		}
-		result, err = taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
+		applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
+		result = applied.Task
 		if err == nil {
 			err = admitTaskResponse(ctx, result, true)
 		}
 		if err == nil && !mutation.Create {
 			err = sessioncore.FreezeTaskSessions(ctx, tx.SessionDAO(), mutation.ID, mutation.Values.Status, mutation.Values.Properties)
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		facts, err := taskFacts(mutation.Create, mutation.Current, result)
+		if err != nil {
+			return err
+		}
+		if len(facts) == 0 {
+			return nil
+		}
+		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), facts)
 	})
 	if err != nil {
 		err = projectcore.ProjectWriteError(err)

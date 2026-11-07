@@ -36,6 +36,7 @@ type ProjectCreationTeam struct {
 
 type ProjectWriteScope interface {
 	EligibilityDAO() WebhookEligibilityDAO
+	CaptureDAO() WebhookCaptureDAO
 	ProjectDAO() ProjectWriteDAO
 	TaskDAO() TaskWriteDAO
 	SessionDAO() ProjectSessionDAO
@@ -70,7 +71,7 @@ type TaskWriteDAO interface {
 	UpdateTask(context.Context, string, TaskWrite) (model.Task, error)
 	ObservedAt(context.Context) (time.Time, error)
 	DependentIDs(context.Context, string) ([]string, error)
-	DeleteTask(context.Context, string, bool) error
+	DeleteTask(context.Context, string, bool) (model.TaskTombstone, error)
 	TaskHeader(context.Context, string) (model.TaskHeader, error)
 	TaskSteps(context.Context, string) ([]model.TaskStep, error)
 	InsertTaskStep(context.Context, string, model.TaskStep) error
