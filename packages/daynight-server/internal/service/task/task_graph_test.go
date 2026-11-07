@@ -16,9 +16,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
-func seedGraph(t *testing.T, database *store.Store, projectID string, nodes, edges int) {
+func seedGraph(t *testing.T, database *postgres.Store, projectID string, nodes, edges int) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, version, created_at, updated_at)
@@ -37,7 +38,7 @@ func seedGraph(t *testing.T, database *store.Store, projectID string, nodes, edg
 
 // A full chain keeps boundary traversal deep; convergent extra edges exercise
 // the independent edge limit while retaining every node in the component.
-func seedConnectedGraph(t *testing.T, database *store.Store, projectID string, nodes, edges int) string {
+func seedConnectedGraph(t *testing.T, database *postgres.Store, projectID string, nodes, edges int) string {
 	t.Helper()
 	ctx := context.Background()
 	seedGraph(t, database, projectID, nodes, 0)

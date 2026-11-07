@@ -181,7 +181,7 @@ func TestTaskPropertyResourceWireLimitAndDatabaseFailure(t *testing.T) {
 	if !reflect.DeepEqual(atLimit, initial) {
 		t.Fatal("exact-limit no-op changed values")
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodPut, path+"/pullRequests", body+" "), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, projectRequest(handler, http.MethodPut, path+"/pullRequests", body+" "), http.StatusRequestEntityTooLarge, "payload_too_large")
 	if _, err := database.Pool.Exec(context.Background(), "ALTER TABLE task_properties RENAME TO private_property_table_secret"); err != nil {
 		t.Fatal(err)
 	}
@@ -294,5 +294,76 @@ func TestWorkerClaimRejectsMalformedResourceIDs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
 		t.Fatal("refused worker resource request changed task or created claim")
+	}
+}
+
+func TestPausedBlockedTaskRetainsDependencyAndInventory(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	project := taskProject(t, handler)
+	prerequisite := createHTTPTask(t, handler, project.ID, "Prerequisite")
+	target := createHTTPTask(t, handler, project.ID, "Dependent", prerequisite.ID)
+	result := propertyResource(t, handler, http.MethodPut, taskPath(target)+"/properties/paused", map[string]any{"version": target.Version, "valueText": "true"})
+	read := readHTTPTask(t, handler, target)
+	if result.Version != target.Version+1 || read.Version != result.Version || string(read.Properties["paused"]) != "true" || read.Status != "todo" || read.Ready || !reflect.DeepEqual(read.DependsOn, []string{prerequisite.ID}) || !reflect.DeepEqual(read.BlockedBy, []string{prerequisite.ID}) {
+		t.Fatalf("paused dependency state: %+v", read)
+	}
+	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID), ""), http.StatusOK)
+	if len(page.Items) != 2 || page.NextCursor != nil {
+		t.Fatalf("paused task inventory: %+v", page)
+	}
+	found := map[string]bool{}
+	for _, item := range page.Items {
+		if item.ProjectID != project.ID || found[item.ID] {
+			t.Fatalf("paused task inventory crossed scope or repeated an ID: %+v", page)
+		}
+		found[item.ID] = true
+		if item.ID == target.ID && (string(item.Properties["paused"]) != "true" || item.Status != "todo" || item.Ready || !reflect.DeepEqual(item.DependsOn, []string{prerequisite.ID}) || !reflect.DeepEqual(item.BlockedBy, []string{prerequisite.ID})) {
+			t.Fatalf("paused task list lost dependency state: %+v", item)
+		}
+	}
+	if !found[prerequisite.ID] || !found[target.ID] {
+		t.Fatalf("paused task inventory lost an ID: %+v", page)
+	}
+}
+
+func TestTaskWriteAdmissionHTTP(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	project := taskProject(t, handler)
+	collection := taskCollection(project.ID)
+	valid := map[string]any{"title": strings.Repeat("界", 341) + "x", "description": strings.Repeat("d", 65536)}
+	created := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, collection, jsonBody(t, valid)), http.StatusCreated)
+	for _, input := range []map[string]any{
+		{"title": strings.Repeat("界", 341) + "xx"},
+		{"title": "x", "description": strings.Repeat("d", 65537)},
+		{"title": " ", "description": "valid"},
+	} {
+		assertProjectError(t, projectRequest(handler, http.MethodPost, collection, jsonBody(t, input)), http.StatusBadRequest, "invalid_input")
+	}
+	path := taskPath(created) + "/properties/pullRequests"
+	prs := []map[string]string{{"url": strings.Repeat("x", 2000), "title": ""}, {"url": strings.Repeat("x", 2000), "title": ""}, {"url": strings.Repeat("x", 2000), "title": ""}, {"url": strings.Repeat("x", 2000), "title": ""}}
+	raw, err := json.Marshal(prs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs[0]["title"] = strings.Repeat("q", 8192-len(raw))
+	raw, err = json.Marshal(prs)
+	if err != nil || len(raw) != 8192 {
+		t.Fatalf("boundary fixture: %d %v", len(raw), err)
+	}
+	set := propertyResource(t, handler, http.MethodPut, path, map[string]any{"version": created.Version, "valueText": string(raw)})
+	before := readHTTPTask(t, handler, created)
+	prs[0]["title"] += "q"
+	raw, err = json.Marshal(prs)
+	if err != nil || len(raw) != 8193 {
+		t.Fatalf("over-limit fixture: %d %v", len(raw), err)
+	}
+	assertProjectError(t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"version": set.Version, "valueText": string(raw)})), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"version": created.Version, "valueText": string(raw)})), http.StatusConflict, "version_conflict")
+	patch := map[string]any{"version": set.Version, "title": "Must roll back", "properties": map[string]any{"pullRequests": prs, "paused": true}}
+	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(created), jsonBody(t, patch)), http.StatusBadRequest, "invalid_input")
+	patch["version"] = created.Version
+	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(created), jsonBody(t, patch)), http.StatusConflict, "version_conflict")
+	if after := readHTTPTask(t, handler, created); !reflect.DeepEqual(before, after) {
+		t.Fatal("rejected property changed task")
 	}
 }

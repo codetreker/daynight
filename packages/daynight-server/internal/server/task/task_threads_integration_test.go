@@ -144,7 +144,7 @@ func TestThreadHTTPStrictInputsAndRefusals(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	assertProjectError(t, recorder, http.StatusBadRequest, "invalid_input")
-	assertProjectError(t, projectRequest(handler, http.MethodPost, path, `{"body":"`+strings.Repeat("x", 1<<20)+`"}`), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, projectRequest(handler, http.MethodPost, path, `{"body":"`+strings.Repeat("x", 1<<20)+`"}`), http.StatusRequestEntityTooLarge, "payload_too_large")
 	for _, query := range []string{"?", "?count=1"} {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, path+query, `{"body":"x"}`), http.StatusBadRequest, "invalid_input")
 	}

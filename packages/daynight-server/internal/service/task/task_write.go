@@ -10,6 +10,13 @@ import (
 )
 
 func taskWriteFault(err error) *model.Fault {
+	if failed, _ := store.DatabaseErrorFacts(err); failed {
+		return nil
+	}
+	var transaction *store.TransactionError
+	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
+		return nil
+	}
 	var fault *model.Fault
 	if errors.As(err, &fault) {
 		return fault
@@ -18,7 +25,7 @@ func taskWriteFault(err error) *model.Fault {
 }
 
 func enforceAssignmentTransition(ctx context.Context, tx store.ProjectWriteScope, mutation taskcore.Mutation) (taskcore.Mutation, error) {
-	changed, err := taskcore.AssignmentChanged(mutation.Current, mutation.Values)
+	values, changed, err := taskcore.AssignmentCandidate(mutation.Current, mutation.Values)
 	if err != nil {
 		return taskcore.Mutation{}, err
 	}
@@ -33,6 +40,6 @@ func enforceAssignmentTransition(ctx context.Context, tx store.ProjectWriteScope
 			return taskcore.Mutation{}, err
 		}
 	}
-	mutation.Values.AllowAgents = false
+	mutation.Values = values
 	return mutation, nil
 }

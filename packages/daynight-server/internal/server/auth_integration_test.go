@@ -82,7 +82,7 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	config.PublicOrigin, config.UniAuthURL = origin, ready.Origin
 	config.UniAuthAppID, config.UniAuthAppSecret, config.UniAuthCallbackURL = ready.AppID, ready.AppSecret, callback
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
-	handler, err := New(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,11 @@ func identityDecode[T any](t *testing.T, data []byte) T {
 
 func (integration *identityIntegration) start(t *testing.T, browser *http.Client) *url.URL {
 	t.Helper()
-	response, _ := identityRequest(t, browser, http.MethodGet, integration.server.URL+"/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks", "", nil, http.StatusSeeOther)
+	loginURL := integration.server.URL + "/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks"
+	response, _ := identityRequest(t, browser, http.MethodGet, loginURL, "", nil, http.StatusSeeOther)
+	if response.Header.Get("Location") == "/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks" {
+		response, _ = identityRequest(t, browser, http.MethodGet, loginURL, "", nil, http.StatusSeeOther)
+	}
 	authorization, err := response.Location()
 	if err != nil || authorization.Scheme+"://"+authorization.Host != integration.gateway {
 		t.Fatal("Daynight did not redirect to its real UniAuth gateway")

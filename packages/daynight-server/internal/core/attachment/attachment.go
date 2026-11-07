@@ -5,6 +5,7 @@ import (
 	"errors"
 	"mime"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -12,6 +13,21 @@ import (
 )
 
 const Bucket = "task-attachments"
+
+// MaxPathCharacters counts Unicode code points, including path separators.
+const MaxPathCharacters = 1024
+
+// MaxContentTypeBytes limits the original MIME value on new writes.
+const MaxContentTypeBytes = 2048
+
+// ValidateWritePath rejects new writes beyond the path length limit. Existing
+// metadata may still refer to longer paths, which remain readable and removable.
+func ValidateWritePath(path string) error {
+	if utf8.RuneCountInString(path) > MaxPathCharacters {
+		return &model.Fault{Code: "invalid_input", Message: "Attachment path must not exceed 1024 characters."}
+	}
+	return nil
+}
 
 type Address struct {
 	ProjectID    string
@@ -42,6 +58,9 @@ func TaskStoragePath(projectID, taskID string) string {
 }
 
 func ValidateContentType(contentType string) error {
+	if len(contentType) > MaxContentTypeBytes {
+		return &model.Fault{Code: "invalid_input", Message: "Attachment content type must not exceed 2048 bytes."}
+	}
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil || !strings.Contains(mediaType, "/") {
 		return &model.Fault{Code: "invalid_input", Message: "Attachment content type is invalid."}
@@ -80,6 +99,23 @@ func Metadata(ctx context.Context, reader store.AttachmentReader, address Addres
 		return model.Attachment{}, NotFound(err)
 	}
 	return result, err
+}
+
+func MetadataBounded(ctx context.Context, reader store.AttachmentReader, address Address, maxBytes int) (model.Attachment, error) {
+	if maxBytes < 1 {
+		return model.Attachment{}, &model.Fault{Code: "invalid_input", Message: "Metadata limit must be positive."}
+	}
+	result, oversized, err := reader.AttachmentBounded(ctx, address.ProjectID, address.TaskID, address.RelativePath, maxBytes)
+	if errors.Is(err, model.ErrNotFound) {
+		return model.Attachment{}, NotFound(err)
+	}
+	if err != nil {
+		return model.Attachment{}, err
+	}
+	if oversized {
+		return model.Attachment{}, &model.Fault{Code: "resource_conflict", Message: "Attachment content type exceeds the supported metadata limit."}
+	}
+	return result, nil
 }
 
 func PutMetadata(ctx context.Context, writer store.AttachmentWriter, address Address, contentType string, size int64) (model.Attachment, bool, error) {

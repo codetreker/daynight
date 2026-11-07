@@ -19,7 +19,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -37,7 +37,7 @@ func attachmentTestFiles(t *testing.T) *local.Storage {
 	return files
 }
 
-func attachmentTestHandler(t *testing.T, database *store.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+func attachmentTestHandler(t *testing.T, database *postgres.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	return resourceTestServer(t, database, files, output)
 }
@@ -374,7 +374,7 @@ func TestAttachmentHTTPUploadStreamFailureAndCancel(t *testing.T) {
 				t.Fatalf("canceled upload response: %s", response.Body)
 			}
 		} else {
-			assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+			assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 		}
 		assertProjectError(t, attachmentRequest(handler, http.MethodGet, location, "", nil), http.StatusNotFound, "not_found")
 	}

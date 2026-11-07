@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	botruntime "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot/runtime"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
@@ -21,7 +23,7 @@ import (
 )
 
 type botFixture struct {
-	db     *store.Store
+	db     *postgres.Store
 	p      model.Principal
 	svc    *sessionservice.Service
 	engine *sessioncore.Engine
@@ -31,7 +33,7 @@ type botFixture struct {
 func newBoundBot(t *testing.T) botFixture {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, testsupport.ServiceDatabaseURL(t))
+	db, err := postgres.Open(ctx, testsupport.ServiceDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,6 +132,65 @@ func (d injectBot) Bot(ctx context.Context, id string) (model.Bot, error) {
 		return model.Bot{}, errRuntimeStage
 	}
 	return d.BotWriteDAO.Bot(ctx, id)
+}
+
+type traceWriter struct {
+	store.SessionWriter
+	calls []string
+}
+type traceScope struct {
+	store.SessionScope
+	writer *traceWriter
+}
+type traceSession struct {
+	store.SessionDAO
+	writer *traceWriter
+}
+type traceBot struct {
+	store.BotWriteDAO
+	writer *traceWriter
+}
+
+func (w *traceWriter) WriteSession(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+	return w.SessionWriter.WriteSession(ctx, func(scope store.SessionScope) error { return fn(traceScope{scope, w}) })
+}
+func (s traceScope) SessionDAO() store.SessionDAO {
+	return traceSession{s.SessionScope.SessionDAO(), s.writer}
+}
+func (s traceScope) BotDAO() store.BotWriteDAO { return traceBot{s.SessionScope.BotDAO(), s.writer} }
+func (d traceSession) LockCredential(ctx context.Context, p model.Principal, now time.Time) error {
+	d.writer.calls = append(d.writer.calls, "credential:"+p.CredentialID)
+	return d.SessionDAO.LockCredential(ctx, p, now)
+}
+func (d traceSession) LockSession(ctx context.Context, id string) (store.SessionRecord, error) {
+	d.writer.calls = append(d.writer.calls, "session:"+id)
+	return d.SessionDAO.LockSession(ctx, id)
+}
+func (d traceBot) Bot(ctx context.Context, id string) (model.Bot, error) {
+	d.writer.calls = append(d.writer.calls, "bot:"+id)
+	return d.BotWriteDAO.Bot(ctx, id)
+}
+
+func TestRuntimeLocksCredentialBotSessionAndRechecksCredentials(t *testing.T) {
+	f := newBoundBot(t)
+	ctx := context.Background()
+	current := f.p
+	current.CredentialID = uuid.NewString()
+	hash := sha256.Sum256([]byte(current.CredentialID))
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'current',now(),now()+interval '1 day')`, current.CredentialID, current.UserID, hash[:]); err != nil {
+		t.Fatal(err)
+	}
+	writer := &traceWriter{SessionWriter: f.db}
+	runtime := botruntime.NewRuntime(f.engine, runtimeWriter(writer))
+	called := false
+	err := runtime.Run(ctx, current, f.bound.Bot.WorkerID, f.bound.Bot.ID, nil, nil, func(_ *sessioncore.Operation, _ store.SessionScope, _ model.Bot, access *sessioncore.Access, _ func(model.Principal) error) error {
+		called = access != nil
+		return nil
+	})
+	want := []string{"credential:" + current.CredentialID, "bot:" + f.bound.Bot.ID, "session:" + *f.bound.Bot.SessionID, "credential:" + current.CredentialID, "credential:" + f.p.CredentialID}
+	if err != nil || !called || !reflect.DeepEqual(writer.calls, want) {
+		t.Fatalf("runtime locks: called=%v, got %v, want %v, err=%v", called, writer.calls, want, err)
+	}
 }
 
 func TestRuntimeUsesBoundBotAndRechecksCredential(t *testing.T) {

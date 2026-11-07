@@ -1,0 +1,32 @@
+--- a/dist/chunks/mermaid.core/ganttDiagram-R7GPNTJY.mjs
++++ b/dist/chunks/mermaid.core/ganttDiagram-R7GPNTJY.mjs
+@@ -826,7 +826,9 @@
+ var weekday = "sunday";
+ var weekend = "saturday";
+ var lastOrder = 0;
++var calendarWork = 0;
+ var clear2 = /* @__PURE__ */ __name(function() {
++  calendarWork = 0;
+   sections = [];
+   tasks = [];
+   currentSection = "";
+@@ -923,6 +925,7 @@
+   return sections;
+ }, "getSections");
+ var getTasks = /* @__PURE__ */ __name(function() {
++  calendarWork = 0;
+   let allItemsProcessed = compileTasks();
+   const maxDepth = 10;
+   let iterationCount = 0;
+@@ -988,6 +991,11 @@
+   let renderEndTime = null;
+   const maxEndTime = endTime.add(1e4, "d");
+   while (startTime <= endTime) {
++    if (++calendarWork > 5e4) {
++      const error = new Error("Gantt calendar work limit exceeded");
++      error.name = "GanttCalendarWorkLimitError";
++      throw error;
++    }
+     if (!invalid) {
+       renderEndTime = endTime.toDate();
+     }

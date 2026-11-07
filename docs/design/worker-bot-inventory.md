@@ -1,6 +1,6 @@
 # Worker Bot 库存设计
 
-[需求](../spec/worker-bot-inventory.md)拥有可观察行为，[决策说明](../../.agents/notes/implemented/architecture/2026-11-04-worker-bot-inventory.md)记录取舍。Bot 库存与现有 Task coordinator 并列；它提供数据与对账接口，不负责 Controller 启动或周期调度。
+[需求](../spec/worker-bot-inventory.md)拥有可观察行为，[决策说明](../../.agents/notes/archived/architecture/2026-11-04-worker-bot-inventory.md)记录取舍。Bot 库存与现有 Task coordinator 并列；它提供数据与对账接口，不负责 Controller 启动或周期调度。
 
 ## 持久边界
 

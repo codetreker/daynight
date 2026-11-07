@@ -6,7 +6,7 @@ import type { Operation } from "../../api/operation.js";
 import { ProtocolError } from "../../api/parse.js";
 import type { WorkerReport, WorkerReportReceipt, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import type { WorkerDiagnostic } from "./diagnostics.js";
-import { hasHerdrCommandCleanupFailure } from "./herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "./herdr/command.js";
 import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js";
 
 type SafeFailure = { category: string; cause?: SafeFailure; errors?: readonly SafeFailure[] };
@@ -61,7 +61,7 @@ export const createWorkerReporter = (options: {
     send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation): Promise<WorkerCloudReportReceipt>;
     accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void>;
   };
-}): { trigger(): void; publishInventory(inventory: WorkerTaskInventory): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
+}): { trigger(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
   const failures = new Map<string, FailureState>();
   const cleanupFailures = new Set<unknown>();
@@ -102,6 +102,20 @@ export const createWorkerReporter = (options: {
   const retainCleanupFailure = (error: unknown): void => {
     cleanupFailures.add(error);
   };
+  const isCancellation = (error: unknown): boolean => error === cancellation.signal.reason ||
+    (error instanceof OperationError && error.kind === "cancelled" && isCancellation(error.cause));
+  const requiresCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {
+    if (seen.has(error)) return true;
+    if (error instanceof HerdrCommandCleanupError) return hasUnconfirmedHerdrCommandCleanup(error);
+    if (isCancellation(error)) return false;
+    // Keep mixed aggregates intact when any independent failure remains. A cause
+    // wrapper alone does not turn an acknowledged cleanup timeout into a new failure.
+    const ancestors = new Set(seen).add(error);
+    if (error instanceof AggregateError) return error.errors.some((item: unknown) => requiresCleanupFailure(item, ancestors)) ||
+      (error.cause !== undefined && requiresCleanupFailure(error.cause, ancestors));
+    if (error instanceof Error && error.cause !== undefined) return requiresCleanupFailure(error.cause, ancestors);
+    return true;
+  };
   const attempt = async (): Promise<void> => {
     const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
     let phase = "collect";
@@ -123,8 +137,7 @@ export const createWorkerReporter = (options: {
       }
       operation.check();
       phase = "send";
-      const report = Object.freeze({ ...sample.telemetry, taskInventory: inventory });
-      if (options.configuration === undefined) await options.send(report, operation);
+      if (options.configuration === undefined) await options.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), operation);
       else {
         phase = "configuration-read";
         await options.configuration.prepare?.(operation);
@@ -132,7 +145,7 @@ export const createWorkerReporter = (options: {
         const captured = options.configuration.capture();
         const sent = immutable(parseWorkerCloudReport(captured));
         phase = "send";
-        const receipt = await options.configuration.send(report, sent, operation);
+        const receipt = await options.configuration.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), sent, operation);
         phase = "configuration";
         await options.configuration.accept(captured, receipt.configuration);
       }
@@ -162,7 +175,7 @@ export const createWorkerReporter = (options: {
     trigger,
     publishInventory: (value) => {
       if (stopped) return;
-      inventory = copyInventory(value);
+      inventory = value === null ? null : copyInventory(value);
       trigger();
     },
     recordClaim: (reference) => {
@@ -176,7 +189,7 @@ export const createWorkerReporter = (options: {
     stop: async () => {
       halt();
       await running;
-      const errors = [...cleanupFailures, diagnosticFailure].filter(error => error !== undefined);
+      const errors = [...[...cleanupFailures].filter(error => requiresCleanupFailure(error)), diagnosticFailure].filter(error => error !== undefined);
       if (errors.length === 1) throw errors[0];
       if (errors.length !== 0) throw new AggregateError(errors, "Worker reporter could not finish safely.");
     },

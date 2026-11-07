@@ -18,6 +18,12 @@ export const taskSyncEpoch = (projectId: string): string => {
   return `00000000-0000-4000-8000-${(hash >>> 0).toString(16).padStart(12, '0')}`;
 };
 
+const observedEpochs = new Map<string, string>();
+let worldEpoch: string | null = null;
+export const beginFixtureWorld = (epoch: string): void => { observedEpochs.clear(); worldEpoch = epoch; };
+export const rememberTaskEpoch = (projectId: string, epoch: string): void => { observedEpochs.set(projectId, epoch); };
+export const fixtureTaskEpoch = (projectId: string): string => observedEpochs.get(projectId) ?? worldEpoch ?? taskSyncEpoch(projectId);
+
 export type TaskSyncFixtureOptions = {
   readonly actorAccess?: ProjectAccess;
   readonly assigneeVersions?: readonly ProjectPersonVersion[];
@@ -45,12 +51,13 @@ const graphAssigneeVersions = (graph: TaskGraph): readonly ProjectPersonVersion[
   .sort().map((userId) => ({ userId, version: TEST_PROFILE_VERSION, hasProjectAccess: true }));
 
 export const taskSyncFixture = (graph: TaskGraph, { assigneeVersions = graphAssigneeVersions(graph), actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}) }: TaskSyncFixtureOptions): WireTaskSync => {
+  rememberTaskEpoch(graph.project.id, epoch);
   const mode = query.epoch === epoch ? 'delta' : 'snapshot';
   const lowerBound = mode === 'delta' && query.since !== undefined ? nanoseconds(query.since) - 10_000_000_000n : null;
   const tasks = graph.tasks.filter((task) => lowerBound === null || nanoseconds(task.updatedAt) >= lowerBound).map((task) => ({ assignedTo: task.assignedTo,
     id: task.id, version: versionForTask(task).toString(), properties: propertiesForTask(task), titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
     status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
-    allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt,
+    allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
     createdAt: task.createdAt, updatedAt: task.updatedAt,
   }));
   return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks };

@@ -7,40 +7,45 @@ import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import * as ProjectOverviewModule from '../src/features/projects/ProjectOverview';
 import * as TaskGraphModule from '../src/features/projects/useTaskGraph';
-import { buildGraphIndex, type GraphIndex } from '../src/features/task-graph/model';
+import * as TaskAssigneeFilterModule from '../src/features/task-assignment/TaskAssigneeFilter';
+import { buildGraphIndex, projectChain, type GraphIndex } from '../src/features/task-graph/model';
 
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
-vi.mock('../src/api/client', async (original) => ({
-  ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), getTaskSync: vi.fn(),
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn(),
   listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
-  attachmentPreviewRoot: (projectId: string, taskId: string) => `/fixtures/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/preview/`,
-}));
-vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, rootId, onOpenTask }: {
+  attachmentPreviewRoot: (projectId: string, taskId: string) => `/fixtures/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/preview/`, }; });
+vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, rootId, onOpenTask, onNavigateExternalTask }: {
   index: GraphIndex; rootId: string; onOpenTask: (id: string, trigger: HTMLElement) => void;
-}) => <button data-testid="graph-node" onClick={(event) => { onOpenTask(rootId, event.currentTarget); }}>图节点 {index.nodes.get(rootId)!.titlePreview}</button> }));
+  onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
+}) => <><button data-testid="graph-node" onClick={(event) => { onOpenTask(rootId, event.currentTarget); }}>图节点 {index.nodes.get(rootId)!.titlePreview}</button>
+  {[...projectChain(index, rootId).externalIds].map((id) => <button key={id} data-testid={`external-${id}`} onClick={(event) => onNavigateExternalTask!(id, event.currentTarget)}>展开 {id}</button>)}</> }));
 
 const project = '00000000-0000-4000-8000-000000000100';
 const otherProject = '00000000-0000-4000-8000-000000000200';
 const canonicalTask = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
+const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null,
   id, titlePreview: `任务 ${id}`, titleTruncated: false, status, dependsOn, blockedBy: [], ready: false,
   createdAt: timestamp, updatedAt: timestamp,
 });
 const seeds = [seed('00000000-0000-4000-8000-000000000001', 'done'), seed('00000000-0000-4000-8000-000000000002', 'todo', ['00000000-0000-4000-8000-000000000001']), seed('00000000-0000-4000-8000-000000000003'), seed('00000000-0000-4000-8000-000000000004', 'done'), seed('00000000-0000-4000-8000-000000000005', 'in_progress')];
 const snapshot = (items = seeds, id = project): TaskGraph => {
   const tasks = items.map((item) => {
-    const blockedBy = item.dependsOn.filter((dependency) => items.find((candidate) => candidate.id === dependency)!.status !== 'done');
+    const blockedBy = item.dependsOn.filter((dependency) => items.find((candidate) => candidate.id === dependency)!.status !== 'done' && items.find((candidate) => candidate.id === dependency)!.status !== 'cancelled');
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id, repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
-      done: tasks.filter((item) => item.status === 'done').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
+      done: tasks.filter((item) => item.status === 'done').length, cancelled: tasks.filter((item) => item.status === 'cancelled').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
 };
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
+const mockNavigationSnapshot = (tasks: GraphTask[], revision: number): TaskGraphModule.GraphSnapshot => {
+  const graph = snapshot(tasks);
+  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
+};
 const tab = (view: 'chains' | 'standalone') => screen.getByRole('tab', { name: view === 'chains' ? '任务链' : '独立任务' });
 const expectUnfinishedCounts = (chains: number, standalone: number) => {
   expect(tab('chains').querySelector('.graph-count-pill')).toHaveTextContent(new RegExp(`^${chains}$`));
@@ -81,7 +86,7 @@ beforeEach(() => {
 
 beforeEach(() => {
   root = document.createElement('div'); root.id = 'root'; document.body.append(root);
-  graphRequest.mockReset(); graphRequest.mockImplementation(async (id) => snapshot(seeds, id));
+  graphRequest.mockReset(); graphRequest.mockImplementation(async (id) => servedGraphs.get(id) ?? snapshot(seeds, id));
   vi.mocked(getTask).mockReset();
   vi.mocked(getTask).mockImplementation(async (projectId, id) => {
     const task = servedGraphs.get(projectId)!.tasks.find((item) => item.id === id)!;
@@ -540,10 +545,6 @@ describe('project overview and task workspace', () => {
     expect(target).not.toHaveClass('overview-progress-target');
   });
 
-  const mockNavigationSnapshot = (tasks: GraphTask[], revision: number): TaskGraphModule.GraphSnapshot => {
-    const graph = snapshot(tasks);
-    return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
-  };
   const interceptOverviewNavigation = () => {
     let navigate!: Parameters<typeof ProjectOverviewModule.ProjectOverview>[0]['onNavigate'];
     const ActualOverview = ProjectOverviewModule.ProjectOverview;
@@ -934,16 +935,133 @@ describe('recent task browsing and pagination', () => {
     expect(pagination('任务链列表')).toHaveTextContent('第 2 / 2 页');
   });
 
+  it.each([
+    ['all', 'all'], ['todo', 'all'], ['all', 'unassigned'], ['todo', 'unassigned'],
+    ['in_progress', 'all'], ['done', 'all'], ['cancelled', 'all'],
+  ] as const)('keeps status %s and assignee %s list state across repeated external Goal navigation', async (status, assignee) => {
+    const targetStatus = status === 'done' ? 'cancelled' as const : 'done' as const;
+    const finished = manyChains(21).map((task) => ({ ...task, status: targetStatus,
+      assignedTo: assignee === 'unassigned' ? canonicalTask(900) : null,
+      ...(task.id === canonicalTask(2) ? { dependsOn: [canonicalTask(1), canonicalTask(4)], externalDependsOn: [canonicalTask(4)] } : {}),
+    }));
+    const source = canonicalTask(100);
+    const dependency = canonicalTask(2);
+    let changeAssignee!: Parameters<typeof TaskAssigneeFilterModule.TaskAssigneeFilter>[0]['onChange'];
+    if (assignee === 'unassigned') {
+      const ActualFilter = TaskAssigneeFilterModule.TaskAssigneeFilter;
+      vi.spyOn(TaskAssigneeFilterModule, 'TaskAssigneeFilter').mockImplementation((props) => {
+        changeAssignee = props.onChange;
+        return <ActualFilter {...props} />;
+      });
+    }
+    const sourceStatus = status === 'all' ? 'todo' : status;
+    graphRequest.mockResolvedValue(snapshot([...finished, seed(source, sourceStatus === 'in_progress' ? 'done' : sourceStatus), seed(canonicalTask(101), sourceStatus, [source, dependency], [dependency])]));
+    mount(); await findChainRow(source);
+    const statusControl = screen.getByRole('combobox', { name: '状态' });
+    fireEvent.change(statusControl, { target: { value: status } });
+    if (assignee === 'unassigned') act(() => changeAssignee({ kind: 'unassigned' }));
+    const assigneeControl = screen.getByRole('button', { name: `负责人: ${assignee === 'all' ? '所有负责人' : '未分配'}` });
+    const rows = [...document.querySelectorAll('.root-toggle')];
+    const page = document.querySelector('#project-chain-list .list-pagination');
+    const pageText = page?.textContent;
+    const original = chainRow(source);
+    const trigger = chainGraphButton(source);
+    fireEvent.click(original);
+    let scroll = 320;
+    vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
+    vi.mocked(window.scrollTo).mockImplementation((options) => { scroll = (options as ScrollToOptions).top!; });
+    vi.mocked(window.scrollTo).mockClear();
+    vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+    await openChain(source);
+    for (const [taskId, rootId] of [[dependency, canonicalTask(1)], [canonicalTask(4), canonicalTask(3)]]) {
+      fireEvent.click(screen.getByTestId(`external-${taskId}`));
+      await waitFor(() => expect(document.getElementById(`task-graph-${rootId}`)).toBeVisible());
+      expect([...document.querySelectorAll('.root-toggle')]).toEqual(rows);
+      rows.forEach((row, position) => expect(document.querySelectorAll('.root-toggle')[position]).toBe(row));
+      expect(original).toHaveAttribute('aria-expanded', 'true');
+      expect(statusControl).toHaveValue(status);
+      expect(assigneeControl).toBeInTheDocument();
+      expect(document.querySelector('#project-chain-list .list-pagination')).toBe(page);
+      expect(page?.textContent).toBe(pageText);
+      expect(scroll).toBe(320);
+    }
+    expect(document.getElementById(`task-graph-${source}`)).toBeNull();
+    closeChain();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(original).toBeVisible();
+    expect(original).toHaveAttribute('aria-expanded', 'true');
+    expect(statusControl).toHaveValue(status);
+    expect(assigneeControl).toBeVisible();
+    expect(window.scrollTo).not.toHaveBeenCalled();
+    expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+    if (page !== null) expect(page).toHaveTextContent('第 1 / 2 页');
+  });
+
+  it('uses the original Goal witness for visible focus fallback after external hops and a representative change', async () => {
+    const source = canonicalTask(100), first = canonicalTask(2), second = canonicalTask(4), replacement = canonicalTask(99);
+    const initial = [seed(canonicalTask(1), 'done'), seed(first, 'done', [canonicalTask(1), second], [second]),
+      seed(canonicalTask(3), 'done'), seed(second, 'done', [canonicalTask(3)]),
+      seed(source), seed(canonicalTask(101), 'todo', [source, first], [first]),
+      seed(canonicalTask(200)), seed(canonicalTask(201), 'todo', [canonicalTask(200)])];
+    const refreshed = [seed(replacement), ...initial.map((task) => task.id === source ? { ...task, dependsOn: [replacement] } : task)];
+    const state = { snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    const view = mount(); await openChain(source);
+    const removed = chainGraphButton(source);
+    fireEvent.click(screen.getByTestId(`external-${first}`));
+    fireEvent.click(screen.getByTestId(`external-${second}`));
+    state.snapshot = mockNavigationSnapshot(refreshed, 2);
+    view.rerender(<ProjectPage projectId={project} />);
+    expect(removed.isConnected).toBe(false);
+    expect(document.getElementById(`task-graph-${canonicalTask(3)}`)).toBeVisible();
+    expect(document.querySelector('.root-toggle')).toBe(chainRow(canonicalTask(200)));
+    closeChain();
+    await waitFor(() => expect(chainRow(replacement)).toHaveFocus());
+  });
+
+  it.each(['removed', 'singleton'] as const)('closes an external graph whose actual task becomes %s on refresh without reopening it', async (kind) => {
+    const source = canonicalTask(100), dependency = canonicalTask(2);
+    const initial = [seed(canonicalTask(1), 'done'), seed(dependency, 'done', [canonicalTask(1)]),
+      seed(source), seed(canonicalTask(101), 'todo', [source, dependency], [dependency])];
+    const refreshed = kind === 'singleton'
+      ? initial.map((task) => task.id === dependency ? { ...task, dependsOn: [] } : task)
+      : initial.filter((task) => task.id !== dependency).map((task) => task.id === canonicalTask(101) ? { ...task, dependsOn: [source], externalDependsOn: [] } : task);
+    const state = { snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    const view = mount(); await openChain(source);
+    const trigger = chainGraphButton(source);
+    fireEvent.click(screen.getByTestId(`external-${dependency}`));
+    expect(document.getElementById(`task-graph-${canonicalTask(1)}`)).toBeVisible();
+    state.snapshot = mockNavigationSnapshot(refreshed, 2);
+    view.rerender(<ProjectPage projectId={project} />);
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    state.snapshot = mockNavigationSnapshot(initial, 3);
+    view.rerender(<ProjectPage projectId={project} />);
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
+  });
+
+  it('opens an external singleton in the task reader and releases the origin graph', async () => {
+    const source = canonicalTask(1), dependency = canonicalTask(3);
+    graphRequest.mockResolvedValue(snapshot([seed(source), seed(canonicalTask(2), 'todo', [source, dependency], [dependency]), seed(dependency)]));
+    mount(); await openChain(source);
+    fireEvent.click(screen.getByTestId(`external-${dependency}`));
+    await waitFor(() => expect(document.querySelector('.task-detail-title')).toHaveTextContent(`任务 ${dependency}`));
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
+    expect(getTask).toHaveBeenCalledWith(project, dependency, expect.anything(), expect.anything());
+  });
+
   it('clamps a removed final page immediately and does not restore it when tasks return', async () => {
     const initial = snapshot(manyStandalone(31));
-    graphRequest.mockResolvedValueOnce(initial).mockResolvedValueOnce(resetSnapshot(snapshot(manyStandalone(15)))).mockResolvedValueOnce(resetSnapshot(initial));
+    const reduced = resetSnapshot(snapshot(manyStandalone(15)));
+    graphRequest.mockResolvedValueOnce(initial).mockResolvedValueOnce(reduced).mockResolvedValueOnce(reduced).mockResolvedValueOnce(resetSnapshot({ ...initial }));
     mount(); await screen.findByRole('tab', { name: '独立任务' }); fireEvent.click(tab('standalone'));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     expect(document.querySelectorAll('.standalone-row')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
-    await waitFor(() => expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull());
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);
+    await waitFor(() => expect(document.querySelectorAll('.standalone-row')).toHaveLength(15));
+    expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页'));
     expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);
@@ -1078,4 +1196,20 @@ describe('status-first project presentation', () => {
     expectUnfinishedCounts(4, 2);
     expect(graphRequest).toHaveBeenCalledTimes(2);
   });
+});
+
+
+it('filters cancelled membership without reducing the complete Goal progress denominator or hiding readable cancelled tasks', async () => {
+  const rootTask = seed(canonicalTask(1), 'done');
+  const cancelled = { ...seed(canonicalTask(2), 'cancelled', [rootTask.id]), cancelledAt: timestamp };
+  const standalone = { ...seed(canonicalTask(3), 'cancelled'), cancelledAt: timestamp };
+  graphRequest.mockResolvedValue(snapshot([rootTask, cancelled, standalone]));
+  mount(); await findChainRow();
+  fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'cancelled' } });
+  expect(screen.getByRole('option', { name: '已取消' })).toBeInTheDocument();
+  expect(chainRow()).toHaveTextContent('2/2 已结束 · 1 完成 · 1 取消');
+  fireEvent.click(tab('standalone')); await waitFor(() => expect(row(standalone.id)).toBeVisible());
+  expect(row(rootTask.id)).toBeNull();
+  await openStandalone(standalone.id);
+  expect(screen.getByRole('button', { name: '已取消' })).toBeDisabled();
 });

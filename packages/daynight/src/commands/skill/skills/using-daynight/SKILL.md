@@ -20,7 +20,7 @@ Use the `daynight` CLI to operate it and [Daynight](https://daynight.cc) to brow
 | Attachment | A task's independent attachment area for inputs and results such as documents, prototypes, and images. |
 | worker-managed | An execution environment assigned and managed by `daynight worker`; the agent executes only its explicit assignment. |
 
-The CLI supports project registration and lookup, task creation and filtering, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, and worker-managed execution.
+The CLI supports project registration and lookup, task creation, search and filtering, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, and worker-managed execution.
 Creation, execution, and handoff are separate operations; see [authorization and scope](references/authorization.md).
 
 ## Setup and CLI

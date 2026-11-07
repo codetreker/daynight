@@ -2,11 +2,15 @@
 
 ## 页面与身份
 
-Task Session 使用共同任务入口，当前 web 执行保留 native timeline、composer 与原连接策略，herdr 执行由独立终端客户端承接。历史选择和附件中的 Session 记录读取同一任务历史 API；条目保存原 sessionId、claimId、executionGeneration、内容类型与 ready hash。历史读取不经过 current，不创建实时连接，也不持有输入接口。Session 选择保存在当前浏览器页签的用户/项目/任务范围内，刷新和重新领取任务不会把已选择记录改投新执行；每次读取仍由服务端核验权限。
+`TaskSessionHost` 按任务生命周期承接共同入口，不保存执行记录选择，也不渲染记录选择器和列表刷新行。活动 claim 继续使用 `TaskAgentSession` 或 `TerminalSessionView`，由各自 current 读取和连接逻辑核验原 claim；历史目录出现同一 Session 不再产生第二个主入口。完成或已释放的 claim 通过对应协议的 current GET 解析真实 Session，再交给固定归档阅读器；该读取只确定身份，不创建 native conversation、提交 assignment 或恢复输入。任务完成信号立即撤下写界面，归档是否可读仍取决于真实状态和内容校验。
+
+服务端 `task_sessions` 对 project/task/claim 保持唯一约束，Web 与 Herdr 使用同一 Session 命名空间。两种 current 均按 Worker claim 查询，completed 和 released Worker 仍保留身份；没有 Worker 时 current 为 not_applicable。无 claim 的主入口使用历史 API 中按创建时间和 Session ID 降序排列的首个实际条目，作为只读历史。当前 claim 尚未注册时不向旧历史回退。无 claim 的目录发现随可用任务详情读取，不依赖先打开尚未确定是否存在的 Session 页签；空页仍有 cursor 时继续读取，直到找到实际记录或确认完整为空。首次读取、失败与拒绝均保留可恢复状态；仅完整确认无 Session 时隐藏页签。
+
+`FixedSessionRecording` 接收由原 sessionId、claimId、executionGeneration 和模式构成的 `SessionRecordingReference`。历史条目已有的归档元信息继续作为校验约束，current 发现无需补造创建时间或历史条目。固定归档读取不创建实时连接或持有输入接口，pending 状态通过有界间隔的只读请求继续观察。Web 的 current 仍为 active/draining 时，暂时 unavailable 表示尚在准备，继续观察原 current 与归档；current 确认 archived 后，unavailable 保持真实终态和人工刷新入口。普通后台检查保留已有阅读器和已验证内容；相同身份和归档内容不因新的响应对象而重新挂载。实际身份、归档状态或权限变化分别处理，权限拒绝撤下内容。Web 归档沿用按账号和 Session 绑定的 Display 偏好，Herdr 使用原终端回放能力。主入口不恢复旧 `daynight:recording:<userId>:<projectId>:<taskId>` 选择键，只移除对应键，草稿与其他会话存储保持各自所有权。具体取舍见[自动 Session 入口决策](../../.agents/notes/implemented/simplification/2026-11-06-automatic-task-session-entry.md)。
 
 普通附件继续使用原文件树、上传和删除流程。受管 Session 记录在同一侧栏中独立于文件树展示。记录目录与确认空结果按用户、项目和任务持久缓存，打开或重新激活时复用合格缓存并后台重读首页；历史 API 没有目录版本合同，任务业务版本不决定目录是否新鲜。确认空目录在后台刷新期间继续隐藏，有记录时保留可读内容，内容变化后更新。首次未知状态提供加载提示；空首页仍有 nextCursor 时，只有全部后续页耗尽才能独立确认完整空目录，缓存保留原首页与 cursor 及该空证明。重读已确认空目录时，若首页仍为空且有 cursor，后台继续读取后续页，直到发现记录或真正耗尽。读取失败不作为空结果保存，已有内容保持可读并提供重试，首次失败也有可恢复入口。缓存仍可读但刷新或分页事务写入失败时保留已有内容、显示可恢复错误，不发布无法排序的新成功响应；完全不可读写时沿用下述有限降级。缓存和响应通过共享身份及项目生命周期准入；正常存储时旧 scope、撤权或过期请求不能重新发布内容。存储完全不可用时，跨标签提示和重启后的撤权记忆有[有限降级](daynight-task-sync.md#5-indexeddb-与去重)。缓存只用于目录展示，不能授权实时连接、控制或归档正文。具体取舍见[记录目录缓存决策](../../.agents/notes/implemented/architecture/2026-11-05-session-records-cache.md)。
 
-历史存在与归档 ready 是不同条件，pending、failed、unavailable 记录也保留入口。选中记录后使用原阅读区打开只读记录，不能借普通附件操作覆盖、删除或重命名权威归档。两类内容共用阅读区的可用高度，避免短窗口中的正文被额外记录区域挤空。普通附件预览在回放时保持挂载并隐藏、禁用交互，上传草稿与 iframe 状态保留；选择普通文件、上传成功或导航到附件时退出受管记录选择。
+历史存在与归档 ready 是不同条件，pending、failed、unavailable 记录也保留入口。附件中的记录选择使用原阅读区打开只读记录，不能借普通附件操作覆盖、删除或重命名权威归档。两类内容共用阅读区的可用高度，避免短窗口中的正文被额外记录区域挤空。普通附件预览在回放时保持挂载并隐藏、禁用交互，上传草稿与 iframe 状态保留；选择普通文件、上传成功或导航到附件时退出受管记录选择。
 
 ## 实时连接与人工输入
 

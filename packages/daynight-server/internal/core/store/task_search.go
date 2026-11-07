@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 )
 
 // TaskSearchReader keeps all search reads in one read-only repeatable snapshot.
@@ -33,7 +33,7 @@ type TaskSearchPosition struct {
 }
 
 type TaskSearchQuery struct {
-	Expression         *query.Node
+	Expression         *tasksearch.Node
 	AssignedTo         model.TaskAssignmentFilter
 	Status             *model.TaskStatus
 	Ready, AllowAgents *bool
@@ -46,6 +46,7 @@ type TaskSearchRow struct {
 	ID, Title, Description string
 	Status                 model.TaskStatus
 	AssignedTo             *string
+	CancelledAt            *time.Time
 	UpdatedAt              time.Time
 	TitlePriority          bool
 }

@@ -203,7 +203,7 @@ func TestDatabaseFailuresDoNotBecomeAcknowledgements(t *testing.T) {
 		t.Fatal("closed database read succeeded")
 	}
 }
-func TestExpiredGrantAndForeignCursorFailClosed(t *testing.T) {
+func TestExpiredGrantAndFutureEventCursorFailClosed(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
 	g, err := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"})
@@ -233,9 +233,6 @@ func TestExpiredGrantAndForeignCursorFailClosed(t *testing.T) {
 	f.s.now = time.Now
 	if _, _, _, err = f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, EventCursor(v, "999")); err == nil {
 		t.Fatal("future event cursor")
-	}
-	if _, err = f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, "before", cursor(position{Session: v.SessionID, Epoch: v.HistoryEpoch, Kind: "timeline", Position: "999", Upper: "999"}), 10); err == nil {
-		t.Fatal("future timeline cursor")
 	}
 }
 

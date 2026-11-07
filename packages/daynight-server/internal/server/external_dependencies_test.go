@@ -33,6 +33,29 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 	if !slices.Equal(target.ExternalDependsOn, expected) || !slices.Equal(target.BlockedBy, []string{pending.ID}) || target.Ready {
 		t.Fatalf("HTTP full read lost external scheduling semantics: %#v", target)
 	}
+	for _, allowed := range []bool{false, true} {
+		before := target
+		target = updateHTTPTask(t, handler, target, map[string]any{"allowAgents": allowed})
+		preserved := target
+		preserved.AllowAgents, preserved.Version, preserved.UpdatedAt = before.AllowAgents, before.Version, before.UpdatedAt
+		if target.AllowAgents != allowed || target.Version != before.Version+1 || !target.UpdatedAt.After(before.UpdatedAt) || !reflect.DeepEqual(preserved, before) {
+			t.Fatalf("permission update changed classified task: before=%#v after=%#v", before, target)
+		}
+		if actual := readHTTPTask(t, handler, target); !reflect.DeepEqual(actual, target) {
+			t.Fatal("permission update lost classified task on readback")
+		}
+	}
+	before := target
+	references := []api.PullRequestProperty{{URL: "https://example.test/pr", Title: "Evidence"}}
+	target = updateHTTPTask(t, handler, target, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, references)}})
+	preserved := target
+	preserved.Properties, preserved.Version, preserved.UpdatedAt = before.Properties, before.Version, before.UpdatedAt
+	if target.Version != before.Version+1 || !target.UpdatedAt.After(before.UpdatedAt) || !slices.Equal(apiPullRequests(t, target.Properties), references) || !reflect.DeepEqual(preserved, before) {
+		t.Fatalf("property update changed classified task: before=%#v after=%#v", before, target)
+	}
+	if actual := readHTTPTask(t, handler, target); !reflect.DeepEqual(actual, target) {
+		t.Fatal("property update lost classified task on readback")
+	}
 	for _, value := range []any{nil, false, []string{target.ID}, []string{done.ID, strings.ToUpper(done.ID)}} {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Invalid external subset", "dependsOn": []string{done.ID}, "externalDependsOn": value})), http.StatusBadRequest, "invalid_input")
 		assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(target), jsonBody(t, map[string]any{"version": target.Version, "externalDependsOn": value})), http.StatusBadRequest, "invalid_input")

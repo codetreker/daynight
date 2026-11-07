@@ -81,6 +81,12 @@ const nativeFixture = (echo = true) => {
   });
   return { emit, interrupt, inputs, options: () => captured, end(error?: Error) { failure = error; ended = true; wake?.(); } };
 };
+test("new Claude selection cannot pass startup when native effective settings are unknown", async () => {
+  const fixture = nativeFixture();
+  const result = await openClaudeProvider({ cwd: process.cwd(), model: "sonnet", args: [], resumeNativeSessionId: null, validateNativeSelection: true, onTimeline: () => {}, onState: () => {}, onSpawn: () => {} }).then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
+  try { expect(result.error).toBeInstanceOf(Error); expect(result.error.message).toContain("unknown"); expect(fixture.inputs).toEqual([]); }
+  finally { await result.provider?.close(); fixture.end(); }
+});
 
 test.each([
   { name: "Bash", input: { command: 'printf "first\\nsecond"', description: "Print two lines", timeout: 0, run_in_background: false }, detail: 'printf "first\\nsecond"\ndescription: Print two lines\ntimeout: 0\nrun_in_background: false' },

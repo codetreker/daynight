@@ -3,10 +3,12 @@ package steps
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 )
 
@@ -47,6 +49,50 @@ func TestMutationAdmissionAndObservedTime(t *testing.T) {
 	var absence *StepAbsence
 	if !errors.As(err, &absence) || absence.Version != math.MaxInt64 {
 		t.Fatalf("absence: %v", err)
+	}
+}
+
+func TestMutationTextAdmissionAndLegacyReads(t *testing.T) {
+	stamp := time.Date(2026, 11, 3, 10, 11, 12, 0, time.UTC)
+	header := model.TaskHeader{ProjectID: "00000000-0000-4000-8000-000000000001", ID: "00000000-0000-4000-8000-000000000002", Version: 3}
+	current := []model.TaskStep{{ID: "00000001", Title: "one", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}}
+	for _, tc := range []struct{ title, description, field string }{
+		{strings.Repeat("é", 512), strings.Repeat("界", 21845) + "x", ""},
+		{strings.Repeat("é", 512) + "x", "", "title"},
+		{"valid", strings.Repeat("\\", 65537), "description"},
+	} {
+		step := model.TaskStep{ID: "00000002", Title: tc.title, Description: tc.description, Status: model.TaskStepTodo}
+		_, addErr := AdmitAdd(header, current, step, nil, nil)
+		_, changeErr := AdmitChange(header, current, current[0].ID, Changes{Title: &tc.title, Description: &tc.description})
+		for _, err := range []error{addErr, changeErr} {
+			if tc.field == "" {
+				if err != nil {
+					t.Fatalf("boundary: %v", err)
+				}
+				continue
+			}
+			var fault *model.Fault
+			var violation *limit.Violation
+			if !errors.As(err, &fault) || fault.Code != "invalid_input" || !errors.As(err, &violation) || violation.Field != tc.field {
+				t.Fatalf("%s admission: %v", tc.field, err)
+			}
+		}
+	}
+	legacy := append([]model.TaskStep(nil), current...)
+	legacy[0].Description = strings.Repeat("x", 65537)
+	if _, _, err := codec.EncodeCollection(header, legacy); err != nil {
+		t.Fatalf("legacy read: %v", err)
+	}
+	title := "changed"
+	if _, err := AdmitChange(header, legacy, legacy[0].ID, Changes{Title: &title}); err == nil {
+		t.Fatal("partial change accepted oversized candidate")
+	}
+	if _, err := AdmitDelete(header, legacy, legacy[0].ID); err != nil {
+		t.Fatalf("legacy deletion: %v", err)
+	}
+	last := "last"
+	if _, err := AdmitMove(header, legacy, legacy[0].ID, Placement{Position: &last}); err != nil {
+		t.Fatalf("legacy move: %v", err)
 	}
 }
 

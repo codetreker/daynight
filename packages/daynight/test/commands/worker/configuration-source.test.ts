@@ -9,7 +9,7 @@ import { updateConfigurationFile } from "../../../src/config/files.js";
 import { parseWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import {
   assertWorkerConfigurationIsLocal, parseWorkerCloudBootstrap, parseWorkerLocalConfiguration,
-  readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForProject,
+  readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForId, workerLocalRepositoryForProject,
 } from "../../../src/commands/worker/configuration-source.js";
 import { resolveWorkerCloudProjectNative } from "../../../src/commands/worker/configuration.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -110,6 +110,8 @@ describe("Worker cloud configuration sources", () => {
     ] } });
     const local = await readWorkerLocalConfiguration(f.paths);
     expect(await workerLocalRepositoryForProject(local, f.paths, project)).toEqual({ projectId: project.id, remote: project.repoUrl, path: path.join(f.directory, "retained") });
+    expect(await workerLocalRepositoryForId(local, f.paths, project.id)).toEqual({ projectId: project.id, remote: project.repoUrl, path: path.join(f.directory, "retained") });
+    expect(await workerLocalRepositoryForId(local, f.paths, uuid(8))).toBeUndefined();
   });
 
   it("rejects selected mapping conflicts and physical overlaps with local state", async () => {

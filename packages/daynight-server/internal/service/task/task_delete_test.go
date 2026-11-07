@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
-func deletedTaskStorage(t *testing.T, database *store.Store, task model.Task) (string, *time.Time, time.Time, int64) {
+func deletedTaskStorage(t *testing.T, database *postgres.Store, task model.Task) (string, *time.Time, time.Time, int64) {
 	t.Helper()
 	var data string
 	var deleted *time.Time

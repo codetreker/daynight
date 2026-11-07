@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -45,7 +45,7 @@ func TestStepsHTTPDeleteStrictInputScopeAndVersion(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
 	good := `{"version":1}`
-	assertProjectError(t, projectRequest(handler, "DELETE", endpoint, good+strings.Repeat(" ", httpx.MaxJSONBody-len(good)+1)), 400, "invalid_input")
+	assertProjectError(t, projectRequest(handler, "DELETE", endpoint, good+strings.Repeat(" ", httpx.MaxJSONBody-len(good)+1)), 413, "payload_too_large")
 	for _, tc := range []struct{ endpoint, allow string }{{path, "GET, HEAD, POST"}, {path + "/abcdef01/status", "PUT"}, {path + "/abcdef01/position", "PUT"}} {
 		response := projectRequest(handler, "DELETE", tc.endpoint, `{"version":1}`)
 		assertProjectError(t, response, 405, "method_not_allowed")
@@ -95,7 +95,7 @@ func TestStepsHTTPDeleteCommittedResponseLossAndReadOnlyReconcile(t *testing.T) 
 					t.Fatal(err)
 				}
 				t.Cleanup(pool.Close)
-				handler = projectTestHandler(t, &store.Store{Pool: pool}, &logs)
+				handler = projectTestHandler(t, &postgres.Store{Pool: pool}, &logs)
 			}
 			request := httptest.NewRequest("DELETE", path+"/ABCDEF01", strings.NewReader(`{"version":1}`)).WithContext(ctx)
 			authorizeResourceRequest(handler, request)

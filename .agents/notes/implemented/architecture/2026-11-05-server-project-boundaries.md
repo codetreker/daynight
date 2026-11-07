@@ -21,9 +21,14 @@ its transaction-bound Project, Task and Session capabilities.
 Creation locks the user and Team before atomically inserting the Project,
 ownership and creator's admin grant. Existing writes lock the Project before the
 callback reads current facts. Transfer retains Project, ownership, then ordered
-Team locks. The [Team creation decision](2026-11-04-team-project-creation.md) and
-[transfer decision](2026-11-04-project-transfer.md) retain their concurrency
+Team locks. The [Team creation decision](../../archived/architecture/2026-11-04-team-project-creation.md) and
+[transfer decision](../../archived/architecture/2026-11-04-project-transfer.md) retain their concurrency
 rationale. `ProjectScope` remains a query value for scoped project pagination.
+
+Repository registration uses `core/project` to select a unique visible match,
+reject ambiguity and require confirmation before creation. The service reads all
+pages in one snapshot and coordinates creation separately; matching does not
+make repository identity globally unique.
 
 ## Alternatives
 
@@ -39,5 +44,6 @@ implementation and obscures their shared transaction lifetime.
 The scope capabilities cannot outlive their callback. Completion and cleanup
 failures take precedence over staged refusals, and uncertain commits remain
 unknown. The [Task boundary](2026-11-05-server-task-boundaries.md) owns Task business
-rules; the physical PostgreSQL move retains its own owner. Task and Session
+rules; the [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns
+their database implementations. Task and Session
 effects continue to share the Project transaction.

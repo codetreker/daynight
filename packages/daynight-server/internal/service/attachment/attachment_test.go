@@ -24,9 +24,11 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func attachmentService(t *testing.T) (*Attachments, *taskservice.Tasks, *store.Store, *local.Storage, model.Task, model.Principal) {
+func attachmentService(t *testing.T) (*Attachments, *taskservice.Tasks, *postgres.Store, *local.Storage, model.Task, model.Principal) {
 	t.Helper()
 	tasks, database, project, _, principal := taskService(t)
 	files, err := local.New(t.TempDir())
@@ -38,7 +40,7 @@ func attachmentService(t *testing.T) (*Attachments, *taskservice.Tasks, *store.S
 			t.Error(err)
 		}
 	})
-	return NewAttachments(database, files), tasks, database, files, createTask(t, tasks, principal, project.ID, "Attachments"), principal
+	return newAttachmentService(database, files), tasks, database, files, createTask(t, tasks, principal, project.ID, "Attachments"), principal
 }
 
 func putAttachment(t *testing.T, attachments *Attachments, principal model.Principal, task model.Task, path, content string) model.Attachment {
@@ -146,7 +148,7 @@ func TestAttachmentScopeAndPathConflicts(t *testing.T) {
 
 func TestAttachmentValidation(t *testing.T) {
 	_, _, _, principal := projectService(t)
-	attachments := NewAttachments(nil, nil)
+	attachments := NewAttachments(nil, nil, nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	for _, address := range [][3]string{{"invalid", id, "file"}, {id, "invalid", "file"}, {id, id, ""}, {id, id, "/file"},
 		{id, id, "a//b"}, {id, id, "a/../b"}, {id, id, "a/./b"}, {id, id, "a\\b"}, {id, id, "a\x00b"}, {id, id, "\xff"}, {id, id, "C:/file"}} {
@@ -288,7 +290,7 @@ func TestAttachmentStorageFailuresAndMissingPhysicalFile(t *testing.T) {
 	ctx := context.Background()
 	putAttachment(t, attachments, principal, task, "file", "content")
 	sentinel := errors.New("disk failed")
-	failed := NewAttachments(database, attachmentFaultStorage{Storage: files, put: sentinel, open: sentinel, delete: sentinel})
+	failed := newAttachmentService(database, attachmentFaultStorage{Storage: files, put: sentinel, open: sentinel, delete: sentinel})
 	_, _, err := failed.Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("new"))
 	assertAttachmentOperationalError(t, err, sentinel)
 	_, _, err = failed.Open(ctx, principal, task.ProjectID, task.ID, "file")
@@ -345,22 +347,30 @@ func TestAttachmentDatabaseFailures(t *testing.T) {
 }
 
 func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
-	for _, operation := range []string{"put", "delete", "concurrent delete"} {
+	for _, operation := range []string{"put", "delete", "suppressed delete"} {
 		t.Run(operation, func(t *testing.T) {
 			attachments, _, database, files, task, principal := attachmentService(t)
 			ctx := context.Background()
 			putAttachment(t, attachments, principal, task, "file", "before")
-			removeTable := func() {
-				if _, err := database.Pool.Exec(ctx, `DROP TABLE task_attachments`); err != nil {
-					t.Fatal(err)
-				}
+			action := `RAISE EXCEPTION USING ERRCODE='P1001', MESSAGE='attachment metadata failure'`
+			event := "INSERT OR UPDATE"
+			if operation != "put" {
+				event = "DELETE"
+			}
+			if operation == "suppressed delete" {
+				action = "RETURN NULL"
+			}
+			if _, err := database.Pool.Exec(ctx, `CREATE FUNCTION fail_attachment_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN `+action+`; END $$;
+				CREATE TRIGGER fail_attachment_write BEFORE `+event+` ON task_attachments FOR EACH ROW EXECUTE FUNCTION fail_attachment_write()`); err != nil {
+				t.Fatal(err)
 			}
 			faults := attachmentFaultStorage{Storage: files}
 			if operation == "put" {
-				faults.afterPut = removeTable
-				_, _, err := NewAttachments(database, faults).Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
+				_, _, err := newAttachmentService(database, faults).Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
 				var databaseError *store.Error
-				if !errors.As(err, &databaseError) {
+				var transactionError *store.TransactionError
+				var postgresError *pgconn.PgError
+				if !FileEffectPossible(err) || !errors.As(err, &databaseError) || !errors.As(err, &transactionError) || !errors.As(err, &postgresError) || postgresError.Code != "P1001" || transactionError.Outcome != store.TransactionNotCommitted || transactionError.CommitAttempted {
 					t.Fatalf("metadata write error: %v", err)
 				}
 				object, err := files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
@@ -372,29 +382,32 @@ func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
 				if readErr != nil || closeErr != nil || string(content) != "after" {
 					t.Fatalf("successful file write was hidden: %q, %v, %v", content, readErr, closeErr)
 				}
+				var contentType string
+				var size int64
+				if err := database.Pool.QueryRow(ctx, `SELECT content_type,size_bytes FROM task_attachments WHERE task_id=$1 AND path='file'`, task.ID).Scan(&contentType, &size); err != nil || contentType != "text/plain; charset=utf-8" || size != 6 {
+					t.Fatalf("metadata was not preserved: %q, %d, %v", contentType, size, err)
+				}
 				return
 			}
-			if operation == "delete" {
-				faults.afterDelete = removeTable
-			} else {
-				faults.afterDelete = func() {
-					if err := database.DeleteAttachment(ctx, task.ProjectID, task.ID, "file"); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			err := NewAttachments(database, faults).Delete(ctx, principal, task.ProjectID, task.ID, "file")
-			if operation == "concurrent delete" {
+			err := newAttachmentService(database, faults).Delete(ctx, principal, task.ProjectID, task.ID, "file")
+			if operation == "suppressed delete" {
 				requireFault(t, err, "not_found")
 			} else {
 				var databaseError *store.Error
-				if !errors.As(err, &databaseError) {
+				var transactionError *store.TransactionError
+				var postgresError *pgconn.PgError
+				if !errors.As(err, &databaseError) || !errors.As(err, &transactionError) || !errors.As(err, &postgresError) || postgresError.Code != "P1001" || transactionError.Outcome != store.TransactionNotCommitted || transactionError.CommitAttempted {
 					t.Fatalf("metadata delete error: %v", err)
 				}
 			}
 			_, err = files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
 			if !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("successful file deletion was hidden: %v", err)
+			}
+			var contentType string
+			var size int64
+			if err := database.Pool.QueryRow(ctx, `SELECT content_type,size_bytes FROM task_attachments WHERE task_id=$1 AND path='file'`, task.ID).Scan(&contentType, &size); err != nil || contentType != "text/plain; charset=utf-8" || size != 6 {
+				t.Fatalf("metadata was not preserved: %q, %d, %v", contentType, size, err)
 			}
 		})
 	}

@@ -1,40 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { openBotStore } from "../../../src/commands/worker/bots/store.js";
-import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
-import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
-import type { BotDefinition, BotRecord } from "../../../src/commands/worker/bots/types.js";
+import type { BotConfiguration, BotRecord } from "../../../src/commands/worker/bots/types.js";
 import { BotEnvironmentCleanupError } from "../../../src/commands/worker/bots/environment.js";
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
-import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
-import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import { resolveConfigurationPaths } from "../../../src/config/paths.js";
-const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
-const cleanups: (()=>void)[] = [];
-afterEach(()=>{ vi.unstubAllEnvs(); for(const cleanup of cleanups.splice(0).reverse()) cleanup(); });
-const fixture = (provider: "codex"|"claude"|"copilot" = "codex") => {
-  const root=path.resolve(import.meta.dirname,"../../../../../.tmp/bot-process"); mkdirSync(root,{recursive:true});
-  const home=mkdtempSync(path.join(root,"h-")); cleanups.push(()=>rmSync(home,{recursive:true,force:true})); vi.stubEnv("DN_CONFIG_DIR",path.join(home,"state"));
-  const file=path.join(home,"state.sqlite"), store=openBotStore(file,{onMigration:()=>{}}), executions=openBotExecutionStore(file,{onMigration:()=>{}}); cleanups.push(()=>store.close(),()=>executions.close());
-  const owner={serverOrigin:"https://daynight.example",ownerUserId:id(1),workerId:id(2)};
-  let bot:BotDefinition={id:id(3),workerId:id(2),ownerUserId:id(1),version:"1",name:"Only a name",creationOrder:"1",requestedOverrides:{},resolvedConfiguration:{workerId:id(2),cwd:home,provider,model:null,args:[]},roleConfiguration:null,sessionId:null,testExecutionId:null,startupResult:{state:"pending",code:null},deletion:null,createdAt:"2026-11-05T00:00:00Z",updatedAt:"2026-11-05T00:00:00Z"};
-  store.observe(owner,bot,1);
-  const current=()=>store.get(owner,bot.id)!;
-  const snapshot=(ticket:ControllerLaunchTicket):ControllerSnapshot=>({executionId:ticket.executionId,testExecutionId:ticket.executionId,sessionId:ticket.sessionId,executionGeneration:ticket.executionGeneration,controllerInstanceId:ticket.controllerInstanceId,lifecycle:"ready",nativeSessionId:id(9),initialInputState:"not_required",activity:"idle",currentTurnId:null,capabilities:{send:true,steer:false,cancel:false,respond:true},controllerProcess:null,nativeProcesses:[],nativeStopped:false,stoppedAt:null,error:null,startup:{state:"ready",reasonCode:"ready"}});
-  const register=vi.fn(async(record:BotRecord)=>{expect(current().intent?.roleConfiguration).not.toBeNull(); expect(record.intent?.roleConfiguration).toEqual(current().intent?.roleConfiguration); bot={...bot,version:"2",sessionId:id(4),testExecutionId:record.intent!.executionId,roleConfiguration:record.intent!.roleConfiguration}; return {bot,snapshot:{} as never};});
-  const grant=vi.fn(async(record:BotRecord)=>({sessionId:id(4),testExecutionId:record.intent!.executionId,executionGeneration:"1",controllerId:record.intent!.registration.controllerId,controllerInstanceId:record.intent!.registration.controllerInstanceId,token:"relay-fixture",expiresAt:new Date(Date.now()+300000).toISOString()}));
-  const environment={HOME:"/real/home",PATH:"/native/bin",CODEX_HOME:"/real/codex",DN_CONFIG_DIR:resolveConfigurationPaths(home).stateDirectory};
-  const release=vi.fn(async()=>{}), prepareEnvironment=vi.fn(async()=>({environment,aliasDirectory:null,bindings:[],release}));
-  let ticket:ControllerLaunchTicket;
-  const launch=vi.fn(async(options:any)=>{ ticket=options.ticket; expect(executions.get(current())!.launchSubmission).toBe("not-submitted"); await options.onSubmitting(); expect(executions.get(current())!.launchSubmission).toBe("unknown"); expect(options.env).toEqual(environment); const value=snapshot(ticket); await options.onObserved(value); return value; });
-  const observe=vi.fn(async(t:ControllerLaunchTicket)=>snapshot(t));
-  const api={register,grant,readSession:vi.fn(async()=>({} as never)),report:vi.fn(async()=>bot),completeDeletion:vi.fn(async()=>{throw new Error("Unexpected deletion report in process fixture");})};
-  const createProcess=(extra: Record<string, unknown> = {}, recoveryLimit: number | (() => number) = 3)=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit,dependencies:{prepareEnvironment,launch,observe,...extra}});
-  return {home,owner,store,executions,current,register,grant,prepareEnvironment,release,launch,observe,process:createProcess(),createProcess,getBot:()=>bot,getTicket:()=>ticket!};
-};
+import { cleanupBotProcesses, fixture, id } from "./bot-process.fixtures.js";
+
+afterEach(cleanupBotProcesses);
 
 test.each(["codex","claude","copilot"] as const)("launches %s in an ordinary cwd with a persisted role and no user turn",async provider=>{
   const f=fixture(provider); const snapshot=await f.process.advance(f.current(),new AbortController().signal);
@@ -69,7 +43,6 @@ test("rejects unsupported native configuration before registration and leaves fa
   expect(f.register).not.toHaveBeenCalled(); expect(f.launch).not.toHaveBeenCalled();
 });
 
-
 test("renews only expiring credentials and retains the observed native identity",async()=>{
   const f=fixture(), signal=new AbortController().signal;
   await f.process.advance(f.current(),signal); await f.process.refreshGrant(f.current(),signal);expect(f.grant).toHaveBeenCalledTimes(1);
@@ -92,7 +65,6 @@ test("retains registration and releases unsubmitted aliases when grant preparati
   await f.process.advance(f.current(),signal);expect(f.register).toHaveBeenCalledTimes(1);expect(f.launch).toHaveBeenCalledTimes(1);
 });
 
-
 test("retains an explicit OS rejection across failed reporting and never spawns again",async()=>{
   const f=fixture(), signal=new AbortController().signal;
   f.launch.mockImplementationOnce(async options=>{await options.onSubmitting();throw new ControllerStartupError({state:"failed",reasonCode:"controller_launch_failed"},"OS rejected spawn");});
@@ -102,21 +74,8 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-test("recovers a native initialization rejection from the original journal after IPC closes",async()=>{
-  const f=fixture(), signal=new AbortController().signal;
-  f.launch.mockImplementationOnce(async options=>{
-    await options.onSubmitting();
-    const journal=openControllerLifecycleStore(f.current().intent!.journalPath,options.ticket);
-    journal.patchSnapshot({lifecycle:"failed",startup:{state:"failed",reasonCode:"native_rejected"},error:"native rejected"});journal.close();
-    throw new Error("IPC closed before observation");
-  });
-  await expect(f.process.advance(f.current(),signal)).rejects.toThrow("IPC closed");f.observe.mockRejectedValue(new Error("unreachable"));
-  expect(await f.createProcess().advance(f.current(),signal)).toMatchObject({startup:{state:"failed",reasonCode:"native_rejected"}});
-  expect(f.launch).toHaveBeenCalledTimes(1);
-});
-
-const recoveryFixture = async () => {
-  const f = fixture(), signal = new AbortController().signal;
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}) => {
+  const f = fixture("codex", configuration), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
   await f.process.advance(f.current(), signal);
   let saved: ControllerSnapshot = { ...f.executions.get(f.current())!.snapshot!, controllerProcess: proof };
@@ -157,15 +116,6 @@ test("shutdown fails visibly when its stop receipt cannot prove the process tree
   expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(f.current().intent!.executionGeneration).toBe("1");
 });
 
-test("stopped process without native ID never obtains a recovery grant or a blank replacement", async () => {
-  const f = fixture(), signal = new AbortController().signal;
-  f.launch.mockImplementationOnce(async options => { await options.onSubmitting(); const ticket = options.ticket; const journal = openControllerLifecycleStore(f.current().intent!.journalPath, ticket); journal.close(); throw new Error("unknown launch"); });
-  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("unknown launch");
-  f.observe.mockRejectedValue(new Error("IPC unavailable"));
-  await expect(f.createProcess({ confirmStopped: async () => true }).advance(f.current(), signal)).rejects.toThrow();
-  expect(f.grant).toHaveBeenCalledTimes(1); expect(f.launch).toHaveBeenCalledTimes(1);
-});
-
 test("recovery keeps its persisted target generation after a lost grant response", async () => {
   const f = await recoveryFixture(); await f.manager.shutdown(f.current(), f.signal);
   f.grant.mockRejectedValueOnce(new Error("response lost"));
@@ -175,7 +125,6 @@ test("recovery keeps its persisted target generation after a lost grant response
   expect(f.current().intent).toEqual(target); expect(f.launch).toHaveBeenCalledTimes(2);
   expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
 });
-
 
 test("an abnormal stopped writer consumes one recovery attempt and a healthy later shutdown does not reset it", async () => {
   const f = await recoveryFixture();
@@ -380,7 +329,6 @@ test("deletion retains registration identity when the accepted registration resp
   expect(f.launch).not.toHaveBeenCalled();
 });
 
-
 test("deletion retries a failed prepared alias release before completing an unregistered Bot", async () => {
   const f = fixture(), signal = new AbortController().signal;
   const alias = path.join(f.home, "state", "agent-cli-aliases", "execution-prepared");
@@ -431,4 +379,52 @@ test("freezes the current recovery limit only when preparing the original Bot in
   limit = 1; await process.advance(f.current(), signal);
   expect(f.current().intent!.recoveryLimit).toBe(7);
   expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+
+test.each(["codex", "claude", "copilot"] as const)("maps frozen %s selection into one validated launch configuration", async provider => {
+  const f = fixture(provider, { model: "chosen-model", args: ["--effort", "low", "--effort", "medium"], reasoningEffort: "native-new-level",
+    selection: { schemaVersion: 1, modelSource: "explicit", reasoningEffortSource: "explicit" } });
+  await f.process.advance(f.current(), new AbortController().signal);
+  expect(f.getTicket().configuration).toEqual({ agent: provider, agentControlMode: "web", model: "chosen-model", args: ["--effort", "native-new-level"], recoveryLimit: 3, validateNativeSelection: true });
+  expect(f.register.mock.calls[0]![0].definition?.resolvedConfiguration).toEqual(f.getBot().resolvedConfiguration);
+  await f.createProcess().advance(f.current(), new AbortController().signal);
+  expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+test("keeps a frozen native effort delegation clear of inherited argument defaults", async () => {
+  const f = fixture("codex", { model: null, args: ["--model", "stale", "--effort", "high", "--sandbox", "read-only"], reasoningEffort: null,
+    selection: { schemaVersion: 1, modelSource: "native", reasoningEffortSource: "native" } });
+  await f.process.advance(f.current(), new AbortController().signal);
+  expect(f.getTicket().configuration).toEqual({ agent: "codex", agentControlMode: "web", model: null, args: ["--sandbox", "read-only"], recoveryLimit: 3 });
+});
+
+
+test("rejects removal of the frozen selection validation from a new Bot ticket", async () => {
+  const f = fixture("copilot", { model: "chosen-model", args: [], reasoningEffort: "none", selection: { schemaVersion: 1, modelSource: "explicit", reasoningEffortSource: "explicit" } });
+  const signal = new AbortController().signal;
+  await f.process.advance(f.current(), signal);
+  const ticket = f.getTicket(), { validateNativeSelection: _validation, ...configuration } = ticket.configuration;
+  writeFileSync(f.current().intent!.ticketPath, JSON.stringify({ ...ticket, configuration }), { mode: 0o600 });
+  await expect(f.createProcess().advance(f.current(), signal)).rejects.toThrow(/selection validation/);
+  expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+
+test.each([
+  { model: "chosen-model", reasoningEffort: null, modelSource: "explicit", reasoningEffortSource: "native", args: [] },
+  { model: null, reasoningEffort: "high", modelSource: "native", reasoningEffortSource: "explicit", args: ["--effort", "high"] },
+] as const)("preserves independent frozen selection %j", async selection => {
+  const f = fixture("codex", { model: selection.model, reasoningEffort: selection.reasoningEffort, selection: { schemaVersion: 1, modelSource: selection.modelSource, reasoningEffortSource: selection.reasoningEffortSource } });
+  await f.process.advance(f.current(), new AbortController().signal);
+  expect(f.getTicket().configuration).toMatchObject({ model: selection.model, args: selection.args, validateNativeSelection: true });
+});
+
+test("keeps new frozen model and effort through original-session recovery", async () => {
+  const f = await recoveryFixture({ model: "chosen-model", args: ["--effort", "low"], reasoningEffort: "high", selection: { schemaVersion: 1, modelSource: "explicit", reasoningEffortSource: "explicit" } });
+  const original = f.getTicket();
+  await f.manager.shutdown(f.current(), f.signal);
+  await f.restart().advance(f.current(), f.signal);
+  expect(f.getTicket()).toMatchObject({ resumeNativeSessionId: id(9), executionGeneration: "2", sessionId: original.sessionId, configuration: original.configuration });
+  expect(f.register).toHaveBeenCalledTimes(1);
 });

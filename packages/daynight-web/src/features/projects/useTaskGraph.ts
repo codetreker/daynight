@@ -42,6 +42,7 @@ export const useTaskGraph = (projectId: string) => {
   const [state, setState] = useState<GraphState>(() => initialState(projectId, scope));
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
+  const observingHistory = useRef(false);
   const liveAccess = useRef(false);
   const receipt = useRef<{ observedAt: string; receivedMonotonic: number; receivedAt: number; revision: number } | null>(null);
   const publish = useCallback((project: CachedProject) => {
@@ -49,7 +50,7 @@ export const useTaskGraph = (projectId: string) => {
     if (!liveAccess.current || sample === null) return;
     setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, ...sample }, status: "ready", refreshing: false, error: null });
   }, [projectId, scope]);
-  const request = useCallback(async (automatic = false) => {
+  const request = useCallback(async (automatic = false, historyRetry = false, confirmationRetry = false) => {
     if (automatic && active.current !== null) return;
     active.current?.abort();
     const controller = new AbortController();
@@ -88,6 +89,18 @@ export const useTaskGraph = (projectId: string) => {
       const receivedMonotonic = performance.now();
       const receivedAt = Date.now();
       if (signal.aborted || revision !== generation.current) return;
+      observingHistory.current = true;
+      let history: "current" | "retired" | "confirm";
+      try { history = await scope.observeHistory(ticket, response.epoch, signal); }
+      finally { observingHistory.current = false; }
+      if (history === "confirm") {
+        if (!confirmationRetry) { void request(false, historyRetry, true); return; }
+        throw new ApiError("protocol");
+      }
+      if (history === "retired") {
+        if (!historyRetry) { void request(false, true, confirmationRetry); return; }
+        throw new ApiError("protocol");
+      }
       const applyStarted = performance.now();
       const result = await scope.applySync(ticket, response, signal);
       console.debug("Task sync", { cycle_id: cycleId, project_id: projectId, received: response.tasks.length,
@@ -122,6 +135,12 @@ export const useTaskGraph = (projectId: string) => {
     const lifetime = new AbortController();
     const unsubscribe = scope.subscribe((event) => {
       if (event.projectId !== projectId) return;
+      if (event.historyChanged === true) {
+        liveAccess.current = false; receipt.current = null;
+        setState({ projectId, scope, snapshot: null, status: "loading", refreshing: false, error: null });
+        if (!observingHistory.current) void request(false, event.historyHint !== true);
+        return;
+      }
       if (event.accessRestored === true) { void request(); return; }
       if (event.accessRevoked === true) {
         liveAccess.current = false; receipt.current = null;

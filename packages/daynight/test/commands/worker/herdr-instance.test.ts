@@ -26,7 +26,7 @@ const present = async (file: string): Promise<boolean> => {
 };
 
 const daemonSource = `import { createServer } from 'node:net';
-import { mkdir, appendFile, writeFile, access } from 'node:fs/promises';
+import { mkdir, appendFile, writeFile, rename, access } from 'node:fs/promises';
 import path from 'node:path';
 if (process.argv.includes('--version')) { process.stdout.write('herdr '+(process.env.FIXTURE_VERSION ?? '0.9.5')+'\\n'); process.exit(0); }
 const root=process.env.XDG_CONFIG_HOME;
@@ -51,7 +51,10 @@ await appendFile(events,JSON.stringify({kind:'api-ready'})+'\\n');
 await waitFile(process.env.FIXTURE_CLIENT_GATE);
 await new Promise(resolve=>clientServer.listen(address(client),resolve));
 process.stdout.write('private daemon started\\n');process.stderr.write('private daemon stderr\\n');
-await writeFile(process.env.FIXTURE_READY,String(process.pid));
+// Readers use file presence as the checkpoint, so publish only the complete PID.
+const ready=process.env.FIXTURE_READY;
+await writeFile(ready+'.next',String(process.pid));
+await rename(ready+'.next',ready);
 setInterval(()=>{},1000);
 `;
 
@@ -169,10 +172,14 @@ const operation=createOperation({limits:{totalMs:5000,requestMs:5000}});try{awai
     const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => parent.once("close", (code, signal) => resolve({ code, signal })));
     const retained = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("The retained daemon must not be replaced"); } });
     try {
-      await waitUntil(async () => await present(resultFile) && await present(f.ready));
-      const result = JSON.parse(await readFile(resultFile, "utf8")) as { daemonPid: number; error?: string };
-      expect(result.error).toMatch(failure === "registration" ? /journal refused/ : /protocol 22/);
-      expect(Number(await readFile(f.ready, "utf8"))).toBe(result.daemonPid);
+      let result: { daemonPid: number; error?: string } | undefined;
+      await waitUntil(async () => {
+        if (!await present(resultFile) || !await present(f.ready)) return false;
+        try { result = JSON.parse(await readFile(resultFile, "utf8")) as typeof result; return true; }
+        catch (error) { if (error instanceof SyntaxError) return false; throw error; }
+      });
+      expect(result!.error).toMatch(failure === "registration" ? /journal refused/ : /protocol 22/);
+      expect(Number(await readFile(f.ready, "utf8"))).toBe(result!.daemonPid);
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const outcome = await Promise.race([closed, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 2_000); })]);

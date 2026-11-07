@@ -21,7 +21,7 @@ details lifetimes follow user action, selection, deletion or scope invalidation;
 submission and reads still require admission.
 
 The selected Bot's confirmed Session binding and actual display selection keep
-the existing [bounded cache](../architecture/2026-11-04-bot-session-cache.md),
+the existing [bounded cache](../../archived/architecture/2026-11-04-bot-session-cache.md),
 client and pane in place during the check. The shared client freezes input and
 publication and retains its bounded transport pause; it reconnects and replays
 from the cursor when the existing limits or a transport interruption require it.

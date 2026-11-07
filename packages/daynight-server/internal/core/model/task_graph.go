@@ -18,6 +18,7 @@ type GraphTask struct {
 	UpdatedAt         time.Time
 	StartedAt         *time.Time
 	CompletedAt       *time.Time
+	CancelledAt       *time.Time
 }
 
 type TaskGraphSummary struct {
@@ -25,6 +26,7 @@ type TaskGraphSummary struct {
 	Todo       int64
 	InProgress int64
 	Done       int64
+	Cancelled  int64
 	Ready      int64
 	Blocked    int64
 }

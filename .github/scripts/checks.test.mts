@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../workflows/checks.yml", import.meta.url), "utf8");
@@ -13,12 +12,11 @@ const command = gate.match(/^        run: (.+)$/m)![1]!;
 test("the final gate waits for every independent validation stage", () => {
   assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(new Set(required), new Set([...jobs.keys()].filter((name) => name !== "checks")));
-  for (const [name, mode] of [["verify-server", "coverage"], ["verify-server-e2e", "e2e"]]) {
+  for (const [name, mode] of [["verify-server", "coverage"]]) {
     const job = jobs.get(name!)!;
     assert.match(job, /^    needs: detect-changes$/m);
     assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
     assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
-    assert.ok(job.includes("DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}"));
   }
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });
@@ -36,11 +34,11 @@ const runGate = (results: Record<string, string>): number | null => {
 
 const success = Object.fromEntries(required.map((name) => [name, "success"]));
 
-test("both successful server jobs pass the actual workflow gate", () => {
+test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-macos", "verify-server", "verify-server-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -59,10 +57,11 @@ test("change detection failure remains visible when application jobs skip", () =
 const ordinary = jobs.get("verify")!;
 const installed = jobs.get("verify-installed")!;
 const nativeStages = [ordinary, installed];
-const nativePlatforms = ["ubuntu-latest", "windows-latest"];
-const macos = jobs.get("verify-macos")!;
+const nativePlatforms = ["ubuntu-latest", "windows-latest", "macos-15"];
 
-test("Ubuntu and Windows retain independent ordinary and installed CLI matrices", () => {
+test("Linux, Windows and macOS share independent ordinary and installed CLI matrices", () => {
+  assert.equal(jobs.has("verify-macos"), false);
+  assert.equal(jobs.has("verify-macos-installed"), false);
   for (const stage of nativeStages) {
     assert.match(stage, /^    needs: detect-changes$/m);
     assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
@@ -113,12 +112,12 @@ test("the ordinary Ubuntu producer alone supplies the runtime matrix package", (
 test("native stages retain phase-owned environment, acceptance and failure-probe artifacts without collisions", () => {
   const ordinaryUploads = uploadSteps(ordinary);
   const installedUploads = uploadSteps(installed);
-  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}", "daynight-cli-tests-probes-${{ matrix.os }}"]);
+  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}", "daynight-cli-tests-probes-${{ matrix.os }}", "daynight-cli-tests-termination-macos-15"]);
   assert.deepEqual(installedUploads.map(artifactName), ["daynight-cli-installed-${{ matrix.os }}", "daynight-cli-installed-probes-${{ matrix.os }}"]);
   const names = [...ordinaryUploads, ...installedUploads].map(artifactName);
   assert.equal(new Set(names).size, names.length);
   assert.deepEqual(artifactPaths(ordinaryUploads[1]!), [".tmp/validation-environment.json"]);
-  assert.deepEqual(artifactPaths(installedUploads[0]!), [".tmp/validation-environment.json", ".tmp/e2e-evidence.json", ".tmp/update-evidence.json", ".tmp/project-task-evidence.json", ".tmp/skill-install-evidence.json", ".tmp/installed-cli-preparation.json"]);
+  assert.deepEqual(artifactPaths(installedUploads[0]!), [".tmp/validation-environment.json", ".tmp/installed-cli-preparation.json"]);
   for (const probe of [ordinaryUploads[2]!, installedUploads[1]!]) {
     assert.match(probe, /^        if: \$\{\{ always\(\) && steps.environment.outcome != 'skipped' \}\}$/m);
     assert.deepEqual(artifactPaths(probe), [".tmp/validation-probes.json"]);
@@ -127,179 +126,166 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
 });
 
 const observedVitest = "node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run";
+const stepsOf = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
 
-test("macOS termination diagnostics belong to ordinary validation and upload after failure", () => {
-  assert.match(ordinary, /name: Test the compiled CLI\n        run: pnpm --filter @codetreker\/daynight exec vitest run\n/);
-  for (const stage of nativeStages) assert.doesNotMatch(stage, /observe-native-validation|tests-termination|runner.os/);
+const selectsPlatform = (step: string, platform: string): boolean => {
+  const condition = step.match(/^        if: (.+)$/m)?.[1];
+  if (condition === undefined) return true;
+  const comparison = condition.match(/^matrix\.os (==|!=) '([^']+)'$/);
+  assert.ok(comparison, `Unsupported platform condition: ${condition}`);
+  return comparison[1] === "==" ? platform === comparison[2] : platform !== comparison[2];
+};
+
+test("each matrix checks Darwin ARM64 before recording its macOS environment", () => {
+  for (const stage of nativeStages) {
+    const architecture = stepsOf(stage).filter((step) => step.includes("name: Require macOS ARM64"));
+    assert.equal(architecture.length, 1);
+    const check = architecture[0]!;
+    assert.match(check, /^        if: matrix.os == 'macos-15'$/m);
+    assert.ok(check.includes("assert.equal(process.platform, 'darwin')"));
+    assert.ok(check.includes("assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64')"));
+    const recorder = stepsOf(stage).find((step) => step.includes("scripts/validation-environment.ts"))!;
+    assert.ok(recorder);
+    assert.ok(stage.indexOf(check) < stage.indexOf(recorder));
+    assert.doesNotMatch(recorder, /^        if:/m);
+    for (const platform of nativePlatforms) assert.equal(selectsPlatform(check, platform), platform === "macos-15");
+  }
+});
+
+test("each platform runs its ordinary and installed suite exactly once", () => {
+  const ordinarySuites = stepsOf(ordinary).filter((step) => step.includes("exec vitest run"));
+  const installedSuites = stepsOf(installed).filter((step) => step.includes("exec vitest run"));
+  assert.equal(ordinarySuites.length, 2);
+  assert.equal(installedSuites.length, 1);
+  assert.doesNotMatch(installedSuites[0]!, /^        if:/m);
+  const phases: string[] = [];
+  for (const platform of nativePlatforms) {
+    const selectedOrdinary = ordinarySuites.filter((step) => selectsPlatform(step, platform));
+    const selectedInstalled = installedSuites.filter((step) => selectsPlatform(step, platform));
+    assert.equal(selectedOrdinary.length, 1, `${platform} ordinary suite count`);
+    assert.equal(selectedInstalled.length, 1, `${platform} installed suite count`);
+    assert.equal(selectedOrdinary[0]!.match(/^        run: (.+)$/m)![1], platform === "macos-15" ? observedVitest : "pnpm --filter @codetreker/daynight exec vitest run");
+    assert.match(selectedInstalled[0]!, /^        run: pnpm --filter @codetreker\/daynight exec vitest run --config vitest.acceptance.config.ts$/m);
+    phases.push(`${platform}:ordinary`, `${platform}:installed`);
+  }
+  assert.equal(phases.length, 6);
+  assert.equal(new Set(phases).size, 6);
+  for (const stage of nativeStages) {
+    for (const run of ["pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store", "pnpm build"]) {
+      const matching = stepsOf(stage).filter((step) => step.includes(`      - run: ${run}\n`) || step.includes(`        run: ${run}\n`));
+      assert.equal(matching.length, 1);
+      assert.doesNotMatch(matching[0]!, /^        if:/m);
+    }
+    assert.doesNotMatch(stage, /timeout-minutes: 20|installed-evidence|!cancelled|--grep|--shard/);
+  }
+});
+
+test("macOS termination diagnostics use only the ordinary matrix and upload after failure", () => {
   assert.equal((workflow.match(/observe-native-validation\.mjs/g) ?? []).length, 1);
-  const phase = macosStep("ordinary-validation");
-  assert.ok(phase.includes(`          ${observedVitest}\n`));
-  assert.equal((phase.match(/exec vitest run/g) ?? []).length, 1);
-  assert.ok(!macosStep("installed-validation").includes("observe-native-validation"));
-  const upload = macosUploads.find((step) => artifactName(step) === "daynight-cli-tests-termination-macos-15")!;
-  assert.match(upload, /^        if: \$\{\{ always\(\) \}\}$/m);
+  assert.doesNotMatch(installed, /observe-native-validation|tests-termination/);
+  const observer = stepsOf(ordinary).find((step) => step.includes("observe-native-validation.mjs"))!;
+  assert.match(observer, /^        if: matrix.os == 'macos-15'$/m);
+  const upload = uploadSteps(ordinary).find((step) => artifactName(step) === "daynight-cli-tests-termination-macos-15")!;
+  assert.match(upload, /^        if: \$\{\{ always\(\) && matrix.os == 'macos-15' \}\}$/m);
   assert.deepEqual(artifactPaths(upload), [".tmp/native-validation/"]);
   assert.match(upload, /^          include-hidden-files: true$/m);
   assert.match(upload, /^          if-no-files-found: warn$/m);
   assert.match(upload, /^          retention-days: 30$/m);
-  assert.equal(permitsMacosStep(upload, { "ordinary-validation": "failure" }, false, false), true);
-  assert.ok(macos.indexOf(upload) > macos.indexOf(phase));
-  assert.ok(macos.indexOf(upload) < macos.indexOf(macosStep("installed-environment")));
+  assert.ok(ordinary.indexOf(upload) > ordinary.indexOf(observer));
 });
 
-test("unselected CLI stages may both skip while other selected modules succeed", () => {
-  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-macos": "skipped", "verify-runtime": "skipped", "verify-completion": "skipped" }), 0);
-});
-
-const macosSteps = [...macos.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
-const macosStep = (id: string): string => {
-  const step = macosSteps.find((block) => block.includes(`        id: ${id}\n`));
-  assert.ok(step, `Missing macOS step ${id}`);
-  return step;
-};
-const macosUploads = uploadSteps(macos);
-const permitsMacosStep = (step: string, outcomes: Record<string, string>, cancelled: boolean, previousSuccess: boolean): boolean => {
-  const condition = step.match(/^        if: \$\{\{ (.+) \}\}$/m)?.[1];
-  if (condition === undefined) return previousSuccess && !cancelled;
-  if (!/\b(?:always|cancelled)\(\)/.test(condition) && !previousSuccess) return false;
-  return condition.split(" && ").every((term) => {
-    if (term === "always()") return true;
-    if (term === "!cancelled()") return !cancelled;
-    const comparison = term.match(/^steps\.([a-z0-9-]+)\.outcome (==|!=) '([a-z]+)'$/);
-    assert.ok(comparison, `Unsupported condition term: ${term}`);
-    const [, id, operator, expected] = comparison;
-    assert.ok(Object.hasOwn(outcomes, id!), `Missing outcome for ${id}`);
-    return operator === "==" ? outcomes[id!] === expected : outcomes[id!] !== expected;
-  });
-};
-
-test("one ARM64 macOS allocation runs both complete bounded validation phases", () => {
-  assert.match(macos, /^    needs: detect-changes$/m);
-  assert.match(macos, /^    if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
-  assert.match(macos, /^    runs-on: macos-15$/m);
-  assert.match(macos, /^    timeout-minutes: 20$/m);
-  assert.match(macos, /^          node-version: 24$/m);
-  assert.match(macos, /^          check-latest: true$/m);
-  assert.equal((macos.match(/run: pnpm install --frozen-lockfile/g) ?? []).length, 1);
-  assert.ok(macosStep("architecture").includes("assert.equal(process.platform, 'darwin')"));
-  assert.ok(macosStep("architecture").includes("assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64')"));
-  const ordinaryPhase = macosStep("ordinary-validation");
-  const installedPhase = macosStep("installed-validation");
-  assert.equal(macosSteps.filter((step) => step.includes("        id: ordinary-validation\n")).length, 1);
-  assert.equal(macosSteps.filter((step) => step.includes("        id: installed-validation\n")).length, 1);
-  assert.equal(ordinaryPhase.split("\n").filter((line) => line === `          ${observedVitest}`).length, 1);
-  assert.equal((installedPhase.match(/^          pnpm --filter @codetreker\/daynight exec vitest run --config vitest.acceptance.config.ts$/gm) ?? []).length, 1);
-  assert.match(ordinaryPhase, /^        timeout-minutes: 10$/m);
-  assert.match(installedPhase, /^        timeout-minutes: 10$/m);
-  assert.ok(ordinaryPhase.includes(`          pnpm typecheck\n          pnpm build\n          pnpm dev:test\n          ${observedVitest}\n`));
-  assert.ok(installedPhase.includes("          pnpm build\n          pnpm --filter @codetreker/daynight exec vitest run --config vitest.acceptance.config.ts\n"));
-  assert.doesNotMatch(macos, /strategy:|matrix\.|VITEST_MAX_WORKERS|--maxWorkers|--no-isolate|continue-on-error|--grep|--shard/);
-});
-
-test("the six logical native OS phases execute exactly once through one macOS allocation", () => {
-  const phases = nativeStages.flatMap((stage, index) => stage.match(/^        os: \[([^\]]+)\]$/m)![1]!.split(", ").map((os) => `${os}:${index === 0 ? "ordinary" : "installed"}`));
-  assert.ok(macosStep("ordinary-validation")); assert.ok(macosStep("installed-validation"));
-  phases.push("macos-15:ordinary", "macos-15:installed");
-  assert.deepEqual(phases.sort(), ["ubuntu-latest:ordinary", "ubuntu-latest:installed", "windows-latest:ordinary", "windows-latest:installed", "macos-15:ordinary", "macos-15:installed"].sort());
-  assert.equal(new Set(phases).size, 6);
-  const allocations = [...jobs.values()].reduce((count, stage) => count
-    + (/^    runs-on: macos-/m.test(stage) ? 1 : 0)
-    + (stage.match(/^        os: \[([^\]]+)\]$/m)?.[1]!.split(", ").filter((os) => os.startsWith("macos-")).length ?? 0), 0);
-  assert.equal(allocations, 1);
-  assert.match(jobs.get("verify-runtime")!, /^    needs: \[detect-changes, verify\]$/m);
-  assert.ok(!macos.includes("daynight-runtime-package"));
-});
-
-test("macOS artifacts retain exclusive phase names and ordinary upload precedes installed recording", () => {
-  assert.deepEqual(macosUploads.map(artifactName), ["daynight-cli-tests-macos-15", "daynight-cli-tests-probes-macos-15", "daynight-cli-tests-termination-macos-15", "daynight-cli-installed-macos-15", "daynight-cli-installed-probes-macos-15"]);
-  const names = [ordinary, installed, macos].flatMap((stage) => uploadSteps(stage).map(artifactName));
+test("matrix artifacts retain unique names across all three platforms", () => {
+  const names = nativeStages.flatMap((stage) => uploadSteps(stage).flatMap((step) => {
+    const name = artifactName(step);
+    if (name === "daynight-runtime-package") return [name];
+    if (name === "daynight-cli-tests-termination-macos-15") return [name];
+    return nativePlatforms.map((platform) => name.replace("${{ matrix.os }}", platform));
+  }));
+  assert.equal(names.length, 14);
   assert.equal(new Set(names).size, names.length);
-  assert.deepEqual(artifactPaths(macosUploads[0]!), [".tmp/validation-environment.json"]);
-  assert.deepEqual(artifactPaths(macosUploads[1]!), [".tmp/validation-probes.json"]);
-  assert.deepEqual(artifactPaths(macosUploads[3]!), artifactPaths(uploadSteps(installed)[0]!));
-  assert.deepEqual(artifactPaths(macosUploads[4]!), [".tmp/validation-probes.json"]);
-  const clear = macosStep("installed-evidence"); const recorder = macosStep("installed-environment");
-  for (const upload of macosUploads.slice(0, 3)) {
-    assert.ok(macos.indexOf(upload) < macos.indexOf(clear));
-    assert.ok(macos.indexOf(upload) < macos.indexOf(recorder));
-  }
-  assert.ok(macos.indexOf(clear) < macos.indexOf(recorder));
-  assert.ok(macos.indexOf(recorder) < macos.indexOf(macosStep("installed-validation")));
-  for (const upload of macosUploads.filter((step) => artifactName(step) !== "daynight-cli-tests-termination-macos-15")) assert.match(upload, /^          if-no-files-found: error$/m);
-});
-
-test("installed macOS validation survives ordinary failures but requires shared preparation and ARM64", () => {
-  const outcomes = { preparation: "success", architecture: "success", "installed-evidence": "success", "installed-environment": "success" };
-  for (const step of [macosStep("installed-evidence"), macosStep("installed-environment"), macosStep("installed-validation")]) {
-    assert.equal(permitsMacosStep(step, outcomes, false, false), true);
-    assert.equal(permitsMacosStep(step, outcomes, true, true), false);
-  }
-  for (const name of ["preparation", "architecture"]) {
-    for (const result of ["failure", "skipped", "cancelled"]) {
-      const failed = { ...outcomes, [name]: result };
-      assert.equal(permitsMacosStep(macosStep("installed-evidence"), failed, false, false), false);
-      assert.equal(permitsMacosStep(macosStep("installed-environment"), failed, false, false), false);
+  for (const platform of nativePlatforms) {
+    for (const prefix of ["daynight-cli-tests", "daynight-cli-tests-probes", "daynight-cli-installed", "daynight-cli-installed-probes"]) {
+      assert.ok(names.includes(`${prefix}-${platform}`));
     }
   }
-  assert.equal(permitsMacosStep(macosStep("installed-environment"), { ...outcomes, "installed-evidence": "failure" }, false, false), false);
 });
 
-test("installed macOS artifacts use their own recorder outcome and cleared paths", () => {
-  const outcomes = { "installed-evidence": "success", "installed-environment": "success", "ordinary-environment": "success" };
-  assert.equal(permitsMacosStep(macosUploads[0]!, outcomes, false, false), true);
-  assert.equal(permitsMacosStep(macosUploads[1]!, outcomes, false, false), true);
-  for (const result of ["failure", "skipped", "cancelled"]) {
-    const failed = { ...outcomes, "installed-environment": result };
-    assert.equal(permitsMacosStep(macosStep("installed-validation"), failed, false, false), false);
-    assert.equal(permitsMacosStep(macosUploads[3]!, failed, false, false), false);
-    assert.equal(permitsMacosStep(macosUploads[4]!, failed, false, false), result !== "skipped");
+test("unselected CLI matrices may skip while other selected modules succeed", () => {
+  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-runtime": "skipped", "verify-completion": "skipped" }), 0);
+});
+
+const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
+const selectedWebCommand = selectedWebStep.match(/^        run: (.+)$/m)![1]!;
+const webQuality = jobs.get("verify-web-quality")!;
+const webBrowser = jobs.get("verify-web-browser")!;
+
+test("Web quality and browser jobs prepare independent runners after module selection", () => {
+  for (const stage of [webQuality, webBrowser]) {
+    assert.match(stage, /^    needs: detect-changes$/m);
+    assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
+    assert.match(stage, /^    runs-on: ubuntu-latest$/m);
+    assert.match(stage, /uses: actions\/checkout@/);
+    assert.match(stage, /^          persist-credentials: false$/m);
+    assert.match(stage, /^          node-version: 24$/m);
+    assert.match(stage, /uses: pnpm\/action-setup@/);
+    assert.match(stage, /^          version: 11\.28\.6$/m);
+    assert.ok(stage.includes("run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
+    assert.match(stage, /COREPACK_HOME: \$\{\{ github.workspace \}\}\/\.tmp\/corepack/);
+    assert.match(stage, /XDG_CACHE_HOME: \$\{\{ github.workspace \}\}\/\.tmp\/cache/);
+    assert.doesNotMatch(stage, /download-artifact|continue-on-error/);
   }
-  assert.equal(permitsMacosStep(macosUploads[4]!, { ...outcomes, "installed-evidence": "failure" }, false, false), false);
+  assert.match(webQuality, /^    timeout-minutes: 30$/m);
+  assert.match(webBrowser, /^    timeout-minutes: 20$/m);
 });
 
-test("the macOS evidence handoff removes only the two recorder paths", () => {
-  const temporary = fileURLToPath(new URL("../../.tmp/workflow-checks/", import.meta.url));
-  mkdirSync(temporary, { recursive: true });
-  const directory = mkdtempSync(`${temporary}evidence-`);
-  try {
-    mkdirSync(`${directory}/.tmp`);
-    for (const name of ["validation-environment.json", "validation-probes.json", "keep-evidence.json"]) writeFileSync(`${directory}/.tmp/${name}`, "ordinary evidence");
-    const command = macosStep("installed-evidence").match(/^        run: \|\n((?:          .+\n)+)/m)![1]!
-      .split("\n").filter(Boolean).map((line) => line.slice(10)).join("\n");
-    const run = () => spawnSync("bash", ["-e", "-c", command], { cwd: directory, encoding: "utf8", timeout: 5_000 });
-    const result = run();
-    if (result.error) throw result.error;
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(existsSync(`${directory}/.tmp/validation-environment.json`), false);
-    assert.equal(existsSync(`${directory}/.tmp/validation-probes.json`), false);
-    assert.equal(readFileSync(`${directory}/.tmp/keep-evidence.json`, "utf8"), "ordinary evidence");
-    assert.equal(run().status, 0, "Already-absent recorder files are normal.");
-    mkdirSync(`${directory}/.tmp/validation-environment.json`);
-    assert.notEqual(run().status, 0, "Real evidence deletion failures must remain visible.");
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+test("Web quality owns types, production build, harness, coverage and evidence", () => {
+  assert.match(webQuality, /run: node packages\/daynight-web\/scripts\/ci.mts quality/);
+  assert.doesNotMatch(webQuality, /playwright|web-browser|bots-viewport/);
+  const uploads = uploadSteps(webQuality);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-web-coverage"]);
+  assert.match(uploads[0]!, /^        if: \$\{\{ always\(\) && steps.web-quality.outcome != 'skipped' \}\}$/m);
+  assert.deepEqual(artifactPaths(uploads[0]!), ["packages/daynight-web/.tmp/coverage/coverage-final.json", "packages/daynight-web/.tmp/coverage/summary.json"]);
+  assert.match(uploads[0]!, /^          if-no-files-found: error$/m);
 });
 
-const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - )/)![1]!;
-const selectedWebCommand = selectedWebStep.match(/        run: \|\n((?:          .+\n)+)/)![1]!
-  .split("\n").filter(Boolean).map((line) => line.slice(10)).join("\n");
+test("Web browser owns the unchanged frontend Playwright regressions and evidence", () => {
+  const steps = [...webBrowser.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
+  const install = steps.find((step) => step.includes("playwright install"))!;
+  const browser = steps.find((step) => step.includes("id: web-browser"))!;
+  const uploads = uploadSteps(webBrowser);
+  const upload = uploads[0]!;
+  assert.ok(install); assert.ok(browser); assert.ok(upload);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser"]);
+  assert.doesNotMatch(webBrowser, /ci\.mts quality|id: web-quality|\.tmp\/coverage/);
+  assert.match(webBrowser, /PLAYWRIGHT_BROWSERS_PATH: \$\{\{ github.workspace \}\}\/\.tmp\/playwright-browsers/);
+  assert.match(install, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright install --with-deps chromium$/m);
+  assert.match(browser, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright test --config tests\/navigation\/bots-viewport-playwright.config.ts --reporter=line,junit$/m);
+  assert.match(browser, /PLAYWRIGHT_JUNIT_OUTPUT_FILE: \$\{\{ github.workspace \}\}\/packages\/daynight-web\/\.tmp\/acceptance\/bots-viewport-results.xml/);
+  assert.ok(webBrowser.indexOf(install) < webBrowser.indexOf(browser));
+  assert.ok(webBrowser.indexOf(browser) < webBrowser.indexOf(upload));
+  assert.doesNotMatch(browser, /continue-on-error|passWithNoTests|--grep|--shard|--update-snapshots|if:/);
+  assert.match(upload, /^        if: \$\{\{ always\(\) && steps.web-browser.outcome != 'skipped' \}\}$/m);
+  assert.deepEqual(artifactPaths(upload), ["packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml", "packages/daynight-web/.tmp/acceptance/bots-viewport/"]);
+  assert.match(upload, /^          include-hidden-files: true$/m);
+  assert.match(upload, /^          if-no-files-found: error$/m);
+});
 
-test("selected Web evidence requires actual quality and shard success before downloads", () => {
+test("selected Web validation requires actual quality and browser success", () => {
   assert.match(selectedWebStep, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
   assert.match(selectedWebStep, /WEB_QUALITY_RESULT: \$\{\{ needs.verify-web-quality.result \}\}/);
-  assert.match(selectedWebStep, /WEB_SHARD_RESULT: \$\{\{ needs.verify-web.result \}\}/);
-  assert.ok(gate.indexOf("Require selected Web jobs to succeed") < gate.indexOf("Download first Web shard summary"));
+  assert.match(selectedWebStep, /WEB_BROWSER_RESULT: \$\{\{ needs.verify-web-browser.result \}\}/);
 });
 
 for (const quality of ["success", "skipped", "failure", "cancelled"]) {
-  for (const shards of ["success", "skipped", "failure", "cancelled"]) {
-    test(`selected Web quality=${quality} shards=${shards} executes the workflow guard`, () => {
+  for (const browser of ["success", "skipped", "failure", "cancelled"]) {
+    test(`selected Web quality=${quality}, browser=${browser} executes the workflow guard`, () => {
       const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
-        env: { ...process.env, WEB_QUALITY_RESULT: quality, WEB_SHARD_RESULT: shards },
+        env: { ...process.env, WEB_QUALITY_RESULT: quality, WEB_BROWSER_RESULT: browser },
         encoding: "utf8", timeout: 5_000,
       });
       if (result.error) throw result.error;
       assert.equal(result.signal, null);
-      assert.equal(result.status === 0, quality === "success" && shards === "success");
+      assert.equal(result.status === 0, quality === "success" && browser === "success");
     });
   }
 }

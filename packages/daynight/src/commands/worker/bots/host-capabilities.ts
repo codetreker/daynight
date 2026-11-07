@@ -6,7 +6,7 @@ import { createOperation, OperationError, type Operation } from "../../../api/op
 import type { WorkerAgent, WorkerAssistantHost, WorkerAssistantHostReason, WorkerAssistantProvider } from "../../../api/types.js";
 import { copilotExecutable } from "../../controller/providers/copilot-runtime.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess, type HerdrCommand, type HerdrCommandResult } from "../herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess, type HerdrCommand, type HerdrCommandResult } from "../herdr/command.js";
 import { NativeVersionOutputError, parseNativeAgentVersion } from "../herdr/version-probe.js";
 import type { ExecutionConfiguration } from "../types.js";
 
@@ -109,7 +109,11 @@ export const createAssistantHostCollector = (options: {
             parseProviderArguments(provider, args);
           } catch (error) { return fail("unsupported_arguments", error, true); }
           if (directoryError !== undefined) return fail(directoryError instanceof OperationError ? "timeout" : "invalid_cwd", directoryError);
-          if (cleanupFailures.has(provider)) return fail("unavailable", cleanupFailures.get(provider));
+          if (cleanupFailures.has(provider)) {
+            const previous = cleanupFailures.get(provider);
+            if (hasUnconfirmedHerdrCommandCleanup(previous)) return fail("unavailable", previous);
+            cleanupFailures.delete(provider);
+          }
           try {
             collection.check();
             const file = resolveExecutable(provider);
@@ -128,7 +132,7 @@ export const createAssistantHostCollector = (options: {
           if (cleanupFailures.size > 0) throw new AggregateError([error, ...cleanupFailures.values()], "Assistant host observation was cancelled with unconfirmed process cleanup.", { cause: error });
           throw error;
         }
-        return { assistantHost: { protocolVersion: 1, observedAt, defaultCwd: cwd, defaultProvider: configured.agent, providers: entries }, issues };
+        return { assistantHost: { protocolVersion: 1, creationConfigurationVersion: 1, observedAt, defaultCwd: cwd, defaultProvider: configured.agent, providers: entries }, issues };
       } finally { collection.dispose(); }
     },
   };

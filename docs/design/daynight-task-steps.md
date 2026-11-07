@@ -43,7 +43,7 @@ flowchart LR
 | `internal/core/model/task_steps.go` | Step、状态、父任务头和有序集合领域值；不包含 HTTP 处理。 |
 | `internal/core/task/codec/` | 纯字段校验、ID 规范化、公开资源类型与精确编码。 |
 | `internal/core/task/steps/` | 不可变候选与顺序变更规则。 |
-| `internal/core/store/task_steps.go` | 父任务头锁定、快照读取、步骤差异写入、只更新父版本和时间。 |
+| `internal/core/store/postgres/task/` 与 `internal/core/store/postgres/internal/task_steps.go` | 父任务头锁定、快照读取、步骤差异写入、只更新父版本和时间。 |
 | `internal/service/task/task_steps*.go` 与 `task_write_admission.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
 | `api/task_steps.go`、`internal/server/task/task_steps*.go` | 严格输入 DTO、路由、HTTP 方法与公共结果；输出复用中性 codec 的资源类型。 |
 | CLI `api/task-steps.ts`、`commands/task/step*.ts` | 已交付 list/show/Add/Update/Set-status/Move/Delete 的严格解析、版本分支、完整确认、同操作事实核对、输出与诊断。 |
@@ -86,7 +86,7 @@ Task UUID 已全局唯一，步骤行不重复 project ID。授权先定位父�
 
 ## 资源与 HTTP
 
-领域状态与 Task 三状态分别定义，`skipped` 不进入 TaskStatus。位置只体现在数组顺序中。
+领域状态与Task四状态分别定义，`skipped` 不进入 TaskStatus。位置只体现在数组顺序中。
 
 ```ts
 type TaskStep = {
@@ -108,6 +108,8 @@ type Placement = { readonly before: string } | { readonly after: string }
 ```
 
 Step ID 恰为 UUIDv4 第一段的 8 位十六进制字符，输入接受大小写并规范化为小写，保留前导零；同一 Task 内现存记录唯一，跨 Task 可以重复。标题和 Markdown 说明保留原始 UTF-8 字符串且不得含 NUL；标题至少包含一个不属于 Unicode `White_Space` 的字符。创建省略说明保存 `""`，省略状态保存 `todo`；读取返回全部字段。时间以 UTC RFC 3339 表示。`done` 表示该步结束，不推导 review 通过或 Task 完成；四状态之间均允许显式设置。
+
+新增和修改的完整目标候选调用 Task 与 Step 共用的文字准入策略，分别限制标题 1024 字节和说明 65536 字节。读侧 codec 保留结构校验，历史长文字不会被截断或因新写入限额而不可读；移动和删除不对目标施加单字段写入限额。目标文字和完整集合编码必须分别通过准入。
 
 下表的 `/steps` 表示完整路径 `/api/v1/projects/{projectId}/tasks/{taskId}/steps`。
 
@@ -140,7 +142,7 @@ Task 元数据与整个 Steps 集合统一使用 `Task.version`，`StepsResource
 2. 进入 `WriteProject`，复核成员，锁父 Task，区分不存在与软删除。
 3. 比较观察版本；陈旧版本先返回 `version_conflict`。
 4. 读取当前 Steps，按 Task 内 ID 解析目标；add 先查重复 ID，再查位置锚点。
-5. 构造不可变候选并做语义比较。no-op 返回原集合、版本及全部时间。
+5. 构造不可变候选并做语义比较；新增和修改先检查完整目标文字。合法 no-op 返回原集合、版本及全部时间。
 6. 真实变化先检查 int64 耗尽，再取得数据库 UTC 微秒时间，确定候选时间和父新版本。
 7. 编码完整候选并校验容量；通过后才写步骤差异和父任务 touch。
 8. 提交成功才返回已校验结果；提交或响应阶段取消继续具有未知结果语义。
@@ -161,7 +163,7 @@ codec 是确定性的纯函数；容量检查和 HTTP 响应共用它。候选�
 
 ### 错误优先级
 
-有效写入的事务内顺序为成员/父资源可见性→父删除→版本→本地身份/锚点→no-op→版本耗尽→容量。当前版本 no-op 在最大版本仍成功；陈旧同值仍冲突。坏输入可在进入事务前拒绝。
+有效写入的事务内顺序为成员/父资源可见性→父删除→版本→本地身份/锚点→目标文字准入（新增和修改）→no-op→版本耗尽→完整集合容量。合法当前版本 no-op 在最大版本仍成功；陈旧同值仍冲突。坏输入可在进入事务前拒绝。
 
 服务的 Fault、HTTP 状态映射和已知错误分类共同增加 `step_id_conflict`、`steps_limit_exceeded`、`version_exhausted` 三个 409；错误 details 增加字节字段。正常子项缺失为 404，父软删除为 410，内部或持久化故障为 500。授权失败不能被子项检查泄露，内部故障不能降格为预期拒绝。
 
@@ -191,15 +193,15 @@ canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具�
 
 首次激活才读取，完整资源只保存在 session 内存。每项独立保留真实版本，既不替旧 TaskDetail 补造 updatedAt，也不推进项目同步水位。owner 比较授权摘要、父详情、同 generation 待准入的父详情、已确认父修改和已验证 Steps 的最高版本；更高下限把旧集合标为 stale。同一缓存 generation 的已知下限只增不减，父刷新、Steps 重读及最后退订只释放完整集合和请求，不遗忘该标量；身份、缓存 generation、父删除及撤权终结这一历史。合法 Steps 响应在身份与 generation 核验后即提高下限，后续缓存准入失败不能撤销已观察事实。活动读取最多一个在途请求，目标推进合并到后续读取；非活动视图不读取。过期结果排队一次当前下限的重读，持续违反相同下限则暴露协议错误，避免无界请求循环。
 
-超前资源等待摘要追上，并触发已有父 GET 和项目刷新。摘要追上才准入，摘要跳过中间版本则重新读取。等待准入与实际读取有不同状态，等待中的刷新入口仍可用；父读取失败传播为 Steps 失败，已有确认行仍可阅读。同版本但内容不同的响应报协议错误，不覆盖已确认集合。
+摘要来源的超前资源等待摘要追上，并触发已有父 GET 和项目刷新。direct 来源以当前实时观察的父版本准入，集合推进时保留下界并有界补读父 Task 与集合，不等待缺席的摘要。摘要追上才准入，摘要跳过中间版本则重新读取。等待准入与实际读取有不同状态，等待中的刷新入口仍可用；父读取失败传播为 Steps 失败，已有确认行仍可阅读。同版本但内容不同的响应报协议错误，不覆盖已确认集合。
 
-读取和准入均受身份、scope signal、缓存 generation、局部请求 generation 及版本下限约束。scope 的权限撤回事件和身份 retirement 同步取消读取并清除完整数组。集合 404 先读取父 Task，父仍可读时仅报告 Steps 错误；可信父 404 才调用既有 scope retirement。403 不推断项目撤权，410 交给共同父删除所有者：取消父读取并推进 generation，同时在父响应异步准入前后检查删除终态。晚到的父读取、待准入响应或已递交写入回执不能恢复已删除详情；同步快照替换 generation 时，以当前授权缓存索引识别已移除的 Task，并向视图发布删除终态，不能让滞后的图节点或 generation 门控掩成加载态。合法的新缓存 generation 仍按原恢复机制重新准入。
+读取和准入均受身份、scope signal、缓存 generation、局部请求 generation 及版本下限约束。scope 的权限撤回事件和身份 retirement 同步取消读取并清除完整数组。集合 404 先读取父 Task，父仍可读时仅报告 Steps 错误；可信父 404 撤回该任务并重新验证项目访问。403 不推断项目撤权，410 交给共同父删除所有者：取消父读取并推进 generation，同时在父响应异步准入前后检查删除终态。晚到的父读取、待准入响应或已递交写入回执不能恢复已删除详情；同步快照替换 generation 时，以当前授权缓存索引识别已移除的 Task，并向视图发布删除终态，不能让滞后的图节点或 generation 门控掩成加载态。合法的新缓存 generation 仍按原恢复机制重新准入。
 
 64 MiB 集合不写入现有 TaskDetail LRU 或 IndexedDB，不改变其 schema。只读准入事务核对 ticket、generation 与当前摘要，不持久化集合。最后一个需要集合的视图退订且没有在途步骤写入操作依赖时清空完整资源、未准入响应并取消其准入等待；隐藏面板保留按 ID 的展开选择、页码和草稿，重新激活按需读取。
 
 ### 已实现的状态、位置、添加、内容与删除写入
 
-Step 状态、位置及删除操作接入现有提交和核对生命周期，并按 Task-result/Steps-result 分派；不复制第二个控制器。Steps 写成功保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。只有当前父详情、授权摘要和 Steps 资源在同一身份与缓存 generation 下匹配父版本，才恢复共同可提交基线。同步直接跳过中间版本时仍按最新下限收敛，不重放修改。核对期间父读取先结束而摘要或 Steps 再推进，或详情重新打开需要新的实时读取时，owner 按版本下限与打开周期合并并调度父 GET；持续落后时有界失败并保留恢复入口。其他页面先提交共享缓存、而当前页面尚未收到广播时，匹配持久摘要的父响应仍作为 pending 保留，直到本页投影追上后重新准入。父详情存储失败但摘要校验允许展示时，读取错误结束本次核对并保留显式重试，不能永久显示正在读取。Task 与 Steps 的状态发布均检查收敛，以便摘要不匹配消失时恢复提交。
+Step 状态、位置及删除操作接入现有提交和核对生命周期，并按 Task-result/Steps-result 分派；不复制第二个控制器。Steps 写成功保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。摘要来源要求当前父详情、授权摘要和 Steps 资源在同一身份与缓存 generation 下匹配父版本；direct 来源要求当前 opening 的实时父观察与 Steps 资源匹配，并达到已确认版本下界，才恢复共同可提交基线。同步直接跳过中间版本时仍按最新下限收敛，不重放修改。核对期间父读取先结束而摘要或 Steps 再推进，或详情重新打开需要新的实时读取时，owner 按版本下限与打开周期合并并调度父 GET；持续落后时有界失败并保留恢复入口。其他页面先提交共享缓存、而当前页面尚未收到广播时，匹配持久摘要的父响应仍作为 pending 保留，直到本页投影追上后重新准入。父详情存储失败但摘要校验允许展示时，读取错误结束本次核对并保留显式重试，不能永久显示正在读取。Task 与 Steps 的状态发布均检查收敛，以便摘要不匹配消失时恢复提交。
 
 添加使用同一提交所有者，提交前确定短 ID 和独立请求 UUID。完整 201 响应须匹配 Location、版本、字段、请求的末尾或锚点相邻位置与已有行，才能确认；非法回执进入只读核对。草稿以请求 UUID 绑定回执，避免迟到结果作用于后来的表单。
 
@@ -262,7 +264,7 @@ Steps workspace 按 Task 身份保存一个新增或编辑表单、草稿、预�
 
 已交付 CLI list/show 各读取一次完整资源。Steps 正文的有效单响应上限取配置预算与 64 MiB 资源上限的较小值，恰好达到上限允许；共享 transport 的单响应 128 MiB/操作总量 256 MiB 默认值与更严格的配置限制保持。CLI Add/Update/Set-status/Move/Delete 的显式 project/version 为一次对应写入，默认版本为一次 GET 加一次写入；unknown 仅在同一仍有效操作内额外读取至多一次，全部消耗共享期限和累计字节。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
 
-本功能没有新增 MCP/模型工具定义，工具 schema/token 预算不适用。命令调用和输出预算由上述具体资源形状拥有；本文未给出吞吐、耗时或 token 节省基准，不作相应收益结论。
+MCP 提供七项 Steps 读取与写入工具。列表使用有界 DAO 投影及绑定父版本的游标；summary 不读取完整描述，显式 full 可读取完整内容。写入复用上述原子用例，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
 
 ## 迁移与部署
 

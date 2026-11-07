@@ -1,6 +1,6 @@
 import './local-only';
 import { describe, expect, it } from 'vitest';
-import { inspectDependencySnapshot } from '../e2e/dependency-geometry';
+import { inspectDependencySnapshot } from '../helpers/dependency-geometry';
 import { expected, snapshot } from '../dependency-geometry-fixture';
 
 describe('full-scale dependency paint coverage', () => {

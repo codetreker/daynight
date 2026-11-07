@@ -11,7 +11,7 @@ To check the selected task's state and responsibility, read only that task, pres
 daynight task show <task-id> --project <project-id> --json
 ```
 
-If it is done, report that it is complete and needs no handoff, then return without an ownership check or further task discovery.
+If it is done or cancelled, report the actual terminal result and that no handoff is needed, then return without an ownership check or further task discovery. Cancelled does not prove delivery and cannot be reopened.
 Read actually required sources under the [task content standard](task-content.md), checking definitions, stage requirements, and producer and consumer contracts.
 For a Goal delivery task, check its [delivery brief and task boundary](goal.md#delivery-task-brief) and [architecture source index](goal.md#register-the-delivery-breakdown). Its objective, scope, implementation approach and acceptance must remain consistent with the confirmed Goal and accepted solution; a missing approach, unsuitable boundary or departure from that Goal is a content gap.
 Read cited source tasks and upstream or downstream contracts only as genuinely needed to assess the selected task. Report concrete content or contract gaps; this review does not authorize repartitioning tasks or changing dependencies.
@@ -35,6 +35,7 @@ Tasks with permission already true may be selected at any time; review them read
 | in_progress, permission false | Report that permission is locked; do not change status to bypass it. |
 | in_progress, permission true | Review read-only and report execution status and responsibility; review does not pause, stop, release, withdraw or reassign execution. |
 | done | Report that it is complete and needs no handoff; do not reopen or change assignment or permission. This is handoff policy, not an API restriction. |
+| cancelled | Report cancellation and that no handoff is needed; do not restore execution, change assignment or enable permission. Cancellation is not proof of delivery. |
 
 Preserve ownership and history for active or released workers. The responsibility check does not revoke or transfer an existing claim.
 New claims, workspaces, or native sessions for released tasks require an authorized administrative decision; enabling permission does not restore old execution or deleted resources.

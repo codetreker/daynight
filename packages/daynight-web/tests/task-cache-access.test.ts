@@ -107,3 +107,247 @@ it("does not return a private detail transaction result if access is withdrawn b
   })).rejects.toMatchObject({ name: "AbortError" });
   expect(revoke).not.toBeNull(); await revoke; expect(cache.getAuthorizedProject(projectId)).toBeNull();
 });
+
+it('fences old in-flight cache publication synchronously on a negative hint', async () => {
+  const owner = scope(); await apply(owner); const old = await owner.beginSync(projectId, signal());
+  const peer = scope(); const cold = await peer.beginSync(projectId, signal());
+  const injector = new Channel('daynight-task-cache'); const original = IDBObjectStore.prototype.put;
+  let sent = false;
+  vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'summaries' && !sent) { sent = true; injector.postMessage({ userId: TEST_VIEWER_ID, projectId, userFence: old.userFence, revokedGeneration: old.cacheGeneration }); }
+    return original.apply(this, args);
+  });
+  const changed = detail({ version: 2n });
+  await expect(peer.applySync(cold, taskSyncFromGraph(graphFixture([changed]), { query: { epoch: cold.epoch! }, versionForTask: () => 2n }), signal())).rejects.toMatchObject({ name: 'AbortError' });
+  expect(peer.getAuthorizedProject(projectId)).toBeNull();
+  injector.close();
+});
+
+it('does not withdraw a fresh independent observation on a delayed older denial', async () => {
+  const owner = scope(); await apply(owner); const old = await owner.beginSync(projectId, signal());
+  await owner.revokeProject(old, signal(), false);
+  await apply(owner);
+  const peer = scope(); const captured = await peer.prepareProjection(signal());
+  expect(captured.get(projectId)).not.toBe(old.cacheGeneration);
+  const events: import('../src/features/task-cache/project-cache').CacheEvent[] = [];
+  peer.subscribeProjection(event => events.push(event));
+  const injector = new Channel('daynight-task-cache');
+  injector.postMessage({ userId: TEST_VIEWER_ID, projectId, userFence: old.userFence, revokedGeneration: old.cacheGeneration,
+    generationAncestors: old.generationAncestors ?? [], unknownAncestors: old.unknownAncestors ?? false });
+  await Promise.resolve();
+  expect(events.length).toBeGreaterThan(0);
+  expect(events.every(event => !peer.projectionEventMatches(captured, event))).toBe(true);
+  injector.close();
+});
+
+it('withdraws an older independent observation after a real snapshot replacement and later denial', async () => {
+  const owner = scope(); await apply(owner); const old = await owner.beginSync(projectId, signal());
+  const peer = scope(); const captured = await peer.prepareProjection(signal()); expect(captured.get(projectId)).toBe(old.cacheGeneration);
+  const events: unknown[] = []; peer.subscribeProjection((event) => events.push(event));
+  await apply(owner, detail({ description: 'new snapshot' }), true);
+  const replacement = await owner.beginSync(projectId, signal()); expect(replacement.cacheGeneration).not.toBe(old.cacheGeneration);
+  await owner.revokeProject(replacement, signal());
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true, revokedGeneration: old.cacheGeneration })));
+});
+
+it('isolates an invalid project generation without blocking other independent projections', async () => {
+  const cache = scope(); await cache.beginSync(projectId, signal());
+  const database = await inspect(); const row = await database.get('projects', [TEST_VIEWER_ID, projectId]);
+  await database.put('projects', { ...row!, cacheGeneration: 'invalid' });
+  const snapshot = await cache.prepareProjection(signal());
+  expect(snapshot.has(projectId)).toBe(false);
+  expect(cache.isProjectionDenied(projectId)).toBe(true);
+  expect(cache.isProjectionDenied('10000000-0000-4000-8000-000000000099')).toBe(false);
+  expect(cache.projectionError).toMatchObject({ category: 'corrupt' });
+});
+
+it('recovers generation ancestry from durable state when the replacement hint was lost', async () => {
+  const owner = scope(); await apply(owner); const old = await owner.beginSync(projectId, signal());
+  const peer = scope(); const captured = await peer.prepareProjection(signal()); const events: unknown[] = [];
+  peer.subscribeProjection(event => events.push(event));
+  const muted = vi.spyOn(Channel.prototype, 'postMessage').mockImplementation(() => {});
+  await apply(owner, detail({ description: 'replacement' }), true); muted.mockRestore();
+  const reader = scope(); const newer = await reader.beginSync(projectId, signal());
+  expect(newer.generationAncestors).toContain(old.cacheGeneration);
+  await reader.revokeProject(newer, signal());
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true, revokedGeneration: captured.get(projectId) })));
+});
+
+it('withdraws an older local projection when a current descendant is denied', async () => {
+  const owner = scope(); await apply(owner);
+  const peer = scope(); await apply(peer);
+  const old = peer.getAuthorizedProject(projectId)!;
+  const muted = vi.spyOn(Channel.prototype, 'postMessage').mockImplementation(() => {});
+  await apply(owner, detail({ description: 'replacement' }), true);
+  muted.mockRestore();
+  const ticket = await peer.beginSync(projectId, signal());
+  expect(ticket.generationAncestors).toContain(old.manifest.cacheGeneration);
+  expect(peer.canRevokeProject(ticket)).toBe(true);
+  await peer.revokeProject(ticket, signal());
+  expect(peer.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it('isolates an unknown corrupted predecessor while protecting a later admitted history', async () => {
+  const owner = scope(); await apply(owner);
+  const peer = scope(); await peer.readProject(projectId, signal());
+  const old = await peer.prepareProjection(signal()); const events: import('../src/features/task-cache/project-cache').CacheEvent[] = [];
+  peer.subscribeProjection(event => events.push(event)); const ordinary: unknown[] = []; peer.subscribe(event => ordinary.push(event));
+  const db = await inspect(); const row = await db.get('projects', [TEST_VIEWER_ID, projectId]);
+  await db.put('projects', { ...row!, cacheGeneration: 'invalid' });
+  const repaired = await owner.beginSync(projectId, signal()); expect(repaired.unknownAncestors).toBe(true);
+  await owner.revokeProject(repaired, signal());
+  await waitFor(() => expect(events.some(event => event.unknownAncestors && peer.projectionEventMatches(old, event))).toBe(true));
+  expect(ordinary).toContainEqual(expect.objectContaining({ accessRevoked: true }));
+  const fresh = await peer.prepareProjection(signal());
+  const event = events.find(item => item.unknownAncestors)!;
+  expect(peer.projectionEventMatches(fresh, event)).toBe(false);
+});
+
+it('withdraws a cold Session history preview immediately when another tab denies its generation', async () => {
+  const owner = scope(); await apply(owner); const ownerTicket = await owner.beginSync(projectId, signal());
+  const peer = scope(); const previewTicket = await peer.beginSync(projectId, signal());
+  expect(await peer.sessionHistoryTransaction(previewTicket, signal(), async () => 'private history')).toBe('private history');
+  expect(peer.getAuthorizedProject(projectId)).toBeNull();
+  expect(peer.isSessionHistoryTicketCurrent(previewTicket)).toBe(true);
+  const events: unknown[] = []; peer.subscribe(event => events.push(event));
+  const revoke = owner.revokeProject(ownerTicket, signal());
+  await Promise.resolve();
+  expect(events).toContainEqual(expect.objectContaining({ projectId, accessRevoked: true }));
+  expect(peer.isSessionHistoryTicketCurrent(previewTicket)).toBe(false);
+  await expect(peer.sessionHistoryTransaction(previewTicket, signal(), async () => 'private history')).rejects.toMatchObject({ name: 'AbortError' });
+  await revoke;
+});
+
+it('preserves a newer Session history preview when an older denial hint arrives', async () => {
+  const owner = scope(); await apply(owner); const old = await owner.beginSync(projectId, signal());
+  await apply(owner, detail({ description: 'new history' }), true);
+  const peer = scope(); const previewTicket = await peer.beginSync(projectId, signal());
+  expect(previewTicket.cacheGeneration).not.toBe(old.cacheGeneration);
+  await peer.sessionHistoryTransaction(previewTicket, signal(), async () => 'new history');
+  const events: unknown[] = []; peer.subscribe(event => events.push(event));
+  const injector = new Channel('daynight-task-cache');
+  injector.postMessage({ userId: TEST_VIEWER_ID, projectId, userFence: old.userFence, revokedGeneration: old.cacheGeneration });
+  await Promise.resolve();
+  expect(peer.isSessionHistoryTicketCurrent(previewTicket)).toBe(true);
+  expect(events).not.toContainEqual(expect.objectContaining({ projectId, accessRevoked: true }));
+  injector.close();
+});
+
+it('rejects a denial from before project suspension after the project resumes', async () => {
+  const cache = scope(); await apply(cache); const old = await cache.beginSync(projectId, signal());
+  cache.suspendProject(projectId);
+  const suspended = await cache.prepareProjection(signal());
+  expect(cache.projectionSnapshotDenied(suspended, projectId)).toBe(true);
+  cache.resumeProject(projectId);
+  expect(cache.projectionSnapshotDenied(suspended, projectId)).toBe(true);
+  expect(cache.projectionSnapshotDenied(await cache.prepareProjection(signal()), projectId)).toBe(false);
+  expect(cache.canPreviewProject(projectId)).toBe(false);
+  expect(cache.canRevokeProject(old)).toBe(false);
+  expect(await cache.revokeProject(old, signal())).toBe(false);
+  const current = await cache.beginSync(projectId, signal());
+  expect(current.scopeRevision).not.toBe(old.scopeRevision);
+  expect(cache.canRevokeProject(current)).toBe(true);
+  await apply(cache);
+  expect(cache.canPreviewProject(projectId)).toBe(true);
+});
+
+it('retains the predecessor when Session history marker cleanup rotates a project generation', async () => {
+  const owner = scope(); await apply(owner); const old = await owner.beginSync(projectId, signal());
+  const peer = scope(); const captured = await peer.prepareProjection(signal()); const events: unknown[] = [];
+  peer.subscribeProjection(event => events.push(event));
+  await owner.sessionHistoryTransaction(old, signal(), async store => {
+    await store.put({ userId: TEST_VIEWER_ID, projectId, taskId, userFence: old.userFence, cacheGeneration: old.cacheGeneration,
+      requestToken: '30000000-0000-4000-8000-000000000081', clearedToken: '30000000-0000-4000-8000-000000000082',
+      leaseExpiresAt: null, settled: 'cancelled', paginationToken: null, page: null, confirmedCompleteEmpty: false,
+      observedNonEmpty: false, byteSize: 0, lastUsedAt: Date.now() });
+  });
+  expect(await owner.rotateSessionHistoryGeneration(old, 1, signal())).toBe(true);
+  const replacement = await owner.beginSync(projectId, signal());
+  expect(replacement.generationAncestors).toContain(old.cacheGeneration);
+  await owner.revokeProject(replacement, signal());
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true, revokedGeneration: captured.get(projectId) })));
+});
+
+it('retains ancestry on a direct-history ticket when withdrawing a peer projection', async () => {
+  const owner = scope(); await apply(owner);
+  const peer = scope(), captured = await peer.prepareProjection(signal()), events: unknown[] = [];
+  peer.subscribeProjection(event => events.push(event));
+  await apply(owner, detail({ description: 'replacement history' }), true);
+  const graphTicket = await owner.beginSync(projectId, signal());
+  const fence = await owner.beginTaskRead(projectId, taskId, 1, 1, signal());
+  expect(await owner.observeHistory(fence, graphTicket.epoch!, signal())).toBe('current');
+  const ticket = await owner.getDirectHistoryTicket(fence, graphTicket.epoch!, signal());
+  expect(ticket?.generationAncestors).toContain(captured.get(projectId));
+  expect(ticket?.admissionRevision).toBe(owner.getAdmissionRevision(projectId));
+  expect(await owner.revokeProject(ticket!, signal())).toBe(true);
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true, revokedGeneration: captured.get(projectId) })));
+});
+
+it('cannot use an older direct-history ticket to revoke a newly admitted generation', async () => {
+  const owner = scope(); await apply(owner);
+  const graphTicket = await owner.beginSync(projectId, signal());
+  const fence = await owner.beginTaskRead(projectId, taskId, 1, 1, signal());
+  expect(await owner.observeHistory(fence, graphTicket.epoch!, signal())).toBe('current');
+  const old = await owner.getDirectHistoryTicket(fence, graphTicket.epoch!, signal());
+  expect(old).not.toBeNull();
+  await apply(owner, detail({ description: 'newly admitted history' }), true);
+  const current = owner.getAuthorizedProject(projectId);
+  expect(owner.canRevokeProject(old!)).toBe(false);
+  expect(await owner.revokeProject(old!, signal())).toBe(false);
+  expect(owner.getAuthorizedProject(projectId)).toBe(current);
+});
+
+it('retains the denied durable generation for retry when a peer displays its ancestor', async () => {
+  const owner = scope(); await apply(owner);
+  const peer = scope(); await apply(peer);
+  const displayed = peer.getAuthorizedProject(projectId)!;
+  await apply(owner, detail({ description: 'new history' }), true);
+  const denied = await owner.beginSync(projectId, signal());
+  expect(denied.generationAncestors).toContain(displayed.manifest.cacheGeneration);
+  const events: unknown[] = []; peer.subscribeProjection(event => events.push(event));
+  const fault = failPurge();
+  await expect(owner.revokeProject(denied, signal())).rejects.toMatchObject({ category: 'storage' });
+  await waitFor(() => expect(events.some(event => (event as { error?: { category?: string } }).error?.category === 'storage')).toBe(true));
+  fault.mockRestore();
+  let fresh = await peer.beginSync(projectId, signal());
+  expect(fresh.cacheGeneration).not.toBe(denied.cacheGeneration);
+  let observation = taskSyncFromGraph(graphFixture([detail()]), { query: fresh.epoch === null ? {} : { epoch: fresh.epoch }, versionForTask: () => 1n });
+  let history = await peer.observeHistory(fresh, observation.epoch, signal());
+  for (let attempt = 0; history !== 'current' && attempt < 2; attempt++) {
+    fresh = await peer.beginSync(projectId, signal());
+    observation = taskSyncFromGraph(graphFixture([detail()]), { query: fresh.epoch === null ? {} : { epoch: fresh.epoch }, versionForTask: () => 1n });
+    history = await peer.observeHistory(fresh, observation.epoch, signal());
+  }
+  expect(history).toBe('current');
+  await expect(peer.applySync(fresh, observation, signal())).resolves.toBeDefined();
+});
+
+it('treats a null ancestry as corruption and withdraws incomparable older projections', async () => {
+  const owner = scope(); await apply(owner);
+  const peer = scope(); const captured = await peer.prepareProjection(signal());
+  await apply(owner, detail({ description: 'new history' }), true);
+  const db = await inspect(); const row = await db.get('projects', [TEST_VIEWER_ID, projectId]);
+  await db.put('projects', { ...row!, generationAncestors: null as unknown as string[] });
+  const corrupt = await peer.prepareProjection(signal());
+  expect(peer.projectionSnapshotDenied(corrupt, projectId)).toBe(true);
+  const events: import('../src/features/task-cache/project-cache').CacheEvent[] = []; peer.subscribeProjection(event => events.push(event));
+  const recovered = await owner.beginSync(projectId, signal());
+  expect(recovered.unknownAncestors).toBe(true);
+  await owner.revokeProject(recovered, signal());
+  await waitFor(() => expect(events.some(event => event.unknownAncestors && peer.projectionEventMatches(captured, event))).toBe(true));
+});
+
+it('rejects an incomparable old denial after the same scope admits a restored history', async () => {
+  const cache = scope(); await apply(cache);
+  const db = await inspect(); const current = await db.get('projects', [TEST_VIEWER_ID, projectId]);
+  await db.put('projects', { ...current!, cacheGeneration: 'invalid' });
+  const old = await cache.beginSync(projectId, signal()); expect(old.unknownAncestors).toBe(true);
+  const baseline = await db.get('projects', [TEST_VIEWER_ID, projectId]);
+  await db.put('projects', { ...baseline!, cacheGeneration: crypto.randomUUID(), generationAncestors: [], unknownAncestors: false });
+  await apply(cache);
+  const admitted = cache.getAuthorizedProject(projectId);
+  expect(admitted).not.toBeNull();
+  expect(cache.canRevokeProject(old)).toBe(false);
+  expect(await cache.revokeProject(old, signal())).toBe(false);
+  expect(cache.getAuthorizedProject(projectId)).toBe(admitted);
+});

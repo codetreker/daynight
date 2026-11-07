@@ -16,15 +16,16 @@ or run your own service. The interface supports English and Simplified Chinese.
 ## What you can do
 
 - **Organize repository work.** Associate projects with Git repositories, create
-  Markdown tasks, link pull requests and track `todo`, `in_progress` and `done`.
+  Markdown tasks, link pull requests and track `todo`, `in_progress`, `done` and `cancelled`.
 - **Understand what can start.** Model prerequisites, find ready and blocked
   tasks, and distinguish dependencies within a task chain from dependencies on
   other chains. Both kinds must be completed before dependent work starts.
 - **See project progress.** Browse project statistics, task-chain progress and
-  standalone tasks. Explore interactive dependency graphs with upstream context,
-  task details and fullscreen reading.
+  standalone tasks. Explore interactive dependency graphs with direct external
+  prerequisites, card navigation to their tasks or Goals, task details and
+  fullscreen reading.
 - **Keep the working material with the task.** Upload designs, screenshots and
-  other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
+  other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
 - **Discuss tasks in the browser or CLI.** Open a task's Discussion tab to read,
   post and reply as your account, with persistent history independent of Sessions.
@@ -349,11 +350,11 @@ These commands target the CLI. Its build publishes skill bundles and per-owner
 SQLite SQL directories with the compiled dist tree; the
 [development guide](docs/development.md#cli-development) owns packaging details.
 Web checks use `pnpm web:typecheck`,
-`pnpm web:test` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
+`pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
 `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
 [development guide](docs/development.md) for prerequisites, native diagnostics,
-browser acceptance and complete validation commands.
+module and complete validation commands.
 
 ## Package versions
 
@@ -373,67 +374,39 @@ release validation, existing-version skips and artifact verification.
 
 ## CI selection
 
-The [`checks` workflow](.github/workflows/checks.yml) selects PR application jobs
-from all changed paths, including deletions and both sides of renames:
+The [`checks` workflow](.github/workflows/checks.yml) selects PR jobs by module
+directory from all changed paths, including deletions and both sides of renames.
+Mixed changes select the union of their modules. The
+[selector](.github/scripts/ci-modules.mts) owns the precise path rules;
+[the development guide](docs/development.md#ci-selection) explains the jobs and
+version-only exception. Main pushes select every module.
 
 | Changed paths | PR application jobs |
 |---|---|
-| `packages/daynight/test/fixtures/installed-cli.ts` | Every module |
-| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server coverage/E2E, Web quality and Web browser acceptance |
-| Implementation and resources under CLI `commands/worker/`, `controller/`, `review/`, `skill/`, `update/` or `completion/`, except `definition.ts` | CLI |
-| Other `packages/daynight/src/` paths, including command definitions | CLI and Go server coverage/E2E |
-| A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
-| Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
-| Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
-| Other `packages/daynight/` paths | Complete ordinary and installed CLI phases on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
-| `packages/daynight-server/` | Go server coverage and E2E |
-| `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
-| Runtime files under `deployment/` | Web quality and Web browser acceptance |
-| Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |
-| Root `.gitignore`, `docs/`, `.agents/`, `.claude/`, files named `README.md`, `AGENTS.md` or `CLAUDE.md`, manual `publish.yml` workflow | No application jobs |
-| CI routing/workflow changes and other unclassified paths | Every module |
+| `packages/daynight/` and installer tooling in `scripts/` | CLI |
+| `packages/daynight-server/` | Go |
+| `packages/daynight-web/` and `deployment/` | Web |
+| Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, and `patches/` | CLI and Web |
+| Root `.gitignore`, documentation, repository instructions and manual publication workflow | None |
+| CI workflow, routing and unclassified paths | All modules |
 
-Every path under `packages/daynight/src/` selects CLI checks, including SQL
-resources and bundled Markdown. The CLI loads the six independent commands above
-only when selected; their implementations and resources do not select Go jobs.
-Their `definition.ts` files are loaded at startup and retain server selection.
-Other CLI source remains a conservative server input. The manifest comparison
-uses committed merge-base and head contents, ignoring only the top-level
-`version` field. Manifest additions, deletions and file-type changes select both
-server jobs; malformed modified manifests fail detection. A PR with exactly one
-modified path skips application jobs only when that path is the CLI manifest,
-its regular-file mode is unchanged, its version string changes, and all other
-parsed fields are equal. Formatting-only changes and any additional changed
-path retain ordinary selection. Version-only PRs run the existing routing
-checks and final gate; version and artifact validation remain in the publication
-workflow. Exact preparation inputs are listed in
-[the selector](.github/scripts/ci-modules.mts).
+Module ownership applies equally to implementations, fixtures and test tooling.
+CLI source paths take precedence over documentation exclusions because bundled
+Markdown is a release input; other documentation exclusions still apply within
+module directories. A PR containing only a CLI manifest version change may skip
+application jobs as described in the
+[development guide](docs/development.md#ci-selection). The
+[module routing decision](.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
+records the directory policy and its validation boundary.
 
-Documentation exclusions apply after CLI source ownership; changes selecting
-several modules run their union. CLI selection enables independent ordinary-test
-and installed-acceptance matrices on Linux and Windows, each with a 10-minute
-bound per job. A required `verify-macos` job uses one macOS ARM64 allocation for
-complete ordinary and installed phases in sequence, with a 20-minute outer bound
-and 10-minute validation-command bounds. Each phase builds current source and
-records its own environment, outcome and artifacts. The ordinary Ubuntu entry supplies
-the runtime package; runtime jobs depend only on the Linux/Windows ordinary
-producer matrix, while final `checks` still requires macOS. The
-[single-allocation decision](.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
-owns macOS failure, evidence and budget handling. The Web selector enables a quality job and two
-browser matrix entries, each with a 20-minute bound. The two browser shards
-jointly cover the complete native/container inventory; shard 2 owns the shared
-navigation, deployment, combined-authentication and persistence checks. The
-server selector enables parallel coverage and E2E jobs, also bounded to 20 minutes
-each. All selected jobs are required by `checks` and retain their complete
-integration and coverage gates.
-The final `checks` job uses `always()` and accepts only `success` or `skipped`
-from preceding jobs. Selected Web quality and browser matrix results must be
-`success`; the same gate validates both current-source shard summaries and their
-complete inventory before passing. A newer PR run cancels the older run for that PR.
-New `main` pushes queue behind an active `main` run without cancelling it.
-Documentation-only PRs run routing tests and that gate; every `main` push selects
-full application validation. See the
-[CI guide](docs/development.md#ci-selection) for routing and execution details.
+CLI validation includes ordinary and installed phases on Linux, Windows and
+macOS ARM64, a Node runtime matrix, and real-shell completion checks. Go has its
+own module job. Web selection starts independent quality and browser jobs; the
+quality job runs full Web typechecking, the harness, the production Docker
+Web build and coverage gate, while the browser job runs its Playwright
+regressions. The final gate rejects failed or cancelled jobs and
+requires both selected Web jobs to succeed. A newer PR run cancels its older run;
+main runs queue without cancelling an active run.
 
 ## Validation
 
@@ -441,18 +414,19 @@ full application validation. See the
 installed package. CLI tests use private home and configuration environments
 and guard real Daynight state (`~/.daynight` and the inherited `DN_CONFIG_DIR`)
 against filesystem and SQLite writes or cleanup. The [CLI test isolation guide](docs/development.md#cli-test-isolation)
-owns child-process propagation, symbolic-link checks and protection limits. Server and Web checks have
-separate commands and require statement coverage strictly greater than 90%.
+owns child-process propagation, symbolic-link checks and protection limits.
+SQLite unit tests use native memory connections; file and process integration
+suites remain part of ordinary `pnpm test`, as described in the
+[CLI development guide](docs/development.md#cli-development). Server and Web checks
+have separate commands and require statement coverage strictly greater than 90%.
 Routine CI suites exclude stress workloads. Run the corresponding explicit local
 command when full-scale evidence is required:
 
 | Local workload | Command from the repository root |
 |---|---|
 | CLI rendering and Session-v2 archive limits | `pnpm test:stress` |
-| Installed CLI production decoded-byte budgets | `pnpm test:stress:budgets` |
 | Go query, archive and repeated-write workloads | `pnpm server:test:stress` |
 | Web graph and geometry workloads | `pnpm web:test:stress` |
-| Production browser capacity and timing matrix | `pnpm web:acceptance:stress` |
 
 These stress entrypoints refuse a CI environment. The
 [development guide](docs/development.md#local-stress-validation) owns their
@@ -464,7 +438,7 @@ execution scope. Controlled process fixtures do not prove live Copilot/GitHub
 behavior, and a local browser run does not prove hosted-CI results. A failed
 scenario or cleanup remains a failure. The
 [validation guide](docs/development.md#validation) owns detailed prerequisites,
-receipt identity checks and evidence limits.
+result scope and evidence limits.
 
 ## Working in the repository
 

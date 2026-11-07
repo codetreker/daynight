@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -121,18 +121,18 @@ func TestStepsHTTPAddStrictInputLeavesCompleteStateUnchanged(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
-	exact := strings.TrimSuffix(base, "}") + `,"description":"` + strings.Repeat("x", httpx.MaxJSONBody-len(base)-len(`,"description":""`)) + `"}`
+	exact := base + strings.Repeat(" ", httpx.MaxJSONBody-len(base))
 	if len(exact) != httpx.MaxJSONBody {
 		t.Fatalf("request boundary fixture %d", len(exact))
 	}
-	assertProjectError(t, projectRequest(handler, "POST", path, exact+" "), 400, "invalid_input")
+	assertProjectError(t, projectRequest(handler, "POST", path, exact+" "), 413, "payload_too_large")
 	read := decodeResponse[api.StepsResource](t, projectRequest(handler, "GET", path, ""), 200)
 	if read.Version != 1 || len(read.Steps) != 0 {
 		t.Fatal("strict refusal changed parent or steps")
 	}
 	boundaryTask := decodeResponse[api.Task](t, projectRequest(handler, "POST", taskCollection(task.ProjectID), `{"title":"Request boundary"}`), 201)
 	boundary := decodeResponse[api.StepsResource](t, projectRequest(handler, "POST", taskPath(boundaryTask)+"/steps", exact), 201)
-	if len(boundary.Steps) != 1 || len(boundary.Steps[0].Description) != httpx.MaxJSONBody-len(base)-len(`,"description":""`) {
+	if len(boundary.Steps) != 1 || boundary.Steps[0].Title != "x" || boundary.Steps[0].Description != "" {
 		t.Fatal("exact 1 MiB request lost content")
 	}
 	// Literal replacement characters, valid surrogate pairs and a textual escape
@@ -184,7 +184,7 @@ func TestStepsHTTPAddCommittedResponseLossAndReadOnlyReconciliation(t *testing.T
 					t.Fatal(err)
 				}
 				t.Cleanup(pool.Close)
-				handler = projectTestHandler(t, &store.Store{Pool: pool}, &logs)
+				handler = projectTestHandler(t, &postgres.Store{Pool: pool}, &logs)
 			}
 			request := httptest.NewRequest("POST", path, strings.NewReader(`{"version":1,"id":"ABCDEF01","title":"secret-title","description":"secret-markdown https://secret.invalid token-secret"}`)).WithContext(ctx)
 			authorizeResourceRequest(handler, request)

@@ -321,11 +321,14 @@ func TestTerminalPreparedStopAfterRecordedRunPreservesFixedArchive(t *testing.T)
 	restarted := New(f.db, f.s.files)
 	restarted.Origin = f.s.Origin
 	got, err := restarted.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID)
-	if err != nil || !bytes.Equal(got, data) {
+	if err != nil || !bytes.Equal(got.Data, data) {
 		t.Fatal("fixed mixed archive changed after reclaim", err)
 	}
-	decoded, err := v2.DecodeArchive(got)
+	decoded, err := v2.DecodeArchive(got.Data)
 	if err != nil || len(decoded.Files) != 1 || len(decoded.UnavailableRuns) != 1 || *decoded.Runs[1].Binding.NativeSessionID != native || decoded.Runs[1].StopProof.NativeLaunch != "not_submitted" {
 		t.Fatal("mixed archive lost original native or recording history", err)
+	}
+	if err := got.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

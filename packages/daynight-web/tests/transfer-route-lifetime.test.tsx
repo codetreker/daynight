@@ -67,7 +67,7 @@ it("retains an unknown transfer across route changes without replaying it", asyn
   expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
 });
 
-it("cancels a queued settings save on navigation while retaining an unknown transfer", async () => {
+it("keeps settings writes blocked across navigation while a transfer outcome is unknown", async () => {
   const transfer = Promise.withResolvers<Response>(), permission = Promise.withResolvers<Response>();
   let holdPermission = false;
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
@@ -97,13 +97,13 @@ it("cancels a queued settings save on navigation while retaining an unknown tran
   const priorReads = fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
   holdPermission = true; fireEvent(window, new Event("focus"));
   await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(priorReads));
-  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
-  expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  fireEvent.submit(screen.getByRole("button", { name: "Save settings" }).closest("form")!);
   act(() => navigate("/workers"));
   holdPermission = false;
   act(() => navigate(`/projects/${projectId}/settings`));
   await act(async () => permission.resolve(json(access)));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled());
   expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
   expect(screen.getByText(/transfer result is unknown/i)).toBeInTheDocument();
   expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith("/settings") && init?.method === "PATCH")).toHaveLength(0);

@@ -5,7 +5,7 @@ import { parseTaskProperties, readTaskPaused, readWorkerClaim } from "./task-pro
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
 import type { ProjectPersonVersion } from "./auth-types";
 import type { TaskSummary, TaskSync } from "./types";
-import { nullableId } from "./validation";
+import { nullableId, taskStatusFields } from "./validation";
 
 const ids = (value: unknown): string[] => {
   const result = array(value, id);
@@ -22,14 +22,14 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   const dependsOn = ids(data.dependsOn);
   const externalDependsOn = ids(data.externalDependsOn);
   if (externalDependsOn.some((dependency) => !dependsOn.includes(dependency))) return malformed();
-  if (data.status !== "todo" && data.status !== "in_progress" && data.status !== "done") return malformed();
   const properties = parseTaskProperties(data.properties);
   readTaskPaused(properties);
-  readWorkerClaim(properties);
+  const worker = readWorkerClaim(properties);
+  if (worker?.state === "active" && data.status !== "in_progress" || worker?.state === "released" && data.status !== "todo" && data.status !== "cancelled") return malformed();
   return {
     id: id(data.id), version, properties,
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
-    status: data.status, dependsOn, externalDependsOn,
+    ...taskStatusFields(data), dependsOn, externalDependsOn,
     allowAgents: boolean(data.allowAgents),
     assignedTo: nullableId(data.assignedTo),
     requiredPlatform: data.requiredPlatform === null ? null : executionPlatform(data.requiredPlatform),

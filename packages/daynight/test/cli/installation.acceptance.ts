@@ -28,7 +28,7 @@ it("shares one real installation while retaining private mutable package bytes, 
         const result = crossSpawn.sync(launcher, ["--version"], { cwd: fixture.receipt.root, env: { ...process.env, HOME: fixture.receipt.root, USERPROFILE: fixture.receipt.root }, encoding: "utf8", timeout: 10_000, windowsHide: true });
         if (result.error) throw result.error;
         expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
-        expect(result.stdout.trim()).toBe(canonical.packageVersion);
+        expect(result.stdout).toBe(`${canonical.packageVersion}\n`);
       }
     }
     await rm(manual(first.receipt.entryPath));

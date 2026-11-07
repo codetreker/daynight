@@ -73,7 +73,7 @@ it('resets explicit directory and provider when changing Worker', async () => {
   fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });
   fireEvent.change(screen.getByRole('combobox', { name: 'Worker' }), { target: { value: wid(2) } }); await flush();
   expect(screen.getByRole('textbox', { name: 'Working directory' })).toHaveValue('/ordinary-2');
-  expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('copilot');
+  expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('');
   name(); submit(); await flush();
   expect(api.createBot).toHaveBeenCalledOnce();
   expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId: wid(2) } });
@@ -111,32 +111,33 @@ it.each(['offline', 'unsupported', 'stale'])('reports %s Worker without allowing
   expect(screen.getByRole('alert')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Create assistant' })).toBeDisabled();
 });
 it('allows explicitly replacing an unavailable default provider', async () => {
-  vi.mocked(api.getBotDefaults).mockResolvedValue({ ...defaults(), configuration: null, reason: 'provider_not_found', workers: [{ ...worker(), configuration: null, reason: 'provider_not_found' }] } as api.BotDefaults);
+  vi.mocked(api.getBotDefaults).mockImplementation(async (_workerId, _signal, _admission, choices) => choices?.provider
+    ? { ...defaults(), configuration: { ...config(), cwd: choices.cwd ?? '/ordinary', provider: choices.provider } }
+    : { ...defaults(), configuration: null, reason: 'provider_not_found', workers: [{ ...worker(), configuration: null, reason: 'provider_not_found' }] } as api.BotDefaults);
   mount(); await flush(); advanced();
   fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/ordinary' } });
   fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });
-  name(); submit(); await flush();
-  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toMatchObject({ overrides: { cwd: '/ordinary', provider: 'claude' } });
+  await flush(); name(); submit(); await flush();
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toMatchObject({ overrides: { workerId: wid(1), cwd: '/ordinary', provider: 'claude' } });
 });
 it('shows a confirmed rejection and allows a corrected fresh request', async () => {
   vi.mocked(api.createBot).mockRejectedValueOnce(new ApiError('server', 409, 'conflict', null, undefined, undefined, 'Directory is unavailable.'));
   mount(); await flush(); advanced(); name();
   fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/unavailable' } });
   fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });
-  submit(); await flush();
+  await flush(); submit(); await flush();
   expect(screen.getByText('Directory is unavailable.')).toBeInTheDocument();
   expect(assistantNameInput()).toHaveValue('Helper');
   expect(screen.getByLabelText('Working directory')).toHaveValue('/unavailable');
   expect(screen.getByLabelText('Agent')).toHaveValue('claude');
   expect(onCreated).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Check creation' })).toBeNull();
-  advanced();
   fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/corrected' } });
-  submit(); await flush();
+  await flush(); submit(); await flush();
   expect(api.createBot).toHaveBeenCalledTimes(2);
   const [first, second] = vi.mocked(api.createBot).mock.calls.map(call => call[0]);
-  expect(first).toEqual({ id: expect.any(String), name: 'Helper', overrides: { cwd: '/unavailable', provider: 'claude' } });
-  expect(second).toEqual({ id: expect.any(String), name: 'Helper', overrides: { cwd: '/corrected', provider: 'claude' } });
+  expect(first).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId: wid(1), cwd: '/unavailable', provider: 'claude' } });
+  expect(second).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId: wid(1), cwd: '/corrected', provider: 'claude' } });
   expect(second!.id).not.toBe(first!.id);
   expect(api.getBot).not.toHaveBeenCalled();
   expect(onCreated).toHaveBeenCalledWith(bot);
@@ -157,8 +158,8 @@ it('rejects relative directories and allows clearing an explicit directory back 
   mount(); await flush(); advanced(); name();
   fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: 'relative/path' } }); submit(); await flush();
   expect(api.createBot).not.toHaveBeenCalled(); expect(screen.getByRole('textbox', { name: 'Working directory' })).toHaveAttribute('aria-invalid', 'true');
-  fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '' } }); submit(); await flush();
-  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper' });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '' } }); await flush(); submit(); await flush();
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId: wid(1) } });
 });
 it('retries failed defaults without losing the name', async () => {
   vi.mocked(api.getBotDefaults).mockRejectedValueOnce(new ApiError('network')).mockResolvedValueOnce(defaults());
@@ -223,7 +224,7 @@ it('returns to implicit defaults when switching an explicit Worker back to autom
   fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });
   fireEvent.change(screen.getByRole('combobox', { name: 'Worker' }), { target: { value: '' } }); await flush();
   expect(screen.getByRole('textbox', { name: 'Working directory' })).toHaveValue('/ordinary-1');
-  expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('copilot');
+  expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('');
   expect(api.getBotDefaults).toHaveBeenLastCalledWith(null, expect.any(AbortSignal), expect.objectContaining({ userId: owner }));
   name(); submit(); await flush();
   expect(api.createBot).toHaveBeenCalledOnce();
@@ -243,10 +244,10 @@ it('retains explicit advanced settings across locale changes and collapse', asyn
   expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('codex');
   fireEvent.click(screen.getByText('高级设置'));
   expect(directory).not.toBeVisible();
-  submit(); await flush();
-  expect(api.getBotDefaults).toHaveBeenCalledOnce();
+  await flush(); submit(); await flush();
+  expect(api.getBotDefaults).toHaveBeenCalledWith(wid(1), expect.any(AbortSignal), expect.objectContaining({ userId: owner }), { cwd: '/projects/中文', provider: 'codex' });
   expect(api.createBot).toHaveBeenCalledOnce();
-  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: '助手', overrides: { cwd: '/projects/中文', provider: 'codex' } });
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: '助手', overrides: { workerId: wid(1), cwd: '/projects/中文', provider: 'codex' } });
 });
 
 it('keeps composition Escape inside the form without cancelling the draft', async () => {

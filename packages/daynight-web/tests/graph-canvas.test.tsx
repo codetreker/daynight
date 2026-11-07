@@ -31,14 +31,14 @@ vi.mock('../src/features/task-graph/TaskNode', async (importOriginal) => {
 const time = '2026-10-20T00:00:00Z';
 const graph: TaskGraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
-  summary: { total: 6, todo: 3, inProgress: 1, done: 2, ready: 2, blocked: 1 },
+  summary: { total: 6, todo: 3, inProgress: 1, done: 2, cancelled: 0, ready: 2, blocked: 1 },
   tasks: [
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'E', titlePreview: '独立任务', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, cancelledAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, cancelledAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'E', titlePreview: '独立任务', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
   ],
 };
 const index = buildGraphIndex(graph);
@@ -56,13 +56,14 @@ const ready = async (container: HTMLElement) => {
 beforeEach(installGraphMeasurements);
 
 describe('task dependency canvas', () => {
-  it('omits the entire expansion footer for fully visible tasks and sizes every card to its body', async () => {
+  it('sizes visible ordinary cards to their bodies and external cards to their navigation footers', async () => {
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await ready(view.container);
-    expect(view.container.querySelector('.task-node-expansions')).toBeNull();
+    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(2);
+    expect(view.container.querySelector('.task-node-expand[data-direction]')).toBeNull();
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
       expect(node.style.width).toBe('220px');
-      expect(node.style.height).toBe('96px');
+      expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '96px' : '136px');
     }
   });
 
@@ -349,10 +350,10 @@ describe('task dependency canvas', () => {
     expect(screen.queryByRole('button', { name: /^独立任务，/ })).toBeNull();
   });
 
-  it('renders the entire external ancestor closure with its own count and keeps card details behavior', async () => {
+  it('renders direct external context and keeps its details separate from navigation', async () => {
     const completed = graph.tasks[1]!;
     const externalGraph: TaskGraphData = {
-      ...graph, summary: { total: 6, todo: 3, inProgress: 0, done: 3, ready: 2, blocked: 1 },
+      ...graph, summary: { total: 6, todo: 3, inProgress: 0, done: 3, cancelled: 0, ready: 2, blocked: 1 },
       tasks: [
         graph.tasks[0]!,
         { ...completed, id: 'P', titlePreview: '已完成外部祖先', dependsOn: [] },
@@ -364,16 +365,16 @@ describe('task dependency canvas', () => {
     };
     const onOpenTask = vi.fn();
     const { container } = render(<TaskGraph index={buildGraphIndex(externalGraph)} rootId="A" onOpenTask={onOpenTask} />);
-    await waitFor(() => { expect(container.querySelectorAll('.react-flow__node')).toHaveLength(5); });
-    expect(screen.getByText('链内 3 · 外部 2 · 任务 5/5 · 依赖 4/4')).toBeTruthy();
-    expect(nodeShell('已完成外部祖先')).toHaveClass('task-node-external', 'task-node-done');
+    await waitFor(() => { expect(container.querySelectorAll('.react-flow__node')).toHaveLength(4); });
+    expect(screen.getByText('链内 3 · 外部 1 · 任务 4/4 · 依赖 3/3')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /已完成外部祖先/ })).toBeNull();
     expect(nodeButton('已完成外部前置')).toHaveAccessibleName('已完成外部前置，已完成，外部前置');
     expect(screen.queryByRole('button', { name: /外部前置的无关后续/ })).toBeNull();
     const externalRoute = container.querySelector('[data-id="P->B"] .react-flow__edge-path');
-    expect(externalRoute).toHaveAttribute('data-external', 'false');
+    expect(externalRoute).toBeNull();
     expect(container.querySelector('[data-id="P->B"] .task-dependency-paint-piece')).toBeNull();
-    fireEvent.click(detailsButton('已完成外部祖先'));
-    expect(onOpenTask).toHaveBeenCalledWith('P', detailsButton('已完成外部祖先'));
+    fireEvent.click(detailsButton('已完成外部前置'));
+    expect(onOpenTask).toHaveBeenCalledWith('B', detailsButton('已完成外部前置'));
     expect(screen.getByText('实线：普通依赖 · 虚线：外部依赖 · 虚线卡片：链外前置')).toBeTruthy();
   });
 
@@ -382,12 +383,12 @@ describe('task dependency canvas', () => {
       { ...graph.tasks[0]!, id: 'A', titlePreview: 'A' },
       { ...graph.tasks[0]!, id: 'X', titlePreview: 'X' },
       { ...graph.tasks[0]!, id: 'Y', titlePreview: 'Y', dependsOn: ['X'] },
-      { ...graph.tasks[0]!, id: 'B', titlePreview: 'B', dependsOn: ['A', 'Y'], externalDependsOn: ['Y'] },
+      { ...graph.tasks[0]!, id: 'B', titlePreview: 'B', dependsOn: ['A', 'X', 'Y'], externalDependsOn: ['X', 'Y'] },
       { ...graph.tasks[5]!, id: 'C', titlePreview: 'C', dependsOn: ['A', 'B'], externalDependsOn: ['A'] },
     ];
-    const snapshot = { ...graph, tasks, summary: { total: 5, todo: 1, inProgress: 0, done: 4, ready: 1, blocked: 0 } };
+    const snapshot = { ...graph, tasks, summary: { total: 5, todo: 1, inProgress: 0, done: 4, cancelled: 0, ready: 1, blocked: 0 } };
     const view = render(<TaskGraph index={buildGraphIndex(snapshot)} rootId="A" onOpenTask={noop} />);
-    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__edge-path')).toHaveLength(5));
+    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__edge-path')).toHaveLength(6));
     await waitFor(() => expect(viewport(view.container).style.transform).not.toBe('translate(0px,0px) scale(1)'));
     const edge = (id: string) => view.container.querySelector<SVGPathElement>(`[data-id="${id}"] .react-flow__edge-path`)!;
     expect(edge('A->C')).toHaveAttribute('data-external', 'true');
@@ -421,7 +422,7 @@ describe('task dependency canvas', () => {
     const expected = layoutModule.layoutGraph({ rootId: 'A', mainIds: new Set(['A', 'C', 'D']), externalIds: new Set(['B', 'F']), edges: [
       { source: 'A', target: 'C', external: false }, { source: 'B', target: 'C', external: true },
       { source: 'C', target: 'D', external: false }, { source: 'F', target: 'D', external: true },
-    ], completed: 1 });
+    ], completed: 1 }, new Map([['A', 96], ['B', 136], ['C', 96], ['D', 96], ['F', 136]]));
     const { container } = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await waitFor(() => { expect(container.querySelectorAll('.react-flow__edge-path')).toHaveLength(expected.edges.length); });
     const actualPaths = [...container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'));
@@ -537,7 +538,7 @@ describe('task dependency canvas', () => {
       ...graph,
       tasks: graph.tasks.map((task) => task.id === 'D' ? { ...task, dependsOn: ['C'], externalDependsOn: [], blockedBy: ['C'] } : task),
     });
-    const expected = layoutModule.layoutGraph(projectChain(updated, 'A'));
+    const expected = layoutModule.layoutGraph(projectChain(updated, 'A'), new Map([['A', 96], ['B', 136], ['C', 96], ['D', 96]]));
     const retainedPath = svg.querySelector('[data-id="A->C"] path');
     view.rerender(<TaskGraph index={updated} rootId="A" onOpenTask={noop} />);
     await waitFor(() => { expect(svg.querySelectorAll('.react-flow__edge-path')).toHaveLength(3); });
@@ -575,7 +576,7 @@ describe('task dependency canvas', () => {
       expect(node.getAttribute('tabindex')).toBeNull();
       expect(node.classList.contains('draggable')).toBe(false);
       expect(node.classList.contains('selectable')).toBe(false);
-      expect(node.querySelectorAll('button')).toHaveLength(2);
+      expect(node.querySelectorAll('button')).toHaveLength(node.querySelector('.task-node-external') === null ? 2 : 3);
     }
     for (const edge of container.querySelectorAll('.react-flow__edge')) {
       expect(edge.getAttribute('tabindex')).toBeNull();
@@ -653,7 +654,7 @@ describe('task dependency canvas', () => {
       dependsOn: position === 0 ? [] : [`N${position - 1}`],
       blockedBy: position === 0 ? [] : [`N${position - 1}`], ready: position === 0,
     }));
-    const longChain = buildGraphIndex({ ...graph, tasks, summary: { total: 10, todo: 10, inProgress: 0, done: 0, ready: 1, blocked: 9 } });
+    const longChain = buildGraphIndex({ ...graph, tasks, summary: { total: 10, todo: 10, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 9 } });
     const { container } = render(<TaskGraph index={longChain} rootId="N0" onOpenTask={noop} />);
     await waitFor(() => { expect(container.querySelectorAll('.react-flow__edge')).toHaveLength(9); });
     await waitFor(() => { expect(zoom(container)).toBe(0.8); });
@@ -678,7 +679,7 @@ describe('task dependency canvas', () => {
       dependsOn: position === 0 ? [] : [`N${position - 1}`],
       blockedBy: position === 0 ? [] : [`N${position - 1}`], ready: position === 0,
     }));
-    const longChain = buildGraphIndex({ ...graph, tasks, summary: { total: 10, todo: 10, inProgress: 0, done: 0, ready: 1, blocked: 9 } });
+    const longChain = buildGraphIndex({ ...graph, tasks, summary: { total: 10, todo: 10, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 9 } });
     const view = render(<TaskGraph index={longChain} rootId="N0" onOpenTask={noop} />);
     await waitFor(() => { expect(zoom(view.container)).toBe(0.8); });
     const button = control === 'body' ? nodeButton('任务 9') : detailsButton('任务 9');
@@ -837,11 +838,12 @@ describe('progressive task visibility', () => {
     expect(rootBody.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('96px');
     fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
     await rendered(view.container, 101, 100);
-    expect(view.container.querySelectorAll('.task-node-expand')).toHaveLength(0);
-    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.task-node-expand[data-direction]')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.task-node-navigate')).toHaveLength(40);
+    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(40);
     await waitFor(() => { expect(joinBody).toHaveFocus(); });
-    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe('96px');
-    expect(progressiveIndex.components.get(rootId)!.progress).toEqual({ total: 61, done: 0, status: 'todo' });
+    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '96px' : '136px');
+    expect(progressiveIndex.components.get(rootId)!.progress).toEqual({ total: 61, done: 0, cancelled: 0, ended: 0, status: 'todo' });
     signal.throwIfAborted();
     await user.click(reset);
     await rendered(view.container, 50, 49);
@@ -1051,7 +1053,7 @@ describe('task chain dialog entries', () => {
       const dependsOn = id === 'C' ? ['A'] : id === 'D' ? ['B'] : id.startsWith('leaf-') ? ['D'] : [];
       return { ...graph.tasks[0]!, id, titlePreview: id, status: 'todo', ready: dependsOn.length === 0, dependsOn, blockedBy: dependsOn };
     });
-    const before = { ...graph, tasks, summary: { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, ready: 2, blocked: tasks.length - 2 } };
+    const before = { ...graph, tasks, summary: { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, cancelled: 0, ready: 2, blocked: tasks.length - 2 } };
     const after = { ...before, tasks: tasks.map((task) => task.id === 'D' ? { ...task, dependsOn: ['B', 'C'], blockedBy: ['B', 'C'] } : task) };
     return { before: buildGraphIndex(before), after: buildGraphIndex(after) };
   };
@@ -1079,9 +1081,9 @@ describe('task chain dialog entries', () => {
   it('recovers focus to the labeled empty list when the final ordinary edge becomes external', async () => {
     const tasks: TaskGraphData['tasks'] = ['A', 'B'].map((id) => ({ ...graph.tasks[0]!, id, titlePreview: id, status: 'todo',
       dependsOn: id === 'B' ? ['A'] : [], blockedBy: id === 'B' ? ['A'] : [], ready: id === 'A' }));
-    const before = buildGraphIndex({ ...graph, tasks, summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 } });
+    const before = buildGraphIndex({ ...graph, tasks, summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
     const after = buildGraphIndex({ ...graph, tasks: tasks.map((task) => task.id === 'B' ? { ...task, externalDependsOn: ['A'] } : task),
-      summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 } });
+      summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
     const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={before} allRepresentativeIds={['A']}
       representativeIds={['A']} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(2));
@@ -1119,7 +1121,7 @@ describe('task chain dialog entries', () => {
     expect([...view.container.querySelectorAll('.root-toggle')].map((root) => root.id)).toEqual(['task-root-F', 'task-root-E', 'task-root-B', 'task-root-A']);
     expect(index.representativeIds).toEqual(['A', 'B', 'E', 'F']);
     expect(index.successors.get('A')).toEqual(['C']);
-    expect(index.components.get('A')!.progress).toEqual({ total: 3, done: 1, status: 'in_progress' });
+    expect(index.components.get('A')!.progress).toEqual({ total: 3, done: 1, cancelled: 0, ended: 1, status: 'in_progress' });
     expect(screen.getByLabelText('显示 4 条，共 4 条任务链')).toHaveTextContent('4 / 4');
   });
 
@@ -1152,7 +1154,7 @@ describe('task chain dialog entries', () => {
     const refreshed = buildGraphIndex({
       ...graph,
       tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })),
-      summary: { total: 6, todo: 0, inProgress: 0, done: 6, ready: 0, blocked: 0 },
+      summary: { total: 6, todo: 0, inProgress: 0, done: 6, cancelled: 0, ready: 0, blocked: 0 },
     });
     view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(originalRoots[2]!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');

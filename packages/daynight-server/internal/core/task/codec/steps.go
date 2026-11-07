@@ -16,6 +16,9 @@ import (
 
 const MaxEncodedBytes = 64 * 1024 * 1024
 
+// MaxMCPStepCursorBytes is the existing encoded Step list cursor limit.
+const MaxMCPStepCursorBytes = 2048
+
 type Step struct {
 	ID          string               `json:"id"`
 	Title       string               `json:"title"`

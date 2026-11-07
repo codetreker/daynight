@@ -16,10 +16,11 @@ import { RepositoryIdentityError, repositoryIdentity } from "../../repository/id
 import { validateRepositoryRoot } from "../../repository/location.js";
 import { resolveWorkerRepositoryPath, validateWorkerRepositoryLocations, workerConfigurationDefaults } from "./config.js";
 import type { WorkerPaths } from "./paths.js";
+import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
 
 export { resolveCloudNative } from "./config.js";
 
-export type WorkerLocalConfiguration = ServerConfiguration & {
+export type WorkerLocalConfiguration = ServerConfiguration & WorkerLocalNativeOverrides & {
   readonly source: string | undefined;
   readonly repositoryRoot: string;
   readonly agentControlMode: AgentControlMode;
@@ -55,7 +56,7 @@ export const parseWorkerLocalConfiguration = (source: string | undefined, paths:
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot")
     : workerConfigurationDefaults.repositoryRoot;
-  return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, agentControlMode };
+  return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, agentControlMode, ...parseWorkerLocalNativeOverrides(worker) };
 };
 
 export const readWorkerLocalConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerLocalConfiguration> => {
@@ -97,6 +98,63 @@ export const workerLocalRepositoryForProject = async (
   if (matches.length > 1) throw new Error(`Project ${project.id} has multiple local repository mappings.`);
   await validateWorkerRepositoryLocations(matches, paths);
   return matches[0];
+};
+
+export const workerLocalRepositoryForId = async (
+  local: WorkerLocalConfiguration, paths: WorkerPaths, projectId: string,
+): Promise<WorkerLocalRepository | undefined> => {
+  const worker = workerMapping(sourceMapping(local.source, paths));
+  if (!Array.isArray(worker.repositories)) return undefined;
+  const matches = worker.repositories.flatMap((entry: unknown, index: number) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return [];
+    const repository = entry as Record<string, unknown>;
+    if (typeof repository.projectId !== "string" || canonicalId(repository.projectId) !== projectId) return [];
+    const field = `worker.repositories[${index}]`;
+    const remote = text(repository.remote, `${field}.remote`);
+    repositoryIdentity(remote);
+    const localPath = resolveWorkerRepositoryPath(repository.path, `${field}.path`, paths, path);
+    if (pathsOverlap(localPath, paths.stateDirectory, path)) throw new TypeError(`${field}.path overlaps the Daynight state directory.`);
+    return [{ remote, path: localPath, projectId }];
+  });
+  if (matches.length > 1) throw new Error(`Project ${projectId} has multiple local repository mappings.`);
+  await validateWorkerRepositoryLocations(matches, paths);
+  return matches[0];
+};
+
+export const workerLocalExplicitProjectIds = (local: WorkerLocalConfiguration, paths: WorkerPaths): readonly string[] => {
+  const worker = workerMapping(sourceMapping(local.source, paths));
+  if (!Array.isArray(worker.repositories)) return [];
+  return [...new Set(worker.repositories.flatMap((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return [];
+    const projectId = (entry as Record<string, unknown>).projectId;
+    const id = typeof projectId === "string" ? canonicalId(projectId) : null;
+    return id === null ? [] : [id];
+  }))];
+};
+
+export const workerLocalUnboundRepositoryIndexes = (local: WorkerLocalConfiguration, paths: WorkerPaths): readonly number[] => {
+  const worker = workerMapping(sourceMapping(local.source, paths));
+  if (!Array.isArray(worker.repositories)) return [];
+  return worker.repositories.flatMap((entry: unknown, index: number) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return [];
+    const repository = entry as Record<string, unknown>;
+    return typeof repository.projectId === "string" && canonicalId(repository.projectId) !== null ? [] : [index];
+  });
+};
+
+export const workerLocalUnboundRepository = async (local: WorkerLocalConfiguration, paths: WorkerPaths, index: number): Promise<{ remote: string; path: string; invalidProjectId: boolean }> => {
+  const worker = workerMapping(sourceMapping(local.source, paths));
+  if (!Array.isArray(worker.repositories)) throw new Error("The local worker repository mapping is unavailable.");
+  const field = `worker.repositories[${index}]`;
+  const repository = mapping(worker.repositories[index], field);
+  const invalidProjectId = Object.hasOwn(repository, "projectId");
+  if (typeof repository.projectId === "string" && canonicalId(repository.projectId) !== null) throw new Error("The local worker repository mapping is no longer unbound.");
+  const remote = text(repository.remote, `${field}.remote`);
+  repositoryIdentity(remote);
+  const localPath = resolveWorkerRepositoryPath(repository.path, `${field}.path`, paths, path);
+  if (pathsOverlap(localPath, paths.stateDirectory, path)) throw new TypeError(`${field}.path overlaps the Daynight state directory.`);
+  await validateWorkerRepositoryLocations([{ path: localPath }], paths);
+  return { remote, path: localPath, invalidProjectId };
 };
 
 const nativeOverrides = (worker: Record<string, unknown>): Partial<WorkerCloudNative> => ({

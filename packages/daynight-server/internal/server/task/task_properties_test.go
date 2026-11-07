@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -74,6 +75,47 @@ func TestTaskHTTPPropertiesRoundTripAndMutationSemantics(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "acceptance-secret") || strings.Contains(logs.String(), "标题") {
 		t.Fatalf("property contents leaked to logs: %s", &logs)
+	}
+}
+
+func TestTaskHTTPPatchPausePreservesActiveWorkerAcrossConflict(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	extendedWorkerTestHandler(handler)
+	project := taskProject(t, handler)
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Pause active worker"), map[string]any{"allowAgents": true})
+	task = claimHTTPWorker(t, handler, task, workerClaimBody(task.Version))
+	if task.Status != "in_progress" || len(task.Properties["worker"]) == 0 {
+		t.Fatalf("worker claim did not start execution: %#v", task)
+	}
+	checkPause := func(before, after api.Task, value bool) {
+		t.Helper()
+		if after.Version != before.Version+1 || !after.UpdatedAt.After(before.UpdatedAt) || string(after.Properties["paused"]) != string(rawProperty(t, value)) {
+			t.Fatalf("pause mutation lost version or value: before=%#v after=%#v", before, after)
+		}
+		preserved := after
+		preserved.Version, preserved.UpdatedAt = before.Version, before.UpdatedAt
+		preserved.Properties = maps.Clone(after.Properties)
+		if previous, exists := before.Properties["paused"]; exists {
+			preserved.Properties["paused"] = previous
+		} else {
+			delete(preserved.Properties, "paused")
+		}
+		if !reflect.DeepEqual(preserved, before) {
+			t.Fatalf("pause mutation changed task or active worker: before=%#v after=%#v", before, after)
+		}
+	}
+	paused := updateHTTPTask(t, handler, task, map[string]any{"properties": map[string]any{"paused": true}})
+	checkPause(task, paused, true)
+	concurrent := updateHTTPTask(t, handler, paused, map[string]any{"description": "Changed independently"})
+	stale := projectRequest(handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": paused.Version, "properties": map[string]any{"paused": false}}))
+	assertProjectError(t, stale, http.StatusConflict, "version_conflict")
+	if read := readHTTPTask(t, handler, task); !reflect.DeepEqual(read, concurrent) {
+		t.Fatalf("stale pause patch changed the task: %#v", read)
+	}
+	unpaused := updateHTTPTask(t, handler, concurrent, map[string]any{"properties": map[string]any{"paused": false}})
+	checkPause(concurrent, unpaused, false)
+	if read := readHTTPTask(t, handler, task); !reflect.DeepEqual(read, unpaused) {
+		t.Fatalf("pause patch did not persist: %#v", read)
 	}
 }
 

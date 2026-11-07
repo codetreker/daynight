@@ -10,6 +10,7 @@ export const workers: WorkersMessages = {
   emptyDetail: 'Workers appear here after they run and report to this account.', back: 'Back to my Workers',
   refresh: 'Refresh', refreshing: 'Refreshing…', retry: 'Retry',
   readError: 'The service could not provide a confirmed Worker observation.', networkError: 'Check your connection and try again.',
+  cacheStorageError: 'The local project cache could not be checked or cleared. Private content for affected projects is hidden. Try again.',
   protocolError: 'The service returned an invalid Worker response.', refreshFailed: 'Worker updates could not be synchronized.',
   retainedState: 'The values and badges show the last confirmed observation.',
   lastSynchronized: 'Last synchronized', lastReported: 'Last report', sampledAt: 'Resource sample', checkedAt: 'Checked',

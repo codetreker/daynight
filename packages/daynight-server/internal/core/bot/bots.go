@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -24,6 +23,8 @@ type CreateBot struct {
 	ID, Name              string
 	Overrides             model.BotOverrides
 	ResolvedConfiguration model.BotConfiguration
+	Resolution            *CreationResolution
+	ResolutionError       error
 }
 
 type BotPage struct {
@@ -70,7 +71,7 @@ func NormalizeBotRequest(input CreateBot) (CreateBot, string, error) {
 		return input, "", invalidInput("Bot name must be valid Unicode without control characters.")
 	}
 	input.Name = strings.TrimSpace(input.Name)
-	if count := utf8.RuneCountInString(input.Name); count < 1 || count > 40 {
+	if count := utf8.RuneCountInString(input.Name); count < 1 || count > MaxNameCodePoints {
 		return input, "", invalidInput("Bot name must contain 1 to 40 characters.")
 	}
 	if input.Overrides.WorkerID != nil {
@@ -85,6 +86,9 @@ func NormalizeBotRequest(input CreateBot) (CreateBot, string, error) {
 	}
 	if input.Overrides.Provider != nil && !model.WorkerAgent(*input.Overrides.Provider).Valid() {
 		return input, "", invalidInput("Bot provider must be codex, claude, or copilot.")
+	}
+	if err := NormalizeOverrides(input.Overrides); err != nil {
+		return input, "", err
 	}
 	data, err := json.Marshal(struct {
 		Name      string             `json:"name"`
@@ -130,6 +134,9 @@ func normalizeBotConfiguration(input CreateBot) (model.BotConfiguration, error) 
 	if configuration.Model != nil && (!utf8.ValidString(*configuration.Model) || strings.TrimSpace(*configuration.Model) == "" || strings.ContainsRune(*configuration.Model, 0)) {
 		return configuration, invalidInput("Resolved Bot model must be nonempty Unicode without NUL.")
 	}
+	if err := validateSelection(configuration); err != nil {
+		return configuration, err
+	}
 	if configuration.Args == nil {
 		configuration.Args = []string{}
 	}
@@ -140,7 +147,9 @@ func normalizeBotConfiguration(input CreateBot) (model.BotConfiguration, error) 
 	}
 	if (input.Overrides.WorkerID != nil && *input.Overrides.WorkerID != id) ||
 		(input.Overrides.Cwd != nil && *input.Overrides.Cwd != configuration.Cwd) ||
-		(input.Overrides.Provider != nil && *input.Overrides.Provider != configuration.Provider) {
+		(input.Overrides.Provider != nil && *input.Overrides.Provider != configuration.Provider) ||
+		(input.Overrides.Model != nil && (configuration.Model == nil || *input.Overrides.Model != *configuration.Model)) ||
+		(input.Overrides.ReasoningEffort != nil && (configuration.ReasoningEffort == nil || *input.Overrides.ReasoningEffort != *configuration.ReasoningEffort)) {
 		return configuration, invalidInput("Resolved Bot configuration must preserve explicit overrides.")
 	}
 	return configuration, nil
@@ -156,6 +165,9 @@ func Create(ctx context.Context, tx store.BotWriteDAO, principal model.Principal
 	}
 	current, err := tx.Bot(ctx, input.ID)
 	if errors.Is(err, model.ErrNotFound) {
+		if input.ResolutionError != nil {
+			return model.Bot{}, input.ResolutionError
+		}
 		if resolve {
 			input.ResolvedConfiguration, err = resolveBotCreation(ctx, tx, principal, input)
 			if err != nil {
@@ -228,43 +240,6 @@ func ListResult(principal model.Principal, workerID *string, records store.BotPa
 		result.NextCursor = &cursor
 	}
 	return result, nil
-}
-
-// Delete records an intent; bound sessions require the separate deletion barrier.
-func Delete(ctx context.Context, tx store.BotWriteDAO, principal model.Principal, id string, input store.DeleteBot) (model.Bot, error) {
-	if err := botCredentialError(tx.Credential(ctx, principal)); err != nil {
-		return model.Bot{}, err
-	}
-	current, err := tx.Bot(ctx, id)
-	if errors.Is(err, model.ErrNotFound) {
-		return model.Bot{}, &model.Fault{Code: "not_found", Message: "Bot was not found.", Cause: err}
-	}
-	if err != nil {
-		return model.Bot{}, err
-	}
-	if err := botOwner(current, principal); err != nil {
-		return model.Bot{}, err
-	}
-	if current.Deletion != nil {
-		if current.Deletion.DeletionID != input.DeletionID || current.Deletion.RequestedVersion != input.Version {
-			return model.Bot{}, botConflict("Bot deletion belongs to a different request.")
-		}
-		return current, botCredentialError(tx.Credential(ctx, principal))
-	}
-	if current.Version != input.Version {
-		return model.Bot{}, &model.Fault{Code: "version_conflict", Message: "Bot version has changed."}
-	}
-	if current.SessionID != nil {
-		return model.Bot{}, botConflict("A bound Bot requires the Session deletion barrier.")
-	}
-	if current.Version == math.MaxInt64 {
-		return model.Bot{}, &model.Fault{Code: "version_exhausted", Message: "Bot version cannot advance."}
-	}
-	result, err := tx.DeleteBot(ctx, id, input.Version, model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})
-	if err != nil {
-		return model.Bot{}, err
-	}
-	return result, botCredentialError(tx.Credential(ctx, principal))
 }
 
 func ResultError(operation string, err error) error {

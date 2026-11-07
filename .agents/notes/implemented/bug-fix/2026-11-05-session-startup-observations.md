@@ -40,9 +40,9 @@ The report contains fixed reason codes; safe text is derived from a fixed map,
 while private raw diagnostics remain local. Observation timestamps describe
 historical evidence, not current transport health.
 
-The [persistent recovery pause decision](2026-11-04-web-recovery-pause.md)
-continues to own recovery budgets, explicit retry, original identity and stop
-proof. Its original implementation deliberately reported only phase and native
+The [persistent recovery pause decision](../../archived/bug-fix/2026-11-04-web-recovery-pause.md)
+records the rationale for recovery budgets, explicit retry, original identity
+and stop proof. Its original implementation deliberately reported only phase and native
 identity; the independent report adds visibility without changing those gates.
 
 ## Alternatives

@@ -9,7 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -25,7 +25,7 @@ import (
 
 type fixture struct {
 	s             *Execution
-	db            *store.Store
+	db            *postgres.Store
 	p             model.Principal
 	project, task string
 	r             sp.Registration
@@ -167,7 +167,7 @@ func setup(t *testing.T) fixture {
 	q := u.Query()
 	q.Set("search_path", schema)
 	u.RawQuery = q.Encode()
-	db, err := store.Open(ctx, u.String())
+	db, err := postgres.Open(ctx, u.String())
 	if err != nil {
 		t.Fatal(err)
 	}

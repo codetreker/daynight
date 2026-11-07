@@ -11,7 +11,7 @@ export const isTaskStale = (snapshotNode: GraphTask | undefined, detail: TaskDet
   if (snapshotNode === undefined) return true;
   const title = Array.from(detail.title);
   return snapshotNode.id !== detail.id || !sameTime(snapshotNode.updatedAt, detail.updatedAt) || !sameTime(snapshotNode.createdAt, detail.createdAt) ||
-    !sameTime(snapshotNode.startedAt, detail.startedAt) || !sameTime(snapshotNode.completedAt, detail.completedAt) || snapshotNode.status !== detail.status ||
+    !sameTime(snapshotNode.startedAt, detail.startedAt) || !sameTime(snapshotNode.completedAt, detail.completedAt) || !sameTime(snapshotNode.cancelledAt, detail.cancelledAt) || snapshotNode.status !== detail.status ||
     snapshotNode.allowAgents !== detail.allowAgents || snapshotNode.assignedTo !== detail.assignedTo || snapshotNode.requiredPlatform !== detail.requiredPlatform || snapshotNode.ready !== detail.ready || !sameIds(snapshotNode.dependsOn, detail.dependsOn) ||
     !sameIds(snapshotNode.externalDependsOn, detail.externalDependsOn) ||
     !sameIds(snapshotNode.blockedBy, detail.blockedBy) || snapshotNode.titlePreview !== title.slice(0, 160).join("") ||

@@ -12,11 +12,11 @@ func (s *Tasks) SetProperty(ctx context.Context, principal model.Principal, proj
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
-	value, err := taskcore.PropertyInput(name, valueText)
-	if err != nil {
-		return model.Task{}, err
-	}
 	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
+		value, err := taskcore.PropertyInput(name, valueText)
+		if err != nil {
+			return taskcore.Mutation{}, err
+		}
 		values, changed := taskcore.SetPropertyCandidate(current, name, value)
 		return taskcore.Mutation{ID: current.ID, Current: current, Values: values, Changed: changed}, nil
 	})
