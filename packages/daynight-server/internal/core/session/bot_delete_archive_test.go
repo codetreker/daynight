@@ -153,11 +153,29 @@ func TestBotDeletionPrecedesArchiveAndCleanupCannotBeFollowedByLateUpload(t *tes
 		_, err := f.s.PutArchive(ctx, f.p, "", "", out.Session.SessionID, data)
 		upload <- err
 	}()
-	waitErr := waitBotArchiveLock(ctx, f)
+	waitCtx, stopWait := context.WithCancel(ctx)
+	wait := make(chan error, 1)
+	go func() { wait <- waitBotArchiveLock(waitCtx, f) }()
+	var uploadErr error
+	var uploadFinished bool
+	select {
+	case uploadErr = <-upload:
+		uploadFinished = true
+	case waitErr := <-wait:
+		if waitErr != nil {
+			t.Error(waitErr)
+		}
+	case <-ctx.Done():
+		t.Error(ctx.Err())
+	}
+	stopWait()
 	close(gate.release)
-	cleanupErr, uploadErr := <-cleanup, <-upload
-	if waitErr != nil || cleanupErr != nil || uploadErr == nil {
-		t.Fatalf("delete-first ordering failed: wait=%v cleanup=%v upload=%v", waitErr, cleanupErr, uploadErr)
+	cleanupErr := <-cleanup
+	if !uploadFinished {
+		uploadErr = <-upload
+	}
+	if cleanupErr != nil || uploadErr == nil {
+		t.Fatalf("delete-first ordering failed: cleanup=%v upload=%v", cleanupErr, uploadErr)
 	}
 	botFault(t, uploadErr, "resource_conflict")
 	if _, err = os.Stat(filepath.Join(root, archiveBucket, testArchiveDirectory(t, "", f.p.UserID, out.Session.SessionID))); !errors.Is(err, fs.ErrNotExist) {

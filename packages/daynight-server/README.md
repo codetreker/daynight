@@ -816,6 +816,8 @@ controlled external provider responses and owns its temporary resources. For
 focused integration tests, source `scripts/env.sh`, set
 `DAYNIGHT_TEST_DATABASE_URL`, then set `DAYNIGHT_TEST_UNIAUTH_FIXTURE` to the
 output of that preparation script. The full check performs preparation itself.
+The real archive upload and response socket deadlines can be checked separately
+with `DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 GOFLAGS="-overlay=scripts/unit-overlay.json" go test -tags=stress ./internal/server/session -run '^TestStressArchive(Upload|Send)DeadlineReleasesCapacity$' -count=1 -timeout=5m`; each test waits for the production 120-second deadline.
 The shared fixture cleanup waits for process exit and reports forced termination;
 an unconfirmed service, database-session or gateway exit retains dependent owned
 resources. `scripts/check.sh` explicitly tests `testdata/testauth`, which `./...`
@@ -842,6 +844,14 @@ PostgreSQL retains the object path, length, digest and archive status or receipt
 Readers continue to open the persisted `object_path` and apply the existing
 length/digest/structure checks. Existing files and metadata stay in place;
 read behavior, same-hash ready upload retries and public URLs remain unchanged.
+Archive uploads and content reads acquire one nonblocking slot per application
+instance and one per original owner across instances sharing a storage root.
+The lease spans body reading, validation, storage readback, encoding and response
+sending; retained content must be closed after its last use. Upload reads and
+archive response writes each have an independent 120-second socket deadline.
+The [Session design](../../docs/design/task-session-protocol.md#归档操作占用)
+owns the admission and lifecycle contract.
+
 The restricted `DeleteSessionArchives` operation receives a validated Namespace
 and removes that current Session directory, including unregistered objects,
 while preserving same-owner/shard siblings. Old direct-directory files are

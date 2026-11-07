@@ -24,8 +24,14 @@ func New(tx pgx.Tx) store.SessionDAO { return &DAO{tx: tx} }
 var _ store.SessionDAO = (*DAO)(nil)
 
 func (tx *DAO) LockCredential(ctx context.Context, principal model.Principal, now time.Time) error {
+	return tx.credential(ctx, principal, now, " FOR SHARE")
+}
+func (tx *DAO) ReadCredential(ctx context.Context, principal model.Principal, now time.Time) error {
+	return tx.credential(ctx, principal, now, "")
+}
+func (tx *DAO) credential(ctx context.Context, principal model.Principal, now time.Time, lock string) error {
 	if principal.Kind == model.OAuthCredential {
-		credential, err := pginternal.ThreadCredential(ctx, tx.tx, principal, " FOR SHARE")
+		credential, err := pginternal.ThreadCredential(ctx, tx.tx, principal, lock)
 		if err != nil {
 			return err
 		}
@@ -49,7 +55,7 @@ func (tx *DAO) LockCredential(ctx context.Context, principal model.Principal, no
 		return model.ErrNotFound
 	}
 	var id string
-	err := tx.tx.QueryRow(ctx, `SELECT id::text FROM `+table+` WHERE id=$1 AND user_id=$2 AND `+predicate+` FOR SHARE`, principal.CredentialID, principal.UserID, now).Scan(&id)
+	err := tx.tx.QueryRow(ctx, `SELECT id::text FROM `+table+` WHERE id=$1 AND user_id=$2 AND `+predicate+lock, principal.CredentialID, principal.UserID, now).Scan(&id)
 	if err != nil {
 		return pginternal.QueryError("lock session credential", err)
 	}
@@ -223,6 +229,20 @@ func (tx *DAO) InsertTestSession(ctx context.Context, r store.SessionRegistratio
 		return pginternal.QueryError("insert test session", err)
 	}
 	return nil
+}
+
+func (tx *DAO) ArchiveMetadata(ctx context.Context, id string) (store.ArchiveMetadata, error) {
+	var m store.ArchiveMetadata
+	err := tx.tx.QueryRow(ctx, `SELECT s.owner_user_id::text, COALESCE(s.parent_credential_id::text,''), COALESCE(s.project_id::text,''), COALESCE(s.task_id::text,''), s.backend, s.scope='test',
+ EXISTS(SELECT 1 FROM tasks t WHERE t.id=s.task_id AND t.project_id=s.project_id),
+ COALESCE((SELECT t.deleted_at IS NOT NULL FROM tasks t WHERE t.id=s.task_id AND t.project_id=s.project_id),false),
+ EXISTS(SELECT 1 FROM projects p WHERE p.id=s.project_id AND p.deleted_at IS NULL),
+ s.bot_id IS NULL OR EXISTS(SELECT 1 FROM bots b WHERE b.id=s.bot_id AND b.deletion IS NULL AND b.session_id=s.id)
+ FROM task_sessions s WHERE s.id=$1`, id).Scan(&m.Owner, &m.Parent, &m.Project, &m.Task, &m.Backend, &m.Test, &m.TaskExists, &m.TaskDeleted, &m.ProjectLive, &m.BotValid)
+	if err != nil {
+		return store.ArchiveMetadata{}, pginternal.QueryError("read archive metadata", err)
+	}
+	return m, nil
 }
 
 func (tx *DAO) SessionLocation(ctx context.Context, id string) (store.SessionLocation, error) {

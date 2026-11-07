@@ -50,23 +50,25 @@ func TestSessionConsumedBodyRejectionKeepsSocketReusable(t *testing.T) {
 		{"session chunked", "POST", f.base, "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "2\r\n{}\r\n0\r\n\r\n", "invalid_input", 400},
 		{"terminal", "POST", f.base, "Content-Type: application/json\r\n" + v2.ProtocolHeader + ": " + v2.Protocol + "\r\n", "{}", "invalid_payload", 400},
 		{"archive", "PUT", f.base + "/" + f.snapshot.SessionID + "/archive", "Content-Type: application/json\r\n", "{}", "invalid_input", 400},
-		{"terminal archive", "PUT", f.base + "/" + f.snapshot.SessionID + "/archive", "Content-Type: application/json\r\n" + v2.ProtocolHeader + ": " + v2.Protocol + "\r\n", "{}", "source_corrupt", 409},
 		{"attachment metadata", "PUT", attachmentFilePath(f.task, "metadata-failure"), "Content-Type: text/plain\r\n", "abc", "internal_error", 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testConsumedBodySocket(t, f, tc.method, tc.path, tc.headers, tc.body, tc.code, tc.status, tc.name == "attachment metadata")
+			testConsumedBodySocket(t, f.server.Config.Handler, f.handler.token, tc.method, tc.path, tc.headers, tc.body, tc.code, tc.status, tc.name == "attachment metadata" || tc.name == "archive")
 		})
 	}
+	terminal := terminalHTTPSetup(t)
+	terminalMessage(t, terminalRequest(terminal.h, http.MethodPost, terminal.base, jsonBody(t, terminal.message), v2.Protocol))
+	testConsumedBodySocket(t, terminal.h.Handler, terminal.h.token, "PUT", terminal.base+"/"+terminal.message.SessionID+"/archive", "Content-Type: application/json\r\n"+v2.ProtocolHeader+": "+v2.Protocol+"\r\n", "{}", "source_corrupt", 409, true)
 }
 
-func testConsumedBodySocket(t *testing.T, f *sessionHTTPFixture, method, path, headers, body, code string, status int, attachment bool) {
+func testConsumedBodySocket(t *testing.T, handler http.Handler, token, method, path, headers, body, code string, status int, bounded bool) {
 	t.Helper()
 	deadline := make(chan time.Time, 2)
 	before := make(chan error, 2)
 	continueWrite := make(chan struct{}, 2)
 	defer close(continueWrite)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.server.Config.Handler.ServeHTTP(&sessionDeadlineObserver{ResponseWriter: w, deadline: deadline, before: before, continueWrite: continueWrite, request: r}, r)
+		handler.ServeHTTP(&sessionDeadlineObserver{ResponseWriter: w, deadline: deadline, before: before, continueWrite: continueWrite, request: r}, r)
 	}))
 	t.Cleanup(server.Close)
 	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), 5*time.Second)
@@ -79,7 +81,7 @@ func testConsumedBodySocket(t *testing.T, f *sessionHTTPFixture, method, path, h
 	if !strings.Contains(headers, "Transfer-Encoding:") {
 		length = fmt.Sprintf("Content-Length: %d\r\n", len(body))
 	}
-	_, err = fmt.Fprintf(conn, "%s %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\n%s%s\r\n%s", method, path, f.handler.token, headers, length, body)
+	_, err = fmt.Fprintf(conn, "%s %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\n%s%s\r\n%s", method, path, token, headers, length, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +93,7 @@ func testConsumedBodySocket(t *testing.T, f *sessionHTTPFixture, method, path, h
 	case <-time.After(5 * time.Second):
 		t.Fatal("Session rejection did not reach response barrier")
 	}
-	if attachment {
+	if bounded {
 		select {
 		case got := <-deadline:
 			if got.IsZero() {
@@ -125,7 +127,7 @@ func testConsumedBodySocket(t *testing.T, f *sessionHTTPFixture, method, path, h
 	if err != nil || response.StatusCode != status || response.Close || !strings.Contains(string(data), `"code":"`+code+`"`) {
 		t.Fatalf("status=%d close=%v body=%q read=%v", response.StatusCode, response.Close, data, err)
 	}
-	_, err = fmt.Fprintf(conn, "GET /api/v1/session-capabilities HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", f.handler.token)
+	_, err = fmt.Fprintf(conn, "GET /api/v1/session-capabilities HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", token)
 	if err != nil {
 		t.Fatal(err)
 	}
