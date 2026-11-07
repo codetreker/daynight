@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, taskSyncEpoch, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncFixture, taskSyncQuery, taskSyncEpoch, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 import { progressiveGraph } from '../helpers/graphData';
 
@@ -24,6 +24,9 @@ async function install(page: Page) {
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
+    if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({
+      items: [...new Set(state.tasks.flatMap(task => task.assignedTo === null ? [] : [task.assignedTo]))].map(userId => ({ userId, version: TEST_PROFILE_VERSION, name: 'Other assignee', avatarUrl: null, hasProjectAccess: true })), unresolvedUserIds: [],
+    });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return state.fail ? send({ error: { code: 'internal_error', message: 'Fixture failure', requestId: 'graph-refresh' } }, 500) : send(taskSyncFixture(graph, { epoch, query: taskSyncQuery(url), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
     const base = `/api/v1/projects/${projectId}/tasks/`;
     if (path.startsWith(base)) {
@@ -101,38 +104,88 @@ test('refresh prunes a disconnected visible prerequisite without adding hidden n
 });
 
 
-test('external navigation opens a filtered offpage Goal and a singleton reader without extending the source canvas', async ({ page }) => {
+for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['all', 'Unassigned']] as const) test(`external navigation retains page, scroll and disclosure with ${status} status and ${assignee}`, async ({ page }) => {
   const state = await install(page);
   const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
   const finished = Array.from({ length: 21 }, (_, position) => {
     const root = id(position * 2 + 1), child = id(position * 2 + 2);
-    return [detailFixture(projectId, root, { title: `Goal ${position + 1}`, status: 'done', ready: false }),
-      detailFixture(projectId, child, { title: `Result ${position + 1}`, status: 'done', ready: false, dependsOn: [root] })];
+    const assignedTo = assignee === 'Unassigned' ? id(900) : null;
+    return [detailFixture(projectId, root, { title: `Goal ${position + 1}`, status: 'done', ready: false, assignedTo }),
+      detailFixture(projectId, child, { title: `Result ${position + 1}`, status: 'done', ready: false, assignedTo,
+        dependsOn: position === 0 ? [root, id(4)] : [root], externalDependsOn: position === 0 ? [id(4)] : [] })];
+  }).flat();
+  const waiting = Array.from({ length: 16 }, (_, position) => {
+    const root = id(2000 + position * 2);
+    return [detailFixture(projectId, root, { title: `Waiting Goal ${position}` }),
+      detailFixture(projectId, id(2001 + position * 2), { title: `Waiting child ${position}`, dependsOn: [root], blockedBy: [root], ready: false })];
   }).flat();
   const source = id(1000), child = id(1001), singleton = id(1002);
-  state.tasks = [...finished, detailFixture(projectId, singleton, { title: 'Standalone prerequisite', status: 'done', ready: false }),
-    detailFixture(projectId, source, { title: 'Consumer Goal' }),
-    detailFixture(projectId, child, { title: 'Consumer task', dependsOn: [source, id(2), singleton], externalDependsOn: [id(2), singleton], blockedBy: [source], ready: false })];
+  state.tasks = [...finished, ...waiting, detailFixture(projectId, singleton, { title: 'Standalone prerequisite', status: 'done', ready: false }),
+    detailFixture(projectId, source, { title: 'Consumer Goal', createdAt: '2026-10-01T10:00:00Z' }),
+    detailFixture(projectId, child, { title: 'Consumer task', dependsOn: [source, id(2), singleton], externalDependsOn: [id(2), singleton], blockedBy: [source], ready: false }),
+    ...Array.from({ length: 8 }, (_, position) => detailFixture(projectId, id(1100 + position), { title: `Consumer child ${position}`, dependsOn: [source], blockedBy: [source], ready: false }))];
+  await page.setViewportSize({ width: 1440, height: 600 });
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
-  await page.getByRole('combobox', { name: 'Status', exact: true }).selectOption('todo');
-  await expect(page.locator('.list-pagination')).toHaveCount(0);
-  await page.locator(`#task-chain-graph-${source}`).click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(4);
+  await page.getByRole('combobox', { name: 'Status', exact: true }).selectOption(status);
+  if (assignee === 'Unassigned') {
+    await page.getByRole('button', { name: 'Assignee: Everyone', exact: true }).click();
+    await page.getByRole('option', { name: 'Unassigned', exact: true }).click();
+  }
+  await page.getByRole('navigation', { name: 'Task chains pagination' }).getByRole('button', { name: 'Next', exact: true }).click();
+  const original = page.locator(`#task-root-${source}`), trigger = page.locator(`#task-chain-graph-${source}`);
+  await original.click(); await expect(original).toHaveAttribute('aria-expanded', 'true');
+  await trigger.evaluate(element => { window.scrollTo(0, 320); element.focus({ preventScroll: true }); });
+  expect(await page.evaluate(() => scrollY)).toBe(320);
+  await page.evaluate(source => {
+    const list = document.getElementById('project-chain-list')!, rows = [...list.querySelectorAll('.root-toggle')];
+    const pagination = list.querySelector('.list-pagination'), pageText = pagination!.textContent;
+    const status = document.querySelector<HTMLSelectElement>('.task-status-filter select')!;
+    const assignee = document.querySelector('.task-assignee-filter .assignee-trigger')!, assigneeName = assignee.getAttribute('aria-label');
+    const statusValue = status.value, original = document.getElementById(`task-root-${source}`)!, top = scrollY;
+    const violations: string[] = [];
+    const check = () => {
+      const current = [...list.querySelectorAll('.root-toggle')];
+      if (current.length !== rows.length || current.some((row, position) => row !== rows[position])) violations.push('list rows changed');
+      if (list.querySelector('.list-pagination') !== pagination || pagination!.textContent !== pageText) violations.push('pagination changed');
+      if (status.value !== statusValue || assignee.getAttribute('aria-label') !== assigneeName) violations.push('filters changed');
+      if (original.getAttribute('aria-expanded') !== 'true') violations.push('disclosure changed');
+      if (scrollY !== top) violations.push('scroll changed');
+    };
+    const observer = new MutationObserver(check);
+    observer.observe(list, { childList: true, attributes: true, characterData: true, subtree: true });
+    window.addEventListener('scroll', check);
+    Reflect.set(window, Symbol.for('external-navigation-state'), { check, violations, finish: () => { observer.disconnect(); window.removeEventListener('scroll', check); } });
+  }, source);
+  const stable = () => page.evaluate(() => {
+    const saved = Reflect.get(window, Symbol.for('external-navigation-state')) as { check: () => void; violations: string[] };
+    saved.check(); return saved.violations;
+  });
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.react-flow__node')).toHaveCount(12);
   await expect(page.locator(`.react-flow__node[data-id="${id(1)}"]`)).toHaveCount(0);
   const external = page.locator(`.react-flow__node[data-id="${id(2)}"]`);
   await external.locator('.task-node-navigate').focus();
   await page.keyboard.press('Enter');
   await expect(page.locator(`#task-graph-${id(1)}`)).toBeVisible();
   await expect(page.locator(`#task-graph-${source}`)).toHaveCount(0);
+  await expect(page.locator('.react-flow__node')).toHaveCount(3);
+  expect(await stable()).toEqual([]);
+  await page.locator(`.react-flow__node[data-id="${id(4)}"] .task-node-navigate`).click();
+  await expect(page.locator(`#task-graph-${id(3)}`)).toBeVisible();
   await expect(page.locator('.react-flow__node')).toHaveCount(2);
-  await expect(page.locator('#project-chain-list .list-pagination-page')).toHaveText('Page 2 of 2');
+  expect(await stable()).toEqual([]);
   await page.locator('.task-chain-close').click();
-  await expect(page.locator(`#task-root-${id(1)}`)).toBeFocused();
-  await page.getByRole('navigation', { name: 'Task chains pagination' }).getByRole('button', { name: 'Previous' }).click();
-  await page.locator(`#task-chain-graph-${source}`).click();
-  await expect(page.locator('.react-flow__node')).toHaveCount(4);
-  await page.locator(`.react-flow__node[data-id="${singleton}"] .task-node-navigate`).click();
+  await expect(trigger).toBeFocused(); expect(await stable()).toEqual([]);
+  await expect(original).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByRole('combobox', { name: 'Status', exact: true })).toHaveValue(status);
+  await expect(page.getByRole('button', { name: `Assignee: ${assignee}`, exact: true })).toBeVisible();
+  await expect(page.locator('#project-chain-list .list-pagination-page')).toHaveText(`Page 2 of ${status === 'all' && assignee === 'Everyone' ? 3 : 2}`);
+  await page.evaluate(() => { (Reflect.get(window, Symbol.for('external-navigation-state')) as { finish: () => void }).finish(); });
+  await trigger.evaluate(element => element.focus({ preventScroll: true })); await page.keyboard.press('Enter');
+  await expect(page.locator('.react-flow__node')).toHaveCount(12);
+  await page.locator(`.react-flow__node[data-id="${singleton}"] .task-node-navigate`).focus();
+  await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-title')).toHaveText('Standalone prerequisite');
   await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
 });

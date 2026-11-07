@@ -1342,9 +1342,11 @@ Both categories share assignee and status filters and the current
 task-list page position; category switching does not restore an older offset. Chain
 ordering uses its representative's exact `(created_at,id)` service order,
 reversed for newest first without lossy JavaScript timestamp conversion. The
-open graph dialog keeps an original task witness only for the current reading
-session and resolves its component after merges or splits without overwriting
-a valid witness with a new representative. A removed, standalone, filtered or off-page
+open graph dialog keeps an active actual-task witness for the current reading
+session and resolves its component from the complete index after merges or splits
+without overwriting a valid witness with a new representative. A valid graph
+requires a multi-member component and the active Task list / Task chains view;
+list filters and pagination do not affect its validity. A removed or standalone
 witness closes the dialog. Membership changes initialize a new bounded overview
 and framing without remounting a same-representative canvas or active Details.
 A representative change initializes the newly represented graph within the
@@ -1479,12 +1481,17 @@ preserves visible tasks and inspection, and reframes the current graph. Desktop
 geometry is `80vw × 80dvh`; at widths of 740px or less the dialog fills
 the viewport except for 12px gutters. The title shows the chain name, status
 and progress. Closing with the explicit button, backdrop or Escape restores the
-original graph button or an available Goal disclosure, filter or list control
-without changing the expanded lists, list height or page position. Complete P
-contains every ordinary component member and every required ancestor through
-all dependency kinds, without unrelated successors of context tasks. Main
+original graph button without changing status/assignee filters, pagination, list
+rows, expanded children, list height or scroll. The original opener and original
+list task witness remain unchanged across external Goal hops. If the opener
+disappears, close resolves that original task to its current visible Goal, then
+uses the first visible Goal disclosure, list region or active category tab.
+Complete P contains every ordinary component member and its directly declared
+external prerequisites, deduplicated by task ID. Context ancestry and unrelated
+successors do not enter P. Main
 progress counts component members only, and project counters count each project
-task once. Actual visible S is progressive for members and context alike.
+task once. Actual visible S is progressive within P; ordinary members have bounded direction
+controls and external cards have an independent resource-navigation action.
 Dashed edges encode explicit external dependencies, including a shortcut inside
 one ordinary component; dashed cards encode context outside that component.
 Ordinary context edges stay solid. Details labels prerequisites, blockers and
@@ -1493,15 +1500,16 @@ successors using each edge's own marker; no dependency editor is added.
 P with at most fifty tasks and one hundred dependencies is fully visible.
 Larger P starts at the representative with stable undirected BFS, successors before prerequisites
 in snapshot order; accept a task only when the complete induced graph remains
-within fifty/one hundred, and traverse only accepted tasks. Cards expose direction
+within fifty/one hundred, and traverse only accepted tasks. Ordinary member cards expose direction
 controls adding at most twenty hidden direct neighbors in P, with exact new-task,
 new-induced-edge and remaining counts. Manual expansion has no edge cap. Every
 real edge with both endpoints in S appears, without shortcuts or aggregate cards.
 
-Cards are 220 by 96 pixels without hidden direct neighbors, using a 94px body
+Ordinary member cards are 220 by 96 pixels without hidden direct neighbors, using a 94px body
 and two border pixels with no footer or separator. Cards with expansion controls
 are 220 by 136, including a 40px two-column footer; an unused direction retains
-its column. Each visible snapshot derives expansion data once. Layout, React
+its column. External cards remain 220 by 136 with an independent Expand footer.
+Each visible snapshot derives expansion data once. Layout, React
 Flow, route ports, viewport fitting and keyboard reveal share actual dimensions.
 The canvas separates native body inspection from sibling Details
 and direction controls. Complete H drives visible ancestor/real-edge/arrow
@@ -1646,8 +1654,13 @@ Each node has sibling native inspection, Details and expansion controls.
 Ordinary members retain progressive direction controls. An external card has an
 Expand button that opens its ordinary-component Goal graph, or closes the origin
 graph and opens the existing task reader for a standalone task. Goal navigation
-locates the destination page, clears only filters hiding it and uses its own graph
-direction. External ancestry is not added to the origin canvas. A long
+resolves the actual task through the complete component index and directly updates
+the graph witness, using the destination Goal's own direction. A filtered or
+off-page destination can open while status/assignee filters, page, rows, expanded
+children and scroll remain unchanged throughout navigation and after close.
+Repeated Goal hops retain the original list opener and original list witness for
+focus restoration. Overview positioning alone adjusts obscuring filters and the
+destination list page. External ancestry is not added to the origin canvas. A long
 graph starts with its root visible at readable zoom; keyboard focus brings
 offscreen nodes into view. In normal mode, the centered body-portal dialog has
 a 960px maximum width, 24px viewport gutters (12px at 600px and below), and a
