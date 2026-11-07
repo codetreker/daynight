@@ -144,8 +144,6 @@ export const ChainList = ({ projectId, index, workerMachines, representativeIds,
     onOpenChain(id, trigger);
   }, [onOpenChain]);
   const navigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
-    opener.current = null;
-    openedTask.current = id;
     if (onNavigateExternalTask !== undefined) onNavigateExternalTask(id, trigger);
     else {
       const representative = index.componentByTask.get(id)!;

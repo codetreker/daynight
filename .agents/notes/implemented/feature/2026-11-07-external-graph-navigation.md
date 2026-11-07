@@ -21,12 +21,19 @@ status and membership continue to count ordinary members only.
 
 External cards have an independent native Expand button beside inspection and
 Details. The project owner resolves the card's actual task ID through the current
-ordinary-component index. A multi-member destination opens its Goal graph after
-locating its list page and clearing only filters that hide it. It uses the
-destination Goal's own graph-direction preference. A standalone destination
+ordinary-component index. A multi-member destination opens its Goal graph using
+the destination Goal's own graph-direction preference. A standalone destination
 closes the original graph and opens the existing task reader. Expand does not
 append external ancestry to the original canvas. Ordinary member cards retain
 bounded direction expansion within the projection.
+
+The original navigation decision located the destination list page and cleared
+only filters that hid its Goal. That made a destination outside the displayed
+list reachable while graph opening depended on list visibility. The
+[list-state preservation decision](../bug-fix/2026-11-07-external-graph-list-state.md)
+replaces that navigation coupling: the graph now resolves independently from the
+complete index, while the original list state and opener remain intact. The
+one-hop projection, complete inspection and per-Goal direction rules continue.
 
 Complete prerequisite inspection still computes H from the full project index.
 Only visible ancestors and their real visible edges highlight; hidden H minus S
@@ -52,7 +59,9 @@ the external task's owning Goal or task.
 
 **Open a Goal only through the current list page's graph entry.** The destination
 can be absent because of pagination or filters. Resolving the actual task through
-the complete index and locating its destination keeps that navigation reliable.
+the complete index made navigation reliable; the original implementation also
+located the destination in the list to satisfy its graph-opening eligibility.
+That list mutation is superseded by the independent resource ownership above.
 
 ## Consequences
 
@@ -64,9 +73,10 @@ action-footer geometry so their navigation is available even when no local
 neighbors are hidden.
 
 Navigating to another Goal initializes that resource's graph exploration and
-inspection state. It can change the selected list page and only those filters
-needed to expose the destination. External context does not add members to Goal
-progress and does not change execution blocking, cycle detection or dependency
-classification. The archived dense external ancestry workload remains historical
-input evidence; current validation distinguishes the complete input, the
-one-hop projection and visible S, and independently checks complete hidden H.
+inspection state. It preserves list filters, pagination, disclosure and scroll,
+and the graph session retains its original list opener for close. External
+context does not add members to Goal progress and does not change execution
+blocking, cycle detection or dependency classification. The archived dense
+external ancestry workload remains historical input evidence; current validation
+distinguishes the complete input, the one-hop projection and visible S, and
+independently checks complete hidden H.

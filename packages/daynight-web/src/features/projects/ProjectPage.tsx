@@ -70,7 +70,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const searchActive = search.applied !== null;
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
   const [pageNavigation, setPageNavigation] = useState<"overview" | TaskView | null>(null);
-  const [listTarget, setListTarget] = useState<(OverviewTaskTarget & { readonly openGraph?: true }) | null>(null);
+  const [listTarget, setListTarget] = useState<OverviewTaskTarget | null>(null);
   const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
@@ -138,7 +138,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     setPageNavigation(null);
   }, [pageNavigation, chainPagination.page, standalonePagination.page, overviewPagination.page, savePosition]);
   const representative = openChainWitness === null ? undefined : snapshot?.index.componentByTask.get(openChainWitness);
-  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && (pageRootIds.includes(representative) || listTarget?.openGraph === true) ? representative : null;
+  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && snapshot!.index.components.get(representative)!.memberIds.size > 1 ? representative : null;
   openChain.current = openChainId;
   useLayoutEffect(() => {
     if (openChainWitness === null || openChainId !== null) return;
@@ -240,13 +240,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       onOpenTask(id, trigger);
       return;
     }
-    const tasks = [...component.memberIds].map((member) => index.nodes.get(member)!);
-    const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, false);
     setNotice(null);
-    setAssigneeFilter(filters.assignee);
-    setStatusFilter(filters.status);
-    setListTarget({ kind: "chain", taskId: id, openGraph: true });
-  }, [snapshot, assigneeFilter, statusFilter, viewer.userId, onOpenTask]);
+    setOpenChainWitness(id);
+  }, [snapshot, onOpenTask]);
 
   useLayoutEffect(() => {
     if (listTarget === null || section !== "tasks") return;
@@ -268,10 +264,6 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (target === null) {
       setNotice({ kind: "overview-target-unavailable" });
       if (!focusVisible(document.getElementById(`project-task-tab-${view}`))) focusVisible(document.getElementById("project-section-tab-tasks"));
-      return;
-    }
-    if (listTarget.openGraph === true && listTarget.kind === "chain") {
-      setOpenChainWitness(listTarget.taskId);
       return;
     }
     // Explicit overview navigation runs after the task list restores its saved position.
