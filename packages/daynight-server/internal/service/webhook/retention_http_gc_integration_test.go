@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -45,8 +46,9 @@ func (s jointHistoryClock) ReadWebhookSnapshot(ctx context.Context, fn func(stor
 	})
 }
 
-// The event clock controls the age at capture so body and deadlines remain
-// mutually consistent. All eligibility and GC comparisons use database time.
+// The historical Task insertion supplies the captured source time. Eligibility
+// and GC comparisons use database time; the retained timestamps represent the
+// same historical fixture rather than moving the observation clock.
 func newJointRetentionHTTP(t *testing.T, age time.Duration) *retentionHTTP {
 	return newJointRetentionHTTPTo(t, age, "")
 }
@@ -54,10 +56,13 @@ func newJointRetentionHTTP(t *testing.T, age time.Duration) *retentionHTTP {
 func newJointRetentionHTTPTo(t *testing.T, age time.Duration, destination string) *retentionHTTP {
 	t.Helper()
 	f := newCaptureFixture(t, 1)
+	var endpoint, delivery string
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text FROM webhook_endpoints`).Scan(&endpoint); err != nil {
+		t.Fatal(err)
+	}
 	if destination != "" {
-		var endpoint string
 		var version int64
-		if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
+		if err := f.db.Pool.QueryRow(f.ctx, `SELECT config_version FROM webhook_endpoints WHERE id=$1`, endpoint).Scan(&version); err != nil {
 			t.Fatal(err)
 		}
 		svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
@@ -66,13 +71,37 @@ func newJointRetentionHTTPTo(t *testing.T, age time.Duration, destination string
 			t.Fatal(err)
 		}
 	}
-	occurred := time.Now().UTC().Add(-age)
-	if _, err := taskservice.NewTasks(f.db, retentionOldCapture{f.capture, occurred}).Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "joint HTTP and GC"}); err != nil {
+	setJointFixtureTime(t, f, endpoint, time.Now().UTC().Add(-age-31*24*time.Hour))
+	trigger := fmt.Sprintf(`CREATE FUNCTION joint_historical_source() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.created_at=statement_timestamp()-interval '%d microseconds'; NEW.updated_at=NEW.created_at; RETURN NEW; END $$; CREATE TRIGGER joint_historical_source BEFORE INSERT ON tasks FOR EACH ROW EXECUTE FUNCTION joint_historical_source()`, age.Microseconds())
+	if _, err := f.db.Pool.Exec(f.ctx, trigger); err != nil {
 		t.Fatal(err)
 	}
-	var endpoint, delivery string
-	if err := f.db.Pool.QueryRow(f.ctx, `UPDATE webhook_deliveries SET state='failed',automatic_open=false,next_attempt_at=NULL,terminal_at=$1,last_activity_at=$1,metadata_expires_at=$1::timestamptz+interval '30 days' RETURNING endpoint_id::text,id::text`, occurred).Scan(&endpoint, &delivery); err != nil {
+	created, err := taskservice.NewTasks(f.db, f.capture).Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "joint HTTP and GC"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	occurred, recorded := created.CreatedAt, created.CreatedAt.Add(time.Second)
+	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_events SET recorded_at=$1 WHERE task_id=$2`, recorded, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Pool.QueryRow(f.ctx, `UPDATE webhook_deliveries SET state='failed',automatic_open=false,next_attempt_at=NULL,terminal_at=$1,last_activity_at=$1,metadata_expires_at=$1::timestamptz+interval '30 days' RETURNING endpoint_id::text,id::text`, recorded).Scan(&endpoint, &delivery); err != nil {
+		t.Fatal(err)
+	}
+	assertJointFixtureTime(t, f, endpoint, occurred)
+	var eventAt, deliveryAt, payloadAt time.Time
+	var body []byte
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT e.occurred_at,d.occurred_at,d.payload_expires_at,d.body FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id WHERE d.id=$1`, delivery).Scan(&eventAt, &deliveryAt, &payloadAt, &body); err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Time string `json:"time"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	wireAt, err := time.Parse(time.RFC3339Nano, wire.Time)
+	if err != nil || !occurred.Equal(eventAt) || !occurred.Equal(deliveryAt) || !occurred.Equal(wireAt) || !payloadAt.Equal(occurred.Add(7*24*time.Hour)) {
+		t.Fatalf("historical Task/event/wire deadline mismatch: %v", err)
 	}
 	token := secret.Random("dnst_")
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE sessions SET token_hash=$1 WHERE id=$2`, secret.Hash(token), f.principal.CredentialID); err != nil {

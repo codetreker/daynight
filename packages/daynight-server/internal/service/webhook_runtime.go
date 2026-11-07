@@ -34,6 +34,7 @@ type webhookRuntime struct {
 	keyDone     chan struct{}
 	logDone     chan struct{}
 	keyFailures chan error
+	keyTicks    <-chan time.Time
 }
 
 func (a *App) assembleWebhooks(db store.Transactions, keys *secretbox.Keyring, enabled bool, logger *slog.Logger) error {
@@ -135,11 +136,15 @@ func (w *webhookRuntime) maintainKeys(ctx context.Context) {
 			w.keyFailures <- errors.New("webhook key maintenance panic")
 		}
 	}()
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
+	ticks := w.keyTicks
+	if ticks == nil {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
 	for {
 		select {
-		case <-ticker.C:
+		case <-ticks:
 			if err := w.rewrap(ctx); err != nil && ctx.Err() == nil {
 				w.keyFailures <- err
 				return
