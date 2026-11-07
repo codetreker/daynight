@@ -159,6 +159,9 @@ var webhookSubscriptionsSQL string
 //go:embed migrations/050_webhook_capture.sql
 var webhookCaptureSQL string
 
+//go:embed migrations/051_webhook_delivery.sql
+var webhookDeliverySQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -217,6 +220,7 @@ var schemaMigrations = []migration{
 	{version: 48, sql: webhookManagementSQL},
 	{version: 49, sql: webhookSubscriptionsSQL},
 	{version: 50, sql: webhookCaptureSQL},
+	{version: 51, sql: webhookDeliverySQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

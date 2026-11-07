@@ -1,4 +1,4 @@
--- Schema snapshot version: 50
+-- Schema snapshot version: 51
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -613,6 +613,66 @@ CREATE TABLE "users" (
     CONSTRAINT "users_uniauth_id_check" CHECK (("length"("uniauth_id") > 0))
 );
 
+CREATE TABLE "webhook_attempts" (
+    "id" "uuid" NOT NULL,
+    "delivery_id" "uuid" NOT NULL,
+    "endpoint_id" "uuid" NOT NULL,
+    "generation" bigint NOT NULL,
+    "sequence" smallint NOT NULL,
+    "trigger" "text" NOT NULL,
+    "lease_token" "uuid" NOT NULL,
+    "destination_revision" bigint NOT NULL,
+    "signing_key_ids" "uuid"[] NOT NULL,
+    "automatic_plan_slot" smallint,
+    "manual_operation_id" "uuid",
+    "claimed_at" timestamp with time zone NOT NULL,
+    "admitted_at" timestamp with time zone NOT NULL,
+    "retention_closed_at" timestamp with time zone,
+    "dispatched_at" timestamp with time zone,
+    "finished_at" timestamp with time zone,
+    "outcome" "text",
+    "http_status" smallint,
+    "duration_ms" bigint,
+    "error_code" "text",
+    "retry_after_not_before" timestamp with time zone,
+    "retry_after_diagnostic_code" "text",
+    "recovered_unknown_at" timestamp with time zone,
+    "late_observed_at" timestamp with time zone,
+    "late_outcome" "text",
+    "late_http_status" smallint,
+    "late_duration_ms" bigint,
+    "late_error_code" "text",
+    "late_retry_after_not_before" timestamp with time zone,
+    "late_retry_after_diagnostic_code" "text",
+    CONSTRAINT "webhook_attempts_admitted_at_check" CHECK ("isfinite"("admitted_at")),
+    CONSTRAINT "webhook_attempts_check" CHECK (((("trigger" = 'automatic'::"text") AND (("automatic_plan_slot" >= 1) AND ("automatic_plan_slot" <= 10)) AND ("automatic_plan_slot" IS NOT NULL) AND ("manual_operation_id" IS NULL)) OR (("trigger" = 'manual'::"text") AND ("automatic_plan_slot" IS NULL) AND ("manual_operation_id" IS NOT NULL)))),
+    CONSTRAINT "webhook_attempts_check1" CHECK (((("finished_at" IS NULL) AND ("outcome" IS NULL) AND ("http_status" IS NULL) AND ("duration_ms" IS NULL) AND ("error_code" IS NULL) AND ("retry_after_not_before" IS NULL) AND ("retry_after_diagnostic_code" IS NULL)) OR (("finished_at" IS NOT NULL) AND ("outcome" IS NOT NULL)))),
+    CONSTRAINT "webhook_attempts_check2" CHECK ((("retry_after_not_before" IS NULL) OR ("retry_after_diagnostic_code" IS NULL))),
+    CONSTRAINT "webhook_attempts_check3" CHECK (((("late_observed_at" IS NULL) AND ("late_outcome" IS NULL) AND ("late_http_status" IS NULL) AND ("late_duration_ms" IS NULL) AND ("late_error_code" IS NULL) AND ("late_retry_after_not_before" IS NULL) AND ("late_retry_after_diagnostic_code" IS NULL)) OR (("late_observed_at" IS NOT NULL) AND ("late_outcome" IS NOT NULL) AND ("recovered_unknown_at" IS NOT NULL)))),
+    CONSTRAINT "webhook_attempts_check4" CHECK ((("late_retry_after_not_before" IS NULL) OR ("late_retry_after_diagnostic_code" IS NULL))),
+    CONSTRAINT "webhook_attempts_claimed_at_check" CHECK ("isfinite"("claimed_at")),
+    CONSTRAINT "webhook_attempts_destination_revision_check" CHECK (("destination_revision" > 0)),
+    CONSTRAINT "webhook_attempts_dispatched_at_check" CHECK ("isfinite"("dispatched_at")),
+    CONSTRAINT "webhook_attempts_duration_ms_check" CHECK (("duration_ms" >= 0)),
+    CONSTRAINT "webhook_attempts_finished_at_check" CHECK ("isfinite"("finished_at")),
+    CONSTRAINT "webhook_attempts_generation_check" CHECK (("generation" > 0)),
+    CONSTRAINT "webhook_attempts_http_status_check" CHECK ((("http_status" >= 100) AND ("http_status" <= 599))),
+    CONSTRAINT "webhook_attempts_late_duration_ms_check" CHECK (("late_duration_ms" >= 0)),
+    CONSTRAINT "webhook_attempts_late_http_status_check" CHECK ((("late_http_status" >= 100) AND ("late_http_status" <= 599))),
+    CONSTRAINT "webhook_attempts_late_observed_at_check" CHECK ("isfinite"("late_observed_at")),
+    CONSTRAINT "webhook_attempts_late_outcome_check" CHECK (("late_outcome" = ANY (ARRAY['acknowledged'::"text", 'http_error'::"text", 'receiver_error'::"text", 'transport_error'::"text", 'unknown'::"text", 'cancelled'::"text", 'policy_denied'::"text", 'render_error'::"text"]))),
+    CONSTRAINT "webhook_attempts_late_retry_after_diagnostic_code_check" CHECK (("late_retry_after_diagnostic_code" = 'invalid_retry_after'::"text")),
+    CONSTRAINT "webhook_attempts_late_retry_after_not_before_check" CHECK ("isfinite"("late_retry_after_not_before")),
+    CONSTRAINT "webhook_attempts_outcome_check" CHECK (("outcome" = ANY (ARRAY['acknowledged'::"text", 'http_error'::"text", 'receiver_error'::"text", 'transport_error'::"text", 'unknown'::"text", 'cancelled'::"text", 'policy_denied'::"text", 'render_error'::"text"]))),
+    CONSTRAINT "webhook_attempts_recovered_unknown_at_check" CHECK ("isfinite"("recovered_unknown_at")),
+    CONSTRAINT "webhook_attempts_retention_closed_at_check" CHECK ("isfinite"("retention_closed_at")),
+    CONSTRAINT "webhook_attempts_retry_after_diagnostic_code_check" CHECK (("retry_after_diagnostic_code" = 'invalid_retry_after'::"text")),
+    CONSTRAINT "webhook_attempts_retry_after_not_before_check" CHECK ("isfinite"("retry_after_not_before")),
+    CONSTRAINT "webhook_attempts_sequence_check" CHECK ((("sequence" >= 1) AND ("sequence" <= 13))),
+    CONSTRAINT "webhook_attempts_signing_key_ids_check" CHECK ((("array_ndims"("signing_key_ids") = 1) AND ("array_lower"("signing_key_ids", 1) = 1) AND (("cardinality"("signing_key_ids") >= 1) AND ("cardinality"("signing_key_ids") <= 2)) AND ("array_position"("signing_key_ids", NULL::"uuid") IS NULL) AND (("cardinality"("signing_key_ids") = 1) OR ("signing_key_ids"[1] <> "signing_key_ids"[2])))),
+    CONSTRAINT "webhook_attempts_trigger_check" CHECK (("trigger" = ANY (ARRAY['automatic'::"text", 'manual'::"text"])))
+);
+
 CREATE TABLE "webhook_bindings" (
     "id" "uuid" NOT NULL,
     "subscription_id" "uuid" NOT NULL,
@@ -621,6 +681,140 @@ CREATE TABLE "webhook_bindings" (
     "deleted_at" timestamp with time zone,
     CONSTRAINT "webhook_bindings_created_at_check" CHECK ("isfinite"("created_at")),
     CONSTRAINT "webhook_bindings_deleted_at_check" CHECK ("isfinite"("deleted_at"))
+);
+
+CREATE SEQUENCE "webhook_delivery_queue_order_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+CREATE TABLE "webhook_deliveries" (
+    "id" "uuid" NOT NULL,
+    "event_id" "uuid" NOT NULL,
+    "endpoint_id" "uuid" NOT NULL,
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "event_type" "text" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "occurred_at" timestamp with time zone NOT NULL,
+    "original_match_count" bigint NOT NULL,
+    "original_match_sha256" "bytea" NOT NULL,
+    "policy_version" bigint NOT NULL,
+    "destination_revision" bigint NOT NULL,
+    "destination_kind" "text" NOT NULL,
+    "adapter_version" bigint NOT NULL,
+    "render_version" smallint NOT NULL,
+    "configuration_schema_version" smallint NOT NULL,
+    "destination_origin" "text" NOT NULL,
+    "destination_envelope_version" smallint NOT NULL,
+    "destination_master_key_id" "text" NOT NULL,
+    "destination_nonce" "bytea" NOT NULL,
+    "destination_ciphertext" "bytea" NOT NULL,
+    "request_method" "text" NOT NULL,
+    "request_media_type" "text" NOT NULL,
+    "deterministic_headers_json" "bytea" NOT NULL,
+    "body" "bytea",
+    "original_body_bytes" integer NOT NULL,
+    "body_sha256" "bytea" NOT NULL,
+    "payload_removed_at" timestamp with time zone,
+    "payload_removed_reason" "text",
+    "automatic_schedule_at" timestamp with time zone[] NOT NULL,
+    "automatic_expires_at" timestamp with time zone NOT NULL,
+    "payload_expires_at" timestamp with time zone NOT NULL,
+    "automatic_plan_cursor" smallint NOT NULL,
+    "automatic_open" boolean NOT NULL,
+    "automatic_attempt_count" smallint NOT NULL,
+    "manual_operation_count" smallint NOT NULL,
+    "attempt_sequence" smallint NOT NULL,
+    "generation" bigint NOT NULL,
+    "state" "text" NOT NULL,
+    "trigger" "text" NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    "next_attempt_at" timestamp with time zone,
+    "manual_operation_id" "uuid",
+    "lease_token" "uuid",
+    "lease_claimed_at" timestamp with time zone,
+    "lease_until" timestamp with time zone,
+    "lease_generation" bigint,
+    "lease_plan_slot" smallint,
+    "current_attempt_id" "uuid",
+    "terminal_at" timestamp with time zone,
+    "last_activity_at" timestamp with time zone NOT NULL,
+    "metadata_expires_at" timestamp with time zone NOT NULL,
+    "preparation_error_code" "text",
+    "queue_order" bigint DEFAULT "nextval"('"webhook_delivery_queue_order_seq"'::"regclass") NOT NULL,
+    "purging_at" timestamp with time zone,
+    CONSTRAINT "webhook_deliveries_adapter_version_check" CHECK (("adapter_version" = 1)),
+    CONSTRAINT "webhook_deliveries_attempt_sequence_check" CHECK ((("attempt_sequence" >= 0) AND ("attempt_sequence" <= 13))),
+    CONSTRAINT "webhook_deliveries_automatic_attempt_count_check" CHECK ((("automatic_attempt_count" >= 0) AND ("automatic_attempt_count" <= 10))),
+    CONSTRAINT "webhook_deliveries_automatic_expires_at_check" CHECK ("isfinite"("automatic_expires_at")),
+    CONSTRAINT "webhook_deliveries_automatic_plan_cursor_check" CHECK ((("automatic_plan_cursor" >= 0) AND ("automatic_plan_cursor" <= 10))),
+    CONSTRAINT "webhook_deliveries_automatic_schedule_at_check" CHECK ((("array_ndims"("automatic_schedule_at") = 1) AND ("array_lower"("automatic_schedule_at", 1) = 1) AND ("cardinality"("automatic_schedule_at") = 10) AND ("array_position"("automatic_schedule_at", NULL::timestamp with time zone) IS NULL) AND "isfinite"("automatic_schedule_at"[1]) AND "isfinite"("automatic_schedule_at"[10]) AND ("automatic_schedule_at"[1] < "automatic_schedule_at"[2]) AND ("automatic_schedule_at"[2] < "automatic_schedule_at"[3]) AND ("automatic_schedule_at"[3] < "automatic_schedule_at"[4]) AND ("automatic_schedule_at"[4] < "automatic_schedule_at"[5]) AND ("automatic_schedule_at"[5] < "automatic_schedule_at"[6]) AND ("automatic_schedule_at"[6] < "automatic_schedule_at"[7]) AND ("automatic_schedule_at"[7] < "automatic_schedule_at"[8]) AND ("automatic_schedule_at"[8] < "automatic_schedule_at"[9]) AND ("automatic_schedule_at"[9] < "automatic_schedule_at"[10]))),
+    CONSTRAINT "webhook_deliveries_body_sha256_check" CHECK (("octet_length"("body_sha256") = 32)),
+    CONSTRAINT "webhook_deliveries_check" CHECK (((("body" IS NOT NULL) AND ("payload_removed_at" IS NULL) AND ("payload_removed_reason" IS NULL) AND ("octet_length"("body") = "original_body_bytes") AND ("sha256"("body") = "body_sha256")) OR (("body" IS NULL) AND ("payload_removed_at" IS NOT NULL) AND ("payload_removed_reason" = 'expired'::"text") AND ("payload_removed_reason" IS NOT NULL)))),
+    CONSTRAINT "webhook_deliveries_check1" CHECK ((("policy_version" <> 1) OR (("automatic_schedule_at"[1] = "occurred_at") AND ("automatic_schedule_at"[10] < "automatic_expires_at") AND ("automatic_expires_at" = ("occurred_at" + '72:00:00'::interval)) AND ("payload_expires_at" = ("occurred_at" + '168:00:00'::interval))))),
+    CONSTRAINT "webhook_deliveries_check2" CHECK (((("lease_token" IS NULL) AND ("lease_claimed_at" IS NULL) AND ("lease_until" IS NULL) AND ("lease_generation" IS NULL) AND ("lease_plan_slot" IS NULL) AND ("current_attempt_id" IS NULL) AND ("state" <> 'leased'::"text")) OR (("lease_token" IS NOT NULL) AND ("lease_claimed_at" IS NOT NULL) AND ("lease_until" IS NOT NULL) AND ("lease_until" > "lease_claimed_at") AND ("lease_generation" IS NOT NULL) AND ("lease_generation" = "generation") AND ("state" = 'leased'::"text")))),
+    CONSTRAINT "webhook_deliveries_configuration_schema_version_check" CHECK (("configuration_schema_version" = 1)),
+    CONSTRAINT "webhook_deliveries_destination_ciphertext_check" CHECK (("octet_length"("destination_ciphertext") >= 16)),
+    CONSTRAINT "webhook_deliveries_destination_envelope_version_check" CHECK (("destination_envelope_version" = 1)),
+    CONSTRAINT "webhook_deliveries_destination_kind_check" CHECK (("destination_kind" = 'http'::"text")),
+    CONSTRAINT "webhook_deliveries_destination_master_key_id_check" CHECK (("destination_master_key_id" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'::"text")),
+    CONSTRAINT "webhook_deliveries_destination_nonce_check" CHECK (("octet_length"("destination_nonce") = 12)),
+    CONSTRAINT "webhook_deliveries_destination_origin_check" CHECK (("octet_length"("destination_origin") > 0)),
+    CONSTRAINT "webhook_deliveries_destination_revision_check" CHECK (("destination_revision" > 0)),
+    CONSTRAINT "webhook_deliveries_deterministic_headers_json_check" CHECK (("deterministic_headers_json" = "convert_to"('[]'::"text", 'UTF8'::"name"))),
+    CONSTRAINT "webhook_deliveries_event_type_check" CHECK (("event_type" = ANY (ARRAY['task.created'::"text", 'task.status_changed'::"text", 'task.paused'::"text", 'task.deleted'::"text", 'task.step_updated'::"text", 'task.thread_posted'::"text"]))),
+    CONSTRAINT "webhook_deliveries_expires_at_check" CHECK ("isfinite"("expires_at")),
+    CONSTRAINT "webhook_deliveries_generation_check" CHECK (("generation" > 0)),
+    CONSTRAINT "webhook_deliveries_last_activity_at_check" CHECK ("isfinite"("last_activity_at")),
+    CONSTRAINT "webhook_deliveries_lease_claimed_at_check" CHECK ("isfinite"("lease_claimed_at")),
+    CONSTRAINT "webhook_deliveries_lease_plan_slot_check" CHECK ((("lease_plan_slot" >= 1) AND ("lease_plan_slot" <= 10))),
+    CONSTRAINT "webhook_deliveries_lease_until_check" CHECK ("isfinite"("lease_until")),
+    CONSTRAINT "webhook_deliveries_manual_operation_count_check" CHECK ((("manual_operation_count" >= 0) AND ("manual_operation_count" <= 3))),
+    CONSTRAINT "webhook_deliveries_metadata_expires_at_check" CHECK ("isfinite"("metadata_expires_at")),
+    CONSTRAINT "webhook_deliveries_next_attempt_at_check" CHECK ("isfinite"("next_attempt_at")),
+    CONSTRAINT "webhook_deliveries_occurred_at_check" CHECK ("isfinite"("occurred_at")),
+    CONSTRAINT "webhook_deliveries_original_body_bytes_check" CHECK ((("original_body_bytes" >= 1) AND ("original_body_bytes" <= 65536))),
+    CONSTRAINT "webhook_deliveries_original_match_count_check" CHECK (("original_match_count" > 0)),
+    CONSTRAINT "webhook_deliveries_original_match_sha256_check" CHECK (("octet_length"("original_match_sha256") = 32)),
+    CONSTRAINT "webhook_deliveries_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
+    CONSTRAINT "webhook_deliveries_payload_expires_at_check" CHECK ("isfinite"("payload_expires_at")),
+    CONSTRAINT "webhook_deliveries_payload_removed_at_check" CHECK ("isfinite"("payload_removed_at")),
+    CONSTRAINT "webhook_deliveries_policy_version_check" CHECK (("policy_version" > 0)),
+    CONSTRAINT "webhook_deliveries_purging_at_check" CHECK ("isfinite"("purging_at")),
+    CONSTRAINT "webhook_deliveries_queue_order_check" CHECK (("queue_order" > 0)),
+    CONSTRAINT "webhook_deliveries_render_version_check" CHECK (("render_version" = 1)),
+    CONSTRAINT "webhook_deliveries_request_media_type_check" CHECK (("request_media_type" = 'application/cloudevents+json'::"text")),
+    CONSTRAINT "webhook_deliveries_request_method_check" CHECK (("request_method" = 'POST'::"text")),
+    CONSTRAINT "webhook_deliveries_state_check" CHECK (("state" = ANY (ARRAY['pending'::"text", 'leased'::"text", 'delivered'::"text", 'failed'::"text", 'suppressed'::"text"]))),
+    CONSTRAINT "webhook_deliveries_terminal_at_check" CHECK ("isfinite"("terminal_at")),
+    CONSTRAINT "webhook_deliveries_trigger_check" CHECK (("trigger" = ANY (ARRAY['automatic'::"text", 'manual'::"text"])))
+);
+
+CREATE TABLE "webhook_delivery_matches" (
+    "delivery_id" "uuid" NOT NULL,
+    "subscription_id" "uuid" NOT NULL,
+    "binding_id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "event_type" "text" NOT NULL,
+    "authorization_epoch" bigint NOT NULL,
+    CONSTRAINT "webhook_delivery_matches_authorization_epoch_check" CHECK (("authorization_epoch" > 0)),
+    CONSTRAINT "webhook_delivery_matches_event_type_check" CHECK (("event_type" = ANY (ARRAY['task.created'::"text", 'task.status_changed'::"text", 'task.paused'::"text", 'task.deleted'::"text", 'task.step_updated'::"text", 'task.thread_posted'::"text"])))
+);
+
+CREATE TABLE "webhook_endpoint_waits" (
+    "endpoint_id" "uuid" NOT NULL,
+    "destination_revision" bigint NOT NULL,
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "not_before" timestamp with time zone,
+    "updated_at" timestamp with time zone NOT NULL,
+    CONSTRAINT "webhook_endpoint_waits_destination_revision_check" CHECK (("destination_revision" > 0)),
+    CONSTRAINT "webhook_endpoint_waits_not_before_check" CHECK ("isfinite"("not_before")),
+    CONSTRAINT "webhook_endpoint_waits_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
+    CONSTRAINT "webhook_endpoint_waits_updated_at_check" CHECK ("isfinite"("updated_at"))
 );
 
 CREATE TABLE "webhook_endpoints" (
@@ -650,6 +844,43 @@ CREATE TABLE "webhook_endpoints" (
     CONSTRAINT "webhook_endpoints_destination_revision_check" CHECK (("destination_revision" > 0)),
     CONSTRAINT "webhook_endpoints_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
     CONSTRAINT "webhook_endpoints_updated_at_check" CHECK ("isfinite"("updated_at"))
+);
+
+CREATE TABLE "webhook_events" (
+    "id" "uuid" NOT NULL,
+    "event_type" "text" NOT NULL,
+    "wire_version" smallint NOT NULL,
+    "schema_version" smallint NOT NULL,
+    "source" "text" NOT NULL,
+    "subject" "text" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "task_version" bigint,
+    "task_deleted_at" timestamp with time zone,
+    "step_id" bigint,
+    "message_id" "uuid",
+    "occurred_at" timestamp with time zone NOT NULL,
+    "recorded_at" timestamp with time zone NOT NULL,
+    "origin_request_id" "text",
+    "fact_codec_version" smallint NOT NULL,
+    "fact_bytes" "bytea",
+    "fact_sha256" "bytea" NOT NULL,
+    "original_fact_bytes" integer NOT NULL,
+    "fact_removed_at" timestamp with time zone,
+    CONSTRAINT "webhook_events_check" CHECK (("source" = ('urn:daynight:project:'::"text" || ("project_id")::"text"))),
+    CONSTRAINT "webhook_events_check1" CHECK (((("event_type" = 'task.thread_posted'::"text") AND ("task_version" IS NULL) AND ("task_deleted_at" IS NULL) AND ("step_id" IS NULL) AND ("message_id" IS NOT NULL) AND ("subject" = ((('tasks/'::"text" || ("task_id")::"text") || '/thread/'::"text") || ("message_id")::"text"))) OR (("event_type" = 'task.step_updated'::"text") AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NULL) AND (("step_id" >= 0) AND ("step_id" <= '4294967295'::bigint)) AND ("step_id" IS NOT NULL) AND ("message_id" IS NULL) AND ("subject" = (('tasks/'::"text" || ("task_id")::"text") || '/steps'::"text"))) OR (("event_type" = 'task.deleted'::"text") AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NOT NULL) AND ("step_id" IS NULL) AND ("message_id" IS NULL) AND ("subject" = ('tasks/'::"text" || ("task_id")::"text"))) OR (("event_type" = ANY (ARRAY['task.created'::"text", 'task.status_changed'::"text", 'task.paused'::"text"])) AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NULL) AND ("step_id" IS NULL) AND ("message_id" IS NULL) AND ("subject" = ('tasks/'::"text" || ("task_id")::"text"))))),
+    CONSTRAINT "webhook_events_check2" CHECK (((("fact_bytes" IS NOT NULL) AND ("fact_removed_at" IS NULL) AND ("octet_length"("fact_bytes") = "original_fact_bytes") AND ("sha256"("fact_bytes") = "fact_sha256")) OR (("fact_bytes" IS NULL) AND ("fact_removed_at" IS NOT NULL)))),
+    CONSTRAINT "webhook_events_event_type_check" CHECK (("event_type" = ANY (ARRAY['task.created'::"text", 'task.status_changed'::"text", 'task.paused'::"text", 'task.deleted'::"text", 'task.step_updated'::"text", 'task.thread_posted'::"text"]))),
+    CONSTRAINT "webhook_events_fact_codec_version_check" CHECK (("fact_codec_version" = 1)),
+    CONSTRAINT "webhook_events_fact_removed_at_check" CHECK ("isfinite"("fact_removed_at")),
+    CONSTRAINT "webhook_events_fact_sha256_check" CHECK (("octet_length"("fact_sha256") = 32)),
+    CONSTRAINT "webhook_events_occurred_at_check" CHECK ("isfinite"("occurred_at")),
+    CONSTRAINT "webhook_events_origin_request_id_check" CHECK ((("octet_length"("origin_request_id") >= 1) AND ("octet_length"("origin_request_id") <= 128))),
+    CONSTRAINT "webhook_events_original_fact_bytes_check" CHECK ((("original_fact_bytes" >= 1) AND ("original_fact_bytes" <= 65536))),
+    CONSTRAINT "webhook_events_recorded_at_check" CHECK ("isfinite"("recorded_at")),
+    CONSTRAINT "webhook_events_schema_version_check" CHECK (("schema_version" = 1)),
+    CONSTRAINT "webhook_events_task_deleted_at_check" CHECK ("isfinite"("task_deleted_at")),
+    CONSTRAINT "webhook_events_wire_version_check" CHECK (("wire_version" = 1))
 );
 
 CREATE TABLE "webhook_operations" (
@@ -984,11 +1215,38 @@ ALTER TABLE ONLY "users"
 ALTER TABLE ONLY "users"
     ADD CONSTRAINT "users_uniauth_id_key" UNIQUE ("uniauth_id");
 
+ALTER TABLE ONLY "webhook_attempts"
+    ADD CONSTRAINT "webhook_attempts_delivery_id_lease_token_key" UNIQUE ("delivery_id", "lease_token");
+
+ALTER TABLE ONLY "webhook_attempts"
+    ADD CONSTRAINT "webhook_attempts_delivery_id_sequence_key" UNIQUE ("delivery_id", "sequence");
+
+ALTER TABLE ONLY "webhook_attempts"
+    ADD CONSTRAINT "webhook_attempts_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "webhook_bindings"
     ADD CONSTRAINT "webhook_bindings_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "webhook_deliveries"
+    ADD CONSTRAINT "webhook_deliveries_event_id_endpoint_id_key" UNIQUE ("event_id", "endpoint_id");
+
+ALTER TABLE ONLY "webhook_deliveries"
+    ADD CONSTRAINT "webhook_deliveries_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "webhook_delivery_matches"
+    ADD CONSTRAINT "webhook_delivery_matches_delivery_id_binding_id_key" UNIQUE ("delivery_id", "binding_id");
+
+ALTER TABLE ONLY "webhook_delivery_matches"
+    ADD CONSTRAINT "webhook_delivery_matches_pkey" PRIMARY KEY ("delivery_id", "subscription_id", "binding_id");
+
+ALTER TABLE ONLY "webhook_endpoint_waits"
+    ADD CONSTRAINT "webhook_endpoint_waits_pkey" PRIMARY KEY ("endpoint_id", "destination_revision");
+
 ALTER TABLE ONLY "webhook_endpoints"
     ADD CONSTRAINT "webhook_endpoints_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "webhook_events"
+    ADD CONSTRAINT "webhook_events_pkey" PRIMARY KEY ("id");
 
 ALTER TABLE ONLY "webhook_operations"
     ADD CONSTRAINT "webhook_operations_pkey" PRIMARY KEY ("owner_kind", "owner_id", "operation_id");
@@ -1096,17 +1354,45 @@ CREATE UNIQUE INDEX "test_session_execution" ON "task_sessions" USING "btree" ("
 
 CREATE UNIQUE INDEX "test_session_registration" ON "task_sessions" USING "btree" ("owner_user_id", "registration_id") WHERE ("scope" = 'test'::"text");
 
+CREATE INDEX "webhook_attempts_history" ON "webhook_attempts" USING "btree" ("delivery_id", "generation", "sequence", "id");
+
 CREATE UNIQUE INDEX "webhook_bindings_active" ON "webhook_bindings" USING "btree" ("subscription_id", "event_type") WHERE ("deleted_at" IS NULL);
 
 CREATE INDEX "webhook_bindings_capture" ON "webhook_bindings" USING "btree" ("event_type", "subscription_id", "id") WHERE ("deleted_at" IS NULL);
 
 CREATE INDEX "webhook_bindings_deleted" ON "webhook_bindings" USING "btree" ("subscription_id", "deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
 
+CREATE INDEX "webhook_deliveries_due" ON "webhook_deliveries" USING "btree" ("next_attempt_at", "queue_order", "id") WHERE (("state" = 'pending'::"text") AND ("purging_at" IS NULL));
+
+CREATE INDEX "webhook_deliveries_endpoint_revision" ON "webhook_deliveries" USING "btree" ("endpoint_id", "destination_revision", "id");
+
+CREATE INDEX "webhook_deliveries_event" ON "webhook_deliveries" USING "btree" ("event_id", "id");
+
+CREATE INDEX "webhook_deliveries_fifo" ON "webhook_deliveries" USING "btree" ("queue_order", "id") WHERE (("state" = 'pending'::"text") AND ("purging_at" IS NULL));
+
+CREATE INDEX "webhook_deliveries_history" ON "webhook_deliveries" USING "btree" ("owner_kind", "owner_id", "endpoint_id", "occurred_at" DESC, "id" DESC);
+
+CREATE INDEX "webhook_deliveries_lease" ON "webhook_deliveries" USING "btree" ("lease_until", "id") WHERE ("lease_token" IS NOT NULL);
+
+CREATE INDEX "webhook_deliveries_master_key" ON "webhook_deliveries" USING "btree" ("destination_master_key_id", "id");
+
+CREATE INDEX "webhook_deliveries_metadata_expiry" ON "webhook_deliveries" USING "btree" ("metadata_expires_at", "id");
+
+CREATE INDEX "webhook_deliveries_purging" ON "webhook_deliveries" USING "btree" ("purging_at", "id") WHERE ("purging_at" IS NOT NULL);
+
+CREATE INDEX "webhook_delivery_matches_binding" ON "webhook_delivery_matches" USING "btree" ("binding_id", "delivery_id");
+
+CREATE INDEX "webhook_delivery_matches_subscription" ON "webhook_delivery_matches" USING "btree" ("subscription_id", "delivery_id");
+
+CREATE INDEX "webhook_endpoint_waits_owner" ON "webhook_endpoint_waits" USING "btree" ("owner_kind", "owner_id", "endpoint_id", "destination_revision");
+
 CREATE INDEX "webhook_endpoints_deleted" ON "webhook_endpoints" USING "btree" ("deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
 
 CREATE INDEX "webhook_endpoints_master_key" ON "webhook_endpoints" USING "btree" ("destination_master_key_id", "id") WHERE ("destination_master_key_id" IS NOT NULL);
 
 CREATE INDEX "webhook_endpoints_owner" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "webhook_events_occurred" ON "webhook_events" USING "btree" ("occurred_at", "id");
 
 CREATE INDEX "webhook_operations_endpoint" ON "webhook_operations" USING "btree" ("endpoint_id", "expires_at", "operation_id");
 
@@ -1165,146 +1451,4 @@ SELECT pg_catalog.setval('"project_grant_versions"', 1, false);
 
 SELECT pg_catalog.setval('"team_member_versions"', 1, false);
 
--- Capture shares the source transaction. Relationships are checked by the
--- owning transaction and have no foreign keys or implicit lock acquisition.
-CREATE SEQUENCE webhook_delivery_queue_order_seq AS bigint;
-
-CREATE TABLE webhook_events (
-    id uuid PRIMARY KEY,
-    event_type text NOT NULL CHECK (event_type IN ('task.created', 'task.status_changed', 'task.paused', 'task.deleted', 'task.step_updated', 'task.thread_posted')),
-    wire_version smallint NOT NULL CHECK (wire_version = 1),
-    schema_version smallint NOT NULL CHECK (schema_version = 1),
-    source text NOT NULL,
-    subject text NOT NULL,
-    project_id uuid NOT NULL,
-    task_id uuid NOT NULL,
-    task_version bigint,
-    task_deleted_at timestamptz CHECK (isfinite(task_deleted_at)),
-    step_id bigint,
-    message_id uuid,
-    occurred_at timestamptz NOT NULL CHECK (isfinite(occurred_at)),
-    recorded_at timestamptz NOT NULL CHECK (isfinite(recorded_at)),
-    origin_request_id text CHECK (octet_length(origin_request_id) BETWEEN 1 AND 128),
-    fact_codec_version smallint NOT NULL CHECK (fact_codec_version = 1),
-    fact_bytes bytea,
-    fact_sha256 bytea NOT NULL CHECK (octet_length(fact_sha256) = 32),
-    original_fact_bytes integer NOT NULL CHECK (original_fact_bytes BETWEEN 1 AND 65536),
-    fact_removed_at timestamptz CHECK (isfinite(fact_removed_at)),
-    CHECK (source = 'urn:daynight:project:' || project_id::text),
-    CHECK (
-        (event_type = 'task.thread_posted' AND task_version IS NULL AND task_deleted_at IS NULL
-            AND step_id IS NULL AND message_id IS NOT NULL AND subject = 'tasks/' || task_id::text || '/thread/' || message_id::text)
-        OR (event_type = 'task.step_updated' AND task_version > 0 AND task_version IS NOT NULL
-            AND task_deleted_at IS NULL AND step_id BETWEEN 0 AND 4294967295 AND step_id IS NOT NULL
-            AND message_id IS NULL AND subject = 'tasks/' || task_id::text || '/steps')
-        OR (event_type = 'task.deleted' AND task_version > 0 AND task_version IS NOT NULL
-            AND task_deleted_at IS NOT NULL AND step_id IS NULL AND message_id IS NULL
-            AND subject = 'tasks/' || task_id::text)
-        OR (event_type IN ('task.created', 'task.status_changed', 'task.paused') AND task_version > 0
-            AND task_version IS NOT NULL AND task_deleted_at IS NULL AND step_id IS NULL AND message_id IS NULL
-            AND subject = 'tasks/' || task_id::text)
-    ),
-    CHECK ((fact_bytes IS NOT NULL AND fact_removed_at IS NULL AND octet_length(fact_bytes) = original_fact_bytes AND sha256(fact_bytes) = fact_sha256)
-        OR (fact_bytes IS NULL AND fact_removed_at IS NOT NULL))
-);
-CREATE INDEX webhook_events_occurred ON webhook_events (occurred_at, id);
-
-CREATE TABLE webhook_deliveries (
-    id uuid PRIMARY KEY,
-    event_id uuid NOT NULL,
-    endpoint_id uuid NOT NULL,
-    owner_kind text NOT NULL CHECK (owner_kind IN ('personal', 'team')),
-    owner_id uuid NOT NULL,
-    event_type text NOT NULL CHECK (event_type IN ('task.created', 'task.status_changed', 'task.paused', 'task.deleted', 'task.step_updated', 'task.thread_posted')),
-    project_id uuid NOT NULL,
-    occurred_at timestamptz NOT NULL CHECK (isfinite(occurred_at)),
-    original_match_count bigint NOT NULL CHECK (original_match_count > 0),
-    original_match_sha256 bytea NOT NULL CHECK (octet_length(original_match_sha256) = 32),
-    policy_version bigint NOT NULL CHECK (policy_version > 0),
-    destination_revision bigint NOT NULL CHECK (destination_revision > 0),
-    destination_kind text NOT NULL CHECK (destination_kind = 'http'),
-    adapter_version bigint NOT NULL CHECK (adapter_version = 1),
-    render_version smallint NOT NULL CHECK (render_version = 1),
-    configuration_schema_version smallint NOT NULL CHECK (configuration_schema_version = 1),
-    destination_origin text NOT NULL CHECK (octet_length(destination_origin) > 0),
-    destination_envelope_version smallint NOT NULL CHECK (destination_envelope_version = 1),
-    destination_master_key_id text NOT NULL CHECK (destination_master_key_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
-    destination_nonce bytea NOT NULL CHECK (octet_length(destination_nonce) = 12),
-    destination_ciphertext bytea NOT NULL CHECK (octet_length(destination_ciphertext) >= 16),
-    request_method text NOT NULL CHECK (request_method = 'POST'),
-    request_media_type text NOT NULL CHECK (request_media_type = 'application/cloudevents+json'),
-    deterministic_headers_json bytea NOT NULL CHECK (deterministic_headers_json = convert_to('[]', 'UTF8')),
-    body bytea,
-    original_body_bytes integer NOT NULL CHECK (original_body_bytes BETWEEN 1 AND 65536),
-    body_sha256 bytea NOT NULL CHECK (octet_length(body_sha256) = 32),
-    payload_removed_at timestamptz CHECK (isfinite(payload_removed_at)),
-    payload_removed_reason text,
-    automatic_schedule_at timestamptz[] NOT NULL,
-    automatic_expires_at timestamptz NOT NULL CHECK (isfinite(automatic_expires_at)),
-    payload_expires_at timestamptz NOT NULL CHECK (isfinite(payload_expires_at)),
-    automatic_plan_cursor smallint NOT NULL CHECK (automatic_plan_cursor BETWEEN 0 AND 10),
-    automatic_open boolean NOT NULL,
-    automatic_attempt_count smallint NOT NULL CHECK (automatic_attempt_count BETWEEN 0 AND 10),
-    manual_operation_count smallint NOT NULL CHECK (manual_operation_count BETWEEN 0 AND 3),
-    attempt_sequence smallint NOT NULL CHECK (attempt_sequence BETWEEN 0 AND 13),
-    generation bigint NOT NULL CHECK (generation > 0),
-    state text NOT NULL CHECK (state IN ('pending', 'leased', 'delivered', 'failed', 'suppressed')),
-    trigger text NOT NULL CHECK (trigger IN ('automatic', 'manual')),
-    expires_at timestamptz NOT NULL CHECK (isfinite(expires_at)),
-    next_attempt_at timestamptz CHECK (isfinite(next_attempt_at)),
-    manual_operation_id uuid,
-    lease_token uuid,
-    lease_claimed_at timestamptz CHECK (isfinite(lease_claimed_at)),
-    lease_until timestamptz CHECK (isfinite(lease_until)),
-    lease_generation bigint,
-    lease_plan_slot smallint CHECK (lease_plan_slot BETWEEN 1 AND 10),
-    current_attempt_id uuid,
-    terminal_at timestamptz CHECK (isfinite(terminal_at)),
-    last_activity_at timestamptz NOT NULL CHECK (isfinite(last_activity_at)),
-    metadata_expires_at timestamptz NOT NULL CHECK (isfinite(metadata_expires_at)),
-    preparation_error_code text,
-    queue_order bigint NOT NULL DEFAULT nextval('webhook_delivery_queue_order_seq') CHECK (queue_order > 0),
-    purging_at timestamptz CHECK (isfinite(purging_at)),
-    UNIQUE (event_id, endpoint_id),
-    CHECK ((body IS NOT NULL AND payload_removed_at IS NULL AND payload_removed_reason IS NULL
-            AND octet_length(body) = original_body_bytes AND sha256(body) = body_sha256)
-        OR (body IS NULL AND payload_removed_at IS NOT NULL AND payload_removed_reason = 'expired' AND payload_removed_reason IS NOT NULL)),
-    CHECK (array_ndims(automatic_schedule_at) = 1 AND array_lower(automatic_schedule_at, 1) = 1
-        AND cardinality(automatic_schedule_at) = 10 AND array_position(automatic_schedule_at, NULL) IS NULL
-        AND isfinite(automatic_schedule_at[1]) AND isfinite(automatic_schedule_at[10])
-        AND automatic_schedule_at[1] < automatic_schedule_at[2] AND automatic_schedule_at[2] < automatic_schedule_at[3]
-        AND automatic_schedule_at[3] < automatic_schedule_at[4] AND automatic_schedule_at[4] < automatic_schedule_at[5]
-        AND automatic_schedule_at[5] < automatic_schedule_at[6] AND automatic_schedule_at[6] < automatic_schedule_at[7]
-        AND automatic_schedule_at[7] < automatic_schedule_at[8] AND automatic_schedule_at[8] < automatic_schedule_at[9]
-        AND automatic_schedule_at[9] < automatic_schedule_at[10]),
-    CHECK (policy_version <> 1 OR (automatic_schedule_at[1] = occurred_at
-        AND automatic_schedule_at[10] < automatic_expires_at
-        AND automatic_expires_at = occurred_at + interval '72 hours'
-        AND payload_expires_at = occurred_at + interval '168 hours')),
-    CHECK ((lease_token IS NULL AND lease_claimed_at IS NULL AND lease_until IS NULL AND lease_generation IS NULL
-            AND lease_plan_slot IS NULL AND current_attempt_id IS NULL AND state <> 'leased')
-        OR (lease_token IS NOT NULL AND lease_claimed_at IS NOT NULL AND lease_until IS NOT NULL
-            AND lease_until > lease_claimed_at AND lease_generation IS NOT NULL AND lease_generation = generation AND state = 'leased'))
-);
-CREATE INDEX webhook_deliveries_due ON webhook_deliveries (next_attempt_at, queue_order, id) WHERE state = 'pending' AND purging_at IS NULL;
-CREATE INDEX webhook_deliveries_fifo ON webhook_deliveries (queue_order, id) WHERE state = 'pending' AND purging_at IS NULL;
-CREATE INDEX webhook_deliveries_lease ON webhook_deliveries (lease_until, id) WHERE lease_token IS NOT NULL;
-CREATE INDEX webhook_deliveries_history ON webhook_deliveries (owner_kind, owner_id, endpoint_id, occurred_at DESC, id DESC);
-CREATE INDEX webhook_deliveries_event ON webhook_deliveries (event_id, id);
-CREATE INDEX webhook_deliveries_endpoint_revision ON webhook_deliveries (endpoint_id, destination_revision, id);
-CREATE INDEX webhook_deliveries_master_key ON webhook_deliveries (destination_master_key_id, id);
-CREATE INDEX webhook_deliveries_metadata_expiry ON webhook_deliveries (metadata_expires_at, id);
-CREATE INDEX webhook_deliveries_purging ON webhook_deliveries (purging_at, id) WHERE purging_at IS NOT NULL;
-
-CREATE TABLE webhook_delivery_matches (
-    delivery_id uuid NOT NULL,
-    subscription_id uuid NOT NULL,
-    binding_id uuid NOT NULL,
-    project_id uuid NOT NULL,
-    event_type text NOT NULL CHECK (event_type IN ('task.created', 'task.status_changed', 'task.paused', 'task.deleted', 'task.step_updated', 'task.thread_posted')),
-    authorization_epoch bigint NOT NULL CHECK (authorization_epoch > 0),
-    PRIMARY KEY (delivery_id, subscription_id, binding_id),
-    UNIQUE (delivery_id, binding_id)
-);
-CREATE INDEX webhook_delivery_matches_subscription ON webhook_delivery_matches (subscription_id, delivery_id);
-CREATE INDEX webhook_delivery_matches_binding ON webhook_delivery_matches (binding_id, delivery_id);
+SELECT pg_catalog.setval('"webhook_delivery_queue_order_seq"', 1, false);

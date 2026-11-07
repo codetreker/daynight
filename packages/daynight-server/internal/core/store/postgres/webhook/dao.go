@@ -4,6 +4,7 @@ package webhook
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -163,12 +164,23 @@ func (d *DAO) PutEndpoint(ctx context.Context, e model.Endpoint) error {
 		name, kind, origin, master, active = e.Name, e.DestinationKind, e.Origin, env.MasterKeyID, e.ActiveKeyID
 		adapter, schema, ver, nonce, cipher = av, int16(1), int16(env.Version), env.Nonce, env.Ciphertext
 	}
+	var previousRevision int64
+	err := d.tx.QueryRow(ctx, `SELECT destination_revision FROM webhook_endpoints WHERE id=$1`, e.ID).Scan(&previousRevision)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return pg.QueryError("read webhook endpoint revision", err)
+	}
+	newRevision := errors.Is(err, pgx.ErrNoRows) || previousRevision != e.DestinationRevision
 	tag, err := d.tx.Exec(ctx, `INSERT INTO webhook_endpoints(id,owner_kind,owner_id,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,active_key_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,enabled=EXCLUDED.enabled,deleted_at=EXCLUDED.deleted_at,config_version=EXCLUDED.config_version,destination_revision=EXCLUDED.destination_revision,destination_kind=EXCLUDED.destination_kind,adapter_version=EXCLUDED.adapter_version,configuration_schema_version=EXCLUDED.configuration_schema_version,destination_origin=EXCLUDED.destination_origin,destination_envelope_version=EXCLUDED.destination_envelope_version,destination_master_key_id=EXCLUDED.destination_master_key_id,destination_nonce=EXCLUDED.destination_nonce,destination_ciphertext=EXCLUDED.destination_ciphertext,active_key_id=EXCLUDED.active_key_id,updated_at=EXCLUDED.updated_at WHERE webhook_endpoints.owner_kind=EXCLUDED.owner_kind AND webhook_endpoints.owner_id=EXCLUDED.owner_id`, e.ID, e.Owner.Kind, e.Owner.ID, name, e.Enabled, e.DeletedAt, e.ConfigVersion, e.DestinationRevision, kind, adapter, schema, origin, ver, master, nonce, cipher, active, e.CreatedAt, e.UpdatedAt)
 	if err != nil {
 		return pg.QueryError("save webhook endpoint", err)
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("webhook endpoint owner mismatch")
+	}
+	if newRevision && e.DeletedAt == nil {
+		if _, err := d.tx.Exec(ctx, `INSERT INTO webhook_endpoint_waits(endpoint_id,destination_revision,owner_kind,owner_id,updated_at) VALUES($1,$2,$3,$4,$5)`, e.ID, e.DestinationRevision, e.Owner.Kind, e.Owner.ID, e.UpdatedAt); err != nil {
+			return pg.QueryError("initialize webhook endpoint wait", err)
+		}
 	}
 	return nil
 }
