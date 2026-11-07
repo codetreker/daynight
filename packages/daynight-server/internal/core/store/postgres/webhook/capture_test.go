@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -82,6 +83,15 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 	if _, err = NewProjectCapture(tx, projectID).FreezeAudience(ctx, uuid.NewString(), []string{"task.created"}); err == nil {
 		t.Fatal("accepted an audience for another project")
 	}
+	if _, err = d.FreezeAudience(ctx, projectID, nil); err == nil {
+		t.Fatal("accepted an empty capture batch")
+	}
+	if _, err = d.FreezeAudience(ctx, projectID, []string{"task.created", "task.created"}); err == nil {
+		t.Fatal("accepted duplicate capture types")
+	}
+	if _, err = d.FreezeAudience(ctx, uuid.NewString(), []string{"task.created"}); err == nil {
+		t.Fatal("accepted an unavailable project")
+	}
 	audience, err := d.FreezeAudience(ctx, projectID, []string{"task.created", "task.paused"})
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +142,12 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 	}
 	proof := sha256.Sum256([]byte("proof"))
 	delivery := store.WebhookCapturedDelivery{ID: uuid.NewString(), EndpointID: ep.ID, Owner: ep.Owner, OriginalMatchSHA256: proof[:], PolicyVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: 1, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationOrigin: ep.Origin, DestinationCiphertext: env, RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte("[]"), Body: body, BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: now.Add(72 * time.Hour), PayloadExpiresAt: now.Add(7 * 24 * time.Hour), LastActivityAt: recorded, MetadataExpiresAt: recorded.Add(30 * 24 * time.Hour), Matches: matches}
-	if err = d.SaveCapture(ctx, event, []store.WebhookCapturedDelivery{delivery}); err != nil {
+	wrongProject := event
+	wrongProject.ProjectID = uuid.NewString()
+	if err = NewProjectCapture(tx, projectID).SaveCapture(ctx, wrongProject, []store.WebhookCapturedDelivery{delivery}); err == nil {
+		t.Fatal("saved an event outside the source project")
+	}
+	if err = NewProjectCapture(tx, projectID).SaveCapture(ctx, event, []store.WebhookCapturedDelivery{delivery}); err != nil {
 		t.Fatal(err)
 	}
 	var count int64
@@ -167,4 +182,24 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 	if err = conn.QueryRow(ctx, `SELECT count(*) FROM webhook_events WHERE id=$1`, event.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed event count=%d err=%v", count, err)
 	}
+	tx3, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = New(tx3).FreezeAudience(ctx, "not-a-uuid", []string{"task.created"}); err == nil {
+		t.Fatal("invalid project query did not fail")
+	}
+	if err = tx3.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx4, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = New(tx4).RecordedAt(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled capture timestamp: %v", err)
+	}
+	_ = tx4.Rollback(ctx)
 }

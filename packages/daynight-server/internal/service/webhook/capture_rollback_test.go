@@ -2,7 +2,9 @@ package webhook_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -33,6 +36,36 @@ func captureDatabaseFacts(t *testing.T, f *captureFixture) string {
 		t.Fatal(err)
 	}
 	return facts
+}
+
+type oversizedBodyCapture struct{ *webhook.Capturer }
+
+func (c oversizedBodyCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+	return c.Capturer.CaptureBatch(ctx, oversizedBodyDAO{WebhookCaptureDAO: dao}, facts)
+}
+
+type oversizedBodyDAO struct{ store.WebhookCaptureDAO }
+
+func (d oversizedBodyDAO) SaveCapture(ctx context.Context, event store.WebhookCapturedEvent, deliveries []store.WebhookCapturedDelivery) error {
+	// Legal v1 facts are bounded far below 64 KiB; inject at persistence to
+	// exercise the database boundary without inventing a reachable wire fact.
+	deliveries[0].Body = bytes.Repeat([]byte("x"), 65537)
+	hash := sha256.Sum256(deliveries[0].Body)
+	deliveries[0].BodySHA256 = hash[:]
+	return d.WebhookCaptureDAO.SaveCapture(ctx, event, deliveries)
+}
+
+func TestCaptureOversizedBodyPersistenceRollsBackSource(t *testing.T) {
+	f := newCaptureFixture(t, 1)
+	before := captureDatabaseFacts(t, f)
+	_, err := taskservice.NewTasks(f.db, oversizedBodyCapture{f.capture}).Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "oversize storage injection"})
+	var cause *pgconn.PgError
+	if !errors.As(err, &cause) || cause.Code != "23514" {
+		t.Fatalf("oversize body constraint: %v", err)
+	}
+	if after := captureDatabaseFacts(t, f); after != before {
+		t.Fatal("oversize body changed source or outbox")
+	}
 }
 
 func TestCaptureInvalidBatchRollsBackSource(t *testing.T) {

@@ -7,9 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
@@ -63,5 +65,51 @@ func TestOpenAppWebhookMasterReferences(t *testing.T) {
 	}
 	if err = app.Close(ctx); err != nil {
 		t.Fatalf("close: %v", err)
+	}
+}
+
+func TestOpenAppRejectsUnreadableOrMalformedWebhookKeyring(t *testing.T) {
+	for _, tc := range []struct {
+		name, rule string
+		contents   []byte
+		missing    bool
+	}{
+		{name: "missing file", rule: "must be readable", missing: true},
+		{name: "invalid contents", rule: "must contain a valid keyring", contents: []byte(`{"activeKeyId":"private-invalid-value"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := appTestConfig(t)
+			c.WebhookKeyringFile = filepath.Join(filepath.Dir(c.StorageRoot), "keys.json")
+			if !tc.missing {
+				if err := os.WriteFile(c.WebhookKeyringFile, tc.contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			app, err := OpenAppWithLogger(context.Background(), c, nil)
+			var invalid *config.ConfigurationError
+			if app != nil || !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_WEBHOOK_KEYRING_FILE" || invalid.Rule != tc.rule || errors.Unwrap(invalid) == nil {
+				t.Fatalf("keyring failure: app=%v error=%v", app, err)
+			}
+			if tc.missing && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("missing file cause lost: %v", err)
+			}
+			if strings.Contains(err.Error(), "private-invalid-value") {
+				t.Fatal("keyring contents leaked in error")
+			}
+			// Failed initialization releases the same resources needed on retry.
+			c.WebhookKeyringFile = ""
+			app, err = OpenAppWithLogger(context.Background(), c, nil)
+			if err != nil {
+				t.Fatalf("retry after correcting keyring: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err = app.Ready(ctx); err != nil {
+				t.Fatalf("retry readiness: %v", err)
+			}
+			if err = app.Close(ctx); err != nil {
+				t.Fatalf("retry close: %v", err)
+			}
+		})
 	}
 }

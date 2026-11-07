@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestWebhookMasterKeyIDs(t *testing.T) {
@@ -45,5 +47,13 @@ func TestWebhookMasterKeyIDs(t *testing.T) {
 	keys, err = s.WebhookMasterKeyIDs(ctx)
 	if err != nil || !reflect.DeepEqual(keys, []string{"delivery-key", "endpoint-key", "signing-key"}) {
 		t.Fatalf("keys=%v err=%v", keys, err)
+	}
+	if _, err = s.Pool.Exec(ctx, `ALTER TABLE webhook_signing_keys RENAME TO unavailable_webhook_signing_keys`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.WebhookMasterKeyIDs(ctx)
+	var cause *pgconn.PgError
+	if !errors.As(err, &cause) || cause.Code != "42P01" {
+		t.Fatalf("missing reference source must fail startup scan: %v", err)
 	}
 }
