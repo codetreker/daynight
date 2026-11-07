@@ -18,3 +18,10 @@ func (r *Runner) SetControlledTestTransport(client *httpoutbound.Client) error {
 	r.client = client
 	return nil
 }
+
+// ControlledTestDone exposes only the test build's worker completion signal.
+func (r *Runner) ControlledTestDone() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.finished
+}

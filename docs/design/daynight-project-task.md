@@ -744,7 +744,7 @@ stderr 错误包含操作名、已确定的 project/task ID、失败阶段和可
 拥有打包、安装与资源清理。
 
 Go 模块验证和原始覆盖率 profile 由[服务端验证说明](../../packages/daynight-server/README.md#validate)
-拥有；当前检查的 race 和关键代码块配置未满足服务端 V8 要求。
+拥有；当前检查的关键代码块配置未满足服务端 V8 要求。
 [安装联调决策](../../.agents/notes/archived/testing/2026-10-20-installed-project-task-acceptance.md)
 与[验证成本决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 记录历史取舍。[PR #55](https://github.com/codetreker/daynight/pull/55) 和本地

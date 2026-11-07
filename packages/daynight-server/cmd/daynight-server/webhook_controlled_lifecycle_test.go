@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -105,6 +106,39 @@ func TestWebhookControlledProcessHelper(t *testing.T) {
 	}
 	root, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if os.Getenv("DAYNIGHT_CONTROLLED_START_FAILURE") == "1" {
+		if err = app.PrestartControlledTestRetention(context.Background()); err != nil {
+			os.Exit(1)
+		}
+		if err = app.Start(root); err == nil {
+			fmt.Fprintln(os.Stderr, "TRACE unexpected_start_success")
+			os.Exit(1)
+		}
+		done := app.ControlledTestRunnerDone()
+		if done == nil {
+			fmt.Fprintln(os.Stderr, "TRACE runner_not_started")
+			os.Exit(1)
+		}
+		cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		if err = runtime.Close(cleanup); err != nil {
+			fmt.Fprintln(os.Stderr, "TRACE partial_start_cleanup_error", err)
+			os.Exit(1)
+		}
+		select {
+		case <-done:
+			fmt.Fprintln(os.Stderr, "TRACE partial_start_runner_stopped")
+		default:
+			fmt.Fprintln(os.Stderr, "TRACE partial_start_runner_active")
+			os.Exit(1)
+		}
+		if app.Ready(context.Background()) == nil {
+			fmt.Fprintln(os.Stderr, "TRACE partial_start_database_still_open")
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "TRACE partial_start_cleanup_complete")
+		os.Exit(1)
+	}
 	if err = app.Start(root); err != nil {
 		_ = runtime.Close(context.Background())
 		os.Exit(1)
@@ -454,4 +488,65 @@ func TestWebhookControlledProcessJointDrain(t *testing.T) {
 		t.Fatalf("PG connections after exit=%d err=%v", active, err)
 	}
 	t.Logf("controlled test app: Session websocket closed; TLS request canceled; HTTP committed; GC delete blocked at SIGTERM; Routes->Engine->dependencies order observed; state=%s attempts=%d", state, attempts)
+}
+
+func TestWebhookControlledPartialStartProcessCleanup(t *testing.T) {
+	values := processAPIEnvironment(t)
+	values["DAYNIGHT_SHUTDOWN_TIMEOUT"] = "2s"
+	values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
+	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = ""
+	parsed, err := url.Parse(values["DAYNIGHT_DATABASE_URL"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := "partial_start_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	query := parsed.Query()
+	query.Set("application_name", application)
+	parsed.RawQuery = query.Encode()
+	values["DAYNIGHT_DATABASE_URL"] = parsed.String()
+	receiver := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer receiver.Close()
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: receiver.Certificate().Raw})
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestWebhookControlledProcessHelper$")
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if _, found := values[key]; !found && key != "DAYNIGHT_CONTROLLED_WEBHOOK_HELPER" && key != "DAYNIGHT_CONTROLLED_CA" && key != "DAYNIGHT_CONTROLLED_START_FAILURE" {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	for k, v := range values {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	cmd.Env = append(cmd.Env, "DAYNIGHT_CONTROLLED_WEBHOOK_HELPER=1", "DAYNIGHT_CONTROLLED_START_FAILURE=1", "DAYNIGHT_CONTROLLED_CA="+base64.StdEncoding.EncodeToString(ca))
+	output, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("partial Start exit: %v %s", err, output)
+	}
+	text := string(output)
+	begin, drained, closed, stopped, finished := strings.Index(text, "TRACE begin_claim_stop"), strings.Index(text, "TRACE engine_drain_end"), strings.Index(text, "TRACE dependencies_close_end"), strings.Index(text, "TRACE partial_start_runner_stopped"), strings.Index(text, "TRACE partial_start_cleanup_complete")
+	if begin < 0 || drained <= begin || closed <= drained || stopped <= closed || finished <= stopped {
+		t.Fatalf("partial Start cleanup evidence: %s", text)
+	}
+	listener, err := net.Listen("tcp", values["DAYNIGHT_LISTEN_ADDR"])
+	if err != nil {
+		t.Fatalf("listener retained after failed Start: %v", err)
+	}
+	_ = listener.Close()
+	db, err := pgx.Connect(ctx, parsed.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close(context.Background())
+	var connections int
+	if err = db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND pid<>pg_backend_pid()`, application).Scan(&connections); err != nil || connections != 0 {
+		t.Fatalf("failed Start retained PG connections: %d %v", connections, err)
+	}
+	t.Log("controlled Retention.Start failure: Runner started then stopped, shared DB closed, listener reusable, PG connections=0")
 }

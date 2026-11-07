@@ -126,7 +126,9 @@ func (r *Runner) Stop(ctx context.Context) error {
 	if cancel == nil {
 		return nil
 	}
-	stopClaims()
+	if stopClaims != nil {
+		stopClaims()
+	}
 	cancel()
 	select {
 	case <-done:
