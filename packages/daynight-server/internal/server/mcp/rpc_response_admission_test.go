@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -10,6 +11,30 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestObjectFieldsLocatesExactValues(t *testing.T) {
+	raw := []byte(" { \n \"name\" \t: \r\n {\"nested\": [1,2]}, \"other\": true, \"name\": null } ")
+	fields, err := objectFields(raw, "name")
+	if err != nil || len(fields) != 2 || !bytes.Equal(raw[fields[0][0]:fields[0][1]], []byte(`{"nested": [1,2]}`)) || !bytes.Equal(raw[fields[1][0]:fields[1][1]], []byte("null")) {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	fields, err = objectFields(raw, "absent")
+	if err != nil || len(fields) != 0 {
+		t.Fatalf("absent field: %v, %v", fields, err)
+	}
+}
+
+func TestObjectFieldsRejectsMalformedObjects(t *testing.T) {
+	for _, raw := range []string{
+		"", "null", "[]", `{1:2}`, `{"name"`, `{"name" 1}`, `{"name":`, `{"name":}`, `{"name":[}`, `{"name":1`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := objectFields([]byte(raw), "name"); err == nil {
+				t.Fatalf("malformed object accepted: %q", raw)
+			}
+		})
+	}
+}
 
 func TestBatchIDCorrelationPreservesClientMetadata(t *testing.T) {
 	for name, meta := range map[string]string{
