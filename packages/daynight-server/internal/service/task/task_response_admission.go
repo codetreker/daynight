@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
@@ -12,11 +13,18 @@ import (
 )
 
 type mcpTaskResponseKey struct{}
+type mcpTaskResponse struct {
+	requestID string
+	rpcID     any
+	modern    bool
+	batch     bool
+	full      bool
+}
 
 // WithMCPTaskResponse supplies the request ID used by the MCP success envelope.
 // The write admission uses the same encoder and outcome as the tool response.
-func WithMCPTaskResponse(ctx context.Context, requestID string) context.Context {
-	return context.WithValue(ctx, mcpTaskResponseKey{}, requestID)
+func WithMCPTaskResponse(ctx context.Context, requestID string, rpcID any, modern, batch, full bool) context.Context {
+	return context.WithValue(ctx, mcpTaskResponseKey{}, mcpTaskResponse{requestID: requestID, rpcID: rpcID, modern: modern, batch: batch, full: full})
 }
 
 // admitTaskResponse runs after the DAO has produced final timestamps and version
@@ -28,12 +36,19 @@ func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error
 			return taskResponseError(err)
 		}
 	}
-	if requestID, ok := ctx.Value(mcpTaskResponseKey{}).(string); ok {
+	if response, ok := ctx.Value(mcpTaskResponseKey{}).(mcpTaskResponse); ok {
 		outcome := "unchanged"
 		if changed {
 			outcome = "changed"
 		}
-		if _, err := taskprotocol.EncodeMCP(io.Discard, task, requestID, outcome, taskcore.MaxTaskResponseJSONBytes); err != nil {
+		// Single responses leave HTML characters in the outer ID unescaped;
+		// legacy JSON batches may escape them when re-encoding RawMessages.
+		var difference int64
+		if id, ok := response.rpcID.(string); ok && !response.batch {
+			difference = int64(5 * (strings.Count(id, "<") + strings.Count(id, ">") + strings.Count(id, "&")))
+		}
+		budget := int64(taskcore.MaxTaskResponseJSONBytes) + difference
+		if _, err := taskprotocol.EncodeMCPResponse(io.Discard, task, response.requestID, outcome, response.rpcID, response.modern, response.full, budget); err != nil {
 			return taskResponseError(err)
 		}
 	}

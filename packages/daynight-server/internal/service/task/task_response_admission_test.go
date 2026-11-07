@@ -26,7 +26,7 @@ func TestTaskResponseAdmissionRollsBackActualWrites(t *testing.T) {
 	target := createTask(t, tasks, principal, project.ID, "Original")
 	// An oversized MCP envelope exercises a controlled output failure after the
 	// real DAO write, without manufacturing an invalid Task candidate.
-	oversized := taskservice.WithMCPTaskResponse(ctx, strings.Repeat("r", taskcore.MaxTaskResponseJSONBytes))
+	oversized := taskservice.WithMCPTaskResponse(ctx, strings.Repeat("r", taskcore.MaxTaskResponseJSONBytes), int64(1), false, false, true)
 	assertLimit := func(err error) {
 		t.Helper()
 		fault, ok := operation.KnownFault(err)
@@ -48,11 +48,11 @@ func TestTaskResponseAdmissionRollsBackActualWrites(t *testing.T) {
 	if err != nil || len(page.Items) != 2 {
 		t.Fatalf("failed create left a Task: %+v, %v", page, err)
 	}
-	updated, err := tasks.Update(taskservice.WithMCPTaskResponse(ctx, "request"), principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed")})
+	updated, err := tasks.Update(taskservice.WithMCPTaskResponse(ctx, "request", int64(1), false, false, true), principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed")})
 	if err != nil || updated.Version != target.Version+1 || updated.Title != "Changed" {
 		t.Fatalf("ordinary MCP response rejected: %+v, %v", updated, err)
 	}
-	unchanged, err := tasks.Update(taskservice.WithMCPTaskResponse(ctx, "request"), principal, project.ID, updated.ID, taskcore.UpdateTask{Version: updated.Version, Title: pointer(updated.Title)})
+	unchanged, err := tasks.Update(taskservice.WithMCPTaskResponse(ctx, "request", int64(1), false, false, true), principal, project.ID, updated.ID, taskcore.UpdateTask{Version: updated.Version, Title: pointer(updated.Title)})
 	if err != nil || !reflect.DeepEqual(updated, unchanged) {
 		t.Fatalf("no-op changed Task: %+v, %v", unchanged, err)
 	}

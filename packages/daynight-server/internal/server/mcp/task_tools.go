@@ -144,7 +144,12 @@ func taskVersion(ctx context.Context, actor RequestActor, tasks *taskservice.Tas
 	return task.Version, nil
 }
 func handleTaskTool(ctx context.Context, actor RequestActor, tasks *taskservice.Tasks, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
-	ctx = taskservice.WithMCPTaskResponse(ctx, actor.RequestID)
+	if name != "task_show" && name != "task_properties" && name != "task_delete" {
+		if actor.rpcResponseID == nil {
+			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Task response could not be bounded."}
+		}
+		ctx = taskservice.WithMCPTaskResponse(ctx, actor.RequestID, actor.rpcResponseID, actor.rpcModern, actor.rpcBatch, in.ReturnView == "full")
+	}
 	switch name {
 	case "task_create":
 		all, external, err := compileTaskDependencies(in.DependsOn, in.ExternalDependsOn)

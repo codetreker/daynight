@@ -4,7 +4,6 @@ import (
 	"context"
 	"strconv"
 	"time"
-	"unicode/utf8"
 
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
@@ -126,34 +125,10 @@ func utcTime(value *time.Time) *time.Time {
 // MapTaskFull copies each raw property value without rewriting arbitrary JSON numbers.
 func MapTaskFull(t core.Task) TaskFull { return taskprotocol.MCPTask(t) }
 
-type TaskSummary struct {
-	Projection       string             `json:"projection"`
-	ID               string             `json:"id"`
-	ProjectID        string             `json:"projectId"`
-	TitlePreview     string             `json:"titlePreview"`
-	TitleTruncated   bool               `json:"titleTruncated"`
-	Status           core.TaskStatus    `json:"status"`
-	Version          string             `json:"version"`
-	Ready            bool               `json:"ready"`
-	BlockedByCount   int                `json:"blockedByCount"`
-	RequiredPlatform *core.TaskPlatform `json:"requiredPlatform"`
-	AssignedTo       *string            `json:"assignedTo"`
-	AllowAgents      bool               `json:"allowAgents"`
-}
+type TaskSummary = taskprotocol.MCPSummary
 
-const titlePreviewBytes = 512
+const titlePreviewBytes = taskprotocol.MCPTitlePreviewBytes
 
 func MapTaskSummary(t core.Task) TaskSummary {
-	title := t.Title
-	truncated := len(title) > titlePreviewBytes
-	if truncated {
-		end := titlePreviewBytes
-		for end > 0 && !utf8.RuneStart(title[end]) {
-			end--
-		}
-		title = title[:end]
-	}
-	return TaskSummary{Projection: "summary", ID: t.ID, ProjectID: t.ProjectID, TitlePreview: title, TitleTruncated: truncated,
-		Status: t.Status, Version: Decimal(t.Version), Ready: t.Ready, BlockedByCount: len(t.BlockedBy),
-		RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents}
+	return taskprotocol.MCPTaskSummary(t)
 }

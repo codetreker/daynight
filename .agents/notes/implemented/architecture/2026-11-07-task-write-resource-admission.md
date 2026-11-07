@@ -16,7 +16,11 @@ policies, preserving structural normalization and ownership checks. Dependency
 count is checked before allocation and graph validation. Each normalized value
 has its own budget, including values owned by worker lifecycle operations.
 The write transaction measures the final Task with the production protocol
-encoding before commit; a capacity failure rolls back the transaction.
+encoding before commit; a capacity failure rolls back the transaction. MCP
+measurement includes the JSON-RPC ID, protocol version and selected projection.
+For a legacy batch, the SDK does not expose each call ID to its tool handler.
+The bounded input adapter associates each Task write with its own ID using an
+internal marker, removed before tool handling, without replacing client metadata.
 The [input policy decision](2026-11-07-api-input-policy.md) owns the shared
 limits and the rationale for separating normalization from admission.
 

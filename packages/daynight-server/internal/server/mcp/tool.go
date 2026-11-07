@@ -356,6 +356,19 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 		defer cancel()
 		actor := scope.actor
 		actor.Context = ctx
+		actor.rpcModern = req.ProtocolVersion() >= "2026-07-28"
+		if scope.batchKey != "" {
+			meta := req.Params.GetMeta()
+			if token, ok := meta[scope.batchKey].(string); ok {
+				if info, exists := scope.batchIDs[token]; exists {
+					actor.rpcResponseID = info.id
+					delete(meta, scope.batchKey)
+					if info.restoreNil {
+						req.Params.SetMeta(nil)
+					}
+				}
+			}
+		}
 		raw := bytes.TrimSpace(req.Params.Arguments)
 		if len(raw) == 0 {
 			raw = []byte("{}")
