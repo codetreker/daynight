@@ -1639,6 +1639,12 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts
 go test ./internal/core/store/postgres/... ./internal/service/task ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
+For the cross-process Step text admission check, build the CLI and set
+`DAYNIGHT_TEST_CLI_MAIN` to its absolute `dist/main.js` path. With the same
+database and UniAuth fixture, run `go test ./internal/server -run
+'^TestStepsCLITextAdmissionAcceptance$' -count=1 -timeout=5m`; use the normal
+unit overlay when the production Web bundle is unavailable.
+
 Maximum-resource HTTP tests use the `stress` build tag and run separately from
 routine CI:
 
