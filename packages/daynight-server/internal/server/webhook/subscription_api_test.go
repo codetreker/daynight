@@ -192,3 +192,72 @@ func TestHTTPManyIndependentSubscriptionsAndSummary(t *testing.T) {
 	mustStatus(t, status, 400, data)
 	t.Logf("T02-A12 subscriptions=%d unique=%d bindings=%d receipts=%d version=%d nullable=true bytes=%d", subscriptions, distinctIDs, bindings, receipts, version, len(wire))
 }
+
+// Invalid arrays are rejected without creating or changing configuration.
+func TestHTTPSubscriptionArraysRejectInvalidValues(t *testing.T) {
+	f := newHTTPFixture(t)
+	actor, member, other := f.actor(t), f.actor(t), f.actor(t)
+	_, _, project, _ := seedHTTPProjects(t, f, actor, member, other)
+	base := "/api/v1/me/webhooks"
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"event null", nil},
+		{"event scalar", "task.created"},
+		{"event mixed array", []any{"task.created", 17}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := createFields(actor, "invalid array", "https://receiver.example/path")
+			sub := subscriptionRow(project, nil, "task.created")
+			sub["eventTypes"] = tc.value
+			fields["subscriptions"] = []any{sub}
+			status, _, data := f.request(t, actor, http.MethodPost, base, encoded(t, fields))
+			mustStatus(t, status, 400, data)
+			if jsonBody(t, data)["error"].(map[string]any)["code"] != "invalid_input" {
+				t.Fatalf("unexpected error: %s", data)
+			}
+		})
+	}
+	var endpoints, subscriptions, bindings, operations int
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_endpoints),(SELECT count(*) FROM webhook_subscriptions),(SELECT count(*) FROM webhook_bindings),(SELECT count(*) FROM webhook_operations)`).Scan(&endpoints, &subscriptions, &bindings, &operations); err != nil || endpoints != 0 || subscriptions != 0 || bindings != 0 || operations != 0 {
+		t.Fatalf("invalid event arrays left effects: endpoints=%d subscriptions=%d bindings=%d operations=%d err=%v", endpoints, subscriptions, bindings, operations, err)
+	}
+	fields := createFields(actor, "valid endpoint", "https://receiver.example/path")
+	fields["subscriptions"] = []any{subscriptionRow(project, nil, "task.created")}
+	status, _, data := f.request(t, actor, http.MethodPost, base, encoded(t, fields))
+	mustStatus(t, status, 201, data)
+	endpoint := jsonBody(t, data)["endpoint"].(map[string]any)["id"].(string)
+	control := operationFields(actor)
+	control["ifVersion"] = "1"
+	control["confirmProjectIds"] = []any{project}
+	status, _, data = f.request(t, actor, http.MethodPatch, base+"/"+endpoint, encoded(t, control))
+	mustStatus(t, status, 200, data)
+	if jsonBody(t, data)["operation"].(map[string]any)["effect"] != "unchanged" {
+		t.Fatalf("valid confirmation control: %s", data)
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"confirm null", nil},
+		{"confirm object", map[string]any{"project": project}},
+		{"confirm mixed array", []any{project, false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			patch := operationFields(actor)
+			patch["ifVersion"] = "1"
+			patch["confirmProjectIds"] = tc.value
+			status, _, data := f.request(t, actor, http.MethodPatch, base+"/"+endpoint, encoded(t, patch))
+			mustStatus(t, status, 400, data)
+			e := jsonBody(t, data)["error"].(map[string]any)
+			if e["code"] != "invalid_input" {
+				t.Fatalf("unexpected error: %s", data)
+			}
+		})
+	}
+	var version int64
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT config_version,(SELECT count(*) FROM webhook_operations WHERE endpoint_id=$1),(SELECT count(*) FROM webhook_subscriptions WHERE endpoint_id=$1 AND deleted_at IS NULL),(SELECT count(*) FROM webhook_bindings b JOIN webhook_subscriptions s ON s.id=b.subscription_id WHERE s.endpoint_id=$1 AND b.deleted_at IS NULL) FROM webhook_endpoints WHERE id=$1`, endpoint).Scan(&version, &operations, &subscriptions, &bindings); err != nil || version != 1 || operations != 2 || subscriptions != 1 || bindings != 1 {
+		t.Fatalf("invalid confirmation arrays changed endpoint: version=%d operations=%d subscriptions=%d bindings=%d err=%v", version, operations, subscriptions, bindings, err)
+	}
+}
