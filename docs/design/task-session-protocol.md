@@ -208,9 +208,11 @@ Claude 原生中断会生成内容恰为 `[Request interrupted by user]` 或 `[R
 
 ## Relay 与恢复
 
-Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用项目准入：先核验当前凭据，再在调用方的 `store.SessionScope` 中通过 `SessionDAO` 读取项目权限。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。admin 或 Session owner 的控制资格、Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
+Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用项目准入：先核验当前凭据，再在调用方的 `store.SessionScope` 中通过 `SessionDAO` 读取项目权限。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。读取准入与执行交互分别判断：当前项目成员可读，执行交互只允许认证用户等于持久 `owner_user_id` 的原 Session owner，项目或 Team 的 admin 角色不授予交互权。Web 与 Herdr 共用这项限制；Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
 
-派发前按原始 requester 重新准入，不借用 Controller 的角色。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查项目准入与执行身份，失权后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+派发前按原始 requester 重新检查有效凭据、项目准入和持久 Session owner，不借用 Controller 的身份或角色。Web 的 offer、operation_begin 和重连 reconcile 均保留该检查；Herdr 的控制派发、租约重检及 ACK 授租也核对原 actor，已存在的非 owner 操作或 lease 不能继续执行。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查项目准入与执行身份，失去读取资格后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+
+Web 的 current 与 browser channel 按当前读者投影权限：非 owner 的 `operations` 全部关闭，setting 的 `mutable` 与命令的 `available` 为 false；投影复制控制目录，不能改写 Controller 的持久能力。Herdr 对非 owner 清空 `control.availableActions`，保留画面与控制归属供阅读。
 
 Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限建立另一条 WebSocket；命令和历史也有 HTTP 接口。bootstrap grant 有效期 120 秒，reconnect grant 为 15 分钟；launcher 在首次 spawn 前将 bootstrap 换成可复连凭据，避免首次连接后短暂断网必须等待续签；grant 冻结签发凭据归属，撤销父凭据会使现有连接失效。服务端每次操作核验项目权限、claim、executionGeneration 和连接 fencing，不将浏览器传入的 native ID 当作授权。Controller 在 WebSocket 升级前先验证 grant、父凭据与 active scope，收到 hello 后在 Connect 事务中重复验证并消费凭据；握手预检不能替代原子 fence 校验。连接配额包含正在升级的请求，失败升级释放预留名额，伪造或失效 token 不能先占用 WebSocket。
 
@@ -327,7 +329,7 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 Claude SDK 不保证实时回显提交的 user message。Controller 在本地派发时按 `operationId:0` 投影用户文本，与以后原生 echo/history 的稳定 ID 相同，避免重复行。这条本地展示不调用 `onInputObserved`、不验证原生身份、不确认回执；原生受理及恢复对账仍必须有真实输入或响应证据。unknown 状态下可查看提交原文，不能因该行存在重发或消除 unknown。
 
-Task 与 Test 共用 `SessionView`、Session client、timeline 和 composer。`SessionMarkdown` 对消息和 reasoning 使用安全 Markdown，保留软换行，为每个实例生成脚注命名空间；只允许该实例生成的脚注内部链接，外链保留协议限制。工具文本用原始文本区域显示，参数和输出限高、可聚焦滚动，展开后才挂载内容。工具摘要从已有参数提取，不向模型补发请求。Copilot 投影去除相同的结果字段，保留不同结果与失败附带的错误/输出；工具状态取原生 `success`，不解释 shell 日志中的自由文本退出码。
+Task 与 Test 共用 `SessionView`、Session client、timeline 和 composer。Task 的当前 claim 将已验证的 `WorkerClaim.userId` 与 claim 身份一起传到 native client，客户端统一拒绝非 owner 的新交互，服务端仍使用持久 Session owner 作最终授权。Session View 将生命周期与交互权限分开：非 owner 保留 live timeline、历史、资源、Display、刷新和全屏，Chatbox 与请求回答不可操作；不能将权限只读当作 archived 而切换到归档等待。独立 Test/Bot 保留已有本人准入。`SessionMarkdown` 对消息和 reasoning 使用安全 Markdown，保留软换行，为每个实例生成脚注命名空间；只允许该实例生成的脚注内部链接，外链保留协议限制。工具文本用原始文本区域显示，参数和输出限高、可聚焦滚动，展开后才挂载内容。工具摘要从已有参数提取，不向模型补发请求。Copilot 投影去除相同的结果字段，保留不同结果与失败附带的错误/输出；工具状态取原生 `success`，不解释 shell 日志中的自由文本退出码。
 
 `SessionView` 顶部及 `SessionActivity` 底部状态、composer 的权限入口和主发送/中断按钮、timeline 内建工具类型只读取消息模块导出的英语标签子集，固定文本局部标为 `lang="en"`。同一消息键在其他位置仍可本地化，例如操作回执中的 unknown、归档正文和交互卡 pending。组件不替换整份消息目录或重建语言 Provider，状态选择及操作 gating 沿用既有逻辑。具体语言取舍见[Session 英语操作标签决策](../../.agents/notes/archived/bug-fix/2026-11-04-english-session-operation-labels.md)。
 

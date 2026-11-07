@@ -219,6 +219,12 @@ updates each affected source version once and marks the target in one transactio
 The target's own prerequisites remain. Target removal and one epoch rotation are
 atomic, with the task-local `410 task_deleted` response for later access.
 
+Task Session reads require current project access; execution interactions require
+the authenticated actor to match the persisted Session owner. Project and Team
+administrators receive the same read-only access as other non-owner members.
+Admission, dispatch, reconnection reconciliation and terminal lease/ACK checks
+apply this rule without changing the wire format or Controller ownership.
+
 Herdr Task Sessions use explicit `daynight.session.v2` selection with the shared
 Session registry and archive storage. The [terminal server design](../../docs/design/terminal-session-server.md)
 defines routes, Worker capability gates, durable recording evidence and control

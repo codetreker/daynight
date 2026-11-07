@@ -84,7 +84,12 @@ complete，也不能伪造一个不存在的采集段。
 
 ## 控制与输入
 
-页面默认只读；查看、刷新、回放或获取 lease 不得 native attach。明确提交
+页面默认只读；所有当前具有项目访问权的成员可查看，只有持久 Session owner
+可以提交人工输入、取得或维护控制租约、处置初始提交和恢复自动执行。其他项目
+管理员、普通成员与 Team 继承读者不能交互。owner 身份不能由项目角色、当前
+Task assignee 或 browserClientId 替代；服务端在接纳、派发、lease 重检和 ACK
+授租时重新核对原 actor。旧非 owner 操作、租约和迟到 ACK 不得恢复控制。
+查看、刷新、回放或获取 lease 不得 native attach。明确提交
 `paste`/`keys` 才能严格 `AttachTerminal(terminalId)`，等待完整基线和键盘模式，
 再次校验 binding 与当前准入条件，然后发送并 Detach。目标消失不能按名称回退。
 attach 本身可能重应用尺寸或恢复 pending agent，不能承诺无副作用。

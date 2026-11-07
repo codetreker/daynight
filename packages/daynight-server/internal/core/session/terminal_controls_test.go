@@ -503,7 +503,7 @@ func TestTerminalExpiredBodySlotsPermitNewSubmission(t *testing.T) {
 
 func TestTerminalRevokedWorkerDisconnectReleasesQueuedBody(t *testing.T) {
 	f := terminalControlSetup(t)
-	actor := terminalOtherActor(t, f)
+	actor := listCredential(t, f.fixture, f.p.UserID, model.PATCredential)
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 	if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
 		t.Fatal(err)
@@ -515,7 +515,7 @@ func TestTerminalRevokedWorkerDisconnectReleasesQueuedBody(t *testing.T) {
 		t.Fatal("revoked principal retained database permission")
 	}
 	if len(f.s.terminalPending) != 0 {
-		t.Fatal("revoked original connection retained admin-submitted body")
+		t.Fatal("revoked original connection retained queued body")
 	}
 }
 
@@ -1201,7 +1201,7 @@ func TestTerminalRevokedActorIsRejectedBeforeForwardingAndAcknowledgement(t *tes
 	for _, afterPoll := range []bool{false, true} {
 		t.Run(map[bool]string{false: "queued", true: "dispatched"}[afterPoll], func(t *testing.T) {
 			f := terminalControlSetup(t)
-			actor := terminalOtherActor(t, f)
+			actor := listCredential(t, f.fixture, f.p.UserID, model.PATCredential)
 			req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 			if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
 				t.Fatal(err)
@@ -1210,7 +1210,7 @@ func TestTerminalRevokedActorIsRejectedBeforeForwardingAndAcknowledgement(t *tes
 			if afterPoll {
 				offers = f.poll(t, "1")
 			}
-			if _, err := f.db.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+			if _, err := f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, actor.CredentialID); err != nil {
 				t.Fatal(err)
 			}
 			if !afterPoll {
@@ -1483,10 +1483,10 @@ func TestTerminalTransientBodyCapacityDoesNotEvictUnresolvedInput(t *testing.T) 
 }
 
 func TestTerminalActiveLeaseCredentialRevocationSuspendsAndInvalidatesInput(t *testing.T) {
-	for _, revoke := range []string{"credential", "role"} {
+	for _, revoke := range []string{"credential", "owner"} {
 		t.Run(revoke, func(t *testing.T) {
 			f := terminalControlSetup(t)
-			actor := terminalOtherActor(t, f)
+			actor := listCredential(t, f.fixture, f.p.UserID, model.PATCredential)
 			req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 			if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
 				t.Fatal(err)
@@ -1502,9 +1502,16 @@ func TestTerminalActiveLeaseCredentialRevocationSuspendsAndInvalidatesInput(t *t
 			f.poll(t, "1")
 			sql := `DELETE FROM personal_access_tokens WHERE id=$1`
 			args := []any{actor.CredentialID}
-			if revoke == "role" {
-				sql = `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`
-				args = []any{f.project, actor.UserID}
+			if revoke == "owner" {
+				other := terminalOtherActor(t, f)
+				if err := f.s.terminalAccess(context.Background(), f.p, f.project, f.task, f.message.SessionID, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
+					r.ControlActor = &other
+					return saveTerminal(context.Background(), tx, r)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				sql = `UPDATE session_operations SET actor_user_id=$2,credential_id=$3,credential_kind=$4 WHERE operation_id=$1`
+				args = []any{input.Payload.(v2.Operation).OperationID, other.UserID, other.CredentialID, other.Kind}
 			}
 			if _, err := f.db.Pool.Exec(context.Background(), sql, args...); err != nil {
 				t.Fatal(err)

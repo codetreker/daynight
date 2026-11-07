@@ -969,8 +969,16 @@ owns identity binding, menu behavior and preference integration.
 ## Herdr Sessions and recordings
 
 The task Session host keeps the native Web timeline and dispatches Herdr executions
-to a read-only terminal preview with explicit control acquisition. Hidden terminal
-views close their viewer channel and release the browser lease; Worker recording
+to a read-only terminal preview with explicit control acquisition. Current project
+access permits reading both modes, while only the persisted Session owner may
+send messages, answer requests, change settings, run commands, interrupt a turn
+or control the terminal. Other project administrators and members retain live
+content, history, resources, Display, Refresh and fullscreen with execution
+interactions disabled. Native clients bind the verified claim owner; terminal
+clients check the validated owner identity separately from lifecycle and transport.
+Their local gates supplement the server owner check.
+
+Hidden terminal views close their viewer channel and release the browser lease; Worker recording
 continues independently. Controls become available only after Worker confirmation.
 During visibility or identity checks, the last confirmed screen, draft and
 same-control confirmation remain in place while input, receipt polling and lease

@@ -28,7 +28,7 @@ function fixture(consumer: Consumer = 'assistant') {
   if (consumer === 'task') {
     const snapshot: TaskSessionSnapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
     session.change({ ...snapshot, sessionId: session.binding.sessionId, lastEventSeq: '0' });
-    client = new TaskSessionClient({ ...options, projectId: snapshot.identity.projectId, taskId: snapshot.identity.taskId, claimId: snapshot.claimId });
+    client = new TaskSessionClient({ ...options, projectId: snapshot.identity.projectId, taskId: snapshot.identity.taskId, claimId: snapshot.claimId, ownerUserId: botOwner });
   } else {
     client = new TaskSessionClient({ ...options, testSessionId: session.binding.sessionId, ...(consumer === 'assistant' ? { bot: session.binding } : {}) });
   }

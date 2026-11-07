@@ -16,12 +16,12 @@ const scopes: TaskCacheScope[] = [];
 afterEach(() => scopes.splice(0).forEach((scope) => scope.dispose()));
 const userId = '00000009-1111-4111-8111-111111111111';
 const initial = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' });
-function fixture(snapshot = initial()) {
+function fixture(snapshot = initial(), ownerUserId = userId) {
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   let receive!: (message: BrowserMessage) => void;
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: snapshot })), timeline: vi.fn(async () => ({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' })), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _after, onMessage) => { receive = onMessage; return { close: vi.fn() }; }) };
   vi.mocked(createSessionApi).mockReturnValue(api);
-  const element = (current = true) => <TaskCacheProvider scope={scope}><TaskAgentSession projectId={snapshot.identity.projectId} taskId={snapshot.identity.taskId} claimId={snapshot.claimId} active current={current} /></TaskCacheProvider>;
+  const element = (current = true) => <TaskCacheProvider scope={scope}><TaskAgentSession ownerUserId={ownerUserId} projectId={snapshot.identity.projectId} taskId={snapshot.identity.taskId} claimId={snapshot.claimId} active current={current} /></TaskCacheProvider>;
   return { scope, api, element, receive: (message: BrowserMessage) => act(() => receive(message)), snapshot };
 }
 describe('production task session panel', () => {
@@ -126,7 +126,7 @@ it('does not combine a new account with the previous client snapshot before its 
   vi.mocked(f.api.current).mockImplementation(() => new Promise(() => {}));
   const nextScope = createTaskCacheScope({ userId: '00000019-1111-4111-8111-111111111111', onIdentityMismatch: vi.fn() }); scopes.push(nextScope);
   const getItem = vi.spyOn(Storage.prototype, 'getItem');
-  rendered.rerender(<TaskCacheProvider scope={nextScope}><TaskAgentSession projectId={f.snapshot.identity.projectId} taskId={f.snapshot.identity.taskId} claimId={f.snapshot.claimId} active current /></TaskCacheProvider>);
+  rendered.rerender(<TaskCacheProvider scope={nextScope}><TaskAgentSession ownerUserId={userId} projectId={f.snapshot.identity.projectId} taskId={f.snapshot.identity.taskId} claimId={f.snapshot.claimId} active current /></TaskCacheProvider>);
   expect(getItem.mock.calls.filter(([key]) => key.startsWith('daynight.web.session.display.v1:'))).toEqual([]);
   expect(screen.queryByRole('button', { name: 'Display' })).toBeNull();
 });
@@ -156,4 +156,24 @@ it('retains the live client, channel and draft through Session fullscreen and la
   expect(f.api.channel).toHaveBeenCalledOnce();
   expect(close).not.toHaveBeenCalled();
   expect(f.api.command).not.toHaveBeenCalled();
+});
+
+it('shows live messages and disabled pending approval controls to another project member', async () => {
+  const s = { ...initial(), activity: 'waiting_input' as const, operations: { canSend: true, canCancel: true, canRespond: true } };
+  const f = fixture(s, '00000010-1111-4111-8111-111111111111');
+  vi.mocked(f.api.timeline).mockResolvedValue({ sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [
+    { kind: 'assistant_message', entryId: 'message', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Shared live output' }] },
+    { kind: 'interaction', entryId: 'request', entrySeq: '2', revision: '1', interaction: { interactionId: 'approval', revision: '1', kind: 'approval', state: 'pending', title: 'Approve Write', detail: 'notes/review.txt', actions: ['allow_once', 'reject'] } }
+  ], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+  render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+  f.receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot: s, cursor: 'zero' });
+  expect(await screen.findByText('Shared live output')).toBeVisible();
+  expect(screen.getByLabelText('Message')).toHaveAttribute('readonly');
+  for (const button of screen.getByRole('region', { name: 'Approve Write' }).querySelectorAll('button')) expect(button).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Display' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(f.api.current).toHaveBeenCalledTimes(2));
+  expect(f.api.command).not.toHaveBeenCalled();
+  expect(screen.getByText('Shared live output')).toBeVisible();
 });

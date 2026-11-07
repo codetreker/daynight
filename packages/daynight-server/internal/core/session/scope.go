@@ -15,7 +15,7 @@ func scopeTask(ctx context.Context, tx *operationTx, project, id string) (task, 
 	}
 	return lockTask(ctx, tx, project, id)
 }
-func (s *Execution) scopePermission(ctx context.Context, tx *operationTx, p model.Principal, r *record) (bool, error) {
+func (s *Execution) scopePermission(ctx context.Context, tx *operationTx, p model.Principal, r *record) error {
 	return s.authorizationRun(ctx, tx.op, tx.scope, p, (&Access{record: r}).Authority())
 }
 

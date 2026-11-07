@@ -231,7 +231,7 @@ func (op *Operation) ArchivePreflight(ctx context.Context, scope store.SessionSc
 		return "", err
 	}
 	if project != "" {
-		if _, err := op.ProjectAdmin(ctx, scope, p, project); err != nil {
+		if err := op.CheckProjectAccess(ctx, scope, p, project); err != nil {
 			return "", err
 		}
 	}

@@ -47,7 +47,7 @@ export type SessionViewState = {
   readonly historyReady: boolean; readonly historyRevision: number; readonly connectionGeneration: number;
 };
 type Options = { readonly api: SessionApi; readonly userId: string; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly onInvalidate?: () => void; readonly storage: Storage | null } & (
-  { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly testSessionId?: never; readonly bot?: never } |
+  { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly ownerUserId: string; readonly testSessionId?: never; readonly bot?: never } |
   { readonly testSessionId: string; readonly bot?: BotSessionBinding; readonly projectId?: never; readonly taskId?: never; readonly claimId?: never }
 );
 const errorCode = (error: unknown): string => error instanceof ApiError ? error.code : 'unknown';
@@ -229,7 +229,7 @@ export class TaskSessionClient {
     try { if (this.view.draft.text || this.view.draft.submission) this.options.storage?.setItem(this.draftKey, JSON.stringify(this.view.draft)); else this.options.storage?.removeItem(this.draftKey); } catch { /* Keep editable text in memory if storage is unavailable. */ }
   }
   setDraft = (text: string): void => {
-    if (this.lifetime.signal.aborted || !this.view.state.snapshot || this.view.draft.text === text) return;
+    if (!this.canInteract() || this.lifetime.signal.aborted || !this.view.state.snapshot || this.view.draft.text === text) return;
     this.publish({ draft: { ...this.view.draft, text, revision: crypto.randomUUID() } }); this.persistDraft();
   };
   private matches(s: SessionSnapshot): boolean {
@@ -575,36 +575,37 @@ export class TaskSessionClient {
       if (error instanceof ApiError && error.code === 'reset_required') { this.beforeCursors.clear(); this.hydrated = false; this.cursor = null; this.schedule(0); }
     } finally { if (this.olderRequest === request) { this.olderRequest = null; this.publish({ loadingOlder: false }); } }
   }
+  canInteract = (): boolean => this.options.testSessionId !== undefined || this.options.ownerUserId === this.options.userId;
   send = (text: string): Promise<void> => {
     this.admitted();
-    if (!this.live() || !text.trim() || !sessionSendGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Sending is not currently allowed.'));
+    if (!this.canInteract() || !this.live() || !text.trim() || !sessionSendGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Sending is not currently allowed.'));
     return this.execute({ kind: 'send_message', payload: { content: [{ type: 'text', text }], expectedTurnId: this.view.state.snapshot!.activity === 'working' ? this.view.state.snapshot!.currentTurnId : null } });
   };
   updateSetting = (settingId: string, value: string, revision: string): Promise<void> => {
     this.admitted();
     const controls = this.view.state.snapshot?.controls, setting = controls?.settings.find(setting => setting.id === settingId);
-    if (!this.live() || !sessionControlGate(this.view.state, this.view.connected) || controls?.revision !== revision || !setting?.mutable || !setting.options.some(option => option.value === value)) return Promise.reject(new Error('This setting changed or is unavailable. Refresh the controls.'));
+    if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected) || controls?.revision !== revision || !setting?.mutable || !setting.options.some(option => option.value === value)) return Promise.reject(new Error('This setting changed or is unavailable. Refresh the controls.'));
     return this.execute({ kind: 'update_setting', payload: { settingId, value, expectedControlsRevision: revision } });
   };
   executeCommand = (commandId: string, args: string, revision: string, draftText?: string): Promise<void> => {
     this.admitted();
     const s = this.view.state.snapshot, command = s?.controls?.commands.find(command => command.id === commandId);
-    if (!this.live() || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== revision || !command?.available) return Promise.reject(new Error('This command changed or is unavailable. Refresh the commands.'));
+    if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== revision || !command?.available) return Promise.reject(new Error('This command changed or is unavailable. Refresh the commands.'));
     return this.execute({ kind: 'execute_command', payload: { commandId, arguments: args, expectedControlsRevision: revision, expectedTurnId: s.currentTurnId } }, draftText);
   };
   refreshControls = (): Promise<void> => {
     this.admitted();
-    if (!this.live() || !sessionControlGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Session controls are unavailable.'));
+    if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Session controls are unavailable.'));
     return this.execute({ kind: 'refresh_controls', payload: {} });
   };
   cancel = (): Promise<void> => {
     this.admitted();
-    if (!this.live() || !sessionCancelGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Cancellation is not currently allowed.'));
+    if (!this.canInteract() || !this.live() || !sessionCancelGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Cancellation is not currently allowed.'));
     return this.execute({ kind: 'cancel', payload: { expectedTurnId: this.view.state.snapshot!.currentTurnId! } });
   };
   respond = (interaction: SessionInteraction, response: InteractionResponse): Promise<void> => {
     this.admitted();
-    if (!this.live() || !sessionRespondGate(this.view.state, this.view.connected, interaction) || interaction.state !== 'pending') return Promise.reject(new Error('This interaction is no longer available.'));
+    if (!this.canInteract() || !this.live() || !sessionRespondGate(this.view.state, this.view.connected, interaction) || interaction.state !== 'pending') return Promise.reject(new Error('This interaction is no longer available.'));
     const current = this.view.state.entries.find((entry) => entry.kind === 'interaction' && entry.interaction.interactionId === interaction.interactionId);
     if (!current || current.kind !== 'interaction' || current.interaction.revision !== interaction.revision || current.interaction.state !== 'pending') return Promise.reject(new Error('This interaction changed. Refresh the session.'));
     return this.execute({ kind: 'interaction_response', payload: { interactionId: interaction.interactionId, interactionRevision: interaction.revision, submissionId: crypto.randomUUID(), response } });
@@ -632,6 +633,7 @@ export class TaskSessionClient {
   }
   private putOperation(operation: SessionOperation, target?: Pick<SessionInteraction, 'interactionId' | 'revision'>) { this.publish({ state: { ...this.view.state, operations: new Map(this.view.state.operations).set(operation.operationId, operation), responseTargets: target ? new Map(this.view.state.responseTargets).set(operation.operationId, target) : this.view.state.responseTargets } }); this.persist(); }
   private async execute(input: CommandInput, draftText?: string): Promise<void> {
+    if (!this.canInteract()) throw new Error("Only the Session owner can interact.");
     const s = this.view.state.snapshot;
     if (!this.live() || !s || (input.kind === 'interaction_response' ? hasPendingResponse(this.view.state, { interactionId: input.payload.interactionId, revision: input.payload.interactionRevision }) : [...this.view.state.operations.values()].some((op) => op.kind === input.kind && uncertain(op)))) throw new Error('Check the original pending operation before continuing.');
     const command: SessionCommand = { protocol: SESSION_PROTOCOL, ...sessionFence(s), requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), ...input };
