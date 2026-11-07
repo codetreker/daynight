@@ -281,13 +281,18 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
     evidence.append(receipt)
     try:
         for command in ["daynight", "dn"]:
-            line, cursor, output = shell.complete(command + " comp\t")
-            actual = shell.execute()
-            passed = actual == ["completion"]
-            receipt["scenarios"].append({"name": command, "line": line, "cursor": cursor, "argv": actual, "passed": passed})
-            if not passed:
-                raise AssertionError(f"{label}: completion failed for {command}: {actual!r}, terminal={output!r}")
-            print(f"PASS {label}: {command}", flush=True)
+            scenarios = [
+                ("root", command + " comp\t", ["completion"]),
+                ("webhook", command + " webh\t sec\t rot\t endpoint --mode o\t", ["webhook", "secret", "rotate", "endpoint", "--mode", "overlap"]),
+            ]
+            for name, keys, expected in scenarios:
+                line, cursor, output = shell.complete(keys)
+                actual = shell.execute()
+                passed = actual == expected
+                receipt["scenarios"].append({"name": f"{command} {name}", "line": line, "cursor": cursor, "argv": actual, "passed": passed})
+                if not passed:
+                    raise AssertionError(f"{label}: completion failed for {command} {name}: {actual!r}, terminal={output!r}")
+                print(f"PASS {label}: {command} {name}", flush=True)
     finally:
         receipt["transcript"] = bytes(shell.transcript).decode(errors="replace")
         shell.close()

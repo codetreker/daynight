@@ -61,7 +61,7 @@ const fixture = (operation = createOperation()) => {
     resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
     getTaskGraph: vi.fn<ApiClient["getTaskGraph"]>().mockResolvedValue(graph),
     putTaskAttachment: vi.fn<ApiClient["putTaskAttachment"]>(), listTaskAttachments: vi.fn<ApiClient["listTaskAttachments"]>(),
-    readTaskAttachment: vi.fn<ApiClient["readTaskAttachment"]>(), removeTaskAttachment: vi.fn<ApiClient["removeTaskAttachment"]>(),
+    readTaskAttachment: vi.fn<ApiClient["readTaskAttachment"]>(), removeTaskAttachment: vi.fn<ApiClient["removeTaskAttachment"]>(), webhookRequest: async <T>(): Promise<T> => { throw new Error("Unavailable in this test."); },
   };
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn<() => string>(() => { throw new Error("Dispatch must not read home"); }),

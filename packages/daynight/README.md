@@ -2,7 +2,7 @@
 
 The `@codetreker/daynight` package provides the `daynight` command and its `dn`
 alias. Use it to manage server-backed projects, tasks, discussion threads,
-attachments and Bot definitions, inspect remote Workers, install the
+attachments, Webhooks and Bot definitions, inspect remote Workers, install the
 `using-daynight` skill for coding agents, run foreground task workers through
 Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer
 through Copilot CLI. Both command names share configuration and behavior. Supported native platforms are Linux, Windows
@@ -34,6 +34,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Task deletion](#task-deletion)
 - [Task discussion threads](#task-discussion-threads)
 - [Task attachments](#task-attachments)
+- [Webhook management](#webhook-management)
 - [Bot management](#bot-management)
 - [Remote Worker queries](#remote-worker-queries)
 - [Worker configuration and startup](#worker-configuration-and-startup)
@@ -131,7 +132,7 @@ explains the mapping, platform limits, fixed build lifetime and shell verificati
 daynight                            # Show root help
 daynight --help                      # Also -h
 daynight --version                   # Also -v
-daynight --skill                    # Print the project/task usage manual
+daynight --skill                    # Print the CLI usage manual
 daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
@@ -181,6 +182,16 @@ daynight team default show [--json]
 daynight team default set <uuid|personal> [--confirm] [--json]
 daynight invitation inspect [--stdin] [--json]
 daynight invitation accept [--stdin] [--confirm] [--json]
+daynight webhook                         # Show Webhook help
+daynight webhook catalog [--json]
+daynight webhook list --personal [--json]
+daynight webhook show <endpoint-id> --team <team-id> [--json]
+daynight webhook create --personal --file <path> --confirm [--json]
+daynight webhook subscription --help
+daynight webhook secret --help
+daynight webhook delivery --help
+daynight webhook attempt --help
+daynight webhook operation --help
 daynight bot list [--json]
 daynight bot show <bot-id> [--json]
 daynight bot create --name <name> [--worker <worker-id>] [--cwd <path>] [--agent <codex|claude|copilot>] [--request-id <uuid>] [--json]
@@ -230,10 +241,10 @@ daynight --skill
 dn --skill
 ```
 
-`--skill` prints one standalone English project/task usage manual from the
+`--skill` prints one standalone English CLI usage manual from the
 current package. It covers project selection, task queries and writes,
 dependencies, properties, attachments and ordered Step list/show reads, Add, Update,
-Set-status, Move and Delete. Other capabilities are discovered
+Set-status, Move and Delete, and Webhook management. Other capabilities are discovered
 through `daynight --help`, with exact options in each subcommand's help. The
 output preserves the manual's original bytes, including YAML
 frontmatter and the final newline. The document has no package-relative
@@ -719,6 +730,78 @@ Identity mismatch is a refusal. A lost or malformed acceptance response may
 follow a commit and is reported as an unknown outcome; the CLI does not replay
 it automatically. Reading current membership cannot recover the original
 receipt. Use `--json` for the validated preview or acceptance receipt.
+
+## Webhook management
+
+`webhook` manages event types, endpoints, subscriptions, signing secrets,
+delivery history, payloads, redelivery and operation receipts through the
+authenticated service. Run `daynight webhook --help` and each leaf's `--help`
+for the complete command and option list. The `dn` alias has the same commands.
+
+Every leaf except `catalog` requires exactly one explicit owner: `--personal`
+selects the authenticated User, and `--team <team-id>` selects a Team UUID.
+The current Git directory and default Team do not select an owner; `--team personal`
+is not accepted. The CLI verifies the authenticated user once and
+checks the response identity throughout the command. IDs are canonical UUIDs;
+versions and generations are positive decimal int64 values, preserved exactly.
+
+```bash
+daynight webhook catalog --json
+daynight webhook list --personal --json
+daynight webhook create --personal --file ./endpoint.json --confirm --json
+daynight webhook update <endpoint-id> --team <team-id> --if-version <version> --file ./patch.json --confirm --json
+daynight webhook subscription reconfirm <endpoint-id> --personal --if-version <version> --project <project-id> --confirm
+daynight webhook secret show <endpoint-id> --personal --reveal
+daynight webhook delivery list <endpoint-id> --personal --limit 50 --json
+daynight webhook delivery payload <endpoint-id> <delivery-id> --personal --output ./payload.json
+daynight webhook delivery redeliver <endpoint-id> <delivery-id> --personal --if-version <version> --if-generation <generation> --confirm --json
+daynight webhook operation show <operation-id> --personal --json
+```
+
+Create, update and subscription replacement take exactly one of `--file` or
+`--stdin`. Inputs are strict UTF-8 JSON with no duplicate or unknown keys,
+at most 32 levels and 256 KiB; the final request including control fields is
+also limited to 256 KiB. Files must be regular files. Supply URL and adapter
+configuration in the JSON, not command arguments. Update is a nonempty partial
+object; subscription replacement is a complete array. Reconfirmation accepts
+one or more distinct `--project` values. All writes except create require the
+observed `--if-version`; redelivery also requires `--if-generation`. No write
+implicitly reads the latest version or retries a conflict. Noninteractive and
+stdin writes require `--confirm`; an interactive confirmation contains only
+the owner, operation, opaque targets and versions.
+
+Writes preserve an operation ID and original issued time. Supply both
+`--operation-id` and `--issued-at`, or let the CLI generate both after
+confirmation. `--operation-out <path>` exclusively creates a private prepared
+record before sending; it contains the scope, versions and request hash, but no
+body, URL, credentials or secret. An unknown result retains the original
+identity and is never automatically replayed. Inspect the original receipt with
+`operation show`; current resource values or a missing receipt do not establish
+the original outcome. To resume, use `--resume-operation <path>` on the original
+write command and supply the same owner, targets, versions, mode and input. It
+verifies the record and exact request hash before reading the receipt. A matching
+receipt confirms the original operation without another write. A missing receipt
+permits at most one identical submission only with `--confirm`, complete original
+input and an issued time within the service's admission window (five minutes
+past and sixty seconds future). An inaccessible receipt or expired window leaves
+the outcome unknown. A prepared record alone cannot reconstruct the body.
+
+Endpoint list validates every page before producing a complete result; delivery
+and attempt lists return one page, defaulting to 50 items, with `--limit` from 1
+to 100 and an explicit `--cursor` for continuation. History can be incomplete
+because of retention. Secret show reports metadata unless `--reveal` is explicitly
+requested; rotation does not reveal the new secret. A successful redelivery only
+registers it and does not mean delivery has completed.
+
+Payload output defaults to the exact original bytes without an added newline.
+`--json` returns its validated Base64 wrapper; `--output <path>` writes a private
+file after validation and never overwrites an existing target. File publication
+requires Linux with procfs; it fails when inode-bound publication is unavailable.
+These two options are mutually exclusive. Payload access and retention are independently enforced
+by the service. Normal JSON output is one value followed by LF. Runtime errors
+with `--json` go to stderr and distinguish invocation from original operation
+outcomes; a confirmed write remains confirmed if local output fails. Exit status
+is 0 for success, 2 for usage errors and 1 for runtime failures or unknown results.
 
 ## Task management
 
