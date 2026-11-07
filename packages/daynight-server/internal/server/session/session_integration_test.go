@@ -21,7 +21,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
 
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -98,6 +97,10 @@ func shutdownDatabaseFailureMatches(err error) bool {
 }
 
 func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
+	return sessionHTTPSetupWithApplication(t, newSessionHTTPApplication)
+}
+
+func sessionHTTPSetupWithApplication(t *testing.T, application sessionApplicationFactory) *sessionHTTPFixture {
 	t.Helper()
 	f := &sessionHTTPFixture{db: projectTestStore(t)}
 	f.handler = projectTestHandler(t, f.db, io.Discard)
@@ -115,15 +118,11 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	}](t, projectRequest(f.handler, http.MethodPost, f.base, jsonBody(t, f.registration)), http.StatusOK)
 	f.snapshot = result.Session
 	f.grant = f.mint(t, "bootstrap")
-	application, err := appsupport.NewHandler(configuredTestConfig(), f.db, f.db.Ready, attachmentTestFiles(t), testLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.application = application.(sessionApplication)
+	f.application = application(t, f.db, attachmentTestFiles(t))
 	// Live relay state is process-local: HTTP control and WebSocket traffic share the same application.
-	f.handler.Handler = httpx.RequestLogging(testLogger(), application)
+	f.handler.Handler = httpx.RequestLogging(testLogger(), f.application)
 	extendedWorkerTestHandler(f.handler)
-	f.server = httptest.NewServer(httpx.RequestLogging(testLogger(), application))
+	f.server = httptest.NewServer(httpx.RequestLogging(testLogger(), f.application))
 	t.Cleanup(f.server.Close)
 	f.sessionHTTPShutdown.register(t, f.application.Shutdown)
 	return f
@@ -402,7 +401,7 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 }
 
 func TestSessionRoutesBrowserRespondsToPingAndContinuesReceivingEvents(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := sessionHTTPSetupWithApplication(t, newSessionPingApplication)
 	pingSeen := make(chan struct{})
 	var firstPing sync.Once
 	sourceEpoch := uuid.NewString()
