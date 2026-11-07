@@ -56,6 +56,29 @@ func (d *botDAO) Worker(context.Context, string, string) error { return d.fail["
 func (d *botDAO) BotDefaults(context.Context, string) (model.BotDefaultsInput, error) {
 	return d.defaults, d.fail["defaults"]
 }
+func (d *botDAO) BotPreferredWorker(context.Context, string) (*string, error) {
+	return d.defaults.PreferredWorkerID, d.fail["defaults"]
+}
+func (d *botDAO) BotCreationCandidate(_ context.Context, _ string, id string) (model.BotDefaultsInput, error) {
+	return selectTestWorker(d.defaults, id), d.fail["defaults"]
+}
+func (d *botDAO) BotCreationCandidates(context.Context, string) (model.BotDefaultsInput, error) {
+	return d.defaults, d.fail["defaults"]
+}
+func (d *botDAO) BotCreationWorker(_ context.Context, _ string, id string) (model.BotDefaultsInput, error) {
+	return selectTestWorker(d.defaults, id), d.fail["defaults"]
+}
+func selectTestWorker(input model.BotDefaultsInput, id string) model.BotDefaultsInput {
+	result := input
+	result.Workers = nil
+	for _, worker := range input.Workers {
+		if worker.WorkerID == id {
+			result.Workers = append(result.Workers, worker)
+		}
+	}
+	return result
+}
+
 func (d *botDAO) InsertBot(_ context.Context, b model.Bot) error {
 	if e := d.fail["insert"]; e != nil {
 		return e

@@ -25,7 +25,7 @@ workers 增加 configuration_revision、configuration_updated_at、desired_confi
 
 目标和观测保存受验证 JSONB，公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量、原生字段和项目数量受[配置协议](../spec/daynight-worker-configuration.md#目标配置)规定的业务容量约束。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值。
 
-配置 GET 按认证 userId/workerId 读取，不施加近期窗口，不续活。快照列表与详情继续使用[快照设计](daynight-worker-snapshots.md)的时间及权限规则。
+配置 GET 按认证 userId/workerId 读取，不施加近期窗口，不续活。快照列表与详情继续使用[快照设计](daynight-worker-snapshots.md)的时间及权限规则。 Bot 创建只读取所选 Worker 的原生配置和成功偏好，其选择规则与完整默认目录由[助手设计](assistant.md#默认解析与偏好事务)维护。
 
 ## Worker 行事务
 

@@ -24,6 +24,8 @@ func NewWithNativeDiscovery(database botStore, requester modelRequester) *Bots {
 
 func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, input botcore.CreateBot) (*botcore.CreationResolution, error) {
 	var defaults model.BotDefaultsInput
+	var resolved botcore.BotDefaults
+	var selectionFault *model.Fault
 	existing := false
 	err := s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
 		_, err := botcore.Get(ctx, scope, principal, input.ID)
@@ -35,18 +37,24 @@ func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, i
 		if !errors.As(err, &fault) || fault.Code != "not_found" {
 			return err
 		}
-		defaults, err = scope.BotDAO().BotDefaults(ctx, principal.UserID)
+		defaults, resolved, err = botcore.CreationDefaults(ctx, scope.BotDAO(), principal.UserID, input.Overrides)
+		if fault, ok := err.(*model.Fault); ok {
+			selectionFault = fault
+			return nil
+		}
 		return err
 	})
 	if err != nil {
+		if selectionFault != nil {
+			return nil, errors.Join(err, selectionFault)
+		}
 		return nil, err
 	}
 	if existing {
 		return nil, nil
 	}
-	resolved, err := botcore.ResolveBotDefaults(defaults, input.Overrides)
-	if err != nil {
-		return nil, err
+	if selectionFault != nil {
+		return nil, selectionFault
 	}
 	if resolved.Configuration == nil {
 		return nil, nil
