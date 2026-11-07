@@ -25,6 +25,8 @@ type WebhookReadScope interface {
 type WebhookWriteScope interface {
 	WebhookReadScope
 	WebhookWriter() WebhookWriter
+	// RedeliveryWriter shares the operation-fenced transaction and its locks.
+	RedeliveryWriter() WebhookRedeliveryScope
 	// LockConfigurationSources fences project and team sources before endpoint locks.
 	LockConfigurationSources(context.Context, webhook.Owner, string, []string) error
 	// LockAuthority takes the Team root and relationship locks for an owner.

@@ -1,4 +1,4 @@
--- Schema snapshot version: 51
+-- Schema snapshot version: 52
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -902,16 +902,19 @@ CREATE TABLE "webhook_operations" (
     "overlap_until_after" timestamp with time zone,
     "recorded_at" timestamp with time zone NOT NULL,
     "expires_at" timestamp with time zone NOT NULL,
+    "delivery_id" "uuid",
+    "generation_after" bigint,
     CONSTRAINT "webhook_operations_check" CHECK (("isfinite"("expires_at") AND ("expires_at" > "recorded_at"))),
     CONSTRAINT "webhook_operations_check1" CHECK (((("kind" = 'signing-secret.rotate'::"text") AND ("key_id_after" IS NOT NULL) AND ((("signing_mode_after" = 'overlap'::"text") AND ("overlap_until_after" IS NOT NULL)) OR (("signing_mode_after" = 'immediate'::"text") AND ("overlap_until_after" IS NULL))) AND ("signing_mode_after" IS NOT NULL)) OR (("kind" <> 'signing-secret.rotate'::"text") AND ("key_id_after" IS NULL) AND ("signing_mode_after" IS NULL) AND ("overlap_until_after" IS NULL)))),
     CONSTRAINT "webhook_operations_config_version_after_check" CHECK (("config_version_after" > 0)),
     CONSTRAINT "webhook_operations_destination_revision_after_check" CHECK (("destination_revision_after" > 0)),
     CONSTRAINT "webhook_operations_effect_check" CHECK (("effect" = ANY (ARRAY['applied'::"text", 'unchanged'::"text"]))),
     CONSTRAINT "webhook_operations_fingerprint_version_check" CHECK (("fingerprint_version" = 1)),
-    CONSTRAINT "webhook_operations_kind_check" CHECK (("kind" = ANY (ARRAY['endpoint.create'::"text", 'endpoint.patch'::"text", 'endpoint.delete'::"text", 'signing-secret.rotate'::"text"]))),
+    CONSTRAINT "webhook_operations_kind_check" CHECK (("kind" = ANY (ARRAY['endpoint.create'::"text", 'endpoint.patch'::"text", 'endpoint.delete'::"text", 'signing-secret.rotate'::"text", 'delivery.redeliver'::"text"]))),
     CONSTRAINT "webhook_operations_overlap_until_after_check" CHECK ("isfinite"("overlap_until_after")),
     CONSTRAINT "webhook_operations_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
     CONSTRAINT "webhook_operations_recorded_at_check" CHECK ("isfinite"("recorded_at")),
+    CONSTRAINT "webhook_operations_redelivery_check" CHECK (((("kind" = 'delivery.redeliver'::"text") AND ("delivery_id" IS NOT NULL) AND ("generation_after" IS NOT NULL) AND ("generation_after" > 0)) OR (("kind" <> 'delivery.redeliver'::"text") AND ("delivery_id" IS NULL) AND ("generation_after" IS NULL)))),
     CONSTRAINT "webhook_operations_request_sha256_check" CHECK (("octet_length"("request_sha256") = 32)),
     CONSTRAINT "webhook_operations_semantic_fingerprint_check" CHECK (("octet_length"("semantic_fingerprint") = 32))
 );
@@ -1393,6 +1396,8 @@ CREATE INDEX "webhook_endpoints_master_key" ON "webhook_endpoints" USING "btree"
 CREATE INDEX "webhook_endpoints_owner" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
 
 CREATE INDEX "webhook_events_occurred" ON "webhook_events" USING "btree" ("occurred_at", "id");
+
+CREATE INDEX "webhook_operations_delivery" ON "webhook_operations" USING "btree" ("delivery_id", "expires_at", "operation_id") WHERE ("delivery_id" IS NOT NULL);
 
 CREATE INDEX "webhook_operations_endpoint" ON "webhook_operations" USING "btree" ("endpoint_id", "expires_at", "operation_id");
 

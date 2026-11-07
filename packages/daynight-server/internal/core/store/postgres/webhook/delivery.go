@@ -7,8 +7,10 @@ import (
 	"sort"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	webhookmodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/jackc/pgx/v5"
 )
@@ -260,14 +262,33 @@ func (d *DAO) Claim(ctx context.Context, limit int, now time.Time, tokens []stri
 }
 
 func (d *DAO) AdmissionSources(ctx context.Context, id string, now time.Time) (store.WebhookAdmissionSources, error) {
+	return d.admissionSources(ctx, id, "", storeOwner{}, "", now)
+}
+
+// The management path binds the immutable anchors before acquiring any source
+// locks. The actor membership shares the same Team lock as send authorization.
+func (d *DAO) AdmissionSourcesForActor(ctx context.Context, id, endpoint string, owner webhookmodel.Owner, actor string, now time.Time) (store.WebhookAdmissionSources, error) {
+	return d.admissionSources(ctx, id, endpoint, storeOwner{owner.Kind, owner.ID}, actor, now)
+}
+
+type storeOwner struct{ kind, id string }
+
+func (d *DAO) admissionSources(ctx context.Context, id, expectedEndpoint string, expectedOwner storeOwner, actor string, now time.Time) (store.WebhookAdmissionSources, error) {
 	var out store.WebhookAdmissionSources
-	var eventID, projectID, taskID, endpointID, ownerKind, ownerID string
-	err := d.tx.QueryRow(ctx, `SELECT d.event_id::text,d.project_id::text,e.task_id::text,d.endpoint_id::text,d.owner_kind,d.owner_id::text FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id WHERE d.id=$1`, id).Scan(&eventID, &projectID, &taskID, &endpointID, &ownerKind, &ownerID)
+	var eventID, projectID, endpointID, ownerKind, ownerID string
+	var taskID *string
+	err := d.tx.QueryRow(ctx, `SELECT d.event_id::text,d.project_id::text,e.task_id::text,d.endpoint_id::text,d.owner_kind,d.owner_id::text FROM webhook_deliveries d LEFT JOIN webhook_events e ON e.id=d.event_id WHERE d.id=$1`, id).Scan(&eventID, &projectID, &taskID, &endpointID, &ownerKind, &ownerID)
 	if err != nil {
 		return out, pg.QueryError("read webhook admission anchors", err)
 	}
+	if expectedEndpoint != "" && (endpointID != expectedEndpoint || ownerKind != expectedOwner.kind || ownerID != expectedOwner.id) {
+		return out, pg.QueryError("read webhook admission anchors", pgx.ErrNoRows)
+	}
+	if taskID == nil {
+		return out, d.missingAdmissionEvent(ctx, id, actor != "")
+	}
 	var deleted *time.Time
-	err = d.tx.QueryRow(ctx, `SELECT deleted_at FROM tasks WHERE id=$1 AND project_id=$2 FOR SHARE`, taskID, projectID).Scan(&deleted)
+	err = d.tx.QueryRow(ctx, `SELECT deleted_at FROM tasks WHERE id=$1 AND project_id=$2 FOR SHARE`, *taskID, projectID).Scan(&deleted)
 	if err != nil && err != pgx.ErrNoRows {
 		return out, pg.QueryError("lock webhook source task", err)
 	}
@@ -282,6 +303,13 @@ func (d *DAO) AdmissionSources(ctx context.Context, id string, now time.Time) (s
 		err = d.tx.QueryRow(ctx, `SELECT id::text FROM teams WHERE id=$1 FOR SHARE`, team).Scan(&teamID)
 		if err != nil && err != pgx.ErrNoRows {
 			return out, pg.QueryError("lock webhook source team", err)
+		}
+	}
+	if actor != "" && ownerKind == "team" && ownerID == team && teamID != "" {
+		var actorID string
+		err = d.tx.QueryRow(ctx, `SELECT user_id::text FROM team_members WHERE team_id=$1 AND user_id=$2 FOR SHARE`, team, actor).Scan(&actorID)
+		if err != nil && err != pgx.ErrNoRows {
+			return out, pg.QueryError("lock webhook actor membership", err)
 		}
 	}
 	var member, grant, ownerUser string
@@ -327,6 +355,9 @@ func (d *DAO) AdmissionSources(ctx context.Context, id string, now time.Time) (s
 		out.SigningKeys = keys
 	}
 	err = d.tx.QueryRow(ctx, `SELECT id::text,event_type,wire_version,schema_version,source,subject,project_id::text,task_id::text,task_version,task_deleted_at,step_id,message_id::text,occurred_at,recorded_at,origin_request_id,fact_codec_version,fact_bytes,fact_sha256 FROM webhook_events WHERE id=$1`, eventID).Scan(&out.Event.ID, &out.Event.EventType, &out.Event.WireVersion, &out.Event.SchemaVersion, &out.Event.Source, &out.Event.Subject, &out.Event.ProjectID, &out.Event.TaskID, &out.Event.TaskVersion, &out.Event.TaskDeletedAt, &out.Event.StepID, &out.Event.MessageID, &out.Event.OccurredAt, &out.Event.RecordedAt, &out.Event.OriginRequestID, &out.Event.FactCodecVersion, &out.Event.FactBytes, &out.Event.FactSHA256)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, d.missingAdmissionEvent(ctx, id, actor != "")
+	}
 	if err != nil {
 		return out, pg.QueryError("read webhook original event", err)
 	}
@@ -385,4 +416,41 @@ func (d *DAO) AdmissionSources(ctx context.Context, id string, now time.Time) (s
 		m.Continuous = subscriptions[m.SubscriptionID] && sub == m.SubscriptionID && typ == m.EventType && bindingRemoved == nil
 	}
 	return out, nil
+}
+
+// Reconcile a disappearing Event against the retention state under the
+// Delivery lock. A still-open history missing its immutable Event is corrupt.
+func (d *DAO) missingAdmissionEvent(ctx context.Context, id string, management bool) error {
+	if !management {
+		// The runner owns claim/lease reconciliation and must make that
+		// decision under its usual Delivery lock before treating this as loss.
+		return pg.QueryError("read webhook original event", pgx.ErrNoRows)
+	}
+	delivery, err := d.LockDelivery(ctx, id)
+	if err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			return &store.WebhookAdmissionEventError{Cause: err}
+		}
+		return err
+	}
+	if delivery.PurgingAt != nil {
+		return &store.WebhookAdmissionEventError{Cause: pg.QueryError("read reclaimed webhook delivery", pgx.ErrNoRows)}
+	}
+	// Late writers take only their Attempt lock, so inspect their activity
+	// after locking all attempts in the documented Delivery-first order.
+	attempts, err := d.LockAttempts(ctx, id)
+	if err != nil {
+		return err
+	}
+	now, err := d.ObservedAt(ctx)
+	if err != nil {
+		return err
+	}
+	if !store.WebhookHistoryRetained(delivery, attempts, now) {
+		return &store.WebhookAdmissionEventError{Cause: pg.QueryError("read expired webhook delivery", pgx.ErrNoRows)}
+	}
+	if !now.Before(delivery.PayloadExpiresAt) {
+		return &store.WebhookAdmissionEventError{Cause: &model.Fault{Code: "payload_expired", Message: "Webhook payload has expired."}}
+	}
+	return &store.WebhookAdmissionEventError{Cause: &store.Error{Phase: "webhook original event integrity", Cause: fmt.Errorf("webhook original event missing")}}
 }

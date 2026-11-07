@@ -32,6 +32,8 @@ type Operation struct {
 	ID, ActorID, Kind, TargetID, IssuedAt, RequestSHA256, Fingerprint string
 	Effect                                                            string
 	ConfigVersion, DestinationRevisionAfter                           int64
+	DeliveryID                                                        string
+	GenerationAfter                                                   *int64
 	ActiveKeyID, SigningMode                                          string
 	OverlapUntil                                                      *time.Time
 	RecordedAt, ExpiresAt                                             time.Time

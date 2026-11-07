@@ -37,6 +37,24 @@ type WebhookDeliveryScope interface {
 	NextQueueOrder(context.Context) (int64, error)
 }
 
+// WebhookRedeliveryScope shares the management operation transaction. Source
+// locks, including the actor's current authority, precede Delivery and Attempts.
+type WebhookRedeliveryScope interface {
+	AdmissionSourcesForActor(context.Context, string, string, webhook.Owner, string, time.Time) (WebhookAdmissionSources, error)
+	LockDelivery(context.Context, string) (WebhookDelivery, error)
+	LockAttempts(context.Context, string) ([]WebhookAttempt, error)
+	UpdateAttempt(context.Context, WebhookAttempt) error
+	UpdateDelivery(context.Context, WebhookDelivery) error
+	NextQueueOrder(context.Context) (int64, error)
+}
+
+// WebhookAdmissionEventError marks a retention decision that waited for a
+// Delivery lock. Its caller must reauthorize before returning that decision.
+type WebhookAdmissionEventError struct{ Cause error }
+
+func (e *WebhookAdmissionEventError) Error() string { return "webhook admission event unavailable" }
+func (e *WebhookAdmissionEventError) Unwrap() error { return e.Cause }
+
 // WebhookDelivery separates immutable capture data from mutable control fields.
 // UpdateDelivery writes only the latter.
 type WebhookDelivery struct {
@@ -118,4 +136,22 @@ type WebhookAttempt struct {
 	LateErrorCode                                   *string
 	LateRetryAfterNotBefore                         *time.Time
 	LateRetryAfterDiagnosticCode                    *string
+}
+
+// WebhookHistoryRetained applies the logical metadata deadline after locking
+// Delivery and Attempts, including activity that has not updated its candidate
+// deadline yet. A closed history never reopens on a late observation.
+func WebhookHistoryRetained(d WebhookDelivery, attempts []WebhookAttempt, now time.Time) bool {
+	if d.PurgingAt != nil {
+		return false
+	}
+	if d.MetadataExpiresAt.After(now) || (d.State == "pending" && d.ExpiresAt.After(now)) || (d.State == "leased" && d.LeaseUntil != nil && d.LeaseUntil.After(now)) {
+		return true
+	}
+	for _, a := range attempts {
+		if (a.FinishedAt != nil && a.FinishedAt.Add(30*24*time.Hour).After(now)) || (a.LateObservedAt != nil && a.LateObservedAt.Add(30*24*time.Hour).After(now)) {
+			return true
+		}
+	}
+	return false
 }

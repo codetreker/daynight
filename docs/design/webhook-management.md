@@ -4,7 +4,7 @@
 
 Webhook 管理模块处理 Personal User 和 shared Team 的 endpoint 配置、签名秘密和操作回执。`internal/server/webhook` 将认证后的请求映射到 `internal/service/webhook`；调用方提供模块、认证和日志依赖后，通过 `RegisterRoutes` 将其挂载到自己的 mux。模块构造不启动通知运行器，主应用的公开挂载由完整后端组装负责。事件目录提供固定的六项 Task 事件及当前 typed policy。
 
-业务校验位于 `internal/core/webhook`，中立事务合同位于 `internal/core/store`，PostgreSQL 实现负责锁与持久化。显式订阅绑定项目和固定事件类型；事件捕获由[捕获模块](webhook-capture.md)在来源事务内协调，[投递模块](webhook-delivery.md)负责发送与恢复。Personal owner 从主体派生；Team 当前成员只能读取脱敏配置和本人原回执，当前管理员才能管理和读取秘密。读取在同一数据库快照内重新检查凭据与成员关系。
+业务校验位于 `internal/core/webhook`，中立事务合同位于 `internal/core/store`，PostgreSQL 实现负责锁与持久化。显式订阅绑定项目和固定事件类型；[捕获模块](webhook-capture.md)在来源事务内协调事件，[投递模块](webhook-delivery.md)负责发送与恢复，[投递历史与重投](webhook-history.md)使用当前权限和保留数据。Personal owner 从主体派生；Team 当前成员只能读取脱敏配置和本人原回执，当前管理员才能管理和读取秘密。读取在同一数据库快照内重新检查凭据与成员关系。
 
 ## 写入与回执
 
