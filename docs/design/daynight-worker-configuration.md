@@ -23,7 +23,7 @@ flowchart LR
 
 workers 增加 configuration_revision、configuration_updated_at、desired_configuration、configuration_observation_revision 和 configuration_observation。目标三列同时为空或存在；应用观测独立为空，观测版本初始为 0。迁移不从任务或旧机器报告推测配置。
 
-目标和观测保存受验证 JSONB，公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量仍受安全整数和轮询期限约束。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值。
+目标和观测保存受验证 JSONB，公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量、原生字段和项目数量受[配置协议](../spec/daynight-worker-configuration.md#目标配置)规定的业务容量约束。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值。
 
 配置 GET 按认证 userId/workerId 读取，不施加近期窗口，不续活。快照列表与详情继续使用[快照设计](daynight-worker-snapshots.md)的时间及权限规则。
 
@@ -38,6 +38,8 @@ PUT 也锁定这行，先校验目标版本，再校验新增/修改项目的准
 ## 输入与输出边界
 
 目标、项目覆盖、观测 key 与应用值分别做闭合解析。native 原子组合保证 Agent/model/args 的表示有效，服务端不运行 native preflight。观测只接受闭合诊断字段，不把自由输出带入日志或 HTTP。
+
+对目标配置值和实际存储的、包含 reportedAt 的观测编码后计量，超限在事务提交前拒绝。客户端在增长当前集合前检查容量，通过已接纳回执清理匹配失败与完成且不再需要的项目记录；未知结果和未完成移除保留以供恢复。
 
 应用观测保留自身服务器接纳时间；机器报告可以更新，而应用结果仍是此前已确认状态。消费者将当前目标与每项目标版本比较，保持旧实际值和明确等待/失败含义。
 

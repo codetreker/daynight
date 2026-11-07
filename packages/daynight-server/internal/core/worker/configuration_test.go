@@ -120,6 +120,19 @@ func TestPutConfigurationFailuresAndExhaustion(t *testing.T) {
 	requireFault(t, err, "invalid_input")
 }
 
+func TestPutConfigurationRejectsUnencodableStoredOverride(t *testing.T) {
+	d := configuredDAO("1")
+	d.current.Desired.Value.Projects = []model.WorkerProjectConfiguration{{
+		ProjectID:       configurationInputProjectA,
+		NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)},
+	}}
+	_, err := PutConfiguration(context.Background(), d, model.Principal{UserID: "user"}, "worker", 1, configurationFixture())
+	requireFault(t, err, "invalid_input")
+	if d.desiredWrites != 0 || len(d.accesses) != 0 {
+		t.Fatalf("unencodable stored configuration caused project reads or writes: %+v", d)
+	}
+}
+
 func TestExchangeConfigurationBootstrapAndIndependentObservationCAS(t *testing.T) {
 	ctx, principal, value := context.Background(), model.Principal{UserID: "user"}, configurationFixture()
 	d := &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}}

@@ -34,7 +34,7 @@ flowchart LR
 
 按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码；core 使用 Task 的 claim 规则匹配引用。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
 
-UPSERT 同时写锁后采集的 last_seen_at、telemetry、task_snapshot，目标原有时间位于未来也使用本次成功时间。已知清单完整替换任务快照；null 清单根据旧状态保留 observed/stale 的任务与原时刻，并变为 stale，旧 unavailable 保持 unavailable。配置交换与这些写入同属事务；取消、SQL 错误或后续配置错误回滚全部结果并释放锁。事务辅助保留操作、提交与回滚错误链。
+UPSERT 同时写锁后采集的 last_seen_at、telemetry、task_snapshot，目标原有时间位于未来也使用本次成功时间。已知清单完整替换任务快照；null 清单根据旧状态保留 observed/stale 的任务与原时刻，并变为 stale，旧 unavailable 保持 unavailable。在 UPSERT 后、提交前计量最终合并的 Worker，包括 null 清单保留的旧任务；超过完整资源预算时拒绝并回滚。配置交换与这些写入同属事务；取消、SQL 错误或后续配置错误回滚全部结果并释放锁。事务辅助保留操作、提交与回滚错误链。
 
 显式配置协议在机器观测 upsert 后，继续以同一 Worker 行处理首次候选和应用观测 CAS；该扩展的完整结构与事务由[配置设计](daynight-worker-configuration.md)拥有。观测 CAS 拒绝保留已有配置结果，不把合法机器观测当作失败。
 

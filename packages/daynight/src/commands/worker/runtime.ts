@@ -18,11 +18,12 @@ import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./reso
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import { createOperation } from "../../api/operation.js";
+import { createOperation, OperationError } from "../../api/operation.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { ApiError } from "../../api/client.js";
 import { ProtocolError } from "../../api/parse.js";
+import { parseWorkerCloudReport } from "../../api/worker-configuration.js";
 import type { WorkerCloudNative, WorkerCloudResource, WorkerCloudValue } from "../../api/worker-configuration.js";
 import { probeNativeAgentVersion } from "./herdr/version-probe.js";
 import { createWorkerConfigurationManager } from "./configuration.js";
@@ -378,6 +379,8 @@ export const runWorker = async (options: {
         }
       },
       onError: error => { failures.push(error); cancellation.controller.abort(error); },
+      onCapacity: revision => emit({ kind: "warning", message: `Worker configuration revision ${revision} is waiting for observation capacity; retained results remain available for acknowledgement.` }),
+      onInvalidDesired: revision => emit({ kind: "warning", message: `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
     });
     await configuration.receive(resource.desired, resource.observationRevision);
     let bootstrap: WorkerCloudValue | null = null;
@@ -523,13 +526,17 @@ export const runWorker = async (options: {
     };
     let initialRemovalsComplete = false;
     let initialRemovalsJob: Promise<void> | undefined;
+    // Keep progress across capacity retries, but require a new coordinator to observe each binding again.
+    const initialRemovalsRegistered = new Set<string>();
     const ensureInitialRemovals = (): Promise<void> => {
       if (initialRemovalsComplete || manager.current().desired === null) return Promise.resolve();
       if (initialRemovalsJob !== undefined) return initialRemovalsJob;
       const job = (async () => {
         for (const project of getStore().listProjects()) {
           signal.throwIfAborted();
+          if (initialRemovalsRegistered.has(project.projectId)) continue;
           await manager.ensureProjectRemoval(project.projectId);
+          initialRemovalsRegistered.add(project.projectId);
         }
         initialRemovalsComplete = true;
       })();
@@ -568,17 +575,22 @@ export const runWorker = async (options: {
     }, send: (report, operation) => remote.report(workerId, report, operation), emit,
       configuration: {
         prepare: async operation => {
-          if (!reconcileReport) return;
+          if (!reconcileReport && manager.current().synchronized) return;
           const actual = await readCloudConfiguration(operation.signal);
           await manager.receive(actual.desired, actual.observationRevision);
           if (actual.desired !== null) bootstrap = null;
           reconcileReport = false;
         },
-        capture: () => manager.report(manager.current().desired === null ? bootstrap : null),
+        capture: () => {
+          const captured = manager.report(manager.current().desired === null ? bootstrap : null);
+          try { parseWorkerCloudReport(captured); }
+          catch (error) { reconcileReport = true; throw error; }
+          return captured;
+        },
         send: async (report, captured, operation) => {
           try { return await remote.reportConfiguration(workerId, report, captured, operation); }
           catch (error) {
-            if (!(error instanceof ApiError) || error.outcomeUnconfirmed) reconcileReport = true;
+            if (!(error instanceof ApiError) || error.outcomeUnconfirmed || error.phase === "prepare" && error.cause instanceof OperationError && error.cause.kind === "request_limit") reconcileReport = true;
             if (error instanceof ApiError && error.status === 404 && error.code === "not_found" && manager.current().desired === null && captured.bootstrap !== null) {
               bootstrap = null;
               fallback ??= await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, operation.signal);

@@ -257,11 +257,8 @@ func TestConfigurationResourceAndNormalizedReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	report.Telemetry.Machine.Name += "x"
-	normalized, err = ValidateReport(report)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkViolation(t, AdmitReport(normalized), "machine.name", MaxMachineNameBytes+1, MaxMachineNameBytes, "bytes")
+	_, err = ValidateReport(report)
+	requireFault(t, err, "invalid_input")
 }
 
 func TestLimitsAfterExistingStructuralValidation(t *testing.T) {
@@ -271,13 +268,10 @@ func TestLimitsAfterExistingStructuralValidation(t *testing.T) {
 			ProjectID: "00000000-0000-4000-8000-000000000001", TaskID: fmt.Sprintf("00000000-0000-4000-8000-%012x", i+1), ClaimID: "00000000-0000-4000-8000-000000000002",
 		})
 	}
-	normalized, err := ValidateReport(report)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkViolation(t, AdmitReport(normalized), "taskInventory.claims", MaxInventoryClaims+1, MaxInventoryClaims, "items")
-	normalized.TaskInventory.Claims = normalized.TaskInventory.Claims[:MaxInventoryClaims]
-	if err := AdmitReport(normalized); err != nil {
+	_, err := ValidateReport(report)
+	requireFault(t, err, "invalid_input")
+	report.TaskInventory.Claims = report.TaskInventory.Claims[:MaxInventoryClaims]
+	if _, err := ValidateReport(report); err != nil {
 		t.Fatal(err)
 	}
 
@@ -290,13 +284,11 @@ func TestLimitsAfterExistingStructuralValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := ParseWorkerConfiguration(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkViolation(t, AdmitConfiguration(parsed), "projects", MaxProjects+1, MaxProjects, "items")
-	parsed.Projects = parsed.Projects[:MaxProjects]
-	if err := AdmitConfiguration(parsed); err != nil {
+	_, err = ParseWorkerConfiguration(raw)
+	requireFault(t, err, "invalid_input")
+	config.Projects = config.Projects[:MaxProjects]
+	raw, _ = json.Marshal(config)
+	if _, err := ParseWorkerConfiguration(raw); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,13 +300,11 @@ func TestLimitsAfterExistingStructuralValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exchange, err := ParseWorkerConfigurationExchange(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkViolation(t, AdmitObservation(*exchange.Observation), "observation.items", MaxObservationItems+1, MaxObservationItems, "items")
-	exchange.Observation.Items = exchange.Observation.Items[:MaxObservationItems]
-	if err := AdmitObservation(*exchange.Observation); err != nil {
+	_, err = ParseWorkerConfigurationExchange(raw)
+	requireFault(t, err, "invalid_input")
+	observation.Items = observation.Items[:MaxObservationItems]
+	raw, _ = json.Marshal(model.WorkerConfigurationExchange{Observation: &observation})
+	if _, err := ParseWorkerConfigurationExchange(raw); err != nil {
 		t.Fatal(err)
 	}
 }

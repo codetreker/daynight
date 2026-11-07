@@ -33,6 +33,8 @@ Worker 按显式选择、最近成功显式 Worker、首次登记时间与 Worke
 
 目录和 Provider 分别采用当前请求显式值、该 Worker 最近成功的显式偏好、该 Worker 报告默认值。模型按单助手显式值、用户/Worker/Provider 成功偏好、目标 Provider 有效默认或原生默认解析。reasoningEffort 按显式值、用户/Worker/Provider/有效模型成功偏好、Worker 有效配置、该模型原生默认解析；Worker 有效配置包含原 args 中的 effort，不能跳过本地或云端明确值。失效历史偏好回退至有效默认；当前显式值或没有更高层覆写的 Worker 明确 effort 不兼容时拒绝。有效模型未知时不套用任何模型的 effort 偏好。args 只来自目标 Worker 的对应 Provider，切机器或 Provider 不继承另一组参数。目录须符合目标平台的绝对路径规则，不由服务端创建或检查本机同名目录。
 
+Worker 原生默认值及其来源来自受容量约束的机器报告；model、args、目录和来源项目集合遵循[快照](daynight-worker-snapshots.md#助手托管预检)及[配置协议](daynight-worker-configuration.md#有效原生配置来源)，不能从被拒绝或截断的报告推断默认值。
+
 托管观测使用服务端时间：最近报告与 assistantHost.observedAt 均须不在未来且年龄严格小于 120 秒。旧 Worker 为 unsupported；报告失联为 offline；探测过期为 stale；全部 Provider 失败为 unavailable。目标 Provider 单独失败时保留具体原因。defaults 只提供观察，不预留资源或承诺未来启动成功。没有 model/effort 覆写或成功偏好的名字创建不增加全量原生发现；需要选择校验时通过绑定 Worker 的[模型能力通道](worker-model-discovery.md)读取真实能力。预览后选择依赖机器的选项时，调用方须绑定实际 Worker；旧 Worker 未声明 `assistantHost.creationConfigurationVersion=1` 时拒绝新增明确选项。
 
 原生只读预检清理未确认时，对应 Provider 保持不可用且不得启动替代探测。只有原探测取得[可靠清理确认](daynight-worker-reporting.md#原生只读探测的清理与恢复)后，才在下一轮正常采集中绕过对应旧失败缓存重新预检；新预检成功且符合当前配置与观测时效后，才可报告可用。清理确认本身、`versions` 成功、其它 Provider 可用和已有 Bot 的持久 ready 均不能替代该 Provider 的新预检。此恢复不切换默认 Provider、不修改已冻结 Bot 或 Session，也不重放用户输入。公开 DTO、服务端创建准入与前端按钮判定保持既有规则；目标 Provider 真实不可用或观测过期时仍拒绝新建，页面刷新不保证旧 Worker 恢复。

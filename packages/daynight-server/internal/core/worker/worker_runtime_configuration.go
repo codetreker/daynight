@@ -6,8 +6,8 @@ func validateWorkerRuntimeConfiguration(configuration *model.WorkerRuntimeConfig
 	if configuration == nil {
 		return nil
 	}
-	if configuration.SchemaVersion != 1 || configuration.Projects == nil || len(configuration.Projects) > 1024 {
-		return invalidInput("Runtime configuration requires schema v1 and at most 1024 projects.")
+	if configuration.SchemaVersion != 1 || configuration.Projects == nil || len(configuration.Projects) > MaxProjects {
+		return invalidInput("Runtime configuration requires schema v1 and at most 128 projects.")
 	}
 	if err := validateWorkerRuntimeNative(configuration.Native); err != nil {
 		return err
