@@ -903,14 +903,23 @@ and disappear on completion without changing task status. The server-sample
 clock avoids client wall-clock skew but does not remove network sampling delay.
 
 
-The Web detail header places a three-item status menu beside the actual task
-title on both tabs. The current item remains selectable. Confirmation names the
-task, current/target states and timing effects; Cancel and Escape send no write.
-Status, **Automatic execution / 自动执行** and platform confirmation share one per-task mutation owner.
-Pending, stale or unknown results block conflicting writes. Current-version same-state responses
-confirm no stored change; actual changes refresh the graph. Unknown outcomes use
-GET-only reconciliation, preserving errors and never attributing the observed
-state to the uncertain request. Closing details does not roll back a submission.
+The Web shared status row offers todo, in progress, done and cancelled on every
+material tab. Cancelled tasks retain readable status and materials without
+reopen, resume or withdraw actions. The current original-state item remains
+selectable. Cancellation uses the existing confirmation with the task name,
+transition, irreversibility, retained readability and dependency consequence.
+Active claims mark cancellation unavailable and expose the existing release
+requirement on hover or keyboard focus without submitting. Dismissing the
+confirmation or pressing Escape sends no write.
+
+Status, **Automatic execution / 自动执行** and platform confirmation share one
+per-task mutation owner. Pending, stale or unknown results block conflicting
+writes. Current-version same-state responses confirm no stored change; actual
+cancellation requires cancelledAt and preserves both execution endpoints and
+other Task fields. Confirmed changes refresh the normal graph, retaining the
+cancelled node and materials. Unknown outcomes use GET-only reconciliation,
+preserving errors and never attributing observed state to the uncertain request.
+Closing details does not roll back a submission.
 
 Task details use one platform select in the left status group to display the
 confirmed requirement and offer Any platform, Windows, Linux and macOS. Choosing

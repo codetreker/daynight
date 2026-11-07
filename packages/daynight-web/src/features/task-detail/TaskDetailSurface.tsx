@@ -322,7 +322,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                   <div className="task-detail-badges">
                     <div className="task-detail-state-controls">
                       <div className="task-detail-status-assignee">
-                        <TaskStatusMenu status={detail.status} disabled={!task.canDisplayStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />
+                        <TaskStatusMenu cancelBlocked={currentClaim?.state === 'active'} status={detail.status} disabled={!task.canDisplayStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />
                         <TaskAssigneeSelect direct={direct} projectId={projectId} detail={detail} disabled={!task.canDisplayAssignee} selectionBlocked={direct && authRequestsPaused()} owner={dialogRef} resetKey={`${taskId}/${task.historyGeneration}/${fullscreen.active}`} onSelect={(assignedTo) => task.setAssignedTo(assignedTo, detail.version)} />
                       </div>
                       <TaskPlatformSelect detail={detail} disabled={!task.canDisplayRequiredPlatform} describedBy={platformFeedbackId}

@@ -291,6 +291,8 @@
 .task-status-option { display: flex; align-items: center; gap: 9px; width: 100%; border: 0; border-radius: 4px; padding: 10px 11px; font: inherit; font-size: 11px; text-align: left; background: #fff; color: #637087; cursor: pointer; }
 .task-status-option span:nth-child(2) { flex: 1; }
 .task-status-option:hover, .task-status-option:focus-visible { background: #f2f2fd; outline: 2px solid #8c8cf0; outline-offset: -2px; }
+.task-status-menu > .task-control-tip { display: flex; width: 100%; }
+.task-status-option[aria-disabled=true] { color: #8b92a0; cursor: not-allowed; }
 .task-status-option[aria-checked=true] { color: #5555ad; background: #f6f6fd; }
 @media (max-width: 600px) { .task-status-option { padding: 11px; } }
 

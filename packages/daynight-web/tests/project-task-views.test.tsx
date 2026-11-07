@@ -30,12 +30,12 @@ const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: strin
 const seeds = [seed('00000000-0000-4000-8000-000000000001', 'done'), seed('00000000-0000-4000-8000-000000000002', 'todo', ['00000000-0000-4000-8000-000000000001']), seed('00000000-0000-4000-8000-000000000003'), seed('00000000-0000-4000-8000-000000000004', 'done'), seed('00000000-0000-4000-8000-000000000005', 'in_progress')];
 const snapshot = (items = seeds, id = project): TaskGraph => {
   const tasks = items.map((item) => {
-    const blockedBy = item.dependsOn.filter((dependency) => items.find((candidate) => candidate.id === dependency)!.status !== 'done');
+    const blockedBy = item.dependsOn.filter((dependency) => items.find((candidate) => candidate.id === dependency)!.status !== 'done' && items.find((candidate) => candidate.id === dependency)!.status !== 'cancelled');
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id, repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
-      done: tasks.filter((item) => item.status === 'done').length, cancelled: 0, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
+      done: tasks.filter((item) => item.status === 'done').length, cancelled: tasks.filter((item) => item.status === 'cancelled').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
 };
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
@@ -1077,4 +1077,20 @@ describe('status-first project presentation', () => {
     expectUnfinishedCounts(4, 2);
     expect(graphRequest).toHaveBeenCalledTimes(2);
   });
+});
+
+
+it('filters cancelled membership without reducing the complete Goal progress denominator or hiding readable cancelled tasks', async () => {
+  const rootTask = seed(canonicalTask(1), 'done');
+  const cancelled = { ...seed(canonicalTask(2), 'cancelled', [rootTask.id]), cancelledAt: timestamp };
+  const standalone = { ...seed(canonicalTask(3), 'cancelled'), cancelledAt: timestamp };
+  graphRequest.mockResolvedValue(snapshot([rootTask, cancelled, standalone]));
+  mount(); await findChainRow();
+  fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'cancelled' } });
+  expect(screen.getByRole('option', { name: '已取消' })).toBeInTheDocument();
+  expect(chainRow()).toHaveTextContent('2/2 已结束 · 1 完成 · 1 取消');
+  fireEvent.click(tab('standalone')); await waitFor(() => expect(row(standalone.id)).toBeVisible());
+  expect(row(rootTask.id)).toBeNull();
+  await openStandalone(standalone.id);
+  expect(screen.getByRole('button', { name: '已取消' })).toBeDisabled();
 });

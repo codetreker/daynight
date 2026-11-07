@@ -113,7 +113,11 @@ Web 直接图模型与缓存摘要投影显式处理四态，共享前置满足�
 
 持久缓存的必需字段变化通过显式 schema 升级重建受影响的 Project、summary 和 detail 记录；未改变的 profile 格式保留。不能用缺 cancelledAt→null 兼容旧缓存。既有用户/项目 generation、历史 fence、高版本合并和同版本不一致拒绝继续适用。
 
-四态均有独立本地化文字与样式。当前已取消状态无 reopen/resume/withdraw 动作，资料继续可读。Web 的既有提交菜单仍提供原三态；非取消任务的取消提交选项不属于当前读取合同。普通状态写入保持单任务互斥、审阅历史、+0/+1 版本和 GET-only 未知结果核对。
+四态均有独立本地化文字与样式。未取消任务的菜单提供cancelled目标，并使用既有状态确认与action:status通道；已取消状态无reopen/resume/withdraw动作，资料继续可读。active claim下取消项以aria-disabled标记并通过既有TaskControlTip在悬停/焦点时说明release要求，实际提交仍由服务端保护。确认展示不可恢复、资料可读和本任务作为前置时的满足后果，不引入原因表单或远端停止动作。
+
+TaskDetailSession以原审阅身份、version与cacheGeneration核验取消。validStatusTiming显式要求实际取消保留startedAt/completedAt、新cancelledAt非空；不能落入done时间分支。成功精确+1，同状态+0；无效完整响应进入既有未知核对，后续仅GET、不重放。旧历史迟到结果不能覆盖新操作、解锁较新防重或设置删除终态。
+
+状态筛选显式支持cancelled，同时保留完整普通分量、Goal进度分母和依赖；取消前置摘要经普通delta即可使后继派生就绪性更新。状态与筛选不改变资料读取权限或原有数据保全。
 
 Goal以ended/total显示进度，同时区分done/cancelled结果。UI汇总类型TaskProgressStatus把全部done表示为done、全部cancelled表示为cancelled、混合终态表示为ended；ended不进入四态TaskStatus协议。完整普通分量保留取消节点，外部上下文不计入进度。全部结束使用所有成员当前终态时间的最大值；最近七个本地日历日、纳秒精度、未知时间和 DST 行为沿用现有时间 owner。后台同步保留菜单、阅读、滚动、图视口和焦点。
 
@@ -129,4 +133,4 @@ Worker 仅凭成功完整自有 inventory 中 claim 缺席确认所有权丢失�
 
 真实数据库验证迁移资料保全、四态组合、blocked 取消、released 取消、active/恢复/withdraw 拒绝、时间与no-op、权限和事务回滚；竞争验证cancel与claim/resume/withdraw只有一个有效结果。HTTP、MCP、CLI、图、同步和搜索验证一致字段、计数、依赖与分页 fence。
 
-CLI native 验证两种 launcher 与严格解析，Web验证显式schema重建、双图投影、持久读取、ended统计、未知结果及旧历史保护。服务端与第一方读取必要修改以同一可运行修订交付，配套server、CLI和内置Web组合验收。普通实现不隐含npm发布或生产部署权限，不回退新状态以兼容旧客户端。模块门禁、覆盖率、必要CI和真实独立批准保持。
+CLI native 验证两种 launcher 与严格解析，Web验证显式schema重建、双图投影、持久读取、ended统计、取消确认/筛选、active项禁派发、未知结果及旧历史保护。服务端与第一方读取必要修改以同一可运行修订交付，配套server、CLI和内置Web组合验收。普通实现不隐含npm发布或生产部署权限，不回退新状态以兼容旧客户端。模块门禁、覆盖率、必要CI和真实独立批准保持。
