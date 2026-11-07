@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"reflect"
 	"strings"
 	"time"
 
@@ -117,6 +116,7 @@ func archiveBodyWithTimeout(w http.ResponseWriter, r *http.Request, timeout time
 		httpx.CloseUnreadBody(w, r)
 		return nil, err
 	}
+	nativeBody := httpx.NativeHTTP1RequestBody(r)
 	stream := httpx.NewDeadlineBody(w, r, timeout)
 	body, err := io.ReadAll(http.MaxBytesReader(w, stream, sp.MaxArchiveBytes))
 	if err != nil {
@@ -130,7 +130,7 @@ func archiveBodyWithTimeout(w http.ResponseWriter, r *http.Request, timeout time
 		var readErr *httpx.BodyReadError
 		// net/http's body Close may attempt a final drain after the same
 		// expired socket deadline. Retain both causes in the timeout error.
-		if errors.As(err, &readErr) && readErr.Status == http.StatusRequestTimeout && sameReadDeadline(readErr.Cause, closeErr) {
+		if nativeBody && errors.As(err, &readErr) && readErr.Status == http.StatusRequestTimeout && sameReadDeadline(readErr.Cause, closeErr) {
 			readErr.Cause = errors.Join(readErr.Cause, closeErr)
 		} else {
 			err = archiveCleanupError(err, closeErr)
@@ -141,9 +141,14 @@ func archiveBodyWithTimeout(w http.ResponseWriter, r *http.Request, timeout time
 
 func sameReadDeadline(readErr, closeErr error) bool {
 	var readOp, closeOp *net.OpError
-	return errors.Is(readErr, os.ErrDeadlineExceeded) && errors.Is(closeErr, os.ErrDeadlineExceeded) &&
-		errors.As(readErr, &readOp) && errors.As(closeErr, &closeOp) &&
-		readOp.Op == "read" && closeOp.Op == "read" && reflect.DeepEqual(readOp, closeOp)
+	if !errors.As(readErr, &readOp) || !errors.As(closeErr, &closeOp) || readOp.Op != "read" || closeOp.Op != "read" || readOp.Net != closeOp.Net || readOp.Err != os.ErrDeadlineExceeded || closeOp.Err != os.ErrDeadlineExceeded {
+		return false
+	}
+	readSource, sourceOK := readOp.Source.(*net.TCPAddr)
+	closeSource, closeSourceOK := closeOp.Source.(*net.TCPAddr)
+	readAddr, addrOK := readOp.Addr.(*net.TCPAddr)
+	closeAddr, closeAddrOK := closeOp.Addr.(*net.TCPAddr)
+	return sourceOK && closeSourceOK && addrOK && closeAddrOK && readSource != nil && readSource == closeSource && readAddr != nil && readAddr == closeAddr
 }
 func (h *Routes) putArchive(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if err := validateArchiveBody(r); err != nil {

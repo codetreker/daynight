@@ -65,10 +65,39 @@ func TestArchiveIndependentCloseTimeoutIsNotReadTimeout(t *testing.T) {
 	}
 }
 
+func TestArchiveIndependentMatchingTimeoutsAreNotOneSocketFailure(t *testing.T) {
+	source := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1234}
+	destination := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4321}
+	readErr := &net.OpError{Op: "read", Net: "tcp", Source: source, Addr: destination, Err: os.ErrDeadlineExceeded}
+	closeErr := &net.OpError{Op: "read", Net: "tcp", Source: source, Addr: destination, Err: os.ErrDeadlineExceeded}
+	r := httptest.NewRequest(http.MethodPut, "/archive", nil)
+	r.Header.Set("Content-Type", "application/json")
+	r.Body = archiveFailingBody{readErr: readErr, closeErr: closeErr}
+	var err error
+	httpx.RequestLogging(testLogger(), http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		_, err = archiveBodyWithTimeout(w, request, time.Second)
+	})).ServeHTTP(httptest.NewRecorder(), r)
+	if !errors.Is(err, readErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("lost error causes: %v", err)
+	}
+	if fault, ok := httpx.KnownFault(err); !ok || fault.Code != "cleanup_unknown" {
+		t.Fatalf("independent close failure disguised as read timeout: %v", err)
+	}
+}
+
 func TestArchiveBodyDeadlineInterruptsSocket(t *testing.T) {
 	if transport.ArchiveBodyReadTimeout != 120*time.Second {
 		t.Fatal("archive upload deadline changed")
 	}
+	for _, expectContinue := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expect-continue-%t", expectContinue), func(t *testing.T) {
+			testArchiveBodyDeadlineSocket(t, expectContinue)
+		})
+	}
+}
+
+func testArchiveBodyDeadlineSocket(t *testing.T, expectContinue bool) {
+	t.Helper()
 	done := make(chan struct{})
 	errs := make(chan error, 1)
 	server := httptest.NewServer(httpx.RequestLogging(testLogger(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -88,10 +117,21 @@ func TestArchiveBodyDeadlineInterruptsSocket(t *testing.T) {
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = fmt.Fprint(conn, "PUT /archive HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{"); err != nil {
+	expect := ""
+	if expectContinue {
+		expect = "Expect: 100-continue\r\n"
+	}
+	if _, err = fmt.Fprintf(conn, "PUT /archive HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n%s\r\n{", expect); err != nil {
 		t.Fatal(err)
 	}
-	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	reader := bufio.NewReader(conn)
+	if expectContinue {
+		response, err := http.ReadResponse(reader, nil)
+		if err != nil || response.StatusCode != http.StatusContinue {
+			t.Fatalf("100-continue: %v %v", response, err)
+		}
+	}
+	response, err := http.ReadResponse(reader, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
