@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -133,8 +134,115 @@ func TestSafeSDKWriterKeepsResultsAndPropagatesFailures(t *testing.T) {
 func TestSafeSDKLogDiscardsUntrustedDiagnostics(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(safeSDKLog{handler: slog.NewTextHandler(&logs, nil)})
-	logger.ErrorContext(context.Background(), "private-secret", "field", "private-secret")
+	logger.With("context", "private-secret").WithGroup("private-secret").ErrorContext(context.Background(), "private-secret", "field", "private-secret")
 	if strings.Contains(logs.String(), "private-secret") || !strings.Contains(logs.String(), "MCP SDK event") {
 		t.Fatal(logs.String())
+	}
+}
+
+type sdkDeadlineWriter struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+}
+
+func (w *sdkDeadlineWriter) SetReadDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return nil
+}
+
+func TestSafeSDKWriterResponseController(t *testing.T) {
+	underlying := &sdkDeadlineWriter{ResponseRecorder: httptest.NewRecorder()}
+	w := &safeSDKWriter{ResponseWriter: &noStoreWriter{ResponseWriter: underlying}}
+	want := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
+	controller := http.NewResponseController(w)
+	if err := controller.SetReadDeadline(want); err != nil || underlying.deadline != want {
+		t.Fatalf("read deadline = %v, %v", underlying.deadline, err)
+	}
+	if err := controller.Flush(); err != nil || !underlying.Flushed {
+		t.Fatalf("flush = %v, flushed = %v", err, underlying.Flushed)
+	}
+}
+
+type failingSDKWriter struct {
+	*httptest.ResponseRecorder
+	failAt, writes int
+	short          bool
+}
+
+func (w *failingSDKWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		if w.short {
+			return 0, nil
+		}
+		return 0, io.ErrClosedPipe
+	}
+	return w.ResponseRecorder.Write(p)
+}
+
+func TestSafeSDKWriterBatchDeliveryFailure(t *testing.T) {
+	input := `[{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"private-secret"}}]`
+	for _, failAt := range []int{1, 2, 3} {
+		t.Run(string(rune('0'+failAt)), func(t *testing.T) {
+			sink := &failingSDKWriter{ResponseRecorder: httptest.NewRecorder(), failAt: failAt}
+			w := &safeSDKWriter{ResponseWriter: sink}
+			if _, err := w.Write([]byte(input)); !errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("write %d: %v", failAt, err)
+			}
+		})
+	}
+	sink := &failingSDKWriter{ResponseRecorder: httptest.NewRecorder(), failAt: 2, short: true}
+	if _, err := (&safeSDKWriter{ResponseWriter: sink}).Write([]byte(input)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write: %v", err)
+	}
+}
+
+func TestSafeSDKWriterPassesSuccessfulBodies(t *testing.T) {
+	for _, body := range []string{
+		``, `ordinary`, `[]`,
+		`{"jsonrpc":"2.0","id":1,"result":{"error":{"message":"tool result"}}}`,
+		`[{"jsonrpc":"2.0","id":1,"result":{"text":"unchanged"}}]`,
+	} {
+		w := httptest.NewRecorder()
+		if n, err := (&safeSDKWriter{ResponseWriter: w}).Write([]byte(body)); err != nil || n != len(body) || w.Body.String() != body {
+			t.Fatalf("body %q: n=%d err=%v got=%q", body, n, err, w.Body.String())
+		}
+	}
+}
+
+func TestSafeSDKWriterPreservesProtocolErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		code    int
+		message string
+	}{
+		{-32700, "Parse error"}, {-32600, "Invalid request"}, {-32601, "Method not found"}, {-32602, "Invalid params"}, {-32603, "Internal error"},
+	} {
+		body, err := json.Marshal(struct {
+			JSONRPC string `json:"jsonrpc"`
+			Error   struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}{"2.0", struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}{tc.code, "private-secret"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		if _, err := (&safeSDKWriter{ResponseWriter: w}).Write(body); err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			ID    any `json:"id"`
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.ID != nil || result.Error.Code != tc.code || result.Error.Message != tc.message || strings.Contains(w.Body.String(), "private-secret") {
+			t.Fatalf("response %s: %v", w.Body, err)
+		}
 	}
 }
