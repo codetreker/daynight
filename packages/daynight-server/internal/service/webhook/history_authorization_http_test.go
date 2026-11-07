@@ -220,9 +220,22 @@ func TestHistoryHTTPAuthorizationAndHiddenFilters(t *testing.T) {
 		}
 	}
 	status, body = f.call(t, f.host, f.member, "GET", base+"?limit=1", "")
-	var page struct{ NextCursor *string }
-	if status != 200 || json.Unmarshal(body, &page) != nil || page.NextCursor == nil {
+	var page struct {
+		NextCursor             *string
+		HistoryMayBeIncomplete bool
+		Retention              map[string]any
+	}
+	if status != 200 || json.Unmarshal(body, &page) != nil || page.NextCursor == nil || !page.HistoryMayBeIncomplete || page.Retention == nil {
 		t.Fatalf("cursor page=%d %s", status, body)
+	}
+	status, attemptBody := f.call(t, f.host, f.member, "GET", base+"/"+visibleID+"/attempts", "")
+	var attempts struct {
+		HistoryMayBeIncomplete bool
+		Retention              map[string]any
+		NextCursor             *string
+	}
+	if status != 200 || json.Unmarshal(attemptBody, &attempts) != nil || !attempts.HistoryMayBeIncomplete || attempts.Retention == nil || attempts.NextCursor != nil {
+		t.Fatalf("attempt history page=%d %s", status, attemptBody)
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(*page.NextCursor)
 	if err != nil {
