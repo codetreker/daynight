@@ -55,6 +55,16 @@ func (d *DAO) FreezeAudience(ctx context.Context, projectID string, eventTypes [
 	if len(eventTypes) == 2 && eventTypes[0] == eventTypes[1] {
 		return nil, fmt.Errorf("duplicate webhook capture event type")
 	}
+	// Retired configuration collection waits for source transactions that
+	// could have observed the old audience. An assigned top-level XID and a
+	// fresh statement snapshot make those transactions visible to its barrier.
+	var safeSource bool
+	if err := d.tx.QueryRow(ctx, `SELECT pg_current_xact_id_if_assigned() IS NOT NULL AND current_setting('transaction_isolation')='read committed'`).Scan(&safeSource); err != nil {
+		return nil, pg.QueryError("check webhook capture transaction", err)
+	}
+	if !safeSource {
+		return nil, fmt.Errorf("webhook capture requires a written read-committed source transaction")
+	}
 	rows, err := d.tx.Query(ctx, `WITH facts AS MATERIALIZED (SELECT unnest($2::text[]) AS event_type),
   scope AS MATERIALIZED (
     SELECT p.id IS NOT NULL AND p.deleted_at IS NULL AS live,

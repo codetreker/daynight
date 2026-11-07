@@ -60,8 +60,10 @@ Task, Step and Thread writes capture eligible notification responsibilities in
 their source transactions. The [capture design](../../docs/design/webhook-capture.md)
 describes the fixed audience, stored request bytes, match proof and keyring
 requirements. The [delivery design](../../docs/design/webhook-delivery.md) describes the
-explicitly started sender, authorization and recovery. Public application
-composition and management route mounting remain separate.
+explicitly started sender, authorization and recovery. The [retention design](../../docs/design/webhook-retention.md)
+and [key maintenance design](../../docs/design/webhook-key-maintenance.md) cover
+bounded reclamation and recovery. Public application composition and management
+route mounting remain separate.
 
 ## Contracts
 
