@@ -141,8 +141,9 @@ server 统一映射创建、分页、详情和改名的 Team DTO；有限删除�
 
 `core/team` 接受显式 Principal 并拥有 Team 业务规则；`service/team` 选择事务或快照并处理
 完成结果，`server/team` 负责 HTTP 适配。管理输入先严格核对 expectedUserId，再进入任何领域查询或
-事务；JSON 字符串先验证原始 Unicode 转义，core 同时验证合法 Unicode、无 NUL 和非全
-Unicode `White_Space`。名称按原文存储，重复名称合法。资源 ID 和 expectedUserId 使用规范
+事务；JSON 字符串先验证原始 Unicode 转义，core 验证合法 Unicode、无 NUL 和非全
+Unicode `White_Space`，并对名称同时执行 256 code points 和 1024 UTF-8 bytes 的准入。
+名称按原文存储，重复名称合法；容量拒绝不修改 Team 或成员关系。资源 ID 和 expectedUserId 使用规范
 小写 UUID，正 int64 元数据版本在 no-op 比较之前校验。
 
 创建作用域先锁定创建者 user，再在单一事务写入普通 Team 与创建者 admin 行；不预锁不存在的
@@ -153,7 +154,7 @@ Team。读取和列表使用同一只读 Repeatable Read 快照取得 Team 与�
 
 已有 Team 写作用域开启 Read Committed 事务并取得目标 Team `FOR UPDATE`，通过事务绑定的
 Team DAO 向 core 提供能力。取锁后读取当前真实成员并重验 admin，Personal 禁用操作先于变更；比较元数据
-version 后才接受相同原文。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
+version 后才接受相同原文，即使存量名称超出新额度；真实改名前检查名称额度。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
 成员版本、Project ownership 或 grant；同值 no-op 不采样变更时钟或执行 UPDATE。
 
 成员目录与主体资格在同一个只读快照中读取；成员行关联规范用户资料，缺少用户行是完整性
