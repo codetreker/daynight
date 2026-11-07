@@ -31,8 +31,11 @@ func (f failedSearchReader) ReadTaskSearch(context.Context, func(store.TaskSearc
 	return f.err
 }
 func serveSearch(reader store.TaskSearchReader, logs *bytes.Buffer) *httptest.Server {
+	return serveSearchWithTimeout(reader, logs, 5*time.Second)
+}
+func serveSearchWithTimeout(reader store.TaskSearchReader, logs *bytes.Buffer, timeout time.Duration) *httptest.Server {
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	h := searchHandler{reader: reader, logger: logger}
+	h := searchHandler{reader: reader, logger: logger, operationTimeout: timeout}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/search", func(w http.ResponseWriter, r *http.Request) {
 		h.search(w, r, model.Principal{Kind: model.PATCredential, UserID: searchTestID, CredentialID: searchTestID})
@@ -209,11 +212,75 @@ func TestSearchHTTPPostgresDeadlineCancelsQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	reader := &blockingPostgresReader{pool: pool}
+	observer, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Release()
+	ready, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready.Release()
+	reader := &blockingPostgresReader{pool: pool, started: make(chan struct{})}
 	var logs bytes.Buffer
-	server := serveSearch(reader, &logs)
+	server := serveSearchWithTimeout(reader, &logs, 500*time.Millisecond)
 	defer server.Close()
-	status, body := postSearch(t, server, `{"query":"private query"}`)
+	type responseResult struct {
+		status int
+		body   string
+		cache  string
+		err    error
+	}
+	done := make(chan responseResult, 1)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/projects/"+searchTestID+"/tasks/search", strings.NewReader(`{"query":"private query"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			done <- responseResult{err: err}
+			return
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		done <- responseResult{status: response.StatusCode, body: string(body), cache: response.Header.Get("Cache-Control"), err: err}
+	}()
+	select {
+	case <-reader.started:
+	case <-ctx.Done():
+		t.Fatal("database query did not start")
+	case result := <-done:
+		t.Fatalf("request finished before database query started: %+v", result)
+	}
+	for {
+		var running bool
+		if err := observer.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND state='active' AND query='SELECT pg_sleep(30)')", reader.pid.Load()).Scan(&running); err != nil {
+			t.Fatal(err)
+		}
+		if running {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("database sleep was not observed")
+		case result := <-done:
+			t.Fatalf("request finished before database sleep was observed: %+v", result)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	var result responseResult
+	select {
+	case result = <-done:
+	case <-ctx.Done():
+		t.Fatal("search deadline did not finish the request")
+	}
+	if result.err != nil || result.cache != "no-store" {
+		t.Fatalf("response: %+v", result)
+	}
+	status, body := result.status, result.body
 	if status != 504 || !strings.Contains(body, `"search_timeout"`) {
 		t.Fatalf("status=%d body=%s logs=%s", status, body, logs.String())
 	}
@@ -243,10 +310,14 @@ func TestSearchHTTPTransactionFailureIsNotTimeout(t *testing.T) {
 	}
 }
 
-type failedCompletionReader struct{ cleanup bool }
+type failedCompletionReader struct {
+	cleanup bool
+	expired chan error
+}
 
 func (r failedCompletionReader) ReadTaskSearch(ctx context.Context, _ func(store.TaskSearchSnapshot) error) error {
 	<-ctx.Done()
+	r.expired <- ctx.Err()
 	if r.cleanup {
 		return &store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: errors.Join(ctx.Err(), errors.New("cleanup failed"))}
 	}
@@ -261,9 +332,18 @@ func TestSearchHTTPDeadlineDoesNotHideCompletionFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			var logs bytes.Buffer
-			server := serveSearch(failedCompletionReader{cleanup: test.cleanup}, &logs)
+			expired := make(chan error, 1)
+			server := serveSearchWithTimeout(failedCompletionReader{cleanup: test.cleanup, expired: expired}, &logs, 500*time.Millisecond)
 			defer server.Close()
 			status, body := postSearch(t, server, `{"query":"cache"}`)
+			select {
+			case err := <-expired:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("operation did not reach its deadline: %v", err)
+				}
+			default:
+				t.Fatal("reader did not observe the operation deadline")
+			}
 			if status != 500 || !strings.Contains(body, `"internal_error"`) || !strings.Contains(logs.String(), `"cause":"database"`) {
 				t.Fatalf("status=%d body=%s logs=%s", status, body, logs.String())
 			}

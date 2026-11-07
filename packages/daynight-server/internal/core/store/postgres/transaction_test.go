@@ -119,7 +119,7 @@ func TestReadOnlySnapshotPreservesAdditionalCleanupFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(bounded, 3*time.Second)
+	ctx, cancel := context.WithTimeout(bounded, time.Second)
 	defer cancel()
 	cleanup := errors.New("extra cleanup failure")
 	err = transactReadOnly(ctx, &rollbackFailureTx{Tx: tx, failure: cleanup}, func(tx pgx.Tx) error { return interruptObservedQuery(t, ctx, nil, observer, tx) })
