@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
 
@@ -124,7 +125,7 @@ func (s *Projects) DeletionPreview(ctx context.Context, p model.Principal, id st
 				connectivity := "unknown"
 				if f.LastSeenAt != nil {
 					connectivity = "offline"
-					if out.ObservedAt.Sub(*f.LastSeenAt) < 120*time.Second {
+					if workercore.ActiveAt(*f.LastSeenAt, out.ObservedAt) {
 						connectivity = "online"
 					}
 				}
