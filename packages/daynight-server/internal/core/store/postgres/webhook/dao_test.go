@@ -42,6 +42,13 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 	if _, err = conn.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
+	migration, err = os.ReadFile("../migrations/051_webhook_delivery.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, string(migration)); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -53,6 +60,17 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 	ep := model.Endpoint{ID: uuid.NewString(), Owner: owner, Name: "example", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationCiphertext: sampleEnvelope(t), ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
 	if err = d.PutEndpoint(ctx, ep); err != nil {
 		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE webhook_endpoint_waits SET not_before=$2 WHERE endpoint_id=$1 AND destination_revision=1`, ep.ID, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	ep.DestinationRevision = 2
+	if err = d.PutEndpoint(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+	var wait *time.Time
+	if err = tx.QueryRow(ctx, `SELECT not_before FROM webhook_endpoint_waits WHERE endpoint_id=$1 AND destination_revision=2`, ep.ID).Scan(&wait); err != nil || wait != nil {
+		t.Fatalf("new destination inherited wait: %v, %v", wait, err)
 	}
 	got, err := d.Endpoint(ctx, owner, ep.ID)
 	if err != nil || got.Name != ep.Name || !bytes.Equal(got.DestinationCiphertext, ep.DestinationCiphertext) {
@@ -128,6 +146,9 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 func (t *captureTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	t.sql, t.args = sql, args
 	return pgconn.NewCommandTag("INSERT 0 1"), t.err
+}
+func (t *captureTx) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
+	return rowFunc(func(v ...any) error { *v[0].(*int64) = 2; return nil })
 }
 func sampleEnvelope(t *testing.T) []byte {
 	t.Helper()

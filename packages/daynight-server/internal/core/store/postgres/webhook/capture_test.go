@@ -41,6 +41,7 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 		{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, []any{teamID, userID}},
 		{`INSERT INTO projects(id,name,repo_url) VALUES($1,'capture','capture')`, []any{projectID}},
 		{`INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, []any{projectID, teamID}},
+		{`INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'source')`, []any{taskID, projectID}},
 	} {
 		if _, err = conn.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatal(err)
@@ -162,6 +163,107 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 		t.Fatalf("persisted matches=%d err=%v", count, err)
 	}
 	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	admissionTx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := New(admissionTx).AdmissionSources(ctx, delivery.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedDelivery, err := New(admissionTx).LockDelivery(ctx, delivery.ID)
+	if err != nil || lockedDelivery.ID != delivery.ID || !sources.ProjectEligible || !sources.TaskPresent || !sources.EndpointPresent || sources.Endpoint.DestinationRevision != 2 || len(sources.Matches) != 51 {
+		t.Fatalf("admission sources=%+v delivery=%+v err=%v", sources, lockedDelivery, err)
+	}
+	for _, match := range sources.Matches {
+		if !match.Continuous {
+			t.Fatal("original active proof lost continuity")
+		}
+	}
+	if err = admissionTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// An authorization revocation that takes the membership row first must
+	// block admission, which then observes the committed loss of access.
+	blockedCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	writer, err := other.Begin(blockedCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(context.Background())
+	var writerPID int
+	if err = writer.QueryRow(blockedCtx, `SELECT pg_backend_pid()`).Scan(&writerPID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = writer.Exec(blockedCtx, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, userID); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := pgx.Connect(blockedCtx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close(context.Background())
+	var readerPID int
+	if err = reader.QueryRow(blockedCtx, `SELECT pg_backend_pid()`).Scan(&readerPID); err != nil {
+		t.Fatal(err)
+	}
+	type admissionResult struct {
+		sources store.WebhookAdmissionSources
+		err     error
+	}
+	result := make(chan admissionResult, 1)
+	go func() {
+		tx, e := reader.Begin(blockedCtx)
+		if e != nil {
+			result <- admissionResult{err: e}
+			return
+		}
+		s, e := New(tx).AdmissionSources(blockedCtx, delivery.ID, now)
+		_ = tx.Rollback(context.Background())
+		result <- admissionResult{s, e}
+	}()
+	for {
+		var blocked bool
+		if err = conn.QueryRow(blockedCtx, `SELECT $1::integer = ANY(pg_blocking_pids($2))`, writerPID, readerPID).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			break
+		}
+		select {
+		case <-blockedCtx.Done():
+			t.Fatal("admission did not block on revocation")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err = writer.Commit(blockedCtx); err != nil {
+		t.Fatal(err)
+	}
+	observed := <-result
+	if observed.err != nil || observed.sources.ProjectEligible {
+		t.Fatalf("revocation observed eligible=%v err=%v", observed.sources.ProjectEligible, observed.err)
+	}
+	if _, err = conn.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, `UPDATE projects SET deleted_at=$2 WHERE id=$1`, projectID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, `DELETE FROM teams WHERE id=$1`, teamID); err != nil {
+		t.Fatal(err)
+	}
+	admissionTx, err = conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err = New(admissionTx).AdmissionSources(ctx, delivery.ID, now)
+	if err != nil || sources.ProjectEligible {
+		t.Fatalf("deleted project with removed Team: eligible=%v err=%v", sources.ProjectEligible, err)
+	}
+	if err = admissionTx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
 	// A failed match insert aborts the event and delivery alongside source writes.

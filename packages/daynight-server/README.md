@@ -59,8 +59,9 @@ live Provider acceptance.
 Task, Step and Thread writes capture eligible notification responsibilities in
 their source transactions. The [capture design](../../docs/design/webhook-capture.md)
 describes the fixed audience, stored request bytes, match proof and keyring
-requirements. This module does not send notifications or mount the management
-routes in the public application.
+requirements. The [delivery design](../../docs/design/webhook-delivery.md) describes the
+explicitly started sender, authorization and recovery. Public application
+composition and management route mounting remain separate.
 
 ## Contracts
 
