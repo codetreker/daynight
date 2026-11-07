@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { decodeWorkerCloudJsonSource, parseWorkerCloudDesired, parseWorkerCloudItem, parseWorkerCloudReceipt, parseWorkerCloudRevision, parseWorkerCloudValue } from "../../api/worker-configuration.js";
 import { canonicalId } from "../../api/parse.js";
+import { ProtocolError } from "../../api/validation.js";
 import type { WorkerCloudDesired, WorkerCloudFailure, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import { replaceFileAtomically } from "../../platform/files.js";
 
@@ -30,6 +31,8 @@ export type WorkerConfigurationManagerOptions = {
   readonly applyNative: (native: WorkerCloudNative, signal: AbortSignal) => Promise<void>;
   readonly onChange?: (snapshot: WorkerConfigurationSnapshot) => void;
   readonly onError?: (error: unknown) => void;
+  readonly onCapacity?: (revision: string) => void;
+  readonly onInvalidDesired?: (revision: string) => void;
   readonly now?: () => number;
   readonly persist?: (file: string, contents: string) => Promise<void>;
 };
@@ -37,6 +40,7 @@ type StoredItem = { readonly value: WorkerCloudItem; readonly attempts: number; 
 type Cache = { readonly schemaVersion: 1; readonly identity: WorkerConfigurationIdentity; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly nextFailureId: number; readonly items: readonly StoredItem[] };
 type Job = { readonly revision: string; readonly controller: AbortController; readonly promise: Promise<void> };
 const retryDelays = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
+class WorkerConfigurationCapacityError extends RangeError {}
 const keyOf = (key: WorkerCloudItemKey): string => `${key.kind}:${"projectId" in key ? key.projectId : ""}`;
 const equal = (first: unknown, second: unknown): boolean => JSON.stringify(first) === JSON.stringify(second);
 const freeze = <T>(value: T): T => {
@@ -58,11 +62,12 @@ const parseCache = (source: string, identity: WorkerConfigurationIdentity): Cach
   const data = exactObject(decodeWorkerCloudJsonSource(source), ["schemaVersion", "identity", "desired", "observationRevision", "nextFailureId", "items"]);
   const scope = exactObject(data.identity, ["serverOrigin", "userId", "workerId"]);
   if (data.schemaVersion !== 1 || scope.serverOrigin !== identity.serverOrigin || scope.userId !== identity.userId || scope.workerId !== identity.workerId) throw new Error("Worker configuration cache identity or schema does not match this Worker.");
-  const desired = data.desired === null ? null : parseWorkerCloudDesired(data.desired);
+  // Historical cache entries are read structurally so a new valid target can repair them.
+  const desired = data.desired === null ? null : parseWorkerCloudDesired(data.desired, false);
   if (!Array.isArray(data.items)) throw new TypeError("Worker configuration cache items must be an array.");
   const seen = new Set<string>();
   const items = data.items.map(entry => {
-    const stored = exactObject(entry, ["value", "attempts", "failureId", "started"]), value = parseWorkerCloudItem(stored.value), key = keyOf(value.key);
+    const stored = exactObject(entry, ["value", "attempts", "failureId", "started"]), value = parseWorkerCloudItem(stored.value, false), key = keyOf(value.key);
     const failureId = stored.failureId === null ? null : counter(stored.failureId, 1);
     if (seen.has(key) || desired === null || BigInt(value.targetRevision) > BigInt(desired.revision) || typeof stored.started !== "boolean" || stored.started && value.key.kind !== "projectRemoval" || (value.lastFailure === null) !== (failureId === null)) throw new TypeError("Worker configuration cache has inconsistent application results.");
     seen.add(key);
@@ -134,6 +139,16 @@ const desiredTransition = (cache: Cache, desired: WorkerCloudDesired | null): Ca
   if (desired === null) return { ...cache, desired: null, items: [] };
   const priorSelected = new Set(cache.desired?.value.projects.map(project => project.projectId));
   const selected = new Set(desired.value.projects.map(project => project.projectId));
+  const projected = new Set(cache.items.map(item => keyOf(item.value.key)));
+  for (const project of desired.value.projects) {
+    const key: WorkerCloudItemKey = { kind: "projectRemoval", projectId: project.projectId }, removal = findItem(cache, key);
+    if (removal !== undefined && !removal.started && removal.value.lastFailure === null) projected.delete(keyOf(key));
+    projected.add(keyOf({ kind: "projectPreparation", projectId: project.projectId }));
+    projected.add(keyOf({ kind: "projectNative", projectId: project.projectId }));
+  }
+  for (const kind of ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "native"] as const) projected.add(keyOf({ kind }));
+  for (const projectId of priorSelected) if (!selected.has(projectId)) projected.add(keyOf({ kind: "projectRemoval", projectId }));
+  if (projected.size > 1024 && projected.size > cache.items.length) throw new WorkerConfigurationCapacityError("Worker configuration observation has no capacity for additional items.");
   const nextCache = { ...cache, desired };
   const items = new Map(cache.items.map(item => [keyOf(item.value.key), item]));
   const update = (key: WorkerCloudItemKey, reset = false): void => {
@@ -170,6 +185,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   options.signal.throwIfAborted();
   const validatedNative = new Map<string, WorkerCloudNative>();
   let synchronized = false, published = snapshot(cache, false, validatedNative), stopped = false, queued = false;
+  let deferredDesired: WorkerCloudDesired | null = null;
   let tail = Promise.resolve(), fatal: { error: unknown } | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let adapters: WorkerConfigurationProjectAdapters = {};
@@ -181,6 +197,24 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     }
   };
   const check = (): void => { if (fatal !== undefined) throw fatal.error; };
+  const transition = (current: Cache, desired: WorkerCloudDesired): Cache => {
+    const candidate = deferredDesired !== null && BigInt(deferredDesired.revision) > BigInt(desired.revision) ? deferredDesired : desired;
+    try { parseWorkerCloudDesired(candidate); }
+    catch (error) {
+      if (!(error instanceof ProtocolError)) throw error;
+      if (deferredDesired?.revision !== candidate.revision) options.onInvalidDesired?.(candidate.revision);
+      deferredDesired = candidate;
+      return current;
+    }
+    if (current.desired !== null && (BigInt(candidate.revision) < BigInt(current.desired.revision) || equal(candidate, current.desired))) { deferredDesired = null; return current; }
+    try { const next = desiredTransition(current, candidate); deferredDesired = null; return next; }
+    catch (error) {
+      if (!(error instanceof WorkerConfigurationCapacityError)) throw error;
+      if (deferredDesired?.revision !== candidate.revision) options.onCapacity?.(candidate.revision);
+      deferredDesired = candidate;
+      return current;
+    }
+  };
   const kick = (): void => {
     if (queued || stopped || fatal !== undefined || !synchronized) return;
     queued = true;
@@ -200,7 +234,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         const item = findItem(cache, proof.key);
         if (item?.value.targetRevision === proof.revision && equal(item.value.appliedValue, proof.native)) validatedNative.set(keyOf(proof.key), proof.native);
       }
-      published = snapshot(cache, synchronized, validatedNative);
+      published = snapshot(cache, synchronized && deferredDesired === null, validatedNative);
       options.onChange?.(published);
       kick();
     });
@@ -210,8 +244,9 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   const runnable = (item: StoredItem): boolean => {
     if (item.value.state === "applied" || item.value.state === "applying" || item.value.nextAttemptAt !== null && Date.parse(item.value.nextAttemptAt) > now()) return false;
     const key = item.value.key;
+    if (deferredDesired !== null && key.kind !== "projectRemoval") return false;
     if (deferred.has(`${keyOf(key)}:${item.value.targetRevision}`)) return false;
-    if (key.kind === "projectRemoval") return adapters.remove !== undefined && (!cache.desired?.value.projects.some(project => project.projectId === key.projectId) || item.started);
+    if (key.kind === "projectRemoval") return adapters.remove !== undefined && (item.started || !cache.desired?.value.projects.some(project => project.projectId === key.projectId) && !deferredDesired?.value.projects.some(project => project.projectId === key.projectId));
     if (target(cache, key) === null) return false;
     if (key.kind === "projectPreparation") return adapters.prepare !== undefined && !hasUnfinishedRemoval(cache, key.projectId);
     return true;
@@ -220,13 +255,21 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     const key = original.value.key, revision = original.value.targetRevision;
     const prepare = adapters.prepare, remove = adapters.remove;
     let intended = target(cache, key), began = false;
+    const resetCancelled = async (): Promise<void> => {
+      if (stopped) return;
+      await commit(current => {
+        const item = findItem(current, key);
+        return item === undefined || item.value.targetRevision !== revision || item.value.state !== "applying" ? current : replaceItem(current, { ...item, value: { ...item.value, state: "pending", error: null, nextAttemptAt: null } });
+      });
+    };
     await commit(current => {
       const item = findItem(current, key);
       if (stopped || controller.signal.aborted || item === undefined || item.value.targetRevision !== revision || !runnable(item)) return current;
       intended = target(current, key); began = true;
       return replaceItem(current, { ...item, started: key.kind === "projectRemoval" || item.started, value: { ...item.value, state: "applying", error: null, nextAttemptAt: null } });
     });
-    if (!began || controller.signal.aborted) return;
+    if (!began) return;
+    if (controller.signal.aborted) { await resetCancelled(); return; }
     let outcome: { succeeded: true } | { succeeded: false; error: unknown } = { succeeded: true }, preparationDeferred = false;
     let validated: WorkerCloudNative | undefined;
     try {
@@ -237,7 +280,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       else if (key.kind === "projectPreparation") preparationDeferred = await prepare!(key.projectId, controller.signal) === false;
       else if (key.kind === "projectRemoval") await remove!(key.projectId, controller.signal);
     } catch (error) { outcome = { succeeded: false, error }; }
-    if (stopped || controller.signal.aborted) return;
+    if (stopped) return;
+    if (controller.signal.aborted) { await resetCancelled(); return; }
     if (!outcome.succeeded && (key.kind === "native" || key.kind === "projectNative")) {
       const previous = findItem(cache, key)?.value.appliedValue;
       if (typeof previous === "object" && previous !== null && !equal(previous, intended) && !equal(previous, validatedNative.get(keyOf(key)))) {
@@ -247,7 +291,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         }
       }
     }
-    if (stopped || controller.signal.aborted) return;
+    if (stopped) return;
+    if (controller.signal.aborted) { await resetCancelled(); return; }
     if (preparationDeferred) {
       await commit(current => {
         const item = findItem(current, key);
@@ -270,7 +315,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
     for (const [key, job] of jobs) {
       const item = cache.items.find(item => keyOf(item.value.key) === key);
-      if (item === undefined || item.value.targetRevision !== job.revision || item.value.key.kind === "projectPreparation" && target(cache, item.value.key) === null) job.controller.abort(new Error("Worker configuration target changed."));
+      if (item === undefined || item.value.targetRevision !== job.revision || deferredDesired !== null && item.value.key.kind !== "projectRemoval" || item.value.key.kind === "projectPreparation" && target(cache, item.value.key) === null) job.controller.abort(new Error("Worker configuration target changed."));
     }
     for (const item of cache.items) {
       const key = keyOf(item.value.key);
@@ -293,11 +338,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   return {
     current: (): WorkerConfigurationSnapshot => published,
     receive: async (desired: WorkerCloudDesired | null, observationRevision?: string): Promise<void> => {
-      const parsed = desired === null ? null : parseWorkerCloudDesired(desired), revision = observationRevision === undefined ? undefined : parseWorkerCloudRevision(observationRevision, true);
+      const parsed = desired === null ? null : parseWorkerCloudDesired(desired, false), revision = observationRevision === undefined ? undefined : parseWorkerCloudRevision(observationRevision, true);
       await commit(current => {
         if (stopped) throw new Error("Worker configuration manager is stopped.");
         const obsolete = synchronized && parsed !== null && current.desired !== null && BigInt(parsed.revision) < BigInt(current.desired.revision);
-        let next = obsolete || equal(current.desired, parsed) ? current : desiredTransition(current, parsed);
+        let next = obsolete ? current : parsed === null ? desiredTransition(current, null) : transition(current, parsed);
         if (!synchronized && parsed !== null) next = { ...next, items: next.items.map(item => item.value.key.kind === "native" || item.value.key.kind === "projectNative" || item.value.key.kind === "projectPreparation"
           ? { ...item, value: { ...item.value, state: "pending", error: null, nextAttemptAt: null } } : item) };
         if (revision !== undefined && (!synchronized || BigInt(revision) > BigInt(current.observationRevision))) next = { ...next, observationRevision: revision };
@@ -317,18 +362,21 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       if (acknowledged === undefined) throw new Error("Worker configuration report was not captured by this manager.");
       if (parsed.observationAccepted && (sent.observation === null || BigInt(parsed.observationRevision) !== BigInt(sent.observation.baseRevision) + 1n || parsed.desired === null || BigInt(parsed.desired.revision) < BigInt(sent.observation.desiredRevision))) throw new Error("Worker configuration receipt does not acknowledge the submitted observation.");
       await commit(current => {
-        let next = parsed.desired !== null && (current.desired === null || BigInt(parsed.desired.revision) > BigInt(current.desired.revision)) ? desiredTransition(current, parsed.desired) : current;
+        let next = current;
         if (BigInt(parsed.observationRevision) > BigInt(next.observationRevision)) next = { ...next, observationRevision: parsed.observationRevision };
         if (parsed.observationAccepted) {
           next = { ...next, items: next.items.map(item => item.failureId !== null && acknowledged.get(keyOf(item.value.key)) === item.failureId ? { ...item, failureId: null, value: { ...item.value, lastFailure: null } } : item) };
-          const selected = new Set(next.desired?.value.projects.map(project => project.projectId));
+          const selected = new Set([...(next.desired?.value.projects.map(project => project.projectId) ?? []), ...(parsed.desired?.value.projects.map(project => project.projectId) ?? [])]);
+          const removals = new Set<string>();
           const completed = new Set(next.items.flatMap(item => {
             const key = item.value.key;
-            if (key.kind !== "projectRemoval" || selected.has(key.projectId) || item.value.state !== "applied" || next.items.some(other => "projectId" in other.value.key && other.value.key.projectId === key.projectId && other.failureId !== null)) return [];
-            return sent.observation?.items.some(sentItem => keyOf(sentItem.key) === keyOf(key) && sentItem.targetRevision === item.value.targetRevision && sentItem.state === "applied") ? [key.projectId] : [];
+            if (key.kind !== "projectRemoval" || item.value.state !== "applied" || item.failureId !== null || !sent.observation?.items.some(sentItem => keyOf(sentItem.key) === keyOf(key) && sentItem.targetRevision === item.value.targetRevision && sentItem.state === "applied")) return [];
+            if (selected.has(key.projectId)) { removals.add(keyOf(key)); return []; }
+            return next.items.some(other => "projectId" in other.value.key && other.value.key.projectId === key.projectId && other.failureId !== null) ? [] : [key.projectId];
           }));
-          if (completed.size !== 0) next = { ...next, items: next.items.filter(item => !("projectId" in item.value.key) || !completed.has(item.value.key.projectId)) };
+          if (completed.size !== 0 || removals.size !== 0) next = { ...next, items: next.items.filter(item => !removals.has(keyOf(item.value.key)) && (!("projectId" in item.value.key) || !completed.has(item.value.key.projectId))) };
         }
+        if (parsed.desired !== null) next = transition(next, parsed.desired);
         return next;
       }, true);
       sentFailures.delete(sent);
@@ -343,6 +391,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         const previous = findItem(current, key);
         // A cached result does not prove that the new coordinator observed stopped resources.
         if (previous !== undefined) return previous.value.state === "applied" ? replaceItem(current, { ...previous, value: { ...previous.value, state: "pending", error: null, nextAttemptAt: null } }) : current;
+        if (current.items.length >= 1024) throw new RangeError("Worker configuration observation has no capacity for additional items.");
         const value: WorkerCloudItem = { key, targetRevision: current.desired.revision, appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null };
         return { ...current, items: [...current.items, { value, attempts: 0, failureId: null, started: false }].sort((a, b) => keyOf(a.value.key).localeCompare(keyOf(b.value.key))) };
       });

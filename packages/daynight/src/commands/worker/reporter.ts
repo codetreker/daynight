@@ -175,15 +175,27 @@ export const createWorkerReporter = (options: {
     trigger,
     publishInventory: (value) => {
       if (stopped) return;
-      inventory = value === null ? null : copyInventory(value);
+      if (value !== null && value.claims.length > 256) {
+        inventory = null;
+        fail("inventory", "collect", new RangeError("Worker claim inventory exceeds 256 items."));
+      } else {
+        inventory = value === null ? null : copyInventory(value);
+        if (value !== null) recover("inventory", "collect");
+      }
       trigger();
     },
     recordClaim: (reference) => {
       if (stopped) return;
-      if (inventory !== null) inventory = Object.freeze({
-        observedAt: inventory.observedAt,
-        claims: Object.freeze([...inventory.claims.filter(claim => claim.taskId !== reference.taskId), copyReference(reference)]),
-      });
+      if (inventory !== null) {
+        const replacing = inventory.claims.some(claim => claim.taskId === reference.taskId);
+        if (!replacing && inventory.claims.length >= 256) {
+          inventory = null;
+          fail("inventory", "collect", new RangeError("Worker claim inventory exceeds 256 items."));
+        } else inventory = Object.freeze({
+          observedAt: inventory.observedAt,
+          claims: Object.freeze([...inventory.claims.filter(claim => claim.taskId !== reference.taskId), copyReference(reference)]),
+        });
+      }
       trigger();
     },
     stop: async () => {

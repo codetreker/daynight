@@ -48,7 +48,7 @@ describe("worker configuration", () => {
     expect(() => parse({ future: true, repositories: [{ ...repo, path: null, future: true }] })).toThrow("worker.repositories[0].path");
   });
 
-  it.each([1, 5_000, 12_345, 2_147_483_647])("preserves the explicit polling interval %i", (pollIntervalMs) => {
+  it.each([1_000, 5_000, 12_345, 60_000])("preserves the explicit polling interval %i", (pollIntervalMs) => {
     expect(parse({ pollIntervalMs }).pollIntervalMs).toBe(pollIntervalMs);
   });
 

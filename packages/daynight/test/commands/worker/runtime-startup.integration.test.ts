@@ -45,7 +45,7 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { maxConcurrent, pollIntervalMs: 1, recoveryLimit: 3, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
 const resource = (target: WorkerCloudDesired | null): WorkerCloudResource => ({ desired: target, observationRevision: "0", observation: null });
 const fixture = async (warm = false, configured = true) => {
@@ -110,6 +110,35 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("starts reporting a full cache and adopts a deferred target after acknowledged removal", async () => {
+    const f = await fixture(true, false), cancellation = new AbortController(); cancellations.add(cancellation);
+    const old = desired([]), next: WorkerCloudDesired = { ...desired([uuid(10)]), revision: "2" };
+    const stored = (key: Record<string, string>, appliedValue: unknown, state = "applied", started = false) => ({ value: { key, targetRevision: "1", appliedValue, state, error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started });
+    const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "native" }, old.value.native)];
+    for (let n = 0; n < 1020; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(10 + n) }, n < 2 ? true : null, n < 2 ? "applied" : "pending", n === 0));
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 1, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: old, observationRevision: "0", nextFailureId: 1, items }));
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(next));
+    let assertionFailure: unknown;
+    mocks.reporter.mockImplementation((options: ReporterOptions) => {
+      queueMicrotask(() => { void (async () => {
+        try {
+          const sent = options.configuration!.capture();
+          expect(sent.observation?.items).toHaveLength(1024);
+          expect(sent.observation?.desiredRevision).toBe("1");
+          await options.configuration!.accept(sent, { desired: next, observationRevision: "1", observationAccepted: true });
+          const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8"));
+          expect(saved.desired.revision).toBe("2");
+          expect(saved.items.some((entry: { value: { key: { kind: string; projectId?: string } } }) => entry.value.key.kind === "projectRemoval" && entry.value.key.projectId === uuid(10))).toBe(false);
+        } catch (error) { assertionFailure = error; }
+        finally { cancellation.abort(); }
+      })(); });
+      return reporter();
+    });
+    await runWorker({ ...f, signal: cancellation.signal });
+    if (assertionFailure !== undefined) throw assertionFailure;
+    expect(mocks.reporter).toHaveBeenCalledOnce();
+  }, 30_000);
   it("applies persistent local overrides to registered cloud targets without rewriting desired", async () => {
     const f = await fixture(), cancellation = new AbortController();
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, agentControlMode: "web", agentModel: "local-model", agentReasoningEffort: "high" } }));
@@ -129,7 +158,7 @@ describe("worker cloud-first startup", () => {
   it.each([true, false])("retains unavailable local IDs and reports fallback sources with local overrides=%s", async overrides => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
-    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", model: "local-model", args: ["-c", 'model_reasoning_effort="low"'], ...(overrides ? { agentModel: "local-model", agentReasoningEffort: "high" } : {}), repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1 } }));
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", model: "local-model", args: ["-c", 'model_reasoning_effort="low"'], ...(overrides ? { agentModel: "local-model", agentReasoningEffort: "high" } : {}), repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1000 } }));
     let available = false;
     const unavailable = new ApiError({ operation: "project.show" }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -194,7 +223,7 @@ describe("worker cloud-first startup", () => {
   it("invalidates an unavailable fallback project before another project's lookup finishes", async () => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
-    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1 } }));
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1000 } }));
     const unavailable = new ApiError({ operation: "project.show", projectId: uuid(1) }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
     let firstAvailable = false, blockSecond = false, entered = false;
     let release!: () => void;

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { ApiError } from "../../../src/api/client.js";
+import { OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerReport } from "../../../src/api/types.js";
 import type { WorkerCloudDesired, WorkerCloudReport, WorkerCloudReportReceipt } from "../../../src/api/worker-configuration.js";
@@ -114,6 +115,18 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it("rechecks the cloud target after a locally oversized report", async () => {
+    const f = await fixture(), remote = mocks.remote(); mocks.remote.mockClear();
+    report.mockImplementationOnce(async () => { throw new ApiError({ operation: "worker.reportConfiguration" }, "prepare", { cause: new OperationError("request_limit") }); });
+    const running = start(f);
+    await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
+    expect(remote.configuration).toHaveBeenCalledOnce();
+    target = { ...target, revision: "2", value: { ...target.value, maxConcurrent: 2 } };
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(remote.configuration).toHaveBeenCalledTimes(2));
+    await eventually(() => expect(report.mock.calls.at(-1)![2].observation?.desiredRevision).toBe("2"));
+    f.signal.abort(); await running;
+  });
   it("reports effective local sources separately and restores cloud sources after restart", async () => {
     const f = await fixture();
     const writeConfiguration = (overrides: object) => writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "web", ...overrides } }));
@@ -262,7 +275,7 @@ describe("worker runtime configuration reporting", () => {
     const f = await fixture(); const running = start(f);
     await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
     const original = mocks.coordinator.mock.results[0]!.value;
-    target = { revision: "2", updatedAt: workerTelemetryTime, value: { ...target.value, maxConcurrent: 3, pollIntervalMs: 250, recoveryLimit: 8, native: { agent: "codex", model: "new-model", args: [] } } };
+    target = { revision: "2", updatedAt: workerTelemetryTime, value: { ...target.value, maxConcurrent: 3, pollIntervalMs: 1000, recoveryLimit: 8, native: { agent: "codex", model: "new-model", args: [] } } };
     await vi.advanceTimersByTimeAsync(30_000);
     await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 3, globalConfiguration: expect.objectContaining({ model: "new-model", recoveryLimit: 8 }) })));
     expect(mocks.coordinator).toHaveBeenCalledOnce(); expect(original.tick).toHaveBeenCalledOnce(); expect(shutdown).not.toHaveBeenCalled();
@@ -349,7 +362,7 @@ describe("worker runtime configuration reporting", () => {
 
   it("wakes an existing long polling wait when readiness or the applied interval changes", async () => {
     const f = await fixture(), prepared = deferred<void>();
-    const longInterval = 2_000_000_000;
+    const longInterval = 60_000;
     target = { ...target, value: { ...target.value, pollIntervalMs: longInterval } };
     prepare.mockImplementation(() => prepared.promise);
     const tick = vi.fn(async () => {});
@@ -376,9 +389,9 @@ describe("worker runtime configuration reporting", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await eventually(() => expect(update.mock.calls.length).toBeGreaterThan(updatesBeforeAcknowledgment));
     expect(previousWait.aborted).toBe(false); expect(tick).toHaveBeenCalledTimes(ticksBeforeAcknowledgment);
-    target = { ...target, revision: "2", value: { ...target.value, pollIntervalMs: 25 } };
+    target = { ...target, revision: "2", value: { ...target.value, pollIntervalMs: 1000 } };
     await vi.advanceTimersByTimeAsync(30_000);
-    await eventually(() => { expect(previousWait.aborted).toBe(true); expect(tick.mock.calls.length).toBeGreaterThan(ticksBeforeAcknowledgment); expect(mocks.delay.mock.calls.some(([milliseconds]) => milliseconds === 25)).toBe(true); });
+    await eventually(() => { expect(previousWait.aborted).toBe(true); expect(tick.mock.calls.length).toBeGreaterThan(ticksBeforeAcknowledgment); expect(mocks.delay.mock.calls.some(([milliseconds]) => milliseconds === 1000)).toBe(true); });
     f.signal.abort(); await running;
   });
 
@@ -398,7 +411,7 @@ describe("worker runtime configuration reporting", () => {
 
   it("reports an unavailable native tuple while independent scalar settings remain applied", async () => {
     const f = await fixture(), backend = deferred<() => string>();
-    target = { ...target, value: { ...target.value, maxConcurrent: 4, pollIntervalMs: 250, recoveryLimit: 8 } };
+    target = { ...target, value: { ...target.value, maxConcurrent: 4, pollIntervalMs: 1000, recoveryLimit: 8 } };
     mocks.prompt.mockImplementation(() => backend.promise);
     mocks.probe.mockRejectedValue(new Error("private-native-probe-output"));
     const running = start(f);
@@ -416,7 +429,7 @@ describe("worker runtime configuration reporting", () => {
       expect(report.mock.calls.length).toBeGreaterThan(before);
       expect(report.mock.calls.at(-1)![2].observation!.items).toEqual(expect.arrayContaining([
         expect.objectContaining({ key: { kind: "maxConcurrent" }, appliedValue: 4, state: "applied" }),
-        expect.objectContaining({ key: { kind: "pollIntervalMs" }, appliedValue: 250, state: "applied" }),
+        expect.objectContaining({ key: { kind: "pollIntervalMs" }, appliedValue: 1000, state: "applied" }),
         expect.objectContaining({ key: { kind: "recoveryLimit" }, appliedValue: 8, state: "applied" }),
         expect.objectContaining({ key: { kind: "native" }, appliedValue: null, state: "error", error: expect.any(Object), lastFailure: expect.any(Object) }),
         expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, appliedValue: null, state: "error", error: expect.any(Object), lastFailure: expect.any(Object) }),

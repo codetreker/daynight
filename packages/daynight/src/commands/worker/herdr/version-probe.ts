@@ -15,7 +15,7 @@ export const parseNativeAgentVersion = (agent: NativeVersionAgent, output: strin
   const match = agent === "codex" ? /^codex-cli (\d+\.\d+\.\d+)(?:\s|$)/m.exec(output)
     : agent === "claude" ? /^(\d+\.\d+\.\d+) \(Claude Code\)(?:\s|$)/m.exec(output)
     : /^GitHub Copilot CLI (\d+\.\d+\.\d+)(?:[.\s]|$)/m.exec(output);
-  if (match === null) throw new NativeVersionOutputError(agent);
+  if (match === null || Buffer.byteLength(match[1]!) > 256) throw new NativeVersionOutputError(agent);
   return match[1]!;
 };
 

@@ -64,7 +64,7 @@ export const workerRuntimeConfigurationReport = (effective: {
   native: WorkerCloudNative | null;
   projects: readonly { projectId: string; native: WorkerCloudNative | null }[];
 }, mode: AgentControlMode, local: WorkerLocalNativeOverrides, configurationSource: "local" | "cloud" = "cloud"): WorkerRuntimeConfiguration | undefined => {
-  if (effective.projects.length > 1024) return undefined;
+  if (effective.projects.length > 128) return undefined;
   const report = (native: WorkerCloudNative | null): WorkerRuntimeNative | null => {
     if (native === null) return null;
     const value = normalizeWorkerNative(native, mode, local).report;

@@ -9,10 +9,14 @@ import (
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfiguration, error) {
+	if err := AdmitConfiguration(value); err != nil {
+		return model.WorkerConfiguration{}, InputLimit(err)
+	}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return model.WorkerConfiguration{}, invalidInput("Worker configuration is invalid.")
@@ -58,9 +62,16 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if actual != expected {
 		return model.WorkerConfigurationResource{}, &model.Fault{Code: "version_conflict", Message: "Worker configuration revision does not match."}
 	}
-	current.Desired.Value, err = NormalizeConfiguration(current.Desired.Value)
-	if err != nil {
-		return model.WorkerConfigurationResource{}, err
+	normalized, err := NormalizeConfiguration(current.Desired.Value)
+	if err == nil {
+		current.Desired.Value = normalized
+	} else {
+		// A previously stored value can exceed the current admission policy.
+		// Permit replacement by a valid candidate without calling it a no-op.
+		var violation *limit.Violation
+		if !errors.As(err, &violation) {
+			return model.WorkerConfigurationResource{}, err
+		}
 	}
 	if err := configurationProjects(ctx, dao, principal.UserID, current.Desired, value); err != nil {
 		return model.WorkerConfigurationResource{}, err

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
@@ -89,6 +91,9 @@ func configurationNative(raw json.RawMessage, overrides bool) (model.WorkerNativ
 			}
 		}
 	}
+	if err := nativeLimits("native", value); err != nil {
+		return value, nil, InputLimit(err)
+	}
 	// Re-encoding each node gives equal override values one canonical representation.
 	normalized := make(map[string]json.RawMessage, len(fields))
 	if _, ok := fields["agent"]; ok {
@@ -132,6 +137,9 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 	if err := configurationDecode(fields["projects"], &projects); err != nil {
 		return value, err
 	}
+	if err := upper("projects", int64(len(projects)), MaxProjects, "items"); err != nil {
+		return value, InputLimit(err)
+	}
 	value.Projects = make([]model.WorkerProjectConfiguration, 0, len(projects))
 	seen := make(map[string]bool, len(projects))
 	for _, raw := range projects {
@@ -158,6 +166,12 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 		value.Projects = append(value.Projects, project)
 	}
 	slices.SortFunc(value.Projects, func(a, b model.WorkerProjectConfiguration) int { return strings.Compare(a.ProjectID, b.ProjectID) })
+	if err := AdmitConfiguration(value); err != nil {
+		return value, InputLimit(err)
+	}
+	if _, err := workerprotocol.EncodeConfiguration(io.Discard, value, MaxConfigurationJSONBytes); err != nil {
+		return value, InputLimit(err)
+	}
 	return value, nil
 }
 
@@ -205,10 +219,14 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 	if err != nil {
 		return nil, err
 	}
-	var observation model.WorkerConfigurationObservation
-	if err := json.Unmarshal(fields["observation"], &observation); err != nil {
+	var header struct {
+		BaseRevision    string `json:"baseRevision"`
+		DesiredRevision string `json:"desiredRevision"`
+	}
+	if err := json.Unmarshal(fields["observation"], &header); err != nil {
 		return nil, invalidInput("Configuration observation is invalid.")
 	}
+	observation := model.WorkerConfigurationObservation{BaseRevision: header.BaseRevision, DesiredRevision: header.DesiredRevision}
 	if _, err := ConfigurationRevision(observation.BaseRevision, true); err != nil {
 		return nil, err
 	}
@@ -219,6 +237,9 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 	var items []json.RawMessage
 	if err := configurationDecode(observationFields["items"], &items); err != nil {
 		return nil, err
+	}
+	if err := upper("observation.items", int64(len(items)), MaxObservationItems, "items"); err != nil {
+		return nil, InputLimit(err)
 	}
 	observation.Items = make([]model.WorkerConfigurationItem, 0, len(items))
 	seen := make(map[model.WorkerConfigurationItemKey]bool, len(items))
@@ -313,5 +334,8 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		observation.Items = append(observation.Items, item)
 	}
 	exchange.Observation = &observation
+	if err := AdmitObservation(observation); err != nil {
+		return nil, InputLimit(err)
+	}
 	return exchange, nil
 }
