@@ -27,6 +27,8 @@ export const graph: GraphMessages = {
   external: 'External prerequisite',
   nodeLabel: ({ title, status, blocked, external }) => [title, status, ...(blocked ? ['blocked'] : []), ...(external ? ['external prerequisite'] : [])].join(', '),
   details: 'Details',
+  expandExternal: 'Expand',
+  expandExternalLabel: ({ title }) => `Expand ${title} in its task or Goal`,
   detailsLabel: ({ title }) => `${title}, Details`,
   inspectionSuffix: { normal: '', selected: ', selected', prerequisite: ', prerequisite of the selected task', unrelated: ', outside the selected dependency path' },
   hiddenPrerequisites: ({ count: value }) => `${count(value, 'additional upstream task is', 'additional upstream tasks are')} hidden`,

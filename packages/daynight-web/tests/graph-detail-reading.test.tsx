@@ -18,8 +18,7 @@ const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<T
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 const graph = completeContextGraph;
-const rootId = graph.tasks.find((task) => task.titlePreview === '外部上下文 · 链内交付起点')!.id;
-const selectedId = graph.tasks.find((task) => task.titlePreview === '外部前置 · 菱形合流')!.id;
+const selectedId = graph.tasks.find((task) => task.titlePreview === '链内最终交付')!.id;
 const detailNode = graph.tasks.find((task) => task.titlePreview === '链内最终交付')!;
 const detail: TaskDetail = {
   ...detailNode, version: 2n, projectId: graph.project.id, title: detailNode.titlePreview,
@@ -72,18 +71,19 @@ describe('graph inspection and detail reading integration', () => {
     const view = render(<ProjectPage projectId={graph.project.id} />, { container: root });
     await selectTaskList();
     await user.click(await screen.findByRole('button', { name: '外部上下文 · 链内交付起点，查看依赖关系' }));
-    await waitFor(() => { expect(root.querySelectorAll('.react-flow__node')).toHaveLength(6); });
+    await waitFor(() => { expect(root.querySelectorAll('.react-flow__node')).toHaveLength(3); });
     await waitFor(() => { expect(root.querySelector<HTMLElement>('.react-flow__viewport')!.style.transform).not.toBe('translate(0px,0px) scale(1)'); });
     const selected = root.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${selectedId}"] .task-node-body`)!;
     await user.click(selected);
     expect(selected).toHaveAttribute('aria-pressed', 'true');
     const state = graphSnapshot(root);
+    expect(state.hiddenUpstream).toBe('3');
     expect(state.nodes.filter((node) => node.inspection === 'selected').map((node) => node.id)).toEqual([selectedId]);
     expect(state.nodes.filter((node) => node.inspection === 'prerequisite').map((node) => node.id)).toEqual(
-      [14, 15, 16].map((number) => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`),
+      [17, 30].map((number) => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`),
     );
-    expect(state.nodes.filter((node) => node.inspection === 'unrelated').map((node) => node.id)).toEqual([rootId, detailNode.id]);
-    expect(state.edges.filter((edge) => edge.inspection === 'highlighted')).toHaveLength(4);
+    expect(state.nodes.filter((node) => node.inspection === 'unrelated').map((node) => node.id)).toEqual([]);
+    expect(state.edges.filter((edge) => edge.inspection === 'highlighted')).toHaveLength(2);
     const trigger = within(root.querySelector<HTMLElement>(`.react-flow__node[data-id="${detailNode.id}"]`)!).getByRole('button', { name: `${detail.title}，详情` });
     await user.click(trigger);
     const dialog = await screen.findByRole('dialog', { name: detail.title });

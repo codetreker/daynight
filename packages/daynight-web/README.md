@@ -1516,8 +1516,13 @@ requires the external set to be a subset; missing or null fields are protocol
 errors. Graph equality and detail freshness include classification, so a
 marker-only change invalidates the corresponding content without inventing a
 new timestamp. Clock-only samples still retain graph/index identity. Chain
-membership uses ordinary-edge weak components; relationship labels and dashed
-edges use the persisted marker independently of outside-component card context.
+membership uses ordinary-edge weak components. A Goal projection contains all
+ordinary members plus their direct external prerequisites, deduplicated by task
+ID, and all real edges whose endpoints are in that projection. It does not follow
+ordinary or external ancestry from contextual tasks. Complete prerequisite
+inspection still uses the project index and counts hidden ancestors beyond this
+one-hop projection. Relationship labels and dashed edges use the persisted
+marker independently of outside-component card context.
 The complete model is specified in the
 [external dependency design](../../docs/design/daynight-external-dependencies.md).
 
@@ -1580,7 +1585,12 @@ unmount order restores the original scrolling state. Neither dialog opening nor
 fullscreen is saved as a browsing preference. The [graph-dialog
 decision](../../.agents/notes/archived/feature/2026-10-26-task-chain-graph-dialog.md) records the rationale for graph presentation and preserves the original [fullscreen
 rationale](../../.agents/notes/archived/feature/2026-10-22-task-graph-fullscreen.md).
-Each node has sibling native inspection, Details and direction controls. A long
+Each node has sibling native inspection, Details and expansion controls.
+Ordinary members retain progressive direction controls. An external card has an
+Expand button that opens its ordinary-component Goal graph, or closes the origin
+graph and opens the existing task reader for a standalone task. Goal navigation
+locates the destination page, clears only filters hiding it and uses its own graph
+direction. External ancestry is not added to the origin canvas. A long
 graph starts with its root visible at readable zoom; keyboard focus brings
 offscreen nodes into view. In normal mode, the centered body-portal dialog has
 a 960px maximum width, 24px viewport gutters (12px at 600px and below), and a
@@ -2108,19 +2118,24 @@ API errors expose fixed safe text and a validated request ID; raw response bodie
 and server diagnostics do not reach the page. Project names and addresses render
 as text. The API parser verifies DTO shape and resource identity. The implemented graph
 model separately verifies dependency closure, acyclicity, status/readiness and
-summary consistency. It projects root descendants plus their complete ancestor
-closure, excluding unrelated descendants of contextual tasks. `mainIds` retains
-chain membership; `externalIds` identifies additional ancestors. Complete projection P retains every required dependency. Visibility selects
-S and all real edges with both endpoints in S; external classification still
-depends on source membership in P−M. It derives distinct root progress and aggregate chain status from main
-tasks in the same traversal, and marks shared tasks. The Dagre
+summary consistency. It derives ordinary-edge weak components and their current
+representatives. `mainIds` contains the complete ordinary component;
+`externalIds` contains only its direct external prerequisites outside that
+component, deduplicated by task ID. Projection P is their union and retains every
+real edge whose endpoints are in P; context does not recurse. Visibility selects
+S and all real edges with both endpoints in S. Edge classification comes from the
+persisted `externalDependsOn` marker, including external shortcuts within an
+ordinary component. Progress and aggregate chain status count main members only,
+and each task has one ordinary-component membership. Complete ancestry remains
+available to inspection through the full project index. The Dagre
 adapter returns finite left-to-right or top-to-bottom node positions and routed edge points for
-220px-wide visible cards with 96px compact or 136px expandable heights. The
+220px-wide visible cards with 96px compact or 136px action-footer heights.
+External cards retain the 136px footer for their independent Expand action. The
 read-only React Flow canvas consumes these results without changing domain
 objects. React Flow owns task nodes with those exact dimensions, native ResizeObserver measurement,
 keyboard behavior, viewport and controls. One memoized SVG in its public
 ViewportPortal renders every planned M/L/C path, with stable edge identity,
-arrowheads, external-context dashes and accessibility semantics. It shares the viewport's
+arrowheads, explicit external-edge dashes and accessibility semantics. It shares the viewport's
 transform, so selection/pan/zoom reuse geometry without per-edge reactive state.
 Canonical routes retain native arrow markers and the full planned geometry.
 Passages use cubic Bézier curves entirely within empty rank gaps, with controls on the gap midpoint at the respective endpoint cross-axis coordinates. Tangents follow the selected direction and join free passages through intermediate ranks, which retain sixteen units of clearance from cards. The

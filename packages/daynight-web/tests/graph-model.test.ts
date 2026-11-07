@@ -103,6 +103,10 @@ describe("ordinary dependency components", () => {
     expect(index.nodes.get(B)).toMatchObject({ blockedBy: [A], ready: false });
     expect(index.successors.get(B)).toEqual([C]);
     expect(projectChain(index, B)).toMatchObject({ rootId: B, mainIds: new Set([B]), externalIds: new Set([A]), completed: 0 });
+    const final = projectChain(index, C);
+    expect(final.externalIds).toEqual(new Set([B]));
+    expect(final.edges).toEqual([{ source: B, target: C, external: true }]);
+    expect(tracePrerequisites(index, C)).toEqual(new Set([A, B, C]));
   });
 
   it("merges and splits membership when only edge classification changes", () => {
@@ -181,7 +185,7 @@ describe("ordinary dependency components", () => {
   });
 });
 
-describe("complete prerequisite projection", () => {
+describe("direct external prerequisite projection", () => {
   it("keeps an external shortcut dashed when both endpoints remain ordinary-connected members", () => {
     const index = buildGraphIndex(graph([
       { id: A, status: "done" }, { id: B, status: "done", dependsOn: [A] },
@@ -197,7 +201,7 @@ describe("complete prerequisite projection", () => {
     ]);
   });
 
-  it("includes recursive external prerequisites with their original edge flags and excludes unrelated successors", () => {
+  it("includes every direct external prerequisite and excludes their ancestors and unrelated successors", () => {
     const index = buildGraphIndex(graph([
       { id: A, status: "done" }, { id: B }, { id: C, status: "done" },
       { id: D, status: "done", dependsOn: [A] }, { id: E, dependsOn: [B] }, { id: F, status: "done", dependsOn: [C] },
@@ -205,13 +209,12 @@ describe("complete prerequisite projection", () => {
     ]));
     const projection = projectChain(index, A);
     expect(projection.mainIds).toEqual(new Set([A, D, G, H]));
-    expect(projection.externalIds).toEqual(new Set([B, C, E, F]));
+    expect(projection.externalIds).toEqual(new Set([E, F]));
     expect(projection.externalIds.has(I)).toBe(false);
     expect(projection.completed).toBe(2);
     expect(index.components.get(A)!.progress).toEqual({ total: 4, done: 2, status: "in_progress" });
     expect(projection.edges).toEqual([
-      { source: A, target: D, external: false }, { source: B, target: E, external: false },
-      { source: C, target: F, external: false }, { source: D, target: G, external: false },
+      { source: A, target: D, external: false }, { source: D, target: G, external: false },
       { source: E, target: G, external: true }, { source: F, target: G, external: true },
       { source: G, target: H, external: false },
     ]);
@@ -265,7 +268,7 @@ describe("complete prerequisite projection", () => {
     expect(index.components.get(B)!.progress).toEqual({ total: 1, done: status === "done" ? 1 : 0, status });
   });
 
-  it("deduplicates completed shared ancestors across recursive external context", () => {
+  it("keeps shared completed ancestors out of the projection and component counters", () => {
     const ancestors = Array.from({ length: 4 }, (_, position) => ({
       id: `external-${position}`, status: "done" as const,
       dependsOn: position === 0 ? [] : [`external-${position - 1}`],
@@ -278,8 +281,8 @@ describe("complete prerequisite projection", () => {
     ]));
     const projection = projectChain(index, A);
     expect(projection.mainIds).toEqual(new Set([A, D]));
-    expect(projection.externalIds.size).toBe(6);
-    expect(projection.edges).toHaveLength(8);
+    expect(projection.externalIds).toEqual(new Set([B, C]));
+    expect(projection.edges).toHaveLength(3);
     expect(projection.completed).toBe(0);
     expect(index.components.get(A)!.progress).toEqual({ total: 2, done: 0, status: "todo" });
     expect(projection.edges.filter((edge) => edge.external)).toHaveLength(2);

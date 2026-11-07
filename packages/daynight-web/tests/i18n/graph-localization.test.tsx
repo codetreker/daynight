@@ -37,6 +37,19 @@ const ready = async (container: HTMLElement) => {
 beforeEach(installGraphMeasurements);
 
 describe('localized task graph presentation', () => {
+  it('translates the external navigation action while retaining its native button and callback', async () => {
+    const navigate = vi.fn();
+    const view = renderWithLocale(<TaskGraph index={index} rootId="A" onOpenTask={noop} onNavigateExternalTask={navigate} />, { locale: 'en' });
+    await ready(view.container);
+    const button = screen.getByRole('button', { name: 'Expand 设计方案 in its task or Goal' });
+    expect(button).toHaveTextContent('Expand');
+    view.setLocale('zh-CN');
+    expect(screen.getByRole('button', { name: '展开 设计方案 所属的任务或 Goal' })).toBe(button);
+    expect(button).toHaveTextContent('展开');
+    fireEvent.click(button);
+    expect(navigate).toHaveBeenCalledWith('B', button);
+  });
+
   it('retranslates waiting chain roots and nodes while preserving external context, node identity and layout', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const waitingGraph: GraphData = {

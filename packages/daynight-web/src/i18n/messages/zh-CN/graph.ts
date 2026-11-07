@@ -26,6 +26,8 @@ export const graph: GraphMessages = {
   external: '外部前置',
   nodeLabel: ({ title, status, blocked, external }) => [title, status, ...(blocked ? ['被阻塞'] : []), ...(external ? ['外部前置'] : [])].join('，'),
   details: '详情',
+  expandExternal: '展开',
+  expandExternalLabel: ({ title }) => `展开 ${title} 所属的任务或 Goal`,
   detailsLabel: ({ title }) => `${title}，详情`,
   inspectionSuffix: { normal: '', selected: '，已选中', prerequisite: '，所选任务的前置', unrelated: '，不在所选依赖路径中' },
   hiddenPrerequisites: ({ count }) => `另有${number(count)}个上游未展开`,
