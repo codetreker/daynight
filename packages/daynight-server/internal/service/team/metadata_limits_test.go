@@ -3,9 +3,11 @@ package team_test
 import (
 	"context"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
@@ -57,5 +59,47 @@ func TestRenameMetadataLimitPreservesAuthorizationAndVersionPriority(t *testing.
 	got, err = teams.Get(ctx, admin, team.ID)
 	if err != nil || got.Name == nil || *got.Name != "Original" || got.Version != math.MaxInt64 {
 		t.Fatalf("exhausted rename changed Team: %#v %v", got, err)
+	}
+}
+
+func TestRenameLegacyOverLimitNameNoOp(t *testing.T) {
+	_, db, _, admin := projectService(t)
+	teams := teamservice.NewTeams(db)
+	ctx := context.Background()
+	name := strings.Repeat("😀", 256) + "a"
+	for _, version := range []int64{7, math.MaxInt64} {
+		team := newTestTeam(t, teams, admin, "Original")
+		if _, err := db.Pool.Exec(ctx, `UPDATE teams SET name=$2,version=$3 WHERE id=$1`, team.ID, name, version); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := func() string {
+			t.Helper()
+			var state string
+			err := db.Pool.QueryRow(ctx, `SELECT jsonb_build_object('team',(SELECT to_jsonb(t) FROM teams t WHERE id=$1),'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY user_id) FROM team_members m WHERE team_id=$1))::text`, team.ID).Scan(&state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return state
+		}
+		before := snapshot()
+		original, err := teams.Get(ctx, admin, team.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input := coreteam.ChangeTeam{Name: name, Version: version, ExpectedUserID: admin.UserID}
+		for _, bounded := range []bool{false, true} {
+			var got model.Team
+			if bounded {
+				got, err = teams.RenameBounded(ctx, admin, team.ID, input, 1<<20)
+			} else {
+				got, err = teams.Rename(ctx, admin, team.ID, input)
+			}
+			if err != nil || !reflect.DeepEqual(got, original) {
+				t.Fatalf("version %d bounded %t: got %#v, err %v", version, bounded, got, err)
+			}
+			if after := snapshot(); after != before {
+				t.Fatalf("version %d bounded %t changed stored rows", version, bounded)
+			}
+		}
 	}
 }

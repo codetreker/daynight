@@ -195,14 +195,14 @@ func Rename(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, inpu
 	if err != nil {
 		return model.Team{}, err
 	}
-	if *t.Name != input.Name && t.Version == math.MaxInt64 {
+	if *t.Name == input.Name {
+		return t, nil
+	}
+	if t.Version == math.MaxInt64 {
 		return model.Team{}, &model.Fault{Code: "version_exhausted", Message: "Team version is exhausted."}
 	}
 	if err := ValidateName(input.Name); err != nil {
 		return model.Team{}, err
-	}
-	if *t.Name == input.Name {
-		return t, nil
 	}
 	return dao.Rename(ctx, p.UserID, input.Name)
 }

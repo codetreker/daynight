@@ -34,5 +34,6 @@ consume more storage and output bytes than a byte budget allows.
 
 All creation and rename paths share the domain rules without truncating input.
 The bounds apply to new candidates; they do not scan or rewrite stored data.
+An exact-name Team rename remains a no-op even for a legacy oversized name.
 Repository parsing and matching retain their existing formats and semantics,
 including unique visible matches that need no creation confirmation.

@@ -154,7 +154,7 @@ Team。读取和列表使用同一只读 Repeatable Read 快照取得 Team 与�
 
 已有 Team 写作用域开启 Read Committed 事务并取得目标 Team `FOR UPDATE`，通过事务绑定的
 Team DAO 向 core 提供能力。取锁后读取当前真实成员并重验 admin，Personal 禁用操作先于变更；比较元数据
-version 后才接受相同原文。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
+version 后才接受相同原文，即使存量名称超出新额度；真实改名前检查名称额度。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
 成员版本、Project ownership 或 grant；同值 no-op 不采样变更时钟或执行 UPDATE。
 
 成员目录与主体资格在同一个只读快照中读取；成员行关联规范用户资料，缺少用户行是完整性

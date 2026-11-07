@@ -179,7 +179,7 @@ Team API 使用既有 session/PAT、Cookie 写请求 Origin 校验、`Daynight-U
 任意登录用户可创建普通 Team；Team 与创建者的真实 admin 行原子提交。普通名称必须是合法
 Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原始文字及首尾空白完整保存，
 允许重名，且同时不超过 256 个 Unicode code points 和 1024 个 UTF-8 bytes。通用请求大小限制保持。
-超限名称、未知、重复、缺失、null、错误类型字段、非法 Unicode 转义、非规范 UUID，以及非正或越界版本
+创建或真实改名时的超限名称、未知、重复、缺失、null、错误类型字段、非法 Unicode 转义、非规范 UUID，以及非正或越界版本
 返回 `400 invalid_input`；名称拒绝不改变 Team、成员关系或版本。
 
 所有 Team 管理写入在任何领域 SQL 前核对 expectedUserId 与实际 principal；错主体返回
@@ -188,7 +188,7 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 `409 personal_team_immutable`。
 
 改名先比较元数据 version，过期请求即使 name 恰与当前原文相同也返回 `409 version_conflict`。
-精确版本下的相同原文是 no-op，保留版本和全部时间；真实名称改变使元数据版本加一。
+精确版本下的相同原文是 no-op，保留版本和全部时间；这也适用于限额生效前保存的超长名称。真实名称改变使元数据版本加一。
 元数据版本达到最大正 int64 时仍接受同值 no-op，真实改名返回 `409 version_exhausted`。
 删除同时核对精确元数据版本和当前名称原文，任一不符返回 `409 version_conflict`；只有没有
 活跃 Project 的 ownership 引用的普通 Team 可删除，否则返回 `409 team_not_empty`。删除原子移除
