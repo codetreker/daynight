@@ -18,7 +18,7 @@ type failedTeamPreflightDB struct {
 	writes int
 }
 
-func (d *failedTeamPreflightDB) WriteTeam(context.Context, string, func(store.TeamWriteDAO) error) (store.Completion, error) {
+func (d *failedTeamPreflightDB) WriteTeam(context.Context, string, func(store.TeamWriteScope) error) (store.Completion, error) {
 	d.writes++
 	return store.Completion{}, errors.New("unexpected write")
 }

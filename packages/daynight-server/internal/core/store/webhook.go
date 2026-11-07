@@ -18,12 +18,15 @@ type WebhookReadScope interface {
 	CredentialDAO() CredentialReader
 	TeamDAO() TeamReader
 	WebhookDAO() WebhookReader
+	EligibilityDAO() WebhookEligibilityDAO
 	ObservedAt(context.Context) (time.Time, error)
 }
 
 type WebhookWriteScope interface {
 	WebhookReadScope
 	WebhookWriter() WebhookWriter
+	// LockConfigurationSources fences project and team sources before endpoint locks.
+	LockConfigurationSources(context.Context, webhook.Owner, string, []string) error
 	// LockAuthority takes the Team root and relationship locks for an owner.
 	// Personal authority is checked against the principal by the caller.
 	LockAuthority(context.Context, webhook.Owner, string) error
@@ -35,6 +38,8 @@ type WebhookReader interface {
 	Endpoint(context.Context, webhook.Owner, string) (webhook.Endpoint, error)
 	Endpoints(context.Context, webhook.Owner) ([]webhook.Endpoint, error)
 	SigningKeys(context.Context, string) ([]webhook.SigningKey, error)
+	Subscriptions(context.Context, string) ([]webhook.Subscription, error)
+	Bindings(context.Context, string) ([]webhook.Binding, error)
 	Operation(context.Context, webhook.Owner, string) (webhook.Operation, error)
 	Policy(context.Context, int64) (webhook.Policy, error)
 }
@@ -42,6 +47,9 @@ type WebhookReader interface {
 type WebhookWriter interface {
 	WebhookReader
 	LockEndpoint(context.Context, webhook.Owner, string) (webhook.Endpoint, error)
+	LockSubscriptions(context.Context, string) ([]webhook.Subscription, error)
+	PutSubscription(context.Context, webhook.Subscription) error
+	PutBinding(context.Context, webhook.Binding) error
 	PutEndpoint(context.Context, webhook.Endpoint) error
 	PutSigningKey(context.Context, webhook.SigningKey) error
 	DeleteSigningKeys(context.Context, string) error

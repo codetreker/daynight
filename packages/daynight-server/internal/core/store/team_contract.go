@@ -11,7 +11,13 @@ import (
 // The DAO is valid only inside its transaction callback.
 type TeamWriter interface {
 	CreateTeam(context.Context, string, func(TeamCreationDAO) error) (Completion, error)
-	WriteTeam(context.Context, string, func(TeamWriteDAO) error) (Completion, error)
+	WriteTeam(context.Context, string, func(TeamWriteScope) error) (Completion, error)
+}
+
+// TeamWriteScope binds Team and cross-module DAOs to the same locked transaction.
+type TeamWriteScope interface {
+	TeamDAO() TeamWriteDAO
+	EligibilityDAO() WebhookEligibilityDAO
 }
 
 type TeamCreationDAO interface {

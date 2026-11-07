@@ -4,7 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"sort"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
 
 	"github.com/google/uuid"
 
@@ -18,8 +22,80 @@ import (
 
 type webhookScope struct{ *Snapshot }
 
-func (s *webhookScope) WebhookDAO() store.WebhookReader    { return dbwebhook.New(s.tx) }
-func (s *webhookScope) WebhookWriter() store.WebhookWriter { return dbwebhook.New(s.tx) }
+func (s *webhookScope) EligibilityDAO() store.WebhookEligibilityDAO { return eligibility.New(s.tx) }
+func (s *webhookScope) WebhookDAO() store.WebhookReader             { return dbwebhook.New(s.tx) }
+func (s *webhookScope) WebhookWriter() store.WebhookWriter          { return dbwebhook.New(s.tx) }
+
+// LockConfigurationSources fences both present and absent relationships through their roots.
+func (s *webhookScope) LockConfigurationSources(ctx context.Context, owner webhook.Owner, actor string, projects []string) error {
+	ids := append([]string(nil), projects...)
+	sort.Strings(ids)
+	unique := ids[:0]
+	for _, id := range ids {
+		if len(unique) == 0 || unique[len(unique)-1] != id {
+			unique = append(unique, id)
+		}
+	}
+	teams := map[string]bool{}
+	if owner.Kind == "team" {
+		teams[owner.ID] = true
+	}
+	live := make([]string, 0, len(unique))
+	for _, id := range unique {
+		var deleted bool
+		err := s.tx.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM projects WHERE id=$1 FOR UPDATE`, id).Scan(&deleted)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return pg.QueryError("lock webhook Project", err)
+		}
+		if !deleted {
+			live = append(live, id)
+		}
+	}
+	for _, id := range live {
+		var team string
+		err := s.tx.QueryRow(ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1 FOR SHARE`, id).Scan(&team)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("live project ownership missing")
+		}
+		if err != nil {
+			return pg.QueryError("lock webhook ownership", err)
+		}
+		teams[team] = true
+	}
+	teamIDs := make([]string, 0, len(teams))
+	for id := range teams {
+		teamIDs = append(teamIDs, id)
+	}
+	sort.Strings(teamIDs)
+	for _, id := range teamIDs {
+		var found string
+		err := s.tx.QueryRow(ctx, `SELECT id::text FROM teams WHERE id=$1 FOR UPDATE`, id).Scan(&found)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return pg.QueryError("lock webhook Team", err)
+		}
+	}
+	for _, id := range teamIDs {
+		var found string
+		err := s.tx.QueryRow(ctx, `SELECT user_id::text FROM team_members WHERE team_id=$1 AND user_id=$2 FOR SHARE`, id, actor).Scan(&found)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return pg.QueryError("lock webhook membership", err)
+		}
+	}
+	for _, id := range live {
+		var found string
+		err := s.tx.QueryRow(ctx, `SELECT user_id::text FROM project_grants WHERE project_id=$1 AND user_id=$2 FOR SHARE`, id, actor).Scan(&found)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return pg.QueryError("lock webhook grant", err)
+		}
+	}
+	return nil
+}
 func (s *webhookScope) LockCredential(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
 	return pg.ThreadCredential(ctx, s.tx, p, " FOR SHARE")
 }

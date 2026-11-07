@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 )
 
 // Catalog reports supported event metadata and the selected immutable policy.
@@ -26,7 +27,7 @@ func (s *Service) Catalog(ctx context.Context, principal model.Principal) (any, 
 		if err != nil {
 			return err
 		}
-		names := []string{"task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"}
+		names := core.EventTypes[:]
 		items := make([]any, 0, len(names))
 		for _, name := range names {
 			items = append(items, map[string]any{"key": name, "wireType": "cc.daynight." + name + ".v1", "schemaVersion": 1, "resourceKind": "project"})

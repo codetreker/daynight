@@ -8,9 +8,9 @@ Webhook owners need to change destinations and signing credentials without expos
 
 ## Decision
 
-The management module uses an owner-scoped operation fence and stores a receipt in the same transaction as the configuration effect. A subsequent authorized snapshot supplies the current projection after the write connection is released. Receipts bind normalized intent separately from the received body digest. PostgreSQL stores recoverable AES-GCM envelopes in independently indexed columns bound to their resource and purpose. The routes are independently mountable; application registration and subscriptions remain separate responsibilities. Versioned typed policies set time and retention rules without maintaining storage quotas.
+The management module uses an owner-scoped operation fence and stores a receipt in the same transaction as the configuration effect. A subsequent authorized snapshot supplies the current projection after the write connection is released. Receipts bind normalized intent separately from the received body digest. PostgreSQL stores recoverable AES-GCM envelopes in independently indexed columns bound to their resource and purpose. The routes are independently mountable; application registration and event delivery remain separate responsibilities. Versioned typed policies set time and retention rules without maintaining storage quotas.
 
-[The management design](../../../docs/design/webhook-management.md) describes the boundaries.
+[The management design](../../../../docs/design/webhook-management.md) describes the boundaries.
 
 ## Alternatives
 
@@ -24,4 +24,4 @@ The management module uses an owner-scoped operation fence and stores a receipt 
 
 ## Consequences
 
-A lost commit result remains unknown until the original operation is read; a missing or unauthorized receipt does not prove rollback. Master-key recovery depends on retaining the keys needed by existing ciphertext. Endpoint subscriptions, dispatch, and background rekey are outside this module.
+A lost commit result remains unknown until the original operation is read; a missing or unauthorized receipt does not prove rollback. Master-key recovery depends on retaining the keys needed by existing ciphertext. Dispatch and background rekey are outside this module.

@@ -153,6 +153,9 @@ var projectSoftDeleteSQL string
 //go:embed migrations/048_webhook_management.sql
 var webhookManagementSQL string
 
+//go:embed migrations/049_webhook_subscriptions.sql
+var webhookSubscriptionsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -209,6 +212,7 @@ var schemaMigrations = []migration{
 	{version: 46, sql: taskCancelledSQL},
 	{version: 47, sql: loginScopeSQL},
 	{version: 48, sql: webhookManagementSQL},
+	{version: 49, sql: webhookSubscriptionsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

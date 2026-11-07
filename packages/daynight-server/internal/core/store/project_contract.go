@@ -35,6 +35,7 @@ type ProjectCreationTeam struct {
 }
 
 type ProjectWriteScope interface {
+	EligibilityDAO() WebhookEligibilityDAO
 	ProjectDAO() ProjectWriteDAO
 	TaskDAO() TaskWriteDAO
 	SessionDAO() ProjectSessionDAO
