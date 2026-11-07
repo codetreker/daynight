@@ -246,15 +246,22 @@ func TestProductionArchiveDeletionSerializesBothOrders(t *testing.T) {
 				waited := make(chan error, 1)
 				go func() { waited <- waitServiceBotLock(waitCtx, f) }()
 				var uploadErr, waitErr error
-				var uploadFinished bool
+				var uploadFinished, waitFinished bool
 				select {
 				case uploadErr = <-upload:
 					uploadFinished = true
 				case waitErr = <-waited:
+					waitFinished = true
 				case <-ctx.Done():
 					waitErr = ctx.Err()
 				}
 				stopWait()
+				if !waitFinished {
+					drained := <-waited
+					if drained != nil && !errors.Is(drained, context.Canceled) && waitErr == nil {
+						waitErr = drained
+					}
+				}
 				release()
 				cleanupErr := <-cleanup
 				if !uploadFinished {

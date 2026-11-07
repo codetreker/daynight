@@ -157,11 +157,12 @@ func TestBotDeletionPrecedesArchiveAndCleanupCannotBeFollowedByLateUpload(t *tes
 	wait := make(chan error, 1)
 	go func() { wait <- waitBotArchiveLock(waitCtx, f) }()
 	var uploadErr error
-	var uploadFinished bool
+	var uploadFinished, waitFinished bool
 	select {
 	case uploadErr = <-upload:
 		uploadFinished = true
 	case waitErr := <-wait:
+		waitFinished = true
 		if waitErr != nil {
 			t.Error(waitErr)
 		}
@@ -169,6 +170,11 @@ func TestBotDeletionPrecedesArchiveAndCleanupCannotBeFollowedByLateUpload(t *tes
 		t.Error(ctx.Err())
 	}
 	stopWait()
+	if !waitFinished {
+		if err := <-wait; err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	}
 	close(gate.release)
 	cleanupErr := <-cleanup
 	if !uploadFinished {
