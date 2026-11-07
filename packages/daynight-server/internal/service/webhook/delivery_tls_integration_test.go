@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -88,6 +89,9 @@ func TestDeliveryRealCaptureTLSAndSignature(t *testing.T) {
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
 	runner := webhook.NewRunner(f.db, svc, true)
+	if os.Getenv("DAYNIGHT_T07_LOG_STDERR") == "1" {
+		runner.Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	}
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)

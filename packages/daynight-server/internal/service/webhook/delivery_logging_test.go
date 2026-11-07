@@ -14,11 +14,13 @@ func TestDeliveryLogCorrelationExcludesSensitiveMaterial(t *testing.T) {
 	var output bytes.Buffer
 	r := &Runner{Logger: slog.New(slog.NewJSONHandler(&output, nil))}
 	request := "origin-request"
-	d := store.WebhookDelivery{ID: "delivery", EventID: "event", EndpointID: "endpoint", ProjectID: "project", Owner: wm.Owner{Kind: "personal", ID: "owner"}, Trigger: "automatic", Generation: 2, DestinationOrigin: "https://secret-host/private-token", Body: []byte("sensitive-payload"), DestinationCiphertext: []byte("secret-key")}
+	operation := "manual-operation"
+	d := store.WebhookDelivery{ID: "delivery", EventID: "event", EndpointID: "endpoint", ProjectID: "project", Owner: wm.Owner{Kind: "personal", ID: "owner"}, Trigger: "automatic", Generation: 2, DestinationKind: "http", AdapterVersion: 1, DestinationOrigin: "https://secret-host/private-token", Body: []byte("sensitive-payload"), DestinationCiphertext: []byte("secret-key")}
+	d.ManualOperationID = &operation
 	a := store.WebhookAttempt{ID: "attempt"}
 	r.logDelivery(d, &a, &request, "finished", "acknowledged")
 	text := output.String()
-	for _, required := range []string{"origin-request", "event", "delivery", "attempt", "endpoint", "owner", "project", "automatic", `"generation":2`, "finished"} {
+	for _, required := range []string{"origin-request", "manual-operation", "event", "delivery", "attempt", "endpoint", "owner", "project", "automatic", `"generation":2`, `"adapter":"http"`, `"adapter_version":1`, "finished"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("missing %q in %s", required, text)
 		}

@@ -325,7 +325,7 @@ type brokenRandom struct{}
 func (brokenRandom) Read([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
 func TestWorkerReportsEntropyFailureBeforeClaim(t *testing.T) {
 	r := NewRunner(nil, &Service{Random: brokenRandom{}}, true)
-	if err := r.worker(context.Background()); err == nil {
+	if err := r.worker(context.Background(), context.Background()); err == nil {
 		t.Fatal("entropy failure hidden")
 	}
 }

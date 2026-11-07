@@ -20,4 +20,4 @@ The maintenance component closes eligible history under Delivery then Attempt lo
 
 ## Consequences
 
-Closed history can be reclaimed across process exits without confusing a partially deleted proof with an active one. Long transactions can delay configuration collection, and the snapshot barrier is reacquired after restart. Key retirement requires evidence from the deployment and backup owners in addition to the database scan. Application composition and combined management API acceptance remain separate responsibilities.
+Closed history can be reclaimed across process exits without confusing a partially deleted proof with an active one. Long transactions can delay configuration collection, and the snapshot barrier is reacquired after restart. Key retirement requires evidence from the deployment and backup owners in addition to the database scan. The [application runtime](2026-11-08-webhook-application-runtime.md) owns composition and coordinated shutdown.

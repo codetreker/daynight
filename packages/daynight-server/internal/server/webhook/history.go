@@ -163,6 +163,7 @@ func (h *Routes) history(w http.ResponseWriter, r *http.Request, p model.Princip
 								err = httpx.InvalidInput("ifGeneration must be a positive int64 decimal string")
 							} else {
 								var result webhookservice.Result
+								h.logOperation(r, p, o, m.OperationID, "delivery.redeliver")
 								result, err = service.Redeliver(r.Context(), p, o, endpoint, delivery, webhookservice.Redelivery{OperationID: m.OperationID, IssuedAt: m.IssuedAt, ExpectedUserID: m.ExpectedUserID, IfVersion: m.IfVersion, IfGeneration: gen, RequestSHA256: digest})
 								value = result.Body
 							}

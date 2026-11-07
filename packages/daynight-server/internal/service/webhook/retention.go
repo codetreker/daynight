@@ -59,7 +59,16 @@ func (r *Retention) Start(parent context.Context) error {
 	r.done = make(chan struct{})
 	go func() {
 		defer close(r.done)
-		if err := r.run(ctx); err != nil && ctx.Err() == nil {
+		defer func() {
+			if recover() != nil && ctx.Err() == nil {
+				r.failures <- fmt.Errorf("webhook retention panic")
+			}
+		}()
+		err := r.run(ctx)
+		if ctx.Err() == nil {
+			if err == nil {
+				err = fmt.Errorf("webhook retention exited unexpectedly")
+			}
 			r.failures <- err
 		}
 	}()
