@@ -107,6 +107,16 @@ const openChild = async () => {
   return dialog;
 };
 
+const openChildFromChain = async () => {
+  const toggle = await screen.findByRole('button', { name: /^Task 1/, expanded: false });
+  fireEvent.click(toggle);
+  const children = document.getElementById(`goal-children-${parent}`)!;
+  fireEvent.click(within(children).getByRole('button', { name: /^Task 2/ }));
+  const dialog = await screen.findByRole('dialog', { name: 'Task 2' });
+  await within(dialog).findByRole('heading', { name: 'Task 2' });
+  return dialog;
+};
+
 describe('status in shared production task details', () => {
   it.each(['status', 'automatic poll'] as const)('keeps another task Markdown-linked attachment draft and upload mounted during a background detail refresh triggered by %s', async (trigger) => {
     if (trigger === 'automatic poll') vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
@@ -121,10 +131,9 @@ describe('status in shared production task details', () => {
     records.set(standalone, { ...records.get(standalone)!, description: '# Task materials\n\n[Selected attachment](kept.txt)' });
     let otherReads = 0;
     vi.mocked(getTask).mockImplementation(async (_project, taskId) => taskId === standalone && ++otherReads === 2 ? refresh.promise : records.get(taskId)!);
-    await mount(); let dialog = await openChild();
+    await mount(); let dialog = await openChildFromChain();
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
-    closeGraph();
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
     dialog = detailDialog();
@@ -197,7 +206,7 @@ describe('status in shared production task details', () => {
     vi.mocked(setTaskStatus).mockRejectedValueOnce(original);
     renderWithLocale(<TaskDetailSessionProvider><Subject /></TaskDetailSessionProvider>, { taskCache: true, locale: 'en', container: root });
     await selectTaskList();
-    const dialog = await openChild();
+    const dialog = await openChildFromChain();
     access.mockClear().mockResolvedValue(directAccessFixture(project));
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await waitFor(() => expect(access).toHaveBeenCalled());
