@@ -628,6 +628,8 @@ docker rm --force --volumes daynight-server-tests
 
 The check builds and vets the Go module using its unit-test Web resource overlay,
 prepares the pinned UniAuth fixture, and runs module tests and coverage. The
+overlay's inherited flag uses a module-derived absolute path: Go's coverage
+metadata child changes to its build directory for packages without tests. The
 optional `--coverage` argument selects the same check. A production build uses
 the real Web assets described under [Build and run](#build-and-run).
 
@@ -1926,8 +1928,9 @@ so the attachment denial is checked after the upload finishes. Its logged
 evidence identifies the source, tree, dirty state, binary, authentication fixture,
 PostgreSQL version and the test and binary race settings. The fresh child uses the test's
 race mode and verifies it from the binary build information. It inherits
-`GOFLAGS` and runs the child build from the module root, preserving module-relative
-overlay paths. Supply an explicit source overlay through `GOFLAGS` so both the
+`GOFLAGS` and runs the child build from the module root. Use an absolute overlay
+file path so coverage metadata children can inherit it from their build directory.
+Supply an explicit source overlay through `GOFLAGS` so both the
 test and its child build use it. A `go test -overlay` argument alone is not
 inherited by the child build.
 
@@ -1936,7 +1939,7 @@ focused run can prepare the fixture and use the module's test-resource overlay:
 
 ```bash
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-export GOFLAGS='-overlay=scripts/unit-overlay.json'
+export GOFLAGS="\"-overlay=$DAYNIGHT_MODULE_ROOT/scripts/unit-overlay.json\""
 go test -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
 # Explicit race evidence for both the test and its freshly built child:
 go test -race -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server

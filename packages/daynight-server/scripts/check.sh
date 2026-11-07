@@ -17,7 +17,11 @@ rm -f coverage.out
 # Unit validation embeds fixed test resources; product builds retain the real
 # Web bundle requirement.
 # Migration fixtures share a database-wide advisory lock across isolated schemas.
-unit_go_flags="${GOFLAGS:+$GOFLAGS }-p=2 -overlay=scripts/unit-overlay.json"
+# Coverage metadata for packages without tests runs a Go child in its build
+# directory. Keep the inherited overlay readable there and quote the complete
+# flag so module roots containing spaces remain one GOFLAGS entry.
+# https://github.com/golang/go/blob/022c8636110ebac86a9b88724cda168ed713c21f/src/cmd/go/internal/work/cover.go#L23-L29
+unit_go_flags="${GOFLAGS:+$GOFLAGS }-p=2 \"-overlay=$DAYNIGHT_MODULE_ROOT/scripts/unit-overlay.json\""
 
 # CI and local runs use the same coverage gates, with race detection locally.
 unset COVERPROFILE MODULE_PREFIX PROJECT_NAME HTML_OUT THRESHOLD_FUNC \

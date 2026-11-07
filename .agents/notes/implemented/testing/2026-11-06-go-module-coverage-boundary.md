@@ -20,6 +20,13 @@ run as part of the check. Package concurrency is limited to two because the
 isolated schemas share the database-wide migration advisory lock. Stress
 workloads remain a separate local entry.
 
+The data-only Web resource overlay is inherited through an absolute,
+module-derived file path. Go runs coverage metadata extraction for packages
+without tests from a temporary build directory; a module-relative overlay file
+cannot be opened there. Quoting the complete flag preserves module roots with
+spaces. The metadata child consumes already-built coverage data, so the checked-in
+source replacement paths keep their module-build semantics.
+
 The [snapshot cancellation decision](2026-11-06-snapshot-cancellation-observation.md)
 records how database query observation separates operation cancellation from
 connection and transaction startup.
@@ -43,9 +50,18 @@ keeps unrelated client and server failures coupled.
 concurrent schema setup queues behind the same migration lock long enough to
 exceed fixture deadlines, despite the schemas being isolated.
 
+**Keep the inherited overlay file relative to the module.** This works for the
+main build but fails when Go changes directories to extract metadata from a
+package without tests. Adding package tests merely to avoid that tool path would
+hide the working-directory dependency.
+
 ## Consequences
 
 The gate includes cross-package calls without excluding production packages or
 lowering thresholds. Coverage is still a measurement of executed statements,
 not evidence that each behavior has an equivalent assertion. Database-backed
 tests retain their isolated PostgreSQL and explicit resource cleanup.
+The script regression executes its coverage child from another directory and
+requires the inherited flag to open the original overlay, including when the
+module root contains spaces. Production builds retain their real Web asset
+requirement; source fixtures remain confined to module validation.
