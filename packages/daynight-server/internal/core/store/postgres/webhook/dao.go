@@ -121,9 +121,9 @@ func modelKind(kind string) string {
 func (d *DAO) Operation(ctx context.Context, o model.Owner, id string) (model.Operation, error) {
 	var r model.Operation
 	var hash, fingerprint []byte
-	var key, mode *string
+	var key, mode, delivery *string
 	r.Owner = o
-	err := d.tx.QueryRow(ctx, `SELECT operation_id::text,actor_user_id::text,kind,endpoint_id::text,issued_at_lexeme,request_sha256,semantic_fingerprint,effect,config_version_after,destination_revision_after,key_id_after::text,signing_mode_after,overlap_until_after,recorded_at,expires_at FROM webhook_operations WHERE owner_kind=$1 AND owner_id=$2 AND operation_id=$3`, o.Kind, o.ID, id).Scan(&r.ID, &r.ActorID, &r.Kind, &r.TargetID, &r.IssuedAt, &hash, &fingerprint, &r.Effect, &r.ConfigVersion, &r.DestinationRevisionAfter, &key, &mode, &r.OverlapUntil, &r.RecordedAt, &r.ExpiresAt)
+	err := d.tx.QueryRow(ctx, `SELECT operation_id::text,actor_user_id::text,kind,endpoint_id::text,issued_at_lexeme,request_sha256,semantic_fingerprint,effect,config_version_after,destination_revision_after,key_id_after::text,signing_mode_after,overlap_until_after,recorded_at,expires_at,delivery_id::text,generation_after FROM webhook_operations WHERE owner_kind=$1 AND owner_id=$2 AND operation_id=$3`, o.Kind, o.ID, id).Scan(&r.ID, &r.ActorID, &r.Kind, &r.TargetID, &r.IssuedAt, &hash, &fingerprint, &r.Effect, &r.ConfigVersion, &r.DestinationRevisionAfter, &key, &mode, &r.OverlapUntil, &r.RecordedAt, &r.ExpiresAt, &delivery, &r.GenerationAfter)
 	if err != nil {
 		return model.Operation{}, pg.QueryError("read webhook operation", err)
 	}
@@ -138,6 +138,9 @@ func (d *DAO) Operation(ctx context.Context, o model.Owner, id string) (model.Op
 	}
 	if mode != nil {
 		r.SigningMode = *mode
+	}
+	if delivery != nil {
+		r.DeliveryID = *delivery
 	}
 	return r, nil
 }
@@ -220,14 +223,17 @@ func (d *DAO) PutOperation(ctx context.Context, r model.Operation) error {
 	if len(fp) != 32 {
 		return fmt.Errorf("invalid semantic fingerprint")
 	}
-	var key, mode any
+	var key, mode, delivery any
 	if r.ActiveKeyID != "" {
 		key = r.ActiveKeyID
 	}
 	if r.SigningMode != "" {
 		mode = r.SigningMode
 	}
-	_, err = d.tx.Exec(ctx, `INSERT INTO webhook_operations(owner_kind,owner_id,operation_id,actor_user_id,endpoint_id,kind,issued_at_lexeme,request_sha256,fingerprint_version,semantic_fingerprint,effect,config_version_after,destination_revision_after,key_id_after,signing_mode_after,overlap_until_after,recorded_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, r.Owner.Kind, r.Owner.ID, r.ID, r.ActorID, r.TargetID, wireKind(r.Kind), r.IssuedAt, hash, fp, r.Effect, r.ConfigVersion, r.DestinationRevisionAfter, key, mode, r.OverlapUntil, r.RecordedAt, r.ExpiresAt)
+	if r.DeliveryID != "" {
+		delivery = r.DeliveryID
+	}
+	_, err = d.tx.Exec(ctx, `INSERT INTO webhook_operations(owner_kind,owner_id,operation_id,actor_user_id,endpoint_id,kind,issued_at_lexeme,request_sha256,fingerprint_version,semantic_fingerprint,effect,config_version_after,destination_revision_after,key_id_after,signing_mode_after,overlap_until_after,recorded_at,expires_at,delivery_id,generation_after) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`, r.Owner.Kind, r.Owner.ID, r.ID, r.ActorID, r.TargetID, wireKind(r.Kind), r.IssuedAt, hash, fp, r.Effect, r.ConfigVersion, r.DestinationRevisionAfter, key, mode, r.OverlapUntil, r.RecordedAt, r.ExpiresAt, delivery, r.GenerationAfter)
 	if err != nil {
 		return pg.QueryError("save webhook operation", err)
 	}
