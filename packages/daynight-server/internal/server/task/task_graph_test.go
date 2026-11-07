@@ -190,6 +190,10 @@ func TestTaskGraphHTTPLimitDetailsAndDomainClassification(t *testing.T) {
 				}
 				edgeCount = 5001
 			}
+			// Bulk graph queries need statistics before autovacuum analyzes the fixture.
+			if _, err := database.Pool.Exec(context.Background(), `ANALYZE tasks, task_dependencies`); err != nil {
+				t.Fatal(err)
+			}
 			response := projectRequest(handler, http.MethodGet, graphPath(project.ID, "00000000-0000-4000-8000-000000000001"), "")
 			assertProjectError(t, response, http.StatusConflict, "graph_limit_exceeded")
 			value := decodeResponse[api.ErrorResponse](t, response, http.StatusConflict)
