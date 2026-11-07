@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -37,7 +38,7 @@ type readOnlyFixture struct {
 	routes  *ReadOnlyRoutes
 }
 
-func newReadOnlyFixture(t *testing.T) *readOnlyFixture {
+func newReadOnlyFixture(t *testing.T, configure ...func(*ReadOnlyRoutes)) *readOnlyFixture {
 	t.Helper()
 	h := testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
 		return authhttp.NewAuthentication(identity, configpkg.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
@@ -57,6 +58,9 @@ func newReadOnlyFixture(t *testing.T) *readOnlyFixture {
 	RegisterRoutes(mux, workerservice.NewWorkers(h.Database), h.Auth, slog.Default())
 	broker := workerservice.NewReadOnly(h.Database)
 	routes := NewReadOnlyRoutes(broker, h.Auth, slog.Default())
+	for _, configureRoute := range configure {
+		configureRoute(routes)
+	}
 	routes.RegisterRoutes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -87,10 +91,13 @@ func (f *readOnlyFixture) report(t *testing.T, worker, token string) {
 	}
 }
 func (f *readOnlyFixture) connect(t *testing.T, worker, token string, operations ...string) (*websocket.Conn, ro.Message) {
+	return f.connectWithPing(t, worker, token, nil, operations...)
+}
+func (f *readOnlyFixture) connectWithPing(t *testing.T, worker, token string, onPing func(context.Context, []byte) bool, operations ...string) (*websocket.Conn, ro.Message) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	conn, response, err := websocket.Dial(ctx, strings.Replace(f.server.URL, "http:", "ws:", 1)+"/api/v1/me/workers/"+worker+"/readonly/channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + token}}})
+	conn, response, err := websocket.Dial(ctx, strings.Replace(f.server.URL, "http:", "ws:", 1)+"/api/v1/me/workers/"+worker+"/readonly/channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + token}}, OnPingReceived: onPing})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,15 +399,28 @@ func TestReadOnlyChannelRejectsInvalidHandshakeAndFrames(t *testing.T) {
 	}
 }
 func TestReadOnlyChannelHeartbeatAndShutdownCancelReader(t *testing.T) {
-	f := newReadOnlyFixture(t)
-	c, _ := f.connect(t, f.worker, f.token)
+	f := newReadOnlyFixture(t, func(routes *ReadOnlyRoutes) { routes.heartbeatInterval = 100 * time.Millisecond })
+	pings := make(chan struct{}, 2)
+	c, _ := f.connectWithPing(t, f.worker, f.token, func(context.Context, []byte) bool {
+		select {
+		case pings <- struct{}{}:
+		default:
+		}
+		return true
+	})
 	closed := make(chan error, 1)
 	go func() { _, _, err := c.Read(context.Background()); closed <- err }()
-	// Keep the socket reader active so the real WebSocket heartbeat is answered.
-	select {
-	case err := <-closed:
-		t.Fatal("healthy channel closed", err)
-	case <-time.After(5200 * time.Millisecond):
+	// The next ping proves the server received the pong to the preceding ping.
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-closed:
+			t.Fatal("healthy channel closed", err)
+		case <-pings:
+		case <-deadline.C:
+			t.Fatal("heartbeat did not complete")
+		}
 	}
 	f.routes.BeginShutdown()
 	select {
@@ -412,6 +432,39 @@ func TestReadOnlyChannelHeartbeatAndShutdownCancelReader(t *testing.T) {
 		t.Fatal("shutdown retained channel")
 	}
 }
+
+func TestReadOnlyRouteTimingDefaults(t *testing.T) {
+	routes := NewReadOnlyRoutes(nil, nil, slog.Default())
+	if routes.heartbeatInterval != 5*time.Second || routes.operationTimeout("directory.list") != ro.RequestTimeout || routes.operationTimeout("model.list") != ro.ModelRequestTimeout {
+		t.Fatal("read-only route timing defaults changed")
+	}
+}
+
+func TestReadOnlyConfiguredOperationDeadlineIncludesBodyReading(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var observed time.Time
+		broker := ro.New(func(ctx context.Context, _ model.Principal, _ string) error {
+			observed, _ = ctx.Deadline()
+			return &model.Fault{Code: "permission_denied", Message: "Denied"}
+		})
+		defer broker.Close()
+		routes := NewReadOnlyRoutes(broker, nil, slog.Default())
+		routes.operationTimeout = func(string) time.Duration { return 3 * time.Second }
+		raw, _ := json.Marshal(ro.Request{RequestID: uuid.NewString(), Operation: "directory.list", Input: json.RawMessage(`{}`)})
+		request := httptest.NewRequest("POST", "/", &delayedModelBody{Reader: strings.NewReader(string(raw))})
+		request.SetPathValue("workerId", uuid.NewString())
+		writer := &deadlineResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
+		started := time.Now()
+		routes.request(writer, request, model.Principal{UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: model.PATCredential})
+		if !observed.Equal(started.Add(3 * time.Second)) {
+			t.Fatalf("operation deadline %s, want %s after body reading", observed, started.Add(3*time.Second))
+		}
+		if len(writer.writes) != 2 || !writer.writes[1].Equal(started.Add(8*time.Second)) {
+			t.Fatalf("write deadlines: %v", writer.writes)
+		}
+	})
+}
+
 func TestReadOnlyShutdownDeadlineIsObservable(t *testing.T) {
 	b := ro.New(func(context.Context, model.Principal, string) error { return nil })
 	h := NewReadOnlyRoutes(b, nil, slog.Default())
@@ -442,9 +495,12 @@ func TestReadOnlyHTTPErrorStatusesRemainDistinct(t *testing.T) {
 }
 
 func TestReadOnlyHTTPForwardingDeadlineReturnsTimeoutJSON(t *testing.T) {
-	f := newReadOnlyFixture(t)
-	c, _ := f.connect(t, f.worker, f.token)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	const operationTimeout = 500 * time.Millisecond
+	f := newReadOnlyFixture(t, func(routes *ReadOnlyRoutes) {
+		routes.operationTimeout = func(string) time.Duration { return operationTimeout }
+	})
+	c, ready := f.connect(t, f.worker, f.token)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	type answer struct {
 		response *http.Response
@@ -452,11 +508,15 @@ func TestReadOnlyHTTPForwardingDeadlineReturnsTimeoutJSON(t *testing.T) {
 	}
 	answers := make(chan answer, 1)
 	started := time.Now()
+	requestID := uuid.NewString()
 	go func() {
-		response, err := f.request(ctx, f.worker, f.token, ro.Request{RequestID: uuid.NewString(), Operation: "directory.list", Input: json.RawMessage(`{}`)})
+		response, err := f.request(ctx, f.worker, f.token, ro.Request{RequestID: requestID, Operation: "directory.list", Input: json.RawMessage(`{}`)})
 		answers <- answer{response, err}
 	}()
 	request := readOnlyRead(t, c)
+	if request.Type != "request" || request.RequestID != requestID || request.Fence != ready.Fence {
+		t.Fatalf("wrong request: %+v", request)
+	}
 	// A real reader answers the channel's heartbeats while this Worker withholds its result.
 	cancellation := make(chan ro.Message, 1)
 	readErrors := make(chan error, 1)
@@ -491,12 +551,12 @@ func TestReadOnlyHTTPForwardingDeadlineReturnsTimeoutJSON(t *testing.T) {
 	if err = json.Unmarshal(raw, &failure); err != nil || result.response.StatusCode != 504 || failure.Error.Code != "timeout" {
 		t.Fatalf("forwarding timeout after %s: status=%d body=%q decode=%v", time.Since(started), result.response.StatusCode, raw, err)
 	}
-	if time.Since(started) < ro.RequestTimeout-time.Second {
+	if time.Since(started) < operationTimeout-100*time.Millisecond {
 		t.Fatal("body deadline interrupted the forwarding window")
 	}
 	select {
 	case m := <-cancellation:
-		if m.Type != "cancel" || m.RequestID != request.RequestID {
+		if m.Type != "cancel" || m.RequestID != request.RequestID || m.Fence != request.Fence {
 			t.Fatal("timeout cancelled another request")
 		}
 	case err := <-readErrors:
