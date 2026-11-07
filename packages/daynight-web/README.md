@@ -2041,6 +2041,20 @@ The [direct-observation state-wait decision](../../.agents/notes/implemented/tes
 and [Steps session state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-steps-session-state-waits.md)
 record these readiness and reader-lifetime requirements.
 
+Authenticated-shell and Team-navigation integration tests use the state waiter
+for request counters, request bodies and storage observations. Rendered controls
+and mixed state/presentation predicates retain the DOM waiter. Identity-mismatch
+fixtures observe actual cache commits, sync-principal inspection and recovery
+request dispatch before checking presentation; they do not substitute timer
+advancement for IndexedDB or React completion. A later task opening must admit
+its live read before a held write is settled, while the independent retired
+write still keeps controls locked. Status completion checks sample matching
+cache and live versions before querying the actual status picker within one DOM
+readiness bound. Stable navigation phases query the current
+owner and retain visibility, identity, ordering and duplicate-control checks.
+The [identity observation decision](../../.agents/notes/implemented/testing/2026-11-07-identity-test-observation-boundaries.md)
+records these boundaries and their limits.
+
 Step panel DOM tests retain the full pagination fixtures and resolve visible
 controls by role and accessible name within their current row, form, toolbar,
 pagination or confirmation dialog. Whole-page counts retain document-wide scope.
