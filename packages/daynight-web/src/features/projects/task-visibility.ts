@@ -1,4 +1,4 @@
-import { taskEndedAt } from "../../api/task-status";
+import { taskEndedAt } from "../../api/task-status.ts";
 import type { GraphIndex } from "../task-graph/model";
 
 export type RecentTaskWindow = {

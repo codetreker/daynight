@@ -33,15 +33,16 @@ func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T)
 	taskID := queryID(10)
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,description,status) VALUES($1,$2,'Task','Description','in_progress')`, taskID, project.ID)
 	var before, after string
-	if err := pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, taskID).Scan(&before); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT `+preCancellationTaskJSON+`::text FROM tasks t WHERE id=$1`, taskID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, taskID).Scan(&after); err != nil || before != after {
+	if err := pool.QueryRow(ctx, `SELECT `+preCancellationTaskJSON+`::text FROM tasks t WHERE id=$1`, taskID).Scan(&after); err != nil || before != after {
 		t.Fatalf("existing task changed: %v", err)
 	}
+	assertHistoricalTasksHaveNoCancellationTime(t, database)
 	seedStoreStep(t, database, taskID, "00abcdef", 0)
 	for _, sql := range []string{
 		`INSERT INTO task_steps SELECT task_id,'00ABCDEF',1,title,description,status,created_at,updated_at FROM task_steps`,
