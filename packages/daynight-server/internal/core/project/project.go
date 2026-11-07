@@ -56,12 +56,24 @@ func ValidateCreateFields(p model.Principal, input CreateProject) error {
 			return err
 		}
 	}
+	return validateProjectFields(input)
+}
+func validateProjectFields(input CreateProject) error {
 	if strings.TrimSpace(input.Name) == "" || !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) {
 		return invalidInput("Project name must be nonempty UTF-8 text without NUL characters.")
 	}
-	return nil
+	return validateProjectSizes(input)
+}
+func validateProjectSizes(input CreateProject) error {
+	if err := AdmitName(input.Name); err != nil {
+		return &model.Fault{Code: "invalid_input", Message: err.Error(), Cause: err}
+	}
+	return validateRepoURLSize(input.RepoURL)
 }
 func Create(ctx context.Context, dao store.ProjectCreationDAO, userID, id string, input CreateProject) (model.Project, model.ProjectAccess, error) {
+	if err := validateProjectSizes(input); err != nil {
+		return model.Project{}, model.ProjectAccess{}, err
+	}
 	var teamID string
 	if input.TeamID == nil {
 		facts, err := dao.CreationPersonalTeam(ctx, true)

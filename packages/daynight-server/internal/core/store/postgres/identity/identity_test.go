@@ -68,6 +68,17 @@ func TestIdentityDAOClassifiesDriverFailuresAndAbsence(t *testing.T) {
 	}
 }
 
+func TestLoginAdmissionPreservesLockAndClockFailures(t *testing.T) {
+	cause := &pgconn.PgError{Code: "08006", Message: "connection failure"}
+	for _, tx := range []*recordingTx{{cause: cause}, {rowCause: cause}} {
+		_, _, err := NewScope(tx).IdentityDAO().AdmitLogin(context.Background(), nil, 10000, 5)
+		failed, state := store.DatabaseErrorFacts(err)
+		if !errors.Is(err, cause) || !failed || state != cause.Code {
+			t.Fatalf("login admission lost database failure: %v (%v, %q)", err, failed, state)
+		}
+	}
+}
+
 func (tx *recordingTx) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return nil, tx.cause
 }
@@ -81,6 +92,7 @@ func TestIdentityOperationsPreserveDatabaseFailures(t *testing.T) {
 		name      string
 		operation func() error
 	}{
+		{"admit login", func() error { _, _, err := dao.AdmitLogin(ctx, nil, 10000, 5); return err }},
 		{"insert login", func() error { return dao.InsertLogin(ctx, model.LoginTransaction{}) }},
 		{"consume login", func() error { _, err := dao.ConsumeLogin(ctx, nil, nil, now); return err }},
 		{"insert session", func() error { return dao.InsertSession(ctx, model.Session{}) }},

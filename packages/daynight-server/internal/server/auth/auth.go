@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -12,10 +13,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 )
 
@@ -42,6 +45,13 @@ func (h *Authentication) SessionCookieName() string {
 		return "__Host-daynight_session"
 	}
 	return "daynight_session"
+}
+
+func (h *Authentication) scopeCookieName() string {
+	if h.secure {
+		return "__Host-daynight_login_scope"
+	}
+	return "daynight_login_scope"
 }
 
 func (h *Authentication) bindingCookieName(state string) string {
@@ -144,11 +154,23 @@ func (h *Authentication) login(w http.ResponseWriter, request *http.Request) {
 		httpx.WriteError(w, request, h.logger, "auth", "login", err)
 		return
 	}
-	start, err := h.identity.StartLogin(request.Context(), values.Get("provider"), values.Get("returnPath"))
+	if err := h.identity.ValidateLogin(values.Get("provider"), values.Get("returnPath")); err != nil {
+		httpx.WriteError(w, request, h.logger, "auth", "login", err)
+		return
+	}
+	scope, ok := requestCookie(request, h.scopeCookieName())
+	if !ok || !secret.Valid(scope, "") {
+		scope = secret.Random("")
+		http.SetCookie(w, h.cookie(h.scopeCookieName(), scope, time.Now().Add(identity.LoginLifetime), int(identity.LoginLifetime.Seconds())))
+		http.Redirect(w, request, request.URL.RequestURI(), http.StatusSeeOther)
+		return
+	}
+	start, err := h.identity.StartLogin(request.Context(), values.Get("provider"), values.Get("returnPath"), scope)
 	if err != nil {
 		httpx.WriteError(w, request, h.logger, "auth", "login", err)
 		return
 	}
+	http.SetCookie(w, h.cookie(h.scopeCookieName(), scope, start.ExpiresAt, int(identity.LoginLifetime.Seconds())))
 	http.SetCookie(w, h.cookie(h.bindingCookieName(start.State), start.BrowserBinding, start.ExpiresAt, int(identity.LoginLifetime.Seconds())))
 	h.logger.InfoContext(request.Context(), "login started", "component", "auth", "phase", "login", "login_id", start.ID, "request_id", httpx.RequestID(request.Context()))
 	http.Redirect(w, request, start.AuthorizationURL, http.StatusSeeOther)
@@ -172,6 +194,15 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 		http.SetCookie(w, h.cookie(h.bindingCookieName(values.Get("state")), "", time.Unix(1, 0), -1))
 	}
 	if err != nil {
+		var identityFailure *model.IdentityProviderError
+		if errors.As(err, &identityFailure) && identityFailure.Code == "identity_unavailable" {
+			var violation *limit.Violation
+			if errors.As(err, &violation) {
+				logger = logger.With("size_bytes", violation.Actual, "max_bytes", violation.Max, "size_lower_bound", violation.LowerBound)
+			}
+			httpx.WriteError(w, request, logger, "auth", "callback", err)
+			return
+		}
 		if result.LoginID != "" {
 			httpx.LogFailure(logger, request.Context(), "auth", "callback", err)
 			if request.Context().Err() == nil {

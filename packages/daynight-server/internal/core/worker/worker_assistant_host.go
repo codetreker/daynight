@@ -83,5 +83,5 @@ func WorkerAssistantHostState(worker model.WorkerSnapshot, observedAt time.Time)
 }
 
 func workerAssistantFresh(value, now time.Time) bool {
-	return !value.IsZero() && !now.IsZero() && !value.After(now) && now.Sub(value) < 120*time.Second
+	return ActiveAt(value, now)
 }

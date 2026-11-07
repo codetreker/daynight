@@ -15,11 +15,22 @@ type WorkerWriter interface {
 
 type WorkerScope interface {
 	ObservedAt(context.Context) (time.Time, error)
+	// AdmitWorker locks the owner until transaction completion, then samples the
+	// database clock and reads the target timestamp and complete active count.
+	AdmitWorker(context.Context, string, string, time.Duration) (WorkerAdmission, error)
 	WorkerDAO() WorkerWriteDAO
+}
+
+type WorkerAdmission struct {
+	ObservedAt  time.Time
+	LastSeenAt  *time.Time
+	ActiveCount int
 }
 
 type WorkerWriteDAO interface {
 	ReportTaskSnapshots(context.Context, string, model.WorkerTaskInventory) ([]WorkerTaskSource, error)
+	// UpsertWorker requires admission for the same owner in this transaction;
+	// its report timestamp must be the locked admission observation.
 	UpsertWorker(context.Context, model.WorkerSnapshot) (model.WorkerSnapshot, error)
 	WorkerConfiguration(context.Context, string, string) (model.WorkerConfigurationResource, error)
 	ConfigurationProjectAccess(context.Context, string, string) error

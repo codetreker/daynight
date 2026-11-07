@@ -47,7 +47,7 @@ func cancellationMigrationFacts(t *testing.T, database *Store) map[string]string
 
 func TestCancellationMigrationPreservesHistoricalTasksAndRejectsInconsistentTime(t *testing.T) {
 	pool := emptyPool(t)
-	previous := schemaMigrations[:len(schemaMigrations)-1]
+	previous := schemaMigrations[:45]
 	if err := migrate(t.Context(), pool, previous); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestCancellationMigrationPreservesHistoricalTasksAndRejectsInconsistentTime
 
 func TestCancellationMigrationFailureRollsBackColumnConstraintAndLedger(t *testing.T) {
 	pool := emptyPool(t)
-	previous := schemaMigrations[:len(schemaMigrations)-1]
+	previous := schemaMigrations[:45]
 	if err := migrate(t.Context(), pool, previous); err != nil {
 		t.Fatal(err)
 	}

@@ -56,6 +56,12 @@ func TestReadOnlyAuthorityUsesLiveOwnerCredentialsAndObservation(t *testing.T) {
 	if _, err = broker.Request(ctx, session, worker, readOnlyRequest()); ro.ErrorCode(err) != "offline" {
 		t.Fatal("stale Worker admitted", err)
 	}
+	if _, err = db.Pool.Exec(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()+interval '1 hour' WHERE worker_id=$1", worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = broker.Request(ctx, session, worker, readOnlyRequest()); ro.ErrorCode(err) != "offline" {
+		t.Fatal("future Worker admitted", err)
+	}
 	if _, err = NewWorkers(db).Report(ctx, session, worker, serviceWorkerReport()); err != nil {
 		t.Fatal(err)
 	}

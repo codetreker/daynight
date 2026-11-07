@@ -2026,12 +2026,15 @@ HTTP cases check decoder admission and protocol classification. The
 [API proof decision](../../.agents/notes/implemented/testing/2026-11-06-web-api-proof-owners.md)
 owns that separation and its limits.
 
-The platform, pause, status and assignment controller session tests use
-`tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
+The platform, pause, status, assignment and direct-observation controller tests
+use `tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
 Testing Library with a 5ms default polling interval, preserving immediate
-checks, timeouts, errors and explicit options. DOM tests keep their existing
-waits. The [state polling decision](../../.agents/notes/archived/testing/2026-11-04-web-controller-state-polling.md)
-records the cadence and its limits.
+checks, timeouts, errors and explicit options. State readiness must describe the
+operation being observed: retired Step parent-check tests settle both the
+reopened parent and Steps collection before arming their fault responses. DOM
+tests keep their existing waits, and production polling remains unchanged. The
+[direct-observation state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-direct-observation-state-waits.md)
+records the readiness and reader-lifetime requirements.
 
 Step panel DOM tests retain the full pagination fixtures and resolve visible
 controls by role and accessible name within their current row, form, toolbar,

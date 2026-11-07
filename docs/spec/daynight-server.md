@@ -71,9 +71,10 @@ Project 包含以下字段：
 
 一个 project 关联一个 repo，多个 project 可以关联同一 repo。支持 HTTPS URL、
 SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；地址登记不验证实际访问权限。
-名称必须是无 NUL 的有效 UTF-8 文本。HTTPS 地址不得包含凭据，SSH 地址允许用户名，
-但不得包含密码；查询参数和 fragment
-不属于仓库地址。无效地址作为输入错误拒绝，地址中 SSH 用户名不作为业务身份。
+名称必须是无 NUL 的有效 UTF-8 文本，最多 256 个 Unicode code points 且最多 1024 个
+UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含凭据，SSH 地址允许用户名，
+但不得包含密码；查询参数和 fragment 不属于仓库地址。无效或超限输入返回 `400 invalid_input`，
+不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
 
 接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，
@@ -186,7 +187,9 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 ## HTTP API
 
 Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确版本和写入结果由
-[鉴权需求](daynight-auth.md#team-生命周期)拥有；下表保留服务的完整资源入口索引。
+[鉴权需求](daynight-auth.md#team-生命周期)拥有。普通 Team 创建和真实改名的非空名称必须同时
+不超过 256 个 Unicode code points 和 1024 个 UTF-8 bytes；超限返回 `400 invalid_input`，
+不改变 Team、成员关系或版本。Personal Team 的名称仍为 `null`。下表保留服务的完整资源入口索引。
 
 | 方法 | 路径 | 结果 |
 |---|---|---|
