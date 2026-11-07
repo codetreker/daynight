@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../src/api/client";
+import { ApiError, pauseAuthRequests } from "../src/api/client";
 import type { StepsResource, TaskStep } from "../src/api/task-steps";
 import { TaskStepsPanel } from "../src/features/task-detail/steps/TaskStepsPanel";
 import { renderWithLocale } from "./helpers/renderWithLocale";
@@ -46,6 +46,40 @@ describe("Step status", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Done" }));
     expect(read.setStatus).toHaveBeenCalledWith("00000000", "done", 3n);
     expect(trigger).toHaveTextContent("To do");
+  });
+  it("preserves a row menu and focus when an insertion draft changes", () => {
+    read.resource = resource();
+    renderWithLocale(panel(), { locale: "en" });
+    fireEvent.click(stepRow("00000000").getByRole("button", { name: "More actions for Round 1" }));
+    fireEvent.click(stepRow("00000000").getByRole("menuitem", { name: "Add before" }));
+    const title = draftForm().getByRole("textbox", { name: "Title" });
+    fireEvent.change(title, { target: { value: "Draft" } });
+    const row = stepRow("00000000");
+    fireEvent.click(row.getByRole("button", { name: "Status for Round 1: To do" }));
+    const option = row.getByRole("menuitemradio", { name: "To do" });
+    expect(option).toHaveFocus();
+    fireEvent.change(title, { target: { value: "Draft revised" } });
+    expect(row.getByRole("menuitemradio", { name: "To do" })).toBe(option);
+    expect(option).toHaveFocus();
+    expect(title).toHaveValue("Draft revised");
+  });
+  it("updates an open row menu when identity requests pause and resume", () => {
+    read.canSetStatus = false; read.canMove = false;
+    const markdown = (text: string) => <div>{text}</div>;
+    const stablePanel = () => <TaskStepsPanel projectId={projectId} taskId={taskId} active renderMarkdown={markdown} />;
+    const view = renderWithLocale(stablePanel(), { locale: "en" });
+    const row = stepRow("00000000");
+    fireEvent.click(row.getByRole("button", { name: "More actions for Round 1" }));
+    const moveDown = row.getByRole("menuitem", { name: "Move down" });
+    expect(moveDown).toBeDisabled();
+    const resume = pauseAuthRequests();
+    try {
+      view.rerender(stablePanel());
+      expect(row.getByRole("menuitem", { name: "Move down" })).toBe(moveDown);
+      expect(moveDown).toBeEnabled(); expect(moveDown).toHaveAttribute("aria-disabled", "true");
+      resume(); view.rerender(stablePanel());
+      expect(moveDown).toBeDisabled();
+    } finally { resume(); }
   });
   it("locks shared writes and exposes conflict and unknown readback without replay", () => {
     read.canDisplayStatus = false; read.canSetStatus = false;
