@@ -1,7 +1,10 @@
 package project
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,7 +12,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	corewebhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/google/uuid"
@@ -123,12 +131,39 @@ func TestWebhookContinuousGrantBeforeMemberRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := uuid.NewString()
-	if _, err = f.database.Pool.Exec(context.Background(), `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'active',1,now(),now())`, id, uuid.NewString(), p.ID, target.UserID); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
+	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"main","keys":{"main":"` + key + `"}}`))
+	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	webhook := &webhookservice.Service{DB: f.database, Keys: keys, ConfigurationExpansionAvailable: true}
+	name, enabled := "Continuity", true
+	request := webhookservice.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: target.UserID, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhookservice.Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/path"}, HasSubscriptions: true, Subscriptions: []corewebhook.SubscriptionInput{{ProjectID: p.ID, EventTypes: []string{"task.created"}}}}
+	if _, err = webhook.Mutate(ctx, target, wm.Owner{Kind: "personal", ID: target.UserID}, request); err != nil {
+		t.Fatal(err)
+	}
+	var id, binding string
+	if err = f.database.Pool.QueryRow(ctx, `SELECT s.id::text,b.id::text FROM webhook_subscriptions s JOIN webhook_bindings b ON b.subscription_id=s.id AND b.deleted_at IS NULL WHERE s.project_id=$1 AND s.owner_kind='personal' AND s.owner_id=$2 AND s.deleted_at IS NULL`, p.ID, target.UserID).Scan(&id, &binding); err != nil {
+		t.Fatal(err)
+	}
+	// A one-connection pool fixes the blocker backend identity for the actual
+	// SetGrant transaction. A different pool observes the waiting Team mutation.
+	cfg, err := pgxpool.ParseConfig(f.database.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 1
+	blockerPool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blockerPool.Close()
+	var blocker int32
+	if err = blockerPool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&blocker); err != nil {
+		t.Fatal(err)
+	}
 	locked, release := make(chan struct{}), make(chan struct{})
 	defer func() {
 		select {
@@ -137,7 +172,7 @@ func TestWebhookContinuousGrantBeforeMemberRemoval(t *testing.T) {
 			close(release)
 		}
 	}()
-	memberships := NewMemberships(heldProjectStore{f.database, locked, release})
+	memberships := NewMemberships(heldProjectStore{&postgres.Store{Pool: blockerPool}, locked, release})
 	grantResult := make(chan error, 1)
 	go func() {
 		_, err := memberships.SetGrant(ctx, owner, p.ID, target.UserID, coreproject.SetProjectGrant{Role: model.ProjectMemberRole, ExpectedUserID: owner.UserID})
@@ -155,36 +190,53 @@ func TestWebhookContinuousGrantBeforeMemberRemoval(t *testing.T) {
 	}()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
+	var waiter int32
 	for {
-		var n int
-		err = f.database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=current_setting('application_name') AND query LIKE '%FROM webhook_subscriptions s%' AND cardinality(pg_blocking_pids(pid))>0`).Scan(&n)
+		var waiters []int32
+		err = f.database.Pool.QueryRow(ctx, `SELECT coalesce(array_agg(pid),ARRAY[]::integer[]) FROM pg_stat_activity WHERE $1::integer=ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM webhook_subscriptions s%'`, blocker).Scan(&waiters)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n > 0 {
+		if len(waiters) == 1 {
+			waiter = waiters[0]
 			break
+		}
+		if len(waiters) > 1 {
+			t.Fatalf("unexpected waiters %v on backend %d", waiters, blocker)
 		}
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			t.Fatal("membership removal did not block on subscription")
+			t.Fatal("membership removal did not block on grant transaction")
 		}
 	}
 	close(release)
-	if err = <-grantResult; err != nil {
-		t.Fatal(err)
+	select {
+	case err = <-grantResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
-	if err = <-removeResult; err != nil {
-		t.Fatal(err)
+	select {
+	case err = <-removeResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
-	var state string
+	var state, actualBinding string
 	var epoch int64
-	if err = f.database.Pool.QueryRow(ctx, `SELECT authorization_state,authorization_epoch FROM webhook_subscriptions WHERE id=$1`, id).Scan(&state, &epoch); err != nil {
+	var memberPresent, grantPresent bool
+	if err = f.database.Pool.QueryRow(ctx, `SELECT s.authorization_state,s.authorization_epoch,b.id::text,EXISTS(SELECT 1 FROM team_members WHERE team_id=$2 AND user_id=$3),EXISTS(SELECT 1 FROM project_grants WHERE project_id=$4 AND user_id=$3) FROM webhook_subscriptions s JOIN webhook_bindings b ON b.subscription_id=s.id AND b.event_type='task.created' AND b.deleted_at IS NULL WHERE s.id=$1 AND s.deleted_at IS NULL`, id, team.ID, target.UserID, p.ID).Scan(&state, &epoch, &actualBinding, &memberPresent, &grantPresent); err != nil {
 		t.Fatal(err)
 	}
-	if state != "active" || epoch != 1 {
-		t.Fatalf("continuous access lost: %s %d", state, epoch)
+	if state != "active" || epoch != 1 || actualBinding != binding || memberPresent || !grantPresent {
+		t.Fatalf("continuous access lost: state=%s epoch=%d binding=%s original=%s member=%t grant=%t", state, epoch, actualBinding, binding, memberPresent, grantPresent)
 	}
+	t.Logf("T02-A03 blocker=%d waiter=%d state=%s epoch=%d binding=%s member=%t grant=%t", blocker, waiter, state, epoch, binding, memberPresent, grantPresent)
 }
 
 func TestWebhookTransferAndTeamDeletionRetainInvalidation(t *testing.T) {
