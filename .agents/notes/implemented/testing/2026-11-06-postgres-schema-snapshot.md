@@ -37,6 +37,11 @@ validation must not silently restrict its data comparison to a fixed table
 allowlist. Historical SQL and the frozen migration 026 transform retain their
 original bytes and checksum semantics.
 
+Migration-specific tests bind their before/after history to the transformation's
+fixed version. Their rollback failure is injected while that version is still
+pending, and a repaired database can subsequently replay the complete history.
+The current tail does not redefine a historical test's starting point.
+
 The [server maintenance guide](../../../../packages/daynight-server/README.md#schema-snapshot-maintenance)
 owns regeneration and routine verification commands. Regeneration is explicit;
 CI verifies the committed artifact without needing a dump executable or writing
@@ -59,6 +64,11 @@ presence is required by normal operations, as well as initial sequence state.
 validation to an installed matching PostgreSQL client and its serialization.
 Catalog and data comparison checks actual database behavior while keeping the
 dump client an explicit maintenance dependency.
+
+**Use the latest migration minus one as every historical test's prefix.**
+Adding another migration would apply the tested transformation before its
+failure trigger is installed, removing the rollback proof without changing the
+test's stated purpose. A fixed-version prefix keeps that proof valid.
 
 ## Consequences
 

@@ -3,10 +3,20 @@ package postgres
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func cancellationMigrationHistory(t *testing.T) ([]migration, []migration) {
+	t.Helper()
+	index := slices.IndexFunc(schemaMigrations, func(item migration) bool { return item.version == 46 })
+	if index < 0 || schemaMigrations[index].sql != taskCancelledSQL {
+		t.Fatal("cancellation migration is not registered at its historical version")
+	}
+	return schemaMigrations[:index], schemaMigrations[:index+1]
+}
 
 func cancellationMigrationRows(t *testing.T, database *Store) []string {
 	t.Helper()
@@ -47,7 +57,7 @@ func cancellationMigrationFacts(t *testing.T, database *Store) map[string]string
 
 func TestCancellationMigrationPreservesHistoricalTasksAndRejectsInconsistentTime(t *testing.T) {
 	pool := emptyPool(t)
-	previous := schemaMigrations[:len(schemaMigrations)-1]
+	previous, cancellation := cancellationMigrationHistory(t)
 	if err := migrate(t.Context(), pool, previous); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +71,7 @@ func TestCancellationMigrationPreservesHistoricalTasksAndRejectsInconsistentTime
 	mustQueryExec(t, database, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'nested/proof.md','text/markdown',13)`, project.ID, queryID(10))
 	mustQueryExec(t, database, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,false),($1,$2,$4,true)`, project.ID, queryID(10), queryID(11), queryID(12))
 	before, related := cancellationMigrationRows(t, database), cancellationMigrationFacts(t, database)
-	if err := migrate(t.Context(), pool, schemaMigrations); err != nil {
+	if err := migrate(t.Context(), pool, cancellation); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(cancellationMigrationRows(t, database), before) || !reflect.DeepEqual(cancellationMigrationFacts(t, database), related) {
@@ -87,18 +97,21 @@ func TestCancellationMigrationPreservesHistoricalTasksAndRejectsInconsistentTime
 	if err := pool.QueryRow(t.Context(), `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, queryID(10)).Scan(&original); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(t.Context(), pool, schemaMigrations); err != nil {
+	if err := migrate(t.Context(), pool, cancellation); err != nil {
 		t.Fatal(err)
 	}
 	var repeated string
 	if err := pool.QueryRow(t.Context(), `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, queryID(10)).Scan(&repeated); err != nil || repeated != original {
 		t.Fatalf("repeat changed cancellation data: %v", err)
 	}
+	if err := migrate(t.Context(), pool, schemaMigrations); err != nil {
+		t.Fatalf("subsequent migrations could not upgrade the cancellation history: %v", err)
+	}
 }
 
 func TestCancellationMigrationFailureRollsBackColumnConstraintAndLedger(t *testing.T) {
 	pool := emptyPool(t)
-	previous := schemaMigrations[:len(schemaMigrations)-1]
+	previous, cancellation := cancellationMigrationHistory(t)
 	if err := migrate(t.Context(), pool, previous); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +122,7 @@ func TestCancellationMigrationFailureRollsBackColumnConstraintAndLedger(t *testi
 	mustQueryExec(t, database, `CREATE FUNCTION reject_cancellation_ledger() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN IF NEW.version=46 THEN RAISE EXCEPTION USING ERRCODE='P1046',MESSAGE='ledger rejection'; END IF; RETURN NEW; END $$;
 		CREATE TRIGGER reject_cancellation_ledger BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION reject_cancellation_ledger()`)
-	err := migrate(t.Context(), pool, schemaMigrations)
+	err := migrate(t.Context(), pool, cancellation)
 	var cause *pgconn.PgError
 	if !errors.As(err, &cause) || cause.Code != "P1046" {
 		t.Fatalf("migration lost ledger failure: %v", err)

@@ -760,6 +760,9 @@ go test -count=1 ./internal/core/store/postgres \
 
 The update flags belong to this package's test binary. Regeneration captures
 final definitions and initial data, rather than concatenating historical SQL.
+Migration-specific preservation and failure tests select the history before and
+through their fixed migration version, so adding a later migration cannot skip
+the transformation or ledger failure that the test must exercise.
 Routine validation needs only the configured PostgreSQL service; it does not
 invoke `pg_dump`. The [snapshot decision](../../.agents/notes/implemented/testing/2026-11-06-postgres-schema-snapshot.md)
 records the equivalence and maintenance requirements.
