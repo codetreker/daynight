@@ -696,11 +696,20 @@ Domain packages own their HTTP integration scenarios, including those that
 construct the production application and use real PostgreSQL and UniAuth
 fixtures. The root `internal/server` package retains tests that need internal
 composition access, shared startup/channel fixtures and runtime shutdown
-ordering. A second package calling the same production application does not
-provide another HTTP boundary: shared scenarios run once in their domain owner,
-while internal-only assertions remain in the root package. The
+ordering. Shared scenarios run once in their domain owner; internal-only
+assertions remain in the root package. The
 [HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
 records the distinction and preservation requirements.
+
+The domain Session fixtures share application shutdown cleanup and mutable
+error expectations. Tests that deliberately revoke authority may declare the
+exact clean domain fault caused by that transition. Project deletion channel
+tests declare `not_found` after successful deletion because socket closure can
+precede the server's disconnect cleanup. Every joined cause must match the
+selected fault without an underlying cause; database errors, timeouts and other
+faults still fail cleanup. Production shutdown error handling remains unchanged.
+The [shutdown expectation decision](../../.agents/notes/implemented/testing/2026-11-07-session-deletion-shutdown-expectations.md)
+records the timing and error-preservation rationale.
 
 ### Schema snapshot maintenance
 
