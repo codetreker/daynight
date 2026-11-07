@@ -285,7 +285,7 @@ export const setTaskStatus = async (
 ): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
-  if (!isTaskVersion(exactVersion) || !["todo", "in_progress", "done"].includes(status)) throw new ApiError("protocol");
+  if (!isTaskVersion(exactVersion) || !["todo", "in_progress", "done", "cancelled"].includes(status)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}/status`, signal, {
     method: "PUT", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, status }),

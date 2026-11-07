@@ -184,3 +184,12 @@ describe('shared status transport failures', () => {
     await expect(setTaskStatus(projectId, taskId, target, 1n, controller.signal, admission)).rejects.toBe(reason); expect(fetcher).not.toHaveBeenCalled();
   });
 });
+
+it('submits the cancelled state through the existing exact-version endpoint and rejects malformed cancellation time', async () => {
+  const saved = { ...task, status: 'cancelled', ready: false, version: 2n, cancelledAt: time };
+  const fetch = fetchResponse(response(saved));
+  await expect(setTaskStatus(projectId, taskId, 'cancelled', 1n, signal(), admission)).resolves.toEqual(saved);
+  expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT', body: '{"version":1,"status":"cancelled"}' });
+  fetchResponse(response({ ...saved, cancelledAt: null }));
+  await expect(setTaskStatus(projectId, taskId, 'cancelled', 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+});

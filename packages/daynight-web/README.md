@@ -884,7 +884,7 @@ withdraw admission even after presentation changes; stale histories cannot
 withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md) records the rationale for the versioning, HTTP cache and scan-cost trade-offs.
 
 The task lists share assignee and status filters. Assignee supports All, Assigned
-to me, Unassigned and a person; status supports all, todo, in progress and done.
+to me, Unassigned and a person; status supports all, todo, in progress, done and cancelled.
 Both conditions must match the same task before pagination. Standalone rows match
 directly; a chain with any matching ordinary member retains its real representative
 and all ordinary children. Changing either filter resets both lists to page one.
@@ -1356,13 +1356,17 @@ affect progress.
 
 The actual task title is the common dialog header and accessible name, with a
 copy icon immediately to its right. The ID and its copy control belong to Overview.
-The existing three-state submission menu begins the shared state row beside the assignee
+The four-state submission menu for non-cancelled tasks begins the shared state row beside the assignee
 control, followed by platform and readiness, with automatic execution at the right.
 Status, assignee and platform controls share a compact 24px height; the left group can wrap
 on narrow screens. The menu remains available on every content tab, marks the current
 item and permits selecting it for the original states. Cancelled records have a
-distinct readable status and no reopen, resume or withdraw action; the non-cancelled
-menu does not yet offer cancellation submission. Arrow/Home/End, activation and
+distinct readable status and no reopen, resume or withdraw action. The cancelled
+target uses the existing state confirmation with Confirm cancellation / 确认取消,
+describing irreversibility, retained readability, preserved execution times and
+dependency satisfaction. Active claims mark the option aria-disabled and show the
+release reason on hover or keyboard focus without dispatching a request; no remote
+stop action or reason form is added. Arrow/Home/End, activation and
 Escape preserve keyboard access and focus. Confirmation shows the full task name,
 current/target states and timing consequences. Cancel is initially focused;
 Cancel/close/Escape submits nothing. Long title and confirmation text have bounded
@@ -1373,7 +1377,11 @@ mutation owner. Operations that require confirmation share one confirmation unio
 Reviewed identity/status/version and material inputs remain frozen; observed
 changes invalidate confirmation. Exact bigint version survives JSON numeric
 serialization without rounding. Same-state requires +0; actual change requires +1.
-Same-state may return fresh derived readiness at the same version. Generation and
+Same-state may return fresh derived readiness at the same version. Actual
+cancellation requires a non-null cancelledAt while preserving startedAt,
+completedAt and all other materials. Its result uses ordinary status installation,
+not the deletion path; malformed results reconcile through GET without replay.
+Generation and
 confirmed-version floor prevent older reads from restoring stale state.
 
 Pending, stale, unknown or failed reconciliation blocks all task writes. Closing or

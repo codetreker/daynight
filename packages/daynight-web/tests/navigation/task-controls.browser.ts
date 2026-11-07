@@ -12,11 +12,20 @@ const time = '2026-10-20T09:00:00Z';
 const step = { id: '00000001', title: 'Review', description: 'Read this', status: 'todo', createdAt: time, updatedAt: time };
 const longName = 'Alexandra Person With A Very Long Name For Narrow Assignment Layout';
 
-async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}) {
+type CancellationBehavior = {
+  readonly outcome?: 'conflict' | 'lost' | 'malformed';
+  readonly gate?: { readonly started: () => void; readonly wait: Promise<void> };
+  readonly observe?: (before: TaskDetail, after: TaskDetail) => void;
+  readonly exposeUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
+};
+
+async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}, cancellation: CancellationBehavior = {}) {
   const epoch = taskSyncEpoch(projectId);
   let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
   const previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n });
-  const graph = () => graphFixture([task, previous]);
+  const graph = () => ({ ...graphFixture([task, previous]), observedAt: task.updatedAt });
+  let statusRequests = 0;
+  cancellation.exposeUpdate?.((changes) => { task = { ...task, ...changes }; });
   let steps = large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
   const writes: string[] = [];
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
@@ -34,6 +43,22 @@ async function install(page: Page, running = false, linked = false, large = fals
       const requested = url.searchParams.getAll('userId');
       const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: true };
       return send({ items: requested.length === 0 || requested.includes(TEST_VIEWER_ID) ? [person] : [], unresolvedUserIds: requested.filter(id => id !== TEST_VIEWER_ID) });
+    }
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/status` && request.method() === 'PUT') {
+      const input = request.postDataJSON();
+      expect(input).toEqual({ version: Number(task.version), status: 'cancelled' });
+      statusRequests++;
+      if (cancellation.outcome === 'conflict' && statusRequests === 1) {
+        task = { ...task, version: task.version + 1n, updatedAt: '2026-10-22T10:01:00Z' };
+        return send({ error: { code: 'version_conflict', message: 'Changed task', requestId: 'cancel-conflict' } }, 409);
+      }
+      cancellation.gate?.started(); await cancellation.gate?.wait;
+      const before = task;
+      task = { ...task, status: 'cancelled', ready: false, cancelledAt: '2026-10-22T10:02:00Z', updatedAt: '2026-10-22T10:02:00Z', version: task.version + 1n };
+      cancellation.observe?.(before, task);
+      if (cancellation.outcome === 'lost') return route.abort('failed');
+      if (cancellation.outcome === 'malformed') return send({ ...task, cancelledAt: null });
+      return send(task);
     }
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps/${step.id}/position` && request.method() === 'PUT') {
       expect(request.postDataJSON()).toEqual({ version: 5, position: 'last' });
@@ -267,7 +292,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       return row.scrollWidth <= row.clientWidth && document.documentElement.scrollWidth <= innerWidth && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 0.5 && box.right <= bounds.right + 0.5 && boxes.slice(index + 1).every(other => box.right <= other.left + 0.5 || other.right <= box.left + 0.5 || box.bottom <= other.top + 0.5 || other.bottom <= box.top + 0.5));
     })).toBe(true);
     await status.focus(); await page.keyboard.press('Enter');
-    const options = dialog.getByRole('menuitemradio'); await expect(options).toHaveCount(3);
+    const options = dialog.getByRole('menuitemradio'); await expect(options).toHaveCount(4);
     await page.keyboard.press('End'); await expect(options.last()).toBeFocused();
     await page.keyboard.press('Home'); await expect(options.first()).toBeFocused();
     await page.keyboard.press('Escape'); await expect(status).toBeFocused();
@@ -365,3 +390,105 @@ test('cancelled tasks retain readable details and Steps without a status restora
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toEqual([]);
 });
+
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`cancellation keeps readable materials and dependency membership at 320px in ${locale}`, async ({ page }) => {
+    let preserved: { before: TaskDetail; after: TaskDetail } | undefined;
+    const writes = await install(page, false, true, false, false, false, undefined, { description: 'Cancellation leaves this description readable', allowAgents: true }, { observe: (before, after) => { preserved = { before, after }; } });
+    await page.setViewportSize({ width: 320, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.locator(`#task-root-${taskId}`).click();
+    await page.getByRole('button', { name: /Target task.*View Goal details|Target task.*查看 Goal 详情/ }).click();
+    const dialog = page.locator('.task-detail-dialog');
+    const status = dialog.locator('.task-status-trigger');
+    await status.click(); await dialog.getByRole('menuitemradio', { name: locale === 'en' ? 'Cancelled' : '已取消', exact: true }).click();
+    let confirmation = page.getByRole('alertdialog');
+    await expect(confirmation).toContainText(locale === 'en' ? 'cannot be undone' : '不可恢复');
+    await expect(confirmation).toContainText(locale === 'en' ? 'records and materials remain readable' : '资料仍可阅读');
+    await page.keyboard.press('Escape'); await expect(confirmation).toHaveCount(0); expect(writes).toEqual([]);
+    await expect(status).toBeFocused();
+    await status.click(); await dialog.getByRole('menuitemradio', { name: locale === 'en' ? 'Cancelled' : '已取消', exact: true }).click();
+    confirmation = page.getByRole('alertdialog'); await confirmation.getByRole('button', { name: locale === 'en' ? 'Confirm cancellation' : '确认取消', exact: true }).click();
+    await expect(status).toHaveText(locale === 'en' ? 'Cancelled' : '已取消'); await expect(status).toBeDisabled();
+    await expect(dialog.getByText('Cancellation leaves this description readable')).toBeVisible();
+    await dialog.getByRole('tab', { name: locale === 'en' ? 'Steps' : '步骤', exact: true }).click(); await expect(dialog.getByText('Review', { exact: true })).toBeVisible();
+    expect(writes).toEqual([`PUT /api/v1/projects/${projectId}/tasks/${taskId}/status`]); expect(preserved).toBeDefined();
+    expect(preserved!.after.allowAgents).toBe(preserved!.before.allowAgents); expect(preserved!.after.assignedTo).toBe(preserved!.before.assignedTo);
+    expect(preserved!.after.startedAt).toBe(preserved!.before.startedAt); expect(preserved!.after.completedAt).toBe(preserved!.before.completedAt);
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情', exact: true }).click();
+    await page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true }).selectOption('cancelled');
+    await expect(page.locator(`[data-chain-id="${taskId}"] .root-progress-label`)).toContainText(locale === 'en' ? '1/2 ended' : '1/2 已结束');
+    await expect(page.locator(`#chain-task-${taskId}-${previousId}`)).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+for (const outcome of ['lost', 'malformed'] as const) {
+  test(`cancellation ${outcome} response is reconciled by reading without replay`, async ({ page }) => {
+    const writes = await install(page, false, false, false, false, false, undefined, { description: 'Readable after reconciliation' }, { outcome });
+    const dialog = await openDialog(page); const status = dialog.locator('.task-status-trigger');
+    await status.click(); await dialog.getByRole('menuitemradio', { name: 'Cancelled', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm cancellation' }).click();
+    await expect(status).toHaveText('Cancelled'); await expect(status).toBeDisabled();
+    await expect(dialog.getByText('Readable after reconciliation')).toBeVisible();
+    await expect(dialog.getByRole('combobox', { name: 'Execution platform' })).toBeEnabled();
+    expect(writes).toEqual([`PUT /api/v1/projects/${projectId}/tasks/${taskId}/status`]);
+  });
+}
+
+test('cancellation conflict requires a newly reviewed version and does not replay its request', async ({ page }) => {
+  const writes = await install(page, false, false, false, false, false, undefined, {}, { outcome: 'conflict' });
+  const dialog = await openDialog(page); const status = dialog.locator('.task-status-trigger');
+  await status.click(); await dialog.getByRole('menuitemradio', { name: 'Cancelled', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm cancellation' }).click();
+  await expect(status).toHaveText('To do'); await expect(status).toBeEnabled(); expect(writes).toHaveLength(1);
+  await status.click(); await dialog.getByRole('menuitemradio', { name: 'Cancelled', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm cancellation' }).click();
+  await expect(status).toHaveText('Cancelled'); expect(writes).toHaveLength(2);
+});
+
+test('active cancellation requires a fresh released record before submission', async ({ page }) => {
+  const claim = { claimId: previousId, state: 'active', userId: TEST_VIEWER_ID, workerId: projectId, machine: { id: projectId, name: 'Worker machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: taskId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
+  let update!: (changes: Partial<TaskDetail>) => void;
+  const writes = await install(page, true, false, false, false, false, undefined, { properties: { worker: claim }, allowAgents: true }, { exposeUpdate: value => { update = value; } });
+  let dialog = await openDialog(page); await dialog.locator('.task-status-trigger').click();
+  const cancelled = dialog.getByRole('menuitemradio', { name: 'Cancelled', exact: true }); await expect(cancelled).toHaveAttribute('aria-disabled', 'true');
+  await cancelled.focus(); await expect(dialog.locator('.task-control-tip-bubble')).toContainText('Release the active Worker execution');
+  await page.keyboard.press('Enter'); expect(writes).toEqual([]); await page.keyboard.press('Escape'); await expect(dialog.getByRole('menu')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Close task details', exact: true }).click();
+  update({ status: 'todo', version: 6n, ready: true, allowAgents: false, startedAt: null, completedAt: null, properties: { worker: { ...claim, state: 'released' } } });
+  dialog = await openDialog(page); await expect(dialog.locator('.task-status-trigger')).toHaveText('To do'); await expect(dialog.locator('.task-status-trigger')).toBeEnabled();
+  await dialog.locator('.task-status-trigger').click(); await dialog.getByRole('menuitemradio', { name: 'Cancelled', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm cancellation' }).click();
+  await expect(dialog.locator('.task-status-trigger')).toHaveText('Cancelled'); expect(writes).toHaveLength(1);
+});
+
+test('pending cancellation survives closing and reopening details without a second submission', async ({ page }) => {
+  const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  const writes = await install(page, false, false, false, false, false, undefined, {}, { gate: { started: entered.resolve, wait: gate.promise } });
+  try {
+    let dialog = await openDialog(page); await dialog.locator('.task-status-trigger').click(); await dialog.getByRole('menuitemradio', { name: 'Cancelled', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm cancellation' }).click(); await entered.promise;
+    await dialog.getByRole('button', { name: 'Close task details', exact: true }).click();
+    await page.locator(`#standalone-task-${taskId}`).click(); dialog = page.locator('.task-detail-dialog');
+    await expect(dialog.locator('.task-status-trigger')).toBeDisabled(); expect(writes).toHaveLength(1);
+    gate.resolve(); await expect(dialog.locator('.task-status-trigger')).toHaveText('Cancelled');
+    await expect(dialog.getByRole('combobox', { name: 'Execution platform' })).toBeEnabled(); expect(writes).toHaveLength(1);
+  } finally { gate.resolve(); }
+});
+
+for (const state of ['in_progress', 'done'] as const) {
+  test(`manual ${state} cancellation preserves the original execution interval`, async ({ page }) => {
+    let original: TaskDetail | undefined, saved: TaskDetail | undefined;
+    const writes = await install(page, false, false, false, false, false, undefined, { status: state, ready: false, startedAt: '2026-10-22T10:00:00Z', completedAt: state === 'done' ? '2026-10-22T10:00:00Z' : null }, { observe: (before, after) => { original = before; saved = after; } });
+    const dialog = await openDialog(page); await dialog.locator('.task-status-trigger').click();
+    await dialog.getByRole('menuitemradio', { name: 'Cancelled', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm cancellation' }).click();
+    await expect(dialog.locator('.task-status-trigger')).toHaveText('Cancelled'); await expect(dialog.locator('.task-status-trigger')).toBeDisabled();
+    expect(saved).toBeDefined(); expect(saved!.startedAt).toBe(original!.startedAt); expect(saved!.completedAt).toBe(original!.completedAt);
+    expect(writes).toEqual([`PUT /api/v1/projects/${projectId}/tasks/${taskId}/status`]);
+  });
+}

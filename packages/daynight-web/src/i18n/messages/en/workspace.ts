@@ -17,7 +17,7 @@ export const workspace: WorkspaceMessages = {
     moreFailed: "More projects could not be loaded. Previously loaded projects remain available.", loadingMore: "Loading more…", retryMore: "Retry loading more", loadMore: "Load more", allLoaded: "All projects loaded",
   },
   project: {
-    statusFilter: "Status", allStatuses: "All statuses", statusOptions: { todo: "To do", in_progress: "In progress", done: "Done" },
+    statusFilter: "Status", allStatuses: "All statuses", statusOptions: { todo: "To do", in_progress: "In progress", done: "Done", cancelled: "Cancelled" },
     back: "← Projects", lastRefreshed: ({ time }) => `Last successful refresh ${time}`, refreshing: "Refreshing…", loading: "Loading task graph", loadingDetail: "Reading project tasks and dependencies.",
     notFound: "Project not found", graphLimit: "Task graph exceeds the display limit", incomplete: "Task graph data is incomplete", loadingFailed: "Project could not be loaded",
     networkError: "Cannot connect to the service. Check the local service and try again.", protocolError: "Task graph data is incomplete or inconsistent. Try again.",

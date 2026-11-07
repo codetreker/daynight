@@ -14,7 +14,7 @@ combined selection.
 ## Decision
 
 The task lists share status and assignee conditions within a project visit.
-Status defaults to all and can select `todo`, `in_progress`, or `done`; all
+Status defaults to all and can select `todo`, `in_progress`, `done` or `cancelled`; all
 history remains available. A standalone task must itself satisfy both
 conditions. A chain remains visible when one ordinary-component member satisfies
 both; its actual representative and all ordinary members remain visible even

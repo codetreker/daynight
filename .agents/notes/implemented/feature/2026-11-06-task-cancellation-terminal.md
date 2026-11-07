@@ -41,8 +41,13 @@ states do not acquire a fourth status.
 
 The [status requirements](../../../../docs/spec/daynight-task-status.md) and
 [architecture](../../../../docs/design/daynight-task-status.md) own the current
-contracts. Web reads, progress and disabled restoration are part of this outcome;
-its existing non-cancelled status menu retains the original submission choices.
+contracts. Web uses the existing status menu and confirmation to cancel a task.
+The confirmation retains reviewed identity, version and cache history and explains
+irreversibility, readable materials and the dependency consequence. Active claims
+require release first; no remote stop coordinator or reason form is added.
+Cancelled state filtering keeps complete chain membership and progress intact.
+Response and unknown-result handling remain with the existing status operation,
+including preserved execution times and GET-only reconciliation.
 
 ## Alternatives
 
