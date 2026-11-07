@@ -49,6 +49,13 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 	if _, err = conn.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
+	migration, err = os.ReadFile("../migrations/052_webhook_redelivery.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, string(migration)); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -22,9 +22,10 @@ import (
 
 type webhookScope struct{ *Snapshot }
 
-func (s *webhookScope) EligibilityDAO() store.WebhookEligibilityDAO { return eligibility.New(s.tx) }
-func (s *webhookScope) WebhookDAO() store.WebhookReader             { return dbwebhook.New(s.tx) }
-func (s *webhookScope) WebhookWriter() store.WebhookWriter          { return dbwebhook.New(s.tx) }
+func (s *webhookScope) EligibilityDAO() store.WebhookEligibilityDAO    { return eligibility.New(s.tx) }
+func (s *webhookScope) WebhookDAO() store.WebhookReader                { return dbwebhook.New(s.tx) }
+func (s *webhookScope) WebhookWriter() store.WebhookWriter             { return dbwebhook.New(s.tx) }
+func (s *webhookScope) RedeliveryWriter() store.WebhookRedeliveryScope { return dbwebhook.New(s.tx) }
 
 // LockConfigurationSources fences both present and absent relationships through their roots.
 func (s *webhookScope) LockConfigurationSources(ctx context.Context, owner webhook.Owner, actor string, projects []string) error {

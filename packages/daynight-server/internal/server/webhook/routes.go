@@ -46,6 +46,27 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc(base, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 		mux.HandleFunc(base+"/{endpointId}", auth.Require(h.endpoint))
 		mux.HandleFunc(base+"/{endpointId}/{subresource}", auth.Require(h.subresource))
+		for path, kind := range map[string]string{
+			"/{endpointId}/deliveries":                           "deliveries",
+			"/{endpointId}/deliveries/{deliveryId}":              "delivery",
+			"/{endpointId}/deliveries/{deliveryId}/attempts":     "attempts",
+			"/{endpointId}/deliveries/{deliveryId}/payload":      "payload",
+			"/{endpointId}/deliveries/{deliveryId}/redeliveries": "redeliver",
+		} {
+			kind := kind
+			mux.HandleFunc(base+path, auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+				method := http.MethodGet
+				allow := "GET, HEAD"
+				if kind == "redeliver" {
+					method, allow = http.MethodPost, "POST"
+				}
+				if r.Method != method && !(method == http.MethodGet && r.Method == http.MethodHead) {
+					httpx.ResourceMethodNotAllowed(logger, allow)(w, r, p)
+					return
+				}
+				h.history(w, r, p, kind)
+			}))
+		}
 		mux.HandleFunc("POST "+base+"/{endpointId}/signing-secret/rotations", auth.Require(h.rotate))
 		mux.HandleFunc(base+"/{endpointId}/signing-secret/rotations", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	}
@@ -69,6 +90,11 @@ func noQuery(r *http.Request) error {
 
 func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Principal, phase string, err error) {
 	logger := h.logger.With("user_id", p.UserID)
+	for _, field := range []struct{ path, attribute string }{{"endpointId", "endpoint_id"}, {"deliveryId", "delivery_id"}} {
+		if id, err := uuidInput(r.PathValue(field.path)); err == nil {
+			logger = logger.With(field.attribute, id)
+		}
+	}
 	var bodyError *httpx.BodyReadError
 	if errors.As(err, &bodyError) {
 		if bodyError.Status == http.StatusRequestEntityTooLarge {
@@ -100,7 +126,8 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 		"unauthenticated": 401, "forbidden": 403, "permission_denied": 403, "not_found": 404,
 		"identity_mismatch": 409, "version_conflict": 409, "operation_conflict": 409,
 		"version_exhausted": 409, "destination_unsupported": 409,
-		"operation_expired": 410, "content_too_large": 413,
+		"generation_conflict": 409, "delivery_busy": 409, "target_changed": 409, "delivery_stopped": 409,
+		"operation_expired": 410, "payload_expired": 410, "content_too_large": 413,
 		"webhooks_unavailable": 503, "dependency_unavailable": 503,
 		"write_outcome_unknown": 503,
 	}

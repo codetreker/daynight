@@ -68,7 +68,14 @@ func opView(o wm.Operation) map[string]any {
 	if o.ActiveKeyID != "" {
 		key = o.ActiveKeyID
 	}
-	return map[string]any{"operationId": o.ID, "kind": wireOperationKind(o.Kind), "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": nil, "generationAfter": nil, "keyId": key, "recordedAt": o.RecordedAt.UTC(), "expiresAt": o.ExpiresAt.UTC()}
+	var deliveryID, generationAfter any
+	if o.DeliveryID != "" {
+		deliveryID = o.DeliveryID
+	}
+	if o.GenerationAfter != nil {
+		generationAfter = version(*o.GenerationAfter)
+	}
+	return map[string]any{"operationId": o.ID, "kind": wireOperationKind(o.Kind), "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": deliveryID, "generationAfter": generationAfter, "keyId": key, "recordedAt": o.RecordedAt.UTC(), "expiresAt": o.ExpiresAt.UTC()}
 }
 func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope, e wm.Endpoint, actor string, manage bool) (map[string]any, error) {
 	owner := map[string]any{"kind": e.Owner.Kind, "id": e.Owner.ID}
@@ -194,6 +201,10 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 		if e != nil {
 			return e
 		}
+		history, e := historyReader(sc)
+		if e != nil {
+			return e
+		}
 		list, e := sc.WebhookDAO().Endpoints(ctx, o)
 		if e != nil {
 			return e
@@ -253,7 +264,16 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 					eventTypes[eventType] = true
 				}
 			}
-			items = append(items, map[string]any{"id": ep.ID, "owner": v["owner"], "name": ep.Name, "enabled": ep.Enabled, "configVersion": version(ep.ConfigVersion), "destination": dest, "projectCount": len(projects), "eventTypeCount": len(eventTypes), "lastResult": nil, "lastAttemptAt": nil})
+			attempt, e := history.LatestAttempt(ctx, ep.ID)
+			if e != nil {
+				return e
+			}
+			var lastAttemptAt, lastResult any
+			if attempt != nil {
+				lastAttemptAt = attempt.AdmittedAt.UTC()
+				lastResult = AttemptResult(*attempt)
+			}
+			items = append(items, map[string]any{"id": ep.ID, "owner": v["owner"], "name": ep.Name, "enabled": ep.Enabled, "configVersion": version(ep.ConfigVersion), "destination": dest, "projectCount": len(projects), "eventTypeCount": len(eventTypes), "lastResult": lastResult, "lastAttemptAt": lastAttemptAt})
 			last = ep.ID
 			lastTime = ep.CreatedAt
 		}
