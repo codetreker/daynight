@@ -117,31 +117,7 @@ func taskBusinessLimit(name string, fields map[string]json.RawMessage, version i
 
 // The domain uses the union and an external subset; either input replaces both.
 func compileTaskDependencies(ordinary, external *[]string) (*[]string, *[]string, error) {
-	if ordinary == nil && external == nil {
-		return nil, nil, nil
-	}
-	all, ext := []string{}, []string{}
-	seen := map[string]bool{}
-	for index, group := range []*[]string{ordinary, external} {
-		if group == nil {
-			continue
-		}
-		for _, value := range *group {
-			id, err := model.CanonicalID(value)
-			if err != nil {
-				return nil, nil, err
-			}
-			if seen[id] {
-				return nil, nil, &model.Fault{Code: "invalid_input", Message: "Dependency inputs must be disjoint and contain no duplicates."}
-			}
-			seen[id] = true
-			all = append(all, id)
-			if index == 1 {
-				ext = append(ext, id)
-			}
-		}
-	}
-	return &all, &ext, nil
+	return taskservice.PartitionDependencies(ordinary, external)
 }
 
 func taskView(task model.Task, view string) any {
@@ -168,6 +144,7 @@ func taskVersion(ctx context.Context, actor RequestActor, tasks *taskservice.Tas
 	return task.Version, nil
 }
 func handleTaskTool(ctx context.Context, actor RequestActor, tasks *taskservice.Tasks, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
+	ctx = taskservice.WithMCPTaskResponse(ctx, actor.RequestID)
 	switch name {
 	case "task_create":
 		all, external, err := compileTaskDependencies(in.DependsOn, in.ExternalDependsOn)
@@ -211,11 +188,9 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks *taskservice.
 	}
 	var all, external *[]string
 	if name == "task_update" {
-		var err error
-		all, external, err = compileTaskDependencies(in.DependsOn, in.ExternalDependsOn)
-		if err != nil {
-			return ToolResult{}, err
-		}
+		// A large partition is refused by the service after its version check;
+		// do not allocate its union merely to measure the request envelope.
+		all, external, _ = compileTaskDependencies(in.DependsOn, in.ExternalDependsOn)
 	}
 	// Omitted versions are read once and never refreshed after a write.
 	version, err := taskVersion(ctx, actor, tasks, in)
@@ -228,14 +203,14 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks *taskservice.
 	var task model.Task
 	switch name {
 	case "task_update":
-		input := taskcore.UpdateTask{Version: version, Title: in.Title, Description: in.Description, AllowAgents: in.AllowAgents, DependsOn: all, ExternalDependsOn: external}
+		input := taskcore.UpdateTask{Version: version, Title: in.Title, Description: in.Description, AllowAgents: in.AllowAgents}
 		if _, ok := fields["assignedTo"]; ok {
 			input.AssignedTo = &in.AssignedTo
 		}
 		if _, ok := fields["requiredPlatform"]; ok {
 			input.RequiredPlatform = &in.RequiredPlatform
 		}
-		task, err = tasks.Update(ctx, actor.Principal, in.ProjectID, in.TaskID, input)
+		task, err = tasks.UpdatePartitionedDependencies(ctx, actor.Principal, in.ProjectID, in.TaskID, input, in.DependsOn, in.ExternalDependsOn)
 	case "task_set_status":
 		task, err = tasks.SetStatus(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.SetTaskStatus{Version: version, Status: in.Status, ClaimID: in.ClaimID})
 	case "task_delete":

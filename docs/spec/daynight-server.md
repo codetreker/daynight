@@ -101,8 +101,8 @@ Task 包含以下持久化字段：
 |---|---|
 | `id` | 服务生成的 UUID |
 | `projectId` | 所属 project，创建后不可变 |
-| `title` | 必填的非空 UTF-8 标题，不含 NUL |
-| `description` | 不含 NUL 的 UTF-8 描述，省略时为空字符串，允许更新为空字符串 |
+| `title` | 必填的非空 UTF-8 标题，不含 NUL，最多 1024 bytes |
+| `description` | 不含 NUL 的 UTF-8 描述，最多 65536 bytes；省略时为空字符串，允许更新为空字符串 |
 | `properties` | 服务端预定义属性的完整 JSON 对象；键可缺失，新任务为 {}，pullRequests 为有序数组，worker 为只读执行归属对象 |
 | `status` | `todo / in_progress / done / cancelled`，创建时为 todo；普通设置使用状态资源，受控 worker 操作原子改变对应状态 |
 | `allowAgents` | 必填布尔自动执行许可，新任务为 `false`；与状态、依赖、实际执行者独立 |
@@ -117,7 +117,7 @@ Task 包含以下持久化字段：
 
 Task 响应还包含 `dependsOn`、`externalDependsOn`、`blockedBy` 和 `ready`：
 
-- `dependsOn` 是全部直接前置 task ID，按 ID 升序返回。
+- `dependsOn` 是全部直接前置 task ID，按 ID 升序返回；完整写入集合最多 15 项，external 不另占额度。
 - `externalDependsOn` 是其中标记为外部的 ID 子集，必填、无重复且按 ID 升序；空子集为 `[]`。
 - `blockedBy` 是其中尚未处于done或cancelled的task ID，按 ID 升序返回。
 - `ready` 当且仅当本 task 为 `todo` 且 `blockedBy` 为空时为 `true`。
@@ -131,7 +131,7 @@ todo/cancelled 可有未满足前置，in_progress/done 的前置必须全部为
 新建 task 和数据库默认值均为 `todo`，初始版本为1，执行起止和取消时间均为null，`allowAgents=false`。
 创建只接受 `title`、可选 `description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 和 `properties`；
 禁止提交 status、allowAgents 和执行时间。省略描述与依赖分别为空字符串与空集合；省略属性不创建默认属性行。
-任务登记不启动执行，也不提供实现、部署、发布、合并或主线 push 的权限。
+任务登记不启动执行，也不提供实现、部署、发布、合并或主线 push 的权限。字段、依赖和属性写入额度及完整 Task 成功响应预算见[输入与资源额度](daynight-api-input-limits.md)；确定的容量拒绝在提交前回滚。提交后发送失败不得表述为确定未写入。
 创建的 requiredPlatform 省略或 null 表示不限制，三个枚举可设置要求。迁移 013 只为旧行
 增加 nullable 平台字段，保留其状态、版本、时间、属性和边；迁移 014 再执行三状态归类。
 平台运行时值必填，缺失或非法值拒绝，不从服务端操作系统推断执行平台。

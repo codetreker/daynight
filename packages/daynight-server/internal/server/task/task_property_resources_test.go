@@ -325,3 +325,45 @@ func TestPausedBlockedTaskRetainsDependencyAndInventory(t *testing.T) {
 		t.Fatalf("paused task inventory lost an ID: %+v", page)
 	}
 }
+
+func TestTaskWriteAdmissionHTTP(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	project := taskProject(t, handler)
+	collection := taskCollection(project.ID)
+	valid := map[string]any{"title": strings.Repeat("界", 341) + "x", "description": strings.Repeat("d", 65536)}
+	created := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, collection, jsonBody(t, valid)), http.StatusCreated)
+	for _, input := range []map[string]any{
+		{"title": strings.Repeat("界", 341) + "xx"},
+		{"title": "x", "description": strings.Repeat("d", 65537)},
+		{"title": " ", "description": "valid"},
+	} {
+		assertProjectError(t, projectRequest(handler, http.MethodPost, collection, jsonBody(t, input)), http.StatusBadRequest, "invalid_input")
+	}
+	path := taskPath(created) + "/properties/pullRequests"
+	prs := []map[string]string{{"url": strings.Repeat("x", 2000), "title": ""}, {"url": strings.Repeat("x", 2000), "title": ""}, {"url": strings.Repeat("x", 2000), "title": ""}, {"url": strings.Repeat("x", 2000), "title": ""}}
+	raw, err := json.Marshal(prs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs[0]["title"] = strings.Repeat("q", 8192-len(raw))
+	raw, err = json.Marshal(prs)
+	if err != nil || len(raw) != 8192 {
+		t.Fatalf("boundary fixture: %d %v", len(raw), err)
+	}
+	set := propertyResource(t, handler, http.MethodPut, path, map[string]any{"version": created.Version, "valueText": string(raw)})
+	before := readHTTPTask(t, handler, created)
+	prs[0]["title"] += "q"
+	raw, err = json.Marshal(prs)
+	if err != nil || len(raw) != 8193 {
+		t.Fatalf("over-limit fixture: %d %v", len(raw), err)
+	}
+	assertProjectError(t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"version": set.Version, "valueText": string(raw)})), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"version": created.Version, "valueText": string(raw)})), http.StatusConflict, "version_conflict")
+	patch := map[string]any{"version": set.Version, "title": "Must roll back", "properties": map[string]any{"pullRequests": prs, "paused": true}}
+	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(created), jsonBody(t, patch)), http.StatusBadRequest, "invalid_input")
+	patch["version"] = created.Version
+	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(created), jsonBody(t, patch)), http.StatusConflict, "version_conflict")
+	if after := readHTTPTask(t, handler, created); !reflect.DeepEqual(before, after) {
+		t.Fatal("rejected property changed task")
+	}
+}

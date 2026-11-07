@@ -376,7 +376,7 @@ daynight task graph <task-id> [--depends-only]
 `--path=value` 继续拒绝。附件上传的 `--path` 是 text 选项，接受内联赋值。
 `project create`、属性 set/remove 和附件 `put/read/remove` 接受独立 `--` 结束选项解析；该终止符用于保留前导连字符的位置参数，选项必须放在终止符之前。其他操作继续使用其声明的语法。
 
-创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；CLI 省略 --assigned-to 时，先通过现有 GET /me 读取当前认证账号，再将其 UUID 作为 assignedTo 提交；显式 UUID 不额外查询身份。身份查询失败或取消时不得创建任务或退回未分配。未显式设置的属性缺失。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`、`cancelled`，列表默认选择
+创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；CLI 省略 --assigned-to 时，先通过现有 GET /me 读取当前认证账号，再将其 UUID 作为 assignedTo 提交；显式 UUID 不额外查询身份。身份查询失败或取消时不得创建任务或退回未分配。未显式设置的属性缺失。服务端对标题、描述、完整依赖及属性值执行[写入额度](daynight-api-input-limits.md)；CLI 保留服务端拒绝。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`、`cancelled`，列表默认选择
 所有未结束任务（排除done/cancelled）；`--all` 选择所有未删除任务的业务状态，
 单个 `--status` 选择指定状态，包括 `done` 和 `cancelled`。`--all` 与 `--status` 互斥，组合使用
 属于参数错误；列表状态值为 `todo`、`in_progress`、`done`、`cancelled`，共享语法负责校验和静态候选，

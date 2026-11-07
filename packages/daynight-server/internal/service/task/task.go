@@ -84,6 +84,26 @@ func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID
 	})
 }
 
+// UpdatePartitionedDependencies accepts the MCP partition of ordinary and
+// external dependencies. Version admission precedes allocation of the union.
+func (s *Tasks) UpdatePartitionedDependencies(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.UpdateTask, ordinary, external *[]string) (model.Task, error) {
+	if ordinary == nil && external == nil {
+		return s.Update(ctx, principal, projectID, id, input)
+	}
+	projectID, id, err := taskWriteIdentity(principal, projectID, id, input.Version)
+	if err != nil {
+		return model.Task{}, err
+	}
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, _ model.Task) (taskcore.Mutation, error) {
+		all, ext, err := PartitionDependencies(ordinary, external)
+		if err != nil {
+			return taskcore.Mutation{}, err
+		}
+		input.DependsOn, input.ExternalDependsOn = all, ext
+		return taskcore.PrepareUpdate(ctx, tx.TaskDAO(), id, input)
+	})
+}
+
 func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID string, prepare func(store.ProjectWriteScope) (taskcore.Mutation, error)) (model.Task, error) {
 	var result model.Task
 	var refusal *model.Fault
@@ -103,7 +123,10 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 		}
 		if !mutation.Changed {
 			result, err = taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
-			return err
+			if err != nil {
+				return err
+			}
+			return admitTaskResponse(ctx, result, false)
 		}
 		if mutation.Delete {
 			if _, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation); err != nil {
@@ -122,6 +145,9 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 			return err
 		}
 		result, err = taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
+		if err == nil {
+			err = admitTaskResponse(ctx, result, true)
+		}
 		if err == nil && !mutation.Create {
 			err = sessioncore.FreezeTaskSessions(ctx, tx.SessionDAO(), mutation.ID, mutation.Values.Status, mutation.Values.Properties)
 		}
