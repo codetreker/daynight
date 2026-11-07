@@ -54,12 +54,12 @@ func TestSessionConsumedBodyRejectionKeepsSocketReusable(t *testing.T) {
 		{"attachment metadata", "PUT", attachmentFilePath(f.task, "metadata-failure"), "Content-Type: text/plain\r\n", "abc", "internal_error", 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testConsumedBodySocket(t, f, tc.method, tc.path, tc.headers, tc.body, tc.code, tc.status)
+			testConsumedBodySocket(t, f, tc.method, tc.path, tc.headers, tc.body, tc.code, tc.status, tc.name == "attachment metadata")
 		})
 	}
 }
 
-func testConsumedBodySocket(t *testing.T, f *sessionHTTPFixture, method, path, headers, body, code string, status int) {
+func testConsumedBodySocket(t *testing.T, f *sessionHTTPFixture, method, path, headers, body, code string, status int, attachment bool) {
 	t.Helper()
 	deadline := make(chan time.Time, 2)
 	before := make(chan error, 2)
@@ -91,9 +91,27 @@ func testConsumedBodySocket(t *testing.T, f *sessionHTTPFixture, method, path, h
 	case <-time.After(5 * time.Second):
 		t.Fatal("Session rejection did not reach response barrier")
 	}
+	if attachment {
+		select {
+		case got := <-deadline:
+			if got.IsZero() {
+				t.Fatal("attachment read deadline was not set")
+			}
+		default:
+			t.Fatal("attachment read deadline was not observed")
+		}
+		select {
+		case got := <-deadline:
+			if !got.IsZero() {
+				t.Fatalf("attachment read deadline not cleared: %v", got)
+			}
+		default:
+			t.Fatal("attachment read deadline clear was not observed")
+		}
+	}
 	select {
 	case got := <-deadline:
-		t.Fatalf("completed Session body set read deadline: %v", got)
+		t.Fatalf("completed body left an unexpected read deadline: %v", got)
 	default:
 	}
 	continueWrite <- struct{}{}

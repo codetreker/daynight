@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sync"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
@@ -355,6 +357,13 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 		defer stop()
 		defer cancel()
 		actor := scope.actor
+		ctx = attachmentservice.WithUploadLeaseRetainer(ctx, func(lease io.Closer) {
+			scope.hold(func() {
+				if err := lease.Close(); err != nil {
+					httpx.LogFailure(e.logger, scope.actor.Context, "mcp", "upload_lease_cleanup", err)
+				}
+			})
+		})
 		actor.Context = ctx
 		actor.rpcModern = req.ProtocolVersion() >= "2026-07-28"
 		if scope.batchKey != "" {

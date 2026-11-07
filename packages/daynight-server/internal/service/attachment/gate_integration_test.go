@@ -74,18 +74,26 @@ func TestAttachmentGateOrdersConcurrentInstances(t *testing.T) {
 				secondResult <- attachmentMutation(ctx, b, principal, task, "delete")
 			}()
 			<-started
-			select {
-			case err := <-secondResult:
-				t.Fatalf("second operation passed live writer: %v", err)
-			case <-time.After(100 * time.Millisecond):
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
+			if operations[0] == "put" && operations[1] == "put" {
+				requireFault(t, attachmentWaitResult(t, ctx, secondResult), "resource_busy")
+			} else {
+				select {
+				case err := <-secondResult:
+					t.Fatalf("second operation passed live writer: %v", err)
+				case <-time.After(100 * time.Millisecond):
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
 			}
 			close(observed.release)
 			if err := attachmentWaitResult(t, ctx, firstResult); err != nil {
 				t.Fatal(err)
 			}
-			if err := attachmentWaitResult(t, ctx, secondResult); err != nil {
+			if operations[0] == "put" && operations[1] == "put" {
+				if _, _, err := b.Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("second-writer")); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := attachmentWaitResult(t, ctx, secondResult); err != nil {
 				t.Fatal(err)
 			}
 			content := "after"
