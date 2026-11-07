@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/httpoutbound"
 )
@@ -84,15 +85,16 @@ func TestDeliveryObservationDoesNotPersistRawResponse(t *testing.T) {
 
 type lateScope struct {
 	store.WebhookDeliveryScope
-	attempt store.WebhookAttempt
-	now     time.Time
+	attempt   store.WebhookAttempt
+	now       time.Time
+	readError error
 }
 
 func (s *lateScope) TryLockDelivery(context.Context, string) (store.WebhookDelivery, bool, error) {
 	return store.WebhookDelivery{}, false, nil
 }
 func (s *lateScope) LockOwnAttempt(context.Context, string) (store.WebhookAttempt, error) {
-	return s.attempt, nil
+	return s.attempt, s.readError
 }
 func (s *lateScope) ObservedAt(context.Context) (time.Time, error) { return s.now, nil }
 func (s *lateScope) UpdateAttempt(_ context.Context, a store.WebhookAttempt) error {
@@ -131,6 +133,22 @@ func TestFinalizeWaitsForRecoveryWithoutHoldingDelivery(t *testing.T) {
 	}
 }
 
+func TestLateFinalizationRejectsDifferentAttemptAndReadFailure(t *testing.T) {
+	now := time.Now()
+	own := store.WebhookAttempt{ID: "a", DeliveryID: "d", LeaseToken: "token", Generation: 1}
+	s := &lateScope{attempt: own, now: now}
+	r := NewRunner(lateDB{scope: s}, &Service{}, true)
+	s.attempt.LeaseToken = "other"
+	if done, err := r.finalizeOnce(context.Background(), own, now, time.Second, httpoutbound.Response{Status: 202}, nil); err == nil {
+		t.Fatalf("different attempt accepted: %t %v", done, err)
+	}
+	s.attempt = own
+	s.readError = errors.New("attempt read failed")
+	if done, err := r.finalizeOnce(context.Background(), own, now, time.Second, httpoutbound.Response{Status: 202}, nil); err == nil {
+		t.Fatalf("read failure hidden: %t %v", done, err)
+	}
+}
+
 func TestRunnerStopHonorsDeadline(t *testing.T) {
 	r := &Runner{}
 	if err := r.Stop(context.Background()); err != nil {
@@ -147,11 +165,18 @@ func TestRunnerStopHonorsDeadline(t *testing.T) {
 
 type recoveryScope struct {
 	store.WebhookDeliveryScope
-	d          store.WebhookDelivery
-	now        time.Time
-	attempts   []store.WebhookAttempt
-	queryError error
-	changed    bool
+	d            store.WebhookDelivery
+	now          time.Time
+	attempts     []store.WebhookAttempt
+	queryError   error
+	changed      bool
+	attemptError error
+	waitError    error
+	wait         store.WebhookEndpointWait
+	noExpired    bool
+	due          []store.WebhookDelivery
+	current      bool
+	currentError error
 }
 
 func (s *recoveryScope) ObservedAt(context.Context) (time.Time, error) { return s.now, nil }
@@ -159,10 +184,26 @@ func (s *recoveryScope) LockExpired(context.Context, int, time.Time) ([]store.We
 	if s.queryError != nil {
 		return nil, s.queryError
 	}
+	if s.noExpired {
+		return nil, nil
+	}
 	return []store.WebhookDelivery{s.d}, nil
 }
 func (s *recoveryScope) LockAttempts(context.Context, string) ([]store.WebhookAttempt, error) {
-	return s.attempts, nil
+	return s.attempts, s.attemptError
+}
+func (s *recoveryScope) LockDueExpiry(context.Context, int, time.Time) ([]store.WebhookDelivery, error) {
+	return s.due, nil
+}
+func (s *recoveryScope) LockWait(context.Context, string, int64) (store.WebhookEndpointWait, error) {
+	return s.wait, s.waitError
+}
+func (s *recoveryScope) CurrentDestination(context.Context, string, int64) (bool, error) {
+	return s.current, s.currentError
+}
+func (s *recoveryScope) UpdateAttempt(_ context.Context, a store.WebhookAttempt) error {
+	s.attempts = []store.WebhookAttempt{a}
+	return nil
 }
 func (s *recoveryScope) UpdateDelivery(_ context.Context, d store.WebhookDelivery) error {
 	s.d = d
@@ -200,5 +241,91 @@ func TestRecoveryLeavesStateOnStorageFailure(t *testing.T) {
 	r := NewRunner(recoveryDB{scope: s}, &Service{}, false)
 	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
 		t.Fatalf("storage failure hidden: %v", err)
+	}
+}
+
+func TestRecoveryRejectsBrokenAttemptAndWait(t *testing.T) {
+	d, now := planFixture()
+	until, id := now.Add(-time.Second), "attempt"
+	d.ID, d.LeaseUntil, d.ExpiresAt, d.CurrentAttemptID = "delivery", &until, now.Add(time.Hour), &id
+	s := &recoveryScope{d: d, now: now}
+	r := NewRunner(recoveryDB{scope: s}, &Service{}, false)
+	s.attemptError = errors.New("attempt history read failed")
+	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
+		t.Fatalf("attempt history error hidden: %v", err)
+	}
+	s.attemptError = nil
+	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
+		t.Fatalf("missing attempt accepted: %v", err)
+	}
+	s.attempts = []store.WebhookAttempt{{ID: id, DeliveryID: d.ID}}
+	s.waitError = errors.New("wait lookup failed")
+	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
+		t.Fatalf("wait lookup failure ignored: %v", err)
+	}
+	s.waitError = nil
+	s.wait.Owner.ID = "different owner"
+	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
+		t.Fatalf("inconsistent wait accepted: %v", err)
+	}
+	s.waitError = model.ErrNotFound
+	s.current = true
+	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
+		t.Fatalf("missing current wait accepted: %v", err)
+	}
+	s.currentError = errors.New("destination read failed")
+	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
+		t.Fatalf("destination read failure hidden: %v", err)
+	}
+}
+
+func TestRecoveryExpiresPendingWithoutClaim(t *testing.T) {
+	d, now := planFixture()
+	d.State = "pending"
+	s := &recoveryScope{now: now, noExpired: true, due: []store.WebhookDelivery{d}}
+	r := NewRunner(recoveryDB{scope: s}, &Service{}, false)
+	if err := r.recoverExpired(context.Background()); err != nil || !s.changed || s.d.State != "failed" || s.d.AutomaticOpen {
+		t.Fatalf("expired pending: %+v %v", s.d, err)
+	}
+}
+
+type recoveryOutcomes struct {
+	calls  int
+	cancel context.CancelFunc
+}
+
+func (d *recoveryOutcomes) WriteWebhookDelivery(_ context.Context, _ func(store.WebhookDeliveryScope) error) (store.Completion, error) {
+	d.calls++
+	if d.calls == 1 {
+		if d.cancel != nil {
+			d.cancel()
+		}
+		return store.Completion{Outcome: store.TransactionUnknown}, errors.New("lost commit receipt")
+	}
+	return store.Completion{Outcome: store.TransactionNotCommitted}, errors.New("permanent storage failure")
+}
+func TestMaintenanceContinuesAfterUnknownRecovery(t *testing.T) {
+	db := &recoveryOutcomes{}
+	r := NewRunner(db, &Service{}, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := r.maintenance(ctx); err == nil || db.calls != 2 {
+		t.Fatalf("unknown recovery ended prematurely: calls=%d err=%v", db.calls, err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	db = &recoveryOutcomes{cancel: cancel}
+	r = NewRunner(db, &Service{}, false)
+	if err := r.maintenance(ctx); err != nil || db.calls != 1 {
+		t.Fatalf("cancelled wait: calls=%d err=%v", db.calls, err)
+	}
+}
+
+type brokenRandom struct{}
+
+func (brokenRandom) Read([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
+func TestWorkerReportsEntropyFailureBeforeClaim(t *testing.T) {
+	r := NewRunner(nil, &Service{Random: brokenRandom{}}, true)
+	if err := r.worker(context.Background()); err == nil {
+		t.Fatal("entropy failure hidden")
 	}
 }

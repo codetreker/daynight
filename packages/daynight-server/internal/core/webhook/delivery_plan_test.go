@@ -59,3 +59,25 @@ func TestAutomaticPlanBounds(t *testing.T) {
 		t.Fatal("non-increasing plan accepted")
 	}
 }
+
+func TestNextAutomaticRejectsCorruptPlanAndSkipsMissedSlots(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	schedule := make([]time.Time, 10)
+	for i := range schedule {
+		schedule[i] = start.Add(time.Duration(i) * time.Minute)
+	}
+	expires := start.Add(72 * time.Hour)
+	if _, _, _, err := NextAutomatic(schedule[:9], 0, 0, true, start, expires, nil); err == nil {
+		t.Fatal("short plan accepted")
+	}
+	if _, _, _, err := NextAutomatic(schedule, 0, 11, true, start, expires, nil); err == nil {
+		t.Fatal("invalid attempt count accepted")
+	}
+	next, cursor, ok, err := NextAutomatic(schedule, 1, 1, true, start.Add(5*time.Minute), expires, nil)
+	if err != nil || !ok || cursor != 6 || !next.Equal(schedule[6]) {
+		t.Fatalf("missed slots: %v %d %v %v", next, cursor, ok, err)
+	}
+	if _, cursor, ok, err = NextAutomatic(schedule, 1, 1, true, start.Add(11*time.Minute), expires, nil); err != nil || ok || cursor != 10 {
+		t.Fatalf("all slots missed: %d %v %v", cursor, ok, err)
+	}
+}

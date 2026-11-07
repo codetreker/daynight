@@ -236,3 +236,19 @@ func TestAdmissionRejectsUnsupportedAndDamagedPayloads(t *testing.T) {
 		}
 	}
 }
+
+func TestAdmissionManualIntentPreservesAutomaticBudget(t *testing.T) {
+	r, s, _ := admissionFixture(t)
+	op := "99999999-9999-4999-8999-999999999999"
+	s.d.Trigger, s.d.ManualOperationID = "manual", &op
+	s.d.AutomaticAttemptCount, s.d.ManualOperationCount = 3, 1
+	a, err := r.admit(context.Background(), s.d)
+	if err != nil || a == nil || a.attempt.ManualOperationID == nil || *a.attempt.ManualOperationID != op || a.attempt.AutomaticPlanSlot != nil || s.d.AutomaticAttemptCount != 3 || s.d.ManualOperationCount != 1 {
+		t.Fatalf("manual admission: %v %v", a, err)
+	}
+	r, s, _ = admissionFixture(t)
+	s.d.Trigger = "manual"
+	if a, err := r.admit(context.Background(), s.d); err == nil || a != nil || len(s.a) != 0 {
+		t.Fatalf("missing manual identity: %v %v", a, err)
+	}
+}
