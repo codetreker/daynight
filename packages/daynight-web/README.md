@@ -2055,6 +2055,16 @@ owner and retain visibility, identity, ordering and duplicate-control checks.
 The [identity observation decision](../../.agents/notes/implemented/testing/2026-11-07-identity-test-observation-boundaries.md)
 records these boundaries and their limits.
 
+Project-settings route-retention and management tests use the same state waiter
+for request dispatch, mocked callbacks and abort signals. Responses, cache
+admission and presentation retain independent checks; a dispatch count does not
+prove that a result was admitted. Settings actions, token creation fields and
+member role controls use their current panel, form or roster. Readiness helpers
+click the same enabled button returned by their semantic query. Global privacy,
+absence and duplicate-control assertions retain document-wide scope. The
+[settings and management observation decision](../../.agents/notes/implemented/testing/2026-11-07-settings-management-test-observations.md)
+records these query and waiting boundaries.
+
 Step panel DOM tests retain the full pagination fixtures and resolve visible
 controls by role and accessible name within their current row, form, toolbar,
 pagination or confirmation dialog. Whole-page counts retain document-wide scope.
