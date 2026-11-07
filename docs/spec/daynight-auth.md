@@ -393,8 +393,9 @@ participant 新增单独授权，或修改、移除真实 grant；操作前确�
 进入 `/login?returnPath=...` 并保留目标的路径、query 和所选页签。缺少目标才使用默认值；
 已提供的目标必须是有效站内目标，外部地址、协议相对路径、反斜线、控制字符、登录循环
 和不支持的页面明确拒绝。已有会话访问 `/login` 直接进入有效目标或 `/projects`，
-历史返回不应反复显示中间登录页。已知登录事务的 callback 失败显示独立登录错误并保留
-有效目标，包括建立本地 session 失败；失败不重放可能已消费的身份 code。
+历史返回不应反复显示中间登录页。已知登录事务的 callback 失败时，除上游响应非法或
+profile 超限返回 502 外，显示独立登录错误并保留有效目标，包括建立本地 session 失败；
+失败不重放可能已消费的身份 code。
 
 邀请凭据在跳转前从 fragment 同步捕获并移出地址；以有效回跳目标识别同一邀请流程，
 经过 `/login?returnPath=/invitations` 或 `/login?returnPath=/team-invitations` 和账号切换时保留，凭据不进入回跳参数。主动离开邀请
@@ -512,8 +513,9 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 撤销无需等待文件 IO，已准入变更允许完成；后续请求重新认证和授权。保留 K1，不在文件
 IO 之后追加成员复查。
 
-数据 API 不跳转登录 HTML。已验证并消费的 callback 失败时进入 `/login` 的通用登录错误
-状态并保留该事务已验证的目标，错误绑定明确拒绝。Web 处理登录状态，CLI 提示 `daynight login`；失败不得伪装成空
+数据 API 不跳转登录 HTML。已验证并消费的 callback 在上游响应非法或 profile 超限时返回
+502 `identity_unavailable`；其他失败进入 `/login` 的通用登录错误状态并保留该事务已验证的
+目标，错误绑定明确拒绝。Web 处理登录状态，CLI 提示 `daynight login`；失败不得伪装成空
 项目或空成员。日志及验收回执不包含 Cookie、Authorization、Set-Cookie、PAT、
 App Secret、一次性 code 或邀请秘密。
 
