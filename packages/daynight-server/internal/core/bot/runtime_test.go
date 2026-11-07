@@ -75,3 +75,26 @@ func TestStartupRulesPreserveReplayAndVersionLimit(t *testing.T) {
 		t.Fatalf("valid startup transition: %v %v", write, err)
 	}
 }
+
+func TestRuntimeAuthorizationAndVersion(t *testing.T) {
+	bot := model.Bot{OwnerUserID: "owner", WorkerID: "worker", Version: 2}
+	check := func(err error, code, message string) {
+		t.Helper()
+		var fault *model.Fault
+		if !errors.As(err, &fault) || fault.Code != code || fault.Message != message {
+			t.Fatalf("expected %s %q, got %v", code, message, err)
+		}
+	}
+	if err := AuthorizeRuntime(bot, "owner", "worker"); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckVersion(bot, 2); err != nil {
+		t.Fatal(err)
+	}
+	check(CheckVersion(bot, 1), "version_conflict", "Bot version has changed.")
+	check(AuthorizeRuntime(bot, "other", "worker"), "forbidden", "Session access is not available.")
+	check(AuthorizeRuntime(bot, "owner", "other"), "forbidden", "Session access is not available.")
+	bot.Deletion = &model.BotDeletion{}
+	check(AuthorizeRuntime(bot, "owner", "worker"), "resource_conflict", "Bot is deleted.")
+	check(AuthorizeRuntime(bot, "other", "worker"), "forbidden", "Session access is not available.")
+}

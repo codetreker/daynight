@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -244,8 +245,8 @@ func TestReaderFailureKeepsExistingFileAndCleansTemporary(t *testing.T) {
 	storage, root := newStorage(t)
 	put(t, storage, "bucket", "file", []byte("keep"))
 	wantErr := errors.New("input failed")
-	if _, err := storage.Put(t.Context(), "bucket", "file", io.MultiReader(strings.NewReader("partial"), errorReader{wantErr})); !errors.Is(err, wantErr) {
-		t.Fatal(err)
+	if _, err := storage.Put(t.Context(), "bucket", "file", io.MultiReader(strings.NewReader("partial"), errorReader{wantErr})); !errors.Is(err, wantErr) || filestorage.PublicationOutcome(err) != filestorage.NotPublished {
+		t.Fatalf("copy failure: %v", err)
 	}
 	if got := string(read(t, storage, "bucket", "file")); got != "keep" {
 		t.Fatal(got)
@@ -256,6 +257,47 @@ func TestReaderFailureKeepsExistingFileAndCleansTemporary(t *testing.T) {
 type errorReader struct{ err error }
 
 func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
+
+type cleanupFailureReader struct {
+	dir   string
+	cause error
+}
+
+func (r cleanupFailureReader) Read([]byte) (int, error) {
+	entries, err := os.ReadDir(r.dir)
+	if err != nil {
+		return 0, err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".daynight-upload-") {
+			name := filepath.Join(r.dir, entry.Name())
+			if err := os.Remove(name); err != nil {
+				return 0, err
+			}
+			if err := os.Mkdir(name, 0o700); err != nil {
+				return 0, err
+			}
+			if err := os.WriteFile(filepath.Join(name, "child"), []byte("x"), 0o600); err != nil {
+				return 0, err
+			}
+			return 0, r.cause
+		}
+	}
+	return 0, errors.New("temporary file missing")
+}
+
+func TestPutPreservesCopyAndCleanupFailures(t *testing.T) {
+	storage, root := newStorage(t)
+	put(t, storage, "bucket", "file", []byte("old"))
+	cause := errors.New("injected read failure")
+	_, err := storage.Put(t.Context(), "bucket", "file", cleanupFailureReader{dir: filepath.Join(root, "bucket"), cause: cause})
+	if !errors.Is(err, cause) || (!errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, syscall.EEXIST)) || filestorage.PublicationOutcome(err) != filestorage.NotPublished {
+		t.Fatalf("copy/cleanup facts lost: %v", err)
+	}
+	if got := string(read(t, storage, "bucket", "file")); got != "old" {
+		t.Fatalf("target = %q", got)
+	}
+}
 
 func TestSymlinksCannotEscapeOrBeDeletedAsFiles(t *testing.T) {
 	storage, root := newStorage(t)
@@ -741,8 +783,8 @@ func TestPutRequiresDurableBytesAndDirectoryPublication(t *testing.T) {
 				}
 				return file.Sync()
 			}
-			if _, err := storage.Put(t.Context(), "bucket", "session/file", strings.NewReader("new")); !errors.Is(err, syncFailure) {
-				t.Fatal("sync failure acknowledged", err)
+			if _, err := storage.Put(t.Context(), "bucket", "session/file", strings.NewReader("new")); !errors.Is(err, syncFailure) || (failAt == 1 && filestorage.PublicationOutcome(err) != filestorage.NotPublished) || (failAt > 1 && filestorage.PublicationOutcome(err) != filestorage.Published) {
+				t.Fatal("sync failure or publication fact lost", err)
 			}
 			got := string(read(t, storage, "bucket", "session/file"))
 			if failAt == 1 && got != "old" {

@@ -20,13 +20,14 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/google/uuid"
 )
 
-func botService(t *testing.T) (*Bots, *store.Store, model.Principal, string) {
+func botService(t *testing.T) (*Bots, *postgres.Store, model.Principal, string) {
 	t.Helper()
-	database, err := store.Open(context.Background(), serviceDatabaseURL(t))
+	database, err := postgres.Open(context.Background(), serviceDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,28 +76,40 @@ func TestBotsCreateOnceWithoutProjectAndPreserveFrozenConfiguration(t *testing.T
 	requireFault(t, err, "resource_conflict")
 }
 
+func requireDeletionFault(t *testing.T, err error, code string) {
+	t.Helper()
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" {
+		t.Fatalf("expected %s fault, got %v", code, err)
+	}
+	var transaction *store.TransactionError
+	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.Outcome != store.TransactionNotCommitted || transaction.CleanupFailed) {
+		t.Fatalf("fault did not have a confirmed rollback: %v", err)
+	}
+}
+
 func TestBotsDeletionIntentIsVersionedAndIdempotent(t *testing.T) {
-	bots, _, principal, workerID := botService(t)
+	bots, database, principal, workerID := botService(t)
 	ctx := context.Background()
 	bot, err := bots.Create(ctx, principal, botInput(workerID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := store.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
-	deleted, err := bots.Delete(ctx, principal, bot.ID, request)
+	deleted, err := NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deleted.Version != 2 || deleted.Deletion == nil || deleted.Deletion.RequestedVersion != 1 || deleted.Deletion.DeletionID != request.DeletionID || deleted.Deletion.WorkerCleanup.State != "pending" || deleted.Deletion.ServerCleanup.State != "pending" {
 		t.Fatalf("incorrect deletion: %+v", deleted)
 	}
-	replayed, err := bots.Delete(ctx, principal, bot.ID, request)
+	replayed, err := NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, request)
 	if err != nil || !reflect.DeepEqual(deleted, replayed) {
 		t.Fatalf("deletion replay: %+v %v", replayed, err)
 	}
 	request.Version = 2
-	_, err = bots.Delete(ctx, principal, bot.ID, request)
-	requireFault(t, err, "resource_conflict")
+	_, err = NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, request)
+	requireDeletionFault(t, err, "resource_conflict")
 	page, err := bots.List(ctx, principal, model.PageRequest{Limit: 10})
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("deleted Bot remained visible: %+v %v", page, err)
@@ -122,8 +135,8 @@ func TestBotsRejectForeignOwnersWorkersAndRevokedCredentials(t *testing.T) {
 	requireFault(t, err, "forbidden")
 	_, err = bots.Create(ctx, other, botInput(workerID))
 	requireFault(t, err, "forbidden")
-	_, err = bots.Delete(ctx, other, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
-	requireFault(t, err, "forbidden")
+	_, err = NewDeletions(database, nil, nil).DeleteBot(ctx, other, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	requireDeletionFault(t, err, "forbidden")
 	_, err = bots.ListWorker(ctx, other, workerID, model.PageRequest{Limit: 10})
 	requireFault(t, err, "forbidden")
 	if _, err := database.Pool.Exec(ctx, "DELETE FROM sessions WHERE id=$1", principal.CredentialID); err != nil {
@@ -133,8 +146,8 @@ func TestBotsRejectForeignOwnersWorkersAndRevokedCredentials(t *testing.T) {
 	requireFault(t, err, "unauthenticated")
 	_, err = bots.Create(ctx, principal, botInput(workerID))
 	requireFault(t, err, "unauthenticated")
-	_, err = bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
-	requireFault(t, err, "unauthenticated")
+	_, err = NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	requireDeletionFault(t, err, "unauthenticated")
 	_, err = bots.List(ctx, principal, model.PageRequest{Limit: 10})
 	requireFault(t, err, "unauthenticated")
 }
@@ -167,7 +180,7 @@ func TestBotsRejectCredentialsExpiringDuringDefinitionLockWait(t *testing.T) {
 					_, err := bots.Create(ctx, principal, input)
 					result <- err
 				} else {
-					_, err := bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+					_, err := NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 					result <- err
 				}
 			}()
@@ -186,7 +199,7 @@ func TestBotsRejectCredentialsExpiringDuringDefinitionLockWait(t *testing.T) {
 			}
 			select {
 			case err := <-result:
-				requireFault(t, err, "unauthenticated")
+				requireDeletionFault(t, err, "unauthenticated")
 			case <-time.After(5 * time.Second):
 				t.Fatal("Bot operation did not finish after releasing its lock")
 			}
@@ -229,7 +242,10 @@ func TestBotsConcurrentCreationAndDeletionChooseOneIdentity(t *testing.T) {
 	}
 	deletion := store.DeleteBot{Version: first.Version, DeletionID: uuid.NewString()}
 	for range 8 {
-		go func() { bot, err := bots.Delete(ctx, principal, input.ID, deletion); results <- outcome{bot, err} }()
+		go func() {
+			bot, err := NewDeletions(database, nil, nil).DeleteBot(ctx, principal, input.ID, deletion)
+			results <- outcome{bot, err}
+		}()
 	}
 	for range 8 {
 		got := <-results
@@ -292,7 +308,7 @@ func TestBotsPaginationAndCompositeWorkerIdentity(t *testing.T) {
 	}
 }
 
-func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
+func TestBotsVersionsAndIndependentTasks(t *testing.T) {
 	bots, database, principal, workerID := botService(t)
 	ctx := context.Background()
 	project, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Independent tasks", RepoURL: "https://github.com/example/independent"})
@@ -310,18 +326,13 @@ func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := store.DeleteBot{Version: 2, DeletionID: uuid.NewString()}
-	_, err = bots.Delete(ctx, principal, bot.ID, request)
-	requireFault(t, err, "version_conflict")
-	if _, err := database.Pool.Exec(ctx, "UPDATE bots SET version=9007199254740993,session_id=$2 WHERE id=$1", bot.ID, uuid.NewString()); err != nil {
+	_, err = NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, request)
+	requireDeletionFault(t, err, "version_conflict")
+	if _, err := database.Pool.Exec(ctx, "UPDATE bots SET version=9007199254740993 WHERE id=$1", bot.ID); err != nil {
 		t.Fatal(err)
 	}
 	request.Version = 9007199254740993
-	_, err = bots.Delete(ctx, principal, bot.ID, request)
-	requireFault(t, err, "resource_conflict")
-	if _, err := database.Pool.Exec(ctx, "UPDATE bots SET session_id=NULL WHERE id=$1", bot.ID); err != nil {
-		t.Fatal(err)
-	}
-	deleted, err := bots.Delete(ctx, principal, bot.ID, request)
+	deleted, err := NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, request)
 	if err != nil || deleted.Version != 9007199254740994 || deleted.Deletion.RequestedVersion != 9007199254740993 {
 		t.Fatalf("version lost precision: %+v %v", deleted, err)
 	}
@@ -335,8 +346,8 @@ func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, "UPDATE bots SET version=9223372036854775807 WHERE id=$1", bot.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: math.MaxInt64, DeletionID: uuid.NewString()})
-	requireFault(t, err, "version_exhausted")
+	_, err = NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, store.DeleteBot{Version: math.MaxInt64, DeletionID: uuid.NewString()})
+	requireDeletionFault(t, err, "version_exhausted")
 }
 
 func TestBotsPATLifecycleAndCompletedCleanupInventory(t *testing.T) {
@@ -355,7 +366,7 @@ func TestBotsPATLifecycleAndCompletedCleanupInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	deleted, err := NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +377,7 @@ func TestBotsPATLifecycleAndCompletedCleanupInventory(t *testing.T) {
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("completed responsibility remained scheduled: %+v %v", page, err)
 	}
-	replayed, err := bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: deleted.Deletion.DeletionID})
+	replayed, err := NewDeletions(database, nil, nil).DeleteBot(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: deleted.Deletion.DeletionID})
 	if err != nil || replayed.Deletion.WorkerCleanup.State != "completed" {
 		t.Fatalf("replay reset cleanup: %+v %v", replayed, err)
 	}
@@ -429,10 +440,6 @@ func TestBotsValidateDefinitionsAndRequests(t *testing.T) {
 		func() error { _, err := bots.Create(ctx, model.Principal{}, botInput(workerID)); return err },
 		func() error { _, err := bots.Get(ctx, model.Principal{}, id); return err },
 		func() error { _, err := bots.List(ctx, model.Principal{}, model.PageRequest{Limit: 10}); return err },
-		func() error {
-			_, err := bots.Delete(ctx, model.Principal{}, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
-			return err
-		},
 	} {
 		requireFault(t, operation(), "unauthenticated")
 	}
@@ -447,33 +454,34 @@ func TestBotsValidateDefinitionsAndRequests(t *testing.T) {
 			_, err := bots.List(ctx, principal, model.PageRequest{Limit: 10, Cursor: pointer("broken")})
 			return err
 		},
-		func() error {
-			_, err := bots.Delete(ctx, principal, "bad", store.DeleteBot{Version: 1, DeletionID: id})
-			return err
-		},
-		func() error {
-			_, err := bots.Delete(ctx, principal, id, store.DeleteBot{Version: 1, DeletionID: "bad"})
-			return err
-		},
-		func() error {
-			_, err := bots.Delete(ctx, principal, id, store.DeleteBot{Version: 0, DeletionID: id})
-			return err
-		},
 	} {
 		requireFault(t, operation(), "invalid_input")
 	}
-	_, err := bots.Get(ctx, principal, id)
+	deletions := NewDeletions(database, nil, nil)
+	for _, input := range []struct {
+		id      string
+		request store.DeleteBot
+	}{
+		{"bad", store.DeleteBot{Version: 1, DeletionID: id}},
+		{id, store.DeleteBot{Version: 1, DeletionID: "bad"}},
+		{id, store.DeleteBot{Version: 0, DeletionID: id}},
+	} {
+		_, err := deletions.DeleteBot(ctx, principal, input.id, input.request)
+		requireDeletionFault(t, err, "invalid_input")
+	}
+	_, err := deletions.DeleteBot(ctx, model.Principal{}, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	requireDeletionFault(t, err, "forbidden")
+	_, err = bots.Get(ctx, principal, id)
 	requireFault(t, err, "not_found")
-	_, err = bots.Delete(ctx, principal, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
-	requireFault(t, err, "not_found")
+	_, err = NewDeletions(database, nil, nil).DeleteBot(ctx, principal, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	requireDeletionFault(t, err, "not_found")
 	database.Close()
+	if _, err := deletions.DeleteBot(ctx, principal, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()}); err == nil {
+		t.Fatal("closed database accepted deletion")
+	}
 	for _, operation := range []func() error{
 		func() error { _, err := bots.Get(ctx, principal, id); return err },
 		func() error { _, err := bots.List(ctx, principal, model.PageRequest{Limit: 10}); return err },
-		func() error {
-			_, err := bots.Delete(ctx, principal, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
-			return err
-		},
 		func() error { _, err := bots.Create(ctx, principal, botInput(workerID)); return err },
 	} {
 		err := operation()

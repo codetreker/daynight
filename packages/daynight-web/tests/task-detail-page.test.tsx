@@ -4,7 +4,7 @@ import { saveDetail } from '../src/features/task-detail/detail-cache';
 import { TaskDetailPage } from '../src/features/task-detail/TaskDetailPage';
 import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { createTaskSessionWorld } from './helpers/taskSessions';
-import { TEST_VIEWER_ID, taskSyncFromGraph, taskSyncResponse, taskSyncQuery, viewerHeaders } from "./helpers/taskSync";
+import { TEST_VIEWER_ID, taskSyncFromGraph, taskSyncResponse, taskSyncQuery, fixtureTaskEpoch, viewerHeaders } from "./helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/app/App';
@@ -29,6 +29,8 @@ const installed = (initial?: TaskDetail) => {
   const paths = new Set(files);
   const handler = (url: string, options?: RequestInit): Response => {
     if (new URL(url, location.origin).pathname === `${root}/task-sync`) return taskSyncResponse(graphFixture([...tasks.values()]), { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(new URL(url, location.origin)), versionForTask: (task) => tasks.get(task.id)!.version, propertiesForTask: (task) => tasks.get(task.id)!.properties });
+    if (new URL(url, location.origin).pathname === `${root}/task-assignees`) return resourceResponse({ items: [{ userId: TEST_VIEWER_ID, version: 'a'.repeat(64), name: 'Owner', avatarUrl: null, hasProjectAccess: true }], unresolvedUserIds: [] }, TEST_VIEWER_ID);
+    if (new URL(url, location.origin).pathname === `${root}/task-graph`) return resourceResponse(graphFixture([...tasks.values()]), TEST_VIEWER_ID);
     const match = new RegExp(`^${root}/tasks/([^/]+)(?:/(status))?$`).exec(url);
     if (match !== null) {
       const task = tasks.get(match[1]!)!;
@@ -42,7 +44,9 @@ const installed = (initial?: TaskDetail) => {
         tasks.set(task.id, next);
         return resourceResponse(next, TEST_VIEWER_ID);
       }
-      return resourceResponse(task, TEST_VIEWER_ID);
+      const response = resourceResponse(task, TEST_VIEWER_ID);
+      response.headers.set('Daynight-Task-Epoch', fixtureTaskEpoch(projectId));
+      return response;
     }
     if (new URL(url, location.origin).pathname.endsWith('/sessions')) return resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID);
     if (url.includes('/attachments?')) return resourceResponse({ items: [...paths].map((path) => ({ path, contentType: 'text/plain', sizeBytes: 12, createdAt: first.createdAt, updatedAt: first.updatedAt })), nextCursor: null });
@@ -104,7 +108,8 @@ describe('standalone full task details', () => {
       });
       await waitFor(() => {
         expect(screen.queryByText(detail.description)).toBeNull();
-        expect(screen.getByRole('heading', { name: '项目不存在' })).toBeVisible();
+        expect(screen.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
+        expect(screen.getByRole('link', { name: '返回项目列表' })).toHaveAttribute('href', '/projects');
       });
       expect(screen.queryByText(detail.description)).toBeNull();
       expect(cold.getAuthorizedProject(projectId)).toBeNull();
@@ -158,7 +163,7 @@ describe('standalone full task details', () => {
     expect(screen.getByRole('main')).toBe(main);
     fireEvent.click(toggle);
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
-    fireEvent.click(screen.getByRole('button', { name: '后续任务，普通依赖' }));
+    fireEvent.click(await screen.findByRole('button', { name: '后续任务，普通依赖' }));
     await screen.findByRole('heading', { name: '后续任务' });
     expect(screen.getByRole('main')).toHaveClass('task-detail-fullscreen');
   });
@@ -228,7 +233,7 @@ describe('standalone full task details', () => {
     const count = window.history.length;
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     expect(window.history.length).toBe(count);
-    fireEvent.click(screen.getByRole('button', { name: '后续任务，普通依赖' }));
+    fireEvent.click(await screen.findByRole('button', { name: '后续任务，普通依赖' }));
     await screen.findByRole('heading', { name: '后续任务' });
     expect(window.location.pathname).toBe(address('overview', null, otherId));
     expect(fetcher.mock.calls.filter(([url]) => new URL(url, location.origin).pathname.endsWith('/task-sync'))).toHaveLength(1);
@@ -265,23 +270,31 @@ describe('standalone full task details', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('exposes real graph failures without loading fabricated task relationships and retries the graph owner', async () => {
+  it('loads details when project synchronization fails and reports relation failures independently', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
     const fixture = installed();
-    fixture.fetcher.mockImplementationOnce(async () => resourceResponse({ error: { code: 'internal_error', message: 'private error', requestId: 'graph-failure' } }));
-    fixture.fetcher.mockImplementationOnce(async () => new Response(JSON.stringify({ error: { code: 'internal_error', message: 'private error', requestId: 'graph-failure' } }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+    let failRelations = true;
+    fixture.fetcher.mockImplementation(async (url, options) => {
+      const path = new URL(url, location.origin).pathname;
+      if (path === `${root}/task-sync` || path === `${root}/task-graph` && failRelations) return new Response(JSON.stringify({ error: { code: 'internal_error', message: 'private error', requestId: 'graph-failure' } }), { status: 503, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
+      return fixture.handler(url, options);
+    });
     window.history.replaceState(null, '', address());
     render(<App />);
+    await screen.findByRole('heading', { name: '独立任务' });
     const alert = await screen.findByRole('alert');
     expect(alert).not.toHaveTextContent('private error');
     expect(screen.queryByText('无后续任务')).toBeNull();
-    expect(fixture.fetcher.mock.calls.some(([url]) => url === `${root}/tasks/${taskId}`)).toBe(false);
-    fireEvent.click(within(alert).getByRole('button', { name: '重试' }));
-    await screen.findByRole('alert');
-    fireEvent.click(screen.getByRole('button', { name: '重试' }));
-    await screen.findByRole('heading', { name: '独立任务' });
+    expect(screen.getByRole('button', { name: '待处理' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: '负责人：未分配' }));
+    expect(await screen.findByRole('option', { name: 'Owner' })).toBeVisible();
+    fireEvent.keyDown(screen.getByRole('dialog', { name: '负责人' }), { key: 'Escape' });
+    failRelations = false;
+    fireEvent.click(within(alert).getByRole('button', { name: '重试详情' }));
+    await screen.findByRole('button', { name: '后续任务，普通依赖' });
   });
 
-  it('reuses full details after an unchanged fifteen-second graph receipt while retaining the mounted view', async () => {
+  it('refreshes direct details every fifteen seconds while retaining the mounted view', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const fixture = installed();
     window.history.replaceState(null, '', address());
@@ -290,11 +303,28 @@ describe('standalone full task details', () => {
     const body = document.querySelector('.task-detail-body');
     expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([url]) => new URL(url, location.origin).pathname.endsWith('/task-sync'))).toHaveLength(2));
-    expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
+    await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(2));
     expect(screen.getByRole('heading', { name: '独立任务' })).toBe(title);
     expect(document.querySelector('.task-detail-body')).toBe(body);
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('immediately reobserves direct details when the page becomes visible', async () => {
+    const fixture = installed();
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    window.history.replaceState(null, '', address());
+    render(<App />);
+    await screen.findByRole('heading', { name: '独立任务' });
+    expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
+    visibility.mockReturnValue('hidden');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    const previous = fixture.tasks.get(taskId)!;
+    fixture.tasks.set(taskId, { ...previous, title: '更新后的任务', version: previous.version + 1n });
+    visibility.mockReturnValue('visible');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(await screen.findByRole('heading', { name: '更新后的任务' })).toBeVisible();
+    expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(2);
+    expect(fixture.fetcher.mock.calls.filter(([, options]) => options?.method === 'PUT' || options?.method === 'PATCH' || options?.method === 'DELETE')).toHaveLength(0);
   });
 
   it('keeps page keys ordinary and uses current exact-version status confirmations, including cancel and no-op', async () => {
@@ -351,7 +381,7 @@ describe('standalone full task details', () => {
     confirmation = screen.getByRole('alertdialog', { name: '修改执行平台？' });
     fireEvent.click(within(confirmation).getByRole('button', { name: '修改平台' }));
     await screen.findByText('执行平台已更新。');
-    expect(platform).toHaveValue('linux');
+    await waitFor(() => expect(platform).toHaveValue('linux'));
     expect(fetcher.mock.calls.find(([, options]) => options?.method === 'PATCH')?.[1]?.body).toBe('{"version":1,"requiredPlatform":"linux"}');
     expect(document.querySelector('.task-attachments')).toBe(panel);
     expect(screen.getByText('方案正文')).toBeVisible();

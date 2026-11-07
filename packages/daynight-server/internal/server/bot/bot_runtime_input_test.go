@@ -97,3 +97,40 @@ func TestBotRuntimeStrictEnvelopes(t *testing.T) {
 		t.Fatal("accepted lone surrogate")
 	}
 }
+
+func TestBotRegistrationPreservesVersionedNativeSelection(t *testing.T) {
+	reg := sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}
+	selected, effort := "model-a", "high"
+	input := sessioncore.BotRegistration{BotVersion: 1, Registration: reg, Configuration: model.BotConfiguration{WorkerID: uuid.NewString(), Cwd: "/work", Provider: "codex", Model: &selected, Args: []string{}, ReasoningEffort: &effort, Selection: &model.BotSelection{SchemaVersion: 1, ModelSource: "explicit", ReasoningEffortSource: "explicit"}}, RoleConfiguration: model.BotRoleConfiguration{Instructions: "Role", Revision: "v1", Digest: "digest"}}
+	raw, _ := json.Marshal(input)
+	got, err := botRegisterInput(raw)
+	if err != nil || got.Configuration.Selection == nil || *got.Configuration.ReasoningEffort != "high" {
+		t.Fatalf("new frozen registration: %+v %v", got, err)
+	}
+	for _, mutate := range []func(map[string]any){
+		func(c map[string]any) { delete(c, "reasoningEffort") },
+		func(c map[string]any) { delete(c, "selection") },
+		func(c map[string]any) { c["selection"] = nil },
+		func(c map[string]any) { c["selection"].(map[string]any)["extra"] = true },
+		func(c map[string]any) { delete(c["selection"].(map[string]any), "modelSource") },
+		func(c map[string]any) { c["selection"].(map[string]any)["schemaVersion"] = 2 },
+		func(c map[string]any) { c["selection"].(map[string]any)["configurationGeneration"] = nil },
+		func(c map[string]any) { c["reasoningEffort"] = nil },
+	} {
+		var object map[string]any
+		_ = json.Unmarshal(raw, &object)
+		mutate(object["configuration"].(map[string]any))
+		bad, _ := json.Marshal(object)
+		if _, err := botRegisterInput(bad); err == nil {
+			t.Fatalf("accepted malformed selection: %s", bad)
+		}
+	}
+	input.Configuration.Model = nil
+	input.Configuration.ReasoningEffort = nil
+	input.Configuration.Selection.ModelSource = "native"
+	input.Configuration.Selection.ReasoningEffortSource = "native"
+	raw, _ = json.Marshal(input)
+	if _, err := botRegisterInput(raw); err != nil {
+		t.Fatalf("native omission rejected: %s %v", raw, err)
+	}
+}

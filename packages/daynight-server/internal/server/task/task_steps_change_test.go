@@ -13,12 +13,12 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func changeHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task, string) {
+func changeHTTPFixture(t *testing.T, logs io.Writer) (*postgres.Store, *resourceTestHandler, api.Task, string) {
 	t.Helper()
 	database, handler, task := stepsHTTPFixture(t, logs)
 	seedHTTPStep(t, database, task.ID, "abcdef01", 0, "  title  ", "  # old\n<>&  ")
@@ -152,7 +152,7 @@ func TestStepsHTTPChangeStrictInputAndMethods(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			assertProjectError(t, response, 400, "invalid_input")
-			assertProjectError(t, projectRequest(handler, tc.method, path+tc.suffix, strings.TrimSuffix(tc.good, "}")+`,"description":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 400, "invalid_input")
+			assertProjectError(t, projectRequest(handler, tc.method, path+tc.suffix, strings.TrimSuffix(tc.good, "}")+`,"description":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 413, "payload_too_large")
 		})
 	}
 	for _, tc := range []struct {
@@ -175,11 +175,11 @@ func TestStepsHTTPChangeStrictInputAndMethods(t *testing.T) {
 	if resource.Steps[0].Title != "�😀\\ud800" || resource.Steps[0].Description != "\uFEFF" {
 		t.Fatal("valid Unicode changed")
 	}
-	prefix := `{"version":2,"description":"`
-	exact := prefix + strings.Repeat("X", httpx.MaxJSONBody-len(prefix)-len(`"}`)) + `"}`
+	body := `{"version":2,"description":"X"}`
+	exact := body + strings.Repeat(" ", httpx.MaxJSONBody-len(body))
 	response = projectRequest(handler, "PATCH", path+"/abcdef01", exact)
 	boundary := decodeResponse[api.StepsResource](t, response, 200)
-	if len(exact) != httpx.MaxJSONBody || len(boundary.Steps[0].Description) != httpx.MaxJSONBody-len(prefix)-len(`"}`) || boundary.Version != 3 {
+	if len(exact) != httpx.MaxJSONBody || boundary.Steps[0].Description != "X" || boundary.Version != 3 {
 		t.Fatal("exact request boundary changed or truncated content")
 	}
 
@@ -201,7 +201,7 @@ func TestStepsHTTPChangeCommittedResponseLossAndReconcile(t *testing.T) {
 						t.Fatal(err)
 					}
 					t.Cleanup(pool.Close)
-					handler = projectTestHandler(t, &store.Store{Pool: pool}, &logs)
+					handler = projectTestHandler(t, &postgres.Store{Pool: pool}, &logs)
 				}
 				suffix, body := "/ABCDEF01", `{"version":1,"title":"lost-title-secret","description":"lost-markdown-secret https://secret.invalid token-secret"}`
 				if method == "PUT" {

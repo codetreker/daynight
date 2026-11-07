@@ -25,6 +25,12 @@ export const runProjectCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.command.name === "delete") {
+    const { prepareDelete, runDelete } = await import("./delete.js");
+    const prepared = prepareDelete(command, context);
+    await dependencies.runServerCommand(context, (session) => runDelete(command, context, session, prepared));
+    return;
+  }
   if (command.command.name === "transfer") {
     const { prepareTransfer, runTransfer } = await import("./transfer.js");
     const prepared = prepareTransfer(command, context);

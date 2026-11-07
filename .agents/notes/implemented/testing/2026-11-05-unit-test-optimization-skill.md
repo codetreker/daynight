@@ -24,8 +24,8 @@ setup through verified cleanup, including failed or interrupted runs.
 
 The skill owns the reusable workflow without depending on Daynight or a specific
 test framework. Concrete timer and assertion mechanisms remain documented in
-their [CLI time and byte](2026-11-04-cli-test-time-and-bytes.md) and
-[coordinator polling](2026-11-04-coordinator-test-polling.md) decisions.
+their [CLI time and byte](../../archived/testing/2026-11-04-cli-test-time-and-bytes.md) and
+[coordinator polling](../../archived/testing/2026-11-04-coordinator-test-polling.md) decisions.
 
 ## Alternatives
 

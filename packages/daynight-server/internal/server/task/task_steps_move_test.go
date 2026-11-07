@@ -12,12 +12,12 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func moveHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task, string) {
+func moveHTTPFixture(t *testing.T, logs io.Writer) (*postgres.Store, *resourceTestHandler, api.Task, string) {
 	t.Helper()
 	database, handler, task := stepsHTTPFixture(t, logs)
 	for index, id := range []string{"00000000", "abcdef01", "12345678", "fedcba98"} {
@@ -146,7 +146,7 @@ func TestStepsHTTPMoveStrictInputAndMethods(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
-	assertProjectError(t, projectRequest(handler, "PUT", endpoint, `{"version":1,"position":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 400, "invalid_input")
+	assertProjectError(t, projectRequest(handler, "PUT", endpoint, `{"version":1,"position":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 413, "payload_too_large")
 	for _, method := range []string{"GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"} {
 		response := projectRequest(handler, method, endpoint, `{}`)
 		if response.Code != 405 || response.Header().Get("Allow") != "PUT" || response.Header().Get("Cache-Control") != "no-store" {
@@ -176,7 +176,7 @@ func TestStepsHTTPMoveCommittedResponseLossAndReadOnlyReconcile(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(pool.Close)
-				handler = projectTestHandler(t, &store.Store{Pool: pool}, &logs)
+				handler = projectTestHandler(t, &postgres.Store{Pool: pool}, &logs)
 			}
 			request := httptest.NewRequest("PUT", path+"/ABCDEF01/position", strings.NewReader(`{"version":1,"position":"last"}`)).WithContext(ctx)
 			authorizeResourceRequest(handler, request)

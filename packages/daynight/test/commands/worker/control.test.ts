@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -22,11 +23,11 @@ const configuration: ExecutionConfiguration = { agent: "codex", model: "current-
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-control-tests/", import.meta.url));
 const resources: { directory: string; store: WorkerStore }[] = [];
 const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", agentControlMode: "herdr", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
-const remoteTask = (worker: WorkerClaim = claim, version = 8n): Task => ({ id: taskId, projectId, title: "Task", description: "", status: worker.state === "active" ? "in_progress" : "todo", version, properties: { worker, pullRequests: [] }, allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: worker.state === "active" ? time : null, completedAt: null, createdAt: time, updatedAt: time, ready: worker.state !== "active", dependsOn: [], externalDependsOn: [], blockedBy: [] });
+const remoteTask = (worker: WorkerClaim = claim, version = 8n): Task => ({ id: taskId, projectId, title: "Task", description: "", status: worker.state === "active" ? "in_progress" : "todo", version, properties: { worker, pullRequests: [] }, allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: worker.state === "active" ? time : null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ready: worker.state !== "active", dependsOn: [], externalDependsOn: [], blockedBy: [] });
 const fixture = (local = true) => {
   mkdirSync(root, { recursive: true });
   const directory = mkdtempSync(path.join(root, "control-"));
-  const store = openWorkerStore(path.join(directory, "state.sqlite"));
+  const store = openWorkerStore(createMemoryDatabase());
   resources.push({ directory, store });
   const project = store.registerProject({ projectId, repoUrl: "https://github.com/example/repo.git", localPath: path.join(directory, "repository") });
   const identity = { projectId, taskId, claimId };

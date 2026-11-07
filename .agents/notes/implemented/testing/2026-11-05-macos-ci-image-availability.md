@@ -28,16 +28,18 @@ identifies this GA standard runner as free for public repositories. It requires
 no larger-runner configuration.
 
 This replaces the macOS 26 image selected by the
-[ARM64 support decision](2026-11-04-macos-arm64-support.md), preserving its
+[ARM64 support decision](../../archived/testing/2026-11-04-macos-arm64-support.md), preserving its
 Apple Silicon boundary and independent Darwin ARM64 guards. The
-[earlier capacity decision](2026-11-03-macos-hosted-runner-capacity.md) retains the
+[earlier capacity decision](../../archived/testing/2026-11-03-macos-hosted-runner-capacity.md) retains the
 Intel, bootstrap and fixture-lifecycle history. Complete ordinary and installed
-suites and the [logical phase responsibilities](2026-11-04-parallel-native-cli-validation.md)
-remain. The later [single-allocation decision](2026-11-05-single-macos-native-allocation.md)
-places both phases in one 20-minute job with separate 10-minute validation
-bounds. Race policy and final checks retain their settings. The
-[development guide](../../../../docs/development.md) owns the current image and
-validation commands. There is no automatic fallback selection mechanism.
+suites and the [logical phase responsibilities](../../archived/testing/2026-11-04-parallel-native-cli-validation.md)
+remain. The [single-allocation decision](2026-11-05-single-macos-native-allocation.md)
+subsequently combined the phases to reduce acquisition dependencies. The
+[independent validation decision](2026-11-07-independent-macos-cli-validation.md)
+owns the current ordinary and installed matrices, each including `macos-15`
+with the same 10-minute job limit as Linux and Windows. Race policy and final
+checks retain their settings. The [development guide](../../../../docs/development.md)
+owns the current image and validation commands. There is no automatic fallback selection mechanism.
 
 ### Portable identity-swap fixtures
 

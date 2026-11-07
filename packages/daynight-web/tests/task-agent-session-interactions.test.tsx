@@ -14,6 +14,7 @@ describe('native session interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
     expect(respond).toHaveBeenCalledWith({ kind: 'approval', action: 'allow_once' });
     expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
+    expect(screen.queryByRole('status')).toBeNull();
     settle();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull());
     expect(screen.getByText('Resolved')).toBeVisible();

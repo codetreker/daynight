@@ -23,10 +23,10 @@ const projectId = "10000000-0000-4000-8000-000000000001";
 const taskId = "20000000-0000-4000-8000-000000000001";
 const date = "2026-10-20T12:34:56Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Project 用户数据", repoUrl: "https://example.com/repo", createdAt: date, updatedAt: date };
-const tasks: readonly GraphTask[] = [{ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: taskId, titlePreview: "Task 用户数据", titleTruncated: false, status: "todo", dependsOn: [], blockedBy: [], ready: true, createdAt: date, updatedAt: date }];
+const tasks: readonly GraphTask[] = [{ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: taskId, titlePreview: "Task 用户数据", titleTruncated: false, status: "todo", dependsOn: [], blockedBy: [], ready: true, createdAt: date, updatedAt: date }];
 const graph = (items = tasks): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
   project, tasks: items,
-  summary: { total: items.length, todo: items.filter((task) => task.status === "todo").length, done: items.filter((task) => task.status === "done").length,
+  summary: { total: items.length, todo: items.filter((task) => task.status === "todo").length, done: items.filter((task) => task.status === "done").length, cancelled: 0,
     inProgress: items.filter((task) => task.status === "in_progress").length, ready: items.filter((task) => task.ready).length,
     blocked: items.filter((task) => task.status === "todo" && !task.ready).length },
 });
@@ -141,7 +141,8 @@ describe("workspace localization", () => {
 
   it("retains task tabs, filters, rows and scroll state, and retranslates a semantic removed-task notice", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
+    const replacement = resetSnapshot(graph([]));
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValue(replacement);
     const user = userEvent.setup();
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
@@ -173,11 +174,11 @@ describe("workspace localization", () => {
     await user.selectOptions(selector, "en");
     expect(screen.getByText(en.workspace.project.selectedTaskRemoved)).toBe(notice);
     expect(screen.getByRole("button", { name: "Dismiss notification" })).toBe(dismiss);
-    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(graphRequest).toHaveBeenCalledTimes(3);
     expect(screen.getByRole("heading", { name: "No tasks yet" })).toBeVisible();
     await user.click(dismiss);
     expect(screen.queryByText(en.workspace.project.selectedTaskRemoved)).toBeNull();
-    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(graphRequest).toHaveBeenCalledTimes(3);
     await user.selectOptions(selector, "zh-CN");
     expect(screen.queryByRole("button", { name: "关闭提示" })).toBeNull();
   });

@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerCPU, WorkerDisk, WorkerExecutableProbe, WorkerMachine, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "./herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "./herdr/command.js";
 import { createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrRuntimeVersionObserver, HerdrVersionUnavailableError } from "./herdr/runtime-version.js";
 import { NativeVersionOutputError, probeNativeAgentVersion } from "./herdr/version-probe.js";
@@ -148,12 +148,17 @@ export const createWorkerTelemetryCollector = (options: {
         catch (error) { const code = codeOf(error); issues.push({ component, code, error }); return { state: "error", checkedAt, code }; }
       };
       const version = async (agent: "codex" | "copilot"): Promise<WorkerExecutableProbe> => {
-        const previous = cache.get(agent);
+        let previous = cache.get(agent);
         // A missing close acknowledgement leaves ownership uncertain; starting a replacement could leak another process tree.
         if (previous?.cleanupUncertain === true) {
           const error = previous.issue!.error;
-          issues.push({ component: agent, code: "unavailable", error });
-          return { state: "error", checkedAt: new Date().toISOString(), code: "unavailable" };
+          if (hasUnconfirmedHerdrCommandCleanup(error)) {
+            issues.push({ component: agent, code: "unavailable", error });
+            return { state: "error", checkedAt: new Date().toISOString(), code: "unavailable" };
+          }
+          // Confirmation restores probe eligibility, not the cached failure or a successful version.
+          cache.delete(agent);
+          previous = undefined;
         }
         if (previous !== undefined && performance.now() - previous.started < 60_000) {
           if (previous.issue !== undefined) issues.push(previous.issue);

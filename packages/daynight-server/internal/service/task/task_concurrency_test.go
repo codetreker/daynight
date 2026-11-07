@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
 type taskResult struct {
@@ -22,7 +25,7 @@ type taskResult struct {
 	err  error
 }
 
-func waitForTaskWriters(t *testing.T, ctx context.Context, database *store.Store, count int) {
+func waitForTaskWriters(t *testing.T, ctx context.Context, database *postgres.Store, count int) {
 	t.Helper()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
@@ -56,7 +59,7 @@ func receiveTaskResult(t *testing.T, ctx context.Context, result <-chan taskResu
 	}
 }
 
-func competeTaskWrites(t *testing.T, database *store.Store, projectID string, operations ...func(context.Context) (model.Task, error)) []taskResult {
+func competeTaskWrites(t *testing.T, database *postgres.Store, projectID string, operations ...func(context.Context) (model.Task, error)) []taskResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -185,15 +188,19 @@ func TestConcurrentSameVersionUpdatesOnlyChangeOnce(t *testing.T) {
 	target := createTask(t, tasks, principal, project.ID, "Original")
 	results := competeTaskWrites(t, database, project.ID,
 		func(ctx context.Context) (model.Task, error) {
-			return tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("First")})
+			return tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("First"), Properties: propertyPatch(model.PullRequestProperty{URL: "first", Title: "First"})})
 		},
 		func(ctx context.Context) (model.Task, error) {
-			return tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Second")})
+			return tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Second"), Properties: propertyPatch(model.PullRequestProperty{URL: "second", Title: "Second"})})
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
 	after, err := tasks.Get(context.Background(), principal, project.ID, target.ID)
 	if err != nil || after.Version != target.Version+1 || (after.Title != "First" && after.Title != "Second") {
 		t.Fatalf("version competition: %#v, %v", after, err)
+	}
+	want := []model.PullRequestProperty{{URL: strings.ToLower(after.Title), Title: after.Title}}
+	if got := testPRs(t, after.Properties); !slices.Equal(got, want) {
+		t.Fatalf("concurrent update mixed title and properties: %#v", after)
 	}
 }
 
@@ -223,11 +230,22 @@ func TestConcurrentReopenAndSuccessorStartPreserveStateInvariant(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if afterSuccessor.Status != model.TaskTodo && afterPredecessor.Status != model.TaskDone {
-					t.Fatalf("active successor has reopened prerequisite: %#v %#v", afterPredecessor, afterSuccessor)
+				wantExternal := []string{}
+				if external {
+					wantExternal = append(wantExternal, predecessor.ID)
 				}
-				if afterPredecessor.Version+afterSuccessor.Version != predecessor.Version+successor.Version+1 {
-					t.Fatal("race mutated more than one task")
+				if !slices.Equal(afterSuccessor.ExternalDependsOn, wantExternal) {
+					t.Fatal("race changed external dependency classification")
+				}
+				if afterPredecessor.Status == model.TaskTodo {
+					expected := successor
+					expected.Ready = false
+					expected.BlockedBy = []string{predecessor.ID}
+					if afterPredecessor.Version != predecessor.Version+1 || !reflect.DeepEqual(afterSuccessor, expected) {
+						t.Fatalf("reopen winner changed successor or blocking: %#v %#v", afterPredecessor, afterSuccessor)
+					}
+				} else if !reflect.DeepEqual(afterPredecessor, predecessor) || afterSuccessor.Status != to || afterSuccessor.Version != successor.Version+1 || len(afterSuccessor.BlockedBy) != 0 {
+					t.Fatalf("successor winner changed prerequisite or blocking: %#v %#v", afterPredecessor, afterSuccessor)
 				}
 			})
 		}
@@ -312,5 +330,22 @@ func TestConcurrentReopenAndActiveSuccessorEdgeWritePreserveInvariant(t *testing
 				}
 			})
 		}
+	}
+}
+
+func TestConcurrentDifferentStatusTargetsHaveOneWinner(t *testing.T) {
+	tasks, database, project, _, principal := taskService(t)
+	target := createTask(t, tasks, principal, project.ID, "Different status targets")
+	results := competeTaskWrites(t, database, project.ID,
+		func(ctx context.Context) (model.Task, error) {
+			return tasks.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskInProgress})
+		},
+		func(ctx context.Context) (model.Task, error) {
+			return tasks.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskDone})
+		})
+	assertOneTaskWinner(t, results, "version_conflict")
+	after, err := tasks.Get(context.Background(), principal, project.ID, target.ID)
+	if err != nil || after.Version != target.Version+1 || (after.Status != model.TaskInProgress && after.Status != model.TaskDone) || len(after.DependsOn) != 0 || len(after.BlockedBy) != 0 || after.Ready {
+		t.Fatalf("different status competition: %#v, %v", after, err)
 	}
 }

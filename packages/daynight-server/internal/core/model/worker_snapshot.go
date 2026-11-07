@@ -48,24 +48,26 @@ type WorkerAssistantProvider struct {
 }
 
 type WorkerAssistantHost struct {
-	ProtocolVersion int64                     `json:"protocolVersion"`
-	ObservedAt      time.Time                 `json:"observedAt"`
-	DefaultCwd      string                    `json:"defaultCwd"`
-	DefaultProvider WorkerAgent               `json:"defaultProvider"`
-	Providers       []WorkerAssistantProvider `json:"providers"`
+	CreationConfigurationVersion int                       `json:"creationConfigurationVersion,omitempty"`
+	ProtocolVersion              int64                     `json:"protocolVersion"`
+	ObservedAt                   time.Time                 `json:"observedAt"`
+	DefaultCwd                   string                    `json:"defaultCwd"`
+	DefaultProvider              WorkerAgent               `json:"defaultProvider"`
+	Providers                    []WorkerAssistantProvider `json:"providers"`
 }
 
 type WorkerTelemetry struct {
-	AssistantHost    *WorkerAssistantHost      `json:"assistantHost,omitempty"`
-	Machine          WorkerMachine             `json:"machine"`
-	Platform         TaskPlatform              `json:"platform"`
-	WorkingDirectory string                    `json:"workingDirectory"`
-	SampledAt        time.Time                 `json:"sampledAt"`
-	OS               WorkerProbe[WorkerOS]     `json:"os"`
-	CPU              WorkerProbe[WorkerCPU]    `json:"cpu"`
-	Memory           WorkerProbe[WorkerMemory] `json:"memory"`
-	Disk             WorkerProbe[WorkerDisk]   `json:"disk"`
-	Versions         WorkerVersions            `json:"versions"`
+	RuntimeConfiguration *WorkerRuntimeConfiguration `json:"runtimeConfiguration,omitempty"`
+	AssistantHost        *WorkerAssistantHost        `json:"assistantHost,omitempty"`
+	Machine              WorkerMachine               `json:"machine"`
+	Platform             TaskPlatform                `json:"platform"`
+	WorkingDirectory     string                      `json:"workingDirectory"`
+	SampledAt            time.Time                   `json:"sampledAt"`
+	OS                   WorkerProbe[WorkerOS]       `json:"os"`
+	CPU                  WorkerProbe[WorkerCPU]      `json:"cpu"`
+	Memory               WorkerProbe[WorkerMemory]   `json:"memory"`
+	Disk                 WorkerProbe[WorkerDisk]     `json:"disk"`
+	Versions             WorkerVersions              `json:"versions"`
 }
 
 type WorkerTaskReference struct {

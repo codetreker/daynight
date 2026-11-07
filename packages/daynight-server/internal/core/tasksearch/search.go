@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 const MaxNodes int64 = 20000
@@ -40,14 +41,15 @@ type Match struct {
 	DescriptionSnippet *string  `json:"descriptionSnippet"`
 }
 type Item struct {
-	ID         string           `json:"id"`
-	ProjectID  string           `json:"projectId"`
-	Title      string           `json:"title"`
-	Status     model.TaskStatus `json:"status"`
-	AssignedTo *string          `json:"assignedTo"`
-	UpdatedAt  time.Time        `json:"updatedAt"`
-	Context    *Context         `json:"context"`
-	Match      Match            `json:"match"`
+	ID          string           `json:"id"`
+	ProjectID   string           `json:"projectId"`
+	Title       string           `json:"title"`
+	Status      model.TaskStatus `json:"status"`
+	AssignedTo  *string          `json:"assignedTo"`
+	CancelledAt *time.Time       `json:"cancelledAt"`
+	UpdatedAt   time.Time        `json:"updatedAt"`
+	Context     *Context         `json:"context"`
+	Match       Match            `json:"match"`
 }
 type Page struct {
 	ProjectID  string  `json:"projectId"`
@@ -78,7 +80,7 @@ func invalidCursor() error {
 	return &model.Fault{Code: "invalid_input", Message: "Cursor is invalid for this search."}
 }
 func decodeCursor(encoded string, scope cursorScope) (cursor, error) {
-	if len(encoded) > 16384 {
+	if len(encoded) > transport.MaxEncodedCursorBytes {
 		return cursor{}, invalidCursor()
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
@@ -252,7 +254,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			if err != nil {
 				return err
 			}
-			result.Items = append(result.Items, Item{ID: row.ID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, UpdatedAt: row.UpdatedAt.UTC(), Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
+			result.Items = append(result.Items, Item{ID: row.ID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, CancelledAt: row.CancelledAt, UpdatedAt: row.UpdatedAt.UTC(), Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
 		}
 		if rows.HasMore {
 			if len(rows.Items) == 0 {

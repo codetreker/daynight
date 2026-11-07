@@ -151,7 +151,7 @@ it('keeps the creation form and its local selections mounted throughout an admis
  expect(screen.getByLabelText('Name')).toBe(name); expect(name).toHaveValue('My assistant'); expect(cwd).toHaveValue('/custom/place');
  await act(async()=>{for(const {url,request} of pending) request.resolve(botResponse(url.includes('/defaults')?botDefaults():{items:f.bots,nextCursor:null}));});
  expect(screen.getByLabelText('Name')).toBe(name); expect(name).toHaveValue('My assistant');
- expect(f.fetch.mock.calls.every(([, options])=>!options?.method || options.method==='GET')).toBe(true);
+ expect(f.fetch.mock.calls.every(([url, options])=>!options?.method || options.method==='GET' || String(url).endsWith('/readonly/requests'))).toBe(true);
 });
 it('retains the open details and delete confirmation when admission pauses', async () => {
  const f=fixture(), view=mount(botId(1));

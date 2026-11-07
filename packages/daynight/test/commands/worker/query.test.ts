@@ -20,6 +20,13 @@ const page = { observedAt, items: [summary], nextCursor: null };
 const context = () => ({ version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn(() => { throw new Error("Unexpected home access"); }), workingDirectory: vi.fn(() => { throw new Error("Unexpected cwd access"); }), stdout: vi.fn(), stderr: vi.fn(), stdoutBytes: vi.fn(async () => {}) });
 
 describe("remote worker response validation", () => {
+  it("reads current runtime sources and preserves their removal in later reports", () => {
+    const runtimeConfiguration = { schemaVersion: 1, native: { agent: "codex", model: { value: "model", source: "local" }, reasoningEffort: { value: null, source: "native" } }, projects: [] };
+    const current = { ...detail, worker: { ...detail.worker, telemetry: { ...telemetry, runtimeConfiguration } } };
+    expect(parseWorkerDetail(current, workerId)).toEqual(current);
+    expect(parseWorkerDetail(detail, workerId).worker.telemetry).not.toHaveProperty("runtimeConfiguration");
+    expect(() => parseWorkerDetail({ ...current, worker: { ...current.worker, telemetry: { ...current.worker.telemetry, runtimeConfiguration: null } } }, workerId)).toThrow();
+  });
   it("preserves observation timestamps and unknown task inventory without inventing idle capacity", () => {
     expect(parseWorkerPage(page)).toEqual(page);
     expect(parseWorkerDetail(detail, workerId)).toEqual(detail);
@@ -68,6 +75,11 @@ describe("remote worker observed telemetry", () => {
     expect(output).toContain("Phase: paused");
     expect(output).toContain("Agent: claude");
   });
+  it("preserves the versioned creation capability and rejects unsupported versions", () => {
+    const withHost = (assistantHost: unknown) => ({ ...complete, worker: { ...complete.worker, telemetry: { ...complete.worker.telemetry, assistantHost } } });
+    expect(parseWorkerDetail(withHost({ ...host, creationConfigurationVersion: 1 }), workerId).worker.telemetry.assistantHost).toEqual({ ...host, creationConfigurationVersion: 1 });
+    for (const creationConfigurationVersion of [null, 0, 2, "1"]) expect(() => parseWorkerDetail(withHost({ ...host, creationConfigurationVersion }), workerId)).toThrow();
+  });
   it("marks an assistant report from the future stale", () => {
     const parsed = parseWorkerDetail({ ...complete, worker: { ...complete.worker, telemetry: { ...complete.worker.telemetry, assistantHost: { ...host, observedAt: "2026-11-04T10:00:01Z" } } } }, workerId);
     expect(renderWorkerDetail(parsed)).toContain("Assistant hosting: protocol 1; stale;");
@@ -86,6 +98,16 @@ describe("remote worker observed telemetry", () => {
 });
 
 describe("remote worker rendering", () => {
+  it.each([
+    ["2026-11-04T10:00:00.001Z", "offline"],
+    ["2026-11-04T10:00:00.000Z", "online"],
+    ["2026-11-04T09:58:00.001Z", "online"],
+    ["2026-11-04T09:58:00.000Z", "offline"],
+    ["2026-11-04T09:57:59.999Z", "offline"],
+  ])("classifies a report at %s relative to server observation", (lastReportedAt, connection) => {
+    const parsed = parseWorkerPage({ ...page, items: [{ ...summary, lastReportedAt }] });
+    expect(renderWorkerList(parsed)).toContain(`Connection: ${connection} (at observation)`);
+  });
   it("shows online as an observation and unknown inventory as unknown", () => {
     const output = renderWorkerDetail(parseWorkerDetail(detail, workerId));
     expect(output).toContain("Connection: online (at observation)");

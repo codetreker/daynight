@@ -124,7 +124,7 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 	config.UniAuthAppID, config.UniAuthAppSecret, config.UniAuthCallbackURL = gateway.AppID, gateway.AppSecret, origin+callbackPath
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	handler, err := New(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal("compose the production authenticated handler failed")
 	}

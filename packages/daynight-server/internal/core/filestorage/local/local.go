@@ -25,6 +25,9 @@ type Storage struct {
 	exactSpelling bool
 	namespace     sync.Mutex
 	fileSync      func(*os.File) error
+	gates         [2][256]chan struct{}
+	residencyMu   sync.Mutex
+	residency     map[string]struct{}
 }
 
 var _ filestorage.Storage = (*Storage)(nil)
@@ -71,7 +74,13 @@ func newWithDirectorySync(root string, fileSync func(*os.File) error) (*Storage,
 	if !sensitive && runtime.GOOS != "darwin" {
 		return nil, errors.Join(ErrCaseInsensitive, directory.Close())
 	}
-	return &Storage{root: directory, exactSpelling: !sensitive, fileSync: (*os.File).Sync}, nil
+	storage := &Storage{root: directory, exactSpelling: !sensitive, fileSync: (*os.File).Sync}
+	for domain := range storage.gates {
+		for stripe := range storage.gates[domain] {
+			storage.gates[domain][stripe] = make(chan struct{}, 1)
+		}
+	}
+	return storage, nil
 }
 
 func (s *Storage) Close() error {
@@ -79,6 +88,12 @@ func (s *Storage) Close() error {
 }
 
 func (s *Storage) Put(ctx context.Context, bucket, name string, content io.Reader) (info filestorage.FileInfo, result error) {
+	outcome := filestorage.NotPublished
+	defer func() {
+		if result != nil {
+			result = &filestorage.PublicationError{Outcome: outcome, Cause: result}
+		}
+	}()
 	address, err := checkedAddress(ctx, bucket, name)
 	if err != nil {
 		return info, err
@@ -101,7 +116,7 @@ func (s *Storage) Put(ctx context.Context, bucket, name string, content io.Reade
 	if result != nil {
 		return info, result
 	}
-	if err := s.publish(temporary, address); err != nil {
+	if err := s.publish(temporary, address, &outcome); err != nil {
 		return info, err
 	}
 	temporary = ""
@@ -163,6 +178,9 @@ func (s *Storage) Delete(ctx context.Context, bucket, name string) error {
 }
 
 func checkedAddress(ctx context.Context, bucket, name string) (string, error) {
+	if strings.EqualFold(bucket, gateDirectory) {
+		return "", fmt.Errorf("%w: reserved storage control namespace", filestorage.ErrInvalidAddress)
+	}
 	if err := filestorage.ValidateAddress(bucket, name); err != nil {
 		return "", err
 	}
@@ -194,7 +212,7 @@ func (s *Storage) beginPut(address string) (file *os.File, temporary string, res
 	return file, temporary, err
 }
 
-func (s *Storage) publish(temporary, address string) error {
+func (s *Storage) publish(temporary, address string, outcome *filestorage.Publication) error {
 	s.namespace.Lock()
 	defer s.namespace.Unlock()
 	if err := s.checkSpelling(address); err != nil {
@@ -203,9 +221,11 @@ func (s *Storage) publish(temporary, address string) error {
 	if err := s.fileTarget(address, true); err != nil {
 		return err
 	}
+	*outcome = filestorage.PublicationUnknown
 	if err := s.root.Rename(temporary, address); err != nil {
 		return err
 	}
+	*outcome = filestorage.Published
 	// The file bytes precede the rename; every new directory entry down to the
 	// configured root must also be durable before a database can acknowledge it.
 	for directory := path.Dir(address); ; directory = path.Dir(directory) {

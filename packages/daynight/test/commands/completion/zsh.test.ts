@@ -75,11 +75,11 @@ describe("native zsh completion", () => {
     expect(script).toContain("'delete:");
   });
 
-  it("offers unified status command and three-state filtering without metadata status updates", () => {
+  it("offers unified status command and four-state filtering without metadata status updates", () => {
     const script = renderZshCompletion(commandTree);
     expect(script).toContain("compdef _daynight 'daynight' 'dn'\n");
-    expect(script).toContain("(--status)--status=[Task status]:status:('\\''todo'\\'' '\\''in_progress'\\'' '\\''done'\\'')");
-    expect(script).toContain("'set-status:Set a task to todo, in_progress, or done'");
+    expect(script).toContain("(--status)--status=[Task status]:status:('\\''todo'\\'' '\\''in_progress'\\'' '\\''done'\\'' '\\''cancelled'\\'')");
+    expect(script).toContain("'set-status:Set a task to todo, in_progress, done, or cancelled'");
     expect(script).toContain("'delete:Soft-delete a task while preserving its stored data and attachments'");
     const update = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("--status");
@@ -108,7 +108,7 @@ describe("native zsh completion", () => {
     expect(script).toContain("(- *)--help[Show this help]");
     expect(script).toContain("specifications+=( '1:Task UUID:->argument_1' )");
     expect(script).toContain("2:Target task status:->argument_2");
-    expect(script).toContain("'todo' 'in_progress' 'done'");
+    expect(script).toContain("'todo' 'in_progress' 'done' 'cancelled'");
     expect(script).not.toContain("--status");
     expect(script).not.toContain("--json");
     expect(script).not.toContain("_files");

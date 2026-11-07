@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { parseCoverageProfile, requireCoverageAbove90 } from './coverage.mts';
+import { parseCoverageProfile, parseCoverageStream, requireCoverageAbove90 } from './coverage.mts';
 
 const profile = (covered: bigint, total: bigint): string =>
   `mode: atomic\nexample.com/server/main.go:1.1,2.1 ${covered} 1\nexample.com/server/main.go:3.1,4.1 ${total - covered} 0\n`;
@@ -68,6 +68,38 @@ test('rejects malformed rows and invalid statement counts or coordinates', () =>
   ]) {
     assert.throws(() => parseCoverageProfile(`mode: atomic\n${row}\na.go:3.1,4.1 1 1\n`));
   }
+});
+
+test('stream parsing agrees across all chunk boundaries including CRLF and Unicode', async () => {
+  const input = 'mode: atomic\r\n路径.go:1.1,2.1 90001 0\r\n路径.go:1.1,2.1 90001 2\r\nb.go:3.1,4.1 9999 0';
+  const expected = parseCoverageProfile(input);
+  for (let split = 0; split <= input.length; split++) {
+    async function* chunks() { yield input.slice(0, split); yield input.slice(split); }
+    assert.deepEqual(await parseCoverageStream(chunks()), expected);
+  }
+});
+
+test('stream rejects the same malformed lines and propagates read errors', async () => {
+  for (const input of ['', 'mode: set\r', 'mode: set\n\n', 'mode: set\na.go:1.1,2.1 1 1\r',
+    'mode: atomic\na.go:1.1,2.1 1 0\na.go:1.1,2.1 2 1\n']) {
+    async function* chunks() { for (const char of input) yield char; }
+    assert.throws(() => parseCoverageProfile(input));
+    await assert.rejects(parseCoverageStream(chunks()));
+  }
+  const cause = new Error('read failed');
+  async function* failed() { yield 'mode: set\n'; throw cause; }
+  await assert.rejects(parseCoverageStream(failed()), error => error === cause);
+});
+
+test('stream merges a large repeated profile without storing the whole input', async () => {
+  async function* chunks() {
+    yield 'mode: count\n';
+    for (let i = 0; i < 200_000; i++) yield `same.go:1.1,2.1 90001 ${i === 199_999 ? 1 : 0}\n`;
+    yield 'other.go:1.1,2.1 9999 0\n';
+  }
+  const result = await parseCoverageStream(chunks());
+  assert.deepEqual(result, { covered: 90001n, total: 100000n });
+  assert.doesNotThrow(() => requireCoverageAbove90(result));
 });
 
 test('CLI succeeds only for a valid profile above 90%', async () => {

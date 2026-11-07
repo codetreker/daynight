@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
-func taskDeleteProjectFacts(t *testing.T, database *store.Store, projectID string) string {
+func taskDeleteProjectFacts(t *testing.T, database *postgres.Store, projectID string) string {
 	t.Helper()
 	var facts string
 	if err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object(

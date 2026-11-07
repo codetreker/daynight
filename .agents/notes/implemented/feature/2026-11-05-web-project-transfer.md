@@ -23,9 +23,7 @@ revocation clears unsubmitted private previews without discarding a dispatched
 transfer or its result; its unknown check does not reveal withdrawn Project or
 Team details.
 
-The [service transfer decision](../architecture/2026-11-04-project-transfer.md)
-owns the transaction and receipt. The [browser Team preference decision](2026-11-04-browser-team-preference.md)
-owns selection persistence.
+The [service transfer decision](../../archived/architecture/2026-11-04-project-transfer.md) records the rationale for the transaction and receipt. The [browser Team preference decision](../../archived/feature/2026-11-04-browser-team-preference.md) records the rationale for selection persistence.
 The [stable Project checks decision](../bug-fix/2026-11-05-stable-project-checks.md)
 separates retained presentation from fresh mutation admission.
 

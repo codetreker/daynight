@@ -17,6 +17,7 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
@@ -61,10 +62,10 @@ func serviceDatabaseURL(t *testing.T) string {
 	return parsed.String()
 }
 
-func projectService(t *testing.T) (*projectservice.Projects, *store.Store, string, model.Principal) {
+func projectService(t *testing.T) (*projectservice.Projects, *postgres.Store, string, model.Principal) {
 	t.Helper()
 	databaseURL := serviceDatabaseURL(t)
-	database, err := store.Open(context.Background(), databaseURL)
+	database, err := postgres.Open(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func projectService(t *testing.T) (*projectservice.Projects, *store.Store, strin
 	return projectservice.NewProjects(database), database, databaseURL, servicePrincipal(t, database)
 }
 
-func servicePrincipal(t *testing.T, database *store.Store) model.Principal {
+func servicePrincipal(t *testing.T, database *postgres.Store) model.Principal {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	secret := secretutil.Random("dnst_")
@@ -91,7 +92,7 @@ func requireIdentityOperationalError(t *testing.T, err error) {
 	}
 }
 
-func fixtureIdentitySession(t *testing.T, database *store.Store, user model.User, session model.Session) model.Principal {
+func fixtureIdentitySession(t *testing.T, database *postgres.Store, user model.User, session model.Session) model.Principal {
 	t.Helper()
 	ctx := context.Background()
 	var principal model.Principal

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 )
 
@@ -125,7 +126,7 @@ func TestASTPositionsUseOriginalUnicodeInput(t *testing.T) {
 	if root.Position != 1 || root.Length != utf8.RuneCountInString(input) || root.Right.Position != 3 || root.Right.Length != utf8.RuneCountInString(input)-2 {
 		t.Fatalf("unexpected source spans: root=%+v right=%+v", root, root.Right)
 	}
-	if root.Right.Kind != query.And || root.Right.Left.Position != 8 || root.Right.Right.Position != 21 {
+	if root.Right.Kind != tasksearch.And || root.Right.Left.Position != 8 || root.Right.Right.Position != 21 {
 		t.Fatalf("unexpected negated group spans: %+v %+v", root.Right.Left, root.Right.Right)
 	}
 }

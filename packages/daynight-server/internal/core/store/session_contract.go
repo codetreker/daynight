@@ -2,12 +2,16 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
+
+// ErrSessionProjectNotFound identifies a tombstoned project in scoped Session access.
+var ErrSessionProjectNotFound = errors.New("session project not found")
 
 // SessionWriter binds all Session and Bot operations to one transaction. The
 // scope and its DAOs are valid only until the callback returns.
@@ -170,7 +174,3 @@ type SessionDAO interface {
 	QueuedTerminalOperation(context.Context, string) ([]string, error)
 	TerminalViewerOperationPending(context.Context, string, string, string) (bool, error)
 }
-
-var _ SessionWriter = (*Store)(nil)
-var _ SessionScope = (*sessionTx)(nil)
-var _ SessionDAO = (*sessionTx)(nil)

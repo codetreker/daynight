@@ -18,8 +18,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestTaskHTTPLifecycleDefaultsAndUpdateSemantics(t *testing.T) {
@@ -42,10 +42,10 @@ func TestTaskHTTPLifecycleDefaultsAndUpdateSemantics(t *testing.T) {
 		t.Fatalf("invalid task location: %s", response.Header().Get("Location"))
 	}
 	var fields map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 18 {
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 19 {
 		t.Fatalf("task DTO fields: %s %v", response.Body, err)
 	}
-	for _, key := range []string{"id", "projectId", "title", "description", "status", "version", "createdAt", "updatedAt", "dependsOn", "externalDependsOn", "blockedBy", "ready", "properties", "allowAgents", "requiredPlatform", "assignedTo"} {
+	for _, key := range []string{"id", "projectId", "title", "description", "status", "version", "createdAt", "updatedAt", "dependsOn", "externalDependsOn", "blockedBy", "ready", "properties", "allowAgents", "requiredPlatform", "assignedTo", "cancelledAt"} {
 		if _, exists := fields[key]; !exists {
 			t.Fatalf("missing task DTO field %s", key)
 		}
@@ -115,12 +115,13 @@ func TestTaskHTTPStrictInputsDoNotMutate(t *testing.T) {
 		`{"title":"x","dependsOn":[null]}`, `{"title":"x","dependsOn":[1]}`, `{"title":"x","dependsOn":[{}]}`,
 		`{"title":"x","dependsOn":["invalid"]}`, `{"title":"x","status":"todo"}`, `{"title":"x","version":1}`,
 		`{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
-		"{\"title\":\"" + string([]byte{0xff}) + "\"}", `{"title":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"}`,
+		"{\"title\":\"" + string([]byte{0xff}) + "\"}",
 	} {
 		t.Run("create-"+body[:min(len(body), 70)], func(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), body), http.StatusBadRequest, "invalid_input")
 		})
 	}
+	assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), `{"title":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), http.StatusRequestEntityTooLarge, "payload_too_large")
 	for _, body := range []string{
 		"", "null", `[]`, `{"version":1,}`, `{"version":1,"title":"x"} false`,
 		`{}`, `{"title":"x"}`, `{"version":1}`, `{"version":null,"title":"x"}`, `{"version":0,"title":"x"}`,
@@ -399,7 +400,7 @@ func TestTaskHTTPKnownFaultsPreserveOperationalPrecedence(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, err := range []error{
 		&model.Fault{Code: "unknown", Message: "unknown-secret"},
-		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, &pgconn.PgError{Message: "driver-secret"}),
+		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("driver-secret")}),
 		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, context.Canceled),
 	} {
 		response := httptest.NewRecorder()

@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +19,7 @@ const fixture = async () => {
   vi.stubEnv("DN_CONFIG_DIR", path.join(directory, "state"));
   const paths = resolveWorkerPaths(directory);
   await mkdir(paths.workerDirectory, { recursive: true });
-  const store = openWorkerStore(paths.databaseFile, { onMigration: () => {} });
+  const store = openWorkerStore(createMemoryDatabase(), { onMigration: () => {} });
   stores.push(store);
   const admission = createWorkerRepositoryAdmission({ paths, store: () => store });
   const project = async (number: number, relative: string): Promise<WorkerProject> => {

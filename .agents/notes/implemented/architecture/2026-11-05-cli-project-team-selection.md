@@ -22,9 +22,7 @@ admin in the creation transaction. A noninteractive new creation needs
 `--confirm`; discovery of an existing Project does not.
 
 The [client requirements](../../../../docs/spec/daynight-project-task.md#pt6-project-命令)
-own observable behavior. The [Team context decision](2026-11-04-cli-team-context.md)
-owns default resolution, and the [Team Project creation decision](2026-11-04-team-project-creation.md)
-owns the server transaction. This extends the archived
+own observable behavior. The [Team context decision](../../archived/architecture/2026-11-04-cli-team-context.md) records the rationale for default resolution, and the [Team Project creation decision](../../archived/architecture/2026-11-04-team-project-creation.md) records the rationale for the server transaction. This extends the archived
 [repository discovery decision](../../archived/bug-fix/2026-10-21-project-create-repository-discovery.md)
 with a target and confirmation only for the zero-match path.
 

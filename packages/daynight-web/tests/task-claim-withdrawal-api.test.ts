@@ -14,7 +14,7 @@ const result: TaskDetail = { assignedTo: null,
   id: taskId, projectId, title: 'Claimed task', description: 'Keep its delivery materials.',
   properties: { pullRequests: [{ title: 'Implementation', url: 'https://example.com/pull/42' }] },
   status: 'todo', version: version + 1n, requiredPlatform: 'macos', allowAgents: false, ready: true,
-  dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
+  dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 };
 const worker: WorkerClaim = {
   claimId, state: 'released', userId: TEST_VIEWER_ID, workerId: otherId, machine: { id: otherId, name: 'Machine' },

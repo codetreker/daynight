@@ -62,6 +62,30 @@ error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextA
 
 baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 int64 十进制字符串，不得引用未来目标。资源 observation 的 reportedAt 由数据库生成，仅在观测被接纳时更新，输入不能提供它。GET 中保留该次输入的 baseRevision，而下一次报告必须使用外层当前 observationRevision。普通或 CAS 被拒绝的机器报告不能更新这个应用确认时间。
 
+## 有效原生配置来源
+
+机器 telemetry 可包含 `runtimeConfiguration`，与 configuration 中的云端目标及应用观测分开：
+
+```json
+{
+  "schemaVersion": 1,
+  "native": {
+    "agent": "codex",
+    "model": { "value": "model-id", "source": "local" },
+    "reasoningEffort": { "value": "high", "source": "cloud" }
+  },
+  "projects": []
+}
+```
+
+`native` 是可空的完整原生来源对象，`projects` 是最多 1024 项的完整列表，每项包含规范且不重复的 `projectId` 与同形可空 `native`。来源对象的 Agent 为 codex/claude/copilot；两个值对象均必填，source 只能为 local/cloud/native。local/cloud 对应非空字符串，model 最多 256 字节、reasoningEffort 最多 64 字节；native 来源必须 value:null，表示 Daynight 未指定该项，不是对 Agent 实际解析值的观察。字符串不得包含控制字符。
+
+云端目标尚未建立、Worker 按本地候选运行可访问项目时，报告该本地全局配置及当前可运行项目；本地候选中明确的旧 model/args 也标记 local，不能冒充 cloud。云端目标建立后报告切换为云端有效配置与本地覆盖的组合。
+
+不可用原生配置用 native:null 表示。旧合法云端模型超过来源报告上限时该项也报告 null；超过项目上限时省略整个可选对象，不截断并假称完整，也不让可选观测阻断心跳。完整报告（含配置观测、任务清单和遥测）按 UTF-8 JSON 编码共同受 1 MiB 请求上限约束；仅来源对象使原本合法的完整报告超限时，整份省略 runtimeConfiguration。必需内容本身超限仍明确拒绝，不截断清单，也不隐藏序列化错误。字段存在时不得为 null，必须满足 schemaVersion=1 的闭合结构。新服务接受旧客户端省略字段，新客户端发送该对象需要支持它的服务；旧严格服务的拒绝不能被解释为已保存来源。
+
+服务器按完整 telemetry 替换存储。移除本地覆盖后的新报告更新有效值及来源；后续报告省略整个字段也必须移除旧观测，不保留过时的 local 标签。该对象不会写入 desired、改变目标版本或取得执行资格。字段归属和组合规则由 [Worker 需求](daynight-worker.md#本地模型与推理强度覆盖)拥有。
+
 ## Web 消费者
 
 “我的 Worker”详情的配置表单编辑 desired.value，以 desired.revision 保存完整目标；observationRevision 与 observation 只用于展示最近应用报告，不改变草稿的保存版本。页面的运行观测和配置分别读取：近期快照超窗的 404 不代表配置不存在，配置读取失败也不清除独立的运行观测。资源没有 supported 标志；desired:null 表示尚未首次导入，Web 不能使用 PUT 建立初值。

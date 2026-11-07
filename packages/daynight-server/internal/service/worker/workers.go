@@ -63,10 +63,14 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 	var result WorkerReportResult
 	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
 		tx := scope.WorkerDAO()
-		observedAt, err := scope.ObservedAt(ctx)
+		admission, err := scope.AdmitWorker(ctx, principal.UserID, workerID, workercore.ActiveWindow)
 		if err != nil {
 			return err
 		}
+		if err := workercore.AdmitActiveWorker(admission); err != nil {
+			return err
+		}
+		observedAt := admission.ObservedAt
 		var items []model.WorkerObservedTask
 		if input.TaskInventory != nil {
 			sources, err := tx.ReportTaskSnapshots(ctx, principal.UserID, *input.TaskInventory)

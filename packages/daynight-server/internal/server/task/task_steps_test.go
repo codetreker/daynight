@@ -3,15 +3,18 @@ package task_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
-func stepsHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task) {
+func stepsHTTPFixture(t *testing.T, logs io.Writer) (*postgres.Store, *resourceTestHandler, api.Task) {
 	t.Helper()
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, logs)
@@ -20,7 +23,7 @@ func stepsHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTest
 	return database, handler, task
 }
 
-func seedHTTPStep(t *testing.T, database *store.Store, taskID, id string, position int, title, description string) {
+func seedHTTPStep(t *testing.T, database *postgres.Store, taskID, id string, position int, title, description string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
  VALUES($1,$2,$3,$4,$5,'done','2026-11-03T10:11:12.123456Z','2026-11-03T11:12:13.654321Z')`, taskID, id, position, title, description); err != nil {
@@ -32,7 +35,9 @@ func TestStepsHTTPReadResourcesAndRefusals(t *testing.T) {
 	var logs bytes.Buffer
 	database, handler, task := stepsHTTPFixture(t, &logs)
 	path := "/api/v1/projects/" + task.ProjectID + "/tasks/" + task.ID + "/steps"
-	empty := decodeResponse[api.StepsResource](t, projectRequest(handler, "GET", path, ""), 200)
+	emptyResponse := projectRequest(handler, "GET", path, "")
+	empty := decodeResponse[api.StepsResource](t, emptyResponse, 200)
+	assertStepsWireFields(t, emptyResponse.Body.Bytes(), false, 0)
 	if empty.Steps == nil || len(empty.Steps) != 0 || empty.Version != task.Version {
 		t.Fatalf("empty: %+v", empty)
 	}
@@ -107,5 +112,81 @@ func TestStepsHTTPRejectsCorruptStorage(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "body-sentinel-must-not-log") || strings.Contains(logs.String(), "SELECT ") {
 		t.Fatal("storage failure logs exposed row or SQL content")
+	}
+}
+
+func TestStepsHTTPReadPreservesEveryStateAndTimestamp(t *testing.T) {
+	database, handler, task := stepsHTTPFixture(t, io.Discard)
+	stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
+	rows := []api.TaskStep{
+		{ID: "abcdef01", Title: "  <同名&> 😀 \x1b[31m\n", Description: "# 完整 Markdown\n<>& \"\\\r\n\u2028\u2029", Status: "done", CreatedAt: stamp, UpdatedAt: stamp.Add(time.Hour)},
+		{ID: "00000000", Title: "\uFEFF", Description: "", Status: "todo", CreatedAt: stamp.Add(time.Microsecond), UpdatedAt: stamp.Add(time.Microsecond)},
+		{ID: "fedcba98", Title: "same", Description: "third", Status: "skipped", CreatedAt: stamp.Add(time.Second), UpdatedAt: stamp.Add(time.Second)},
+		{ID: "11111111", Title: "same", Description: "fourth", Status: "in_progress", CreatedAt: stamp.Add(2 * time.Second), UpdatedAt: stamp.Add(2 * time.Second)},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for position, step := range rows {
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, task.ID, step.ID, position, step.Title, step.Description, string(step.Status), step.CreatedAt, step.UpdatedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const version int64 = 9007199254740993
+	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET version=$1 WHERE id=$2`, version, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/projects/" + strings.ToUpper(task.ProjectID) + "/tasks/" + strings.ToUpper(task.ID) + "/steps"
+	response := projectRequest(handler, "GET", path, "")
+	resource := decodeResponse[api.StepsResource](t, response, 200)
+	assertStepsWireFields(t, response.Body.Bytes(), false, len(rows))
+	if resource.ProjectID != task.ProjectID || resource.TaskID != task.ID || resource.Version != version || !reflect.DeepEqual(resource.Steps, rows) || !bytes.Contains(response.Body.Bytes(), []byte(`"version":9007199254740993`)) {
+		t.Fatalf("complete seeded collection: %+v", resource)
+	}
+	itemResponse := projectRequest(handler, "GET", path+"/ABCDEF01", "")
+	item := decodeResponse[api.StepResource](t, itemResponse, 200)
+	assertStepsWireFields(t, itemResponse.Body.Bytes(), true, 1)
+	if item.ProjectID != task.ProjectID || item.TaskID != task.ID || item.Version != version || item.Step != rows[0] {
+		t.Fatalf("complete scoped item: %+v", item)
+	}
+}
+
+func assertStepsWireFields(t *testing.T, data []byte, item bool, count int) {
+	t.Helper()
+	assertObject := func(fields map[string]json.RawMessage, names ...string) {
+		t.Helper()
+		if len(fields) != len(names) {
+			t.Fatalf("unexpected resource field count: got %d want %d", len(fields), len(names))
+		}
+		for _, name := range names {
+			value, exists := fields[name]
+			if !exists || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				t.Fatalf("missing or null resource field %q", name)
+			}
+		}
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal("resource is not valid JSON")
+	}
+	key := "steps"
+	if item {
+		key = "step"
+	}
+	assertObject(fields, "projectId", "taskId", "version", key)
+	var rows []map[string]json.RawMessage
+	if item {
+		var row map[string]json.RawMessage
+		if err := json.Unmarshal(fields[key], &row); err != nil {
+			t.Fatal("Step is not a JSON object")
+		}
+		rows = []map[string]json.RawMessage{row}
+	} else if err := json.Unmarshal(fields[key], &rows); err != nil || rows == nil {
+		t.Fatal("Steps is not a JSON array")
+	}
+	if len(rows) != count {
+		t.Fatalf("unexpected Step count: got %d want %d", len(rows), count)
+	}
+	for _, row := range rows {
+		assertObject(row, "id", "title", "description", "status", "createdAt", "updatedAt")
 	}
 }

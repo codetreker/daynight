@@ -24,15 +24,16 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
-func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
+func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
 
-func projectTestHandler(t *testing.T, database *store.Store, output io.Writer) *resourceTestHandler {
+func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	return resourceTestServer(t, database, attachmentTestFiles(t), output)
 }
@@ -117,12 +118,13 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
 		`{"name":"ok","repoUrl":"not-a-repository","expectedUserId":"` + handler.principal.UserID + `"}`,
 		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\",\"expectedUserId\":\"" + handler.principal.UserID + "\"}",
-		`{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
 	} {
 		t.Run(string(body[:min(len(body), 80)]), func(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
 		})
 	}
+	oversized := `{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`
+	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", oversized), http.StatusRequestEntityTooLarge, "payload_too_large")
 	for _, contentType := range []string{"", "text/plain", "application/json; charset=iso-8859-1", "application/json; charset=", "application/json; charset=utf-8; charset=us-ascii"} {
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(jsonBody(t, api.CreateProjectRequest{Name: "ok", RepoURL: "https://github.com/example/repo", ExpectedUserID: handler.principal.UserID})))
 		authorizeResourceRequest(handler, request)
@@ -141,7 +143,7 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 	}
 }
 
-func createPrivateProjectFixture(database *store.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
+func createPrivateProjectFixture(database *postgres.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
 	var project model.Project
 	completion, err := database.WriteProjectCreation(ctx, principal.UserID, func(dao store.ProjectCreationDAO) error {
 		var err error
@@ -211,12 +213,11 @@ func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
 	}
 	assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""), http.StatusNotFound, "not_found")
 	assertProjectError(t, projectRequest(handler, http.MethodGet, "/unknown-secret-path?query=secret", ""), http.StatusNotFound, "not_found")
-	for _, path := range []string{"/api/v1/projects", "/api/v1/projects/00000000-0000-4000-8000-000000000099"} {
-		response := projectRequest(handler, http.MethodDelete, path, "")
-		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
-		if !strings.Contains(response.Header().Get("Allow"), "GET") || strings.Contains(response.Header().Get("Allow"), "POST") != (path == "/api/v1/projects") {
-			t.Fatalf("invalid Allow: %s", response.Header().Get("Allow"))
-		}
+	assertProjectError(t, projectRequest(handler, http.MethodDelete, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""), http.StatusNotFound, "not_found")
+	response := projectRequest(handler, http.MethodDelete, "/api/v1/projects", "")
+	assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
+	if !strings.Contains(response.Header().Get("Allow"), "GET") || !strings.Contains(response.Header().Get("Allow"), "POST") {
+		t.Fatalf("invalid Allow: %s", response.Header().Get("Allow"))
 	}
 }
 

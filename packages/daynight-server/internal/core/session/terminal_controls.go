@@ -43,6 +43,7 @@ type terminalOperation struct {
 }
 
 type terminalFrameWrite struct {
+	projectID    string
 	raw          []byte
 	fence        v2.Envelope
 	epoch, owner string
@@ -50,6 +51,7 @@ type terminalFrameWrite struct {
 }
 
 type terminalBodyWrite struct {
+	projectID    string
 	raw          []byte
 	fence        v2.Envelope
 	epoch, owner string
@@ -132,7 +134,7 @@ func (s *Execution) stageTerminalSnapshot(r *terminalRecord, raw []byte) (commit
 			return nil, nil, fault("rate_limited", "Terminal preview capacity is unavailable.")
 		}
 	}
-	write := &terminalFrameWrite{raw: raw, fence: r.Envelope, epoch: r.ConnectionEpoch, owner: r.Owner.OwnerUserID, lastSeen: now}
+	write := &terminalFrameWrite{projectID: r.Owner.ProjectID, raw: raw, fence: r.Envelope, epoch: r.ConnectionEpoch, owner: r.Owner.OwnerUserID, lastSeen: now}
 	s.terminalFrameWrites[id] = write
 	finish := func(publish bool) {
 		s.terminalMutex.Lock()
@@ -286,7 +288,7 @@ func (s *Execution) storeTerminalBody(r *terminalRecord, operationID string, raw
 		s.terminalPending[id] = entries
 	}
 	clear(entries)
-	write := &terminalBodyWrite{raw: bytes.Clone(raw), fence: r.Envelope, epoch: r.ConnectionEpoch, owner: r.Owner.OwnerUserID, deadline: deadline}
+	write := &terminalBodyWrite{projectID: r.Owner.ProjectID, raw: bytes.Clone(raw), fence: r.Envelope, epoch: r.ConnectionEpoch, owner: r.Owner.OwnerUserID, deadline: deadline}
 	entries[operationID] = write
 	// Rollback releases the database lock before caller cleanup. Cancel only
 	// this reservation, because a same-ID retry may already have replaced it.

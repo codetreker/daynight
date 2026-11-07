@@ -19,13 +19,13 @@ import (
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestSessionRoutesExposeOnlyCurrentClaim(t *testing.T) {
@@ -66,7 +66,8 @@ func TestSessionRoutesCapabilitiesRequireAuthentication(t *testing.T) {
 }
 
 type sessionHTTPFixture struct {
-	db           *store.Store
+	sessionHTTPShutdown
+	db           *postgres.Store
 	handler      *resourceTestHandler
 	server       *httptest.Server
 	application  sessionApplication
@@ -77,7 +78,29 @@ type sessionHTTPFixture struct {
 	grant        sessioncore.GrantResult
 }
 
+func shutdownDatabaseFailureMatches(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range joined.Unwrap() {
+			if !shutdownDatabaseFailureMatches(cause) {
+				return false
+			}
+		}
+		return len(joined.Unwrap()) > 0
+	}
+	if cause, ok := err.(*pgconn.PgError); ok {
+		return cause.Message == "injected disconnect failure"
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return shutdownDatabaseFailureMatches(wrapped.Unwrap())
+	}
+	return false
+}
+
 func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
+	return sessionHTTPSetupWithApplication(t, newSessionHTTPApplication)
+}
+
+func sessionHTTPSetupWithApplication(t *testing.T, application sessionApplicationFactory) *sessionHTTPFixture {
 	t.Helper()
 	f := &sessionHTTPFixture{db: projectTestStore(t)}
 	f.handler = projectTestHandler(t, f.db, io.Discard)
@@ -95,23 +118,13 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	}](t, projectRequest(f.handler, http.MethodPost, f.base, jsonBody(t, f.registration)), http.StatusOK)
 	f.snapshot = result.Session
 	f.grant = f.mint(t, "bootstrap")
-	application, err := server.New(server.Dependencies{Store: f.db, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.application = application.(sessionApplication)
+	f.application = application(t, f.db, attachmentTestFiles(t))
 	// Live relay state is process-local: HTTP control and WebSocket traffic share the same application.
-	f.handler.Handler = httpx.RequestLogging(testLogger(), application)
+	f.handler.Handler = httpx.RequestLogging(testLogger(), f.application)
 	extendedWorkerTestHandler(f.handler)
-	f.server = httptest.NewServer(httpx.RequestLogging(testLogger(), application))
+	f.server = httptest.NewServer(httpx.RequestLogging(testLogger(), f.application))
 	t.Cleanup(f.server.Close)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := f.application.Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
-	})
+	f.sessionHTTPShutdown.register(t, f.application.Shutdown)
 	return f
 }
 func (f *sessionHTTPFixture) mint(t *testing.T, kind string) sessioncore.GrantResult {
@@ -225,6 +238,10 @@ func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- projectRequest(online, http.MethodGet, path+"/timeline?direction=tail&limit=10", "") }()
 	request := sessionWSKind(t, controller, "content_request")
+	var requestedKind string
+	if err := json.Unmarshal(request["kind"], &requestedKind); err != nil || requestedKind != "timeline" {
+		t.Fatalf("timeline read requested the wrong content kind: %q, %v", requestedKind, err)
+	}
 	var requestID, historyEpoch string
 	_ = json.Unmarshal(request["requestId"], &requestID)
 	_ = json.Unmarshal(request["historyEpoch"], &historyEpoch)
@@ -264,7 +281,11 @@ func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 		t.Fatal("wrong native intent")
 	}
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID})
-	sessionWSKind(t, controller, "operation_authorized")
+	authorized := sessionWSKind(t, controller, "operation_authorized")
+	var authorizedID string
+	if err := json.Unmarshal(authorized["operationId"], &authorizedID); err != nil || authorizedID != offered.OperationID {
+		t.Fatalf("authorized operation differs from offered intent: %q, %v", authorizedID, err)
+	}
 	accepted.Operation.State = "confirmed"
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "operation_receipt", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, Operation: &accepted.Operation})
 	sessionWSKind(t, controller, "receipt_ack")
@@ -280,6 +301,7 @@ func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 	if _, err = sp.DecodeEvent(frame["event"]); err != nil {
 		t.Fatal(err)
 	}
+	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "unauthenticated") }
 	if _, err = f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.handler.principal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
@@ -352,8 +374,8 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 		{"/api/v1/controller-resources/" + uuid.NewString() + "?x=1", f.grant.Token, "1", strings.NewReader(""), 400},
 		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "", strings.NewReader(""), 400},
 		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "01", strings.NewReader(""), 400},
-		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "1", strings.NewReader(strings.Repeat("x", sp.MaxResourceBytes+1)), 413},
-		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "1", &attachmentFailingBody{readErr: errors.New("broken body")}, 400},
+		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "1", strings.NewReader(strings.Repeat("x", sp.MaxResourceBytes+1)), 404},
+		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "1", &attachmentFailingBody{readErr: errors.New("broken body")}, 404},
 	} {
 		request := httptest.NewRequest(http.MethodPut, test.path, test.body)
 		if test.token != "" {
@@ -379,7 +401,7 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 }
 
 func TestSessionRoutesBrowserRespondsToPingAndContinuesReceivingEvents(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := sessionHTTPSetupWithApplication(t, newSessionPingApplication)
 	pingSeen := make(chan struct{})
 	var firstPing sync.Once
 	sourceEpoch := uuid.NewString()
@@ -569,6 +591,29 @@ func TestSessionRoutesCookieOriginResetAndShutdown(t *testing.T) {
 	}
 	if err == nil || response == nil || response.StatusCode != 429 {
 		t.Fatal("shutdown accepted a new channel")
+	}
+}
+
+func TestSessionShutdownRetainsDisconnectFailure(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	_, snapshot := f.controller(t, uuid.NewString())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := f.db.Pool.Exec(ctx, `CREATE FUNCTION refuse_shutdown_disconnect() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected disconnect failure'; END $$;
+		CREATE TRIGGER refuse_shutdown_disconnect BEFORE UPDATE OF connection_expires_at ON task_sessions FOR EACH ROW EXECUTE FUNCTION refuse_shutdown_disconnect()`); err != nil {
+		t.Fatal(err)
+	}
+	f.expectShutdownError = shutdownDatabaseFailureMatches
+	for i := 0; i < 2; i++ {
+		err := f.application.Shutdown(ctx)
+		var cause *pgconn.PgError
+		if !errors.As(err, &cause) || cause.Message != "injected disconnect failure" {
+			t.Fatalf("shutdown %d lost disconnect cause: %v", i, err)
+		}
+	}
+	var connected bool
+	if err := f.db.Pool.QueryRow(ctx, `SELECT connection_expires_at IS NOT NULL FROM task_sessions WHERE id=$1`, snapshot.SessionID).Scan(&connected); err != nil || !connected {
+		t.Fatalf("failed disconnect unexpectedly cleared connection: connected=%v error=%v", connected, err)
 	}
 }
 

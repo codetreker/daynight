@@ -13,11 +13,13 @@ import (
 	"encoding/json"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
@@ -30,17 +32,17 @@ type resourceTestHandler struct {
 	principal model.Principal
 }
 
-func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
-func resourceTestServer(t *testing.T, database *store.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
+func resourceTestServer(t *testing.T, database *postgres.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	instance := httptest.NewUnstartedServer(nil)
 	t.Cleanup(instance.Close)
 	origin := "http://" + instance.Listener.Addr().String()
 	callback := origin + "/api/v1/auth/callback"
 	gateway := testauth.StartGateway(t, callback)
-	config := server.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: origin, UniAuthURL: gateway.Origin, UniAuthAppID: gateway.AppID, UniAuthAppSecret: gateway.AppSecret, UniAuthCallbackURL: callback, AllowHTTPTestOrigin: true, AllowLoopbackHTTP: true}
+	config := configpkg.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: origin, UniAuthURL: gateway.Origin, UniAuthAppID: gateway.AppID, UniAuthAppSecret: gateway.AppSecret, UniAuthCallbackURL: callback, AllowHTTPTestOrigin: true, AllowLoopbackHTTP: true}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := server.New(server.Dependencies{Store: database, Files: files}, config, logger)
+	handler, err := appsupport.NewHandler(config, database, database.Ready, files, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,13 +109,20 @@ func authorizeResourceRequest(handler http.Handler, request *http.Request) {
 	}
 }
 
+// uiOnlyStore supports composition for route-only tests; any database access is
+// unexpected and fails through the unimplemented embedded interface.
+type uiOnlyStore struct{ store.Transactions }
+
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	config := server.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example", UniAuthAppID: "configuration-test", UniAuthAppSecret: "configuration-test", UniAuthCallbackURL: "https://daynight.example/api/v1/auth/callback"}
-	handler, err := server.New(server.Dependencies{}, config, logger)
+	config := configpkg.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example", UniAuthAppID: "configuration-test", UniAuthAppSecret: "configuration-test", UniAuthCallbackURL: "https://daynight.example/api/v1/auth/callback"}
+	handler, err := appsupport.NewHandler(config, &uiOnlyStore{}, nil, nil, logger)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if lifecycle, ok := handler.(interface{ Shutdown(context.Context) error }); ok {
+		t.Cleanup(func() { _ = lifecycle.Shutdown(context.Background()) })
 	}
 	return httpx.RequestLogging(logger, handler)
 }

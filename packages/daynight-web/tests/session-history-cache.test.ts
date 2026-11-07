@@ -536,7 +536,7 @@ it('preserves clear markers under capacity pressure and rotates the project befo
   expect(await beginSessionHistoryRefresh(scope, ticket, taskId(33), signal())).toEqual({ kind: 'capacity', expiresAt: recovering.expiresAt });
   await releaseSessionHistoryRefresh(scope, ticket, taskId(1), recovering.token, 'cancelled', signal());
   await expect(beginSessionHistoryRefresh(scope, ticket, taskId(33), signal())).rejects.toMatchObject({ name: 'AbortError' });
-  expect(events).toHaveBeenCalledWith({ projectId, cacheGenerationChanged: true });
+  expect(events).toHaveBeenCalledWith(expect.objectContaining({ projectId, cacheGenerationChanged: true }));
   expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ accessRevoked: true }));
   expect(await (await inspect()).getAll('sessionHistory')).toEqual([]);
   const rebuilt = await scope.beginSync(projectId, signal());
@@ -597,7 +597,7 @@ it('delivers verified clear and generation hints to a cache preview without gran
   events.mockClear(); Channel.messages = [];
   await first.applySync(ticket, taskSyncFromGraph(graphFixture([detail(1)]), { versionForTask: () => 1n, epoch: '00000000-0000-4000-8000-000000000901' }), signal());
   Channel.deliver(Channel.messages.find(value => typeof value === 'object' && value !== null && 'projectId' in value)!);
-  await vi.waitFor(() => expect(events).toHaveBeenCalledWith({ projectId, cacheGenerationChanged: true }));
+  await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({ projectId, cacheGenerationChanged: true, historyChanged: true })));
   expect(preview.isSessionHistoryTicketCurrent(previewTicket)).toBe(false);
   expect(preview.getAuthorizedProject(projectId)).toBeNull();
 });

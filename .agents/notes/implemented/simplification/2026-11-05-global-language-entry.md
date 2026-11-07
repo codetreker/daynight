@@ -23,7 +23,7 @@ Shared `ManagementDialog` and `CreateProjectDialog` inherit the current language
 or its preference notice and retry. The page's selector continues to own that
 feedback. Language changes still update mounted dialog content without changing
 business state or pending operations. This partially supersedes the placement
-policy in the [bilingual interface decision](../feature/2026-10-22-web-bilingual-interface.md),
+policy in the [bilingual interface decision](../../archived/feature/2026-10-22-web-bilingual-interface.md),
 whose original rationale and runtime guarantees remain relevant.
 
 ## Alternatives

@@ -1,15 +1,17 @@
 import { decodeWorkerCloudJsonSource, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
 import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "./worker-configuration.js";
+import { workerReportBody } from "./worker-report.js";
 import { jsonObjectSources } from "./json-source.js";
 import { randomUUID } from "node:crypto";
 import { parseCreatedTeamInvitation, parseTeamInvitations, parseTeamInvitationRevoke } from "./team-invitations.js";
 import { sameStartupReport } from "../session/startup.js";
-import { parseBot, botName, botVersion } from "../commands/bot/api.js";
+import { parseBot, botName, botOverrides, botVersion } from "../commands/bot/api.js";
 import type { Bot, CreateBotInput, DeleteBotInput } from "../commands/bot/api.js";
 import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api.js";
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, readSessionStartupReport } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
+import { isTaskStatus } from "../task/status.js";
 import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
 import type { AddTaskStepInput, AddTaskStepOptions, DeleteTaskStepInput, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
@@ -19,8 +21,8 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { ProjectTransferPreview, ProjectTransferReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
+import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseProjectDeletionPreview, parseProjectDeletionReceipt, parseProjectDeletionError, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
 import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true };
@@ -165,6 +167,8 @@ export type ApiClient = {
   revokeTeamInvitation(userId: string, teamId: string, invitationId: string, requestId: string): Promise<TeamInvitationRevokeReceipt>;
   previewProjectTransfer(userId: string, projectId: string, targetTeamId: string): Promise<ProjectTransferPreview>;
   transferProject(userId: string, projectId: string, preview: ProjectTransferPreview, requestId: string): Promise<ProjectTransferReceipt>;
+  previewProjectDeletion(userId: string, projectId: string): Promise<ProjectDeletionPreview>;
+  deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   getWorkerConfiguration(workerId: string): Promise<WorkerCloudResource>;
   reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport): Promise<WorkerCloudReportReceipt>;
@@ -254,7 +258,7 @@ export const createApiClient = (options: {
   type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -381,7 +385,7 @@ export const createApiClient = (options: {
           else throw new ProtocolError("The authenticated response principal does not match the expected user.");
         }
         if (mode.kind === "json") {
-          try { mode.onPrincipal?.(principalId); }
+          try { mode.onPrincipal?.(principalId, success); }
           catch (error) {
             if (error instanceof ProtocolError && (secret !== undefined || mode.allowIdentityMismatchRefusal === true) && !success && status === 409) invitationIdentityMismatch = true;
             else throw error;
@@ -429,13 +433,13 @@ export const createApiClient = (options: {
       checkRequest();
       if (!success) {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
-        serverError = parseServerError(value);
+        serverError = mode.kind === "json" && mode.parseError !== undefined ? mode.parseError(value) : parseServerError(value);
         if (invitationIdentityMismatch && serverError.code !== "identity_mismatch") { serverError = undefined; throw new ProtocolError("The authenticated response principal changed during the operation."); }
         if (secret !== undefined) {
           const safeCodes = ["unauthenticated", "forbidden", "invalid_input", "identity_mismatch", "invitation_unavailable", "write_outcome_unknown", "internal_error"];
           serverError = { code: safeCodes.includes(serverError.code) ? serverError.code : "server_error", message: "Invitation request failed.", requestId: canonicalId(serverError.requestId) === serverError.requestId ? serverError.requestId : "unavailable" };
         }
-        const confirmedRefusal = status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
+        const confirmedRefusal = mode.kind === "json" && mode.classifyRefusal !== undefined ? mode.classifyRefusal(status, serverError, responseRequestId) : status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
         throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(responseRequestId === undefined ? {} : { responseRequestId }) });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
@@ -542,7 +546,7 @@ export const createApiClient = (options: {
   };
   const taskAssignmentInput = (value: string | null | undefined): string | null | undefined => value === undefined || value === null ? value : resourceId(value);
   const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
-    if (filters.status !== undefined && filters.status !== "todo" && filters.status !== "in_progress" && filters.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
+    if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
@@ -663,15 +667,16 @@ export const createApiClient = (options: {
     createBot: (input) => {
       const target = resourceId(input.id), principal = accountPrincipal();
       const name = botName(input.name);
+      const overrides = input.overrides === undefined ? undefined : botOverrides(input.overrides);
       return exchange({ operation: "bot.create" }, "/me/bots", "POST", { kind: "json", requirePrincipal: true, parse: (value, metadata) => {
         const bot = parseBot(value, target, principal(metadata));
-        if (input.overrides?.workerId !== undefined && bot.workerId !== input.overrides.workerId) throw new ProtocolError("Bot creation response does not match the submitted Worker.");
-        if (bot.deletion === null && (bot.name !== name || ["workerId", "cwd", "provider"].some((key) => {
+        if (overrides?.workerId !== undefined && bot.workerId !== overrides.workerId) throw new ProtocolError("Bot creation response does not match the submitted Worker.");
+        if (bot.deletion === null && (bot.name !== name || ["workerId", "cwd", "provider", "model", "reasoningEffort"].some((key) => {
           const field = key as keyof NonNullable<CreateBotInput["overrides"]>;
-          return bot.requestedOverrides[field] !== input.overrides?.[field];
+          return bot.requestedOverrides[field] !== overrides?.[field];
         }))) throw new ProtocolError("Bot creation response does not match the submitted request.");
         return bot;
-      }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: { ...input, id: target, name } });
+      }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: { id: target, name, ...(overrides === undefined ? {} : { overrides }) } });
     },
     deleteBot: (botId, input) => {
       const target = resourceId(botId), principal = accountPrincipal();
@@ -1007,9 +1012,45 @@ export const createApiClient = (options: {
         parse: (value) => parseProjectTransferReceipt(value, project, user, preview), confirmMutation: (result) => result.projectId,
       }, [200], { kind: "json", value: { ownership: { teamId: source, version: preview.ownership.version }, targetTeam: { id: target, version: preview.targetTeam.version }, expectedUserId: user } }, true);
     },
+    previewProjectDeletion: async (userId, projectId) => {
+      const user = resourceId(userId), project = resourceId(projectId), claims: ProjectDeletionPreview["activeClaims"][number][] = [];
+      const cursors = new Set<string>();
+      let cursor: string | null = null, preview: ProjectDeletionPreview | undefined;
+      do {
+        operation.check();
+        const query = new URLSearchParams({ limit: "100", ...(cursor === null ? {} : { cursor }) });
+        preview = await exchange({ operation: "project.deletion-preview", projectId: project }, `/projects/${encodeURIComponent(project)}/deletion-preview?${query}`, "GET", {
+          kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
+          onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+          decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+          parse: (value) => parseProjectDeletionPreview(value, project),
+        }, [200]);
+        for (const claim of preview.activeClaims) {
+          if (claims.length > 0 && claims[claims.length - 1]!.taskId >= claim.taskId) throw new ProtocolError("Invalid claim ordering across preview pages.");
+          claims.push(claim);
+        }
+        cursor = preview.nextCursor;
+        if (cursor !== null) { if (cursors.has(cursor)) throw new ProtocolError("Repeated pagination cursor."); cursors.add(cursor); }
+      } while (cursor !== null);
+      operation.check();
+      return { ...preview!, activeClaims: claims };
+    },
+    deleteProject: (userId, projectId, requestId) => {
+      const user = resourceId(userId), project = resourceId(projectId);
+      return exchange({ operation: "project.delete", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}`, "DELETE", {
+        kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
+        onPrincipal: (actual, success) => { if (!success && actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+        parse: (value) => parseProjectDeletionReceipt(value, project), parseError: parseProjectDeletionError, confirmMutation: (result) => result.projectId,
+        classifyRefusal: (status, error, responseId) => {
+          if (responseId !== requestId || error.requestId !== requestId) return false;
+          return status === 401 && error.code === "unauthenticated" || status === 400 && error.code === "invalid_input" || status === 403 && error.code === "forbidden" || status === 404 && error.code === "not_found" || status === 409 && error.code === "active_worker_claims" || status === 500 && error.code === "internal_error" && error.details?.writeOutcome === "not_committed";
+        },
+      }, [200], undefined, true);
+    },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], { kind: "json", value: input }, true);
+      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], workerReportBody(input), true);
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);
@@ -1033,7 +1074,7 @@ export const createApiClient = (options: {
           if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
           return receipt;
         },
-      }, [200], { kind: "json", value: { ...input, configuration: parsed }, maxBytes: 1_048_576 }, true);
+      }, [200], workerReportBody({ ...input, configuration: parsed }), true);
     },
     createProject: (input, requestId) => {
       const expected = resourceId(input.expectedUserId);
@@ -1058,7 +1099,7 @@ export const createApiClient = (options: {
           parse: (value) => parseProject(value, project),
         }, [200], undefined, true);
       }
-      return request({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", (value) => parseProject(value, project));
+      return exchange({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", { kind: "json", checkPrincipalOnError: true, parse: (value) => parseProject(value, project) }, [200]);
     },
     listProjects: (userId) => list({ operation: "project.list" }, "/projects", (value) => parsePage(value, (item) => parseProject(item), (project) => project.id), (project) => project.id, {}, userId !== undefined, userId === undefined ? undefined : resourceId(userId)),
     getProjectAccess: (projectId) => {
@@ -1204,11 +1245,11 @@ export const createApiClient = (options: {
       if (query.cursor !== undefined && (typeof query.cursor !== "string" || query.cursor === "")) throw new Error("Task page cursor must be a nonempty string.");
       const search = new URLSearchParams({ ...taskFilterQuery(query), limit: String(query.limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
       const parse = taskPageParser(project, query);
-      return request({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", (value, metadata) => {
+      return exchange({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", { kind: "json", checkPrincipalOnError: true, parse: (value, metadata) => {
         const page = parse(value, metadata);
         if (page.items.length > query.limit) throw new ProtocolError("Task page exceeds the requested limit.");
         return page;
-      });
+      } }, [200]);
     },
     listReadyTasks: (projectId, limit, filters = {}) => {
       const project = resourceId(projectId);
@@ -1252,7 +1293,7 @@ export const createApiClient = (options: {
     },
     setTaskStatus: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      if (input.status !== "todo" && input.status !== "in_progress" && input.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
+      if (!isTaskStatus(input.status)) throw new Error("Task status must be todo, in_progress, done or cancelled.");
       taskVersion(input.version);
       return exchange({ operation: "task.set-status", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/status`, "PUT", { kind: "json", parse: (value) => {
         const result = parseTask(value, project, task);

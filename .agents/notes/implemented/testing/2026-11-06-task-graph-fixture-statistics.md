@@ -12,10 +12,11 @@ functional regression spend time on incidental preparation state.
 
 The full backbone and convergent edges are necessary: the graph contract accepts
 exactly 1000 nodes and 5000 dependency references while rejecting node and edge
-overflow independently. Generating every candidate pair and sorting it before
-keeping only a small prefix also makes fixture preparation unnecessarily costly.
-The [chain-query decision](../architecture/2026-10-29-chain-scoped-task-graph.md)
-owns selection and snapshot semantics.
+overflow independently. Reducing counts or depth would remove that boundary proof.
+Generating every candidate pair and sorting it before keeping a small prefix also
+makes fixture preparation unnecessarily costly. The
+[chain-query decision](../../archived/architecture/2026-10-29-chain-scoped-task-graph.md)
+records the rationale for selection and snapshot semantics.
 
 ## Decision
 

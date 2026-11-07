@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,12 +19,19 @@ func TestTaskHTTPStatusPairsAndStaleVersions(t *testing.T) {
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, projectTestStore(t), &logs)
 	project := taskProject(t, handler)
-	for _, from := range []string{"todo", "in_progress", "done"} {
-		for _, to := range []string{"todo", "in_progress", "done"} {
+	for _, from := range []string{"todo", "in_progress", "done", "cancelled"} {
+		for _, to := range []string{"todo", "in_progress", "done", "cancelled"} {
 			t.Run(from+"_to_"+to, func(t *testing.T) {
 				task := setHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "private-title-secret"), from)
 				path := taskPath(task) + "/status"
 				assertProjectError(t, projectRequest(handler, http.MethodPut, path, jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version + 1, Status: to})), http.StatusConflict, "version_conflict")
+				if from == "cancelled" && to != "cancelled" {
+					assertProjectError(t, projectRequest(handler, http.MethodPut, path, jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: to})), http.StatusConflict, "invalid_transition")
+					if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
+						t.Fatal("cancelled recovery changed persistent task")
+					}
+					return
+				}
 				after := setHTTPTask(t, handler, task, to)
 				delta := int64(1)
 				if from == to {
@@ -125,6 +133,30 @@ func TestTaskHTTPStatusResourceScopeCanonicalIDsAndExactVersion(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "secret") {
 		t.Fatalf("resource diagnostics exposed data: %s", &logs)
+	}
+}
+
+func TestTaskHTTPCompletionAtMaximumVersionAndNoOp(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	task := createHTTPTask(t, handler, taskProject(t, handler).ID, "Maximum version")
+	task = setHTTPTask(t, handler, task, "in_progress")
+	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET version=$1 WHERE id=$2`, int64(math.MaxInt64-1), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := readHTTPTask(t, handler, task)
+	response := projectRequest(handler, http.MethodPut, taskPath(task)+"/status", `{"version":9223372036854775806,"status":"done"}`)
+	completed := decodeResponse[api.Task](t, response, http.StatusOK)
+	if completed.Status != "done" || completed.Version != math.MaxInt64 || !reflect.DeepEqual(completed.StartedAt, before.StartedAt) || completed.CompletedAt == nil || !strings.Contains(response.Body.String(), `"version":9223372036854775807`) {
+		t.Fatalf("maximum version completion: %+v", completed)
+	}
+	if read := readHTTPTask(t, handler, task); !reflect.DeepEqual(read, completed) {
+		t.Fatal("maximum version completion did not persist")
+	}
+	response = projectRequest(handler, http.MethodPut, taskPath(task)+"/status", `{"version":9223372036854775807,"status":"done"}`)
+	confirmed := decodeResponse[api.Task](t, response, http.StatusOK)
+	if !reflect.DeepEqual(confirmed, completed) || !reflect.DeepEqual(readHTTPTask(t, handler, task), completed) || !strings.Contains(response.Body.String(), `"version":9223372036854775807`) {
+		t.Fatal("maximum version same-status request changed the task")
 	}
 }
 

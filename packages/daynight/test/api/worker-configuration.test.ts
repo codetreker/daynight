@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiClient } from "../../src/api/client.js";
+import { stringifyApiJson } from "../../src/api/json.js";
+import type { WorkerRuntimeConfiguration } from "../../src/api/types.js";
 import { createOperation } from "../../src/api/operation.js";
 import type { Operation } from "../../src/api/operation.js";
 import { ProtocolError } from "../../src/api/validation.js";
@@ -79,6 +81,70 @@ describe("Worker cloud configuration protocol", () => {
 });
 
 describe("Worker cloud configuration client", () => {
+  it("omits the whole optional source observation when it exceeds the complete report budget", async () => {
+    const projectIds = Array.from({ length: 1024 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+    const native = { agent: "codex" as const, model: "gpt-6-astra", args: ["--add-dir", "/" + "a".repeat(399)] };
+    const observation: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: projectIds.flatMap(projectId => [
+      { ...item, key: { kind: "projectNative" as const, projectId }, appliedValue: native },
+      { ...item, key: { kind: "projectPreparation" as const, projectId }, appliedValue: true },
+    ]) } };
+    const source = { agent: "codex" as const, model: { value: "gpt-6-astra", source: "cloud" as const }, reasoningEffort: { value: "high", source: "local" as const } };
+    const runtimeConfiguration: WorkerRuntimeConfiguration = { schemaVersion: 1, native: source, projects: projectIds.map(projectId => ({ projectId, native: source })) };
+    const required = { ...report, taskInventory: { observedAt: time, claims: [{ projectId: workerId, taskId: userId, claimId: workerId }] } };
+    const input = { ...required, runtimeConfiguration };
+    expect(Buffer.byteLength(stringifyApiJson({ ...required, configuration: observation }))).toBeLessThan(1_048_576);
+    expect(Buffer.byteLength(stringifyApiJson({ ...input, configuration: observation }))).toBeGreaterThan(1_048_576);
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
+    await expect(api(fetch).reportWorkerConfiguration(workerId, input, observation)).resolves.toEqual(receipt);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ ...required, configuration: observation });
+    expect(input.runtimeConfiguration.projects).toHaveLength(1024);
+  });
+
+  it("retains source observations at the exact encoded byte limit and omits them one byte above", async () => {
+    const runtimeConfiguration: WorkerRuntimeConfiguration = { schemaVersion: 1, native: null, projects: [] };
+    const base = { ...report, runtimeConfiguration, workingDirectory: "" };
+    const padding = 1_048_576 - Buffer.byteLength(stringifyApiJson({ ...base, configuration }));
+    const input = { ...base, workingDirectory: "中".repeat(Math.floor(padding / 3)) + "a".repeat(padding % 3) };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response(receipt));
+    const client = api(fetch);
+    await expect(client.reportWorkerConfiguration(workerId, input, configuration)).resolves.toEqual(receipt);
+    expect(Buffer.byteLength(String(fetch.mock.calls[0]![1]!.body))).toBe(1_048_576);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).runtimeConfiguration).toEqual(runtimeConfiguration);
+    await expect(client.reportWorkerConfiguration(workerId, { ...input, workingDirectory: input.workingDirectory + "a" }, configuration)).resolves.toEqual(receipt);
+    expect(JSON.parse(String(fetch.mock.calls[1]![1]!.body))).not.toHaveProperty("runtimeConfiguration");
+  });
+
+  it("still rejects a required report that exceeds the budget after optional sources are omitted", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const runtimeConfiguration: WorkerRuntimeConfiguration = { schemaVersion: 1, native: null, projects: [] };
+    await expect(api(fetch).reportWorkerConfiguration(workerId, { ...report, runtimeConfiguration }, { bootstrap: { ...value, native: { ...value.native, args: ["x".repeat(1_048_576)] } }, observation: null })).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "request_limit" } });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("applies the complete byte budget to legacy reports without configuration observations", async () => {
+    const runtimeConfiguration: WorkerRuntimeConfiguration = { schemaVersion: 1, native: null, projects: [] };
+    const base = { ...report, workingDirectory: "" };
+    const input = { ...base, workingDirectory: "a".repeat(1_048_576 - Buffer.byteLength(stringifyApiJson(base))) };
+    const legacy = { observedAt: time, lastReportedAt: time };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response(legacy, null));
+    const client = api(fetch);
+    await expect(client.reportWorker(workerId, { ...input, runtimeConfiguration })).resolves.toEqual(legacy);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual(input);
+    await expect(client.reportWorker(workerId, { ...input, workingDirectory: input.workingDirectory + "a", runtimeConfiguration })).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "request_limit" } });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not discard optional sources to hide serialization errors", async () => {
+    const runtimeConfiguration: WorkerRuntimeConfiguration = { schemaVersion: 1, native: null, projects: [] };
+    Object.assign(runtimeConfiguration, { invalid: 0n });
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = api(fetch);
+    await expect(client.reportWorker(workerId, { ...report, runtimeConfiguration })).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { message: "version must be a positive 64-bit integer." } });
+    await expect(client.reportWorkerConfiguration(workerId, { ...report, runtimeConfiguration }, configuration)).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { message: "version must be a positive 64-bit integer." } });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("isolates capability headers per request and preserves the exact legacy receipt", async () => {
     const legacy = { observedAt: time, lastReportedAt: time };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(resource)).mockResolvedValueOnce(response(receipt)).mockResolvedValueOnce(response(legacy, null));

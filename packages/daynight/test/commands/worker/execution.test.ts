@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +34,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const cwd = path.join(project.localPath, ".worktrees", "daynight", owner.taskId); await mkdir(cwd, { recursive: true });
   const worktree: WorktreeBinding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: cwd, branch: `daynight/${owner.taskId}` };
   const configuration: ExecutionConfiguration = { agent, model: "current-model", args: [], recoveryLimit: 2 };
-  const store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); store.registerProject(project);
+  const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   store.registerPending({ ...owner, agent, sessionId }); const task = store.activateTask(owner);
   const context: HerdrExecutionContext = { ...owner, cwd, agent };
   const nativeEnvironment = { XDG_CONFIG_HOME: "/native/config", XDG_STATE_HOME: "/native/state" };
@@ -104,7 +105,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const events: WorkerEvent[] = [];
   const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
   const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = {
-    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null,
+    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null,
     version: 1n, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: owner.claimId, state: "active", userId: uuid(6), workerId: uuid(5), machine: { id: uuid(7), name: "fixture" }, platform: "linux", agent, agentControlMode: "herdr", worktreeId: owner.worktreeId, phase: "executing", herdr: null, nativeSessionId: sessionId, claimedAt: "2026-10-27T00:00:00Z" } },
   };

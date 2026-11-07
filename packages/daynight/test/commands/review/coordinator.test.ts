@@ -1,177 +1,30 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import Database from "better-sqlite3";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { runCoordinator } from "../../../src/commands/review/coordinator.js";
-import type { CoordinatorEvent, CoordinatorOptions } from "../../../src/commands/review/coordinator.js";
+import { describe, expect, it, vi } from "vitest";
+import type { CoordinatorOptions } from "../../../src/commands/review/coordinator.js";
 import { createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
-import type { CopilotAttemptOutcome, CopilotRunOptions } from "../../../src/commands/review/adapters/copilot.js";
 import { createGitManager, GitCommandError } from "../../../src/commands/review/adapters/worktrees.js";
-import type { LocalRepository, PreparedWorktree } from "../../../src/commands/review/adapters/worktrees.js";
 import { executeCommand, GitHubApiError } from "../../../src/commands/review/adapters/github.js";
-import type { GitHubClient, GitHubRepository } from "../../../src/commands/review/adapters/github.js";
-import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
+import type { GitHubClient } from "../../../src/commands/review/adapters/github.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
-import { openStore } from "../../../src/commands/review/store.js";
-import type { Store } from "../../../src/commands/review/store.js";
-import type { PullRequestObservation, PullRequestReviewSnapshot, ReviewState } from "../../../src/commands/review/model.js";
 
-const root = path.resolve(import.meta.dirname, "../../../../../.tmp/coordinator-tests");
-const fixtures: { directory: string; store: Store; runs: { abort: AbortController; completion: Promise<{ safeToReleaseLock: boolean }> }[] }[] = [];
-const proof = { processesExcluded: true, operationsStopped: true } as const;
-const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const deferred = <T = void>() => {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((accept, refuse) => { resolve = accept; reject = refuse; });
-  return { promise, resolve, reject };
-};
-const waitFor = async (condition: () => boolean, description: string, timeoutMs = 5_000): Promise<void> => {
-  const until = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() >= until) throw new Error(`Timed out waiting for ${description}.`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-};
-const untilAborted = async (signal: AbortSignal): Promise<never> => {
-  signal.throwIfAborted();
-  await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
-  throw new Error("Unreachable abort wait.");
-};
-const observation = (number: number, change: Partial<PullRequestObservation> = {}): PullRequestObservation => ({
-  number, state: "open", draft: false, headSha: "a".repeat(40), baseRef: "main", baseSha: "b".repeat(40), ...change,
-});
+import { createCoordinatorFixtures } from "./coordinator-fixtures.js";
 
-const fixture = (repositoryCount = 1, initialized = true, repositoryHost = (_index: number): string => "github.com") => {
-  mkdirSync(root, { recursive: true });
-  const directory = mkdtempSync(path.join(root, "Coordinator 中文 "));
-  const paths = resolveReviewPaths(path.join(directory, "home"));
-  mkdirSync(paths.stateDirectory, { recursive: true });
-  let store = openStore(paths.databaseFile);
-  const configurations = Array.from({ length: repositoryCount }, (_, index) => {
-    const host = repositoryHost(index);
-    return { remote: `https://${host}/owner/repo${index}.git`, coordinate: `${host}/owner/repo${index}`, host, owner: "owner", name: `repo${index}`, path: path.join(directory, `repo${index}`) };
-  });
-  const identities = configurations.map((config, index): GitHubRepository => ({ host: config.host, githubId: String(42 + index), owner: config.owner, name: config.name }));
-  const snapshots = identities.map(() => new Map<number, PullRequestObservation>());
-  const polls = identities.map(() => 0);
-  const locals = configurations.map((configuration, index): LocalRepository => ({ configuration, repository: identities[index]!, root: configuration.path,
-    commonDirectory: path.join(configuration.path, ".git"), rootIdentity: `root-${index}`, commonIdentity: `common-${index}` }));
-  for (const [index, config] of configurations.entries()) {
-    store.registerRepository({ ...identities[index]!, remote: config.remote, localPath: config.path });
-    if (initialized) store.initializeRepository(identities[index]!, 0, Date.now());
-  }
-  const events: CoordinatorEvent[] = [];
-  const prepared: ReviewState[] = [];
-  const launched: { review: ReviewState; session: string; input: CopilotRunOptions }[] = [];
-  const cleaned: number[] = [];
-  const publications: PullRequestReviewSnapshot["reviews"] = [];
-  const threads: PullRequestReviewSnapshot["threads"] = [];
-  let onSnapshot: (() => Promise<void>) | undefined;
-  const checked: { number: number; headSha: string; baseRef: string }[] = [];
-  let onPoll: ((index: number) => Promise<void>) | undefined;
-  let onPrepare: ((review: ReviewState, signal: AbortSignal) => Promise<void>) | undefined;
-  let onRun: ((review: ReviewState, input: CopilotRunOptions) => Promise<boolean>) | undefined;
-  let onCleanup: ((pr: number) => Promise<void>) | undefined;
-  let onChecks: ((pr: PullRequestObservation, signal: AbortSignal) => Promise<{ headSha: string; baseRef: string; ready: boolean }>) | undefined;
-  const client: GitHubClient = {
-    resolveRepository: async (config) => identities[configurations.findIndex((item) => item.name === config.name)]!,
-    listPullRequestNumbers: async () => [],
-    listOpenPullRequests: async (repository) => {
-      const index = identities.findIndex((item) => item.githubId === repository.githubId);
-      polls[index]!++;
-      await onPoll?.(index);
-      return [...snapshots[index]!.values()].filter((item) => item.state === "open").map((item) => ({ ...item }));
-    },
-    getPullRequest: async (repository, number) => ({ ...snapshots[identities.findIndex((item) => item.githubId === repository.githubId)]!.get(number)! }),
-    getPullRequestReviewSnapshot: async (repository, number) => {
-      await onSnapshot?.();
-      const pr = snapshots[identities.findIndex((item) => item.githubId === repository.githubId)]!.get(number)!;
-      return { state: pr.state, draft: pr.draft, headSha: pr.headSha, baseRef: pr.baseRef, viewerId: "viewer", reviews: publications.filter((item) => item.body.includes(`number=${number} `)), threads: [...threads] };
-    },
-    getPullRequestChecks: async (repository, number, signal) => {
-      const pr = { ...snapshots[identities.findIndex((item) => item.githubId === repository.githubId)]!.get(number)! };
-      checked.push({ number, headSha: pr.headSha, baseRef: pr.baseRef });
-      return onChecks === undefined ? { headSha: pr.headSha, baseRef: pr.baseRef, ready: pr.state === "open" && !pr.draft } : onChecks(pr, signal!);
-    },
-  };
-  const git: CoordinatorOptions["git"] = {
-    ensureRepository: async (config) => locals[configurations.findIndex((item) => item.name === config.name)]!,
-    prepareWorktree: async (state, local, id, excluded, signal) => {
-      expect(excluded.processesExcluded).toBe(true);
-      const review = state.getReview(id)!;
-      prepared.push(review);
-      await onPrepare?.(review, signal!);
-      signal?.throwIfAborted();
-      const target = path.join(local.root, ".worktrees", `pr-${review.number}`);
-      state.registerWorktree(review, target);
-      state.pinReviewBase(id, state.getPullRequest(review)!.baseSha, Date.now());
-      return { kind: "prepared", path: target, headSha: review.headSha, baseSha: state.getReview(id)!.baseSha!, mergeBaseSha: "c".repeat(40), gitEnvironment: {} };
-    },
-    cleanupWorktree: async (state, local, pr, excluded) => {
-      expect(excluded).toEqual(proof);
-      cleaned.push(pr.number);
-      await onCleanup?.(pr.number);
-      const current = state.getPullRequest(pr)!;
-      if (current.state === "open") {
-        state.cancelCleanup(pr, current.worktreePath!, excluded);
-        return { kind: "reopened" };
-      }
-      state.completeCleanup(pr, current.worktreePath!, excluded);
-      return { kind: "cleaned" };
-    },
-  };
-  const runner: CoordinatorOptions["runner"] = { run: async (state, id, worktree, input) => {
-    const started = state.startAttempt(id, { processOwner: "fixture", stdoutLogPath: path.join(directory, `${id}-out`), stderrLogPath: path.join(directory, `${id}-err`) }, Date.now());
-    launched.push({ review: started, session: state.getPullRequest(started)!.sessionId!, input });
-    const completed = onRun === undefined ? true : await onRun(started, input);
-    const outcome: CopilotAttemptOutcome = { attempt: { reviewId: id, attempt: started.attemptCount }, sessionId: state.getPullRequest(started)!.sessionId!, sessionMode: started.attemptCount === 1 ? "create" : "resume",
-      stdoutLogPath: started.stdoutLogPath!, stderrLogPath: started.stderrLogPath!, completed, directProcessClosed: true, captureComplete: true,
-      exitCode: 0, signal: null, lastNonemptyLine: completed ? `PR ${started.number} Review Completed` : "incomplete", interruption: null, launchFailure: null, processExclusionFailure: null, errors: [] };
-    if (completed && !publications.some((item) => item.body.includes(`review=${id} `))) publications.push({ id: `remote-${id}`, authorId: "viewer", headSha: started.headSha,
-      state: "APPROVED", body: `number=${started.number} fixture\n<!-- daynight review=${id} revision=${started.revision} head=${started.headSha} -->` });
-    expect(worktree.headSha).toBe(started.headSha);
-    return outcome;
-  } };
-  const processes: CoordinatorOptions["processes"] = { onProcess: () => {}, stop: async () => {}, exclude: async () => proof, recover: async () => proof };
-  const configuration = { pollIntervalMs: 20, maxConcurrentWorker: 1, agentTimeoutMs: 10_000, maxAttempts: 3, retryDelayMs: 20, repositories: configurations };
-  const runs: { abort: AbortController; completion: Promise<{ safeToReleaseLock: boolean }> }[] = [];
-  const start = (overrides: Partial<CoordinatorOptions> = {}) => {
-    const abort = new AbortController();
-    const completion = runCoordinator({ configuration, store, client, git, runner, processes, signal: abort.signal, log: (event) => { events.push(event); }, ...overrides });
-    const run = { abort, completion };
-    runs.push(run);
-    return run;
-  };
-  const update = (number: number, change: Partial<PullRequestObservation> = {}, index = 0) => {
-    snapshots[index]!.set(number, observation(number, { ...snapshots[index]!.get(number), ...change }));
-  };
-  const pr = (number = 1, index = 0) => ({ ...identities[index]!, number });
-  const migrateSchema1 = () => {
-    store.close();
-    const previous = new Database(paths.databaseFile);
-    try { previous.exec("DROP TABLE review_publications; PRAGMA user_version = 1"); } finally { previous.close(); }
-    store = openStore(paths.databaseFile);
-  };
-  const result = { directory, paths, get store() { return store; }, migrateSchema1, publications, threads, snapshot: (handler: typeof onSnapshot) => { onSnapshot = handler; }, configurations, identities, snapshots, polls, events, prepared, launched, cleaned, checked, client, git, runner, processes, configuration, start, update, pr, runs,
-    prepare: (handler: typeof onPrepare) => { onPrepare = handler; }, run: (handler: typeof onRun) => { onRun = handler; }, poll: (handler: typeof onPoll) => { onPoll = handler; }, cleanup: (handler: typeof onCleanup) => { onCleanup = handler; },
-    checks: (handler: typeof onChecks) => { onChecks = handler; } };
-  fixtures.push(result);
-  return result;
-};
-
-afterEach(async () => {
-  for (const f of fixtures.splice(0)) {
-    for (const run of f.runs) run.abort.abort(new Error("Test shutdown."));
-    await Promise.all(f.runs.map((run) => run.completion));
-    f.store.close();
-    rmSync(f.directory, { recursive: true, force: true });
-  }
-});
+const { proof, uuid, deferred, waitFor, untilAborted, observation, fixture } = createCoordinatorFixtures(true);
 
 describe("foreground review coordination", () => {
+  it("keeps independent sessions for different pull requests", async () => {
+    const f = fixture(); f.update(1); f.update(2); f.start();
+    await waitFor(() => f.store.getPullRequest(f.pr(1))?.completedRevision === 1 && f.store.getPullRequest(f.pr(2))?.completedRevision === 1, "both reviews");
+    const first = f.store.getPullRequest(f.pr(1))!.sessionId, second = f.store.getPullRequest(f.pr(2))!.sessionId;
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    expect(first).toMatch(uuidPattern); expect(second).toMatch(uuidPattern); expect(second).not.toBe(first);
+    expect(f.launched).toHaveLength(2);
+    expect(f.launched.map(({ review, session }) => [review.number, session])).toEqual(expect.arrayContaining([[1, first], [2, second]]));
+  });
+
   it("waits for all unresolved conversations without reserving resources, including outdated and other-author threads", async () => {
     const f = fixture(); f.update(1);
     f.threads.push({ id: "outdated-other-author", reviewId: "other-review", isResolved: false });
@@ -335,39 +188,6 @@ describe("foreground review coordination", () => {
     expect(f.launched).toHaveLength(2);
     expect(f.launched[1]!.review.id).toBe(first.id);
     expect(f.store.getReviewPublication(first.id)!.publisherId).toBe("viewer");
-  });
-
-  it.each([
-    ["running", "APPROVED"], ["retry_wait", "APPROVED"], ["running", "COMMENTED"], ["retry_wait", "COMMENTED"],
-  ] as const)("recovers schema1 %s marker loss with a prefixed legacy %s and adopts its historical actor", async (status, outcome) => {
-    const f = fixture(); f.update(1);
-    f.store.observePullRequest(f.identities[0]!, observation(1), Date.now());
-    const old = f.store.reserveReview(f.pr(), { reviewId: uuid(870), sessionId: uuid(871), maxAttempts: 3 }, Date.now())!;
-    f.store.registerWorktree(f.pr(), path.join(f.configurations[0]!.path, ".worktrees", "pr-1"));
-    f.store.pinReviewBase(old.id, "b".repeat(40), Date.now());
-    f.store.startAttempt(old.id, { processOwner: "old-runtime", stdoutLogPath: path.join(f.directory, "old-out"), stderrLogPath: path.join(f.directory, "old-err") }, Date.now());
-    if (status === "retry_wait") {
-      const endedAt = Date.now();
-      f.store.retryReview({ reviewId: old.id, attempt: 1 }, proof, { error: "old final marker missing", retryAt: endedAt }, endedAt);
-    }
-    f.publications.push({ id: "old-submitted-review", authorId: "historical-publisher", headSha: old.headSha, state: outcome,
-      body: `number=1 fixture\nStable review identity: daynight review=${old.id} revision=1 head=${old.headSha}` });
-    if (outcome === "COMMENTED") f.threads.push({ id: "legacy-feedback", reviewId: "old-submitted-review", isResolved: false });
-    f.migrateSchema1();
-    expect(f.store.getReviewPublication(old.id)).toMatchObject({ identityFormat: "legacy", phase: "prepared", publisherId: null });
-    const recover = vi.fn(async () => proof);
-    f.run(async (review, input) => {
-      expect(review.id).toBe(old.id); expect(review.attemptCount).toBe(2);
-      expect(input.publisherId).toBe("historical-publisher"); expect(input.publicationIdentityFormat).toBe("legacy");
-      return true;
-    });
-    f.start({ processes: { ...f.processes, recover } });
-    await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 1, "migrated unfinished publication confirmation");
-    expect(f.launched).toHaveLength(1);
-    expect(recover).toHaveBeenCalledTimes(status === "running" ? 1 : 0);
-    expect(f.store.getReview(old.id)).toMatchObject({ status: "completed", attemptCount: 2 });
-    expect(f.store.getReviewPublication(old.id)).toMatchObject({ identityFormat: "legacy", publisherId: "historical-publisher", remoteReviewId: "old-submitted-review", outcome: outcome === "APPROVED" ? "approved" : "commented" });
-    expect(f.publications).toHaveLength(1);
   });
 
   it("keeps newly created rounds strict when a legacy-style prefixed approval is returned", async () => {
@@ -1016,47 +836,6 @@ describe("foreground review coordination", () => {
     const confirmed = f.start();
     await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 2, "reopened PR after explicit recovery proof");
     expect(f.cleaned).toEqual([1]);
-    confirmed.abort.abort();
-    await expect(confirmed.completion).resolves.toEqual({ safeToReleaseLock: true });
-  });
-
-  it("retains cleanup uncertainty when a PR reopens before removal fails and blocks reuse after automatic restart", async () => {
-    const f = fixture(2);
-    f.update(1);
-    const removal = deferred();
-    f.cleanup(async () => removal.promise);
-    const original = f.start();
-    await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 1, "review before cleanup");
-    f.update(1, { state: "closed" });
-    await waitFor(() => f.cleaned.length === 1, "in-flight removal");
-    f.update(1, { state: "open" });
-    await waitFor(() => f.store.getPullRequest(f.pr())?.state === "open", "reopening before removal result");
-    expect(f.store.getPullRequest(f.pr())?.cleanupPending).toBe(true);
-    expect(f.launched).toHaveLength(1);
-    removal.reject(new GitCommandError("Removal outcome is uncertain.", new Error("capture abandoned"), false));
-    await waitFor(() => f.events.some((event) => event.phase === "cleanup" && event.level === "error"), "uncertain removal diagnostic");
-    original.abort.abort();
-    await expect(original.completion).resolves.toEqual({ safeToReleaseLock: false });
-    const persisted = openStore(f.paths.databaseFile);
-    try {
-      expect(persisted.getPullRequest(f.pr())).toMatchObject({ state: "open", cleanupPending: true });
-      expect(persisted.listActiveReviews()).toEqual([]);
-      expect(persisted.listCleanupCandidates().map((pr) => pr.number)).toEqual([1]);
-    } finally { persisted.close(); }
-
-    f.update(2, {}, 1);
-    const restarted = f.start({ processes: createProcessSupervisor() });
-    await waitFor(() => f.store.getPullRequest(f.pr(2, 1))?.completedRevision === 1, "independent review after automatic restart");
-    expect(f.prepared.map((review) => review.number)).toEqual([1, 2]);
-    expect(f.cleaned).toEqual([1]);
-    expect(f.store.getPullRequest(f.pr())?.cleanupPending).toBe(true);
-    restarted.abort.abort();
-    await expect(restarted.completion).resolves.toEqual({ safeToReleaseLock: false });
-
-    f.cleanup(undefined);
-    const confirmed = f.start();
-    await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 2, "reopened review after explicit exclusion");
-    expect(f.store.getPullRequest(f.pr())?.cleanupPending).toBe(false);
     confirmed.abort.abort();
     await expect(confirmed.completion).resolves.toEqual({ safeToReleaseLock: true });
   });

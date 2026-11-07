@@ -1,5 +1,5 @@
 import type { WorkersMessages } from "./messages/workers";
-import type { TaskStatus } from "../api/types";
+import type { TaskProgressStatus } from "../api/task-status";
 import type { WorkspaceMessages } from "./messages/workspace";
 import type { GraphMessages } from "./messages/graph";
 import type { PlatformMessages } from "./messages/platform";
@@ -19,7 +19,7 @@ export type Messages = {
   readonly assignment: AssignmentMessages;
   readonly common: {
     readonly retrySave: string;
-    readonly status: Readonly<Record<TaskStatus, string>>;
+    readonly status: Readonly<Record<TaskProgressStatus, string>>;
     readonly requestId: string;
   };
   readonly workspace: WorkspaceMessages;

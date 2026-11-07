@@ -4,7 +4,7 @@ export type GraphMessages = {
   readonly chainList: string;
   readonly rootSummary: (args: { total: number; remaining: number }) => string;
   readonly inProgressCount: (args: { count: number }) => string;
-  readonly progress: (args: { done: number; total: number }) => string;
+  readonly progress: (args: { done: number; cancelled: number; total: number }) => string;
   readonly chainTitle: string;
   readonly noMachineRecord: string;
   readonly claimMachine: (args: { name: string }) => string;
@@ -24,6 +24,8 @@ export type GraphMessages = {
   readonly nodeLabel: (args: { title: string; status: string; blocked: boolean; external: boolean }) => string;
   readonly details: string;
   readonly detailsLabel: (args: { title: string }) => string;
+  readonly expandExternal: string;
+  readonly expandExternalLabel: (args: { title: string }) => string;
   readonly inspectionSuffix: Readonly<Record<'normal' | 'selected' | 'prerequisite' | 'unrelated', string>>;
   readonly hiddenPrerequisites: (args: { count: number }) => string;
   readonly dependencyHighlightedSuffix: string;

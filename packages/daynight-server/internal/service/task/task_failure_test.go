@@ -7,12 +7,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,7 +45,7 @@ func (action taskQueryAction) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ 
 
 type tracedTaskService struct {
 	*taskservice.Tasks
-	store *store.Store
+	store *postgres.Store
 }
 
 func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *tracedTaskService {
@@ -57,7 +60,7 @@ func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *trac
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	db := &store.Store{Pool: pool}
+	db := &postgres.Store{Pool: pool}
 	return &tracedTaskService{Tasks: taskservice.NewTasks(db), store: db}
 }
 
@@ -170,17 +173,30 @@ func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
 	dependencies := []string{a.ID, b.ID}
 	slices.Sort(dependencies)
 	statement := fmt.Sprintf(`CREATE FUNCTION reject_second_edge() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN IF NEW.depends_on_task_id = '%s'::uuid THEN RAISE EXCEPTION 'private edge diagnostic'; END IF; RETURN NEW; END $$;
-		CREATE TRIGGER reject_second_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_second_edge()`, dependencies[1])
+		BEGIN
+		IF NEW.depends_on_task_id = '%s'::uuid THEN
+			IF NEW.task_id = '%s'::uuid AND (
+				NOT EXISTS (SELECT 1 FROM tasks WHERE id=NEW.task_id AND project_id=NEW.project_id AND title='Changed' AND description='Changed' AND version=%d)
+				OR NOT EXISTS (SELECT 1 FROM task_properties WHERE task_id=NEW.task_id AND name='pullRequests' AND value='[{"url":"changed","title":"Changed"}]')
+				OR NOT EXISTS (SELECT 1 FROM task_dependencies WHERE project_id=NEW.project_id AND task_id=NEW.task_id AND depends_on_task_id='%s'::uuid)
+			) THEN
+				RAISE EXCEPTION USING ERRCODE='P1002', MESSAGE='partial write barrier not reached';
+			END IF;
+			RAISE EXCEPTION USING ERRCODE='P1001', MESSAGE='private edge diagnostic';
+		END IF;
+		RETURN NEW; END $$;
+		CREATE TRIGGER reject_second_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_second_edge()`, dependencies[1], target.ID, target.Version+1, dependencies[0])
 	if _, err := database.Pool.Exec(ctx, statement); err != nil {
 		t.Fatal(err)
 	}
-	_, updateErr := tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed"), Description: pointer("Changed"), DependsOn: &dependencies})
+	properties := propertyPatch(model.PullRequestProperty{URL: "changed", Title: "Changed"})
+	input := taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed"), Description: pointer("Changed"), DependsOn: &dependencies, Properties: properties}
+	_, updateErr := tasks.Update(ctx, principal, project.ID, target.ID, input)
 	_, createErr := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Rejected create", DependsOn: dependencies})
 	for _, err := range []error{updateErr, createErr} {
 		assertOperational(t, err)
 		var pgError *pgconn.PgError
-		if !errors.As(err, &pgError) || pgError.Code != "P0001" || strings.Contains(err.Error(), "private edge") {
+		if !errors.As(err, &pgError) || pgError.Code != "P1001" || strings.Contains(err.Error(), "private edge") {
 			t.Fatalf("partial failure cause/redaction: %v", err)
 		}
 	}
@@ -188,6 +204,19 @@ func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
 	page, err := tasks.List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
 	if err != nil || len(page.Items) != 4 {
 		t.Fatalf("failed creation left rows: %#v, %v", page, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `DROP TRIGGER reject_second_edge ON task_dependencies; DROP FUNCTION reject_second_edge()`); err != nil {
+		t.Fatal(err)
+	}
+	retryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	updated, err := tasks.Update(retryCtx, principal, project.ID, target.ID, input)
+	if err != nil || updated.Version != target.Version+1 || updated.Title != "Changed" || updated.Description != "Changed" || !slices.Equal(updated.DependsOn, dependencies) || !slices.Equal(testPRs(t, updated.Properties), []model.PullRequestProperty{{URL: "changed", Title: "Changed"}}) {
+		t.Fatalf("write after rollback: %#v, %v", updated, err)
+	}
+	read, err := tasks.Get(retryCtx, principal, project.ID, target.ID)
+	if err != nil || !reflect.DeepEqual(read, updated) {
+		t.Fatalf("write after rollback did not persist: %#v, %v", read, err)
 	}
 }
 

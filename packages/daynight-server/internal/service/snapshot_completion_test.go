@@ -23,6 +23,7 @@ import (
 
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,63 +39,63 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		refusal bool
-		read    func(context.Context, *store.Store) (any, error)
+		read    func(context.Context, *postgres.Store) (any, error)
 	}{
-		{"project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"project missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return projectservice.NewProjects(db).Get(ctx, principal, missing)
 		}},
-		{"project access missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"project access missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return projectservice.NewProjects(db).Access(ctx, principal, missing)
 		}},
-		{"scoped projects missing team", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"scoped projects missing team", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return projectservice.NewProjects(db).ListScoped(ctx, principal, coreproject.ProjectListRequest{Page: page, TeamID: &missing})
 		}},
-		{"project transfer missing team", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"project transfer missing team", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return projectservice.NewProjects(db).TransferPreview(ctx, principal, project.ID, missing)
 		}},
-		{"team missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"team missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return teamservice.NewTeams(db).Get(ctx, principal, missing)
 		}},
-		{"team members missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"team members missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return teamservice.NewTeams(db).Members(ctx, principal, missing)
 		}},
-		{"team invitation missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"team invitation missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return teamservice.NewTeams(db).InspectInvitation(ctx, principal, teamSecret)
 		}},
-		{"membership missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"membership missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return projectservice.NewMemberships(db).List(ctx, principal, missing)
 		}},
-		{"project invitation missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"project invitation missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return projectservice.NewMemberships(db).InspectInvitation(ctx, principal, projectSecret)
 		}},
-		{"task missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"task missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return taskservice.NewTasks(db).Get(ctx, principal, project.ID, missing)
 		}},
-		{"task list project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"task list project missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return taskservice.NewTasks(db).List(ctx, principal, missing, taskservice.TaskListRequest{PageRequest: page})
 		}},
-		{"graph project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"graph project missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return taskservice.NewTasks(db).Graph(ctx, principal, missing, task.ID)
 		}},
-		{"sync project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"sync project missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return taskservice.NewTaskSync(db, 10*time.Second).Get(ctx, principal, missing, taskservice.TaskSyncRequest{})
 		}},
-		{"assignees project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"assignees project missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return taskservice.NewTasks(db).Assignees(ctx, principal, missing, taskservice.TaskAssigneesRequest{})
 		}},
-		{"attachment task missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return attachmentservice.NewAttachments(db, nil).List(ctx, principal, project.ID, missing, page)
+		{"attachment task missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
+			return attachmentservice.NewAttachments(db, nil, nil).List(ctx, principal, project.ID, missing, page)
 		}},
-		{"worker missing", true, func(ctx context.Context, db *store.Store) (any, error) {
+		{"worker missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return workerservice.NewWorkers(db).Get(ctx, principal, missing)
 		}},
-		{"project success", false, func(ctx context.Context, db *store.Store) (any, error) {
+		{"project success", false, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return projectservice.NewProjects(db).Get(ctx, principal, project.ID)
 		}},
-		{"bot list success", false, func(ctx context.Context, db *store.Store) (any, error) {
+		{"bot list success", false, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return botservice.New(db).List(ctx, principal, page)
 		}},
-		{"thread success", false, func(ctx context.Context, db *store.Store) (any, error) {
+		{"thread success", false, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return taskservice.NewTaskThreads(db).List(ctx, principal, project.ID, task.ID, taskservice.ThreadListRequest{})
 		}},
 	} {
@@ -155,7 +156,7 @@ func TestSnapshotCompletionFailureDominatesMissingProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	_, err = projectservice.NewProjects(&store.Store{Pool: pool}).Get(ctx, principal, "00000000-0000-0000-0000-000000000001")
+	_, err = projectservice.NewProjects(&postgres.Store{Pool: pool}).Get(ctx, principal, "00000000-0000-0000-0000-000000000001")
 	var fault *model.Fault
 	if err == nil || errors.As(err, &fault) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("failed snapshot completion must not become not_found: %#v", err)

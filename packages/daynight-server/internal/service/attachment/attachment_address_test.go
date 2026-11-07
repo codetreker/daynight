@@ -62,7 +62,7 @@ func TestAttachmentProjectAndTaskShardIsolation(t *testing.T) {
 		}
 	})
 	recorded := &attachmentRecordedStorage{Storage: files}
-	attachments := NewAttachments(database, recorded)
+	attachments := newAttachmentService(database, recorded)
 	createFixedTask := func(projectID, taskID string) model.Task {
 		t.Helper()
 		if _, err := database.Pool.Exec(ctx, `INSERT INTO tasks(id, project_id, title) VALUES ($1,$2,'Attachment isolation')`, taskID, projectID); err != nil {

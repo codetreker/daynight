@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -23,7 +24,7 @@ it.each([true, false])("freezes the Copilot profile in the launch ticket and dur
   if (process.platform !== "win32") socketDirectories.add(path.dirname(resolveControllerIpcEndpoint(home, randomUUID())));
   vi.stubEnv("COPILOT_HOME", explicit ? path.join(home, "native") : undefined);
   vi.stubEnv("CLAUDE_CONFIG_DIR", path.join(home, "other-provider"));
-  const store = openWebExecutionStore(path.join(home, "worker.sqlite"));
+  const store = openWebExecutionStore(createMemoryDatabase());
   try {
     const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
 
@@ -47,7 +48,7 @@ it.each([true, false])("freezes the Copilot profile in the launch ticket and dur
 it("renews before two default polling cycles and serializes concurrent credential refresh", async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "gr-")); roots.push(home);
-  const store = openWebExecutionStore(path.join(home, "worker.sqlite")), now = Date.now();
+  const store = openWebExecutionStore(createMemoryDatabase()), now = Date.now();
   try {
     const project = { projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
     const identity = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), serverOrigin: "https://daynight.example" };

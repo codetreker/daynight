@@ -48,7 +48,7 @@ describe('production task session panel', () => {
     await screen.findByText('Ready', { exact: true });
     vi.mocked(f.api.command).mockRejectedValue(new Error('Lost acknowledgement'));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'do once' } }); fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    await screen.findByText('Outcome unknown');
+    await screen.findByText('Unable to confirm whether this operation completed. Check the original operation.');
     const command = vi.mocked(f.api.command).mock.calls[0]![1];
     vi.mocked(f.api.operation).mockResolvedValue({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'started', error: null });
     fireEvent.click(screen.getByRole('button', { name: 'Check original operation' }));

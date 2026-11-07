@@ -22,7 +22,7 @@ repaired before further validation.
 A successful retry establishes the observed result, not the root cause. Required
 checks and acceptance criteria remain unchanged, and retries and observed results
 are reported. This replaces the retry restriction recorded in the
-[Web quality isolation decision](../testing/2026-10-26-web-quality-job-isolation.md#consequences)
+[Web quality isolation decision](../../archived/testing/2026-10-26-web-quality-job-isolation.md#consequences)
 without changing its job isolation or deadlines.
 
 ## Alternatives

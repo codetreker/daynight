@@ -1,16 +1,21 @@
 import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
+import { ApiError, authRequestsPaused, authRequestsPauseRevision, deleteTask, getTaskObservation, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
 import { addTaskStep, deleteTaskStep, editTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
-import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
+import { TaskCacheLifecycleChanged, type SyncTicket, type TaskCacheScope, type TaskReadFence } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 
 export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepEdit"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepDelete"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepPosition"; readonly stepId: string; readonly placement: StepPlacement; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
-const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepEdit" | "stepDelete" | "stepPosition" }> =>
+export type TaskObservationInput = { readonly kind: "project-summary"; readonly revision: number; readonly task: GraphTask | undefined } | { readonly kind: "direct" };
+type DirectTaskReceipt = { readonly fence: TaskReadFence; readonly epoch: string; readonly detail: TaskDetail };
+const directQualification = Symbol("directQualification");
+export type DirectQualification = { readonly [directQualification]: DirectTaskReceipt };
+type ReadTicket = SyncTicket | TaskReadFence;
+export const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepEdit" | "stepDelete" | "stepPosition" }> =>
   operation?.action === "stepStatus" || operation?.action === "stepAdd" || operation?.action === "stepEdit" || operation?.action === "stepDelete" || operation?.action === "stepPosition";
 const movedSteps = (resource: StepsResource, stepId: string, placement: StepPlacement): StepsResource["steps"] | null => {
   const from = resource.steps.findIndex((step) => step.id === stepId);
@@ -27,7 +32,7 @@ const movedSteps = (resource: StepsResource, stepId: string, placement: StepPlac
   remaining.splice(to, 0, resource.steps[from]!);
   return remaining;
 };
-type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string; readonly scopeRevision: number };
+type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string; readonly scopeRevision: number; readonly receipt: DirectTaskReceipt | null };
 class TaskMutationReviewExpired extends Error {}
 export type TaskMutationState = {
   readonly operation: TaskMutationOperation | null;
@@ -69,7 +74,7 @@ type StepsRead = {
   read: AbortController | null;
   queued: boolean;
   admission: AbortController | null;
-  pending: { readonly resource: StepsResource; readonly ticket: SyncTicket; readonly generation: number } | null;
+  pending: { readonly resource: StepsResource; readonly ticket: ReadTicket; readonly generation: number } | null;
   readonly projectId: string;
   readonly taskId: string;
   readonly listeners: Set<() => void>;
@@ -88,6 +93,14 @@ type Entry = {
   admitted: boolean;
   liveVersion: bigint | null;
   openingGeneration: number;
+  source: "project-summary" | "direct";
+  receipt: DirectTaskReceipt | null;
+  historyRetry: boolean;
+  historyHintRetry: boolean;
+  directAccessPending: boolean;
+  directParentReadFailed: boolean;
+  withdrawn: boolean;
+  operationFence: TaskReadFence | null;
   liveOpeningGeneration: number;
   mismatch: TaskDetail | null;
   pending: { readonly detail: TaskDetail; readonly ticket: SyncTicket; readonly revision: number; readonly reconciliation: boolean; readonly generation: number | null; readonly writeGeneration: number | null; readonly readOpeningGeneration: number | null } | null;
@@ -106,13 +119,13 @@ const initialState = (): DetailState => ({ revision: 0, loadedRevision: null, de
 const canMutate = (state: DetailState): boolean => state.detail !== null && state.status === "ready" &&
   state.mutation.phase !== "pending" && state.mutation.phase !== "unknown" && !state.mutation.reconciling && state.mutation.reconciliationError === null && !state.requiresFreshRead && state.error === null;
 export const canDeleteTask = (state: DetailState): boolean => canMutate(state);
-export const canSetStatus = (state: DetailState): boolean => canMutate(state);
+export const canSetStatus = (state: DetailState): boolean => canMutate(state) && state.detail!.status !== "cancelled";
 export const canUnpause = (state: DetailState): boolean => canMutate(state) && readTaskPaused(state.detail!.properties) === true;
 export const canSetAgentPermission = (state: DetailState): boolean => state.detail !== null && state.detail.status !== "in_progress" && canMutate(state);
 export const canSetRequiredPlatform = canSetAgentPermission;
 export const canSetAssignedTo = canSetAgentPermission;
 export const canWithdrawClaim = (state: DetailState): boolean => {
-  if (!canMutate(state)) return false;
+  if (!canMutate(state) || state.detail!.status === "cancelled") return false;
   const worker = readWorkerClaim(state.detail!.properties);
   return worker !== undefined && worker.state !== "completed";
 };
@@ -123,7 +136,9 @@ const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorke
   (!preserveAssignment || before.assignedTo === after.assignedTo) &&
   sameIds(before.dependsOn, after.dependsOn) && sameIds(before.externalDependsOn, after.externalDependsOn);
 const validStatusTiming = (before: TaskDetail, after: TaskDetail, target: TaskStatus): boolean => {
-  if (before.status === target) return before.updatedAt === after.updatedAt && before.startedAt === after.startedAt && before.completedAt === after.completedAt;
+  if (before.status === target) return before.updatedAt === after.updatedAt && before.startedAt === after.startedAt && before.completedAt === after.completedAt && before.cancelledAt === after.cancelledAt;
+  if (target === "cancelled") return after.cancelledAt !== null && after.startedAt === before.startedAt && after.completedAt === before.completedAt;
+  if (after.cancelledAt !== null) return false;
   if (target === "todo") return after.startedAt === null && after.completedAt === null;
   if (target === "in_progress") return after.startedAt !== null && after.completedAt === null;
   return after.completedAt !== null && after.startedAt === (before.status === "in_progress" ? before.startedAt : null);
@@ -136,18 +151,72 @@ const sameSteps = (before: StepsResource, after: StepsResource): boolean => befo
 
 export class TaskDetailSessions {
   private readonly entries = new Map<string, Entry>();
+  private readonly retiredMutations = new Map<TaskMutationOperation, { readonly projectId: string; readonly taskId: string; readonly fence: TaskReadFence | null; phase: "pending" | "confirmed" | "unknown" | "conflict" | "refused"; error: unknown; reconciling: boolean; committedVersion: bigint | null; historyRetries: number; historyConfirmRetries: number }>();
   private readonly projects = new Map<string, Set<() => void>>();
   private readonly projectGenerations = new Map<string, string | null>();
   private disposed = false;
   private readonly releaseScope: () => void;
   private readonly onScopeRetired = (): void => {
-    for (const entry of this.entries.values()) this.clearSteps(entry.steps, emptyTaskStepsState);
+    for (const entry of this.entries.values()) {
+      if (entry.source !== "direct") { this.clearSteps(entry.steps, emptyTaskStepsState); continue; }
+      this.cancelRead(entry.steps.projectId, entry.steps.taskId);
+      entry.receipt = null; entry.liveVersion = null; entry.admitted = false; entry.pending = null;
+      this.clearSteps(entry.steps, emptyTaskStepsState);
+      this.publish(entry, { ...initialState(), status: "error", error: new ApiError("protocol") });
+    }
   };
   constructor(private readonly scope: TaskCacheScope) {
     this.releaseScope = scope.subscribe((event) => {
       if (event.accessRevoked) this.projectGenerations.set(event.projectId, null);
       for (const entry of this.entries.values()) {
         if (entry.steps.projectId !== event.projectId) continue;
+        if (entry.source === "direct" && event.directAccessUncertain) {
+          this.retireMutation(entry);
+          this.cancelRead(event.projectId, entry.steps.taskId);
+          entry.openingGeneration++; entry.receipt = null; entry.liveVersion = null; entry.committedVersion = null;
+          entry.pending = null; entry.mismatch = null; entry.admitted = false; entry.directAccessPending = true;
+          this.clearSteps(entry.steps, emptyTaskStepsState);
+          this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "loading" });
+          continue;
+        }
+        if (entry.source === "direct" && event.directAccessRecheck && entry.directAccessPending) {
+          entry.directAccessPending = false; entry.admitted = true;
+          if (event.error !== undefined) this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
+          else if (entry.listeners.size > 0) queueMicrotask(() => {
+            if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
+          });
+          continue;
+        }
+        if (entry.source === "direct" && event.accessRevoked && entry.directAccessPending) {
+          if (event.error !== undefined) this.publish(entry, { ...entry.state, status: "error", error: event.error });
+          continue;
+        }
+        if (entry.source === "direct" && (event.historyChanged || event.accessRevoked)) {
+          const canRetry = event.historyChanged === true && (event.historyHint ? !entry.historyHintRetry : !entry.historyRetry) && entry.listeners.size > 0;
+          this.retireMutation(entry);
+          if (event.historyHint) entry.historyHintRetry = true;
+          else if (event.historyChanged) entry.historyRetry = true;
+          this.cancelRead(event.projectId, entry.steps.taskId);
+          entry.openingGeneration++; entry.receipt = null; entry.liveVersion = null; entry.committedVersion = null;
+          entry.pending = null; entry.mismatch = null; entry.admitted = !event.accessRevoked; entry.directAccessPending = false;
+          entry.observedGeneration = this.entryGeneration(entry);
+          this.clearSteps(entry.steps, emptyTaskStepsState);
+          this.publish(entry, { ...initialState(), revision: entry.state.revision, status: canRetry ? "loading" : "error",
+            error: canRetry ? null : event.error ?? new ApiError("protocol") });
+          if (canRetry) queueMicrotask(() => {
+            if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
+          });
+          continue;
+        }
+        if (event.historyChanged === true) {
+          const previousVersion = entry.observedVersion;
+          this.observe(event.projectId, entry.steps.taskId, undefined, false);
+          // A complete later summary may still establish that a previously
+          // observed task is absent, even though its old detail is retired.
+          entry.observedVersion = previousVersion;
+          this.clearSteps(entry.steps, emptyTaskStepsState);
+          continue;
+        }
         if (event.accessRevoked) {
           this.observe(event.projectId, entry.steps.taskId, undefined, false);
           this.clearSteps(entry.steps, { ...emptyTaskStepsState, status: "error", error: event.error });
@@ -176,10 +245,103 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, source: "project-summary", receipt: null, historyRetry: false, historyHintRetry: false, directAccessPending: false, directParentReadFailed: false, withdrawn: false, operationFence: null, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
+  }
+  private entryGeneration(entry: Entry): string | null {
+    return entry.source === "direct" ? `history:${this.scope.getHistoryGeneration(entry.steps.projectId)}` : this.projectGeneration(entry.steps.projectId);
+  }
+  private observedParentVersion(entry: Entry, allowAuthPaused = false): bigint | null {
+    if (entry.source === "direct") return entry.receipt !== null && this.scope.isTaskReadCurrent(entry.receipt.fence, allowAuthPaused) &&
+      entry.receipt.fence.openingSequence === entry.openingGeneration ? entry.receipt.detail.version : null;
+    return this.summaryVersion(entry.steps.projectId, entry.steps.taskId);
+  }
+  private ticketCurrent(entry: Entry, ticket: ReadTicket, allowAuthPaused = false): boolean {
+    return "historyGeneration" in ticket ? entry.source === "direct" && ticket.openingSequence === entry.openingGeneration && this.scope.isTaskReadCurrent(ticket, allowAuthPaused)
+      : entry.source === "project-summary" && ticket.scopeRevision === this.scope.getProjectRevision(ticket.projectId) && this.projectGeneration(ticket.projectId) === ticket.cacheGeneration;
+  }
+  historyGeneration(projectId: string): number { return this.scope.getHistoryGeneration(projectId); }
+  directRequiresFreshRead(projectId: string, taskId: string, allowAuthPaused = false): boolean {
+    const entry = this.entry(projectId, taskId);
+    return entry.source !== "direct" || entry.receipt === null || !this.ticketCurrent(entry, entry.receipt.fence, allowAuthPaused) || entry.state.requiresFreshRead ||
+      this.hasRetiredWrite(projectId, taskId) ||
+      entry.state.status !== "ready" || entry.state.error !== null || entry.state.detail?.version !== entry.receipt.detail.version ||
+      entry.state.mutation.phase === "unknown" || entry.state.mutation.reconciling || entry.state.mutation.reconciliationError !== null ||
+      entry.committedVersion !== null && entry.receipt.detail.version < entry.committedVersion;
+  }
+  private hasRetiredWrite(projectId: string, taskId: string): boolean {
+    return [...this.retiredMutations.values()].some((retired) => retired.projectId === projectId && retired.taskId === taskId && retired.fence !== null && this.scope.isTaskHistoryPossiblyCurrent(retired.fence));
+  }
+  captureDirectQualification(projectId: string, taskId: string, allowAuthPaused = false): DirectQualification | null {
+    const entry = this.entry(projectId, taskId);
+    return this.directRequiresFreshRead(projectId, taskId, allowAuthPaused) || entry.state.mutation.phase === "pending" && !isStepOperation(entry.state.mutation.operation) || entry.receipt === null ? null : { [directQualification]: entry.receipt };
+  }
+  isDirectQualificationCurrent(projectId: string, taskId: string, qualification: DirectQualification): boolean {
+    const entry = this.entry(projectId, taskId);
+    return entry.receipt === qualification[directQualification] && (entry.state.mutation.phase !== "pending" || isStepOperation(entry.state.mutation.operation)) && !this.directRequiresFreshRead(projectId, taskId);
+  }
+  directSessionCurrent(projectId: string, taskId: string, allowAuthPaused = false): boolean {
+    const entry = this.entry(projectId, taskId);
+    const receipt = entry.receipt;
+    if (entry.source !== "direct" || receipt === null || !this.ticketCurrent(entry, receipt.fence, allowAuthPaused) || entry.directParentReadFailed || entry.withdrawn ||
+      entry.state.status !== "ready" || entry.state.error !== null || entry.state.detail?.version !== receipt.detail.version) return false;
+    const retired = [...this.retiredMutations.entries()].filter(([, owner]) => owner.projectId === projectId && owner.taskId === taskId && owner.fence !== null && this.scope.isTaskHistoryPossiblyCurrent(owner.fence));
+    if (retired.some(([operation]) => !isStepOperation(operation))) return false;
+    const mutation = entry.state.mutation;
+    if (mutation.operation !== null && !isStepOperation(mutation.operation) && mutation.phase !== "idle") return !this.directRequiresFreshRead(projectId, taskId, allowAuthPaused) && mutation.phase !== "pending";
+    const stepUnsettled = isStepOperation(mutation.operation) && (mutation.phase === "pending" || mutation.phase === "unknown" || mutation.phase === "conflict" ||
+      mutation.reconciling || mutation.reconciliationError !== null || mutation.phase === "confirmed" && entry.committedVersion !== null && receipt.detail.version < entry.committedVersion);
+    if (stepUnsettled || retired.some(([operation]) => isStepOperation(operation))) return true;
+    return !this.directRequiresFreshRead(projectId, taskId, allowAuthPaused) && mutation.phase !== "pending";
+  }
+  captureDirectSessionQualification(projectId: string, taskId: string): DirectQualification | null {
+    const entry = this.entry(projectId, taskId);
+    return this.directSessionCurrent(projectId, taskId) && entry.receipt !== null ? { [directQualification]: entry.receipt } : null;
+  }
+  async captureDirectSessionHistoryTicket(projectId: string, taskId: string, qualification: DirectQualification, signal: AbortSignal): Promise<SyncTicket | null> {
+    const current = () => this.directSessionCurrent(projectId, taskId) && this.entry(projectId, taskId).receipt === qualification[directQualification];
+    if (!current()) return null;
+    const receipt = qualification[directQualification];
+    const ticket = await this.scope.getDirectHistoryTicket(receipt.fence, receipt.epoch, signal);
+    return current() ? ticket : null;
+  }
+  async verifyDirectQualification(projectId: string, taskId: string, qualification: DirectQualification, signal: AbortSignal): Promise<boolean> {
+    if (!this.isDirectQualificationCurrent(projectId, taskId, qualification)) return false;
+    return await this.scope.verifyTaskRead(qualification[directQualification].fence, signal) && this.isDirectQualificationCurrent(projectId, taskId, qualification);
+  }
+  isDirectQualificationHistoryCurrent(projectId: string, taskId: string, qualification: DirectQualification): boolean {
+    const entry = this.entry(projectId, taskId); const receipt = qualification[directQualification];
+    const missing = entry.state.error instanceof ApiError && entry.state.error.kind === "server" && entry.state.error.status === 404;
+    return entry.source === "direct" && entry.admitted && entry.state.status !== "deleted" && !missing &&
+      entry.openingGeneration === receipt.fence.openingSequence && this.scope.isTaskReadCurrent(receipt.fence, true);
+  }
+  async verifyDirectQualificationHistory(projectId: string, taskId: string, qualification: DirectQualification, signal: AbortSignal): Promise<boolean> {
+    if (!this.isDirectQualificationHistoryCurrent(projectId, taskId, qualification)) return false;
+    return await this.scope.verifyTaskRead(qualification[directQualification].fence, signal) && this.isDirectQualificationHistoryCurrent(projectId, taskId, qualification);
+  }
+  async captureDirectHistoryTicket(projectId: string, taskId: string, qualification: DirectQualification, signal: AbortSignal): Promise<SyncTicket | null> {
+    if (!this.isDirectQualificationCurrent(projectId, taskId, qualification)) return null;
+    const receipt = qualification[directQualification];
+    const ticket = await this.scope.getDirectHistoryTicket(receipt.fence, receipt.epoch, signal);
+    return this.isDirectQualificationCurrent(projectId, taskId, qualification) ? ticket : null;
+  }
+  reportDirectHistoryDenied(projectId: string, taskId: string, qualification: DirectQualification, manifestAbsent = false, origin?: symbol): boolean {
+    const receipt = qualification[directQualification];
+    if (!this.isDirectQualificationHistoryCurrent(projectId, taskId, qualification)) return false;
+    return this.scope.reportDirectSessionDenied(receipt.fence, receipt.epoch, manifestAbsent, origin);
+  }
+  openDirect(projectId: string, taskId: string): void {
+    const entry = this.entry(projectId, taskId);
+    this.retireMutation(entry, true);
+    this.cancelRead(projectId, taskId);
+    this.clearSteps(entry.steps, emptyTaskStepsState);
+    entry.source = "direct"; entry.openingGeneration++; entry.historyRetry = false; entry.historyHintRetry = false; entry.directAccessPending = false; entry.receipt = null; entry.admitted = true;
+    entry.observedGeneration = this.entryGeneration(entry); entry.committedVersion = null; entry.deletedGeneration = null;
+    entry.liveVersion = null; entry.pending = null; entry.mismatch = null;
+    this.publish(entry, { ...initialState(), revision: 1 });
+    this.load(projectId, taskId, 1, "open");
   }
   private publish(entry: Entry, state: DetailState): void {
     entry.state = state;
@@ -221,18 +383,19 @@ export class TaskDetailSessions {
     const mutation = entry.state.mutation;
     return isStepOperation(mutation.operation) && mutation.reconciling ? `${mutation.operation.requestId}.r${++entry.steps.recoveryReads}` : undefined;
   }
-  private getParent(entry: Entry, signal: AbortSignal): Promise<TaskDetail> {
+  private async getParent(entry: Entry, ticket: SyncTicket, signal: AbortSignal): Promise<TaskDetail> {
     const admission = { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch };
     const correlationId = this.stepRecoveryId(entry);
-    return correlationId === undefined ? getTask(entry.steps.projectId, entry.steps.taskId, signal, admission)
-      : getTask(entry.steps.projectId, entry.steps.taskId, signal, admission, correlationId);
+    const observation = await getTaskObservation(entry.steps.projectId, entry.steps.taskId, signal, admission, correlationId);
+    if (await this.scope.observeHistory(ticket, observation.epoch, signal) !== "current") throw new DOMException("The task history changed.", "AbortError");
+    return observation.detail;
   }
   private finishStepReconciliation(entry: Entry): boolean {
     const mutation = entry.state.mutation;
     const steps = entry.steps;
     const version = steps.state.resource?.version;
     if (!isStepOperation(mutation.operation) || !mutation.reconciling || steps.state.stale || steps.state.error !== null || version === undefined ||
-      entry.state.detail?.version !== version || this.summaryVersion(steps.projectId, steps.taskId) !== version || entry.state.requiresFreshRead || entry.state.error !== null) return false;
+      entry.state.detail?.version !== version || this.observedParentVersion(entry) !== version || entry.state.requiresFreshRead || entry.state.error !== null) return false;
     entry.state = { ...entry.state, mutation: { ...mutation, phase: mutation.phase === "unknown" || mutation.phase === "conflict" ? "reconciled" : mutation.phase,
       ...(mutation.phase === "unknown" || mutation.phase === "conflict" ? { reconciledFrom: mutation.phase } : {}), reconciling: false, reconciliationError: null } };
     if (steps.listeners.size === 0) this.clearSteps(steps, emptyTaskStepsState, false);
@@ -242,14 +405,15 @@ export class TaskDetailSessions {
     const pending = entry.pending;
     const pendingVersion = pending !== null && pending.ticket.cacheGeneration === this.projectGeneration(entry.steps.projectId) &&
       (pending.generation === null || pending.generation === entry.generation) ? pending.detail.version : null;
-    const versions = [this.summaryVersion(entry.steps.projectId, entry.steps.taskId), entry.state.detail?.version ?? null,
+    const versions = [this.observedParentVersion(entry), entry.state.detail?.version ?? null,
       entry.committedVersion, pendingVersion, entry.steps.floor, entry.steps.state.resource?.version ?? null, entry.steps.pending?.resource.version ?? null];
     return versions.reduce<bigint | null>((floor, version) => version !== null && (floor === null || version > floor) ? version : floor, null);
   }
   private synchronizeSteps(entry: Entry): void {
     const steps = entry.steps;
     if (this.disposed || this.scope.isInvalidated) return;
-    const generation = this.projectGeneration(steps.projectId);
+    if (entry.withdrawn) return;
+    const generation = this.entryGeneration(entry);
     if (steps.cacheGeneration !== generation) {
       steps.cacheGeneration = generation;
       const denied = generation === null ? steps.state.error : null;
@@ -275,7 +439,7 @@ export class TaskDetailSessions {
       if (floor !== null && pending.resource.version < floor) {
         steps.pending = null;
         steps.queued = true;
-      } else if (pending.resource.version === this.summaryVersion(steps.projectId, steps.taskId)) {
+      } else if (pending.resource.version === this.observedParentVersion(entry)) {
         steps.pending = null;
         steps.admission = new AbortController();
         const signal = AbortSignal.any([steps.admission.signal, this.scope.signal]);
@@ -307,8 +471,8 @@ export class TaskDetailSessions {
   loadSteps(projectId: string, taskId: string, force = false): void {
     const entry = this.entry(projectId, taskId);
     const steps = entry.steps;
-    if (this.disposed || this.scope.isInvalidated || entry.state.mutation.phase === "pending" && isStepOperation(entry.state.mutation.operation) || steps.listeners.size === 0 && !this.stepOperationNeedsResource(entry) || !entry.admitted || entry.state.status === "deleted" ||
-      entry.observedGeneration !== this.projectGeneration(projectId) || this.projectGeneration(projectId) === null) return;
+    if (this.disposed || this.scope.isInvalidated || entry.withdrawn || entry.state.mutation.phase === "pending" && isStepOperation(entry.state.mutation.operation) || steps.listeners.size === 0 && !this.stepOperationNeedsResource(entry) || !entry.admitted || entry.state.status === "deleted" ||
+      entry.observedGeneration !== this.entryGeneration(entry) || this.entryGeneration(entry) === null) return;
     if (steps.admission !== null || steps.read !== null) { if (force || steps.state.stale) steps.queued = true; return; }
     if (!force && steps.pending !== null) return;
     if (!force && !steps.state.stale) return;
@@ -323,17 +487,19 @@ export class TaskDetailSessions {
       if (steps.listeners.size === 0) this.clearSteps(steps, emptyTaskStepsState, false);
     }
   }
-  private async acceptSteps(entry: Entry, resource: StepsResource, ticket: SyncTicket, generation: number, signal: AbortSignal): Promise<void> {
+  private async acceptSteps(entry: Entry, resource: StepsResource, ticket: ReadTicket, generation: number, signal: AbortSignal): Promise<void> {
     const steps = entry.steps;
     const current = () => !this.disposed && !this.scope.isInvalidated && !signal.aborted && generation === steps.generation &&
-      (steps.listeners.size > 0 || this.stepOperationNeedsResource(entry)) && entry.admitted && ticket.scopeRevision === this.scope.getProjectRevision(steps.projectId) && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
+      (steps.listeners.size > 0 || this.stepOperationNeedsResource(entry)) && entry.admitted && this.ticketCurrent(entry, ticket) && entry.observedGeneration === this.entryGeneration(entry);
     await this.scope.ready(signal);
+    if ("historyGeneration" in ticket && !await this.scope.verifyTaskRead(ticket, signal)) return;
     if (!current()) return;
     const observed = this.stepsFloor(entry);
     const received = observed === null || resource.version > observed ? resource.version : observed;
     if (steps.floor !== received) { steps.floor = received; steps.retriedFloor = null; }
     this.scheduleStepParent(entry, received);
-    const summaryVersion = await this.scope.detailTransaction(ticket, signal, async (_details, _manifest, summaries) => summaries.get(steps.taskId)?.version ?? null);
+    const summaryVersion = "historyGeneration" in ticket ? this.observedParentVersion(entry)
+      : await this.scope.detailTransaction(ticket, signal, async (_details, _manifest, summaries) => summaries.get(steps.taskId)?.version ?? null);
     while (authRequestsPaused()) {
       try { await this.scope.ready(signal); }
       catch (error) { if (!isAbortError(error) || signal.aborted || this.scope.isInvalidated) throw error; }
@@ -346,7 +512,7 @@ export class TaskDetailSessions {
       steps.queued = true;
       return;
     }
-    if (summaryVersion !== resource.version || this.summaryVersion(steps.projectId, steps.taskId) !== resource.version) {
+    if (summaryVersion !== resource.version || this.observedParentVersion(entry) !== resource.version) {
       steps.pending = { resource, ticket, generation };
       this.publishSteps(steps, { ...steps.state, status: steps.state.resource === null ? "waiting" : "ready", refreshing: false, stale: true });
       this.refreshProject(steps.projectId);
@@ -365,22 +531,28 @@ export class TaskDetailSessions {
     const generation = steps.generation;
     const signal = AbortSignal.any([controller.signal, this.scope.signal]);
     this.publishSteps(steps, { ...steps.state, status: steps.state.resource === null ? "loading" : "ready", refreshing: steps.state.resource !== null, stale: true, error: null });
-    let ticket: SyncTicket | null = null;
+    let ticket: ReadTicket | null = null;
     try {
-      ticket = await this.scope.beginSync(steps.projectId, signal);
+      ticket = entry.source === "direct" ? await this.scope.beginTaskRead(steps.projectId, steps.taskId, entry.openingGeneration, generation, signal)
+        : await this.scope.beginSync(steps.projectId, signal);
       const resource = await getTaskSteps(steps.projectId, steps.taskId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch }, this.stepRecoveryId(entry));
       await this.acceptSteps(entry, resource, ticket, generation, signal);
     } catch (error) {
       if (signal.aborted || this.disposed || this.scope.isInvalidated || generation !== steps.generation || isAbortError(error)) return;
-      if (ticket !== null && this.projectGeneration(steps.projectId) !== ticket.cacheGeneration) return;
+      if (ticket !== null && !this.ticketCurrent(entry, ticket)) return;
       if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
-        this.markDeleted(steps.projectId, steps.taskId, ticket.cacheGeneration, error);
+        this.markDeleted(steps.projectId, steps.taskId, this.entryGeneration(entry)!, error);
         return;
       }
       if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404) {
+        if ("historyGeneration" in ticket) {
+          this.load(steps.projectId, steps.taskId, entry.state.revision, "refresh");
+          this.failSteps(steps, error);
+          return;
+        }
         // A missing Steps route or item does not establish that the parent is inaccessible.
         try {
-          const detail = await this.getParent(entry, signal);
+          const detail = await this.getParent(entry, ticket, signal);
           await this.accept(steps.projectId, steps.taskId, detail, ticket, entry.state.revision, false, signal);
         } catch (parentError) {
           if (signal.aborted || this.disposed || this.scope.isInvalidated || generation !== steps.generation || isAbortError(parentError)) return;
@@ -389,8 +561,9 @@ export class TaskDetailSessions {
             return;
           }
           if (parentError instanceof ApiError && parentError.kind === "server" && parentError.status === 404 && parentError.code === "not_found") {
-            try { await this.revokeAccess(ticket, parentError, this.scope.signal); }
-            catch (storageError) { if (!this.scope.isInvalidated && !isAbortError(storageError)) this.failSteps(steps, storageError); }
+            this.clearSteps(steps, emptyTaskStepsState);
+            this.failRead(entry, parentError, false);
+            this.scope.reportTaskNotFound(steps.projectId);
             return;
           }
           this.failSteps(steps, parentError);
@@ -409,7 +582,11 @@ export class TaskDetailSessions {
   // A mutation result cannot satisfy a later opening's required live GET.
   requireOpeningRead(projectId: string, taskId: string): void {
     const entry = this.entry(projectId, taskId);
-    if (entry.state.status === "deleted") return;
+    const switched = entry.source === "direct";
+    if (switched) this.retireMutation(entry);
+    entry.source = "project-summary"; entry.receipt = null;
+    if (switched) { this.clearSteps(entry.steps, emptyTaskStepsState); this.publish(entry, initialState()); }
+    if (entry.state.status === "deleted") { entry.deletedGeneration = null; this.publish(entry, initialState()); }
     entry.openingGeneration++;
     entry.liveVersion = null;
     this.publish(entry, { ...entry.state, requiresFreshRead: true });
@@ -418,6 +595,7 @@ export class TaskDetailSessions {
     const entry = this.entry(projectId, taskId);
     if (entry.state.status === "deleted") return false;
     return entry.state.requiresFreshRead || entry.liveOpeningGeneration !== entry.openingGeneration || entry.mismatch !== null || !entry.admitted ||
+      this.hasRetiredWrite(projectId, taskId) ||
       entry.observedGeneration !== this.projectGeneration(projectId) ||
       entry.committedVersion !== null && entry.state.detail !== null && entry.state.detail.version < entry.committedVersion ||
       entry.state.detail !== null && (this.summaryVersion(projectId, taskId) !== entry.state.detail.version || task === undefined);
@@ -520,7 +698,14 @@ export class TaskDetailSessions {
     entry.read = null;
   }
   releaseRead(projectId: string, taskId: string): void {
-    if (!this.entry(projectId, taskId).state.mutation.reconciling) this.cancelRead(projectId, taskId);
+    const entry = this.entry(projectId, taskId);
+    if (entry.source === "direct") {
+      this.retireMutation(entry);
+      this.cancelRead(projectId, taskId); entry.openingGeneration++; entry.receipt = null; entry.liveVersion = null;
+      this.clearSteps(entry.steps, emptyTaskStepsState);
+      return;
+    }
+    if (!entry.state.mutation.reconciling) this.cancelRead(projectId, taskId);
   }
   private drainReads(projectId: string, taskId: string): void {
     const entry = this.entry(projectId, taskId);
@@ -534,6 +719,9 @@ export class TaskDetailSessions {
   }
   load(projectId: string, taskId: string, revision: number, mode: "open" | "refresh" | "automatic" = "refresh"): void {
     const entry = this.entry(projectId, taskId);
+    if (mode === "refresh") {
+      for (const [operation, retired] of this.retiredMutations) if (retired.projectId === projectId && retired.taskId === taskId && retired.phase !== "pending" && !retired.reconciling) this.finishRetiredMutation(operation, retired.phase === "confirmed", retired.error);
+    }
     if (!entry.admitted || entry.state.status === "deleted" || entry.state.mutation.phase === "pending" || entry.state.mutation.phase === "unknown" || entry.state.mutation.reconciling) return;
     if (mode === "automatic") {
       if (document.visibilityState === "hidden") return;
@@ -562,22 +750,10 @@ export class TaskDetailSessions {
     void this.read(entry.steps.projectId, entry.steps.taskId, entry.state.revision, false, true);
     this.loadSteps(entry.steps.projectId, entry.steps.taskId, true);
   }
-  private async revokeAccess(ticket: SyncTicket, error: ApiError, signal: AbortSignal): Promise<void> {
-    if (!this.scope.canRevokeProject(ticket)) return;
-    for (const [key, entry] of this.entries) {
-      if (!key.startsWith(`${ticket.projectId}/`)) continue;
-      entry.admitted = false; entry.liveVersion = null; entry.pending = null; entry.queuedRead = null; entry.mismatch = null;
-      const state: DetailState = { ...entry.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, graphMismatch: false, error,
-        mutation: { ...entry.state.mutation, reconciling: false, reconciliationError: entry.state.mutation.reconciling ? error : entry.state.mutation.reconciliationError } };
-      if (this.disposed) entry.state = state;
-      else this.publish(entry, state);
-    }
-    await this.scope.revokeProject(ticket, signal, true, error);
-  }
   private markDeleted(projectId: string, taskId: string, cacheGeneration: string, error: ApiError | null, phase: "confirmed" | "reconciled" = "confirmed"): void {
     if (this.scope.isInvalidated) return;
-    if (this.projectGeneration(projectId) !== cacheGeneration) { this.refreshProject(projectId); return; }
     const entry = this.entry(projectId, taskId);
+    if (this.entryGeneration(entry) !== cacheGeneration) { this.refreshProject(projectId); return; }
     this.cancelRead(projectId, taskId);
     entry.deletedGeneration = cacheGeneration;
     entry.liveVersion = null; entry.pending = null; entry.queuedRead = null; entry.mismatch = null;
@@ -595,6 +771,7 @@ export class TaskDetailSessions {
     const stepReconciliation = isStepOperation(entry.state.mutation.operation) && entry.state.mutation.reconciling;
     if (stepReconciliation) entry.queuedRead = null;
     const missing = error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
+    if (missing) entry.withdrawn = true;
     const detail = missing ? null : entry.state.detail;
     this.publish(entry, { ...entry.state, detail, loadedRevision: missing ? null : entry.state.loadedRevision, status: detail !== null ? "ready" : "error", refreshing: false,
       requiresFreshRead: reconciliation || entry.state.requiresFreshRead,
@@ -658,6 +835,7 @@ export class TaskDetailSessions {
     entry.mismatch = isTaskStale(node, detail) ? detail : null;
     if (writeGeneration === null || writeGeneration === entry.generation) entry.liveVersion = detail.version;
     if (readOpeningGeneration !== null) entry.liveOpeningGeneration = readOpeningGeneration;
+    entry.withdrawn = false;
     const mutation = reconciliation
       ? { ...entry.state.mutation, phase: entry.state.mutation.phase === "unknown" ? "reconciled" as const : entry.state.mutation.phase, reconciling: false, reconciliationError: null }
       : readOpeningGeneration !== null && !isStepOperation(entry.state.mutation.operation) ? { ...entry.state.mutation, reconciling: false, reconciliationError: null } : entry.state.mutation;
@@ -686,6 +864,7 @@ export class TaskDetailSessions {
   private async read(projectId: string, taskId: string, revision: number, reconciliation: boolean, retainLoaded: boolean, automatic = false): Promise<void> {
     if (this.disposed || this.scope.isInvalidated) return;
     const entry = this.entry(projectId, taskId);
+    if (entry.source === "direct") return this.readDirect(entry, revision, reconciliation, retainLoaded, automatic);
     this.cancelRead(projectId, taskId);
     entry.pending = null;
     const controller = new AbortController();
@@ -704,14 +883,14 @@ export class TaskDetailSessions {
     try {
       ticket = await this.scope.beginSync(projectId, signal);
       knownTask = this.scope.getSummaryVersion(projectId, taskId) !== null;
-      if (!retain && entry.admitted) {
+      if (!retain && entry.admitted && !entry.withdrawn) {
         const cached = await readCachedDetail(this.scope, ticket, taskId, signal);
         const node = entry.observedTask;
         if (cached !== null && node !== undefined && cached.version === this.summaryVersion(projectId, taskId) && generation === entry.generation && !signal.aborted) {
           this.publish(entry, { ...entry.state, detail: materializeDetail(cached, node), status: "ready", refreshing: true, requiresFreshRead: true });
         }
       }
-      const detail = await this.getParent(entry, signal);
+      const detail = await this.getParent(entry, ticket, signal);
       if (signal.aborted || generation !== entry.generation || this.disposed) return;
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
@@ -722,8 +901,9 @@ export class TaskDetailSessions {
       }
       const denied = knownTask && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
       if (denied) {
-        try { await this.revokeAccess(ticket!, error, signal); }
-        catch (storageError) { if (!isAbortError(storageError) && !this.disposed && !this.scope.isInvalidated && generation === entry.generation && this.scope.canRevokeProject(ticket!)) this.failRead(entry, storageError, reconciliation); }
+        this.clearSteps(entry.steps, emptyTaskStepsState);
+        this.failRead(entry, error, reconciliation);
+        this.scope.reportTaskNotFound(projectId);
         return;
       }
       this.failRead(entry, error, reconciliation);
@@ -738,15 +918,87 @@ export class TaskDetailSessions {
       }
     }
   }
+  private async readDirect(entry: Entry, revision: number, reconciliation: boolean, retainLoaded: boolean, automatic: boolean): Promise<void> {
+    const { projectId, taskId } = entry.steps;
+    this.cancelRead(projectId, taskId);
+    const controller = new AbortController(); entry.read = controller;
+    const signal = AbortSignal.any([controller.signal, this.scope.signal]);
+    const generation = entry.generation; const opening = entry.openingGeneration;
+    const retain = entry.state.detail !== null && (retainLoaded || entry.state.mutation.phase !== "idle");
+    this.publish(entry, { ...entry.state, revision, detail: retain ? entry.state.detail : null,
+      status: retain ? "ready" : "loading", refreshing: retain, requiresFreshRead: !automatic || entry.state.requiresFreshRead,
+      error: automatic ? entry.state.error : null,
+      mutation: reconciliation ? { ...entry.state.mutation, reconciling: true, reconciliationError: null } : entry.state.mutation });
+    let fence: TaskReadFence | null = null;
+    try {
+      fence = await this.scope.beginTaskRead(projectId, taskId, opening, generation, signal);
+      const observation = await getTaskObservation(projectId, taskId, signal,
+        { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch }, this.stepRecoveryId(entry));
+      await this.scope.ready(signal);
+      if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration || !this.scope.isTaskReadCurrent(fence)) return;
+      if (await this.scope.observeHistory(fence, observation.epoch, signal) !== "current") return;
+      if (signal.aborted || generation !== entry.generation || opening !== entry.openingGeneration || !this.scope.isTaskReadCurrent(fence)) return;
+      const floor = this.stepsFloor(entry);
+      if (floor !== null && observation.detail.version < floor) {
+        if (this.retryStepParent(entry, revision, opening)) return;
+        throw new ApiError("protocol");
+      }
+      entry.receipt = { fence, ...observation }; entry.liveVersion = observation.detail.version; entry.liveOpeningGeneration = opening;
+      entry.historyRetry = false; entry.historyHintRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
+      const mutation = reconciliation
+        ? { ...entry.state.mutation, phase: entry.state.mutation.phase === "unknown" ? "reconciled" as const : entry.state.mutation.phase,
+          ...(entry.state.mutation.phase === "unknown" ? { reconciledFrom: "unknown" as const } : {}), reconciling: false, reconciliationError: null }
+        : !isStepOperation(entry.state.mutation.operation) ? { ...entry.state.mutation, reconciling: false, reconciliationError: null } : entry.state.mutation;
+      this.publish(entry, { ...entry.state, revision, loadedRevision: revision, detail: preserveCollection(entry.state.detail, observation.detail),
+        status: "ready", refreshing: false, requiresFreshRead: false, graphMismatch: false, error: null, mutation });
+      for (const [operation, retired] of this.retiredMutations) {
+        if (retired.projectId === projectId && retired.taskId === taskId && retired.phase !== "pending" && !retired.reconciling) this.finishRetiredMutation(operation, retired.phase === "confirmed", retired.error, retired.committedVersion);
+      }
+    } catch (error) {
+      if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration) return;
+      if (error instanceof TaskCacheLifecycleChanged && fence !== null && this.scope.isTaskReadCurrent(fence, true)) {
+        if (!entry.historyRetry) {
+          entry.historyRetry = true;
+          queueMicrotask(() => { if (!this.disposed && entry.listeners.size > 0) void this.read(projectId, taskId, revision, reconciliation, retainLoaded); });
+        } else { entry.directParentReadFailed = true; this.failRead(entry, new ApiError("protocol"), reconciliation); }
+        return;
+      }
+      if (isAbortError(error)) return;
+      const negative = error instanceof ApiError && error.kind === "server" && (error.status === 404 && error.code === "not_found" || error.status === 410 && error.code === "task_deleted");
+      if (!negative) { try { await this.scope.ready(signal); } catch { return; } }
+      if (signal.aborted || this.disposed || generation !== entry.generation || opening !== entry.openingGeneration) return;
+      if (fence !== null && !this.scope.isTaskReadCurrent(fence, negative)) return;
+      if (error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
+        this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, error, reconciliation ? "reconciled" : "confirmed"); return;
+      }
+      if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+        entry.receipt = null; entry.liveVersion = null;
+        this.clearSteps(entry.steps, emptyTaskStepsState);
+        this.scope.reportTaskNotFound(projectId);
+      }
+      entry.directParentReadFailed = true;
+      this.failRead(entry, error, reconciliation);
+    } finally {
+      if (generation === entry.generation) { entry.read = null; this.drainReads(projectId, taskId); }
+    }
+  }
   private writableState(projectId: string, taskId: string): DetailState {
     const entry = this.entry(projectId, taskId);
-    return { ...entry.state, requiresFreshRead: this.scope.isInvalidated || this.requiresFreshRead(projectId, taskId, entry.observedTask) };
+    return { ...entry.state, requiresFreshRead: this.scope.isInvalidated || (entry.source === "direct" ? this.directRequiresFreshRead(projectId, taskId) : this.requiresFreshRead(projectId, taskId, entry.observedTask)) };
   }
   canSetStepStatus(projectId: string, taskId: string): boolean {
+    return this.stepStatusAvailable(projectId, taskId, false);
+  }
+  canDisplayStepStatus(projectId: string, taskId: string): boolean {
+    return this.stepStatusAvailable(projectId, taskId, true);
+  }
+  private stepStatusAvailable(projectId: string, taskId: string, allowAuthPaused: boolean): boolean {
     const entry = this.entry(projectId, taskId);
-    const state = this.writableState(projectId, taskId);
+    const state = allowAuthPaused && entry.source === "direct"
+      ? { ...entry.state, requiresFreshRead: this.scope.isInvalidated || this.directRequiresFreshRead(projectId, taskId, true) }
+      : this.writableState(projectId, taskId);
     const steps = entry.steps.state;
-    return canMutate(state) && steps.resource !== null && !steps.stale && !steps.refreshing && steps.error === null && steps.resource.version === state.detail!.version && this.summaryVersion(projectId, taskId) === steps.resource.version;
+    return canMutate(state) && steps.resource !== null && !steps.stale && !steps.refreshing && steps.error === null && steps.resource.version === state.detail!.version && this.observedParentVersion(entry, allowAuthPaused) === steps.resource.version;
   }
   setStepStatus(projectId: string, taskId: string, stepId: string, status: StepStatus, version: bigint): void {
     const entry = this.entry(projectId, taskId);
@@ -796,7 +1048,7 @@ export class TaskDetailSessions {
   }
   setStatus(projectId: string, taskId: string, status: TaskStatus, version: bigint): void {
     const state = this.writableState(projectId, taskId);
-    if (!canSetStatus(state) || state.detail!.version !== version || !["todo", "in_progress", "done"].includes(status)) return;
+    if (!canSetStatus(state) || state.detail!.version !== version || !["todo", "in_progress", "done", "cancelled"].includes(status) || status === "cancelled" && readWorkerClaim(state.detail!.properties)?.state === "active") return;
     this.performMutation(projectId, taskId, { action: "status", status, version });
   }
   setAgentPermission(projectId: string, taskId: string, allowAgents: boolean, version: bigint): void {
@@ -830,9 +1082,152 @@ export class TaskDetailSessions {
     if (!canDeleteTask(state) || state.detail!.version !== version) return;
     this.performMutation(projectId, taskId, { action: "delete", version, removeDepends });
   }
-  private async runMutationStage<T>(projectId: string, taskId: string, operation: TaskMutationOperation, work: () => T | Promise<T>): Promise<{ readonly value: T } | null> {
+  private retireMutation(entry: Entry, includeSummary = false): void {
+    if (entry.source !== "direct" && !includeSummary) return;
+    const mutation = entry.state.mutation;
+    if (mutation.operation === null || mutation.phase !== "pending" && mutation.phase !== "unknown" && mutation.phase !== "conflict" && !(mutation.phase === "confirmed" && entry.state.requiresFreshRead)) return;
+    if (!this.retiredMutations.has(mutation.operation)) this.retiredMutations.set(mutation.operation, { projectId: entry.steps.projectId, taskId: entry.steps.taskId,
+      fence: entry.operationFence, phase: mutation.phase, error: mutation.error, reconciling: false, committedVersion: entry.committedVersion, historyRetries: 0, historyConfirmRetries: 0 });
+    // The retired owner now exclusively tracks this operation, including when
+    // it settles while no view is subscribed and the entry is later reopened.
+    entry.state = { ...entry.state, mutation: idleMutation() };
+    entry.operationFence = null;
+    if (mutation.phase !== "pending") this.finishRetiredMutation(mutation.operation, mutation.phase === "confirmed", mutation.error);
+  }
+  private finishRetiredMutation(operation: TaskMutationOperation, confirmed: boolean, error: unknown, committedVersion: bigint | null = null): void {
+    const retired = this.retiredMutations.get(operation);
+    if (retired === undefined || retired.reconciling) return;
+    retired.phase = confirmed ? "confirmed" : error instanceof ApiError && error.kind === "server" && error.status !== null && error.status >= 400 && error.status < 500
+      ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
+    retired.error = error;
+    if (confirmed && committedVersion !== null) retired.committedVersion = committedVersion;
+    if (isStepOperation(operation) && error instanceof ApiError && error.kind === "server" && error.status === 404) {
+      retired.reconciling = true;
+      void this.verifyRetiredStepParent(operation, retired);
+      return;
+    }
+    if (!isStepOperation(operation) && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+      if (retired.fence === null || !this.scope.isTaskHistoryPossiblyCurrent(retired.fence)) { this.retiredMutations.delete(operation); return; }
+      if (!this.scope.isTaskReadCurrent(retired.fence, true)) {
+        retired.reconciling = true;
+        void this.verifyRetiredStepParent(operation, retired);
+        return;
+      }
+      const current = this.entries.get(`${retired.projectId}/${retired.taskId}`);
+      if (!this.disposed && current !== undefined) {
+        current.receipt = null; current.liveVersion = null; current.withdrawn = true;
+        this.clearSteps(current.steps, emptyTaskStepsState);
+        this.publish(current, { ...current.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, error });
+      }
+      retired.reconciling = true;
+      void this.scope.revalidateProjectAccess(retired.projectId).then(() => {
+        this.retiredMutations.delete(operation); this.notifyRetiredSettlement(retired, true);
+      }).catch(() => { retired.reconciling = false; });
+      return;
+    }
+    if (retired.phase === "refused") { this.retiredMutations.delete(operation); this.notifyRetiredSettlement(retired, false); return; }
+    retired.reconciling = true;
+    // A retired owner reconciles independently and cannot publish into a later opening.
+    void (async () => {
+      try {
+        const signal = this.scope.signal;
+        const admission = { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch };
+        for (let attempt = 0; ; attempt++) {
+          const fence = await this.scope.beginTaskRead(retired.projectId, retired.taskId, -1, -1, signal);
+          const observation = await getTaskObservation(retired.projectId, retired.taskId, signal, admission);
+          const history = await this.scope.observeHistory(fence, observation.epoch, signal);
+          if (history !== "current") {
+            retired.reconciling = false;
+            const retry = history === "confirm" ? retired.historyConfirmRetries++ === 0 : retired.historyRetries++ === 0;
+            if (retry) this.finishRetiredMutation(operation, confirmed, error, committedVersion);
+            else retired.error = new ApiError("protocol");
+            return;
+          }
+          const belowFloor = retired.fence !== null && this.scope.isTaskHistoryPossiblyCurrent(retired.fence) && retired.committedVersion !== null && observation.detail.version < retired.committedVersion;
+          const steps = isStepOperation(operation) && !belowFloor ? await getTaskSteps(retired.projectId, retired.taskId, signal, admission) : null;
+          if (!belowFloor && (steps === null || steps.version === observation.detail.version)) break;
+          if (attempt === 1) throw new ApiError("protocol");
+        }
+        this.retiredMutations.delete(operation);
+        this.notifyRetiredSettlement(retired, true);
+      } catch (failure) {
+        if (failure instanceof ApiError && failure.kind === "server" && (failure.status === 404 || failure.status === 410)) {
+          this.retiredMutations.delete(operation); this.notifyRetiredSettlement(retired, true);
+        } else { retired.error = failure; retired.reconciling = false; }
+      }
+    })();
+  }
+  private async verifyRetiredStepParent(operation: TaskMutationOperation, retired: NonNullable<ReturnType<typeof this.retiredMutations.get>>): Promise<void> {
+    const { projectId, taskId } = retired;
+    const oldCurrent = (): boolean => retired.fence !== null && this.scope.isTaskHistoryPossiblyCurrent(retired.fence);
+    const releaseOld = (): void => { this.retiredMutations.delete(operation); };
+    try {
+      if (!oldCurrent()) { releaseOld(); return; }
+      const signal = this.scope.signal;
+      const fence = await this.scope.beginTaskRead(projectId, taskId, -1, -1, signal);
+      if (!oldCurrent()) { releaseOld(); return; }
+      if (!await this.scope.verifyTaskRead(fence, signal)) { if (!oldCurrent()) releaseOld(); else retired.reconciling = false; return; }
+      const owner = this.entries.get(`${projectId}/${taskId}`);
+      const opening = owner?.openingGeneration;
+      const generation = owner?.generation;
+      let observation: Awaited<ReturnType<typeof getTaskObservation>>;
+      try {
+        observation = await getTaskObservation(projectId, taskId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
+      } catch (failure) {
+        const negative = failure instanceof ApiError && failure.kind === "server" &&
+          (failure.status === 404 && failure.code === "not_found" || failure.status === 410 && failure.code === "task_deleted");
+        if (!negative) {
+          if (oldCurrent() && this.scope.isTaskReadCurrent(fence, true) && owner !== undefined && owner === this.entries.get(`${projectId}/${taskId}`) &&
+            owner.openingGeneration === opening && owner.generation === generation && !this.disposed) {
+            owner.directParentReadFailed = true;
+            this.publish(owner, { ...owner.state });
+          }
+          throw failure;
+        }
+        if (!oldCurrent()) { releaseOld(); return; }
+        if (!this.scope.isTaskReadCurrent(fence, true)) { if (!oldCurrent()) releaseOld(); else retired.reconciling = false; return; }
+        // A later opening or read owns its own result, so retry rather than apply this receipt to it.
+        if (owner !== this.entries.get(`${projectId}/${taskId}`) || owner?.openingGeneration !== opening || owner?.generation !== generation) {
+          retired.reconciling = false; return;
+        }
+        if (owner !== undefined && !this.disposed) {
+          if (failure.status === 410) this.markDeleted(projectId, taskId, this.entryGeneration(owner)!, failure);
+          else {
+            this.cancelRead(projectId, taskId);
+            owner.receipt = null; owner.liveVersion = null; owner.withdrawn = true;
+            this.clearSteps(owner.steps, emptyTaskStepsState);
+            this.publish(owner, { ...owner.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, error: failure });
+          }
+        }
+        if (failure.status === 404) await this.scope.revalidateProjectAccess(projectId);
+        releaseOld();
+        if (failure.status === 404) this.notifyRetiredSettlement(retired, true);
+        return;
+      }
+      const history = await this.scope.observeHistory(fence, observation.epoch, signal);
+      if (history !== "current") {
+        if (!oldCurrent()) releaseOld();
+        else if (history === "confirm" && retired.historyConfirmRetries++ === 0) void this.verifyRetiredStepParent(operation, retired);
+        else retired.reconciling = false;
+        return;
+      }
+      if (!oldCurrent()) { releaseOld(); return; }
+      releaseOld(); this.notifyRetiredSettlement(retired, true);
+    } catch {
+      // Keep the original refusal and its lock so an explicit refresh can retry verification.
+      retired.reconciling = false;
+    }
+  }
+  private notifyRetiredSettlement(retired: { readonly projectId: string; readonly taskId: string; readonly fence: TaskReadFence | null }, refresh: boolean): void {
+    if (this.disposed || this.scope.isInvalidated || retired.fence === null || !this.scope.isTaskHistoryConfirmedCurrent(retired.fence)) return;
+    const entry = this.entries.get(`${retired.projectId}/${retired.taskId}`);
+    if (entry === undefined || !entry.admitted || entry.listeners.size === 0) return;
+    if (refresh) void this.read(retired.projectId, retired.taskId, entry.state.revision, false, true);
+    else this.publish(entry, { ...entry.state });
+  }
+  private async runMutationStage<T>(projectId: string, taskId: string, operation: TaskMutationOperation, work: () => T | Promise<T>, retryPreparation?: () => boolean): Promise<{ readonly value: T } | null> {
     const entry = this.entry(projectId, taskId);
-    while (!this.scope.isInvalidated && entry.state.mutation.operation === operation) {
+    while (!this.scope.isInvalidated && (entry.state.mutation.operation === operation || this.retiredMutations.has(operation))) {
       try { await this.scope.ready(this.scope.signal); }
       catch (error) {
         if (this.scope.isInvalidated) return null;
@@ -840,19 +1235,28 @@ export class TaskDetailSessions {
         throw error;
       }
       if (authRequestsPaused()) continue;
-      if (this.scope.isInvalidated || entry.state.mutation.operation !== operation) return null;
+      if (this.scope.isInvalidated || entry.state.mutation.operation !== operation && !this.retiredMutations.has(operation)) return null;
       // Admission and its synchronous effects share the same unpaused turn.
-      return { value: await work() };
+      try { return { value: await work() }; }
+      catch (error) {
+        // A pause during asynchronous admission is not a rejection of the review.
+        // Once dispatch starts, however, an operation must never be replayed.
+        if (retryPreparation?.() && authRequestsPaused() && !this.scope.isInvalidated &&
+          (isAbortError(error) || error instanceof TaskMutationReviewExpired)) continue;
+        throw error;
+      }
     }
     return null;
   }
-  private mutationIsCurrent(projectId: string, entry: Entry, operation: TaskMutationOperation, ticket: SyncTicket): boolean {
-    return !this.scope.isInvalidated && entry.state.mutation.operation === operation && ticket.scopeRevision === this.scope.getProjectRevision(projectId) && this.projectGeneration(projectId) === ticket.cacheGeneration;
+  private mutationIsCurrent(_projectId: string, entry: Entry, operation: TaskMutationOperation, ticket: ReadTicket): boolean {
+    return !this.scope.isInvalidated && entry.state.mutation.operation === operation && this.ticketCurrent(entry, ticket);
   }
-  private admitMutationOutcome(projectId: string, taskId: string, operation: TaskMutationOperation, ticket: SyncTicket | null, error: unknown = null): boolean {
+  private admitMutationOutcome(projectId: string, taskId: string, operation: TaskMutationOperation, ticket: ReadTicket | null, error: unknown = null, confirmed = false, committedVersion: bigint | null = null): boolean {
     const entry = this.entry(projectId, taskId);
+    if (this.retiredMutations.has(operation)) { this.finishRetiredMutation(operation, confirmed, error, committedVersion); return false; }
     if (this.scope.isInvalidated || entry.state.mutation.operation !== operation) return false;
     if (ticket === null || this.mutationIsCurrent(projectId, entry, operation, ticket)) return true;
+    if ("historyGeneration" in ticket) return false;
     const project = this.scope.getAuthorizedProject(projectId);
     if (!this.disposed && project !== null && entry.observedGeneration !== project.manifest.cacheGeneration) {
       this.observe(projectId, taskId, project.index.nodes.get(taskId), true);
@@ -873,17 +1277,54 @@ export class TaskDetailSessions {
     }
     return false;
   }
-  private assertMutationReview(projectId: string, taskId: string, operation: TaskMutationOperation, review: TaskMutationReview, ticket: SyncTicket): void {
-    const entry = this.entry(projectId, taskId);
+  private hasNewerObservation(entry: Entry, epoch: string, version: bigint): boolean {
+    const { projectId, taskId } = entry.steps;
     const project = this.scope.getAuthorizedProject(projectId);
-    if (this.scope.isInvalidated || entry.state.mutation.operation !== operation || !entry.admitted ||
-      entry.observedGeneration !== review.cacheGeneration || ticket.cacheGeneration !== review.cacheGeneration ||
+    if (project?.manifest.epoch === epoch && (project.versions.get(taskId) ?? version) > version) return true;
+    const receipt = entry.receipt;
+    const currentDirect = receipt !== null && receipt.epoch === epoch && this.ticketCurrent(entry, receipt.fence);
+    const currentSummary = entry.source === "project-summary" && entry.admitted && project?.manifest.epoch === epoch &&
+      entry.observedGeneration === project.manifest.cacheGeneration;
+    if (!currentDirect && !currentSummary) return false;
+    if (currentDirect && receipt.detail.version > version || entry.committedVersion !== null && entry.committedVersion > version ||
+      entry.steps.cacheGeneration === this.entryGeneration(entry) && entry.steps.floor !== null && entry.steps.floor > version) return true;
+    const pending = entry.pending;
+    return currentSummary && pending !== null && pending.readOpeningGeneration === entry.openingGeneration &&
+      (pending.generation === null || pending.generation === entry.generation) && pending.ticket.cacheGeneration === project.manifest.cacheGeneration &&
+      pending.ticket.scopeRevision === this.scope.getProjectRevision(projectId) && pending.detail.version > version;
+  }
+  private assertMutationReview(projectId: string, taskId: string, operation: TaskMutationOperation, review: TaskMutationReview, ticket: ReadTicket): void {
+    const entry = this.entry(projectId, taskId);
+    if ("historyGeneration" in ticket) {
+      const retired = this.retiredMutations.get(operation);
+      if (retired !== undefined) {
+        if (this.scope.isInvalidated || retired.fence !== ticket || review.receipt === null || review.receipt.fence !== ticket ||
+          review.detail.version !== operation.version || review.receipt.detail.version !== operation.version ||
+          !this.scope.isTaskReadCurrent(ticket)) throw new TaskMutationReviewExpired();
+        // A newer opening may only invalidate this review; it cannot grant it.
+        if (this.hasNewerObservation(entry, review.receipt.epoch, operation.version)) throw new TaskMutationReviewExpired();
+        return;
+      }
+      if (this.scope.isInvalidated || entry.state.mutation.operation !== operation || entry.receipt !== review.receipt ||
+        review.receipt === null || review.receipt.fence !== ticket || !this.ticketCurrent(entry, ticket) ||
+        entry.state.detail !== review.detail || this.observedParentVersion(entry) !== operation.version) throw new TaskMutationReviewExpired();
+      return;
+    }
+    const project = this.scope.getAuthorizedProject(projectId);
+    const retired = this.retiredMutations.get(operation);
+    if (this.scope.isInvalidated || (retired === undefined
+      ? entry.state.mutation.operation !== operation || !entry.admitted || entry.observedGeneration !== review.cacheGeneration
+      : retired.fence === null || !this.scope.isTaskReadCurrent(retired.fence)) || ticket.cacheGeneration !== review.cacheGeneration ||
       ticket.scopeRevision !== review.scopeRevision || this.scope.getProjectRevision(projectId) !== review.scopeRevision ||
       project?.manifest.cacheGeneration !== review.cacheGeneration || this.summaryVersion(projectId, taskId) !== operation.version ||
       isTaskStale(project.index.nodes.get(taskId), review.detail)) throw new TaskMutationReviewExpired();
+    // A later direct observation can invalidate, but never authorize, the original summary review.
+    if (retired !== undefined && project.manifest.epoch !== null && this.hasNewerObservation(entry, project.manifest.epoch, operation.version)) throw new TaskMutationReviewExpired();
   }
   private expireMutationReview(projectId: string, taskId: string, operation: TaskMutationOperation): void {
     const entry = this.entry(projectId, taskId);
+    const retired = this.retiredMutations.get(operation);
+    if (retired !== undefined) { this.retiredMutations.delete(operation); this.notifyRetiredSettlement(retired, true); return; }
     if (this.scope.isInvalidated || entry.state.mutation.operation !== operation) return;
     const project = this.scope.getAuthorizedProject(projectId);
     if (!this.disposed && project !== null && entry.observedGeneration !== project.manifest.cacheGeneration) {
@@ -903,13 +1344,23 @@ export class TaskDetailSessions {
       }
     }
   }
+  private failDirectFence(entry: Entry, operation: TaskMutationOperation, error: unknown, submitted: boolean, confirmed: boolean, committedVersion: bigint): void {
+    if (this.scope.isInvalidated || entry.state.mutation.operation !== operation) return;
+    if (confirmed) entry.committedVersion = committedVersion;
+    entry.receipt = null; entry.liveVersion = null;
+    this.clearSteps(entry.steps, emptyTaskStepsState, false);
+    const phase = confirmed ? "confirmed" : submitted ? "unknown" : "refused";
+    this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, error,
+      mutation: { operation, phase, error: confirmed ? null : error, reconciling: false, reconciliationError: confirmed || submitted ? error : null } });
+  }
   private performMutation(projectId: string, taskId: string, operation: TaskMutationOperation, addInput?: AddStepInput, editInput?: { readonly title: string; readonly description: string }): void {
     const entry = this.entry(projectId, taskId);
     const previous = entry.state.detail!;
     const previousSteps = isStepOperation(operation) ? entry.steps.state.resource : null;
-    const reviewedGeneration = this.projectGeneration(projectId);
+    const reviewedGeneration = this.entryGeneration(entry);
     if (reviewedGeneration === null) return;
-    const review: TaskMutationReview = { detail: previous, cacheGeneration: reviewedGeneration, scopeRevision: this.scope.getProjectRevision(projectId) };
+    const review: TaskMutationReview = { detail: previous, cacheGeneration: reviewedGeneration, scopeRevision: this.scope.getProjectRevision(projectId), receipt: entry.receipt };
+    entry.operationFence = entry.receipt?.fence ?? this.scope.captureTaskHistoryFence(projectId, taskId, entry.openingGeneration, entry.generation);
     this.cancelRead(projectId, taskId);
     if (isStepOperation(operation)) {
       entry.steps.recoveryReads = 0;
@@ -935,23 +1386,76 @@ export class TaskDetailSessions {
         : operation.action === "assignedTo" ? previous.assignedTo !== operation.assignedTo : true;
       const committedVersion = operation.version + (changed ? 1n : 0n);
       const signal = this.scope.signal;
-      let ticket: SyncTicket | null = null;
+      let ticket: ReadTicket | null = null;
+      // Verification can retire the owner while a known write outcome is in flight.
+      const settleRetired = (error: unknown): boolean => {
+        if (!this.retiredMutations.has(operation)) return false;
+        if (!submitted) this.expireMutationReview(projectId, taskId, operation);
+        else this.finishRetiredMutation(operation, confirmed, error, committedVersion);
+        return true;
+      };
+      const runOutcome = async (outcomeTicket: ReadTicket | null, error: unknown, work: () => void | Promise<void>, before?: () => boolean, verify = true): Promise<void> => {
+        // Verify and admit in the same turn; retry only the read-only part.
+        for (;;) {
+          let admissionPauseRevision = authRequestsPauseRevision();
+          let admitted = false;
+          try {
+            await this.runMutationStage(projectId, taskId, operation, async () => {
+              if (settleRetired(error) || before?.() === false) return;
+              if (verify && outcomeTicket !== null && "historyGeneration" in outcomeTicket) {
+                admissionPauseRevision = authRequestsPauseRevision();
+                const current = await this.scope.verifyTaskRead(outcomeTicket, signal);
+                if (settleRetired(error)) return;
+                if ((authRequestsPaused() || admissionPauseRevision !== authRequestsPauseRevision()) && this.scope.isTaskReadCurrent(outcomeTicket, true)) throw new TaskCacheLifecycleChanged();
+                if (!current) return;
+              }
+              if (!this.admitMutationOutcome(projectId, taskId, operation, outcomeTicket, error, confirmed, committedVersion)) return;
+              admitted = true;
+              await work();
+            }, () => !admitted);
+            return;
+          } catch (failure) {
+            if (settleRetired(error)) return;
+            // A pause can also end before the rejected transaction is observed.
+            if (!admitted && failure instanceof TaskCacheLifecycleChanged && admissionPauseRevision !== authRequestsPauseRevision() &&
+              outcomeTicket !== null && "historyGeneration" in outcomeTicket && this.scope.isTaskReadCurrent(outcomeTicket, true)) {
+              continue;
+            }
+            throw failure;
+          }
+        }
+      };
       try {
-        ticket = await this.scope.beginSync(projectId, signal);
+        if (review.receipt !== null) ticket = review.receipt.fence;
+        else {
+          const acquired = await this.runMutationStage(projectId, taskId, operation, () => this.scope.beginSync(projectId, signal), () => !submitted);
+          if (acquired === null) return;
+          ticket = acquired.value;
+        }
         const requestTicket = ticket;
         const prepared = await this.runMutationStage(projectId, taskId, operation, () => {
           this.assertMutationReview(projectId, taskId, operation, review, requestTicket);
-          return this.scope.detailTransaction(requestTicket, signal, async (_store, _manifest, summaries) => {
-            if (summaries.get(taskId)?.version !== operation.version) throw new ApiError("protocol");
-          });
-        });
+          if ("historyGeneration" in requestTicket) return this.scope.verifyTaskRead(requestTicket, signal).then((current) => { if (!current) throw new TaskMutationReviewExpired(); });
+          return this.scope.detailTransaction(requestTicket, signal, async (_store, _manifest, summaries) => summaries.get(taskId)?.version === operation.version)
+            .then((current) => { if (!current) throw new TaskMutationReviewExpired(); });
+        }, () => !submitted);
         if (prepared === null) return;
+        const verifySendReview = async () => {
+          if ("historyGeneration" in requestTicket) {
+            if (!await this.scope.verifyTaskRead(requestTicket, signal)) throw new TaskMutationReviewExpired();
+          } else {
+            const current = await this.scope.detailTransaction(requestTicket, signal, async (_store, _manifest, summaries) => summaries.get(taskId)?.version === operation.version);
+            if (!current) throw new TaskMutationReviewExpired();
+          }
+        };
         const admission = { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch,
           onWriteConfirmed: () => { confirmed = true; } };
         if (isStepOperation(operation)) {
-          const response = await this.runMutationStage(projectId, taskId, operation, () => {
+          const response = await this.runMutationStage(projectId, taskId, operation, async () => {
+            await verifySendReview();
             this.assertMutationReview(projectId, taskId, operation, review, requestTicket);
-            if (previousSteps === null || entry.steps.state.resource !== previousSteps || entry.steps.state.stale || previousSteps.version !== operation.version) throw new TaskMutationReviewExpired();
+            if (previousSteps === null || previousSteps.version !== operation.version ||
+              !this.retiredMutations.has(operation) && (entry.steps.state.resource !== previousSteps || entry.steps.state.stale)) throw new TaskMutationReviewExpired();
             submitted = true;
             return operation.action === "stepStatus"
               ? setTaskStepStatus(projectId, taskId, operation.stepId, operation.status, operation.version, signal, admission, operation.requestId)
@@ -962,10 +1466,9 @@ export class TaskDetailSessions {
                 : operation.action === "stepDelete"
                   ? deleteTaskStep(projectId, taskId, operation.stepId, operation.version, signal, admission, operation.requestId)
                 : moveTaskStep(projectId, taskId, operation.stepId, operation.placement, operation.version, signal, admission, operation.requestId);
-          });
+          }, () => !submitted);
           if (response === null) return;
-          await this.runMutationStage(projectId, taskId, operation, async () => {
-            if (!this.admitMutationOutcome(projectId, taskId, operation, requestTicket)) return;
+          await runOutcome(requestTicket, null, async () => {
             const result = response.value;
             const expected = operation.action === "stepPosition" ? moved : operation.action === "stepDelete" ? previousSteps!.steps.filter((step) => step.id !== operation.stepId) : previousSteps!.steps;
             const valid = operation.action === "stepAdd"
@@ -990,18 +1493,20 @@ export class TaskDetailSessions {
           return;
         }
         if (operation.action === "delete") {
-          const response = await this.runMutationStage(projectId, taskId, operation, () => {
+          const response = await this.runMutationStage(projectId, taskId, operation, async () => {
+            await verifySendReview();
             this.assertMutationReview(projectId, taskId, operation, review, requestTicket);
             submitted = true;
             return deleteTask(projectId, taskId, operation.version, operation.removeDepends, signal, admission);
-          });
+          }, () => !submitted);
           if (response === null) return;
-          await this.runMutationStage(projectId, taskId, operation, () => {
-            if (this.admitMutationOutcome(projectId, taskId, operation, requestTicket)) this.markDeleted(projectId, taskId, requestTicket.cacheGeneration, null);
+          await runOutcome(requestTicket, null, () => {
+            this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, null);
           });
           return;
         }
-        const response = await this.runMutationStage(projectId, taskId, operation, () => {
+        const response = await this.runMutationStage(projectId, taskId, operation, async () => {
+          await verifySendReview();
           this.assertMutationReview(projectId, taskId, operation, review, requestTicket);
           submitted = true;
           return operation.action === "withdraw"
@@ -1015,17 +1520,16 @@ export class TaskDetailSessions {
               : operation.action === "assignedTo"
               ? setTaskAssignedTo(projectId, taskId, operation.assignedTo, operation.version, signal, admission)
               : setTaskStatus(projectId, taskId, operation.status, operation.version, signal, admission);
-        });
+        }, () => !submitted);
         if (response === null) return;
         const detail = response.value;
-        await this.runMutationStage(projectId, taskId, operation, async () => {
-          if (!this.admitMutationOutcome(projectId, taskId, operation, requestTicket)) return;
+        await runOutcome(requestTicket, null, async () => {
           if (confirmed) entry.committedVersion = committedVersion;
           if (this.disposed) {
             entry.state = { ...entry.state, mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } };
             return;
           }
-          const preservesTiming = detail.startedAt === previous.startedAt && detail.completedAt === previous.completedAt;
+          const preservesTiming = detail.startedAt === previous.startedAt && detail.completedAt === previous.completedAt && detail.cancelledAt === previous.cancelledAt;
           const validResult = operation.action === "withdraw"
             ? detail.status === "todo" && !detail.allowAgents && readWorkerClaim(detail.properties) === undefined && detail.startedAt === null && detail.completedAt === null && detail.requiredPlatform === previous.requiredPlatform
             : operation.action === "allowAgents"
@@ -1043,23 +1547,52 @@ export class TaskDetailSessions {
           validated = true;
           confirmed = true;
           entry.committedVersion = detail.version;
+          if ("historyGeneration" in requestTicket) {
+            this.publish(entry, { ...entry.state, requiresFreshRead: true, mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } });
+            await this.read(projectId, taskId, entry.state.revision, false, true);
+            return;
+          }
           await this.accept(projectId, taskId, detail, requestTicket, entry.state.revision, false, signal, null, operationGeneration);
           await this.runMutationStage(projectId, taskId, operation, () => {
-            if (this.disposed || !this.admitMutationOutcome(projectId, taskId, operation, requestTicket)) return;
+            if (this.disposed || !this.admitMutationOutcome(projectId, taskId, operation, requestTicket, null, confirmed, committedVersion)) return;
             this.publish(entry, { ...entry.state, mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } });
             this.refreshProject(projectId);
           });
         });
       } catch (error) {
         if (this.scope.isInvalidated) return;
+        if (settleRetired(error)) return;
+        if (!isStepOperation(operation) && ticket !== null && "historyGeneration" in ticket && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" &&
+          this.scope.isTaskReadCurrent(ticket, true) && entry.openingGeneration === ticket.openingSequence) {
+          entry.receipt = null; entry.liveVersion = null; entry.withdrawn = true;
+          this.clearSteps(entry.steps, emptyTaskStepsState);
+          this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, error,
+            mutation: { operation, phase: "refused", error, reconciling: false, reconciliationError: null } });
+          this.scope.reportTaskNotFound(projectId);
+          return;
+        }
+        if (ticket !== null && "historyGeneration" in ticket && error instanceof TaskCacheError && error.category === "storage") {
+          this.failDirectFence(entry, operation, error, submitted, confirmed, committedVersion); return;
+        }
+        const settleError = async (work: () => void | Promise<void>): Promise<void> => {
+          const negative = error instanceof ApiError && error.kind === "server" && (error.status === 404 || error.status === 410);
+          try {
+            await runOutcome(ticket, error, work, () => {
+              if (error instanceof TaskMutationReviewExpired || !submitted && (isAbortError(error) || ticket !== null && !this.mutationIsCurrent(projectId, entry, operation, ticket))) {
+                this.expireMutationReview(projectId, taskId, operation);
+                return false;
+              }
+              return true;
+            }, !negative);
+          } catch (failure) {
+            if (settleRetired(error)) return;
+            if (ticket !== null && "historyGeneration" in ticket && (failure instanceof TaskCacheLifecycleChanged && this.scope.isTaskReadCurrent(ticket, true) || failure instanceof TaskCacheError && failure.category === "storage"))
+              this.failDirectFence(entry, operation, failure, submitted, confirmed, committedVersion);
+          }
+        };
         if (isStepOperation(operation)) {
-          await this.runMutationStage(projectId, taskId, operation, async () => {
-            if (error instanceof TaskMutationReviewExpired || !submitted && (isAbortError(error) || ticket !== null && !this.mutationIsCurrent(projectId, entry, operation, ticket))) {
-              this.expireMutationReview(projectId, taskId, operation);
-              return;
-            }
-            if (!this.admitMutationOutcome(projectId, taskId, operation, ticket, error)) return;
-            if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") { this.markDeleted(projectId, taskId, ticket.cacheGeneration, error); return; }
+          await settleError(async () => {
+            if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") { this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, error); return; }
             if (validated) {
               // The complete receipt proves the write even if local admission fails later.
               this.publish(entry, { ...entry.state, requiresFreshRead: true,
@@ -1075,25 +1608,23 @@ export class TaskDetailSessions {
           return;
         }
         // Access withdrawal belongs to the scope even while identity checks suspend positive admission.
-        if (!confirmed && submitted && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+        if (!confirmed && submitted && ticket !== null && !("historyGeneration" in ticket) && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
           if (entry.state.mutation.operation === operation) {
-            const state: DetailState = { ...entry.state, mutation: { operation, phase: "refused", error, reconciling: false, reconciliationError: null } };
+            const current = this.mutationIsCurrent(projectId, entry, operation, ticket);
+            const state: DetailState = { ...entry.state, ...(current ? { detail: null, loadedRevision: null, status: "error" as const, error, requiresFreshRead: true } : {}), mutation: { operation, phase: "refused", error, reconciling: false, reconciliationError: null } };
             if (this.disposed) entry.state = state;
-            else this.publish(entry, state);
+            else { this.publish(entry, state); if (current) { this.clearSteps(entry.steps, emptyTaskStepsState); entry.withdrawn = true; } }
+            if (current) {
+              if (this.disposed || entry.listeners.size === 0) void this.scope.revalidateProjectAccess(projectId).catch(() => {});
+              else this.scope.reportTaskNotFound(projectId);
+            }
           }
-          try { await this.revokeAccess(ticket, error, signal); }
-          catch (storageError) { if (!isAbortError(storageError) && !this.disposed && !this.scope.isInvalidated && this.scope.canRevokeProject(ticket)) this.failRead(entry, storageError, false); }
           return;
         }
-        await this.runMutationStage(projectId, taskId, operation, async () => {
-          if (error instanceof TaskMutationReviewExpired || !submitted && (isAbortError(error) || ticket !== null && !this.mutationIsCurrent(projectId, entry, operation, ticket))) {
-            this.expireMutationReview(projectId, taskId, operation);
-            return;
-          }
-          if (!this.admitMutationOutcome(projectId, taskId, operation, ticket, error)) return;
+        await settleError(async () => {
           if (confirmed) entry.committedVersion = committedVersion;
           if (submitted && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
-            this.markDeleted(projectId, taskId, ticket.cacheGeneration, error);
+            this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, error);
             return;
           }
           if (entry.state.status === "deleted") {
@@ -1118,7 +1649,7 @@ export class TaskDetailSessions {
           const phase = !submitted ? "refused" : error instanceof ApiError && error.kind === "server" && error.status !== null && error.status >= 400 && error.status < 500
             ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
           this.publish(entry, { ...entry.state, mutation: { operation, phase, error, reconciling: false, reconciliationError: null } });
-          if (phase === "conflict" || phase === "unknown") {
+          if (phase === "conflict" || phase === "unknown" || entry.source === "direct" && error instanceof ApiError && error.status === 404) {
             if (phase === "conflict") this.refreshProject(projectId);
             if (!this.disposed) await this.read(projectId, taskId, entry.state.revision, true, true);
           }
@@ -1133,6 +1664,7 @@ export class TaskDetailSessions {
     this.projects.clear();
     this.projectGenerations.clear();
     for (const entry of this.entries.values()) {
+      this.retireMutation(entry);
       this.clearSteps(entry.steps, emptyTaskStepsState);
       entry.steps.listeners.clear();
       entry.generation++;
@@ -1150,6 +1682,7 @@ export const TaskDetailSessionProvider = ({ children }: { readonly children: Rea
 };
 export const TaskDetailSessionBoundary = ({ children }: { readonly children: ReactNode }) =>
   useContext(Context) === null ? <TaskDetailSessionProvider>{children}</TaskDetailSessionProvider> : children;
+export const useOptionalTaskDetailSessions = (): TaskDetailSessions | null => useContext(Context);
 export const useTaskDetailSessions = (): TaskDetailSessions => {
   const sessions = useContext(Context);
   if (sessions === null) throw new Error("Task detail sessions are required.");
