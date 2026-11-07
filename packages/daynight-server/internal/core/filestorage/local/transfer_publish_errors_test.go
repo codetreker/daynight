@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"strings"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestPublishTransferRejectsMissingAndInvalidSources(t *testing.T) {
 	if err := s.PublishTransferAttachment(ctx, n, objectID, target); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled publication: %v", err)
 	}
-	if err := s.PublishTransferAttachment(t.Context(), n, objectID, target); !errors.Is(err, fs.ErrNotExist) {
+	if err := s.PublishTransferAttachment(t.Context(), n, objectID, target); !errors.Is(err, fs.ErrNotExist) || filestorage.PublicationOutcome(err) != filestorage.NotPublished {
 		t.Fatalf("missing namespace: %v", err)
 	}
 	if _, err := s.PutTransfer(t.Context(), n, objectID, strings.NewReader("staged")); err != nil {
@@ -40,6 +41,27 @@ func TestPublishTransferRejectsMissingAndInvalidSources(t *testing.T) {
 	}
 	if err := object.Body.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublishTransferDirectorySyncFailureRetainsOutcome(t *testing.T) {
+	s, _ := newStorage(t)
+	n := transferNamespace(t, transferID)
+	target, err := filestorage.NewTransferAttachmentTarget(transferID, otherTransferID, "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutTransfer(t.Context(), n, objectID, strings.NewReader("staged")); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("directory sync failed")
+	s.fileSync = func(*os.File) error { return cause }
+	err = s.PublishTransferAttachment(t.Context(), n, objectID, target)
+	if !errors.Is(err, cause) || filestorage.PublicationOutcome(err) != filestorage.Published {
+		t.Fatalf("publication outcome: %v", err)
+	}
+	if got := string(read(t, s, "task-attachments", target.Path())); got != "staged" {
+		t.Fatalf("target = %q", got)
 	}
 }
 

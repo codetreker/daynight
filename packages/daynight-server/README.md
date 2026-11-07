@@ -11,6 +11,13 @@ Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
 are grouped by project and the first two canonical task UUID characters; an
 explicit offline maintenance command migrates the old task-only layout.
+New and replaced attachments are limited to 5 MiB of actual content; a larger
+stream returns `payload_too_large` before publication. REST upload reads have a
+60-second socket deadline. Active upload I/O is limited per instance, user and
+Task, with immediate `resource_busy` refusal; idle MCP tickets use the separate
+private transfer ledger. The [attachment contract](../../docs/spec/daynight-task-attachments.md)
+and [design](../../docs/design/daynight-task-attachments.md) define the limits,
+publication facts and retained failure semantics.
 Dependency rows also
 persist an ordinary/external classification and task/graph reads expose the
 required external subset. Public create and versioned PATCH accept explicit

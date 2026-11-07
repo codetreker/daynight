@@ -27,6 +27,8 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	return &Store{Pool: pool}, nil
 }
 
+func (s *Store) MaxConnections() int { return int(s.Pool.Config().MaxConns) }
+
 func (s *Store) Close() { s.Pool.Close() }
 
 func (s *Store) Ready(ctx context.Context) error {

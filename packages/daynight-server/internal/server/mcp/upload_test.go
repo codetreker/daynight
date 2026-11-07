@@ -226,6 +226,47 @@ func TestUploadErrorRetainsConfirmedAttachmentReceipt(t *testing.T) {
 	}
 }
 
+func TestUploadLimitAndLeaseErrorsPreserveProtocolFacts(t *testing.T) {
+	f := newEntryFixture(t)
+	s := &uploadFixture{data: map[string]any{"transferId": invitationTestProjectID, "writeOutcome": "not_committed"}}
+	if err := RegisterUploadTools(f.entry, s); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	args := map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID, "action": "chunk", "transferId": invitationTestProjectID, "chunkId": invitationTestTeamID, "offset": "0", "contentBase64": "YQ=="}
+	for _, code := range []string{"payload_too_large", "resource_busy"} {
+		s.err = &model.Fault{Code: code, Message: "Upload rejected."}
+		fault := object(t, invitationCall(t, client, "task_attachment_put", args, true)["error"])
+		if fault["code"] != code || fault["writeOutcome"] != "not_committed" || object(t, fault["refs"])["transferId"] != invitationTestProjectID {
+			t.Fatalf("%s: %#v", code, fault)
+		}
+		if object(t, fault["refs"])["receipt"] != nil {
+			t.Fatalf("unconfirmed receipt: %#v", fault)
+		}
+	}
+}
+
+func TestUploadToolDiscoveryDescribesFileLimit(t *testing.T) {
+	f := newEntryFixture(t)
+	if err := RegisterUploadTools(f.entry, &uploadFixture{}); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	list, err := client.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range list.Tools {
+		if tool.Name == "task_attachment_put" {
+			if !strings.Contains(tool.Description, "512 KiB") || !strings.Contains(tool.Description, "5 MiB") {
+				t.Fatalf("incorrect upload description: %q", tool.Description)
+			}
+			return
+		}
+	}
+	t.Fatal("upload tool not listed")
+}
+
 func TestUploadRegistrationRejectsInvalidDefinition(t *testing.T) {
 	if err := RegisterUploadTools(newEntryFixture(t).entry, nil); err == nil {
 		t.Fatal("missing service accepted")
