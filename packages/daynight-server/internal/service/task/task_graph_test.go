@@ -284,7 +284,7 @@ func TestGraphSeedsPreserveOrderedEdgePrefixes(t *testing.T) {
   SELECT md5($1::text || ':' || n)::uuid, md5($1::text || ':' || (n-1))::uuid
   FROM generate_series(2, $2::int) n WHERE $4::boolean
 ), actual AS (
-  SELECT task_id, depends_on_task_id FROM task_dependencies WHERE project_id=$1
+  SELECT task_id, depends_on_task_id FROM task_dependencies WHERE project_id=$1::uuid
 )
 SELECT count(*) FROM (
   (SELECT * FROM expected EXCEPT SELECT * FROM actual)
