@@ -135,9 +135,6 @@ func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, princ
 	httpx.WriteJSON(w, request, logger, http.StatusOK, api.WorkerDetailResponse{ObservedAt: result.ObservedAt.UTC(), Worker: workerDetailResponse(result.Worker)})
 }
 
-func workerSummaryResponse(worker model.WorkerSnapshot) api.WorkerSummary {
-	return workerprotocol.Summary(worker)
-}
 func workerDetailResponse(worker model.WorkerSnapshot) api.WorkerDetail {
 	return workerprotocol.Detail(worker)
 }

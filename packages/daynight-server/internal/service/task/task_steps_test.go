@@ -189,6 +189,27 @@ func TestTaskStepsAdmittedPageRejectsCorruptLookahead(t *testing.T) {
 	}
 }
 
+func TestTaskStepGetBoundedRejectsInvalidAndMissingInputs(t *testing.T) {
+	tasks, database, project, _, principal := taskService(t)
+	parent := createTask(t, tasks, principal, project.ID, "Parent")
+	steps := taskservice.NewTaskSteps(database)
+	ctx := context.Background()
+	if _, err := steps.GetBounded(ctx, model.Principal{}, project.ID, parent.ID, "00000000"); err == nil {
+		t.Fatal("unauthenticated Step read succeeded")
+	}
+	if _, err := steps.GetBounded(ctx, principal, project.ID, parent.ID, "invalid"); err == nil {
+		t.Fatal("invalid Step ID was accepted")
+	}
+	_, err := steps.GetBounded(ctx, principal, project.ID, parent.ID, "00000000")
+	requireThreadFault(t, err, "not_found")
+	if _, err := database.Pool.Exec(ctx, `DROP TABLE task_steps`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := steps.GetBounded(ctx, principal, project.ID, parent.ID, "00000000"); err == nil || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("storage failure was hidden as missing Step: %v", err)
+	}
+}
+
 func TestTaskStepsOversizedTextDoesNotHideInvalidTitle(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	parent := createTask(t, tasks, principal, project.ID, "Parent")

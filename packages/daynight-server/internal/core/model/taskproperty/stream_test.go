@@ -203,3 +203,63 @@ func TestNormalizeStreamCancellationDuringLeadingWhitespace(t *testing.T) {
 		t.Fatalf("cancellation was reclassified: %v", err)
 	}
 }
+
+func TestNormalizeStreamUnicodeEscapesAndMalformedStrings(t *testing.T) {
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{"mixed hexadecimal digits", []byte(`[{"url":"\u0041\u0061\u00AF\u00af","title":"x"}]`)},
+		{"control escapes and surrogate pair", []byte(`[{"url":"\"\\\/\b\f\n\r\t","title":"\ud83d\ude00"}]`)},
+		{"high surrogate without pair", []byte(`[{"url":"\ud800x","title":"x"}]`)},
+		{"high surrogate before another escape", []byte(`[{"url":"\ud800\u0041","title":"x"}]`)},
+		{"lone low surrogate", []byte(`[{"url":"\udc00","title":"x"}]`)},
+		{"invalid hexadecimal digit", []byte(`[{"url":"\u00x0","title":"x"}]`)},
+		{"truncated Unicode escape", []byte(`[{"url":"\u00`)},
+		{"truncated string escape", []byte(`[{"url":"x\`)},
+		{"unescaped control", []byte("[{\"url\":\"x\ny\",\"title\":\"x\"}]")},
+		{"invalid UTF-8 byte", append(append([]byte(`[{"url":"`), 0xff), []byte(`","title":"x"}]`)...)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want, wantErr := taskproperty.NormalizeValue("pullRequests", tc.input)
+			got, gotErr := taskproperty.NormalizeStream(context.Background(), "pullRequests", bytes.NewReader(tc.input), 1<<20)
+			if (wantErr == nil) != (gotErr == nil) || wantErr == nil && !bytes.Equal(want, got) {
+				t.Fatalf("existing=%q %v streaming=%q %v", want, wantErr, got, gotErr)
+			}
+			if wantErr != nil {
+				var invalid *taskproperty.ValidationError
+				if !errors.As(gotErr, &invalid) {
+					t.Fatalf("invalid input lost classification: %v", gotErr)
+				}
+			}
+		})
+	}
+}
+
+func TestNormalizeStreamRejectsInvalidOversizedWorkerText(t *testing.T) {
+	for _, name := range []string{strings.Repeat("\u2003", 1000), strings.Repeat("x", 1000) + "\x00"} {
+		worker := workerFixture()
+		worker.AgentControlMode = model.AgentControlModeWeb
+		worker.Herdr = nil
+		worker.Machine.Name = name
+		raw, err := taskproperty.EncodeWorker(&worker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, omitted, err := taskproperty.NormalizeStreamLegacy(context.Background(), "worker", bytes.NewReader(raw), 16)
+		var invalid *taskproperty.ValidationError
+		if omitted || !errors.As(err, &invalid) {
+			t.Fatalf("invalid oversized worker: omitted=%v err=%v", omitted, err)
+		}
+	}
+}
+
+func TestNormalizeStreamPropagatesInterruptedUnicodeEscape(t *testing.T) {
+	for _, input := range []string{`[{"url":"\u`, `[{"url":"\u00`, `[{"url":"\ud83d\u`} {
+		_, err := taskproperty.NormalizeStream(context.Background(), "pullRequests", &cutPropertyReader{data: []byte(input)}, 1024)
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("input=%q: %v", input, err)
+		}
+	}
+}

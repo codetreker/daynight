@@ -377,8 +377,10 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 }
 
 func committedResponseFailure(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component string, err error) {
-	logger = logger.With("tx_outcome", "committed", "write_outcome", "unknown")
-	httpx.WriteError(w, request, logger, component, "response", &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err})
+	logger = logger.With("tx_outcome", "committed", "write_outcome", "unknown", component+"_error_code", "write_outcome_unknown")
+	failure := &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err}
+	httpx.LogFailure(logger, request.Context(), component, "response", failure)
+	httpx.WriteJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: failure.Code, Message: failure.Message, RequestID: httpx.RequestID(request.Context())}})
 }
 
 func writeTaskMutation(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component string, status int, location string, task model.Task) {

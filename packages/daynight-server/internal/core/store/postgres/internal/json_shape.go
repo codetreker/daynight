@@ -78,54 +78,6 @@ func (b *jsonShapeBuilder) bad(expr string, typ reflect.Type) string {
 	}
 }
 
-// JSONTimes returns SELECT statements yielding bounded timestamp text for every
-// matching field, including aliases later overwritten by another JSON key.
-func JSONTimes(expr string, typ reflect.Type) []string {
-	b := &jsonShapeBuilder{}
-	return b.times(expr, typ, nil, nil)
-}
-func (b *jsonShapeBuilder) times(expr string, typ reflect.Type, from, where []string) []string {
-	for typ.Kind() == reflect.Pointer {
-		typ = typ.Elem()
-	}
-	if typ == timeType {
-		if len(from) == 0 {
-			panic("root timestamp is unsupported")
-		}
-		conditions := append(append([]string{}, where...), `jsonb_typeof(`+expr+`)='string'`)
-		return []string{`SELECT ` + CompactJSONTime(expr+`#>>'{}'`) + ` FROM ` + strings.Join(from, ` CROSS JOIN LATERAL `) + ` WHERE ` + strings.Join(conditions, ` AND `)}
-	}
-	switch typ.Kind() {
-	case reflect.Struct:
-		var out []string
-		for i := 0; i < typ.NumField(); i++ {
-			f := typ.Field(i)
-			if !f.IsExported() {
-				continue
-			}
-			tag := strings.Split(f.Tag.Get("json"), ",")[0]
-			if tag == "-" {
-				continue
-			}
-			if tag == "" {
-				tag = f.Name
-			}
-			a := b.alias()
-			source := `jsonb_each(CASE WHEN jsonb_typeof(` + expr + `)='object' THEN ` + expr + ` ELSE '{}'::jsonb END) AS ` + a
-			fs := append(append([]string{}, from...), source)
-			ws := append(append([]string{}, where...), JSONFold(a+".key")+`='`+strings.ToLower(tag)+`'`)
-			out = append(out, b.times(a+".value", f.Type, fs, ws)...)
-		}
-		return out
-	case reflect.Slice, reflect.Array:
-		a := b.alias()
-		source := `jsonb_array_elements(CASE WHEN jsonb_typeof(` + expr + `)='array' THEN ` + expr + ` ELSE '[]'::jsonb END) AS ` + a + `(value)`
-		return b.times(a+".value", typ.Elem(), append(append([]string{}, from...), source), where)
-	default:
-		return nil
-	}
-}
-
 // JSONTimestampInvalid mirrors Go's RFC3339 parser, including its permissive
 // one-digit hour, comma fraction and 24:60 numeric timezone offset. Captured
 // fields are fixed width, so even long fractions are not materialized in Go.

@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -99,5 +100,21 @@ func TestTaskPageBudgetRejectsOversizedFirstItem(t *testing.T) {
 	_, fault, err := readBoundedTaskPage(context.Background(), r, id, selection, true)
 	if err != nil || fault == nil || fault.Code != "resource_limit_exceeded" {
 		t.Fatalf("unexpected fault: %v, error: %v", fault, err)
+	}
+}
+
+func TestTaskPageCursorEncodingErrorRetainsCause(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	selection, err := taskcore.SelectList(id, id, taskcore.ListRequest{PageRequest: model.PageRequest{Limit: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := &budgetReader{items: []model.Task{{ID: id, CreatedAt: invalid}, {ID: "00000000-0000-4000-8000-000000000002"}}}
+	_, _, err = readBoundedTaskPage(context.Background(), r, id, selection, true)
+	var local *taskPageEncodingError
+	var marshal *json.MarshalerError
+	if !errors.As(err, &local) || !errors.As(err, &marshal) || errors.Unwrap(local) == nil || !strings.Contains(err.Error(), "encode task cursor") {
+		t.Fatalf("cursor encoding cause lost: %v", err)
 	}
 }
