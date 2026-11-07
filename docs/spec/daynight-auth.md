@@ -45,7 +45,14 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 入口。完整 provider-qualified id 映射到本地 UUID，不同身份不按同邮箱自动合并。
 资料更新不改变本地用户和成员关系。每个用户恰有一个 Personal Team，包含其真实 owner admin 行；
 规范用户建立、Personal 初始化与浏览器 session 原子提交。重复及并发登录复用相同归属，
-已有 Personal 关系损坏明确失败。登录页只能展示当前 UniAuth App 同时允许且
+已有 Personal 关系损坏明确失败。身份领取的实际解压响应最多 2097152 bytes，期限为 15 秒。
+外部身份 ID、姓名和邮箱各最多 1024 UTF-8 bytes，头像 URL 最多 524288 UTF-8 bytes；
+完整规范化 profile JSON 还须不超过 1048576 bytes，字段上限与整体上限同时生效。
+可空字段保持原值；头像 data URL 原样保存，不增加 scheme 限制。上游响应协议错误（含读取、
+关闭失败）或 profile 准入失败时，可响应的请求返回 502 `identity_unavailable`，不提交新用户、
+资料、Personal Team 或 session，既有资料不变。
+已消费的一次性登录事务保持消费，必须重新登录，不能重试同一 code。
+登录页只能展示当前 UniAuth App 同时允许且
 已启用的 provider。前端通过 `GET /api/v1/auth/providers` 读取 `{providers:[ids]}`；
 读取失败显示可重试错误，空列表显示无可用登录方式，不能硬编码 provider 或以
 全局启用状态代替 App 范围。服务使用固定版本的 UniAuth SDK 实时读取当前 App
@@ -388,8 +395,9 @@ participant 新增单独授权，或修改、移除真实 grant；操作前确�
 进入 `/login?returnPath=...` 并保留目标的路径、query 和所选页签。缺少目标才使用默认值；
 已提供的目标必须是有效站内目标，外部地址、协议相对路径、反斜线、控制字符、登录循环
 和不支持的页面明确拒绝。已有会话访问 `/login` 直接进入有效目标或 `/projects`，
-历史返回不应反复显示中间登录页。已知登录事务的 callback 失败显示独立登录错误并保留
-有效目标，包括建立本地 session 失败；失败不重放可能已消费的身份 code。
+历史返回不应反复显示中间登录页。已知登录事务的 callback 失败时，除上游响应协议错误或
+profile 准入失败返回 502 外，显示独立登录错误并保留有效目标，包括建立本地 session 失败；
+失败不重放可能已消费的身份 code。
 
 邀请凭据在跳转前从 fragment 同步捕获并移出地址；以有效回跳目标识别同一邀请流程，
 经过 `/login?returnPath=/invitations` 或 `/login?returnPath=/team-invitations` 和账号切换时保留，凭据不进入回跳参数。主动离开邀请
@@ -507,8 +515,9 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 撤销无需等待文件 IO，已准入变更允许完成；后续请求重新认证和授权。保留 K1，不在文件
 IO 之后追加成员复查。
 
-数据 API 不跳转登录 HTML。已验证并消费的 callback 失败时进入 `/login` 的通用登录错误
-状态并保留该事务已验证的目标，错误绑定明确拒绝。Web 处理登录状态，CLI 提示 `daynight login`；失败不得伪装成空
+数据 API 不跳转登录 HTML。已验证并消费的 callback 在上游响应协议错误或 profile 准入失败时，
+可响应的请求返回 502 `identity_unavailable`；其他失败进入 `/login` 的通用登录错误状态并保留该事务已验证的
+目标，错误绑定明确拒绝。Web 处理登录状态，CLI 提示 `daynight login`；失败不得伪装成空
 项目或空成员。日志及验收回执不包含 Cookie、Authorization、Set-Cookie、PAT、
 App Secret、一次性 code 或邀请秘密。
 
