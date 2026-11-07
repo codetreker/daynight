@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
 
@@ -36,10 +37,10 @@ func completed(c store.Completion, err error, refusal *model.Fault) error {
 	}
 	return nil
 }
-func (s *Teams) write(ctx context.Context, id string, op func(store.TeamWriteDAO) error) error {
+func (s *Teams) write(ctx context.Context, id string, op func(store.TeamWriteScope) error) error {
 	var refusal *model.Fault
-	c, err := s.writer.WriteTeam(ctx, id, func(dao store.TeamWriteDAO) error {
-		return completion.Capture(func() error { return op(dao) }, &refusal)
+	c, err := s.writer.WriteTeam(ctx, id, func(scope store.TeamWriteScope) error {
+		return completion.Capture(func() error { return op(scope) }, &refusal)
 	})
 	return completed(c, err, refusal)
 }
@@ -174,7 +175,8 @@ func (s *Teams) RenameBounded(ctx context.Context, p model.Principal, id string,
 		return model.Team{}, err
 	}
 	var result model.Team
-	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err = s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
 		var e error
 		result, e = core.Rename(ctx, boundedTeamWriter{dao, limit}, p, input)
 		return e
@@ -189,7 +191,13 @@ func (s *Teams) DeleteBounded(ctx context.Context, p model.Principal, id string,
 	if err != nil {
 		return err
 	}
-	return s.write(ctx, id, func(dao store.TeamWriteDAO) error { return core.Delete(ctx, boundedTeamWriter{dao, limit}, p, input) })
+	return s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
+		if err := core.Delete(ctx, boundedTeamWriter{dao, limit}, p, input); err != nil {
+			return err
+		}
+		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{TeamID: id, TeamOwner: true})
+	})
 }
 func (s *Teams) changeMemberBounded(ctx context.Context, p model.Principal, id, user string, input core.ChangeTeamMember, remove bool, limit int) (core.TeamMemberResult, error) {
 	id, target, err := core.ValidateMemberChange(p, id, user, input, remove)
@@ -197,10 +205,14 @@ func (s *Teams) changeMemberBounded(ctx context.Context, p model.Principal, id, 
 		return core.TeamMemberResult{}, err
 	}
 	var result core.TeamMemberResult
-	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err = s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
 		var e error
 		result, e = core.ChangeMember(ctx, boundedTeamWriter{dao, limit}, p, target, input, remove)
-		return e
+		if e != nil {
+			return e
+		}
+		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{TeamID: id, UserID: target})
 	})
 	if err != nil {
 		return core.TeamMemberResult{}, err
@@ -220,7 +232,8 @@ func (s *Teams) Rename(ctx context.Context, p model.Principal, id string, input 
 		return model.Team{}, err
 	}
 	var result model.Team
-	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err = s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
 		var err error
 		result, err = core.Rename(ctx, dao, p, input)
 		return err
@@ -235,7 +248,13 @@ func (s *Teams) Delete(ctx context.Context, p model.Principal, id string, input 
 	if err != nil {
 		return err
 	}
-	return s.write(ctx, id, func(dao store.TeamWriteDAO) error { return core.Delete(ctx, dao, p, input) })
+	return s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
+		if err := core.Delete(ctx, dao, p, input); err != nil {
+			return err
+		}
+		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{TeamID: id, TeamOwner: true})
+	})
 }
 func (s *Teams) Members(ctx context.Context, p model.Principal, id string) ([]model.TeamMemberProfile, error) {
 	id, err := core.ValidateRead(p, id)
@@ -309,10 +328,14 @@ func (s *Teams) changeMember(ctx context.Context, p model.Principal, id, user st
 		return core.TeamMemberResult{}, err
 	}
 	var result core.TeamMemberResult
-	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err = s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
 		var err error
 		result, err = core.ChangeMember(ctx, dao, p, target, input, remove)
-		return err
+		if err != nil {
+			return err
+		}
+		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{TeamID: id, UserID: target})
 	})
 	if err != nil {
 		return core.TeamMemberResult{}, err
@@ -331,7 +354,8 @@ func (s *Teams) CreateInvitation(ctx context.Context, p model.Principal, id, exp
 		return core.MintedTeamInvitation{}, err
 	}
 	var result core.MintedTeamInvitation
-	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err = s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
 		var err error
 		result, err = core.CreateInvitation(ctx, dao, p, id, s.now)
 		return err
@@ -375,7 +399,8 @@ func (s *Teams) RevokeInvitation(ctx context.Context, p model.Principal, id, inv
 		return false, err
 	}
 	var changed bool
-	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err = s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
 		var err error
 		changed, err = core.RevokeInvitation(ctx, dao, p, inviteID, s.now)
 		return err
@@ -425,10 +450,14 @@ func (s *Teams) AcceptInvitation(ctx context.Context, p model.Principal, secret,
 		return core.TeamInvitationAcceptance{}, err
 	}
 	var result core.TeamInvitationAcceptance
-	err := s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+	err := s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
 		var err error
 		result, err = core.AcceptInvitation(ctx, dao, p, secret, s.now)
-		return err
+		if err != nil {
+			return err
+		}
+		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{TeamID: id, UserID: p.UserID})
 	})
 	if fault, classified := core.WriteFault(err); classified && fault.Code == "not_found" {
 		return core.TeamInvitationAcceptance{}, model.InvitationUnavailable(nil)

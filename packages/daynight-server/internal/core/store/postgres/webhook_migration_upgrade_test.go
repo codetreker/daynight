@@ -17,7 +17,7 @@ func TestWebhookUpgradePopulated47AndReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(schemaMigrations) != 48 || schemaMigrations[46].version != 47 || schemaMigrations[47].version != 48 {
+	if len(schemaMigrations) != 49 || schemaMigrations[46].version != 47 || schemaMigrations[47].version != 48 || schemaMigrations[48].version != 49 {
 		pool.Close()
 		t.Fatal("unexpected migration history")
 	}

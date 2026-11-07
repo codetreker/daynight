@@ -70,7 +70,7 @@ func opView(o wm.Operation) map[string]any {
 	}
 	return map[string]any{"operationId": o.ID, "kind": wireOperationKind(o.Kind), "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": nil, "generationAfter": nil, "keyId": key, "recordedAt": o.RecordedAt.UTC(), "expiresAt": o.ExpiresAt.UTC()}
 }
-func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope, e wm.Endpoint, manage bool) (map[string]any, error) {
+func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope, e wm.Endpoint, actor string, manage bool) (map[string]any, error) {
 	owner := map[string]any{"kind": e.Owner.Kind, "id": e.Owner.ID}
 	if e.DeletedAt != nil {
 		return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "deleted", "configVersion": version(e.ConfigVersion), "deletedAt": utcTime(e.DeletedAt)}, nil
@@ -103,7 +103,11 @@ func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope
 			overlap = utcTime(k.OverlapUntil)
 		}
 	}
-	return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "active", "name": e.Name, "enabled": e.Enabled, "configVersion": version(e.ConfigVersion), "destinationRevision": version(e.DestinationRevision), "destination": map[string]any{"kind": e.DestinationKind, "adapterVersion": e.AdapterVersion, "url": url, "displayUrl": display}, "signing": map[string]any{"scheme": "standard-webhooks-v1", "activeKeyId": e.ActiveKeyID, "overlapUntil": overlap}, "subscriptions": []any{}, "capabilities": map[string]any{"manage": manage, "readSecret": manage, "redeliver": manage}, "createdAt": e.CreatedAt.UTC(), "updatedAt": e.UpdatedAt.UTC(), "deletedAt": nil}, nil
+	subscriptions, err := s.subscriptionViews(ctx, scope, e, actor)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "active", "name": e.Name, "enabled": e.Enabled, "configVersion": version(e.ConfigVersion), "destinationRevision": version(e.DestinationRevision), "destination": map[string]any{"kind": e.DestinationKind, "adapterVersion": e.AdapterVersion, "url": url, "displayUrl": display}, "signing": map[string]any{"scheme": "standard-webhooks-v1", "activeKeyId": e.ActiveKeyID, "overlapUntil": overlap}, "subscriptions": subscriptions, "capabilities": map[string]any{"manage": manage, "readSecret": manage, "redeliver": manage}, "createdAt": e.CreatedAt.UTC(), "updatedAt": e.UpdatedAt.UTC(), "deletedAt": nil}, nil
 }
 func (s *Service) Get(ctx context.Context, p model.Principal, o Owner, id string) (any, error) {
 	var v any
@@ -116,7 +120,7 @@ func (s *Service) Get(ctx context.Context, p model.Principal, o Owner, id string
 		if e != nil {
 			return notFound(e)
 		}
-		v, e = s.endpointView(ctx, sc, ep, m)
+		v, e = s.endpointView(ctx, sc, ep, p.UserID, m)
 		return e
 	})
 	return v, err
@@ -229,7 +233,7 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 			if ep.DeletedAt != nil || (c.After != "" && (ep.CreatedAt.Before(c.CreatedAt) || (ep.CreatedAt.Equal(c.CreatedAt) && ep.ID <= c.After))) || (q.Enabled != nil && ep.Enabled != *q.Enabled) {
 				continue
 			}
-			v, e := s.endpointView(ctx, sc, ep, m)
+			v, e := s.endpointView(ctx, sc, ep, p.UserID, m)
 			if e != nil {
 				return e
 			}
@@ -241,7 +245,15 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 				more = true
 				break
 			}
-			items = append(items, map[string]any{"id": ep.ID, "owner": v["owner"], "name": ep.Name, "enabled": ep.Enabled, "configVersion": version(ep.ConfigVersion), "destination": dest, "projectCount": 0, "eventTypeCount": 0, "lastResult": nil, "lastAttemptAt": nil})
+			projects, eventTypes := map[string]bool{}, map[string]bool{}
+			for _, item := range v["subscriptions"].([]any) {
+				sub := item.(map[string]any)
+				projects[sub["projectId"].(string)] = true
+				for _, eventType := range sub["eventTypes"].([]string) {
+					eventTypes[eventType] = true
+				}
+			}
+			items = append(items, map[string]any{"id": ep.ID, "owner": v["owner"], "name": ep.Name, "enabled": ep.Enabled, "configVersion": version(ep.ConfigVersion), "destination": dest, "projectCount": len(projects), "eventTypeCount": len(eventTypes), "lastResult": nil, "lastAttemptAt": nil})
 			last = ep.ID
 			lastTime = ep.CreatedAt
 		}

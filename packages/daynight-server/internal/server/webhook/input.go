@@ -21,7 +21,7 @@ import (
 const maxBody = 256 << 10
 
 func uuidInput(v string) (string, error) {
-	if webhookcore.CanonicalUUID(v) != nil {
+	if webhookcore.CanonicalUUID(v) != nil || v == "00000000-0000-0000-0000-000000000000" {
 		return "", httpx.InvalidInput("ID must be a canonical nonzero UUID")
 	}
 	return v, nil
@@ -137,6 +137,68 @@ func destinationInput(raw json.RawMessage) (*Destination, error) {
 	return &Destination{Kind: kind, AdapterVersion: version, URL: value}, nil
 }
 
+func stringArray(raw json.RawMessage, field string) ([]string, error) {
+	var values []string
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &values) != nil {
+		return nil, httpx.InvalidInput(field + " must be an array of strings")
+	}
+	return values, nil
+}
+
+func subscriptionInput(raw json.RawMessage) ([]webhookcore.SubscriptionInput, error) {
+	var items []json.RawMessage
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &items) != nil {
+		return nil, httpx.InvalidInput("subscriptions must be an array")
+	}
+	result := make([]webhookcore.SubscriptionInput, 0, len(items))
+	ids := map[string]bool{}
+	for _, item := range items {
+		fields, err := jsonobject.Decode(item, "subscription", "id", "projectId", "eventTypes")
+		if err != nil {
+			return nil, httpx.InvalidInput(err.Error())
+		}
+		rawID, ok := fields["id"]
+		if !ok {
+			return nil, httpx.InvalidInput("subscription id is required")
+		}
+		var id *string
+		if !bytes.Equal(bytes.TrimSpace(rawID), []byte("null")) {
+			value, err := httpx.RequiredString(fields, "id")
+			if err != nil {
+				return nil, err
+			}
+			if _, err = uuidInput(value); err != nil {
+				return nil, err
+			}
+			if ids[value] {
+				return nil, httpx.InvalidInput("duplicate subscription id")
+			}
+			ids[value] = true
+			id = &value
+		}
+		projectID, err := httpx.RequiredString(fields, "projectId")
+		if err != nil {
+			return nil, err
+		}
+		if _, err = uuidInput(projectID); err != nil {
+			return nil, err
+		}
+		eventTypes, err := stringArray(fields["eventTypes"], "eventTypes")
+		if err != nil || len(eventTypes) == 0 {
+			return nil, httpx.InvalidInput("eventTypes must be a nonempty array")
+		}
+		seen := map[string]bool{}
+		for _, eventType := range eventTypes {
+			if !webhookcore.ValidEventType(eventType) || seen[eventType] {
+				return nil, httpx.InvalidInput("eventTypes must contain distinct registered event types")
+			}
+			seen[eventType] = true
+		}
+		result = append(result, webhookcore.SubscriptionInput{ID: id, ProjectID: projectID, EventTypes: eventTypes})
+	}
+	return result, nil
+}
+
 func mutationInput(fields map[string]json.RawMessage, digest, kind, endpoint string, p model.Principal) (Mutation, error) {
 	m := Mutation{Kind: kind, EndpointID: endpoint, RequestSHA256: digest}
 	var err error
@@ -203,18 +265,32 @@ func mutationInput(fields map[string]json.RawMessage, digest, kind, endpoint str
 		}
 		if raw, ok := fields["subscriptions"]; ok {
 			m.HasSubscriptions = true
-			var items []json.RawMessage
-			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &items) != nil || len(items) != 0 {
-				return m, httpx.InvalidInput("subscriptions must be empty")
+			m.Subscriptions, err = subscriptionInput(raw)
+			if err != nil {
+				return m, err
 			}
 		}
-		if _, ok := fields["confirmProjectIds"]; ok {
-			return m, httpx.InvalidInput("subscription confirmation is unavailable")
+		if raw, ok := fields["confirmProjectIds"]; ok {
+			m.HasConfirmProjectIDs = true
+			m.ConfirmProjectIDs, err = stringArray(raw, "confirmProjectIds")
+			if err != nil {
+				return m, err
+			}
+			seen := map[string]bool{}
+			for _, id := range m.ConfirmProjectIDs {
+				if _, err = uuidInput(id); err != nil {
+					return m, err
+				}
+				if seen[id] {
+					return m, httpx.InvalidInput("duplicate confirmed project")
+				}
+				seen[id] = true
+			}
 		}
 		if kind == "endpoint.create" && (m.Name == nil || m.Enabled == nil || m.Destination == nil || !m.HasSubscriptions) {
-			return m, httpx.InvalidInput("name, enabled, destination and empty subscriptions are required")
+			return m, httpx.InvalidInput("name, enabled, destination and subscriptions are required")
 		}
-		if kind == "endpoint.update" && m.Name == nil && m.Enabled == nil && m.Destination == nil && !m.HasSubscriptions {
+		if kind == "endpoint.update" && m.Name == nil && m.Enabled == nil && m.Destination == nil && !m.HasSubscriptions && !m.HasConfirmProjectIDs {
 			return m, httpx.InvalidInput("at least one configuration field is required")
 		}
 	}

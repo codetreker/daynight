@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	webhookcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 )
 
 // Owner identifies a personal user or a shared team. Personal owners are always
@@ -29,6 +30,9 @@ type Mutation struct {
 	Enabled                                                 *bool
 	Destination                                             *Destination
 	HasSubscriptions                                        bool
+	Subscriptions                                           []webhookcore.SubscriptionInput
+	ConfirmProjectIDs                                       []string
+	HasConfirmProjectIDs                                    bool
 	Mode                                                    string
 }
 

@@ -27,6 +27,15 @@ type unknownTeamDB struct {
 type unknownSnapshot struct{ store.SnapshotScope }
 type unknownReader struct{ store.TeamReader }
 type unknownWriter struct{ store.TeamWriteDAO }
+type unknownTeamScope struct{}
+type emptyTeamEligibility struct{ store.WebhookEligibilityDAO }
+
+func (unknownTeamScope) TeamDAO() store.TeamWriteDAO                 { return unknownWriter{} }
+func (unknownTeamScope) EligibilityDAO() store.WebhookEligibilityDAO { return emptyTeamEligibility{} }
+func (emptyTeamEligibility) LockAffected(context.Context, store.WebhookEligibilityFilter) ([]store.WebhookAuthorization, error) {
+	return nil, nil
+}
+
 type unknownCreator struct {
 	store.TeamCreationDAO
 	db *unknownTeamDB
@@ -79,9 +88,9 @@ func (d *unknownTeamDB) CreateTeam(_ context.Context, _ string, f func(store.Tea
 	}
 	return store.Completion{Outcome: store.TransactionUnknown}, unknownCommit()
 }
-func (d *unknownTeamDB) WriteTeam(_ context.Context, _ string, f func(store.TeamWriteDAO) error) (store.Completion, error) {
+func (d *unknownTeamDB) WriteTeam(_ context.Context, _ string, f func(store.TeamWriteScope) error) (store.Completion, error) {
 	d.writes++
-	if err := f(unknownWriter{}); err != nil {
+	if err := f(unknownTeamScope{}); err != nil {
 		return store.Completion{}, err
 	}
 	return store.Completion{Outcome: store.TransactionUnknown}, unknownCommit()

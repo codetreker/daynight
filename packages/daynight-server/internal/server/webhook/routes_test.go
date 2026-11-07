@@ -268,7 +268,7 @@ func TestMutationValidationAndRouting(t *testing.T) {
 		{"PATCH", base, `{` + common + `,"subscriptions":[ ]}`, "endpoint.update", 200},
 		{"DELETE", base, `{` + common + `}`, "endpoint.delete", 200},
 		{"PATCH", base, `{` + common + `}`, "", 400},
-		{"PATCH", base, `{` + common + `,"confirmProjectIds":[]}`, "", 400},
+		{"PATCH", base, `{` + common + `,"confirmProjectIds":[]}`, "endpoint.update", 200},
 		{"PATCH", base, `{` + strings.Replace(common, `"2"`, `"02"`, 1) + `,"enabled":false}`, "", 400},
 		{"PATCH", base, `{` + strings.Replace(common, `"2"`, `"9223372036854775808"`, 1) + `,"enabled":false}`, "", 400},
 		{"POST", base + "/signing-secret/rotations", `{` + common + `,"mode":"other"}`, "", 400},
