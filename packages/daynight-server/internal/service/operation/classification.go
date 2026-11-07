@@ -47,6 +47,8 @@ func KnownFault(err error) (*model.Fault, bool) {
 	var fault *model.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
+		case "invalid_operation_time", "operation_expired", "content_too_large", "subscription_capacity", "destination_unsupported", "operation_capacity", "webhooks_unavailable", "webhook_capacity_unavailable", "dependency_unavailable":
+			return fault, true
 		case "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "capability_error", "cleanup_unknown", "io_error", "offline", "unsupported", "timeout", "cancelled", "busy", "limit_exceeded", "invalid_cursor", "invalid_path":
 			return fault, true
 		case "list_changed", "configuration_not_initialized", "invalid_search_expression", "search_context_limit_exceeded", "search_changed", "search_timeout", "transfer_conflict", "transfer_state_conflict", "capacity_unavailable":

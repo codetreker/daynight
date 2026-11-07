@@ -192,30 +192,30 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusUnauthorized
 		case "permission_denied", "forbidden":
 			status = http.StatusForbidden
-		case "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_search_expression", "search_context_limit_exceeded":
+		case "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_search_expression", "search_context_limit_exceeded", "invalid_operation_time":
 			status = http.StatusBadRequest
 		case "search_timeout", "timeout":
 			status = http.StatusGatewayTimeout
-		case "payload_too_large", "limit_exceeded":
+		case "payload_too_large", "limit_exceeded", "content_too_large":
 			status = http.StatusRequestEntityTooLarge
-		case "capability_error", "cleanup_unknown", "io_error", "offline", "controller_offline", "relay_instance_unavailable":
+		case "capability_error", "cleanup_unknown", "io_error", "offline", "controller_offline", "relay_instance_unavailable", "webhooks_unavailable", "webhook_capacity_unavailable", "dependency_unavailable":
 			status = http.StatusServiceUnavailable
 		case "unsupported":
 			status = http.StatusNotImplemented
-		case "busy":
+		case "busy", "operation_capacity":
 			status = http.StatusTooManyRequests
 		case "content_unavailable":
 			status = http.StatusBadGateway
 		case "rate_limited":
 			status = http.StatusTooManyRequests
 			w.Header().Set("Retry-After", "60")
-		case "task_deleted":
+		case "task_deleted", "operation_expired":
 			status = http.StatusGone
 		case "not_found", "message_not_found", "invitation_unavailable":
 			status = http.StatusNotFound
 		case "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown":
 			status = http.StatusServiceUnavailable
-		case "configuration_not_initialized", "search_changed":
+		case "configuration_not_initialized", "search_changed", "subscription_capacity", "destination_unsupported":
 			status = http.StatusConflict
 		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict":
 			status = http.StatusConflict
