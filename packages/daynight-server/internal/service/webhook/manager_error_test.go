@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -628,5 +629,261 @@ func TestCorruptStoredTimestampCannotProduceContinuationCursor(t *testing.T) {
 	cursor, err := nextCursor(cursorScope{PrincipalID: boundaryUserID, Owner: webhookmodel.Owner{Kind: webhookmodel.PersonalOwner, ID: boundaryUserID}}, endpoint)
 	if err == nil || cursor != "" {
 		t.Fatal("unencodable stored timestamp produced a false continuation cursor")
+	}
+}
+
+func boundaryReplayFixture(t *testing.T, kind string) (*boundaryFixture, webhookmodel.OperationReceipt) {
+	t.Helper()
+	f := newBoundaryFixture(t)
+	destination, err := f.manager.destination(f.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := f.manager.signingSecret(f.endpoint, f.endpoint.SigningKeys[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.owner = webhookmodel.Owner{Kind: webhookmodel.TeamOwner, ID: boundaryOperationID}
+	current := f.endpoint
+	current.Owner, current.ConfigVersion = f.owner, 5
+	current.EncryptedDestination = boundarySealDestination(t, f.manager, current, destination)
+	associatedData, err := webhookcore.SigningAssociatedData(current, current.ActiveKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.SigningKeys[0].EncryptedSecret, err = f.manager.encrypt(secret, associatedData)
+	clear(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind == "delete" {
+		deletedAt := boundaryNow
+		current.DeletedAt, current.ConfigVersion = &deletedAt, 4
+		current.Name, current.ActiveKeyID, current.DestinationOrigin = "", "", ""
+		current.EncryptedDestination, current.SigningKeys = nil, []webhookmodel.SigningKey{}
+	}
+	f.endpoint = current
+	lookup := func(_ context.Context, owner webhookmodel.Owner, id string) (webhookmodel.Endpoint, error) {
+		if owner != f.owner || id != current.ID {
+			t.Fatal("replay view crossed endpoint or owner")
+		}
+		return current, nil
+	}
+	projects := func(_ context.Context, owner webhookmodel.Owner, userID string, ids []string) ([]webhookmodel.ProjectAccess, error) {
+		if owner != f.owner || userID != f.principal.UserID {
+			t.Fatal("replay qualification crossed owner or principal")
+		}
+		result := []webhookmodel.ProjectAccess{}
+		for _, id := range ids {
+			if id != boundaryProjectID {
+				t.Fatal("unexpected replay project")
+			}
+			name := "Project"
+			result = append(result, webhookmodel.ProjectAccess{ProjectID: id, ProjectName: &name, Present: true, CanRead: true, OwnerTeamID: owner.ID})
+		}
+		return result, nil
+	}
+	f.read.dao.endpoint, f.read.dao.projects = lookup, projects
+	operationKind := webhookmodel.EndpointCreate
+	target := ""
+	var normalized any
+	name := "Changed release"
+	switch kind {
+	case "create":
+		_, _, destination := boundaryCrypto(t)
+		normalized, err = webhookcore.NormalizeCreate(webhookcore.CreateInput{Operation: f.input, Name: "Release", Enabled: true, Destination: destination, Subscriptions: []webhookcore.SubscriptionInput{{ProjectID: boundaryProjectID, EventTypes: []string{"task.paused"}}}})
+	case "patch":
+		operationKind, target = webhookmodel.EndpointPatch, current.ID
+		normalized, err = webhookcore.NormalizePatch(webhookcore.PatchInput{Operation: f.input, IfVersion: 3, Name: &name})
+	case "delete":
+		operationKind, target = webhookmodel.EndpointDelete, current.ID
+		normalized, err = webhookcore.NormalizeDelete(webhookcore.DeleteInput{Operation: f.input, IfVersion: 3})
+	case "rotate":
+		operationKind, target = webhookmodel.SecretRotate, current.ID
+		normalized, err = webhookcore.NormalizeRotation(webhookcore.RotateInput{Operation: f.input, IfVersion: 3, Mode: "immediate"})
+	default:
+		t.Fatal("unsupported replay fixture")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := webhookcore.Fingerprint(operationKind, f.owner, target, normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := webhookmodel.OperationReceipt{OperationID: f.input.ID, Kind: operationKind, IssuedAt: f.input.IssuedAt, RequestSHA256: f.input.RequestSHA256, Fingerprint: fingerprint, ActorUserID: f.principal.UserID, Owner: f.owner, EndpointID: current.ID, Effect: webhookmodel.EffectApplied, ConfigVersionAfter: 4, DestinationRevisionAfter: 2, RecordedAt: boundaryNow, ExpiresAt: boundaryNow.Add(30 * 24 * time.Hour)}
+	if kind == "create" {
+		receipt.ConfigVersionAfter, receipt.DestinationRevisionAfter = 1, 1
+	}
+	if kind == "rotate" {
+		id := boundaryKeyID
+		receipt.KeyID = &id
+	}
+	f.write.dao.receipt = func(context.Context, webhookmodel.Owner, string) (webhookmodel.OperationReceipt, error) {
+		return receipt, nil
+	}
+	// The operation-fenced RC phase may authenticate and match its receipt,
+	// but must not project current resources or start another effect.
+	f.write.dao.endpoint, f.write.dao.projects, f.write.dao.policy = nil, nil, nil
+	f.write.dao.lock, f.write.dao.reserveOperation, f.write.dao.reserveConfiguration = nil, nil, nil
+	f.write.dao.insertEndpoint, f.write.dao.saveEndpoint, f.write.dao.insertOperation = nil, nil, nil
+	f.write.now = nil
+	return f, receipt
+}
+
+func TestReplayKeepsMatchedOperationFactsWhenCurrentViewFails(t *testing.T) {
+	for _, kind := range []string{"create", "patch", "delete", "rotate"} {
+		for _, stage := range []string{"snapshot", "credential", "owner", "endpoint", "clock", "projects"} {
+			if kind == "delete" && stage == "projects" {
+				continue
+			}
+			t.Run(kind+"/"+stage, func(t *testing.T) {
+				f, receipt := boundaryReplayFixture(t, kind)
+				cause := errors.New("current view dependency unavailable")
+				released := false
+				prechecks, views := 0, 0
+				write := f.database.write
+				f.database.write = func(ctx context.Context, owner webhookmodel.Owner, id string, callback func(store.WebhookWriteScope) error) (store.Completion, error) {
+					completion, err := write(ctx, owner, id, callback)
+					released = true
+					switch stage {
+					case "credential":
+						f.read.credential.read = func(context.Context, model.Principal) (store.ThreadCredential, error) {
+							return store.ThreadCredential{}, cause
+						}
+					case "owner":
+						f.read.dao.owner = func(context.Context, webhookmodel.Owner, string) (webhookmodel.OwnerAccess, error) {
+							return webhookmodel.OwnerAccess{}, cause
+						}
+					case "endpoint":
+						f.read.dao.endpoint = func(context.Context, webhookmodel.Owner, string) (webhookmodel.Endpoint, error) {
+							return webhookmodel.Endpoint{}, cause
+						}
+					case "clock":
+						f.read.now = func(context.Context) (time.Time, error) { return time.Time{}, cause }
+					case "projects":
+						f.read.dao.projects = func(context.Context, webhookmodel.Owner, string, []string) ([]webhookmodel.ProjectAccess, error) {
+							return nil, cause
+						}
+					}
+					return completion, err
+				}
+				f.database.read = func(_ context.Context, callback func(store.SnapshotScope) error) error {
+					if !released {
+						prechecks++
+						return callback(f.read)
+					}
+					views++
+					if stage == "snapshot" {
+						return cause
+					}
+					return callback(f.read)
+				}
+				result, err := f.writeCall(kind)
+				if !errors.Is(err, cause) || !result.Replayed || !reflect.DeepEqual(result.Operation, receipt) {
+					t.Fatalf("current view failure lost matched operation facts: %+v %v", result, err)
+				}
+				if operation.CompletionFacts(err).Outcome != "" {
+					t.Fatal("current read failure was reclassified as a write outcome")
+				}
+				if prechecks != 1 || views != 1 {
+					t.Fatalf("replay did not use precheck then one post-release snapshot: %d %d", prechecks, views)
+				}
+				if f.write.dao.insertCalls != 0 || f.write.dao.saveCalls != 0 || f.write.dao.receiptCalls != 0 {
+					t.Fatal("failed replay view started another effect")
+				}
+			})
+		}
+	}
+}
+
+func TestReplayRevalidatesCurrentCredentialOwnerAndReceiptReadRights(t *testing.T) {
+	for _, change := range []string{"credential revoked", "owner lost", "manager demoted"} {
+		t.Run(change, func(t *testing.T) {
+			f, receipt := boundaryReplayFixture(t, "patch")
+			write := f.database.write
+			f.database.write = func(ctx context.Context, owner webhookmodel.Owner, id string, callback func(store.WebhookWriteScope) error) (store.Completion, error) {
+				completion, err := write(ctx, owner, id, callback)
+				switch change {
+				case "credential revoked":
+					f.read.credential.read = func(context.Context, model.Principal) (store.ThreadCredential, error) {
+						return store.ThreadCredential{}, model.ErrNotFound
+					}
+					f.read.dao.endpoint = nil
+				case "owner lost":
+					f.read.dao.owner = func(context.Context, webhookmodel.Owner, string) (webhookmodel.OwnerAccess, error) {
+						return webhookmodel.OwnerAccess{}, nil
+					}
+					f.read.dao.endpoint = nil
+				case "manager demoted":
+					f.read.dao.owner = func(context.Context, webhookmodel.Owner, string) (webhookmodel.OwnerAccess, error) {
+						return webhookmodel.OwnerAccess{CanRead: true}, nil
+					}
+				}
+				return completion, err
+			}
+			result, err := f.writeCall("patch")
+			if !result.Replayed || result.Operation.OperationID != receipt.OperationID {
+				t.Fatal("current admission change lost original receipt")
+			}
+			if change == "manager demoted" {
+				if err != nil || result.Endpoint.Access.CanManage || result.Endpoint.Destination != nil {
+					t.Fatal("post-release view restored old management disclosure")
+				}
+				return
+			}
+			var fault *model.Fault
+			code := "forbidden"
+			if change == "credential revoked" {
+				code = "unauthenticated"
+			}
+			if !errors.As(err, &fault) || fault.Code != code || operation.CompletionFacts(err).Outcome != "" {
+				t.Fatalf("current read refusal became a historical write refusal: %v", err)
+			}
+		})
+	}
+	f, receipt := boundaryReplayFixture(t, "patch")
+	f.read.dao.owner = func(context.Context, webhookmodel.Owner, string) (webhookmodel.OwnerAccess, error) {
+		return webhookmodel.OwnerAccess{CanRead: true}, nil
+	}
+	f.read.dao.endpoint = nil
+	receipt.ActorUserID = boundaryCredentialID
+	_, err := f.manager.readEndpointSnapshot(context.Background(), f.principal, f.owner, f.endpoint.ID, &receipt)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "forbidden" {
+		t.Fatal("current member could project another actor's receipt")
+	}
+}
+
+func TestReplayReadOnlyCompletionFactsDoNotEraseMatchedHistoricalWrite(t *testing.T) {
+	for _, kind := range []string{"create", "patch", "delete", "rotate"} {
+		t.Run(kind, func(t *testing.T) {
+			f, receipt := boundaryReplayFixture(t, kind)
+			cause := &model.Fault{Code: "forbidden", Message: "Current endpoint view is not authorized."}
+			readError := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: cause}
+			released := false
+			write := f.database.write
+			f.database.write = func(ctx context.Context, owner webhookmodel.Owner, id string, callback func(store.WebhookWriteScope) error) (store.Completion, error) {
+				completion, err := write(ctx, owner, id, callback)
+				released = true
+				return completion, err
+			}
+			f.database.read = func(_ context.Context, callback func(store.SnapshotScope) error) error {
+				if released {
+					return readError
+				}
+				return callback(f.read)
+			}
+			result, err := f.writeCall(kind)
+			if err != readError || !errors.Is(err, cause) || !result.Replayed || !reflect.DeepEqual(result.Operation, receipt) {
+				t.Fatal("read-only refusal was rewritten or erased matched historical write facts")
+			}
+			if operation.CompletionFacts(err).Outcome != store.TransactionNotCommitted {
+				t.Fatal("read-only transaction's original completion fact was discarded")
+			}
+			if f.write.dao.insertCalls != 0 || f.write.dao.saveCalls != 0 || f.write.dao.receiptCalls != 0 {
+				t.Fatal("read-only refusal started another historical operation effect")
+			}
+		})
 	}
 }

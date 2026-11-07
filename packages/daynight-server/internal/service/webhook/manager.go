@@ -205,6 +205,10 @@ func (s *Manager) Get(ctx context.Context, principal model.Principal, owner webh
 	if err := resourceID(endpointID); err != nil {
 		return EndpointResult{}, err
 	}
+	return s.readEndpointSnapshot(ctx, principal, owner, endpointID, nil)
+}
+
+func (s *Manager) readEndpointSnapshot(ctx context.Context, principal model.Principal, owner webhookmodel.Owner, endpointID string, receipt *webhookmodel.OperationReceipt) (EndpointResult, error) {
 	var result EndpointResult
 	err := s.database.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
 		if err := readCredential(ctx, scope, principal); err != nil {
@@ -217,6 +221,11 @@ func (s *Manager) Get(ctx context.Context, principal model.Principal, owner webh
 		}
 		if err := webhookcore.RequireOwner(owner, principal.UserID, access, false); err != nil {
 			return err
+		}
+		if receipt != nil {
+			if err := webhookcore.RequireReceiptRead(owner, principal.UserID, access, *receipt); err != nil {
+				return err
+			}
 		}
 		endpoint, err := dao.Endpoint(ctx, owner, endpointID)
 		if err != nil {

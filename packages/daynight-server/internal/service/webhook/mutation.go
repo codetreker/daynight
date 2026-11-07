@@ -181,19 +181,7 @@ func (s *Manager) mutate(ctx context.Context, principal model.Principal, owner w
 			if err := webhookcore.MatchReceipt(receipt, request.operation, request.kind, owner, request.target, fingerprint); err != nil {
 				return err
 			}
-			endpoint, err := dao.Endpoint(ctx, owner, receipt.EndpointID)
-			if err != nil {
-				return err
-			}
-			now, err := scope.ObservedAt(ctx)
-			if err != nil {
-				return err
-			}
-			projected, err := s.endpointResult(ctx, dao, principal, owner, endpoint, access, now, true)
-			if err != nil {
-				return err
-			}
-			result = MutationResult{Operation: receipt, Endpoint: projected, Replayed: true}
+			result = MutationResult{Operation: receipt, Replayed: true}
 			return nil
 		}
 		if !errors.Is(err, model.ErrNotFound) {
@@ -329,6 +317,14 @@ func (s *Manager) mutate(ctx context.Context, principal model.Principal, owner w
 	}
 	if completion.Outcome != store.TransactionCommitted {
 		return MutationResult{}, &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: fmt.Errorf("Webhook transaction did not confirm commit")}
+	}
+	if result.Replayed {
+		// Release the operation fence and its connection before the current-view
+		// snapshot, so authorization cannot come from an older RC statement.
+		result.Endpoint, err = s.readEndpointSnapshot(ctx, principal, owner, result.Operation.EndpointID, &result.Operation)
+		if err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }
