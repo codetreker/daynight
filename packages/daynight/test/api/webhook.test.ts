@@ -39,6 +39,7 @@ describe("webhook API boundaries", () => {
     const view = { id: deliveryId, endpointId, eventId: operationId, owner, eventType: "task.created", resource: { projectId: operationId, taskId: operationId, stepId: null, messageId: null, displayName: null }, occurredAt: time, resourceVersion: "1", target: { destinationRevision: "1", url: null, displayUrl: "https://example.test/…" }, generation: "1", state: "pending", attemptCount: 0, automaticAttemptCount: 0, manualOperationCount: 0, nextAttemptAt: null, lastAttemptAt: null, expiresAt: time, automaticExpiresAt: time, payloadExpiresAt: time, lastAcknowledgedAt: null, lastResult: null, payloadAvailable: true, disclosure: "full" };
     expect(parseWebhookDelivery(view, owner, endpointId, deliveryId).eventType).toBe("task.created");
     expect(() => parseWebhookDelivery({ ...view, eventType: null }, owner, endpointId)).toThrow();
+    expect(() => parseWebhookDelivery({ ...view, lastResult: { category: "http_error", code: "HTTP", httpStatus: 999, durationMs: null } }, owner, endpointId)).toThrow();
     expect(() => parseWebhookDelivery({ ...view, disclosure: "metadata_only" }, owner, endpointId)).toThrow();
     const hidden = { ...view, disclosure: "metadata_only", eventType: null, resourceVersion: null, resource: { projectId: null, taskId: null, stepId: null, messageId: null, displayName: null }, target: { destinationRevision: "1", url: null, displayUrl: null }, payloadAvailable: false };
     expect(parseWebhookDelivery(hidden, owner, endpointId).disclosure).toBe("metadata_only");

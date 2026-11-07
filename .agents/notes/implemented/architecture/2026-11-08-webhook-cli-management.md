@@ -39,7 +39,8 @@ retention and admission windows limit later reconciliation and resubmission; a
 missing receipt alone does not establish that the write was rolled back. The CLI
 also checks a receipt's expiry against its local clock before confirmation, since
 the management API can still return a retained row after its expiry. Clock skew
-can therefore prevent confirmation. Normal
+can prevent confirmation or allow a locally unexpired receipt that has expired
+on the service clock. Normal
 human output omits sensitive destination paths, and raw payload output preserves
 its exact bytes. File export fails on platforms without the required inode-bound
 publication. Temporary-name cleanup checks the inode before removal; that check

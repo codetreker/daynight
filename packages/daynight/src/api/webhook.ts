@@ -14,6 +14,7 @@ const version = (value: unknown): string => {
 };
 const nonempty = (value: unknown): string => text(value, true);
 const positive = (value: unknown): number => { const n = count(value); return n > 0 ? n : malformed(); };
+const httpStatus = (value: unknown): number => { const n = count(value); return n >= 100 && n <= 599 ? n : malformed(); };
 const eventType = (value: unknown) => oneOf(value, ["task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"] as const);
 export const parseWebhookOwner = (value: unknown, expected?: WebhookOwner): WebhookOwner => {
   const o = fields(value, ["kind", "id"]);
@@ -38,7 +39,7 @@ const subscription = (value: unknown) => {
 const outcome = (value: unknown) => oneOf(value, ["acknowledged", "http_error", "receiver_error", "transport_error", "unknown", "cancelled", "policy_denied", "render_error"] as const);
 const result = (value: unknown) => {
   const d = fields(value, ["category", "code", "httpStatus", "durationMs"]);
-  return { category: outcome(d.category), code: nullable(d.code, nonempty), httpStatus: nullable(d.httpStatus, positive), durationMs: nullable(d.durationMs, count) };
+  return { category: outcome(d.category), code: nullable(d.code, nonempty), httpStatus: nullable(d.httpStatus, httpStatus), durationMs: nullable(d.durationMs, count) };
 };
 export const parseWebhookCatalog = (value: unknown) => {
   const d = fields(value, ["items", "service", "limits"]);
@@ -109,8 +110,8 @@ export const parseWebhookAttempt = (value: unknown, endpointId: string, delivery
   const d = fields(value, ["id", "endpointId", "deliveryId", "generation", "number", "claimedAt", "admittedAt", "dispatchedAt", "finishedAt", "outcome", "httpStatus", "durationMs", "error", "recoveredUnknownAt", "lateResult"]);
   if (id(d.endpointId) !== endpointId || id(d.deliveryId) !== deliveryId) return malformed();
   const error = nullable(d.error, (v) => { const e = fields(v, ["category", "code", "message"]); return { category: outcome(e.category), code: nonempty(e.code), message: text(e.message) }; });
-  const lateResult = nullable(d.lateResult, (v) => { const e = fields(v, ["observedAt", "outcome", "httpStatus", "durationMs", "error"]); return { observedAt: timestamp(e.observedAt), outcome: outcome(e.outcome), httpStatus: nullable(e.httpStatus, positive), durationMs: nullable(e.durationMs, count), error: nullable(e.error, nonempty) }; });
-  return { id: id(d.id), endpointId, deliveryId, generation: version(d.generation), number: positive(d.number), claimedAt: timestamp(d.claimedAt), admittedAt: nullableTimestamp(d.admittedAt), dispatchedAt: nullableTimestamp(d.dispatchedAt), finishedAt: nullableTimestamp(d.finishedAt), outcome: nullable(d.outcome, outcome), httpStatus: nullable(d.httpStatus, positive), durationMs: nullable(d.durationMs, count), error, recoveredUnknownAt: nullableTimestamp(d.recoveredUnknownAt), lateResult };
+  const lateResult = nullable(d.lateResult, (v) => { const e = fields(v, ["observedAt", "outcome", "httpStatus", "durationMs", "error"]); return { observedAt: timestamp(e.observedAt), outcome: outcome(e.outcome), httpStatus: nullable(e.httpStatus, httpStatus), durationMs: nullable(e.durationMs, count), error: nullable(e.error, nonempty) }; });
+  return { id: id(d.id), endpointId, deliveryId, generation: version(d.generation), number: positive(d.number), claimedAt: timestamp(d.claimedAt), admittedAt: nullableTimestamp(d.admittedAt), dispatchedAt: nullableTimestamp(d.dispatchedAt), finishedAt: nullableTimestamp(d.finishedAt), outcome: nullable(d.outcome, outcome), httpStatus: nullable(d.httpStatus, httpStatus), durationMs: nullable(d.durationMs, count), error, recoveredUnknownAt: nullableTimestamp(d.recoveredUnknownAt), lateResult };
 };
 export const parseWebhookHistoryPage = <T>(value: unknown, parse: (value: unknown) => T) => {
   const d = fields(value, ["items", "nextCursor", "historyMayBeIncomplete", "retention"]);
