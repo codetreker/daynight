@@ -20,7 +20,8 @@ shows only safe scope and version details.
 Supply `--operation-id` and `--issued-at` together or let the CLI generate them
 after confirmation. `--operation-out <path>` creates a private, exclusive
 prepared record before submission. It stores identity, scope, versions and the
-request hash, not the body or secrets. Ordinary writes are not automatically
+request hash, not the body or secrets. Private prepared-file creation is
+unavailable on Windows and fails before sending. Ordinary writes are not automatically
 replayed. Unknown outcomes retain the original identity; use `webhook operation
 show` to inspect its receipt. A missing receipt or matching current resource
 does not prove rollback or success.

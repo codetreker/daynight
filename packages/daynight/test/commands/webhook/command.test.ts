@@ -53,7 +53,7 @@ describe("Webhook command failure boundaries", () => {
     expect(f.stdout).not.toHaveBeenCalled();
   });
 
-  it("creates a private exclusive prepared record before submission and preserves it on collision", async () => {
+  it.skipIf(process.platform === "win32")("creates a private exclusive prepared record before submission and preserves it on collision", async () => {
     const f = await fixture(); const at = issued(), recordPath = path.join(f.dir, "prepared.json");
     f.setResponse(() => refusal("operation_conflict"));
     const error = await runWebhookCommand([...args(at), "--operation-out", recordPath], f.context).catch((e: unknown) => e);
@@ -70,7 +70,7 @@ describe("Webhook command failure boundaries", () => {
     expect(await readFile(recordPath)).toEqual(bytes);
   });
 
-  it.each(["wrong principal", "malformed body"])("does not resend on a %s 404 during resume", async (failure) => {
+  it.skipIf(process.platform === "win32").each(["wrong principal", "malformed body"])("does not resend on a %s 404 during resume", async (failure) => {
     const f = await fixture(); const at = issued(), recordPath = path.join(f.dir, "prepared.json");
     f.setResponse(() => refusal("operation_conflict"));
     await runWebhookCommand([...args(at), "--operation-out", recordPath], f.context).catch(() => {});

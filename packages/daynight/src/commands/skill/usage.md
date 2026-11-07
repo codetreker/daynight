@@ -67,7 +67,8 @@ Writes use one operation ID and original issued time. Supply both
 `--operation-id` and `--issued-at`, or let the CLI generate both after
 confirmation. `--operation-out <path>` exclusively creates a private prepared
 record before sending; it contains identity, scope, versions and request hash,
-not body or secrets. Ordinary writes are not automatically replayed. An unknown
+not body or secrets. Private prepared-file creation is unavailable on Windows
+and fails before sending. Ordinary writes are not automatically replayed. An unknown
 outcome retains the original identity; inspect it with `operation show`. Missing
 receipts or matching current values do not prove rollback or success.
 

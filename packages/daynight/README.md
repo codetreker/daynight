@@ -774,7 +774,8 @@ Writes preserve an operation ID and original issued time. Supply both
 `--operation-id` and `--issued-at`, or let the CLI generate both after
 confirmation. `--operation-out <path>` exclusively creates a private prepared
 record before sending; it contains the scope, versions and request hash, but no
-body, URL, credentials or secret. An unknown result retains the original
+body, URL, credentials or secret. Private prepared-file creation is unavailable
+on Windows and fails before sending. An unknown result retains the original
 identity and is never automatically replayed. Inspect the original receipt with
 `operation show`; current resource values or a missing receipt do not establish
 the original outcome. To resume, use `--resume-operation <path>` on the original

@@ -4,6 +4,7 @@ import { cp, mkdir, readFile, readdir, stat, symlink, unlink, writeFile } from "
 import { createServer, request as httpRequest } from "node:http";
 import path from "node:path";
 import { expect, it } from "vitest";
+import crossSpawn from "cross-spawn";
 import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
@@ -157,7 +158,7 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
   Object.assign(env, { HOME: home, USERPROFILE: home, DN_CONFIG_DIR: config, XDG_CONFIG_HOME: path.join(fixture, "xdg"), XDG_CACHE_HOME: path.join(fixture, "cache"), TMPDIR: temporary, TMP: temporary, TEMP: temporary, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(fixture, "gitconfig"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
   const invoke = async (args: string[], alias = false, input?: string, closeOutput = false, preload?: string) => {
     const launcher = alias ? path.join(path.dirname(receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn") : receipt.launcherPath;
-    const child = spawn(launcher, args, { cwd: fixture, env: preload === undefined ? env : { ...env, NODE_OPTIONS: `--require=${JSON.stringify(preload)}` }, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
+    const child = crossSpawn(launcher, args, { cwd: fixture, env: preload === undefined ? env : { ...env, NODE_OPTIONS: `--require=${JSON.stringify(preload)}` }, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
     const out: Buffer[] = [], err: Buffer[] = [];
     child.stdout!.on("data", (b: Buffer) => out.push(b)); child.stderr!.on("data", (b: Buffer) => err.push(b));
     if (closeOutput) child.stdout!.destroy();
@@ -851,7 +852,7 @@ it("exposes webhook help through both installed launchers without credentials", 
     for (const name of ["daynight", "dn"]) {
       const launcher = path.join(path.dirname(receipt.launcherPath), process.platform === "win32" ? `${name}.cmd` : name);
       for (const leaf of leaves) {
-        const child = spawn(launcher, ["webhook", ...leaf, "--help"], { cwd: fixture, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+        const child = crossSpawn(launcher, ["webhook", ...leaf, "--help"], { cwd: fixture, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
         const out: Buffer[] = [], err: Buffer[] = [];
         child.stdout!.on("data", (value: Buffer) => out.push(value)); child.stderr!.on("data", (value: Buffer) => err.push(value));
         let launchError: unknown; child.once("error", cause => { launchError = cause; });
