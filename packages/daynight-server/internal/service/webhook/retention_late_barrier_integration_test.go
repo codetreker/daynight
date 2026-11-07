@@ -1,8 +1,11 @@
 package webhook_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -27,13 +30,16 @@ type lateAttemptBarrier struct {
 	locked  chan struct{}
 	release chan struct{}
 	once    sync.Once
+	at      time.Time
 }
 type lateAttemptBarrierScope struct {
 	store.WebhookDeliveryScope
 	barrier *lateAttemptBarrier
+	late    bool
 }
 
 func (s *lateAttemptBarrierScope) LockOwnAttempt(ctx context.Context, id string) (store.WebhookAttempt, error) {
+	s.late = true
 	a, err := s.WebhookDeliveryScope.LockOwnAttempt(ctx, id)
 	if err != nil {
 		return a, err
@@ -46,6 +52,15 @@ func (s *lateAttemptBarrierScope) LockOwnAttempt(ctx context.Context, id string)
 		}
 	})
 	return a, nil
+}
+
+// Only the late observation uses the controlled clock. Admission and recovery
+// retain the real database timestamps that produced the attempt.
+func (s *lateAttemptBarrierScope) ObservedAt(ctx context.Context) (time.Time, error) {
+	if s.late {
+		return s.barrier.at, nil
+	}
+	return s.WebhookDeliveryScope.ObservedAt(ctx)
 }
 func (b *lateAttemptBarrier) WriteWebhookDelivery(ctx context.Context, fn func(store.WebhookDeliveryScope) error) (store.Completion, error) {
 	return b.base.WriteWebhookDelivery(ctx, func(sc store.WebhookDeliveryScope) error {
@@ -61,6 +76,7 @@ type retentionAttemptBarrier struct {
 	continuePass chan struct{}
 	once         sync.Once
 	commitOnce   sync.Once
+	at           time.Time
 }
 type retentionAttemptBarrierScope struct {
 	store.WebhookRetentionScope
@@ -68,6 +84,9 @@ type retentionAttemptBarrierScope struct {
 	closed  bool
 }
 
+func (s *retentionAttemptBarrierScope) ObservedAt(context.Context) (time.Time, error) {
+	return s.barrier.at, nil
+}
 func (s *retentionAttemptBarrierScope) LockAttempts(ctx context.Context, id string) ([]store.WebhookAttempt, error) {
 	attempts, err := s.WebhookRetentionScope.LockAttempts(ctx, id)
 	if err != nil {
@@ -177,13 +196,15 @@ func testRetentionLateAttemptLockBarriers(t *testing.T, lateFirst bool) {
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := taskservice.NewTasks(f.db, f.capture).Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "late GC lock barrier"}); err != nil {
+	created, err := taskservice.NewTasks(f.db, f.capture).Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "late GC lock barrier"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	runnerDB, runnerPID := singleBarrierStore(t, f, "t06_late_lock")
 	gcDB, gcPID := singleBarrierStore(t, f, "t06_gc_lock")
 	observer := &observeLateTransactions{base: runnerDB, committed: make(chan struct{}, 1)}
-	late := &lateAttemptBarrier{base: observer, locked: make(chan struct{}), release: make(chan struct{})}
+	controlledAt := created.CreatedAt.Add(40 * 24 * time.Hour)
+	late := &lateAttemptBarrier{base: observer, locked: make(chan struct{}), release: make(chan struct{}), at: controlledAt}
 	runner := webhook.NewRunner(late, svc, true)
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
@@ -215,6 +236,25 @@ func testRetentionLateAttemptLockBarriers(t *testing.T, lateFirst bool) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,current_attempt_id::text FROM webhook_deliveries`).Scan(&id, &attempt); err != nil {
 		t.Fatal(err)
 	}
+	var sourceAt, eventAt, deliveryAt, recordedAt, automatic, payload time.Time
+	var sourceBody, fact, hash, factHash []byte
+	if err = f.db.Pool.QueryRow(f.ctx, `SELECT t.created_at,e.occurred_at,d.occurred_at,e.recorded_at,d.automatic_expires_at,d.payload_expires_at,d.body,e.fact_bytes,d.body_sha256,e.fact_sha256 FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id JOIN tasks t ON t.id=e.task_id WHERE d.id=$1`, id).Scan(&sourceAt, &eventAt, &deliveryAt, &recordedAt, &automatic, &payload, &sourceBody, &fact, &hash, &factHash); err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Time string `json:"time"`
+	}
+	if err = json.Unmarshal(sourceBody, &wire); err != nil {
+		t.Fatal(err)
+	}
+	wireTime, err := time.Parse(time.RFC3339Nano, wire.Time)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(sourceBody)
+	if !sourceAt.Equal(created.CreatedAt) || !sourceAt.Equal(eventAt) || !eventAt.Equal(deliveryAt) || !eventAt.Equal(wireTime) || !automatic.Equal(eventAt.Add(72*time.Hour)) || !payload.Equal(eventAt.Add(7*24*time.Hour)) || !bytes.Equal(sourceBody, fact) || !bytes.Equal(hash, digest[:]) || !bytes.Equal(hash, factHash) {
+		t.Fatal("source, event, body, hash, and original deadlines disagree")
+	}
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET lease_claimed_at=clock_timestamp()-interval '46 seconds',lease_until=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -241,11 +281,14 @@ func testRetentionLateAttemptLockBarriers(t *testing.T, lateFirst bool) {
 		t.Fatal(err)
 	}
 	cancel()
-	ageRetention(t, f, id, 40*24*time.Hour)
-	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_attempts SET finished_at=clock_timestamp()-interval '40 days',recovered_unknown_at=clock_timestamp()-interval '40 days' WHERE id=$1`, attempt); err != nil {
+	var metadata, finished, recovered time.Time
+	if err = f.db.Pool.QueryRow(f.ctx, `SELECT d.metadata_expires_at,a.finished_at,a.recovered_unknown_at FROM webhook_deliveries d JOIN webhook_attempts a ON a.delivery_id=d.id WHERE a.id=$1`, attempt).Scan(&metadata, &finished, &recovered); err != nil {
 		t.Fatal(err)
 	}
-	gate := &retentionAttemptBarrier{Store: gcDB, locked: make(chan struct{}), release: make(chan struct{}), committed: make(chan struct{}), continuePass: make(chan struct{})}
+	if !controlledAt.After(metadata) || !controlledAt.After(payload) || finished.Before(recordedAt) || recovered.Before(recordedAt) {
+		t.Fatal("controlled observation or real recovery time invalid")
+	}
+	gate := &retentionAttemptBarrier{Store: gcDB, locked: make(chan struct{}), release: make(chan struct{}), committed: make(chan struct{}), continuePass: make(chan struct{}), at: controlledAt}
 	t.Cleanup(func() {
 		select {
 		case <-gate.release:
@@ -258,6 +301,16 @@ func testRetentionLateAttemptLockBarriers(t *testing.T, lateFirst bool) {
 			close(gate.continuePass)
 		}
 	})
+	assertCaptured := func() {
+		t.Helper()
+		var eventAfter, deliveryAfter, autoAfter, payloadAfter time.Time
+		var bodyAfter, factAfter, hashAfter, factHashAfter []byte
+		var payloadRemoved, factRemoved bool
+		err := f.db.Pool.QueryRow(f.ctx, `SELECT e.occurred_at,d.occurred_at,d.automatic_expires_at,d.payload_expires_at,d.body,e.fact_bytes,d.body_sha256,e.fact_sha256,d.payload_removed_at IS NOT NULL,e.fact_removed_at IS NOT NULL FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id WHERE d.id=$1`, id).Scan(&eventAfter, &deliveryAfter, &autoAfter, &payloadAfter, &bodyAfter, &factAfter, &hashAfter, &factHashAfter, &payloadRemoved, &factRemoved)
+		if err != nil || !eventAfter.Equal(eventAt) || !deliveryAfter.Equal(deliveryAt) || !autoAfter.Equal(automatic) || !payloadAfter.Equal(payload) || !bytes.Equal(hashAfter, hash) || !bytes.Equal(factHashAfter, factHash) || (!payloadRemoved && !bytes.Equal(bodyAfter, sourceBody)) || (payloadRemoved && bodyAfter != nil) || (!factRemoved && !bytes.Equal(factAfter, fact)) || (factRemoved && factAfter != nil) {
+			t.Fatalf("captured evidence changed: %v", err)
+		}
+	}
 	gcDone := make(chan error, 1)
 	startGC := func() { go func() { _, _, e := webhook.NewRetention(gate).Pass(f.ctx); gcDone <- e }() }
 	if lateFirst {
@@ -286,9 +339,10 @@ func testRetentionLateAttemptLockBarriers(t *testing.T, lateFirst bool) {
 		}
 		var purging, observed *time.Time
 		var expiry time.Time
-		if err := f.db.Pool.QueryRow(f.ctx, `SELECT d.purging_at,a.late_observed_at,d.metadata_expires_at FROM webhook_deliveries d JOIN webhook_attempts a ON a.delivery_id=d.id WHERE a.id=$1`, attempt).Scan(&purging, &observed, &expiry); err != nil || purging != nil || observed == nil || !expiry.After(time.Now().Add(29*24*time.Hour)) {
+		if err := f.db.Pool.QueryRow(f.ctx, `SELECT d.purging_at,a.late_observed_at,d.metadata_expires_at FROM webhook_deliveries d JOIN webhook_attempts a ON a.delivery_id=d.id WHERE a.id=$1`, attempt).Scan(&purging, &observed, &expiry); err != nil || purging != nil || observed == nil || !observed.Equal(controlledAt) || !expiry.Equal(controlledAt.Add(30*24*time.Hour)) {
 			t.Fatalf("late first retention state %v %v %v %v", purging, observed, expiry, err)
 		}
+		assertCaptured()
 	} else {
 		close(late.release)
 		startGC()
@@ -318,9 +372,11 @@ func testRetentionLateAttemptLockBarriers(t *testing.T, lateFirst bool) {
 		}
 		var closed bool
 		var observed *time.Time
-		if err := f.db.Pool.QueryRow(f.ctx, `SELECT d.purging_at IS NOT NULL AND a.retention_closed_at IS NOT NULL,a.late_observed_at FROM webhook_deliveries d JOIN webhook_attempts a ON a.delivery_id=d.id WHERE a.id=$1`, attempt).Scan(&closed, &observed); err != nil || !closed || observed != nil {
+		var purgeAt, closedAt time.Time
+		if err := f.db.Pool.QueryRow(f.ctx, `SELECT d.purging_at IS NOT NULL AND a.retention_closed_at IS NOT NULL,a.late_observed_at,d.purging_at,a.retention_closed_at FROM webhook_deliveries d JOIN webhook_attempts a ON a.delivery_id=d.id WHERE a.id=$1`, attempt).Scan(&closed, &observed, &purgeAt, &closedAt); err != nil || !closed || observed != nil || !purgeAt.Equal(controlledAt) || !closedAt.Equal(controlledAt) {
 			t.Fatalf("close first state %t %v %v", closed, observed, err)
 		}
+		assertCaptured()
 		close(gate.continuePass)
 		if err := <-gcDone; err != nil {
 			t.Fatal(err)
