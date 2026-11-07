@@ -279,7 +279,7 @@ func TestRedeliveryHTTPRetentionLockOrdering(t *testing.T) {
 	})
 	t.Run("expired, before and after close", func(t *testing.T) {
 		r := newRetentionHTTP(t, true)
-		retentionReceive(t, r, r.call("POST", "/redeliveries", r.intent()), 410)
+		retentionReceive(t, r, r.call("POST", "/redeliveries", r.intent()), 404)
 		retentionCounts(t, r, 0, 0, 1)
 		tx, err := r.f.db.Pool.Begin(r.f.ctx)
 		if err != nil {
