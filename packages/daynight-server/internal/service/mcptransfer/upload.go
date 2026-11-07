@@ -36,13 +36,14 @@ type attachmentPut interface {
 }
 
 type Uploads struct {
-	lifecycle   *Lifecycle
-	files       filestorage.TransferStorage
-	attachments attachmentPut
+	lifecycle       *Lifecycle
+	files           filestorage.TransferStorage
+	attachments     attachmentPut
+	renewalInterval time.Duration
 }
 
 func NewUploads(lifecycle *Lifecycle, files filestorage.TransferStorage, attachments attachmentPut) *Uploads {
-	return &Uploads{lifecycle: lifecycle, files: files, attachments: attachments}
+	return &Uploads{lifecycle: lifecycle, files: files, attachments: attachments, renewalInterval: 20 * time.Second}
 }
 
 type uploadData = transfer.UploadData
@@ -474,7 +475,7 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	done := make(chan error, 1)
 	opID := uuid.NewString()
 	go func() {
-		ticker := time.NewTicker(20 * time.Second)
+		ticker := time.NewTicker(s.renewalInterval)
 		defer ticker.Stop()
 		for {
 			select {

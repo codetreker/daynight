@@ -67,6 +67,8 @@ type uploadFailureWriter struct {
 	state   string
 }
 
+var errUploadTransferUpdate = errors.New("injected private transfer update failure")
+
 type uploadFailureDAO struct {
 	store.PrivateTransferDAO
 	owner *uploadFailureWriter
@@ -74,7 +76,7 @@ type uploadFailureDAO struct {
 
 func (d uploadFailureDAO) Put(ctx context.Context, record model.PrivateTransfer, version int64) (model.PrivateTransfer, error) {
 	if d.owner.enabled.Load() && record.State == d.owner.state {
-		return model.PrivateTransfer{}, errors.New("injected private transfer update failure")
+		return model.PrivateTransfer{}, errUploadTransferUpdate
 	}
 	return d.PrivateTransferDAO.Put(ctx, record, version)
 }
@@ -745,6 +747,10 @@ func (g *initialReadGate) OpenTransfer(ctx context.Context, n filestorage.Transf
 
 func TestUploadRenewalFailureBeforePublicationIsNotCommitted(t *testing.T) {
 	f, s, attachments := uploadFixture(t)
+	if s.renewalInterval != 20*time.Second {
+		t.Fatalf("production renewal interval: %s", s.renewalInterval)
+	}
+	s.renewalInterval = 100 * time.Millisecond
 	previous := []byte("previous")
 	runUpload(t, s, f, f.actor, UploadInput{Action: "inline", Path: "renewal", ContentType: "text/plain", ContentBase64: base64.StdEncoding.EncodeToString(previous)})
 	id := uuid.NewString()
@@ -773,7 +779,7 @@ func TestUploadRenewalFailureBeforePublicationIsNotCommitted(t *testing.T) {
 	}
 	select {
 	case got := <-result:
-		if got.err == nil || got.data["writeOutcome"] != "not_committed" || got.data["operationId"] != nil {
+		if !errors.Is(got.err, errUploadTransferUpdate) || got.data["writeOutcome"] != "not_committed" || got.data["operationId"] != nil {
 			t.Fatalf("renewal failure before publication: %+v %v", got.data, got.err)
 		}
 	case <-ctx.Done():
