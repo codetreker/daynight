@@ -2071,6 +2071,14 @@ pagination or confirmation dialog. Whole-page counts retain document-wide scope.
 The [query ownership decision](../../.agents/notes/implemented/testing/2026-11-05-step-panel-query-owners.md)
 records the retained accessibility, draft and focus proof and its cost boundary.
 
+Project browsing and graph tests resolve tablists, filters, pagination,
+search, dialog headers and graph viewport actions within their current owners.
+Global absence, privacy and node/edge/page counts remain document-wide.
+Unchanged refresh receipts and repeated search errors are observed through the
+actual controller/UI publication before interaction. The full graph expansion
+and keyboard fixtures remain intact; the [project/graph query decision](../../.agents/notes/implemented/testing/2026-11-07-project-graph-query-owners.md)
+owns those query and receipt boundaries.
+
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft
 admission independently of Steps forms and HTTP writes, including indexed

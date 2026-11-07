@@ -46,6 +46,8 @@ const noop = () => {};
 const nodeButton = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}，(?:已完成|待处理|进行中)`) });
 const detailsButton = (name: string) => screen.getByRole('button', { name: `${name}，详情` });
 const nodeShell = (name: string) => nodeButton(name).closest<HTMLElement>('.task-node')!;
+const toolbarActions = (container: HTMLElement) => within(container.querySelector<HTMLElement>('.graph-toolbar-actions')!);
+const viewportActions = (container: HTMLElement) => within(container.querySelector<HTMLElement>('.react-flow__controls')!);
 const viewport = (container: HTMLElement) => container.querySelector<HTMLElement>('.react-flow__viewport')!;
 const zoom = (container: HTMLElement) => Number(/scale\(([^)]+)\)/.exec(viewport(container).style.transform)![1]);
 const ready = async (container: HTMLElement) => {
@@ -92,8 +94,8 @@ describe('task dependency canvas', () => {
     const user = userEvent.setup();
     const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
-    const horizontal = screen.getByRole('radio', { name: '水平' });
-    const vertical = screen.getByRole('radio', { name: '垂直' });
+    const horizontal = toolbarActions(view.container).getByRole('radio', { name: '水平' });
+    const vertical = toolbarActions(view.container).getByRole('radio', { name: '垂直' });
     expect(horizontal).toHaveAttribute('aria-checked', 'true');
     fireEvent.click(nodeButton('合流实现…'));
     const canvas = view.container.querySelector('.react-flow');
@@ -104,8 +106,8 @@ describe('task dependency canvas', () => {
     expect(nodeShell('合流实现…')).toHaveClass('task-node-selected');
     expect(view.container.querySelector('.react-flow')).toBe(canvas);
     view.unmount();
-    render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
-    expect(screen.getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
+    const reopened = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    expect(toolbarActions(reopened.container).getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('switches the same modal canvas to fullscreen and back without changing its viewport or layout', async () => {
@@ -118,17 +120,17 @@ describe('task dependency canvas', () => {
     expect(dialog).toHaveClass('task-chain-dialog');
     expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
     const initialZoom = zoom(view.container);
-    fireEvent.click(screen.getByRole('button', { name: '放大' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '放大' }));
     await waitFor(() => { expect(zoom(view.container)).toBeGreaterThan(initialZoom); });
     const canvas = view.container.querySelector('.task-graph-canvas');
     const nodes = [...view.container.querySelectorAll('.react-flow__node')];
     const paths = [...view.container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'));
     const positions = nodes.map((node) => (node as HTMLElement).style.transform);
     const transform = viewport(view.container).style.transform;
-    const enter = screen.getByRole('button', { name: '全屏查看' });
+    const enter = toolbarActions(view.container).getByRole('button', { name: '全屏查看' });
     fireEvent.click(enter);
     expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
-    expect(screen.getByRole('button', { name: '退出全屏' })).toBe(enter);
+    expect(toolbarActions(view.container).getByRole('button', { name: '退出全屏' })).toBe(enter);
     expect(enter).toHaveFocus();
     expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);
     [...view.container.querySelectorAll('.react-flow__node')].forEach((node, position) => { expect(node).toBe(nodes[position]); });
@@ -146,7 +148,7 @@ describe('task dependency canvas', () => {
     expect(layout).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(enter);
-    fireEvent.click(screen.getByRole('button', { name: '退出全屏' }));
+    fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '退出全屏' }));
     expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
     expect(viewport(view.container).style.transform).toBe(transform);
     fireEvent.keyDown(enter, { key: 'Escape' });
@@ -168,8 +170,8 @@ describe('task dependency canvas', () => {
       await user.tab({ shift: true });
       expect(dialog).toContainElement(document.activeElement as HTMLElement);
     }
-    fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
-    const exit = screen.getByRole('button', { name: '退出全屏' });
+    fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '全屏查看' }));
+    const exit = toolbarActions(view.container).getByRole('button', { name: '退出全屏' });
     fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
     fireEvent.keyDown(exit, { key: 'Escape' });
@@ -200,7 +202,7 @@ describe('task dependency canvas', () => {
     const dialog = screen.getByRole('dialog');
     const canvas = view.container.querySelector('.task-graph-canvas');
     const transform = viewport(view.container).style.transform;
-    const fullscreen = screen.getByRole('button', { name: '全屏查看' });
+    const fullscreen = toolbarActions(view.container).getByRole('button', { name: '全屏查看' });
     await user.click(fullscreen);
     await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
     expect(dialog).toHaveFocus();
@@ -223,7 +225,7 @@ describe('task dependency canvas', () => {
     await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
     expect(dialog).toHaveFocus();
     await user.tab({ shift });
-    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog).getByRole('button', { name: '关闭依赖图' })).toHaveFocus();
+    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog.querySelector<HTMLElement>('.task-chain-header')!).getByRole('button', { name: '关闭依赖图' })).toHaveFocus();
   });
 
   it('inerts background ancestors for the whole modal and restores their original state without touching body portals', async () => {
@@ -244,8 +246,8 @@ describe('task dependency canvas', () => {
     background.forEach((element) => { expect(element).toHaveAttribute('inert'); });
     expect(document.body.style.overflow).toBe('hidden');
     expect(portal).not.toHaveAttribute('inert');
-    fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
-    fireEvent.click(screen.getByRole('button', { name: '退出全屏' }));
+    fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '全屏查看' }));
+    fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '退出全屏' }));
     background.forEach((element) => { expect(element).toHaveAttribute('inert'); });
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(view.container.querySelector('.task-chain-close')!);
@@ -295,7 +297,7 @@ describe('task dependency canvas', () => {
     const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
-    const first = within(dialog).getByRole('button', { name: '关闭依赖图' });
+    const first = within(dialog.querySelector<HTMLElement>('.task-chain-header')!).getByRole('button', { name: '关闭依赖图' });
     first.focus();
     await user.tab({ shift: true });
     const last = document.activeElement as HTMLElement;
@@ -526,7 +528,7 @@ describe('task dependency canvas', () => {
     const paths = [...svg.querySelectorAll('path.react-flow__edge-path')];
     const initialPaths = paths.map((path) => path.getAttribute('d'));
     const beforeZoom = viewport(view.container).style.transform;
-    fireEvent.click(screen.getByRole('button', { name: '放大' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '放大' }));
     await waitFor(() => { expect(viewport(view.container).style.transform).not.toBe(beforeZoom); });
     expect(view.container.querySelector('svg.task-dependency-edges')).toBe(svg);
     paths.forEach((path, position) => { expect(svg.querySelectorAll('path.react-flow__edge-path')[position]).toBe(path); });
@@ -584,10 +586,10 @@ describe('task dependency canvas', () => {
     }
     expect(container.querySelector('.react-flow__controls-interactive')).toBeNull();
     expect(container.querySelectorAll('.react-flow__handle.connectable')).toHaveLength(0);
-    expect(screen.getByRole('button', { name: '放大' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '缩小' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '适应画布' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'React Flow attribution' }).getAttribute('href')).toContain('reactflow.dev');
+    expect(viewportActions(container).getByRole('button', { name: '放大' })).toBeTruthy();
+    expect(viewportActions(container).getByRole('button', { name: '缩小' })).toBeTruthy();
+    expect(viewportActions(container).getByRole('button', { name: '适应画布' })).toBeTruthy();
+    expect(within(container.querySelector<HTMLElement>('.react-flow__attribution')!).getByRole('link', { name: 'React Flow attribution' }).getAttribute('href')).toContain('reactflow.dev');
   });
 
   it('zooms and fits without recomputing layout, and applies selected styling without moving nodes', async () => {
@@ -600,11 +602,11 @@ describe('task dependency canvas', () => {
     expect(timings[0]!.duration).toBeGreaterThanOrEqual(0);
     const initialZoom = zoom(view.container);
     const positions = [...view.container.querySelectorAll<HTMLElement>('.react-flow__node')].map((node) => node.style.transform);
-    fireEvent.click(screen.getByRole('button', { name: '放大' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '放大' }));
     await waitFor(() => { expect(zoom(view.container)).toBeGreaterThan(initialZoom); });
-    fireEvent.click(screen.getByRole('button', { name: '缩小' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '缩小' }));
     await waitFor(() => { expect(zoom(view.container)).toBeLessThan(1.2 * initialZoom); });
-    fireEvent.click(screen.getByRole('button', { name: '适应画布' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '适应画布' }));
     await waitFor(() => { expect(zoom(view.container)).toBeLessThanOrEqual(1); });
     expect(zoom(view.container)).toBeGreaterThanOrEqual(0.2);
     const userViewport = viewport(view.container).style.transform;
@@ -667,7 +669,7 @@ describe('task dependency canvas', () => {
     expect(sourceLeft + layoutModule.TASK_NODE_WIDTH * zoom(container)).toBeLessThanOrEqual(800);
     expect(sourceTop).toBeGreaterThanOrEqual(0);
     expect(sourceTop + layoutModule.TASK_NODE_COMPACT_HEIGHT * zoom(container)).toBeLessThanOrEqual(445);
-    fireEvent.click(screen.getByRole('button', { name: '适应画布' }));
+    fireEvent.click(viewportActions(container).getByRole('button', { name: '适应画布' }));
     await waitFor(() => { expect(zoom(container)).toBeLessThan(0.8); });
     expect(zoom(container)).toBeGreaterThanOrEqual(0.2);
     expect(container.querySelectorAll('.react-flow__node')).toHaveLength(10);
@@ -735,7 +737,7 @@ describe('progressive task visibility', () => {
     const taskBody = (title: string) => within(taskShell(title)).getByRole('button', { name: new RegExp(`^${title}，(?!详情$)`) });
     const taskDetails = (title: string) => within(taskShell(title)).getByRole('button', { name: `${title}，详情` });
     const expansion = (title: string, direction: string) => taskShell(title).querySelector<HTMLButtonElement>(`.task-node-expand[data-direction="${direction}"]`)!;
-    const resetControl = () => within(container.querySelector<HTMLElement>('.graph-toolbar')!).getByRole('button', { name: '收起到概览' });
+    const resetControl = () => toolbarActions(container).getByRole('button', { name: '收起到概览' });
     return { scope, taskShell, taskBody, taskDetails, expansion, resetControl };
   };
   const rendered = async (container: HTMLElement, nodes: number, edges: number) => {
@@ -788,12 +790,14 @@ describe('progressive task visibility', () => {
     fireEvent.click(taskBody('合流任务 · 40 个外部前置'));
     const ids = visibleIds(view.container);
     const canvas = view.container.querySelector('.react-flow');
-    fireEvent.click(screen.getByRole('radio', { name: '垂直' }));
-    expect(screen.getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
+    const vertical = toolbarActions(view.container).getByRole('radio', { name: '垂直' });
+    const horizontal = toolbarActions(view.container).getByRole('radio', { name: '水平' });
+    fireEvent.click(vertical);
+    expect(vertical).toHaveAttribute('aria-checked', 'true');
     expect(visibleIds(view.container)).toEqual(ids);
     expect(taskBody('合流任务 · 40 个外部前置')).toHaveAttribute('aria-pressed', 'true');
     expect(view.container.querySelector('.react-flow')).toBe(canvas);
-    fireEvent.click(screen.getByRole('radio', { name: '水平' }));
+    fireEvent.click(horizontal);
     expect(visibleIds(view.container)).toEqual(ids);
   });
 
@@ -872,7 +876,7 @@ describe('progressive task visibility', () => {
     view.rerender(<><button type="button">详情关闭控件</button><TaskGraph index={refreshed} rootId={rootId} onOpenTask={noop} /></>);
     await rendered(view.container, 70, 69);
     expect(visibleIds(view.container)).toEqual(retainedIds);
-    expect(scope.getByRole('button', { name: '更新后的直接后续，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
+    expect(within(view.container.querySelector<HTMLElement>(`.react-flow__node[data-id="${revised.id}"]`)!).getByRole('button', { name: '更新后的直接后续，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
     expect(outside).toHaveFocus();
     expect(viewport(view.container).style.transform).toBe(transform);
     expect(taskShell('合流任务 · 40 个外部前置')).toHaveClass('task-node-selected');
@@ -906,7 +910,7 @@ describe('progressive task visibility', () => {
 
   it('recovers graph focus when refresh removes a focused visible card', async () => {
     const view = render(<TaskGraph index={progressiveIndex} rootId={rootId} onOpenTask={noop} />);
-    const { scope, taskBody, expansion } = controls(view.container);
+    const { taskBody, expansion, resetControl } = controls(view.container);
     await rendered(view.container, 50, 49);
     fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
     await rendered(view.container, 70, 69);
@@ -916,7 +920,7 @@ describe('progressive task visibility', () => {
     const refreshed = buildGraphIndex({ ...fixture, tasks, summary: { ...fixture.summary, total: 100, done: 39 } });
     view.rerender(<TaskGraph index={refreshed} rootId={rootId} onOpenTask={noop} />);
     await rendered(view.container, 69, 68);
-    expect(scope.getByRole('button', { name: '收起到概览' })).toHaveFocus();
+    expect(resetControl()).toHaveFocus();
   });
 
   it('reveals an offscreen expansion control using intended viewport coordinates before native scroll resets', async () => {
@@ -1065,8 +1069,8 @@ describe('task chain dialog entries', () => {
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50));
     const card = view.container.querySelector<HTMLElement>('.react-flow__node[data-id="D"]')!;
-    if (control === 'fullscreen') fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
-    const focused = control === 'fullscreen' ? screen.getByRole('button', { name: '退出全屏' })
+    if (control === 'fullscreen') fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '全屏查看' }));
+    const focused = control === 'fullscreen' ? toolbarActions(view.container).getByRole('button', { name: '退出全屏' })
       : card.querySelector<HTMLButtonElement>(control === 'footer' ? '.task-node-expand[data-direction="successors"]' : '.task-node-body')!;
     focused.focus();
     expect(focused).toHaveFocus();
