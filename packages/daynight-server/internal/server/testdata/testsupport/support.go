@@ -112,16 +112,27 @@ func (h *AuthHarness[A]) Start(t *testing.T, returnPath string) (string, *http.C
 	if returnPath != "" {
 		values.Set("returnPath", returnPath)
 	}
-	response := h.Request("GET", "/api/v1/auth/login?"+values.Encode(), "", nil, nil, "")
-	if response.Code != 303 || len(response.Result().Cookies()) != 1 {
+	loginURL := "/api/v1/auth/login?" + values.Encode()
+	bootstrap := h.Request("GET", loginURL, "", nil, nil, "")
+	if bootstrap.Code != 303 || bootstrap.Header().Get("Location") != loginURL || len(bootstrap.Result().Cookies()) != 1 {
+		t.Fatalf("login bootstrap: %d %s", bootstrap.Code, bootstrap.Body)
+	}
+	scope := bootstrap.Result().Cookies()[0]
+	response := h.Request("GET", loginURL, "", []*http.Cookie{scope}, nil, "")
+	if response.Code != 303 || len(response.Result().Cookies()) != 2 {
 		t.Fatalf("login start: %d %s", response.Code, response.Body)
 	}
 	u, err := url.Parse(response.Header().Get("Location"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cookie := response.Result().Cookies()[0]
-	if cookie.Domain != "" || cookie.Path != "/" || cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 600 {
+	var cookie *http.Cookie
+	for _, candidate := range response.Result().Cookies() {
+		if candidate.Name != scope.Name {
+			cookie = candidate
+		}
+	}
+	if cookie == nil || cookie.Domain != "" || cookie.Path != "/" || cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != 600 {
 		t.Fatalf("binding cookie: %+v", cookie)
 	}
 	return u.Query().Get("state"), cookie

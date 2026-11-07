@@ -1,5 +1,8 @@
 # Task Session 模式与共享契约
 
+
+Session 和 Test Session 的专用 cursor 在 base64 解码前检查原有较小的编码长度限制。废弃的 Controller resource PUT 在读取正文之前拒绝，并关闭未消费正文的连接；Controller 资源继续由现有流程处理。
+
 ## 组件与实现边界
 
 [需求](../spec/task-sessions.md)定义两种互斥执行方式。认领服务保存实际模式，CLI 冻结执行配置，Web 读取同一字段。共享纯 TypeScript 协议位于 `packages/daynight/src/session/`；CLI 发布时随包编译，Web 从同一源码消费类型与解析，避免产生独立发布包或重复协议副本。模块不得依赖 Node 进程、文件系统或认证配置。

@@ -174,6 +174,8 @@ type Object struct {
 }
 
 type Storage interface {
+    TryAcquireResidency(ctx context.Context, key string) (io.Closer, error)
+    AcquireGate(ctx context.Context, domain GateDomain, key string) (io.Closer, error)
     Put(ctx context.Context, bucket, path string, content io.Reader) (FileInfo, error)
     Open(ctx context.Context, bucket, path string) (Object, error)
     Delete(ctx context.Context, bucket, path string) error
@@ -201,7 +203,9 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 通用文件操作本身不隐式取得业务目标 gate。
 
 存储 gate 接口按控制域和键取得可取消的 permit。本地后端在固定控制目录内分别为目标与私有域使用 256 个持久锁文件条带，结合进程内准入和操作系统 advisory lock 协调共享根的实例；对象清理不能删除锁文件。条带碰撞会串行化无关操作。私有传输持有私有 permit 时再进入附件目标 gate，调用方不得重复取得目标 gate。permit 的生命周期独立于数据库连接，失去数据库锁不代表文件操作已经停止。
-替换前的普通写入失败或取消，清理本次调用拥有的临时文件并报告错误。用户可访问
+活跃 I/O 另用非阻塞、完整 key 的 ResidencyGate；用户和 Task 槽按操作族、规范 UUID 和槽号命名，使用完整 key hash 的稳定控制文件与本地引用计数，避免条带碰撞造成无关 owner 被拒。释放关闭句柄并移除本地零引用项，但不 unlink 锁文件：其他实例可能已打开旧 inode。控制文件可持续存在，累计磁盘量不受该机制约束。
+
+替换前的普通写入失败或取消，清理本次调用拥有的临时文件并报告错误及清理失败。文件存储记录发布事实：复制、Sync 或 Close 在发布前失败为 `NotPublished`，进入可能改变目标的发布后无法确定结果为 `Unknown`，明确发布成功为 `Published`；错误链保留原始原因。用户可访问
 的路径不会指向正在写入的半个文件；内部临时名不属于附件路径或历史版本。
 
 替换实现需要满足目标平台的完整文件发布语义。存储模块仅保证一次文件写入的结果，
@@ -237,6 +241,8 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 
 共享附件写入用例在取得目标 gate 和发布文件之前，校验原始 `contentType` 不超过 2048 字节并符合既有 MIME 语法；所有复用该用例的入口使用相同限制。历史超限元数据不迁移，读取、列表和删除不执行新写入校验。
 
+附件领域拥有 5242880 字节的文件上限。共享 Put 和已准入的 PutFrom 将实际输入包装为限长 reader；越过上限显式失败而非以截断 EOF 成功。local 临时文件完整复制、同步并关闭后才发布，因此超限在发布前失败，不改变目标与元数据。结果转换保留存储发布事实和数据库完成事实，不能把确定未发布的超限归为未知，也不能把发布后的数据库或响应故障当作回滚。
+
 上传依次校验业务输入和归属、调用 `Storage.Put`、创建或更新 PG 元数据，全部成功
 后才返回成功。Storage 写入业务层推导的固定地址，不分配持久化唯一 key。
 
@@ -254,7 +260,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 或附件记录仍存在而文件已经缺失。共享目标 gate 防止同一路径的成功覆盖、删除和打开交错，
 不承诺跨介质原子提交或失败后的一致性。
 
-该问题是已接受的限制。错误必须明确返回，并说明文件操作可能已经生效；客户端不
+该问题是已接受的限制。错误必须明确返回，发布可能已经发生时须保留该事实；客户端不
 隐式重试写操作。目标 gate 不提供补偿、回滚、状态机、对账、后台回收或自动
 恢复机制。离线布局维护的清单只描述目录转换，预存不一致会阻止迁移，不将业务一致性修复作为交付条件。
 
@@ -382,7 +388,9 @@ T = /api/v1/projects/{projectId}/tasks/{taskId}
 上传请求体直接携带文件字节，`Content-Type` 表达文件 MIME。上传端按文件类型选择
 合法 MIME，无法识别时使用 `application/octet-stream`；服务拒绝非法 header 值。
 缺失 Content-Type 时使用 application/octet-stream。服务不使用 JSON 解码器接收文件，
-也不将完整文件载入内存。
+也不将完整文件载入内存。从首次读取开始设置 60 秒实际 socket 读取期限；完整读取后清除 deadline，超时或未读完的请求关闭连接。超限返回 `413 payload_too_large`，读取超时在可写时返回 `408 request_timeout`，资源名额满立即返回 `429 resource_busy`。
+
+附件 I/O 在相应授权后依次获取实例、用户和 Task 名额；失败时释放已取得的名额。实例容量是 `min(4,max(1,floor(P/2)))`，P 是连接池最大连接数；用户两个槽、Task 一个槽通过共享存储的 ResidencyGate 跨实例协调。REST 持有至结果发送及清理完成。MCP 的 inline、chunk、commit 每次实际 I/O 与结果发送持有名额，begin 和空闲 ticket 不占用；私有传输账本仍管理空闲 ticket 与暂存容量。
 
 ```http
 PUT T/attachments/files/mockup/assets/style.css
@@ -781,7 +789,7 @@ MCP 附件列表使用有界数据库投影及完整项边界分页。首项超�
 
 每个用户最多保留四个未关闭传输。跨实例账本分别记录保留总量与尚未确认物化的部分：文件发布和回执确认前，未物化部分继续保守占用；实际删除私有命名空间并确认关闭后才返还总量和槽位。配置预算以及磁盘余量采样分别限制分配；物理 I/O 仍可能失败。提交目标可能同时需要私有块和目标临时副本，部署容量必须覆盖所需文件大小和并发。终态与核对数据保留 24 小时，空闲期限为 60 分钟，最长为 24 小时。
 
-上传块的 UUID、偏移、长度、hash 和私有对象地址分别持久保存；回执与预留消费在同一短事务提交。重复块只有身份、偏移、长度和 hash 均一致才返回已有回执。提交先验证总长度和整体 hash，保留目标暂存容量，并以原 transfer 的唯一 operation 进入 committing。已确认块按偏移流式读取，完整文件无需物化到内存。
+上传块的 UUID、偏移、长度、hash 和私有对象地址分别持久保存；回执与预留消费在同一短事务提交。重复块只有身份、偏移、长度和 hash 均一致才返回已有回执。新块在预留或写私有对象前检查累计实际字节不超过 5 MiB。提交先检查声明长度、已确认偏移和上限，再验证整体 hash，保留目标暂存容量，并以原 transfer 的唯一 operation 进入 committing。已确认块按偏移流式读取，完整文件无需物化到内存；最终发布的共享 reader 也独立检查上限。5 MiB 可由 begin、十个 512 KiB chunk 和 commit 完成，普通 MCP 请求外壳仍限 4 MiB。
 
 每次外部调用重新检查当前凭据和任务权限。分块写入先锁 transfer，再锁 Task 并以新语句检查 Project 生命周期；私有文件和块回执写入在该作用域内完成。提交在目标 gate 内完成身份和路径准入，最终事务锁住 Task 并再次检查 Project 和 Task 生命周期后，才组合暂存、发布目标并写入 metadata。删除先提交时这些物理变更不执行；写入先取得锁时删除等待。已准入身份的凭据或成员权限后续撤销不取消该次提交。提交读取逐块确认的 immutable receipt，并持有 private permit；最终事务直接读取这些回执，不逆向获取 transfer 行锁。租约续期也须通过生命周期屏障；续期失败取消所属操作，不自动重放。文件发布与 metadata 仍非原子，失败后不删除目标或伪造结果。详见[上传删除屏障决策](../../.agents/notes/implemented/architecture/2026-11-06-upload-deletion-barrier.md)。
 

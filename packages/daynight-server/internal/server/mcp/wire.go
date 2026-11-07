@@ -2,10 +2,11 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"time"
 	"unicode/utf8"
+
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -112,28 +113,7 @@ func MapTeam(t core.Team) Team {
 		Membership: TeamMember{TeamID: m.TeamID, UserID: m.UserID, Role: m.Role, Version: Decimal(m.Version), CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()}}
 }
 
-type TaskFull struct {
-	Projection        string                     `json:"projection"`
-	ID                string                     `json:"id"`
-	ProjectID         string                     `json:"projectId"`
-	Title             string                     `json:"title"`
-	Description       string                     `json:"description"`
-	Properties        map[string]json.RawMessage `json:"properties"`
-	Status            core.TaskStatus            `json:"status"`
-	Version           string                     `json:"version"`
-	CreatedAt         time.Time                  `json:"createdAt"`
-	UpdatedAt         time.Time                  `json:"updatedAt"`
-	StartedAt         *time.Time                 `json:"startedAt"`
-	CompletedAt       *time.Time                 `json:"completedAt"`
-	CancelledAt       *time.Time                 `json:"cancelledAt"`
-	DependsOn         []string                   `json:"dependsOn"`
-	ExternalDependsOn []string                   `json:"externalDependsOn"`
-	BlockedBy         []string                   `json:"blockedBy"`
-	RequiredPlatform  *core.TaskPlatform         `json:"requiredPlatform"`
-	AssignedTo        *string                    `json:"assignedTo"`
-	AllowAgents       bool                       `json:"allowAgents"`
-	Ready             bool                       `json:"ready"`
-}
+type TaskFull = taskprotocol.MCPFull
 
 func utcTime(value *time.Time) *time.Time {
 	if value == nil {
@@ -144,17 +124,7 @@ func utcTime(value *time.Time) *time.Time {
 }
 
 // MapTaskFull copies each raw property value without rewriting arbitrary JSON numbers.
-func MapTaskFull(t core.Task) TaskFull {
-	properties := make(map[string]json.RawMessage, len(t.Properties))
-	for k, v := range t.Properties {
-		properties[k] = append(json.RawMessage(nil), v...)
-	}
-	return TaskFull{Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Title: t.Title, Description: t.Description, Properties: properties,
-		Status: t.Status, Version: Decimal(t.Version), CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
-		StartedAt: utcTime(t.StartedAt), CompletedAt: utcTime(t.CompletedAt), CancelledAt: utcTime(t.CancelledAt), DependsOn: append([]string{}, t.DependsOn...),
-		ExternalDependsOn: append([]string{}, t.ExternalDependsOn...), BlockedBy: append([]string{}, t.BlockedBy...),
-		RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents, Ready: t.Ready}
-}
+func MapTaskFull(t core.Task) TaskFull { return taskprotocol.MCPTask(t) }
 
 type TaskSummary struct {
 	Projection       string             `json:"projection"`

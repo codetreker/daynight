@@ -18,9 +18,10 @@ import (
 )
 
 type Attachments struct {
-	store     store.SnapshotReader
-	mutations store.AttachmentMutationWriter
-	files     filestorage.Storage
+	store       store.SnapshotReader
+	mutations   store.AttachmentMutationWriter
+	files       filestorage.Storage
+	uploadSlots chan struct{}
 }
 
 // fileEffectError records that a file mutation was entered. The underlying
@@ -38,7 +39,18 @@ func FileEffectPossible(err error) bool {
 }
 
 func NewAttachments(database store.SnapshotReader, mutations store.AttachmentMutationWriter, files filestorage.Storage) *Attachments {
-	return &Attachments{store: database, mutations: mutations, files: files}
+	maxConnections := 8
+	if pool, ok := database.(interface{ MaxConnections() int }); ok {
+		maxConnections = pool.MaxConnections()
+	}
+	capacity := maxConnections / 2
+	if capacity < 1 {
+		capacity = 1
+	}
+	if capacity > 4 {
+		capacity = 4
+	}
+	return &Attachments{store: database, mutations: mutations, files: files, uploadSlots: make(chan struct{}, capacity)}
 }
 
 func (s *Attachments) mutate(ctx context.Context, principal model.Principal, address attachmentcore.Address, operation func(store.AttachmentMutationDAO) error) error {
@@ -111,34 +123,88 @@ func (s *Attachments) read(ctx context.Context, principal model.Principal, proje
 	return nil
 }
 
+// Put releases its upload lease after the call unless a protocol retains it
+// until delivery of the response.
 func (s *Attachments) Put(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, content io.Reader) (model.Attachment, bool, error) {
+	item, created, lease, err := s.PutRetained(ctx, principal, projectID, taskID, path, contentType, content)
+	if lease != nil && !RetainUploadLease(ctx, lease) {
+		if closeErr := lease.Close(); closeErr != nil {
+			if err == nil {
+				err = &fileEffectError{cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
+			} else {
+				err = errors.Join(err, closeErr)
+			}
+		}
+	}
+	return item, created, err
+}
+
+func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, content io.Reader) (result model.Attachment, isCreated bool, held io.Closer, resultErr error) {
 	if err := model.RequirePrincipal(principal); err != nil {
-		return model.Attachment{}, false, err
+		return model.Attachment{}, false, nil, err
 	}
 	address, err := attachmentcore.NewAddress(projectID, taskID, path)
 	if err != nil {
-		return model.Attachment{}, false, err
+		return model.Attachment{}, false, nil, err
 	}
 	if err := attachmentcore.ValidateWritePath(address.RelativePath); err != nil {
-		return model.Attachment{}, false, err
+		return model.Attachment{}, false, nil, err
 	}
 	if err := attachmentcore.ValidateContentType(contentType); err != nil {
-		return model.Attachment{}, false, err
+		return model.Attachment{}, false, nil, err
+	}
+	if err := s.read(ctx, principal, address.ProjectID, address.TaskID, func(store.AttachmentReader) error { return nil }); err != nil {
+		// Recheck refusals under the normal Task lifecycle lock so a concurrent
+		// Project deletion retains its established error ordering.
+		var fault *model.Fault
+		if errors.As(err, &fault) && (fault.Code == "task_deleted" || fault.Code == "not_found") {
+			err = s.mutate(ctx, principal, address, func(store.AttachmentMutationDAO) error { return nil })
+			if err == nil {
+				return model.Attachment{}, false, nil, errors.New("attachment admission changed; retry the operation")
+			}
+		}
+		return model.Attachment{}, false, nil, err
+	}
+	lease, err := s.AcquireUploadLease(ctx, principal, address.ProjectID, address.TaskID)
+	if err != nil {
+		return model.Attachment{}, false, nil, err
 	}
 	permit, err := s.files.AcquireGate(ctx, filestorage.TargetGate, address.StoragePath)
 	if err != nil {
-		return model.Attachment{}, false, fmt.Errorf("acquire attachment gate: %w", err)
+		return model.Attachment{}, false, lease, fmt.Errorf("acquire attachment gate: %w", err)
 	}
-	defer permit.Close()
+	defer func() {
+		if closeErr := permit.Close(); closeErr != nil {
+			if resultErr == nil {
+				resultErr = &fileEffectError{cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
+			} else {
+				resultErr = errors.Join(resultErr, closeErr)
+			}
+		}
+	}()
 	var attachment model.Attachment
 	var created bool
-	fileStarted := false
-	err = s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
+	publication := filestorage.NotPublished
+	completion, err := s.mutations.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+		presence, err := scope.LockTaskPresence(ctx, address.ProjectID, address.TaskID)
+		if err != nil {
+			return err
+		}
+		if err := scope.ProjectLive(ctx, address.ProjectID); err != nil {
+			return projectcore.LookupError(err)
+		}
+		if !presence.Found {
+			return taskcore.NotFound(model.ErrNotFound)
+		}
+		if presence.DeletedAt != nil {
+			return taskcore.NotFound(model.ErrTaskDeleted)
+		}
+		dao := scope.AttachmentDAO()
 		if err := attachmentcore.CheckPathConflict(ctx, dao, address); err != nil {
 			return err
 		}
-		fileStarted = true
-		info, err := s.files.Put(ctx, attachmentcore.Bucket, address.StoragePath, content)
+		info, err := s.files.Put(ctx, attachmentcore.Bucket, address.StoragePath, attachmentcore.BoundedContent(content))
+		publication = filestorage.PublicationOutcome(err)
 		if err != nil {
 			if errors.Is(err, filestorage.ErrPathConflict) {
 				return attachmentcore.StorageConflict(err)
@@ -151,21 +217,26 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 		}
 		return nil
 	})
-	if err != nil {
-		if fileStarted {
-			if operation.CompletionFacts(err).Outcome == store.TransactionCommitted {
-				return attachment, created, &fileEffectError{cause: err}
-			}
-			return model.Attachment{}, false, &fileEffectError{cause: err}
-		}
-		return model.Attachment{}, false, err
+	if err == nil && completion.Outcome != store.TransactionCommitted {
+		err = &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: errors.New("attachment mutation did not commit")}
 	}
-	return attachment, created, nil
+	if err != nil {
+		err = &filestorage.PublicationError{Outcome: publication, Cause: err}
+		if publication != filestorage.NotPublished {
+			if operation.CompletionFacts(err).Outcome == store.TransactionCommitted {
+				return attachment, created, lease, &fileEffectError{cause: err}
+			}
+			return model.Attachment{}, false, lease, &fileEffectError{cause: err}
+		}
+		return model.Attachment{}, false, lease, err
+	}
+	return attachment, created, lease, nil
 }
 
 // TransferAdmission holds the target gate for one admitted transfer operation.
 type TransferAdmission struct {
 	service      *Attachments
+	principal    model.Principal
 	address      attachmentcore.Address
 	contentType  string
 	namespace    filestorage.TransferNamespace
@@ -220,7 +291,7 @@ func (s *Attachments) AdmitTransfer(ctx context.Context, principal model.Princip
 	}); err != nil {
 		return nil, errors.Join(err, permit.Close())
 	}
-	return &TransferAdmission{service: s, address: address, contentType: contentType, namespace: namespace, target: target, private: private, publisher: publisher, permit: permit}, nil
+	return &TransferAdmission{service: s, principal: principal, address: address, contentType: contentType, namespace: namespace, target: target, private: private, publisher: publisher, permit: permit}, nil
 }
 
 // Put consumes an admission at most once and leaves cleanup of staged objects
@@ -232,7 +303,37 @@ func (a *TransferAdmission) Put(ctx context.Context, content io.Reader) (model.A
 // PutFrom constructs and closes its reader within the Task lifecycle scope. A
 // transfer reader must hold its private permit and use only scope-bound receipt
 // reads, avoiding a Task-to-transfer lock inversion during Project deletion.
-func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.AttachmentMutationScope) (io.ReadCloser, error)) (model.Attachment, bool, error) {
+func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.AttachmentMutationScope) (io.ReadCloser, error)) (item model.Attachment, created bool, resultErr error) {
+	lease, err := a.service.AcquireUploadLease(ctx, a.principal, a.address.ProjectID, a.address.TaskID)
+	if err != nil {
+		return model.Attachment{}, false, err
+	}
+	if !RetainUploadLease(ctx, lease) {
+		defer func() {
+			if closeErr := lease.Close(); closeErr != nil {
+				if resultErr == nil {
+					resultErr = &fileEffectError{cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
+				} else {
+					resultErr = errors.Join(resultErr, closeErr)
+				}
+			}
+		}()
+	}
+	return a.PutFromWithLease(ctx, lease, source)
+}
+
+// PutFromWithLease uses the lease already held by a multi-stage upload.
+func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer, source func(store.AttachmentMutationScope) (io.ReadCloser, error)) (model.Attachment, bool, error) {
+	lease, ok := held.(*uploadLease)
+	user, err := model.CanonicalID(a.principal.UserID)
+	if !ok || lease == nil || err != nil || lease.user != user || lease.project != a.address.ProjectID || lease.task != a.address.TaskID || lease.instance != a.service.uploadSlots {
+		return model.Attachment{}, false, errors.New("invalid attachment upload lease")
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.closed {
+		return model.Attachment{}, false, errors.New("attachment upload lease is closed")
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed || a.used {
@@ -244,7 +345,8 @@ func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.Attac
 		return model.Attachment{}, false, fmt.Errorf("generate staged attachment ID: %w", err)
 	}
 	var attachment model.Attachment
-	var created, fileStarted bool
+	var created bool
+	publication := filestorage.NotPublished
 	completion, err := a.service.mutations.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
 		presence, err := scope.LockTaskPresence(ctx, a.address.ProjectID, a.address.TaskID)
 		if err != nil {
@@ -267,18 +369,19 @@ func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.Attac
 		if err != nil {
 			return err
 		}
-		info, stageErr := a.private.PutTransfer(ctx, a.namespace, object.String(), content)
+		info, stageErr := a.private.PutTransfer(ctx, a.namespace, object.String(), attachmentcore.BoundedContent(content))
 		closeErr := content.Close()
 		if stageErr != nil || closeErr != nil {
 			return fmt.Errorf("stage attachment content: %w", errors.Join(stageErr, closeErr))
 		}
-		fileStarted = true
 		if err := a.publisher.PublishTransferAttachment(ctx, a.namespace, object.String(), a.target); err != nil {
+			publication = filestorage.PublicationOutcome(err)
 			if errors.Is(err, filestorage.ErrPathConflict) {
 				return attachmentcore.StorageConflict(err)
 			}
 			return fmt.Errorf("publish attachment content: %w", err)
 		}
+		publication = filestorage.Published
 		attachment, created, err = attachmentcore.PutMetadata(ctx, dao, a.address, a.contentType, info.Size)
 		if err != nil {
 			return fmt.Errorf("write attachment metadata: %w", err)
@@ -289,7 +392,8 @@ func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.Attac
 		err = &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: errors.New("attachment mutation did not commit")}
 	}
 	if err != nil {
-		if fileStarted {
+		err = &filestorage.PublicationError{Outcome: publication, Cause: err}
+		if publication != filestorage.NotPublished {
 			err = &fileEffectError{cause: err}
 			if operation.CompletionFacts(err).Outcome == store.TransactionCommitted {
 				return attachment, created, err

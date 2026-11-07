@@ -323,7 +323,7 @@ func TestRedeemHTTPRejectionsAndPreflight(t *testing.T) {
 		{"POST", "/oauth/token?code=secret", "application/x-www-form-urlencoded", "", http.StatusBadRequest},
 		{"POST", "/oauth/token", "application/json", "{}", http.StatusBadRequest},
 		{"POST", "/oauth/token", "application/x-www-form-urlencoded; charset=ascii", "grant_type=authorization_code", http.StatusBadRequest},
-		{"POST", "/oauth/token", "application/x-www-form-urlencoded", strings.Repeat("a", core.MetadataLimit+1), http.StatusBadRequest},
+		{"POST", "/oauth/token", "application/x-www-form-urlencoded", strings.Repeat("a", core.MetadataLimit+1), http.StatusRequestEntityTooLarge},
 	} {
 		r := httptest.NewRequest(tc.method, tc.target, strings.NewReader(tc.body))
 		r.Header.Set("Content-Type", tc.media)

@@ -32,6 +32,7 @@ type UploadInput struct{ Action, Path, ContentType, TransferID, ChunkID, Offset,
 type attachmentPut interface {
 	Put(context.Context, model.Principal, string, string, string, string, io.Reader) (model.Attachment, bool, error)
 	AdmitTransfer(context.Context, model.Principal, string, string, string, string, filestorage.TransferNamespace) (*attachmentservice.TransferAdmission, error)
+	AcquireUploadLease(context.Context, model.Principal, string, string) (io.Closer, error)
 }
 
 type Uploads struct {
@@ -200,7 +201,7 @@ func (s *Uploads) Execute(ctx context.Context, a transfer.Actor, project, task s
 	}
 }
 
-func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
+func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (result map[string]any, err error) {
 	if !transfer.Canonical(in.ChunkID) {
 		return nil, uploadFault("Invalid chunk ID.")
 	}
@@ -219,11 +220,18 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 	if _, e = s.bound(ctx, a, project, task, in.TransferID); e != nil {
 		return nil, e
 	}
+	lease, e := s.attachments.AcquireUploadLease(ctx, a.Principal, project, task)
+	if e != nil {
+		return map[string]any{"transferId": in.TransferID, "writeOutcome": "not_committed"}, e
+	}
+	if !attachmentservice.RetainUploadLease(ctx, lease) {
+		defer func() { err = errors.Join(err, lease.Close()) }()
+	}
 	p, e := s.lifecycle.AcquirePermit(ctx, a, in.TransferID)
 	if e != nil {
 		return nil, e
 	}
-	defer p.Close()
+	defer func() { err = errors.Join(err, p.Close()) }()
 	r, e := s.lifecycle.admittedUploadRecord(p.Context, p)
 	if e != nil {
 		return nil, e
@@ -259,6 +267,9 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 	}
 	if off != d.NextOffset || off > int64(^uint64(0)>>1)-int64(len(b)) {
 		return nil, uploadFault("Chunk offset does not match the next offset.")
+	}
+	if d.NextOffset > attachmentcore.MaxFileBytes || int64(len(b)) > attachmentcore.MaxFileBytes-d.NextOffset {
+		return map[string]any{"transferId": in.TransferID, "writeOutcome": "not_committed"}, attachmentcore.FileTooLarge()
 	}
 	r, e = s.lifecycle.reserveAdmittedUpload(p.Context, p, int64(len(b)))
 	if e != nil {
@@ -392,7 +403,7 @@ func (s *Uploads) stream(ctx context.Context, p *Permit, id string, total int64)
 	}
 	return &chunkStream{ctx: ctx, service: s, permit: p, namespace: n, total: total}, nil
 }
-func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
+func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (result map[string]any, err error) {
 	total, e := number(in.TotalBytes)
 	if e != nil {
 		return nil, e
@@ -411,6 +422,13 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		}
 		return result, transfer.ErrState
 	}
+	lease, e := s.attachments.AcquireUploadLease(ctx, a.Principal, project, task)
+	if e != nil {
+		return map[string]any{"transferId": in.TransferID, "writeOutcome": "not_committed"}, e
+	}
+	if !attachmentservice.RetainUploadLease(ctx, lease) {
+		defer func() { err = errors.Join(err, lease.Close()) }()
+	}
 	p, e := s.lifecycle.AcquirePermit(ctx, a, in.TransferID)
 	if e != nil {
 		if errors.Is(e, transfer.ErrState) {
@@ -424,7 +442,7 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		}
 		return nil, e
 	}
-	defer p.Close()
+	defer func() { err = errors.Join(err, p.Close()) }()
 	r, e := s.lifecycle.admittedUploadRecord(p.Context, p)
 	if e != nil {
 		return nil, e
@@ -437,6 +455,9 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		result, _ := uploadResult(r)
 		return result, transfer.ErrState
 	}
+	if total > attachmentcore.MaxFileBytes || d.NextOffset > attachmentcore.MaxFileBytes {
+		return map[string]any{"transferId": r.ID, "writeOutcome": "not_committed"}, attachmentcore.FileTooLarge()
+	}
 	if d.NextOffset != total {
 		return nil, uploadFault("Total does not match accepted bytes.")
 	}
@@ -448,7 +469,7 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	if e != nil {
 		return map[string]any{"transferId": r.ID, "writeOutcome": "not_committed"}, e
 	}
-	defer admission.Close()
+	defer func() { err = errors.Join(err, admission.Close()) }()
 	opCtx, cancel := context.WithCancel(p.Context)
 	done := make(chan error, 1)
 	opID := uuid.NewString()
@@ -478,7 +499,7 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		cancel()
 		return <-done
 	}
-	defer stop()
+	defer func() { err = errors.Join(err, stop()) }()
 	reader, e := s.stream(opCtx, p, r.ID, total)
 	if e != nil {
 		return nil, e
@@ -507,7 +528,7 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	}
 	var item model.Attachment
 	var created bool
-	item, created, e = admission.PutFrom(opCtx, func(scope store.AttachmentMutationScope) (io.ReadCloser, error) {
+	item, created, e = admission.PutFromWithLease(opCtx, lease, func(scope store.AttachmentMutationScope) (io.ReadCloser, error) {
 		reader, err := s.stream(opCtx, p, r.ID, total)
 		if err != nil {
 			return nil, err
@@ -524,29 +545,30 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		d.Created = &created
 		result, finishErr := s.lifecycle.FinishCommit(ctx, p, a, r.ID, 0, "committed", encodeUpload(d))
 		if finishErr != nil {
-			return map[string]any{"transferId": r.ID, "operationId": d.OperationID, "writeOutcome": "confirmed", "attachment": attachmentWire(item), "created": created}, errors.Join(e, finishErr)
+			return map[string]any{"transferId": r.ID, "operationId": d.OperationID, "writeOutcome": "confirmed", "attachment": attachmentWire(item), "created": created}, errors.Join(e, renewErr, finishErr)
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = s.lifecycle.requestAdmittedCleanup(cleanupCtx, p, d.OperationID)
+		cleanupErr := s.lifecycle.requestAdmittedCleanup(cleanupCtx, p, d.OperationID)
 		cleanupCancel()
 		confirmed, resultErr := uploadResult(result)
-		return confirmed, errors.Join(e, resultErr)
+		return confirmed, errors.Join(e, renewErr, cleanupErr, resultErr)
 	}
 	outcome := "unknown"
 	if !attachmentservice.FileEffectPossible(e) {
 		outcome = "not_committed"
 	}
 	d.WriteOutcome = outcome
+	var finishErr, cleanupErr error
 	if outcome == "not_committed" {
-		if _, finishErr := s.lifecycle.FinishCommit(ctx, p, a, r.ID, 0, "failed", encodeUpload(d)); finishErr == nil {
+		if _, finishErr = s.lifecycle.FinishCommit(ctx, p, a, r.ID, 0, "failed", encodeUpload(d)); finishErr == nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			_ = s.lifecycle.requestAdmittedCleanup(cleanupCtx, p, d.OperationID)
+			cleanupErr = s.lifecycle.requestAdmittedCleanup(cleanupCtx, p, d.OperationID)
 			cleanupCancel()
 		}
 	} else {
 		finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer finishCancel()
-		_ = s.lifecycle.markAdmittedUnknown(finishCtx, p, d.OperationID, encodeUpload(d))
+		finishErr = s.lifecycle.markAdmittedUnknown(finishCtx, p, d.OperationID, encodeUpload(d))
 	}
-	return map[string]any{"transferId": r.ID, "operationId": d.OperationID, "writeOutcome": outcome}, fmt.Errorf("upload commit: %w", errors.Join(e, renewErr))
+	return map[string]any{"transferId": r.ID, "operationId": d.OperationID, "writeOutcome": outcome}, fmt.Errorf("upload commit: %w", errors.Join(e, renewErr, finishErr, cleanupErr))
 }

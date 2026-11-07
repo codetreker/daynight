@@ -51,6 +51,12 @@ race 和关键代码块配置未满足下文 V8；完整进程证据须按被测
 
 受保护 worker 属性、原子认领/更新/释放/强制撤回和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。账号级运行快照由[快照需求](daynight-worker-snapshots.md)定义，记录认证客户端最近的机器和任务观测。快照读写不改变 claim 或任务状态；服务端不启动执行进程，前台 Worker 与真实资源恢复仍是独立运行时能力。
 
+## HTTP 输入边界
+
+HTTP/1 请求行与请求头初始读取合计不超过 64 KiB，原始 request-target 和 query 分别不超过 48 KiB 和 24 KiB。通用 encoded cursor 在解码前限制为 16 KiB；更小的专用限制保持有效。普通 REST JSON 最大 1 MiB，MCP body 最大 4 MiB。普通短 body 从读取开始限时 15 秒；实际 body 超限返回 413，目标或 query 超限返回 414，头超限返回 431 或安全关闭，读取超时在可写时返回 408 并关闭连接。认证后的 MCP 预读每实例最多 16 个，满额立即返回 429。成功读完 body 后可继续复用连接；拒绝未读 body 不等待客户端发送剩余内容。错误与日志不回显正文或秘密。
+
+附件和归档的读取期限合同分别为 60 秒和 120 秒，由对应入口接入；Session 消息、SSE、WebSocket 和长轮询沿用专用协议及生命周期。[输入与资源额度](daynight-api-input-limits.md)列出领域额度的实施状态。
+
 ## Project
 
 Project 包含以下字段：
@@ -65,9 +71,10 @@ Project 包含以下字段：
 
 一个 project 关联一个 repo，多个 project 可以关联同一 repo。支持 HTTPS URL、
 SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；地址登记不验证实际访问权限。
-名称必须是无 NUL 的有效 UTF-8 文本。HTTPS 地址不得包含凭据，SSH 地址允许用户名，
-但不得包含密码；查询参数和 fragment
-不属于仓库地址。无效地址作为输入错误拒绝，地址中 SSH 用户名不作为业务身份。
+名称必须是无 NUL 的有效 UTF-8 文本，最多 256 个 Unicode code points 且最多 1024 个
+UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含凭据，SSH 地址允许用户名，
+但不得包含密码；查询参数和 fragment 不属于仓库地址。无效或超限输入返回 `400 invalid_input`，
+不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
 
 接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，
@@ -180,7 +187,9 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 ## HTTP API
 
 Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确版本和写入结果由
-[鉴权需求](daynight-auth.md#team-生命周期)拥有；下表保留服务的完整资源入口索引。
+[鉴权需求](daynight-auth.md#team-生命周期)拥有。普通 Team 创建和真实改名的非空名称必须同时
+不超过 256 个 Unicode code points 和 1024 个 UTF-8 bytes；超限返回 `400 invalid_input`，
+不改变 Team、成员关系或版本。Personal Team 的名称仍为 `null`。下表保留服务的完整资源入口索引。
 
 | 方法 | 路径 | 结果 |
 |---|---|---|

@@ -146,7 +146,7 @@ func TestStepsHTTPMoveStrictInputAndMethods(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
-	assertProjectError(t, projectRequest(handler, "PUT", endpoint, `{"version":1,"position":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 400, "invalid_input")
+	assertProjectError(t, projectRequest(handler, "PUT", endpoint, `{"version":1,"position":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 413, "payload_too_large")
 	for _, method := range []string{"GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"} {
 		response := projectRequest(handler, method, endpoint, `{}`)
 		if response.Code != 405 || response.Header().Get("Allow") != "PUT" || response.Header().Get("Cache-Control") != "no-store" {

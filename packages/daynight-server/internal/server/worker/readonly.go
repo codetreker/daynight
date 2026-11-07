@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -82,15 +81,14 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 	ctx, cancel := context.WithDeadline(r.Context(), started.Add(ro.ModelRequestTimeout))
 	defer cancel()
 	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(started.Add(h.bodyTimeout))
 	_ = controller.SetWriteDeadline(started.Add(ro.ModelRequestTimeout + 5*time.Second))
 	defer func() {
 		_ = controller.Flush()
-		_ = controller.SetReadDeadline(time.Time{})
 		_ = controller.SetWriteDeadline(time.Time{})
 	}()
 	id, err := readOnlyWorker(r)
 	if err != nil {
+		httpx.CloseUnreadBody(w, r)
 		h.failure(w, r, err)
 		return
 	}
@@ -98,6 +96,7 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 	h.mu.Lock()
 	if h.closing || h.requests >= 1024 || h.requestTargets[target] >= 16 {
 		h.mu.Unlock()
+		httpx.CloseUnreadBody(w, r)
 		h.failure(w, r, &model.Fault{Code: "busy", Message: "Worker read-only HTTP request capacity is exhausted."})
 		return
 	}
@@ -119,13 +118,9 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 	var input ro.Request
 	if err == nil {
 		var raw []byte
-		raw, err = io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+		raw, err = httpx.ReadBody(w, r, 64<<10, time.Until(started.Add(h.bodyTimeout)))
 		if err != nil {
-			r.Close = true
-			w.Header().Set("Connection", "close")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(api.ErrorResponse{Error: api.Error{Code: "invalid_input", Message: "Worker read-only request is too large or unreadable."}})
+			httpx.WriteBodyError(w, r, h.logger, "worker_readonly", "request_body", err)
 			return
 		} else {
 			err = ro.Decode(raw, &input)

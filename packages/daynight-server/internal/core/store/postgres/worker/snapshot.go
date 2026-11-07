@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -34,6 +33,26 @@ func (w *Writer) ObservedAt(ctx context.Context) (time.Time, error) {
 		return time.Time{}, pg.QueryError("read worker clock", err)
 	}
 	return observed.UTC(), nil
+}
+
+func (w *Writer) AdmitWorker(ctx context.Context, userID, workerID string, window time.Duration) (store.WorkerAdmission, error) {
+	var result store.WorkerAdmission
+	if _, err := w.tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('worker-admission:' || $1::uuid::text, 0))`, userID); err != nil {
+		return result, pg.QueryError("lock worker admission", err)
+	}
+	observed, err := w.ObservedAt(ctx)
+	if err != nil {
+		return result, err
+	}
+	result.ObservedAt = observed
+	err = w.tx.QueryRow(ctx, `SELECT
+		(SELECT last_seen_at FROM workers WHERE user_id=$1 AND worker_id=$2),
+		(SELECT count(*) FROM workers WHERE user_id=$1 AND last_seen_at > $3::timestamptz - ($4::double precision * interval '1 second') AND last_seen_at <= $3)`,
+		userID, workerID, observed, window.Seconds()).Scan(&result.LastSeenAt, &result.ActiveCount)
+	if err != nil {
+		return store.WorkerAdmission{}, pg.QueryError("read worker admission", err)
+	}
+	return result, nil
 }
 
 func (w *Writer) ReportTaskSnapshots(ctx context.Context, userID string, inventory model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
@@ -101,14 +120,7 @@ func (w *Writer) UpsertWorker(ctx context.Context, snapshot model.WorkerSnapshot
 						THEN jsonb_set(workers.task_snapshot, '{state}', '"stale"'::jsonb)
 						ELSE workers.task_snapshot END
 				ELSE EXCLUDED.task_snapshot END
-		WHERE workers.last_seen_at<EXCLUDED.last_seen_at
 		RETURNING `+pg.WorkerSnapshotProjection, snapshot.UserID, snapshot.WorkerID, snapshot.CreatedAt, snapshot.LastReportedAt, telemetry, tasks))
-	if errors.Is(err, pgx.ErrNoRows) {
-		// A separate ReadCommitted statement can observe the conflicting row after
-		// its transaction commits; a same-statement CTE fallback cannot.
-		// https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED
-		worker, err = pg.ScanWorkerSnapshot(w.tx.QueryRow(ctx, `SELECT `+pg.WorkerSnapshotProjection+` FROM workers WHERE user_id=$1 AND worker_id=$2`, snapshot.UserID, snapshot.WorkerID))
-	}
 	if err != nil {
 		return model.WorkerSnapshot{}, pg.QueryError("upsert worker snapshot", err)
 	}

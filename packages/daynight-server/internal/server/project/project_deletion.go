@@ -2,13 +2,13 @@ package project
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 )
@@ -40,13 +40,19 @@ func (h *projectHandler) delete(w http.ResponseWriter, r *http.Request, p model.
 	w.Header().Set("Cache-Control", "no-store")
 	logger := transferLogID(h.logger.With("user_id", p.UserID), "project_id", r.PathValue("projectId"))
 	if _, err := httpx.QueryValues(r); err != nil {
+		httpx.CloseUnreadBody(w, r)
 		httpx.WriteError(w, r, logger, "project_deletion", "prepare", err)
 		return
 	}
 	if r.Body != nil {
-		data, err := io.ReadAll(io.LimitReader(r.Body, 1))
-		if err != nil || len(data) != 0 {
-			httpx.WriteError(w, r, logger, "project_deletion", "prepare", httpx.InvalidInput("DELETE does not accept a request body"))
+		_, err := httpx.ReadBody(w, r, 0, transport.JSONBodyReadTimeout)
+		if err != nil {
+			var bodyErr *httpx.BodyReadError
+			if errors.As(err, &bodyErr) && bodyErr.Status == http.StatusRequestEntityTooLarge {
+				httpx.WriteError(w, r, logger, "project_deletion", "prepare", httpx.InvalidInput("DELETE does not accept a request body"))
+			} else {
+				httpx.WriteBodyError(w, r, logger, "project_deletion", "prepare", err)
+			}
 			return
 		}
 	}

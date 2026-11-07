@@ -26,7 +26,7 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, principal, session := testAuthRecords(t, s)
-	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: deviceStoreHash("state"), BrowserBindingHash: deviceStoreHash("browser"), Provider: "github", ReturnPath: "/projects", ExpiresAt: now.Add(time.Hour)}
+	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: deviceStoreHash("state"), BrowserBindingHash: deviceStoreHash("browser"), ScopeHash: deviceStoreHash("scope"), Provider: "github", ReturnPath: "/projects", ExpiresAt: now.Add(time.Hour)}
 	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: deviceStoreHash("pat"), Name: "DAO PAT", CreatedAt: now}
 	identityScopeTest(t, s, func(scope IdentityScope) error {
 		dao := scope.IdentityDAO()
@@ -267,7 +267,7 @@ func TestIdentityCleanupFailureRollsBackEarlierDeletes(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	_, _, session := testAuthRecords(t, s)
-	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: deviceStoreHash("expired-state"), BrowserBindingHash: deviceStoreHash("expired-binding"), Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(-time.Hour)}
+	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: deviceStoreHash("expired-state"), BrowserBindingHash: deviceStoreHash("expired-binding"), ScopeHash: deviceStoreHash("scope"), Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(-time.Hour)}
 	identityScopeTest(t, s, func(scope IdentityScope) error { return scope.IdentityDAO().InsertLogin(ctx, login) })
 	if _, err := s.Pool.Exec(ctx, `UPDATE sessions SET created_at=$2,expires_at=$3 WHERE id=$1`, session.ID, now.Add(-2*time.Hour), now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)

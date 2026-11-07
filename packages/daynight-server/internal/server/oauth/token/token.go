@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -13,6 +13,8 @@ import (
 	"unicode/utf8"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 )
 
@@ -42,40 +44,43 @@ func publicHeaders(w http.ResponseWriter) {
 func publicPost(w http.ResponseWriter, r *http.Request) bool {
 	publicHeaders(w)
 	if r.Method == http.MethodOptions {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.WriteHeader(http.StatusNoContent)
 		return false
 	}
 	if r.Method != http.MethodPost {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("Allow", "POST, OPTIONS")
 		writeError(w, http.StatusMethodNotAllowed, "invalid_request")
 		return false
 	}
 	return true
 }
-func publicForm(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
+func publicForm(w http.ResponseWriter, r *http.Request) (url.Values, bool, error) {
 	media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if r.URL.RawQuery != "" || err != nil || media != "application/x-www-form-urlencoded" || len(params) > 1 || (len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8")) {
-		return nil, false
+		httpx.CloseUnreadBody(w, r)
+		return nil, false, nil
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, core.MetadataLimit))
+	body, err := httpx.ReadBody(w, r, core.MetadataLimit, transport.JSONBodyReadTimeout)
 	if err != nil {
-		return nil, false
+		return nil, false, err
 	}
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		return nil, false
+		return nil, false, nil
 	}
 	for key, entries := range values {
 		if len(entries) != 1 || !utf8.ValidString(key) || !utf8.ValidString(entries[0]) || strings.ContainsRune(key, 0) || strings.ContainsRune(entries[0], 0) {
-			return nil, false
+			return nil, false, nil
 		}
 		if entries[0] == "" {
 			values.Del(key)
 		}
 	}
-	return values, true
+	return values, true, nil
 }
 func publicError(w http.ResponseWriter, err error) {
 	switch {
@@ -102,14 +107,20 @@ func (h *PublicTokens) Token(w http.ResponseWriter, r *http.Request) {
 	}
 	permit, allowed, err := h.Admission.TakeToken(r.Context(), source)
 	if err != nil {
+		httpx.CloseUnreadBody(w, r)
 		publicError(w, err)
 		return
 	}
 	if !allowed {
+		httpx.CloseUnreadBody(w, r)
 		publicError(w, core.ErrRateLimited)
 		return
 	}
-	v, ok := publicForm(w, r)
+	v, ok, readErr := publicForm(w, r)
+	if readErr != nil {
+		httpx.WriteBodyError(w, r, slog.Default(), "oauth", "token_body", readErr)
+		return
+	}
 	if !ok || v.Get("grant_type") == "" || v.Get("client_id") == "" || v.Get("resource") == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
@@ -170,7 +181,11 @@ func (h *PublicTokens) Revoke(w http.ResponseWriter, r *http.Request) {
 	if !publicPost(w, r) {
 		return
 	}
-	v, ok := publicForm(w, r)
+	v, ok, readErr := publicForm(w, r)
+	if readErr != nil {
+		httpx.WriteBodyError(w, r, slog.Default(), "oauth", "revoke_body", readErr)
+		return
+	}
 	if !ok || v.Get("token") == "" || v.Get("client_id") == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return

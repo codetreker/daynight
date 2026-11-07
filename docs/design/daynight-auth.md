@@ -141,8 +141,9 @@ server 统一映射创建、分页、详情和改名的 Team DTO；有限删除�
 
 `core/team` 接受显式 Principal 并拥有 Team 业务规则；`service/team` 选择事务或快照并处理
 完成结果，`server/team` 负责 HTTP 适配。管理输入先严格核对 expectedUserId，再进入任何领域查询或
-事务；JSON 字符串先验证原始 Unicode 转义，core 同时验证合法 Unicode、无 NUL 和非全
-Unicode `White_Space`。名称按原文存储，重复名称合法。资源 ID 和 expectedUserId 使用规范
+事务；JSON 字符串先验证原始 Unicode 转义，core 验证合法 Unicode、无 NUL 和非全
+Unicode `White_Space`，并对名称同时执行 256 code points 和 1024 UTF-8 bytes 的准入。
+名称按原文存储，重复名称合法；容量拒绝不修改 Team 或成员关系。资源 ID 和 expectedUserId 使用规范
 小写 UUID，正 int64 元数据版本在 no-op 比较之前校验。
 
 创建作用域先锁定创建者 user，再在单一事务写入普通 Team 与创建者 admin 行；不预锁不存在的
@@ -153,7 +154,7 @@ Team。读取和列表使用同一只读 Repeatable Read 快照取得 Team 与�
 
 已有 Team 写作用域开启 Read Committed 事务并取得目标 Team `FOR UPDATE`，通过事务绑定的
 Team DAO 向 core 提供能力。取锁后读取当前真实成员并重验 admin，Personal 禁用操作先于变更；比较元数据
-version 后才接受相同原文。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
+version 后才接受相同原文，即使存量名称超出新额度；真实改名前检查名称额度。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
 成员版本、Project ownership 或 grant；同值 no-op 不采样变更时钟或执行 UPDATE。
 
 成员目录与主体资格在同一个只读快照中读取；成员行关联规范用户资料，缺少用户行是完整性
@@ -209,10 +210,22 @@ Origin 检查、角色和业务授权仍由原入口执行；该头只是响应�
 
 ### UniAuth 一次性交接
 
-login_transactions 保存随机 state 摘要、浏览器绑定摘要、provider、主站内返回路径
-和十分钟到期时间。每次登录使用独立的绑定 Cookie，支持同时打开多个登录页。
+login_transactions 保存随机 state、每笔浏览器绑定及独立浏览器 scope 的摘要、provider、主站内返回路径和十分钟到期时间。先验证 provider 和最多 4096 bytes 的 returnPath；有效 scope Cookie 缺失时只设置 32-byte 随机 scope 并以 303 返回原登录 URL，不创建 pending。首次并发请求或清除 Cookie 后的请求不能关联为同一物理浏览器。每次准入成功刷新 scope Cookie，使其覆盖新交易的期限；每笔登录仍使用独立绑定 Cookie，支持同时打开多个登录页。
+
+短数据库事务取得全服务容量锁后读取数据库当前时间，排除过期记录并检查全服务 10000 条及同 scope 5 条上限。仅准入成功后才执行有限清理并插入；拒绝不清理、不插入、不撤销其他交易。锁后时间决定交易期限，避免等待锁使有效期缩短；callback 在取得交易行锁后按数据库时间判断到期，其他凭据仍按服务时钟判断自身期限。scope Cookie 与绑定 Cookie 都使用 host-only、HttpOnly、SameSite=Lax，HTTPS 时带 Secure 和 `__Host-` 前缀。
+
+升级时必须停止旧版本创建登录交易，允许旧 callback 完成或等待十分钟到期。迁移对仍有效的旧 pending 明确失败并保留记录；旧记录全部消费或到期后，迁移清理过期记录并建立非空 scope 摘要合同，不伪造 scope。
 callback 在同一事务验证绑定/state/provider/期限并消费 pending；提交后才通过 SDK
-执行一次 Retrieve，继承请求 context 和有界 deadline。
+执行一次 Retrieve，继承请求 context 和 15 秒期限。专用 HTTP client 禁止重定向，
+在底层 transport 解压之后限制 response body 的实际读取量为 2097152 bytes；读取到
+上限后再探测一个 byte，超限即返回错误并停止读取，不依赖 Content-Length。读取、取消和
+关闭仍遵循响应 body 的生命周期，错误原因保留在服务内部，日志不记录 code、token 或资料正文。
+
+领取成功且 provider 匹配后，identity 领域校验外部 ID、姓名和邮箱各最多 1024 UTF-8 bytes，
+头像 URL 最多 524288 UTF-8 bytes；纯 profile codec 按实际规范化 JSON 编码计量完整对象，
+上限 1048576 bytes。转义可能使字段分别合规但整体超限。所有校验在本地用户、Personal Team
+和 session 的写事务之前完成；拒绝映射为 502 `identity_unavailable`，保留已经提交的 pending
+消费事实，旧资料不变。null、false 和头像 data URL 保持原值，不添加头像 scheme 限制。
 
 合法 provider error 结束 pending；错误绑定不领取。网络断连、取消、协议错误或
 领取响应丢失都重新登录，不能重试可能已消费的 code。用户以完整 UniAuth id 唯一
@@ -264,9 +277,10 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认端口，使配置值与浏览器
 Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精确主站 Origin，PAT 写
 请求按其 header 凭据验证。数据 API 401
-始终 JSON，Web 发起登录导航。已验证并消费的 callback 若失败，清除绑定 Cookie、
-记录清洗后的错误并 303 到固定主站 `/login?authError=login_failed`；已知事务同时带回
-经过验证的 `returnPath`，包括身份领取后本地 session 创建失败。错误/未绑定 callback
+始终 JSON，Web 发起登录导航。已验证并消费的 callback 若失败，清除绑定 Cookie 并
+记录清洗后的错误；上游响应协议错误及 profile 准入失败返回 502 `identity_unavailable`，
+其他失败 303 到固定主站 `/login?authError=login_failed`，带回经过验证的 `returnPath`，
+包括身份领取后本地 session 创建失败。错误/未绑定 callback
 保留 JSON 拒绝。登录壳读取并清除通用标记，保留目标与重试入口，不带回原始 code/错误。
 主站默认 HTTPS，使用 __Host- 会话/绑定 Cookie；显式 HTTP 主站测试配置使用不带
 该前缀和 Secure 的测试名称，仍为 host-only、HttpOnly、Lax。SDK gateway 的
@@ -370,7 +384,7 @@ HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由�
 |---|---|
 | GET /healthz、GET /readyz | 无业务数据的存活/就绪；就绪保留 store 可用性。 |
 | GET /api/v1/auth/providers | 公开 App 范围 provider 发现；真实 SDK 投影当前权威交集。 |
-| GET /api/v1/auth/login?provider=... | 创建 pending 并跳转 UniAuth。 |
+| GET /api/v1/auth/login?provider=... | 校验输入；无有效 scope 时初始化并返回同一 URL，否则按容量创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET/HEAD /api/v1/me | 当前用户最小资料及必填 personalTeam:TeamRef；读取真实 Personal 关系并校验 owner admin，认证及完整资料读取后以强 ETag 重验，成功 200/304 使用 private, no-cache。 |
 | GET/POST /api/v1/teams | 本人成员资格过滤的 Team 分页；原子创建普通 Team 和创建者 admin。 |

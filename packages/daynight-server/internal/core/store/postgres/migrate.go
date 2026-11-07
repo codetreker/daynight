@@ -141,13 +141,16 @@ var botNativePreferencesSQL string
 //go:embed migrations/046_task_cancelled.sql
 var taskCancelledSQL string
 
+//go:embed migrations/047_login_scope.sql
+var loginScopeSQL string
+
 //go:embed migrations/043_upload_chunks.sql
 var uploadChunksSQL string
 
 //go:embed migrations/044_project_soft_delete.sql
 var projectSoftDeleteSQL string
 
-//go:embed migrations/047_webhook_management.sql
+//go:embed migrations/048_webhook_management.sql
 var webhookManagementSQL string
 
 type migration struct {
@@ -204,7 +207,8 @@ var schemaMigrations = []migration{
 	{version: 44, sql: projectSoftDeleteSQL},
 	{version: 45, sql: botNativePreferencesSQL},
 	{version: 46, sql: taskCancelledSQL},
-	{version: 47, sql: webhookManagementSQL},
+	{version: 47, sql: loginScopeSQL},
+	{version: 48, sql: webhookManagementSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

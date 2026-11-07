@@ -71,6 +71,8 @@ func TestDeletedProjectClosesWebSessionChannels(t *testing.T) {
 	if deleted.Code != http.StatusOK {
 		t.Fatalf("delete %d: %s", deleted.Code, deleted.Body.String())
 	}
+	// Socket closure can precede disconnect cleanup against the deleted Project.
+	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "not_found") }
 	requireDeletedChannelClosed(t, ctx, controllerClosed)
 	requireDeletedChannelClosed(t, ctx, browserClosed)
 }
@@ -110,6 +112,8 @@ func TestDeletedProjectClosesTerminalSessionChannels(t *testing.T) {
 	if deleted.Code != http.StatusOK {
 		t.Fatalf("delete %d: %s", deleted.Code, deleted.Body.String())
 	}
+	// Socket closure can precede disconnect cleanup against the deleted Project.
+	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "not_found") }
 	requireDeletedChannelClosed(t, ctx, workerClosed)
 	requireDeletedChannelClosed(t, ctx, browserClosed)
 }

@@ -11,6 +11,13 @@ Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
 are grouped by project and the first two canonical task UUID characters; an
 explicit offline maintenance command migrates the old task-only layout.
+New and replaced attachments are limited to 5 MiB of actual content; a larger
+stream returns `payload_too_large` before publication. REST upload reads have a
+60-second socket deadline. Active upload I/O is limited per instance, user and
+Task, with immediate `resource_busy` refusal; idle MCP tickets use the separate
+private transfer ledger. The [attachment contract](../../docs/spec/daynight-task-attachments.md)
+and [design](../../docs/design/daynight-task-attachments.md) define the limits,
+publication facts and retained failure semantics.
 Dependency rows also
 persist an ordinary/external classification and task/graph reads expose the
 required external subset. Public create and versioned PATCH accept explicit
@@ -56,6 +63,11 @@ modifying, or reviewing daynight-server.
 The TypeScript review command retains its separate configuration, storage and
 lifecycle. The client HTTP foundation targets this service's API.
 
+The [candidate input limits](../../docs/spec/daynight-api-input-limits.md) and
+[measurement design](../../docs/design/daynight-api-input-limits.md) describe
+pure domain admission, protocol measurement, and the active HTTP input limits.
+Domain online admission is owned by each respective implementation.
+
 The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
@@ -71,7 +83,14 @@ handoff, local users, browser sessions, personal access tokens and project
 membership. The identity module implements persistent users, browser-bound login
 transactions, sessions, PATs and callable HTTP handlers;
 NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The
-membership module provides NewMemberships/NewMembershipRoutes, transaction-scoped
+[identity admission](../../docs/design/daynight-auth.md#uniauth-一次性交接) limits the
+decompressed upstream response to 2 MiB and retains the 15-second deadline. It
+checks the external ID, name and email at 1024 UTF-8 bytes each, the avatar URL
+at 512 KiB, and the complete normalized profile JSON at 1 MiB. Invalid or
+oversized upstream identity returns 502 `identity_unavailable` without changing
+the user, Personal Team or session; the already consumed login remains consumed.
+Nullable values and data URLs are preserved without truncation.
+The membership module provides NewMemberships/NewMembershipRoutes, transaction-scoped
 access checks, private project creation, filtered project lists, administrator
 changes and invitations. The
 [identity foundation](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
@@ -696,11 +715,20 @@ Domain packages own their HTTP integration scenarios, including those that
 construct the production application and use real PostgreSQL and UniAuth
 fixtures. The root `internal/server` package retains tests that need internal
 composition access, shared startup/channel fixtures and runtime shutdown
-ordering. A second package calling the same production application does not
-provide another HTTP boundary: shared scenarios run once in their domain owner,
-while internal-only assertions remain in the root package. The
+ordering. Shared scenarios run once in their domain owner; internal-only
+assertions remain in the root package. The
 [HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
 records the distinction and preservation requirements.
+
+The domain Session fixtures share application shutdown cleanup and mutable
+error expectations. Tests that deliberately revoke authority may declare the
+exact clean domain fault caused by that transition. Project deletion channel
+tests declare `not_found` after successful deletion because socket closure can
+precede the server's disconnect cleanup. Every joined cause must match the
+selected fault without an underlying cause; database errors, timeouts and other
+faults still fail cleanup. Production shutdown error handling remains unchanged.
+The [shutdown expectation decision](../../.agents/notes/implemented/testing/2026-11-07-session-deletion-shutdown-expectations.md)
+records the timing and error-preservation rationale.
 
 ### Schema snapshot maintenance
 

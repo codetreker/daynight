@@ -2026,12 +2026,20 @@ HTTP cases check decoder admission and protocol classification. The
 [API proof decision](../../.agents/notes/implemented/testing/2026-11-06-web-api-proof-owners.md)
 owns that separation and its limits.
 
-The platform, pause, status and assignment controller session tests use
-`tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
-Testing Library with a 5ms default polling interval, preserving immediate
-checks, timeouts, errors and explicit options. DOM tests keep their existing
-waits. The [state polling decision](../../.agents/notes/archived/testing/2026-11-04-web-controller-state-polling.md)
-records the cadence and its limits.
+State-only waits in the platform, pause, status, assignment,
+direct-observation and Steps session suites use `tests/helpers/waitForState.ts`.
+It delegates to Testing Library with a 5ms default polling interval, preserving
+immediate checks, timeouts, errors and explicit options. The mixed Steps session
+suite retains Testing Library's default wait for DOM predicates. Production
+polling remains unchanged.
+
+Readiness must describe the operation being observed. Retired Step parent-check
+tests settle the reopened parent and Steps collection before arming their fault
+responses. Steps history-replacement tests flush pending React work, then jointly
+require fresh parent and Steps versions, the rendered row and the retained draft.
+The [direct-observation state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-direct-observation-state-waits.md)
+and [Steps session state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-steps-session-state-waits.md)
+record these readiness and reader-lifetime requirements.
 
 Step panel DOM tests retain the full pagination fixtures and resolve visible
 controls by role and accessible name within their current row, form, toolbar,

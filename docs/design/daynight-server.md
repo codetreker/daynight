@@ -212,6 +212,11 @@ ssh://git@git.example.com/team/repo.git
 git@git.example.com:team/repo.git
 ```
 
+Team 与 Project 的共同领域准入分别检查原始名称的有效性，以及最多 256 个 Unicode code points
+和 1024 个 UTF-8 bytes；普通 Team 创建和真实改名、Project 创建及仓库注册共用这些规则。Team 同名 no-op 保留存量超限名称。
+Project `repoUrl` 在 URL/SCP 解析和仓库匹配前检查最多 4096 个 UTF-8 bytes；容量失败
+映射为 `invalid_input`，发生在创建或修改任何持久数据之前，不截断输入。
+
 解析器校验协议、主机及非空仓库路径等语法，拒绝控制字符、嵌入密码、HTTPS userinfo、
 query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；私钥、口令、token 等
 认证材料不得出现在保存的地址中。地址处理不限定 GitHub 或其他 provider，不进行
@@ -293,6 +298,12 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 该设计以同 project 写入吞吐量换取明确的串行规则。采用 `SERIALIZABLE` 可以提供
 另一种并发控制，但还需要全操作重试及冲突响应策略；project 已经是依赖范围，因此
 以 project 行锁组织写入更直接。若出现单 project 写入瓶颈，再根据观测重新评估。
+
+## HTTP 传输准入
+
+Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHeaderBytes` 设置为 64 KiB 减去初始读取的 4096-byte slop。该预算适用于 HTTP/1；未来 HTTP/2 的解压头字段需独立定义。`httpx` 沿 `ResponseWriter.Unwrap` 使用 `ResponseController`，在实际读取开始时设置 socket deadline。成功读到 EOF 后清除期限；请求入口跟踪底层 body 的实际 EOF，使已消费正文的业务错误保留连接与正常取消语义。取消或未消费正文时关闭连接并阻止自动 drain。读取超时保留业务 context 的取消，使用保留 request ID 的独立短写入路径在最多一秒内尝试 408，不重新启动业务。流式读取使用 `DeadlineBody`，供附件和归档入口在授权后的实际读取处应用各自期限。
+
+MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读并交给 SDK。名额持续到 HTTP 与 SDK handler 均不再持有输入，与 Control 和 Large 工具预算独立。失败、取消、初始化和关闭均释放名额。详细额度及适用状态见[输入规范](../spec/daynight-api-input-limits.md)。
 
 ## HTTP API
 

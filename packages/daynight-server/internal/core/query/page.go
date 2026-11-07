@@ -9,6 +9,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 type listCursor struct {
@@ -49,6 +50,9 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 	page := store.Page{Limit: request.Limit}
 	if request.Cursor == nil {
 		return page, nil
+	}
+	if len(*request.Cursor) > transport.MaxEncodedCursorBytes {
+		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
 	data, err := base64.RawURLEncoding.Strict().DecodeString(*request.Cursor)
 	if err != nil {

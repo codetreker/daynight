@@ -67,35 +67,16 @@ func TestSessionRoutesCapabilitiesRequireAuthentication(t *testing.T) {
 }
 
 type sessionHTTPFixture struct {
-	db                  *postgres.Store
-	handler             *resourceTestHandler
-	server              *httptest.Server
-	application         sessionApplication
-	task                api.Task
-	base                string
-	registration        sp.Registration
-	snapshot            sp.Snapshot
-	grant               sessioncore.GrantResult
-	expectShutdownError func(error) bool
-}
-
-func shutdownFaultMatches(err error, code string) bool {
-	if drained, ok := err.(interface {
-		Drained() bool
-		Unwrap() error
-	}); ok && drained.Drained() {
-		return shutdownFaultMatches(drained.Unwrap(), code)
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, cause := range joined.Unwrap() {
-			if !shutdownFaultMatches(cause, code) {
-				return false
-			}
-		}
-		return len(joined.Unwrap()) > 0
-	}
-	fault, ok := err.(*model.Fault)
-	return code != "" && ok && fault.Code == code && fault.Cause == nil
+	sessionHTTPShutdown
+	db           *postgres.Store
+	handler      *resourceTestHandler
+	server       *httptest.Server
+	application  sessionApplication
+	task         api.Task
+	base         string
+	registration sp.Registration
+	snapshot     sp.Snapshot
+	grant        sessioncore.GrantResult
 }
 
 func shutdownDatabaseFailureMatches(err error) bool {
@@ -144,13 +125,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	extendedWorkerTestHandler(f.handler)
 	f.server = httptest.NewServer(httpx.RequestLogging(testLogger(), application))
 	t.Cleanup(f.server.Close)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := f.application.Shutdown(ctx); err != nil && (f.expectShutdownError == nil || !f.expectShutdownError(err)) {
-			t.Error(err)
-		}
-	})
+	f.sessionHTTPShutdown.register(t, f.application.Shutdown)
 	return f
 }
 func (f *sessionHTTPFixture) mint(t *testing.T, kind string) sessioncore.GrantResult {
@@ -400,8 +375,8 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 		{"/api/v1/controller-resources/" + uuid.NewString() + "?x=1", f.grant.Token, "1", strings.NewReader(""), 400},
 		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "", strings.NewReader(""), 400},
 		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "01", strings.NewReader(""), 400},
-		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "1", strings.NewReader(strings.Repeat("x", sp.MaxResourceBytes+1)), 413},
-		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "1", &attachmentFailingBody{readErr: errors.New("broken body")}, 400},
+		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "1", strings.NewReader(strings.Repeat("x", sp.MaxResourceBytes+1)), 404},
+		{"/api/v1/controller-resources/" + uuid.NewString(), f.grant.Token, "1", &attachmentFailingBody{readErr: errors.New("broken body")}, 404},
 	} {
 		request := httptest.NewRequest(http.MethodPut, test.path, test.body)
 		if test.token != "" {

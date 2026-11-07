@@ -43,6 +43,15 @@ beforeEach(() => {
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); invalidateAuthRequests(); vi.useRealTimers(); });
 
 describe('Worker observation time', () => {
+  it.each([
+    ['2026-11-04T10:00:00.001Z', false],
+    ['2026-11-04T10:00:00.000Z', true],
+    ['2026-11-04T09:58:00.001Z', true],
+    ['2026-11-04T09:58:00.000Z', false],
+    ['2026-11-04T09:57:59.999Z', false],
+  ])('classifies a report at %s relative to server observation', (lastReportedAt, online) => {
+    expect(isWorkerOnline({ lastReportedAt }, Date.parse('2026-11-04T10:00:00.000Z'))).toBe(online);
+  });
   it('uses server and monotonic time for119/120 seconds and72-hour visibility without mutating input', () => {
     const now = Date.parse(WORKER_TIME), current = workerSummary(1), old = workerSummary(2);
     current.lastReportedAt = new Date(now - 119_000).toISOString();

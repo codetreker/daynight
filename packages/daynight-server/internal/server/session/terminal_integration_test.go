@@ -116,6 +116,7 @@ func TestTerminalCapabilitiesAreExplicit(t *testing.T) {
 }
 
 type terminalHTTPFixture struct {
+	sessionHTTPShutdown
 	h       *resourceTestHandler
 	app     sessionApplication
 	db      *postgres.Store
@@ -124,7 +125,7 @@ type terminalHTTPFixture struct {
 	message v2.Message
 }
 
-func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
+func terminalHTTPSetup(t *testing.T) *terminalHTTPFixture {
 	t.Helper()
 	db := projectTestStore(t)
 	h := projectTestHandler(t, db, io.Discard)
@@ -144,16 +145,12 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 	h.Handler = httpx.RequestLogging(testLogger(), app)
 	server := httptest.NewServer(app)
 	t.Cleanup(server.Close)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if e := app.Shutdown(ctx); e != nil {
-			t.Error(e)
-		}
-	})
+
 	pane := "pane_1"
 	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: w.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: project.ID, TaskID: task.ID, WorkerID: w.WorkerID, WorktreeID: w.WorktreeID, OwnerUserID: h.principal.UserID, ServerOrigin: cfg.PublicOrigin, Provider: "codex"}, Binding: v2.Binding{InstanceID: "daemon", SessionID: "native", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_test"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
-	return terminalHTTPFixture{h: h, app: app, db: db, server: server, base: taskPath(task) + "/sessions", message: m}
+	f := &terminalHTTPFixture{h: h, app: app, db: db, server: server, base: taskPath(task) + "/sessions", message: m}
+	f.sessionHTTPShutdown.register(t, f.app.Shutdown)
+	return f
 }
 func terminalMessage(t *testing.T, w *httptest.ResponseRecorder) v2.Message {
 	t.Helper()
@@ -166,7 +163,7 @@ func terminalMessage(t *testing.T, w *httptest.ResponseRecorder) v2.Message {
 	}
 	return m
 }
-func (f terminalHTTPFixture) messageRequest(t *testing.T, kind string, payload v2.Payload) v2.Message {
+func (f *terminalHTTPFixture) messageRequest(t *testing.T, kind string, payload v2.Payload) v2.Message {
 	t.Helper()
 	m := f.message
 	m.Type = kind
@@ -337,7 +334,7 @@ func TestTerminalWorkerAndBrowserWebSockets(t *testing.T) {
 	t.Fatal("revoked browser remained connected")
 }
 
-func terminalInitialInputChannel(t *testing.T) (terminalHTTPFixture, *websocket.Conn) {
+func terminalInitialInputChannel(t *testing.T) (*terminalHTTPFixture, *websocket.Conn) {
 	t.Helper()
 	f := terminalHTTPSetup(t)
 	reg := f.message.Payload.(v2.Registration)

@@ -64,7 +64,7 @@ func setSnapshotTaskClaim(t *testing.T, database *Store, projectID string, taskN
 	return model.WorkerTaskReference{ProjectID: projectID, TaskID: task.ID, ClaimID: claim.ClaimID}
 }
 
-func TestWorkerSnapshotUpsertUnknownStaleAndOlderObservation(t *testing.T) {
+func TestWorkerSnapshotUpsertUnknownStaleAndObservedTime(t *testing.T) {
 	database := isolatedStore(t)
 	stamp := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
 	worker := workerSnapshotFixture(queryID(1), queryID(2), stamp)
@@ -91,8 +91,8 @@ func TestWorkerSnapshotUpsertUnknownStaleAndOlderObservation(t *testing.T) {
 	worker.LastReportedAt = stamp.Add(time.Second)
 	worker.Telemetry.Machine.Name = "Older report"
 	older := putWorkerSnapshot(t, database, worker)
-	if !reflect.DeepEqual(older, stale) {
-		t.Fatalf("older report overwrote the latest full snapshot: %#v", older)
+	if !older.LastReportedAt.Equal(worker.LastReportedAt) || older.Telemetry.Machine.Name != "Older report" || !reflect.DeepEqual(older.TaskSnapshot, stale.TaskSnapshot) {
+		t.Fatalf("upsert did not persist its supplied observation: %#v", older)
 	}
 	worker.LastReportedAt = stamp.Add(4 * time.Second)
 	worker.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &worker.LastReportedAt, InventoryObservedAt: &stamp, Items: []model.WorkerObservedTask{}}
@@ -294,20 +294,25 @@ func TestWorkerSnapshotRecentWindowAccountIsolationAndStablePagination(t *testin
 	readWorkerSnapshot(t, database, userID, queryID(4), stamp)
 }
 
-func TestWorkerSnapshotConcurrentOlderObservationReadsCommittedWinner(t *testing.T) {
+func TestWorkerSnapshotConcurrentAdmissionResamplesAfterLock(t *testing.T) {
 	database := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stamp := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
-	older := workerSnapshotFixture(queryID(1), queryID(2), stamp)
-	newer := older
-	newer.LastReportedAt = stamp.Add(time.Second)
-	newer.Telemetry.Machine.Name = "Winning report"
+	worker := workerSnapshotFixture(queryID(1), queryID(2), time.Now().UTC())
 	ready, release := make(chan struct{}), make(chan struct{})
 	first := make(chan error, 1)
+	var firstTime time.Time
 	go func() {
 		first <- writeWorkerForTest(database, ctx, func(tx WorkerScope) error {
-			if _, err := tx.WorkerDAO().UpsertWorker(ctx, newer); err != nil {
+			admission, err := tx.AdmitWorker(ctx, worker.UserID, worker.WorkerID, 120*time.Second)
+			if err != nil {
+				return err
+			}
+			firstTime = admission.ObservedAt
+			firstWorker := worker
+			firstWorker.CreatedAt = firstTime
+			firstWorker.LastReportedAt = firstTime
+			if _, err := tx.WorkerDAO().UpsertWorker(ctx, firstWorker); err != nil {
 				return err
 			}
 			close(ready)
@@ -326,14 +331,21 @@ func TestWorkerSnapshotConcurrentOlderObservationReadsCommittedWinner(t *testing
 	}
 	second := make(chan error, 1)
 	var result model.WorkerSnapshot
+	var admission WorkerAdmission
 	go func() {
 		second <- writeWorkerForTest(database, ctx, func(tx WorkerScope) error {
 			var err error
-			result, err = tx.WorkerDAO().UpsertWorker(ctx, older)
+			admission, err = tx.AdmitWorker(ctx, worker.UserID, worker.WorkerID, 120*time.Second)
+			if err != nil {
+				return err
+			}
+			worker.LastReportedAt = admission.ObservedAt
+			worker.Telemetry.Machine.Name = "Second report"
+			result, err = tx.WorkerDAO().UpsertWorker(ctx, worker)
 			return err
 		})
 	}()
-	waitForQueryLock(t, database, "INSERT INTO workers")
+	waitForQueryLock(t, database, "SELECT pg_advisory_xact_lock")
 	close(release)
 	if err := <-first; err != nil {
 		t.Fatal(err)
@@ -341,8 +353,8 @@ func TestWorkerSnapshotConcurrentOlderObservationReadsCommittedWinner(t *testing
 	if err := <-second; err != nil {
 		t.Fatal(err)
 	}
-	if !result.LastReportedAt.Equal(newer.LastReportedAt) || result.Telemetry.Machine.Name != newer.Telemetry.Machine.Name {
-		t.Fatalf("ignored write could not observe the committed winner: %#v", result)
+	if admission.LastSeenAt == nil || !admission.LastSeenAt.Equal(firstTime) || admission.ActiveCount != 1 || !admission.ObservedAt.After(firstTime) || !result.LastReportedAt.Equal(admission.ObservedAt) || result.Telemetry.Machine.Name != "Second report" {
+		t.Fatalf("admission did not observe committed report after waiting: %+v %#v", admission, result)
 	}
 }
 

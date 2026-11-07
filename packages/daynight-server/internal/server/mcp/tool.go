@@ -6,11 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"sync"
+
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
@@ -352,6 +357,13 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 		defer stop()
 		defer cancel()
 		actor := scope.actor
+		ctx = attachmentservice.WithUploadLeaseRetainer(ctx, func(lease io.Closer) {
+			scope.hold(func() {
+				if err := lease.Close(); err != nil {
+					httpx.LogFailure(e.logger, scope.actor.Context, "mcp", "upload_lease_cleanup", err)
+				}
+			})
+		})
 		actor.Context = ctx
 		raw := bytes.TrimSpace(req.Params.Arguments)
 		if len(raw) == 0 {
@@ -418,7 +430,14 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return e.errorResult(output, actor, failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
-		encoded, err := json.Marshal(value)
+		var encoded []byte
+		if task, ok := result.Data.(TaskFull); ok {
+			var output bytes.Buffer
+			_, err = taskprotocol.EncodeMCPProjection(&output, task, actor.RequestID, result.Outcome, math.MaxInt64)
+			encoded = output.Bytes()
+		} else {
+			encoded, err = json.Marshal(value)
+		}
 		if err == nil && len(encoded) <= 128<<20 {
 			err = validateJSON(output, encoded)
 		} else if err == nil {

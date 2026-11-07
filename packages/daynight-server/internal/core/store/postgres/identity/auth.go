@@ -9,8 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func cleanupCredentials(ctx context.Context, tx pgx.Tx, now time.Time) error {
+func cleanupCredentials(ctx context.Context, tx pgx.Tx, loginNow, credentialNow time.Time) error {
 	for _, table := range []string{"login_transactions", "sessions", "personal_access_tokens"} {
+		now := credentialNow
+		if table == "login_transactions" {
+			now = loginNow
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE id IN (SELECT id FROM `+table+` WHERE expires_at <= $1 ORDER BY expires_at LIMIT 100 FOR UPDATE SKIP LOCKED)`, now); err != nil {
 			return pg.QueryError("cleanup credentials", err)
 		}

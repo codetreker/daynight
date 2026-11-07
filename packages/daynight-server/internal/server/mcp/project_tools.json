@@ -6,10 +6,12 @@
       "type": "object",
       "properties": {
         "name": {
-          "type": "string"
+          "type": "string",
+          "description": "Nonempty Unicode text without NUL; at most 256 code points and 1024 UTF-8 bytes."
         },
         "repoUrl": {
-          "type": "string"
+          "type": "string",
+          "description": "Repository address, at most 4096 UTF-8 bytes."
         },
         "team": {
           "anyOf": [

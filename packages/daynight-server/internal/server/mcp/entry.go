@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -75,6 +78,7 @@ type Entry struct {
 	origins    map[string]bool
 	publicHost string
 	budget     *Budget
+	input      chan struct{}
 	ctx        context.Context
 	cancel     context.CancelFunc
 	mu         sync.Mutex
@@ -97,9 +101,10 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 		origins[origin] = true
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: logger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
-	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), ctx: ctx, cancel: cancel}
-	e.http = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 4 << 20, Logger: logger, DisableLocalhostProtection: true})
+	sdkLogger := slog.New(safeSDKLog{handler: logger.Handler()})
+	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: sdkLogger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
+	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), input: make(chan struct{}, transport.MaxMCPInputOperations), ctx: ctx, cancel: cancel}
+	e.http = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: transport.MaxMCPJSONBodyBytes, Logger: sdkLogger, DisableLocalhostProtection: true})
 	return e, nil
 }
 
@@ -150,16 +155,19 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	}()
 	w.Header().Set("Cache-Control", "no-store")
 	if !e.beginWork() {
+		httpx.CloseUnreadBody(w, r)
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	defer e.active.Done()
 	if _, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && !e.allowedHost(r.Host) {
+		httpx.CloseUnreadBody(w, r)
 		http.Error(w, "forbidden host", http.StatusForbidden)
 		return
 	}
 	origins := r.Header.Values("Origin")
 	if len(origins) > 1 || (len(origins) == 1 && !e.origins[origins[0]]) {
+		httpx.CloseUnreadBody(w, r)
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return
 	}
@@ -169,6 +177,7 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Expose-Headers", "MCP-Session-Id, MCP-Protocol-Version, WWW-Authenticate")
 	}
 	if r.Method == http.MethodOptions {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id, MCP-Method, MCP-Name, Last-Event-ID")
 		w.WriteHeader(http.StatusNoContent)
@@ -176,12 +185,14 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	}
 	values := r.Header.Values("Authorization")
 	if len(values) != 1 {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("WWW-Authenticate", e.challenge())
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
 	parts := strings.Fields(values[0])
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("WWW-Authenticate", e.challenge())
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -206,13 +217,35 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 		authority = AuthorityRef{Kind: "pat", ID: p.CredentialID}
 	}
 	if err != nil {
+		httpx.CloseUnreadBody(w, r)
 		w.Header().Set("WWW-Authenticate", e.challenge())
 		httpx.WriteError(w, r, e.logger, "mcp", "authenticate", err)
 		return
 	}
 	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
 	defer s.delivered()
-	e.http.ServeHTTP(w, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
+	if r.Method == http.MethodPost {
+		// Input reservations are independent of tool budgets: a tool may need a
+		// control slot while the SDK and its handlers still retain this body.
+		select {
+		case e.input <- struct{}{}:
+			s.hold(func() { <-e.input })
+		default:
+			httpx.CloseUnreadBody(w, r)
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "MCP input capacity exhausted", http.StatusTooManyRequests)
+			return
+		}
+		body, err := httpx.ReadBody(w, r.WithContext(ctx), transport.MaxMCPJSONBodyBytes, transport.JSONBodyReadTimeout)
+		if err != nil {
+			httpx.WriteBodyError(w, r, e.logger, "mcp", "read", err)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	} else {
+		httpx.CloseUnreadBody(w, r)
+	}
+	e.http.ServeHTTP(&safeSDKWriter{ResponseWriter: w}, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
 }
 
 // beginWork synchronizes HTTP and tool admission with shutdown's wait start.

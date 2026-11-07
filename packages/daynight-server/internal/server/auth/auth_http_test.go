@@ -180,9 +180,16 @@ func TestIdentityHTTPCallbackFailures(t *testing.T) {
 			}
 			before := h.Claims.Load()
 			result := h.Request("GET", "/api/v1/auth/callback?"+values.Encode(), "", []*http.Cookie{binding}, nil, "")
-			location, err := url.Parse(result.Header().Get("Location"))
-			if result.Code != http.StatusSeeOther || err != nil || location.Path != "/login" || location.Query().Get("authError") != "login_failed" || location.Query().Get("returnPath") != destination || len(location.Query()) != 2 || len(result.Result().Cookies()) != 1 || result.Result().Cookies()[0].MaxAge != -1 {
-				t.Fatalf("failed browser navigation lost its login state or destination: %d %s", result.Code, result.Body)
+			if mode == "protocol-secret" {
+				testsupport.AssertProjectError(t, result, http.StatusBadGateway, "identity_unavailable")
+			} else {
+				location, err := url.Parse(result.Header().Get("Location"))
+				if result.Code != http.StatusSeeOther || err != nil || location.Path != "/login" || location.Query().Get("authError") != "login_failed" || location.Query().Get("returnPath") != destination || len(location.Query()) != 2 {
+					t.Fatalf("failed browser navigation lost its destination: %d %s", result.Code, result.Body)
+				}
+			}
+			if len(result.Result().Cookies()) != 1 || result.Result().Cookies()[0].MaxAge != -1 {
+				t.Fatalf("failed callback did not clear binding: %d %s", result.Code, result.Body)
 			}
 			replay := h.Request("GET", "/api/v1/auth/callback?"+values.Encode(), "", []*http.Cookie{binding}, nil, "")
 			testsupport.AssertProjectError(t, replay, 401, "unauthenticated")

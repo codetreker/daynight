@@ -16,7 +16,44 @@ var (
 	ErrInvalidAddress = errors.New("invalid file storage address")
 	ErrNotRegular     = errors.New("file storage object is not a regular file")
 	ErrPathConflict   = errors.New("file storage path aliases another directory entry")
+	ErrGateBusy       = errors.New("file storage residency gate is busy")
 )
+
+// ResidencyGate provides nonblocking, exact-key exclusion across instances
+// sharing a storage root. A permit holds its key until Close.
+type ResidencyGate interface {
+	TryAcquireResidency(context.Context, string) (io.Closer, error)
+}
+
+// Publication describes what is known about an attempted target publication.
+type Publication string
+
+const (
+	NotPublished       Publication = "not_published"
+	PublicationUnknown Publication = "unknown"
+	Published          Publication = "published"
+)
+
+// PublicationError preserves the publication fact and the original causes.
+type PublicationError struct {
+	Outcome Publication
+	Cause   error
+}
+
+func (e *PublicationError) Error() string { return e.Cause.Error() }
+func (e *PublicationError) Unwrap() error { return e.Cause }
+
+// PublicationOutcome treats unclassified failures conservatively.
+func PublicationOutcome(err error) Publication {
+	if err == nil {
+		return Published
+	}
+	var failure *PublicationError
+	if errors.As(err, &failure) {
+		return failure.Outcome
+	}
+	return PublicationUnknown
+}
 
 type FileInfo struct {
 	Size int64
@@ -36,6 +73,7 @@ const (
 )
 
 type Storage interface {
+	ResidencyGate
 	// AcquireGate serializes a domain/key across all instances sharing the root.
 	// The permit remains held until Close, independently of database leases.
 	AcquireGate(ctx context.Context, domain GateDomain, key string) (io.Closer, error)

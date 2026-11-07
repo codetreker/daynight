@@ -310,7 +310,10 @@ func controllerToken(r *http.Request) (string, error) {
 }
 func (h *Routes) putResource(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	token, err := controllerToken(r)
+	// This endpoint cannot accept uploads, so even rejected requests must not
+	// drain an untrusted body for connection reuse.
+	httpx.CloseUnreadBody(w, r)
+	_, err := controllerToken(r)
 	if err != nil {
 		h.Failure(w, r, err)
 		return
@@ -329,7 +332,7 @@ func (h *Routes) putResource(w http.ResponseWriter, r *http.Request) {
 		h.Failure(w, r, err)
 		return
 	}
-	id, err := model.CanonicalID(r.PathValue("resourceId"))
+	_, err = model.CanonicalID(r.PathValue("resourceId"))
 	if err != nil {
 		h.Failure(w, r, err)
 		return
@@ -344,18 +347,7 @@ func (h *Routes) putResource(w http.ResponseWriter, r *http.Request) {
 		h.Failure(w, r, httpx.InvalidInput("Invalid controller connection epoch."))
 		return
 	}
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, sp.MaxResourceBytes))
-	if err != nil {
-		var limit *http.MaxBytesError
-		if errors.As(err, &limit) {
-			h.Failure(w, r, &model.Fault{Code: "payload_too_large", Message: "Session resources are limited to 8 MiB."})
-		} else {
-			h.Failure(w, r, httpx.InvalidInput("Unable to read session resource."))
-		}
-		return
-	}
-	result, err := h.service.PutResource(r.Context(), token, epochs[0], id, data)
-	h.Result(w, r, http.StatusOK, map[string]any{"resource": result}, err)
+	h.Failure(w, r, &model.Fault{Code: "not_found", Message: "Session resources are read from the online controller; server uploads are not supported."})
 }
 func (h *Routes) origin(r *http.Request, cookie bool) error {
 	origins := r.Header.Values("Origin")

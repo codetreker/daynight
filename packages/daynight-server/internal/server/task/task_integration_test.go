@@ -115,12 +115,13 @@ func TestTaskHTTPStrictInputsDoNotMutate(t *testing.T) {
 		`{"title":"x","dependsOn":[null]}`, `{"title":"x","dependsOn":[1]}`, `{"title":"x","dependsOn":[{}]}`,
 		`{"title":"x","dependsOn":["invalid"]}`, `{"title":"x","status":"todo"}`, `{"title":"x","version":1}`,
 		`{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
-		"{\"title\":\"" + string([]byte{0xff}) + "\"}", `{"title":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"}`,
+		"{\"title\":\"" + string([]byte{0xff}) + "\"}",
 	} {
 		t.Run("create-"+body[:min(len(body), 70)], func(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), body), http.StatusBadRequest, "invalid_input")
 		})
 	}
+	assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), `{"title":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), http.StatusRequestEntityTooLarge, "payload_too_large")
 	for _, body := range []string{
 		"", "null", `[]`, `{"version":1,}`, `{"version":1,"title":"x"} false`,
 		`{}`, `{"title":"x"}`, `{"version":1}`, `{"version":null,"title":"x"}`, `{"version":0,"title":"x"}`,

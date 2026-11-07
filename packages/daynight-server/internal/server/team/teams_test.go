@@ -122,9 +122,10 @@ func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
 	db := h.database
 	actor := h.principal.UserID
 	suffix := `,"expectedUserId":"` + actor + `"}`
-	for _, body := range []string{"", "null", "[]", `{"name":"x"}`, `{"name":null` + suffix, `{"name":1` + suffix, `{"name":""` + suffix, `{"name":" \u2003\u0085"` + suffix, `{"name":"bad\u0000"` + suffix, `{"name":"\ud800"` + suffix, `{"name":"\udfff"` + suffix, `{"name":"\ud800x"` + suffix, `{"name":"x","name":"y"` + suffix, `{"name":"x","extra":1` + suffix, `{"Name":"x"` + suffix, `{"name":"x"` + suffix + ` {}`, `{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"` + suffix} {
+	for _, body := range []string{"", "null", "[]", `{"name":"x"}`, `{"name":null` + suffix, `{"name":1` + suffix, `{"name":""` + suffix, `{"name":" \u2003\u0085"` + suffix, `{"name":"bad\u0000"` + suffix, `{"name":"\ud800"` + suffix, `{"name":"\udfff"` + suffix, `{"name":"\ud800x"` + suffix, `{"name":"x","name":"y"` + suffix, `{"name":"x","extra":1` + suffix, `{"Name":"x"` + suffix, `{"name":"x"` + suffix + ` {}`} {
 		assertProjectError(t, projectRequest(h, "POST", "/api/v1/teams", body), 400, "invalid_input")
 	}
+	assertProjectError(t, projectRequest(h, "POST", "/api/v1/teams", `{"name":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"`+suffix), 413, "payload_too_large")
 	literal := decodeResponse[api.Team](t, projectRequest(h, "POST", "/api/v1/teams", `{"name":"\\ud800 \ufffd \ud83d\ude00"`+suffix), 201)
 	if *literal.Name != "\\ud800 � 😀" {
 		t.Fatalf("valid escapes changed %q", *literal.Name)

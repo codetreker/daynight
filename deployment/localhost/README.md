@@ -244,7 +244,11 @@ Two Compose-managed named volumes hold application data:
 | `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` and new Session archive bodies under the project/user and Session UUID shards described in the [Session design](../../docs/design/task-session-protocol.md#服务端归档布局) |
 
 Names are scoped to the Compose project. Server startup applies its embedded
-migrations. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
+migrations. Before upgrading to the login scope schema, stop old servers from
+starting new logins while allowing existing callbacks to complete, or wait for
+pending logins to expire (10 minutes). The migration fails without deleting
+valid pending transactions; retry after they are consumed or expired. Do not run
+old login writers after migration. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
 Normal task writes, stop, restart, `up --build --force-recreate`, and `down` preserve
 the epoch and both volumes. Retain the private deployment configuration and the
 corresponding UniAuth application registration separately from the application

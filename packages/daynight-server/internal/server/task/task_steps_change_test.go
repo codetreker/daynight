@@ -152,7 +152,7 @@ func TestStepsHTTPChangeStrictInputAndMethods(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			assertProjectError(t, response, 400, "invalid_input")
-			assertProjectError(t, projectRequest(handler, tc.method, path+tc.suffix, strings.TrimSuffix(tc.good, "}")+`,"description":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 400, "invalid_input")
+			assertProjectError(t, projectRequest(handler, tc.method, path+tc.suffix, strings.TrimSuffix(tc.good, "}")+`,"description":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 413, "payload_too_large")
 		})
 	}
 	for _, tc := range []struct {

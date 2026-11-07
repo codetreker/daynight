@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 )
 
@@ -47,7 +48,7 @@ func NewReadOnly(database readOnlyStore) *workerreadonly.Broker {
 		if err != nil {
 			return err
 		}
-		if detail.ObservedAt.Sub(detail.Worker.LastReportedAt) > 2*time.Minute {
+		if !workercore.ActiveAt(detail.Worker.LastReportedAt, detail.ObservedAt) {
 			return &model.Fault{Code: "offline", Message: "Worker is offline."}
 		}
 		return nil

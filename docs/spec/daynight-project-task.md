@@ -165,7 +165,9 @@ daynight project show <project-id> --json
 `--name` 不再是有效选项，名称缺失或多余位置参数均为参数错误。名称必须为
 不含 NUL 的合法 Unicode 文本，且不能全部由 Unicode `White_Space` 组成；保留原始
 字符及空白，不以 JavaScript `trim()` 改写。U+FEFF 单独作为名称有效，U+0085 单独
-作为名称无效。名称、Team 选择和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝；
+作为名称无效。服务端创建准入还要求名称同时不超过 256 个 Unicode code points 和
+1024 个 UTF-8 bytes，`repoUrl` 不超过 4096 个 UTF-8 bytes；超限写入返回 `400 invalid_input`，
+CLI 报告服务错误，不截断或重试。名称、Team 选择和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝；
 重复 `--confirm` 或 `--confirm=false` 也是参数错误。
 
 创建在写入前必须读取配置 server 的全部可访问 project 分页，将选定 repo 地址与
@@ -268,7 +270,9 @@ Personal Team UUID。未提供无值布尔 `--confirm` 时须交互确认，非�
 
 `team create` 创建普通 Team，创建者成为 admin；`rename` 修改普通 Team 原始名称，
 `delete` 删除没有项目的普通 Team。名称保留原始文字与空白，允许重复，必须是合法
-Unicode、不能包含 NUL 或全为 Unicode `White_Space`。Personal Team 不可改名或删除，
+Unicode、不能包含 NUL 或全为 Unicode `White_Space`，且同时不超过 256 个 Unicode code points
+和 1024 个 UTF-8 bytes。服务端对超限创建或真实改名返回 `400 invalid_input`，CLI 报告该错误，
+不截断或重试。Personal Team 不可改名或删除，
 非 admin、非空 Team 和版本冲突由服务明确拒绝。改名和删除使用显式 Team 或上述默认
 上下文，读取当前目标；`--if-version` 接受完整正 int64，与读取版本不符时在本地
 拒绝提交，不自动替换指定版本。

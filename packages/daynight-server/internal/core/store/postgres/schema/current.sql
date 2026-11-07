@@ -112,9 +112,11 @@ CREATE TABLE "login_transactions" (
     "provider" "text" NOT NULL,
     "return_path" "text" NOT NULL,
     "expires_at" timestamp with time zone NOT NULL,
+    "scope_hash" "bytea" NOT NULL,
     CONSTRAINT "login_transactions_browser_binding_hash_check" CHECK (("octet_length"("browser_binding_hash") = 32)),
     CONSTRAINT "login_transactions_provider_check" CHECK (("provider" = ANY (ARRAY['microsoft'::"text", 'google'::"text", 'github'::"text"]))),
     CONSTRAINT "login_transactions_return_path_check" CHECK (("left"("return_path", 1) = '/'::"text")),
+    CONSTRAINT "login_transactions_scope_hash_check" CHECK (("octet_length"("scope_hash") = 32)),
     CONSTRAINT "login_transactions_state_hash_check" CHECK (("octet_length"("state_hash") = 32))
 );
 
@@ -949,6 +951,8 @@ CREATE INDEX "device_authorization_limits_expiry" ON "device_authorization_limit
 CREATE INDEX "device_authorizations_expiry" ON "device_authorizations" USING "btree" ("expires_at");
 
 CREATE INDEX "login_transactions_expiry" ON "login_transactions" USING "btree" ("expires_at");
+
+CREATE INDEX "login_transactions_scope_expiry" ON "login_transactions" USING "btree" ("scope_hash", "expires_at");
 
 CREATE INDEX "oauth_access_tokens_expiry" ON "oauth_access_tokens" USING "btree" ("expires_at");
 
