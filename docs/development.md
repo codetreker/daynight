@@ -510,6 +510,10 @@ API examples, logs, updates and volume removal.
 
 ## Server development
 
+The [input limit inventory](../packages/daynight-server/README.md#input-limit-inventory)
+provides a read-only scan and source-bound activation check. Its controlled test
+fixtures do not establish production data readiness or a stopped-writer window.
+
 Read [server organization rules](daynight-server.md) before adding to, modifying
 or reviewing daynight-server. Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS
 and pnpm 11.28.6. From `packages/daynight-server/`, set

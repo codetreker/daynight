@@ -437,6 +437,61 @@ for handlers, the relay and database cleanup within a separate five-second
 cleanup budget before closing shared storage. If cleanup times out, it retains
 resources and returns an error; a caller can retry close.
 
+## Input limit inventory
+
+Before enabling candidate online limits, stop every old-rule database and file
+writer, establish a continuous maintenance window and take a backup. Build the
+intended deployment source with the normal [production build](#build-and-run), from a clean
+Git tree. With `DAYNIGHT_DATABASE_URL` and `DAYNIGHT_STORAGE_ROOT` identifying
+the actual data, run:
+
+```bash
+.tmp/daynight-server inspect-input-limits > inventory.jsonl
+.tmp/daynight-server inspect-input-limits --verify-report inventory.jsonl --writers-stopped-since '2026-01-01T00:00:00Z'
+```
+
+Replace the example timestamp with the actual start of the still-continuous
+writer-stopped window. The first command does not start HTTP or apply migrations;
+it returns zero only for a complete clear scan. The second independently reads
+the current database identity and compares the trusted report, binary source,
+policy, specification, storage root and window; zero means those checks pass.
+It cannot establish that writers were stopped, authenticate a fabricated report,
+or prove a storage volume was not replaced. Confirm the same storage instance
+remained mounted throughout the window, and retain the report under trusted
+custody. A different source, data source, storage root or interrupted window
+requires a new scan. Confirm old pending logins have naturally been consumed or
+expired, resolve every reported item under its owner's approved mapping, and
+verify active Worker counts before switching every applicable write entry point.
+The inspection does not modify data, remove files or evict Workers.
+
+The JSONL header records `sourceSha`, `sourceModified`, `policySha`, `specSha`,
+`policyVersion`, a fingerprint of the resolved storage-root path and its local
+device and inode, and database,
+schema, relation, snapshot and observation identity. Finding records identify
+the resource and field, category, measurement, limit and unit; an indicated lower
+bound is not an exact measurement. Long addresses are identified by hash and
+byte count. The final summary contains `complete`, `clear`, per-kind `counts`,
+`findings`, `indeterminate` and an incomplete reason when applicable. It contains
+no input values or secrets. Errors, cancellation and exhausted budgets exit
+nonzero and never establish clear. A candidate is read only after SQL length
+checks; single candidates are limited to 8 MiB of raw input and 32 MiB of
+normalized output. Metadata, records and the full report are bounded as specified
+in the [input limits contract](../../docs/spec/daynight-api-input-limits.md#存量检查与启用门槛).
+The policy digest is SHA-256 of compact Go JSON encoding of an object with
+`version` and the ordered, fully evaluated `entries` from `inputpolicy.Catalog()`;
+the specification digest covers the UTF-8 bytes of the input limits specification.
+Report verification accepts a local regular file and rejects symbolic links.
+If uploading a report as task attachments, split only at complete JSONL records
+into chunks of at most 4 MiB and retain an ordered manifest of chunk sizes,
+record counts and SHA-256 digests; splitting does not relax the report budget.
+The storage fingerprint is not a persistent volume identity; inode reuse and
+cross-host mounts require independent operator confirmation. Database identity
+includes the connected server address and PostgreSQL system identifier; cloned
+clusters can share that identifier, so independently confirm the database
+instance too. The inspection account must be able to read `pg_control_system()`.
+Platforms without the required local identity fail the inspection rather than
+produce clear.
+
 ## Local Docker deployment
 
 Configure the required UniAuth App and origin settings using the

@@ -27,6 +27,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if len(args) != 0 {
+		if args[0] == "inspect-input-limits" {
+			return runInputLimitsInspection(ctx, args, getenv, stdout, logger)
+		}
 		return runAttachmentMigration(ctx, args, getenv, stdout, logger)
 	}
 	cfg, err := config.LoadConfig(getenv)

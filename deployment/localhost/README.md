@@ -10,6 +10,25 @@ and its server-side credentials are required.
 
 ## Configure and start
 
+Before enabling candidate input limits on existing data, use the
+[server inventory and activation procedure](../../packages/daynight-server/README.md#input-limit-inventory)
+in a continuous writer-stopped window. Drain old pending logins by normal
+consumption or expiry; the inspection does not invent browser ownership or
+modify existing data. Compose startup and database migration do not establish
+this activation evidence.
+
+The image build does not include Git metadata, so its bundled server binary
+cannot establish the source identity required for a clear inventory. Build a
+separate Linux inspector from the clean, exact source revision intended for the
+image, with Go VCS stamping enabled. Run that inspector in the Compose network
+with the same database configuration and attachment volume mounted at
+`/var/lib/daynight/storage`, while the server and every other writer remain
+stopped. Use the same inspector and mounts for report verification. Confirm the
+image's trusted build provenance identifies that same revision and the volume
+remained the same storage instance throughout the window. The report does not
+bind an image digest; a source build or an image build alone does not prove those
+operational facts.
+
 From the repository root, copy the local configuration template:
 
 ```bash
