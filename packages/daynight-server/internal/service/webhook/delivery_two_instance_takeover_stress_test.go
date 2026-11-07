@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -119,6 +120,11 @@ func testTwoInstanceTakeover(t *testing.T, stopBeforeTakeover bool) {
 	defer receiver.Close()
 	defer once.Do(func() { close(releaseOld) })
 	f := newCaptureFixture(t, 1)
+	// Keep both captured second opportunities near 63 seconds so a 58-second
+	// source starts at slot 1 and recovery reaches slot 2 within the deadline.
+	// Only this fixture uses the deterministic stream; the production policy
+	// and capturer still generate and persist the complete jittered schedule.
+	f.capture.Random = rand.New(rand.NewSource(25))
 	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	var endpoint string
 	var version int64
@@ -194,6 +200,15 @@ func testTwoInstanceTakeover(t *testing.T, stopBeforeTakeover bool) {
 	if first.row.ID == "" || second.row.ID == "" || first.row.ID == second.row.ID || first.row.LeaseToken == nil || second.row.LeaseToken == nil || *first.row.LeaseToken == *second.row.LeaseToken {
 		t.Fatalf("invalid claims %+v %+v", first, second)
 	}
+	for _, claim := range []simultaneousClaim{first, second} {
+		if len(claim.row.AutomaticScheduleAt) != 10 {
+			t.Fatalf("invalid captured schedule: %v", claim.row.AutomaticScheduleAt)
+		}
+		untilSecond := time.Until(claim.row.AutomaticScheduleAt[1])
+		if untilSecond <= 0 || untilSecond > 12*time.Second {
+			t.Fatalf("second opportunity must remain future and within the takeover deadline: %s", untilSecond)
+		}
+	}
 	mu.Lock()
 	oldEvent = first.row.EventID
 	mu.Unlock()
@@ -213,6 +228,15 @@ func testTwoInstanceTakeover(t *testing.T, stopBeforeTakeover bool) {
 	}
 	if !seen[first.row.EventID] || !seen[second.row.EventID] {
 		t.Fatalf("initial receiver events %v", seen)
+	}
+	for _, claim := range []simultaneousClaim{first, second} {
+		var cursor, attempts int
+		if err := f.db.Pool.QueryRow(f.ctx, `SELECT automatic_plan_cursor,automatic_attempt_count FROM webhook_deliveries WHERE id=$1`, claim.row.ID).Scan(&cursor, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		if cursor != 1 || attempts != 1 {
+			t.Fatalf("initial admission must consume only slot 1: cursor=%d attempts=%d", cursor, attempts)
+		}
 	}
 	r1.StopClaims()
 	var oldAttempt, oldToken string
