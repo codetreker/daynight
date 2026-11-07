@@ -22,15 +22,54 @@ var _ store.IdentityDAO = (*scope)(nil)
 var _ store.PersonalTeamDAO = (*scope)(nil)
 
 func (s *scope) CleanupCredentials(ctx context.Context, now time.Time) error {
-	return cleanupCredentials(ctx, s.tx, now)
+	var databaseNow time.Time
+	if err := s.tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&databaseNow); err != nil {
+		return pg.AuthQueryError("read login cleanup time", err)
+	}
+	return cleanupCredentials(ctx, s.tx, databaseNow, now)
+}
+func (s *scope) CleanupLoginCredentials(ctx context.Context, databaseNow, applicationNow time.Time) error {
+	return cleanupCredentials(ctx, s.tx, databaseNow, applicationNow)
+}
+
+// The lock covers both counts and the caller's subsequent cleanup and insert.
+// All instances use the same transaction-scoped lock in this database.
+const loginCapacityLock int64 = 0x444e4c4f47494e
+
+func (s *scope) AdmitLogin(ctx context.Context, scopeHash []byte, globalLimit, scopeLimit int) (time.Time, string, error) {
+	if _, err := s.tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, loginCapacityLock); err != nil {
+		return time.Time{}, "", pg.AuthQueryError("lock login capacity", err)
+	}
+	var now time.Time
+	if err := s.tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return time.Time{}, "", pg.AuthQueryError("read login capacity time", err)
+	}
+	var globalCount, scopeCount int
+	err := s.tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE scope_hash=$2) FROM login_transactions WHERE expires_at>$1`, now, scopeHash).Scan(&globalCount, &scopeCount)
+	if err != nil {
+		return time.Time{}, "", pg.AuthQueryError("count login capacity", err)
+	}
+	if globalCount >= globalLimit {
+		return now, "capacity_exhausted", nil
+	}
+	if scopeCount >= scopeLimit {
+		return now, "rate_limited", nil
+	}
+	return now, "", nil
 }
 func (s *scope) InsertLogin(ctx context.Context, pending model.LoginTransaction) error {
-	_, err := s.tx.Exec(ctx, `INSERT INTO login_transactions (id,state_hash,browser_binding_hash,provider,return_path,expires_at) VALUES ($1,$2,$3,$4,$5,$6)`, pending.ID, pending.StateHash, pending.BrowserBindingHash, pending.Provider, pending.ReturnPath, pending.ExpiresAt)
+	_, err := s.tx.Exec(ctx, `INSERT INTO login_transactions (id,state_hash,browser_binding_hash,provider,return_path,expires_at,scope_hash) VALUES ($1,$2,$3,$4,$5,$6,$7)`, pending.ID, pending.StateHash, pending.BrowserBindingHash, pending.Provider, pending.ReturnPath, pending.ExpiresAt, pending.ScopeHash)
 	return pg.AuthQueryError("insert login", err)
 }
-func (s *scope) ConsumeLogin(ctx context.Context, stateHash, bindingHash []byte, now time.Time) (model.LoginTransaction, error) {
+func (s *scope) ConsumeLogin(ctx context.Context, stateHash, bindingHash []byte, _ time.Time) (model.LoginTransaction, error) {
 	var p model.LoginTransaction
-	err := s.tx.QueryRow(ctx, `DELETE FROM login_transactions WHERE state_hash=$1 AND browser_binding_hash=$2 AND expires_at>$3 RETURNING id::text,state_hash,browser_binding_hash,provider,return_path,expires_at`, stateHash, bindingHash, now).Scan(&p.ID, &p.StateHash, &p.BrowserBindingHash, &p.Provider, &p.ReturnPath, &p.ExpiresAt)
+	var id string
+	// The expiry check must happen after any row-lock wait, not when a scan
+	// first sees the row. Another callback can consume the row while we wait.
+	if err := s.tx.QueryRow(ctx, `SELECT id::text FROM login_transactions WHERE state_hash=$1 AND browser_binding_hash=$2 FOR UPDATE`, stateHash, bindingHash).Scan(&id); err != nil {
+		return p, pg.AuthQueryError("lock login", err)
+	}
+	err := s.tx.QueryRow(ctx, `DELETE FROM login_transactions WHERE id=$1 AND expires_at>clock_timestamp() RETURNING id::text,state_hash,browser_binding_hash,provider,return_path,expires_at,scope_hash`, id).Scan(&p.ID, &p.StateHash, &p.BrowserBindingHash, &p.Provider, &p.ReturnPath, &p.ExpiresAt, &p.ScopeHash)
 	if err != nil {
 		return p, pg.AuthQueryError("consume login", err)
 	}

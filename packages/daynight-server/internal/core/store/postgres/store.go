@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -22,6 +24,10 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
 		pool.Close()
+		var cause *pgconn.PgError
+		if errors.As(err, &cause) && cause.Code == "P1047" {
+			return nil, databaseFailure("migration requires active login transactions to be consumed or expired", err)
+		}
 		return nil, databaseFailure("migrate", err)
 	}
 	return &Store{Pool: pool}, nil

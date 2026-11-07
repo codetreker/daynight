@@ -34,6 +34,7 @@ type LoginTransaction struct {
 	ID                 string
 	StateHash          []byte
 	BrowserBindingHash []byte
+	ScopeHash          []byte
 	Provider           string
 	ReturnPath         string
 	ExpiresAt          time.Time
