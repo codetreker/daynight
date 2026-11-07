@@ -775,13 +775,15 @@ records the equivalence and maintenance requirements.
 
 ### Task Graph boundary fixtures
 
-The TaskGraph boundary regression keeps a 1000-node backbone with 5000 dependency
-references, plus independent node and edge overflow cases. Its connected fixture
-runs `ANALYZE tasks, task_dependencies` after all links are loaded and before the
-real graph queries. These private tables can be queried before autovacuum collects
-statistics; explicit collection gives the planner the loaded graph's cardinality
-without changing its rows, topology, SQL or snapshot assertions. Preparation
-failures fail the test. The [fixture statistics decision](../../.agents/notes/implemented/testing/2026-11-06-task-graph-fixture-statistics.md)
+Graph boundary regressions retain the 1000-node backbone and 5000 dependency
+references, plus independent node and edge overflow cases. Connected service
+fixtures and the HTTP limit fixture run `ANALYZE tasks, task_dependencies` after
+all links are loaded and before graph queries. These private tables can be queried
+before autovacuum collects statistics; explicit collection gives the planner the
+loaded graph's cardinality without changing its rows or snapshot assertions.
+Preparation failures fail the test. Task service Graph and Sync seeds generate
+their ordered edge prefix directly while preserving its original topology. The
+[fixture preparation decision](../../.agents/notes/implemented/testing/2026-11-06-task-graph-fixture-statistics.md)
 owns the rationale and proof boundary.
 
 ### Race instrumentation
