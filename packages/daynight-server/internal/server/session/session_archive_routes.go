@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -128,13 +130,20 @@ func archiveBodyWithTimeout(w http.ResponseWriter, r *http.Request, timeout time
 		var readErr *httpx.BodyReadError
 		// net/http's body Close may attempt a final drain after the same
 		// expired socket deadline. Retain both causes in the timeout error.
-		if errors.As(err, &readErr) && readErr.Status == http.StatusRequestTimeout && errors.Is(err, os.ErrDeadlineExceeded) && errors.Is(closeErr, os.ErrDeadlineExceeded) {
+		if errors.As(err, &readErr) && readErr.Status == http.StatusRequestTimeout && sameReadDeadline(readErr.Cause, closeErr) {
 			readErr.Cause = errors.Join(readErr.Cause, closeErr)
 		} else {
 			err = archiveCleanupError(err, closeErr)
 		}
 	}
 	return body, err
+}
+
+func sameReadDeadline(readErr, closeErr error) bool {
+	var readOp, closeOp *net.OpError
+	return errors.Is(readErr, os.ErrDeadlineExceeded) && errors.Is(closeErr, os.ErrDeadlineExceeded) &&
+		errors.As(readErr, &readOp) && errors.As(closeErr, &closeOp) &&
+		readOp.Op == "read" && closeOp.Op == "read" && reflect.DeepEqual(readOp, closeOp)
 }
 func (h *Routes) putArchive(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if err := validateArchiveBody(r); err != nil {

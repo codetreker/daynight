@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,19 @@ func TestArchiveCleanupFailureDoesNotMasqueradeAsRejection(t *testing.T) {
 	}
 }
 
+func TestArchiveIndependentCloseTimeoutIsNotReadTimeout(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPut, "/archive", nil)
+	r.Header.Set("Content-Type", "application/json")
+	r.Body = archiveFailingBody{readErr: &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}, closeErr: os.ErrDeadlineExceeded}
+	_, err := archiveBodyWithTimeout(httptest.NewRecorder(), r, time.Second)
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("lost timeout causes: %v", err)
+	}
+	if fault, ok := httpx.KnownFault(err); !ok || fault.Code != "cleanup_unknown" {
+		t.Fatalf("independent close failure disguised as read timeout: %v", err)
+	}
+}
+
 func TestArchiveBodyDeadlineInterruptsSocket(t *testing.T) {
 	if transport.ArchiveBodyReadTimeout != 120*time.Second {
 		t.Fatal("archive upload deadline changed")
@@ -60,14 +74,6 @@ func TestArchiveBodyDeadlineInterruptsSocket(t *testing.T) {
 	server := httptest.NewServer(httpx.RequestLogging(testLogger(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(done)
 		_, err := archiveBodyWithTimeout(w, r, 200*time.Millisecond)
-		var bodyError *httpx.BodyReadError
-		if errors.As(err, &bodyError) {
-			if causes, ok := bodyError.Cause.(interface{ Unwrap() []error }); ok {
-				for _, cause := range causes.Unwrap() {
-					t.Logf("timeout cause %p %#v", cause, cause)
-				}
-			}
-		}
 		errs <- err
 		if err != nil {
 			httpx.WriteBodyError(w, r, testLogger(), "session", "archive", err)
