@@ -42,26 +42,50 @@ if [[ "$1" == scripts/prepare-uniauth-fixture.mts ]]; then printf '%s\\n' fixtur
   await chmod(join(bin, 'go'), 0o755);
   await chmod(join(bin, 'node'), 0o755);
   const trace = join(fixture, 'trace');
-  const env = { ...process.env, ...extra, PATH: `${bin}:${process.env.PATH}`, TRACE: trace,
-    DAYNIGHT_TEST_DATABASE_URL: 'postgres://fixture', GOFLAGS: '-race', CI: ci };
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, TRACE: trace,
+    DAYNIGHT_TEST_DATABASE_URL: 'postgres://fixture', GOFLAGS: '-race', CI: ci,
+    GITHUB_EVENT_NAME: undefined, GITHUB_REF: undefined, ...extra };
   const result = spawnSync('bash', [join(scripts, 'check.sh'), '--coverage'], { env, encoding: 'utf8', timeout: 10_000 });
   assert.equal(result.error, undefined);
   return { result, trace: await readFile(trace, 'utf8') };
 }
 
 test('module check selects production packages and local race instrumentation', async (t) => {
-  const { result, trace } = await runCheck(t, undefined);
+  const { result, trace } = await runCheck(t, undefined, { GOFLAGS: '-race=false' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(trace, /go-cov --race=true GOFLAGS=.*-coverpkg=example\/api,example\/server/);
+  assert.match(trace, /go-cov --race=true GOFLAGS=.*-race=true -coverpkg=example\/api,example\/server/);
+  assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth GOFLAGS=.*-race=true/);
   assert.match(trace, /node --test scripts\/coverage.test.mts/);
   assert.match(trace, /node scripts\/coverage.mts coverage.out/);
 });
 
-test('CI disables inherited race and propagates coverage failure', async (t) => {
-  const { result, trace } = await runCheck(t, 'true', { COV_EXIT: '17' });
+test('PR CI disables inherited race and propagates coverage failure', async (t) => {
+  const { result, trace } = await runCheck(t, 'true', { COV_EXIT: '17', GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/pull/42/merge' });
   assert.equal(result.status, 17);
+  assert.match(trace, /go build .* GOFLAGS=-race .* -race=false/);
+  assert.match(trace, /go vet .* GOFLAGS=-race .* -race=false/);
+  assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth GOFLAGS=-race .* -race=false/);
   assert.match(trace, /go-cov --race=false GOFLAGS=.*-race -p=2 -overlay=scripts\/unit-overlay.json -race=false -coverpkg=example\/api,example\/server/);
   assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
+});
+
+test('main push enables race despite inherited false flags', async (t) => {
+  const { result, trace } = await runCheck(t, 'true', {
+    GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GOFLAGS: '-race=false',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(trace, /go build .* GOFLAGS=-race=false .* -race=true/);
+  assert.match(trace, /go vet .* GOFLAGS=-race=false .* -race=true/);
+  assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth GOFLAGS=-race=false .* -race=true/);
+  assert.match(trace, /go-cov --race=true GOFLAGS=-race=false .* -race=true -coverpkg=example\/api,example\/server/);
+});
+
+test('other CI events retain conservative race settings', async (t) => {
+  for (const extra of [{}, { GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/feature' }]) {
+    const { result, trace } = await runCheck(t, 'true', extra);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(trace, /go-cov --race=false GOFLAGS=.*-race=false -coverpkg=/);
+  }
 });
 
 test('module check fails when no production packages are listed', async (t) => {

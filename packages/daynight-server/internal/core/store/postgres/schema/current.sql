@@ -1,4 +1,12 @@
--- Schema snapshot version: 47
+-- Schema snapshot version: 48
+
+CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    AS $$
+BEGIN
+    RAISE EXCEPTION 'webhook policies are immutable';
+END
+$$;
 
 CREATE TABLE "bot_configuration_preferences" (
     "user_id" "uuid" NOT NULL,
@@ -605,6 +613,127 @@ CREATE TABLE "users" (
     CONSTRAINT "users_uniauth_id_check" CHECK (("length"("uniauth_id") > 0))
 );
 
+CREATE TABLE "webhook_endpoints" (
+    "id" "uuid" NOT NULL,
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "name" "text",
+    "enabled" boolean NOT NULL,
+    "config_version" bigint NOT NULL,
+    "destination_revision" bigint NOT NULL,
+    "destination_kind" "text",
+    "adapter_version" bigint,
+    "configuration_schema_version" smallint,
+    "destination_origin" "text",
+    "destination_envelope_version" smallint,
+    "destination_master_key_id" "text",
+    "destination_nonce" "bytea",
+    "destination_ciphertext" "bytea",
+    "active_key_id" "uuid",
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL,
+    "deleted_at" timestamp with time zone,
+    CONSTRAINT "webhook_endpoints_check" CHECK (((("deleted_at" IS NULL) AND ("name" IS NOT NULL) AND (("char_length"("name") >= 1) AND ("char_length"("name") <= 120)) AND ("destination_kind" = 'http'::"text") AND ("adapter_version" = 1) AND ("configuration_schema_version" = 1) AND ("destination_origin" IS NOT NULL) AND ("destination_envelope_version" = 1) AND ("destination_master_key_id" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'::"text") AND ("octet_length"("destination_nonce") = 12) AND ("octet_length"("destination_ciphertext") >= 16) AND ("active_key_id" IS NOT NULL) AND ("destination_kind" IS NOT NULL) AND ("adapter_version" IS NOT NULL) AND ("configuration_schema_version" IS NOT NULL) AND ("destination_envelope_version" IS NOT NULL) AND ("destination_master_key_id" IS NOT NULL) AND ("destination_nonce" IS NOT NULL) AND ("destination_ciphertext" IS NOT NULL)) OR (("deleted_at" IS NOT NULL) AND (NOT "enabled") AND ("name" IS NULL) AND ("destination_kind" IS NULL) AND ("adapter_version" IS NULL) AND ("configuration_schema_version" IS NULL) AND ("destination_origin" IS NULL) AND ("destination_envelope_version" IS NULL) AND ("destination_master_key_id" IS NULL) AND ("destination_nonce" IS NULL) AND ("destination_ciphertext" IS NULL) AND ("active_key_id" IS NULL)))),
+    CONSTRAINT "webhook_endpoints_config_version_check" CHECK (("config_version" > 0)),
+    CONSTRAINT "webhook_endpoints_created_at_check" CHECK ("isfinite"("created_at")),
+    CONSTRAINT "webhook_endpoints_deleted_at_check" CHECK ("isfinite"("deleted_at")),
+    CONSTRAINT "webhook_endpoints_destination_revision_check" CHECK (("destination_revision" > 0)),
+    CONSTRAINT "webhook_endpoints_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
+    CONSTRAINT "webhook_endpoints_updated_at_check" CHECK ("isfinite"("updated_at"))
+);
+
+CREATE TABLE "webhook_operations" (
+    "owner_kind" "text" NOT NULL,
+    "owner_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "actor_user_id" "uuid" NOT NULL,
+    "endpoint_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "issued_at_lexeme" "text" NOT NULL,
+    "request_sha256" "bytea" NOT NULL,
+    "fingerprint_version" smallint NOT NULL,
+    "semantic_fingerprint" "bytea" NOT NULL,
+    "effect" "text" NOT NULL,
+    "config_version_after" bigint NOT NULL,
+    "destination_revision_after" bigint NOT NULL,
+    "key_id_after" "uuid",
+    "signing_mode_after" "text",
+    "overlap_until_after" timestamp with time zone,
+    "recorded_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    CONSTRAINT "webhook_operations_check" CHECK (("isfinite"("expires_at") AND ("expires_at" > "recorded_at"))),
+    CONSTRAINT "webhook_operations_check1" CHECK (((("kind" = 'signing-secret.rotate'::"text") AND ("key_id_after" IS NOT NULL) AND ((("signing_mode_after" = 'overlap'::"text") AND ("overlap_until_after" IS NOT NULL)) OR (("signing_mode_after" = 'immediate'::"text") AND ("overlap_until_after" IS NULL))) AND ("signing_mode_after" IS NOT NULL)) OR (("kind" <> 'signing-secret.rotate'::"text") AND ("key_id_after" IS NULL) AND ("signing_mode_after" IS NULL) AND ("overlap_until_after" IS NULL)))),
+    CONSTRAINT "webhook_operations_config_version_after_check" CHECK (("config_version_after" > 0)),
+    CONSTRAINT "webhook_operations_destination_revision_after_check" CHECK (("destination_revision_after" > 0)),
+    CONSTRAINT "webhook_operations_effect_check" CHECK (("effect" = ANY (ARRAY['applied'::"text", 'unchanged'::"text"]))),
+    CONSTRAINT "webhook_operations_fingerprint_version_check" CHECK (("fingerprint_version" = 1)),
+    CONSTRAINT "webhook_operations_kind_check" CHECK (("kind" = ANY (ARRAY['endpoint.create'::"text", 'endpoint.patch'::"text", 'endpoint.delete'::"text", 'signing-secret.rotate'::"text"]))),
+    CONSTRAINT "webhook_operations_overlap_until_after_check" CHECK ("isfinite"("overlap_until_after")),
+    CONSTRAINT "webhook_operations_owner_kind_check" CHECK (("owner_kind" = ANY (ARRAY['personal'::"text", 'team'::"text"]))),
+    CONSTRAINT "webhook_operations_recorded_at_check" CHECK ("isfinite"("recorded_at")),
+    CONSTRAINT "webhook_operations_request_sha256_check" CHECK (("octet_length"("request_sha256") = 32)),
+    CONSTRAINT "webhook_operations_semantic_fingerprint_check" CHECK (("octet_length"("semantic_fingerprint") = 32))
+);
+
+CREATE TABLE "webhook_policies" (
+    "version" bigint NOT NULL,
+    "max_automatic_attempts" smallint NOT NULL,
+    "automatic_window_seconds" integer NOT NULL,
+    "automatic_offsets_seconds" integer[] NOT NULL,
+    "max_manual_operations" smallint NOT NULL,
+    "payload_retention_seconds" integer NOT NULL,
+    "metadata_retention_seconds" integer NOT NULL,
+    "operation_retention_seconds" integer NOT NULL,
+    "operation_max_age_seconds" integer NOT NULL,
+    "operation_future_skew_seconds" integer NOT NULL,
+    "http_timeout_seconds" integer NOT NULL,
+    "lease_seconds" integer NOT NULL,
+    "minimum_failure_wait_seconds" integer NOT NULL,
+    "jitter_basis_points" integer NOT NULL,
+    "jitter_max_seconds" integer NOT NULL,
+    "key_overlap_default_seconds" integer NOT NULL,
+    "key_overlap_max_seconds" integer NOT NULL,
+    CONSTRAINT "webhook_policies_automatic_window_seconds_check" CHECK (("automatic_window_seconds" > 0)),
+    CONSTRAINT "webhook_policies_check" CHECK ((("array_ndims"("automatic_offsets_seconds") = 1) AND ("array_lower"("automatic_offsets_seconds", 1) = 1) AND ("array_position"("automatic_offsets_seconds", NULL::integer) IS NULL) AND ("cardinality"("automatic_offsets_seconds") = "max_automatic_attempts"))),
+    CONSTRAINT "webhook_policies_check1" CHECK (("key_overlap_max_seconds" >= "key_overlap_default_seconds")),
+    CONSTRAINT "webhook_policies_http_timeout_seconds_check" CHECK (("http_timeout_seconds" > 0)),
+    CONSTRAINT "webhook_policies_jitter_basis_points_check" CHECK ((("jitter_basis_points" >= 0) AND ("jitter_basis_points" <= 10000))),
+    CONSTRAINT "webhook_policies_jitter_max_seconds_check" CHECK (("jitter_max_seconds" >= 0)),
+    CONSTRAINT "webhook_policies_key_overlap_default_seconds_check" CHECK (("key_overlap_default_seconds" > 0)),
+    CONSTRAINT "webhook_policies_lease_seconds_check" CHECK (("lease_seconds" > 0)),
+    CONSTRAINT "webhook_policies_max_automatic_attempts_check" CHECK (("max_automatic_attempts" > 0)),
+    CONSTRAINT "webhook_policies_max_manual_operations_check" CHECK (("max_manual_operations" > 0)),
+    CONSTRAINT "webhook_policies_metadata_retention_seconds_check" CHECK (("metadata_retention_seconds" > 0)),
+    CONSTRAINT "webhook_policies_minimum_failure_wait_seconds_check" CHECK (("minimum_failure_wait_seconds" > 0)),
+    CONSTRAINT "webhook_policies_operation_future_skew_seconds_check" CHECK (("operation_future_skew_seconds" >= 0)),
+    CONSTRAINT "webhook_policies_operation_max_age_seconds_check" CHECK (("operation_max_age_seconds" > 0)),
+    CONSTRAINT "webhook_policies_operation_retention_seconds_check" CHECK (("operation_retention_seconds" > 0)),
+    CONSTRAINT "webhook_policies_payload_retention_seconds_check" CHECK (("payload_retention_seconds" > 0)),
+    CONSTRAINT "webhook_policies_version_check" CHECK (("version" > 0))
+);
+
+CREATE TABLE "webhook_signing_keys" (
+    "id" "uuid" NOT NULL,
+    "endpoint_id" "uuid" NOT NULL,
+    "slot" "text" NOT NULL,
+    "envelope_version" smallint NOT NULL,
+    "master_key_id" "text" NOT NULL,
+    "nonce" "bytea" NOT NULL,
+    "ciphertext" "bytea" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "overlap_started_at" timestamp with time zone,
+    "overlap_until" timestamp with time zone,
+    CONSTRAINT "webhook_signing_keys_check" CHECK (((("slot" = 'current'::"text") AND ("overlap_started_at" IS NULL) AND ("overlap_until" IS NULL)) OR (("slot" = 'overlap'::"text") AND ("overlap_started_at" IS NOT NULL) AND ("overlap_until" IS NOT NULL) AND ("overlap_until" > "overlap_started_at") AND ("overlap_until" <= ("overlap_started_at" + '7 days'::interval))))),
+    CONSTRAINT "webhook_signing_keys_ciphertext_check" CHECK (("octet_length"("ciphertext") = 48)),
+    CONSTRAINT "webhook_signing_keys_created_at_check" CHECK ("isfinite"("created_at")),
+    CONSTRAINT "webhook_signing_keys_envelope_version_check" CHECK (("envelope_version" = 1)),
+    CONSTRAINT "webhook_signing_keys_master_key_id_check" CHECK (("master_key_id" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'::"text")),
+    CONSTRAINT "webhook_signing_keys_nonce_check" CHECK (("octet_length"("nonce") = 12)),
+    CONSTRAINT "webhook_signing_keys_overlap_started_at_check" CHECK ("isfinite"("overlap_started_at")),
+    CONSTRAINT "webhook_signing_keys_overlap_until_check" CHECK ("isfinite"("overlap_until")),
+    CONSTRAINT "webhook_signing_keys_slot_check" CHECK (("slot" = ANY (ARRAY['current'::"text", 'overlap'::"text"])))
+);
+
 CREATE TABLE "workers" (
     "user_id" "uuid" NOT NULL,
     "worker_id" "uuid" NOT NULL,
@@ -826,6 +955,21 @@ ALTER TABLE ONLY "users"
 ALTER TABLE ONLY "users"
     ADD CONSTRAINT "users_uniauth_id_key" UNIQUE ("uniauth_id");
 
+ALTER TABLE ONLY "webhook_endpoints"
+    ADD CONSTRAINT "webhook_endpoints_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "webhook_operations"
+    ADD CONSTRAINT "webhook_operations_pkey" PRIMARY KEY ("owner_kind", "owner_id", "operation_id");
+
+ALTER TABLE ONLY "webhook_policies"
+    ADD CONSTRAINT "webhook_policies_pkey" PRIMARY KEY ("version");
+
+ALTER TABLE ONLY "webhook_signing_keys"
+    ADD CONSTRAINT "webhook_signing_keys_endpoint_id_slot_key" UNIQUE ("endpoint_id", "slot");
+
+ALTER TABLE ONLY "webhook_signing_keys"
+    ADD CONSTRAINT "webhook_signing_keys_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "workers"
     ADD CONSTRAINT "workers_pkey" PRIMARY KEY ("user_id", "worker_id");
 
@@ -917,7 +1061,21 @@ CREATE UNIQUE INDEX "test_session_execution" ON "task_sessions" USING "btree" ("
 
 CREATE UNIQUE INDEX "test_session_registration" ON "task_sessions" USING "btree" ("owner_user_id", "registration_id") WHERE ("scope" = 'test'::"text");
 
+CREATE INDEX "webhook_endpoints_deleted" ON "webhook_endpoints" USING "btree" ("deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
+
+CREATE INDEX "webhook_endpoints_master_key" ON "webhook_endpoints" USING "btree" ("destination_master_key_id", "id") WHERE ("destination_master_key_id" IS NOT NULL);
+
+CREATE INDEX "webhook_endpoints_owner" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "webhook_operations_endpoint" ON "webhook_operations" USING "btree" ("endpoint_id", "expires_at", "operation_id");
+
+CREATE INDEX "webhook_operations_expiry" ON "webhook_operations" USING "btree" ("expires_at", "owner_kind", "owner_id", "operation_id");
+
+CREATE INDEX "webhook_signing_keys_master_key" ON "webhook_signing_keys" USING "btree" ("master_key_id", "endpoint_id", "id");
+
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
+
+CREATE TRIGGER "webhook_policy_no_update" BEFORE UPDATE ON "webhook_policies" FOR EACH ROW EXECUTE FUNCTION "webhook_policy_no_update"();
 
 ALTER TABLE ONLY "bot_configuration_preferences"
     ADD CONSTRAINT "bot_configuration_preferences_user_id_worker_id_fkey" FOREIGN KEY ("user_id", "worker_id") REFERENCES "workers"("user_id", "worker_id");
@@ -951,6 +1109,8 @@ INSERT INTO "oauth_authorization_cleanup_cursor" ("singleton", "next_kind") VALU
 INSERT INTO "oauth_credential_cleanup_cursor" ("singleton", "next_kind") VALUES (true, 0);
 
 INSERT INTO "private_transfer_ledger" ("singleton", "reserved_bytes", "outstanding_bytes") VALUES (true, 0, 0);
+
+INSERT INTO "webhook_policies" ("version", "max_automatic_attempts", "automatic_window_seconds", "automatic_offsets_seconds", "max_manual_operations", "payload_retention_seconds", "metadata_retention_seconds", "operation_retention_seconds", "operation_max_age_seconds", "operation_future_skew_seconds", "http_timeout_seconds", "lease_seconds", "minimum_failure_wait_seconds", "jitter_basis_points", "jitter_max_seconds", "key_overlap_default_seconds", "key_overlap_max_seconds") VALUES (1, 10, 259200, '{0,60,300,1800,7200,21600,43200,86400,172800,255600}', 3, 604800, 2592000, 2592000, 300, 60, 15, 45, 5, 1000, 1800, 86400, 604800);
 
 SELECT pg_catalog.setval('"bots_creation_order_seq"', 1, false);
 
