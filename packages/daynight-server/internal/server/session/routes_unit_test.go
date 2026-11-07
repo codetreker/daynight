@@ -23,6 +23,13 @@ import (
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+func TestRoutesDefaultBrowserPingInterval(t *testing.T) {
+	routes := NewRoutes(nil, nil, testLogger())
+	if routes.pingInterval != 10*time.Second {
+		t.Fatal("default browser ping interval", routes.pingInterval)
+	}
+}
+
 type failingResponseWriter struct{ header http.Header }
 
 func (w *failingResponseWriter) Header() http.Header     { return w.header }

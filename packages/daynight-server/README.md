@@ -720,6 +720,15 @@ assertions remain in the root package. The
 [HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
 records the distinction and preservation requirements.
 
+The Session browser ping regression uses production Session routes with real
+business services and authentication in a focused route fixture. Its test-local
+interval allows actual Ping/Pong and subsequent event delivery to complete
+promptly. Other integration scenarios retain the full application. Route
+cleanup drains the relay and stops its engine before the outer fixture releases
+its borrowed Store and files. The
+[Session test completion decision](../../.agents/notes/implemented/testing/2026-11-07-session-protocol-test-completion.md)
+records this fixture's responsibility.
+
 The domain Session fixtures share application shutdown cleanup and mutable
 error expectations. Tests that deliberately revoke authority may declare the
 exact clean domain fault caused by that transition. Project deletion channel

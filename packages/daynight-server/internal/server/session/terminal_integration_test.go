@@ -14,9 +14,13 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
+	servicesupport "github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -296,13 +300,28 @@ func TestTerminalWorkerAndBrowserWebSockets(t *testing.T) {
 		t.Fatal(ack)
 	}
 	reg := f.message.Payload.(v2.Registration)
+	viewer := servicesupport.ServicePrincipal(t, f.db)
+	var viewerPAT identitycore.MintedPAT
+	completion, err := f.db.WriteIdentity(ctx, func(scope store.IdentityScope) error {
+		var err error
+		viewerPAT, err = identitycore.NewIdentity(configuredTestConfig().UniAuthCallbackURL).CreatePAT(ctx, scope.IdentityDAO(), viewer, identitycore.CreatePAT{Name: "Terminal viewer"}, time.Now())
+		return err
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("viewer token creation: completion=%+v error=%v", completion, err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, reg.Owner.ProjectID, viewer.UserID); err != nil {
+		t.Fatal(err)
+	}
+	viewerHandler := &resourceTestHandler{Handler: f.h.Handler, token: viewerPAT.Secret, principal: viewer}
 	run := v2.Run{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}
 	ledger := f.message
 	ledger.Type = "generation_ledger"
 	ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{run}}
 	sessionWSWrite(t, worker, ledger)
 	sessionWSKind(t, worker, "generation_ledger")
-	browser, _, err := websocket.Dial(ctx, f.server.URL+path+"/channel?browserClientId="+uuid.NewString(), &websocket.DialOptions{HTTPHeader: header, Subprotocols: []string{v2.Protocol}})
+	viewerHeader := http.Header{"Authorization": []string{"Bearer " + viewerPAT.Secret}}
+	browser, _, err := websocket.Dial(ctx, f.server.URL+path+"/channel?browserClientId="+uuid.NewString(), &websocket.DialOptions{HTTPHeader: viewerHeader, Subprotocols: []string{v2.Protocol}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,14 +339,27 @@ func TestTerminalWorkerAndBrowserWebSockets(t *testing.T) {
 	if string(update["snapshot"]) == "null" {
 		t.Fatal(update)
 	}
-	// Revoking membership closes the existing browser subscription.
-	_, err = f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, reg.Owner.ProjectID, reg.Owner.OwnerUserID)
+	_, err = f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, reg.Owner.ProjectID, viewer.UserID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "forbidden") }
+	revoked := terminalRequest(viewerHandler, http.MethodGet, path+"/state", "", v2.Protocol)
+	failure := decodeResponse[api.ErrorResponse](t, revoked, http.StatusForbidden)
+	if failure.Error.Code != "forbidden" || failure.Error.RequestID != revoked.Header().Get("X-Request-ID") {
+		t.Fatalf("viewer revocation response: %+v", failure)
+	}
+	if response := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol); response.Code != http.StatusOK {
+		t.Fatalf("viewer revocation affected the worker owner: %d %s", response.Code, response.Body)
+	}
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelClose()
 	for i := 0; i < 4; i++ {
-		_, _, err = browser.Read(ctx)
+		_, _, err = browser.Read(closeCtx)
 		if err != nil {
+			if closeCtx.Err() != nil {
+				t.Fatalf("revoked browser did not close before the deadline: %v", err)
+			}
 			return
 		}
 	}
