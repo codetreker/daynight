@@ -109,7 +109,7 @@ recording_not_enabled。每代证据独立核对。
 该地址与 Web Task 归档共用归属及分片规则；独立 Test/Bot 归档使用用户分组。
 新写入使用此布局，既有文件与元数据保持原状。读取继续打开持久 `object_path`，
 上传重试和回执沿用原语义，不根据目录布局增加拒绝条件。
-[共享归档设计](task-session-protocol.md#服务端归档布局)拥有物理地址规则。
+[共享归档设计](task-session-protocol.md#服务端归档布局)拥有物理地址规则。 [归档操作占用](task-session-protocol.md#归档操作占用)覆盖上传、内部读回及原始正文发送。
 
 写入保留原始字节，重新打开并核对大小和 SHA-256 后持久保存 receipt；下载再次
 校验文件和身份，并直接发送原始存储字节，不重新编码 JSON。ready/unavailable

@@ -139,8 +139,11 @@ func TestTerminalArchiveReadyReadsActualBytesAndSurvivesNewClaim(t *testing.T) {
 	restarted := New(f.db, f.s.files)
 	restarted.Origin = f.s.Origin
 	got, err := restarted.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID)
-	if err != nil || !bytes.Equal(got, data) {
+	if err != nil || !bytes.Equal(got.Data, data) {
 		t.Fatal("history content", err)
+	}
+	if err := got.Close(); err != nil {
+		t.Fatal(err)
 	}
 	page, err := restarted.TerminalHistory(ctx, f.p, f.project, f.task, "", 1)
 	if err != nil || len(page["items"].([]map[string]any)) != 1 {

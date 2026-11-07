@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -89,6 +90,25 @@ type bodyCompletionKey struct{}
 type trackedRequestBody struct {
 	io.ReadCloser
 	complete atomic.Bool
+}
+
+// NativeHTTP1RequestBody recognizes the Go 1.27 HTTP/1 server's own body
+// implementations, including its Expect: 100-continue wrapper. Their Close
+// drains the same socket; arbitrary middleware bodies have no such guarantee.
+func NativeHTTP1RequestBody(r *http.Request) bool {
+	if r.ProtoMajor != 1 {
+		return false
+	}
+	tracked, ok := r.Context().Value(bodyCompletionKey{}).(*trackedRequestBody)
+	if !ok || r.Body != tracked {
+		return false
+	}
+	t := reflect.TypeOf(tracked.ReadCloser)
+	if t == nil || t.Kind() != reflect.Pointer {
+		return false
+	}
+	t = t.Elem()
+	return t.PkgPath() == "net/http" && (t.Name() == "body" || t.Name() == "expectContinueReader")
 }
 
 func (b *trackedRequestBody) Read(p []byte) (int, error) {

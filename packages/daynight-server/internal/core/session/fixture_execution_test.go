@@ -25,10 +25,10 @@ func New(db store.SessionWriter, files ...filestorage.Storage) *Execution {
 			var transaction *store.TransactionError
 			if completion.Outcome == store.TransactionNotCommitted && errors.As(err, &transaction) && !transaction.CommitAttempted && !transaction.CleanupFailed {
 				var refusal *model.Fault
-				if errors.As(err, &refusal) {
+				if errors.As(err, &refusal) && refusal.Code != "cleanup_unknown" && onlyFixtureCause(transaction.Cause, refusal) {
 					return refusal
 				}
-				if errors.Is(err, model.ErrNotFound) {
+				if errors.Is(err, model.ErrNotFound) && onlyFixtureCause(transaction.Cause, model.ErrNotFound) {
 					return fault("not_found", "Session was not found.")
 				}
 			}
@@ -39,7 +39,9 @@ func New(db store.SessionWriter, files ...filestorage.Storage) *Execution {
 		}
 		return nil
 	}
-	return NewExecution(engine, c.browser, c.controller, c.archive, c.terminal, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.registerTerminal, c.authorize)
+	execution := NewExecution(engine, c.browser, c.controller, c.archive, c.terminal, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.registerTerminal, c.authorize)
+	execution.SetArchivePreflight(c.archivePreflight)
+	return execution
 }
 
 type fixtureCoordinator struct {
@@ -519,4 +521,35 @@ func testTransact(s *Execution, db store.SessionWriter, ctx context.Context, fn 
 	})
 	op.Finish(completion.Outcome)
 	return err
+}
+
+func (s *fixtureCoordinator) archivePreflight(ctx context.Context, p model.Principal, project, taskID, id string, mode ArchiveMode) (owner string, err error) {
+	op, err := s.engine.BeginOperation()
+	if err != nil {
+		return "", err
+	}
+	defer op.Close()
+	err = s.write(ctx, op, func(scope store.SessionScope) error {
+		var e error
+		owner, e = op.ArchivePreflight(ctx, scope, p, project, taskID, id, mode)
+		return e
+	})
+	return owner, err
+}
+
+func onlyFixtureCause(err, target error) bool {
+	if err == target {
+		return true
+	}
+	if failure, ok := err.(*store.Error); ok && target == model.ErrNotFound && failure.MissingRow && !failure.DatabaseFailure {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		return len(children) == 1 && onlyFixtureCause(children[0], target)
+	}
+	if next := errors.Unwrap(err); next != nil {
+		return onlyFixtureCause(next, target)
+	}
+	return false
 }

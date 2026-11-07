@@ -24,6 +24,7 @@ type Operation struct {
 type TransactionRunner func(context.Context, *Operation, func(store.SessionScope) error) error
 type BrowserRunner func(context.Context, model.Principal, string, string, string, func(*Access) error) error
 type ControllerRunner func(context.Context, sp.ControllerFence, func(*Access) error) error
+type ArchivePreflightRunner func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error)
 type ArchiveRunner func(context.Context, model.Principal, string, string, string, bool, func(*Access) error) error
 type TerminalRunner func(context.Context, model.Principal, string, string, string, bool, func(*TerminalAccess) error) error
 type TaskRegistrationRunner func(context.Context, model.Principal, string, string, sp.Registration, func(*Operation, store.SessionScope, *Access) error) error
@@ -42,6 +43,7 @@ type Execution struct {
 	browserRun              BrowserRunner
 	controllerRun           ControllerRunner
 	archiveRun              ArchiveRunner
+	archivePreflightRun     ArchivePreflightRunner
 	terminalRun             TerminalRunner
 	taskRegistrationRun     TaskRegistrationRunner
 	testRegistrationRun     TestRegistrationRunner

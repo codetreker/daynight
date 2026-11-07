@@ -627,7 +627,8 @@ func TestTerminalWorkerChannelRejectsBinaryRegistration(t *testing.T) {
 	}
 }
 
-func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
+func terminalArchiveReady(t *testing.T) (*terminalHTTPFixture, string, []byte, v2.Receipt) {
+	t.Helper()
 	f := terminalHTTPSetup(t)
 	raw, err := os.ReadFile("../../../../daynight/test/session/fixtures/v2/valid-archive.json")
 	if err != nil {
@@ -671,6 +672,11 @@ func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
 	data = append(data, []byte("\n \t\n")...)
 	path := f.base + "/" + doc.SessionID + "/archive"
 	receipt := terminalMessage(t, terminalRequest(f.h, "PUT", path, string(data), v2.Protocol)).Payload.(v2.Receipt)
+	return f, path, data, receipt
+}
+
+func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
+	f, path, data, receipt := terminalArchiveReady(t)
 	got := terminalRequest(f.h, "GET", path+"/content", "", v2.Protocol)
 	if got.Code != 200 {
 		t.Fatal(got.Code, got.Body.String())

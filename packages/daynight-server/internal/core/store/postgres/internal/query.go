@@ -24,10 +24,11 @@ func PageValues(page store.Page) (any, any) {
 
 func QueryError(phase string, err error) error {
 	failed, state := queryFailureFacts(err)
+	missingRow := err == pgx.ErrNoRows
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = errors.Join(model.ErrNotFound, err)
 	}
-	return &store.Error{Phase: phase, Cause: err, DatabaseFailure: failed, SQLState: state}
+	return &store.Error{Phase: phase, Cause: err, DatabaseFailure: failed, SQLState: state, MissingRow: missingRow}
 }
 
 // ConfirmedClosedCleanup retains the driver's rollback cause when a closed
