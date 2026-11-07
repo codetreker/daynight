@@ -43,6 +43,4 @@ Unchanged rows can retain their menu instances while draft text changes. A chang
 to the resource, locale, permission, request pause, callbacks or the matching
 editor still updates the affected rows. A new mutable in-place Step update would
 break the snapshot identity assumption and must not be introduced without
-revisiting this boundary. The picker still scans its bounded page for the current
-selection; its observed comparison cost did not justify changing its selection
-mechanism in this decision.
+revisiting this boundary.
