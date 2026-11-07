@@ -19,23 +19,25 @@ import (
 )
 
 type ReadOnlyRoutes struct {
-	broker         *ro.Broker
-	auth           *authhttp.Authentication
-	logger         *slog.Logger
-	mu             sync.Mutex
-	closing        bool
-	reserved       int
-	requests       int
-	requestTargets map[string]int
-	bodyTimeout    time.Duration
-	active         sync.WaitGroup
-	connections    map[*websocket.Conn]context.CancelFunc
-	drained        chan struct{}
-	once           sync.Once
+	broker            *ro.Broker
+	auth              *authhttp.Authentication
+	logger            *slog.Logger
+	mu                sync.Mutex
+	closing           bool
+	reserved          int
+	requests          int
+	requestTargets    map[string]int
+	bodyTimeout       time.Duration
+	operationTimeout  func(string) time.Duration
+	heartbeatInterval time.Duration
+	active            sync.WaitGroup
+	connections       map[*websocket.Conn]context.CancelFunc
+	drained           chan struct{}
+	once              sync.Once
 }
 
 func NewReadOnlyRoutes(broker *ro.Broker, auth *authhttp.Authentication, logger *slog.Logger) *ReadOnlyRoutes {
-	return &ReadOnlyRoutes{broker: broker, auth: auth, logger: logger, connections: map[*websocket.Conn]context.CancelFunc{}, drained: make(chan struct{}), requestTargets: map[string]int{}, bodyTimeout: 5 * time.Second}
+	return &ReadOnlyRoutes{broker: broker, auth: auth, logger: logger, connections: map[*websocket.Conn]context.CancelFunc{}, drained: make(chan struct{}), requestTargets: map[string]int{}, bodyTimeout: 5 * time.Second, operationTimeout: ro.OperationTimeout, heartbeatInterval: 5 * time.Second}
 }
 func (h *ReadOnlyRoutes) RegisterRoutes(mux *http.ServeMux) {
 	const base = "/api/v1/me/workers/{workerId}/readonly"
@@ -129,7 +131,7 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 	var result ro.Message
 	if err == nil {
 		// The operation budget starts at HTTP admission, including time spent reading its body.
-		timeout := ro.OperationTimeout(input.Operation)
+		timeout := h.operationTimeout(input.Operation)
 		operationCtx, stop := context.WithDeadline(ctx, started.Add(timeout))
 		defer stop()
 		_ = controller.SetWriteDeadline(started.Add(timeout + 5*time.Second))
@@ -264,7 +266,7 @@ func (h *ReadOnlyRoutes) channel(w http.ResponseWriter, r *http.Request, p model
 		}
 	}()
 	defer func() { cancel(); _ = c.CloseNow(); <-readDone }()
-	tick := time.NewTicker(5 * time.Second)
+	tick := time.NewTicker(h.heartbeatInterval)
 	defer tick.Stop()
 	for {
 		select {
