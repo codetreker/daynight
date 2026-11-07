@@ -213,7 +213,7 @@ git@git.example.com:team/repo.git
 ```
 
 Team 与 Project 的共同领域准入分别检查原始名称的有效性，以及最多 256 个 Unicode code points
-和 1024 个 UTF-8 bytes；普通 Team 创建和改名、Project 创建及仓库注册共用这些规则。
+和 1024 个 UTF-8 bytes；普通 Team 创建和真实改名、Project 创建及仓库注册共用这些规则。Team 同名 no-op 保留存量超限名称。
 Project `repoUrl` 在 URL/SCP 解析和仓库匹配前检查最多 4096 个 UTF-8 bytes；容量失败
 映射为 `invalid_input`，发生在创建或修改任何持久数据之前，不截断输入。
 

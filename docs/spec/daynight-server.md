@@ -187,7 +187,7 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 ## HTTP API
 
 Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确版本和写入结果由
-[鉴权需求](daynight-auth.md#team-生命周期)拥有。普通 Team 创建和改名的非空名称必须同时
+[鉴权需求](daynight-auth.md#team-生命周期)拥有。普通 Team 创建和真实改名的非空名称必须同时
 不超过 256 个 Unicode code points 和 1024 个 UTF-8 bytes；超限返回 `400 invalid_input`，
 不改变 Team、成员关系或版本。Personal Team 的名称仍为 `null`。下表保留服务的完整资源入口索引。
 
