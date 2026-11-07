@@ -39,6 +39,7 @@ func TestRedeliveryHTTPRealCaptureAndTLS(t *testing.T) {
 		}
 		requests <- observedRequest{body: b, id: r.Header.Get("Webhook-Id"), timestamp: r.Header.Get("Webhook-Timestamp"), signature: r.Header.Get("Webhook-Signature")}
 		w.WriteHeader(int(responseStatus.Load()))
+		_, _ = io.WriteString(w, "receiver-response-body-canary")
 	}))
 	defer receiver.Close()
 	f := newCaptureFixture(t, 1)
@@ -209,6 +210,17 @@ func TestRedeliveryHTTPRealCaptureAndTLS(t *testing.T) {
 	}
 	if count != 4 || manual != 3 || generation != 4 {
 		t.Fatalf("sequence=%d manual=%d generation=%d", count, manual, generation)
+	}
+	status, attemptBody := call("GET", base+"/attempts", "")
+	if status != 200 || strings.Contains(string(attemptBody), "receiver-response-body-canary") {
+		t.Fatalf("receiver response exposed in attempts: %d %s", status, attemptBody)
+	}
+	var storedAttempts string
+	if err = f.db.Pool.QueryRow(f.ctx, `SELECT coalesce(json_agg(a)::text,'[]') FROM webhook_attempts a WHERE delivery_id=$1`, delivery).Scan(&storedAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedAttempts, "receiver-response-body-canary") {
+		t.Fatal("receiver response persisted in attempts")
 	}
 	status, b = call("GET", base+"/payload", "")
 	if status != 200 {

@@ -94,7 +94,13 @@ func TestHistoryHTTPRetainedSummary(t *testing.T) {
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_attempts SET finished_at=admitted_at, outcome='http_error',http_status=500,duration_ms=7,error_code='receiver_error' WHERE id=$1`, newerID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET config_version=9007199254740993 WHERE id=$1`, endpoint); err != nil {
+		t.Fatal(err)
+	}
 	s = summary()
+	if s["configVersion"] != "9007199254740993" {
+		t.Fatalf("summary version lost precision: %#v", s)
+	}
 	result, ok := s["lastResult"].(map[string]any)
 	if !ok || result["category"] != "http_error" || result["code"] != "receiver_error" || result["httpStatus"] != float64(500) || result["durationMs"] != float64(7) || len(result) != 4 {
 		t.Fatalf("latest result: %#v", s)
