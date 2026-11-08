@@ -303,7 +303,7 @@
 .webhooks .empty-detail svg,
 .webhook-dialog .empty-detail svg { color:#c5cada;margin-bottom:12px }
 .webhooks .state-box,
-.webhook-dialog .state-box { min-height:328px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:35px 22px;gap:12px;color:#7a879c }
+.webhook-dialog .state-box { min-height:328px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:35px 22px;gap:12px;color:#7a879c;border:0;border-radius:0;background:transparent;overflow-wrap:normal }
 .webhooks .state-icon,
 .webhook-dialog .state-icon { width:48px;height:48px;background:#f2f2fb;color:#8383c5;border-radius:12px;display:grid;place-items:center;margin-bottom:4px }
 .webhooks .state-box h3,
