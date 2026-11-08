@@ -72,7 +72,7 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		TaskSearch:     database,
 		TaskSteps:      task.NewTaskSteps(database, capturer),
 		TaskThreads:    task.NewTaskThreads(database, capturer),
-		TaskSync:       task.NewTaskSync(database, overlap),
+		TaskSync:       task.NewTaskSync(database, engine, overlap),
 		Attachments:    attachment.NewAttachments(database, database, files),
 		Engine:         engine,
 		Sessions:       session.New(database, engine),

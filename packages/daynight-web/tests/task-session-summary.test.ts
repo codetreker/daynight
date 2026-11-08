@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { pauseAuthRequests } from '../src/api/client';
-import { pollingIntervalsKey } from '../src/app/polling';
-import type { TaskDetail, WorkerClaim } from '../src/api/types';
-import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
+import { ApiError, pauseAuthRequests } from '../src/api/client';
+import type { TaskDetail, TaskSync, WorkerClaim } from '../src/api/types';
+import { createTaskCacheScope, type CachedProject, type TaskCacheScope, type TaskSyncTicket } from '../src/features/task-cache/project-cache';
+import { deriveTaskSyncBindings, taskExecutionBinding } from '../src/features/task-cache/execution-binding';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
 import { aggregateSessionIndicators, sessionIndicator } from '../src/features/task-session-summary/summary';
-import { detailFixture, graphFixture, resourceResponse } from './helpers/taskDetail';
+import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 import type { TaskSessionSnapshot } from './helpers/session';
 
@@ -14,32 +14,35 @@ const original = JSON.parse(readFileSync('../daynight/test/session/fixtures/snap
 const projectId = original.identity.projectId;
 const taskId = original.identity.taskId;
 const id = (n: number) => `10000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
-const worker = (claimId = original.claimId): WorkerClaim => ({ claimId, state: 'active', userId: TEST_VIEWER_ID, workerId: original.identity.workerId,
+const worker = (changes: Partial<WorkerClaim> = {}): WorkerClaim => ({ claimId: original.claimId, state: 'active', userId: TEST_VIEWER_ID, workerId: original.identity.workerId,
   machine: { id: id(90), name: 'test' }, platform: 'macos', agent: 'codex', agentControlMode: 'web', worktreeId: original.identity.worktreeId,
-  phase: 'executing', herdr: null, nativeSessionId: 'native-thread-1', claimedAt: '2026-10-22T10:00:00Z' });
-const task = (taskId = original.identity.taskId, claimId = original.claimId): TaskDetail => detailFixture(projectId, taskId, {
-  status: 'in_progress', startedAt: '2026-10-22T10:00:00Z', properties: { worker: { ...worker(claimId) } },
+  phase: 'executing', herdr: null, nativeSessionId: 'native-thread-1', claimedAt: '2026-10-22T10:00:00Z', ...changes });
+const task = (taskId = original.identity.taskId, changes: Partial<TaskDetail> = {}): TaskDetail => detailFixture(projectId, taskId, {
+  status: 'in_progress', startedAt: '2026-10-22T10:00:00Z', properties: { worker: { ...worker() } }, ...changes,
 });
 const snapshot = (changes: Partial<TaskSessionSnapshot> = {}): TaskSessionSnapshot => ({ ...original, activity: 'working', operations: { canSend: false, canRespond: false, canCancel: false }, ...changes });
-const response = (s = snapshot(), userId = TEST_VIEWER_ID) => resourceResponse({ status: 'registered', session: s }, userId);
-const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
-const scopes: TaskCacheScope[] = []; const stores: TaskSessionSummaryStore[] = [];
-async function apply(scope: TaskCacheScope, tasks: readonly TaskDetail[]) {
-  const signal = new AbortController().signal;
-  const ticket = await scope.beginSync(projectId, signal);
-  return scope.applySync(ticket, taskSyncFromGraph(graphFixture(tasks), { query: ticket.epoch ? { epoch: ticket.epoch } : {},
-    versionForTask: (node) => tasks.find((t) => t.id === node.id)!.version, propertiesForTask: (node) => tasks.find((t) => t.id === node.id)!.properties }), signal);
+const scopes: TaskCacheScope[] = [];
+const stores: TaskSessionSummaryStore[] = [];
+type Read = { readonly ticket: TaskSyncTicket; readonly sync: TaskSync };
+async function read(scope: TaskCacheScope, tasks: readonly TaskDetail[], sessions: TaskSync['sessions'] = {}): Promise<Read> {
+  const ticket = await scope.beginSync(projectId, new AbortController().signal);
+  const sync = taskSyncFromGraph(graphFixture(tasks), { query: ticket.epoch ? { epoch: ticket.epoch } : {}, sessions,
+    versionForTask: (node) => tasks.find((t) => t.id === node.id)!.version, propertiesForTask: (node) => tasks.find((t) => t.id === node.id)!.properties });
+  return { ticket, sync };
 }
+const apply = (scope: TaskCacheScope, value: Read) => scope.applySync(value.ticket, value.sync, new AbortController().signal);
+const publish = (store: TaskSessionSummaryStore, value: Read, project: CachedProject, receivedMonotonic = performance.now()) =>
+  store.replace({ project, observedBindings: deriveTaskSyncBindings(value.ticket, value.sync), sessions: value.sync.sessions, receivedMonotonic });
 async function fixture(tasks: readonly TaskDetail[] = [task()]) {
-  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope); await apply(scope, tasks);
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const initial = await read(scope, tasks); await apply(scope, initial);
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'] });
   const store = new TaskSessionSummaryStore(scope, projectId); stores.push(store); store.start();
+  store.setChain('chain', tasks.map((item) => item.id), true);
   return { scope, store };
 }
-async function settle() { for (let i = 0; i < 10; i++) await Promise.resolve(); }
 afterEach(() => {
-  stores.splice(0).forEach((s) => s.dispose()); scopes.splice(0).forEach((s) => s.dispose());
-  Reflect.deleteProperty(globalThis, Symbol.for(pollingIntervalsKey));
+  stores.splice(0).forEach((store) => store.dispose()); scopes.splice(0).forEach((scope) => scope.dispose());
 });
 
 describe('Session summary semantics', () => {
@@ -54,7 +57,7 @@ describe('Session summary semantics', () => {
   it('does not mistake the ability to respond for a pending interaction', () => {
     expect(sessionIndicator(snapshot({ activity: 'idle', operations: { canSend: true, canCancel: false, canRespond: true } }))).toBe('warning');
   });
-  it('recomputes the highest current indicator instead of retaining a historical maximum', () => {
+  it('recomputes the highest current indicator after contributions disappear', () => {
     expect(aggregateSessionIndicators(['working', 'notice', 'warning', null])).toBe('warning');
     expect(aggregateSessionIndicators(['working', 'notice', null])).toBe('notice');
     expect(aggregateSessionIndicators(['working', null])).toBe('working');
@@ -62,138 +65,128 @@ describe('Session summary semantics', () => {
   });
 });
 
-describe('Session summary scheduling and fencing', () => {
-  it('refreshes after the mocked polling period without changing the monotonic clock', async () => {
-    Reflect.set(globalThis, Symbol.for(pollingIntervalsKey), { sessionSummary: 100 });
-    const { store } = await fixture();
-    const fetch = vi.fn().mockImplementation(() => response()); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId], true); await settle();
-    expect(fetch).toHaveBeenCalledOnce();
-    const received = performance.now();
-    await vi.advanceTimersByTimeAsync(99); expect(fetch).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(1); expect(fetch).toHaveBeenCalledTimes(2);
-    expect(performance.now() - received).toBe(100);
+describe('Session snapshot admission and expiry', () => {
+  it('publishes all four states, retains pending access and never schedules HTTP', async () => {
+    const tasks = [task(), task(id(2)), task(id(3)), task(id(4))];
+    const { scope, store } = await fixture(tasks); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    const value = await read(scope, tasks, { [taskId]: 'working', [id(2)]: 'notice', [id(3)]: 'warning', [id(4)]: 'pending' });
+    const result = await apply(scope, value); publish(store, value, result.project);
+    expect([...store.snapshot().values()].map((entry) => entry.indicator)).toEqual(['working', 'notice', 'warning', null]);
+    store.setChain('second', tasks.map((item) => item.id), true); store.removeChain('chain');
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(store.snapshot().size).toBe(0); expect(fetch).not.toHaveBeenCalled();
+  });
+  it('applies a complete map even when the Task delta is empty and removes matching omissions', async () => {
+    const tasks = [task(), task(id(2))]; const { scope, store } = await fixture(tasks);
+    const first = await read(scope, tasks, { [taskId]: 'working', [id(2)]: 'notice' }); publish(store, first, (await apply(scope, first)).project);
+    const next = await read(scope, tasks, { [taskId]: 'warning' }); const empty = { ...next, sync: { ...next.sync, tasks: [] } };
+    publish(store, empty, (await apply(scope, empty)).project);
+    expect(store.snapshot().get(taskId)?.indicator).toBe('warning'); expect(store.snapshot().has(id(2))).toBe(false);
+    const absent = { ...next, sync: { ...next.sync, tasks: [], sessions: {} } }; publish(store, absent, (await apply(scope, absent)).project);
+    expect(store.snapshot().size).toBe(0);
+  });
+  it('renews an unchanged state only on an accepted body receipt', async () => {
+    const { scope, store } = await fixture(); const first = await read(scope, [task()], { [taskId]: 'working' });
+    const project = (await apply(scope, first)).project; publish(store, first, project, 0);
+    await vi.advanceTimersByTimeAsync(15_000); publish(store, first, project, 15_000);
+    await vi.advanceTimersByTimeAsync(15_001); expect(store.snapshot().has(taskId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(14_999); expect(store.snapshot().has(taskId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1); expect(store.snapshot().has(taskId)).toBe(false);
+  });
+  it('keeps the body receipt through delayed decoding and cache application', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'pending' });
+    const receivedMonotonic = performance.now();
+    await vi.advanceTimersByTimeAsync(12_000);
+    publish(store, value, (await apply(scope, value)).project, receivedMonotonic);
+    expect(store.snapshot().get(taskId)).toEqual({ indicator: null });
+    await vi.advanceTimersByTimeAsync(18_000); expect(store.snapshot().has(taskId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1); expect(store.snapshot().has(taskId)).toBe(false);
+  });
+  it.each(['working', undefined] as const)('rejects an already expired value or omission (%s) before publishing', async (state) => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'notice' }); const project = (await apply(scope, value)).project;
+    await vi.advanceTimersByTimeAsync(20_000); publish(store, value, project, 20_000);
+    const listener = vi.fn(); store.subscribe(listener);
+    await vi.advanceTimersByTimeAsync(11_000);
+    store.replace({ project, observedBindings: deriveTaskSyncBindings(value.ticket, value.sync), sessions: state === undefined ? {} : { [taskId]: state }, receivedMonotonic: 0 });
+    expect(store.snapshot().get(taskId)?.indicator).toBe('notice'); expect(listener).not.toHaveBeenCalled();
+  });
+  it('rechecks expiry before restoring a hidden document even when its background timer was delayed', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'working' }); publish(store, value, (await apply(scope, value)).project, 0);
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden'); document.dispatchEvent(new Event('visibilitychange'));
+    expect(store.snapshot().size).toBe(0);
+    vi.clearAllTimers(); vi.spyOn(performance, 'now').mockReturnValue(31_001);
+    visibility.mockReturnValue('visible'); document.dispatchEvent(new Event('visibilitychange'));
+    expect(store.snapshot().size).toBe(0);
+  });
+  it('restores a valid contribution after a presentation change without renewing its receipt', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'working' }); publish(store, value, (await apply(scope, value)).project, 0);
+    store.setActive(false); expect(store.snapshot().size).toBe(0);
+    await vi.advanceTimersByTimeAsync(20_000); store.setActive(true); expect(store.snapshot().has(taskId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_001); expect(store.snapshot().size).toBe(0);
+  });
+  it('preserves valid contributions while an ordinary sync is in flight and clears a confirmed read failure', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'working' }); publish(store, value, (await apply(scope, value)).project);
+    await scope.beginSync(projectId, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(15_000); expect(store.snapshot().get(taskId)?.indicator).toBe('working');
+    store.clear(); expect(store.snapshot().size).toBe(0);
+    publish(store, value, scope.getAuthorizedProject(projectId)!, performance.now()); expect(store.snapshot().has(taskId)).toBe(true);
+  });
+  it.each(['value', 'omission'] as const)('does not let a late old-claim %s modify or renew the new execution', async (kind) => {
+    const { scope, store } = await fixture(); const old = await read(scope, [task()], kind === 'value' ? { [taskId]: 'warning' } : {});
+    const changed = task(taskId, { version: 2n, updatedAt: '2026-10-22T10:00:01Z', properties: { worker: { ...worker({ claimId: id(50) }) } } });
+    const newer = await read(scope, [changed], { [taskId]: 'working' });
+    await vi.advanceTimersByTimeAsync(1000); publish(store, newer, (await apply(scope, newer)).project, 1000);
+    await vi.advanceTimersByTimeAsync(19_000); publish(store, old, (await apply(scope, old)).project, 20_000);
     expect(store.snapshot().get(taskId)?.indicator).toBe('working');
+    await vi.advanceTimersByTimeAsync(11_001); expect(store.snapshot().has(taskId)).toBe(false);
   });
-
-  it('shares reads across visible chains, ignores unobserved tasks and refreshes five seconds after completion', async () => {
-    const { store } = await fixture([task(), task(id(2))]); const pending = deferred<Response>();
-    const fetch = vi.fn().mockReturnValueOnce(pending.promise).mockImplementation(() => response()); vi.stubGlobal('fetch', fetch);
-    store.setChain('first', [taskId], true); store.setChain('second', [taskId], true);
-    expect(store.snapshot().size).toBe(0); expect(fetch).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(2000); pending.resolve(response()); await settle();
-    expect(store.snapshot().get(taskId)?.indicator).toBe('working');
-    await vi.advanceTimersByTimeAsync(4999); expect(fetch).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(1); expect(fetch).toHaveBeenCalledTimes(2);
-    expect(fetch.mock.calls.every(([url]) => url.endsWith('/sessions/current'))).toBe(true);
-    store.removeChain('first'); expect(store.snapshot().has(taskId)).toBe(true);
-    store.removeChain('second'); expect(store.snapshot().size).toBe(0);
+  it.each([
+    ['claim', { properties: { worker: { ...worker({ claimId: id(50) }) } } }],
+    ['worker', { properties: { worker: { ...worker({ workerId: id(51) }) } } }],
+    ['worktree', { properties: { worker: { ...worker({ worktreeId: id(52) }) } } }],
+    ['mode', { properties: { worker: { ...worker({ agentControlMode: 'herdr' }) } } }],
+    ['state', { properties: { worker: { ...worker({ state: 'completed' }) } } }],
+    ['status', { status: 'done', completedAt: '2026-10-22T10:00:01Z', properties: { worker: { ...worker({ state: 'completed' }) } } }],
+    ['missing worker', { properties: {} }],
+  ] satisfies readonly (readonly [string, Partial<TaskDetail>])[])('revokes a contribution after its %s changes through the ordinary cache', async (_label, changes) => {
+    const { scope, store } = await fixture(); const old = await read(scope, [task()], { [taskId]: 'working' }); publish(store, old, (await apply(scope, old)).project);
+    const changed = task(taskId, { version: 2n, updatedAt: '2026-10-22T10:00:01Z', ...changes }); const next = await read(scope, [changed]);
+    await apply(scope, next); expect(store.snapshot().size).toBe(0);
+    publish(store, old, scope.getAuthorizedProject(projectId)!); expect(store.snapshot().size).toBe(0);
   });
-  it('caps concurrent requests at four and releases slots only when requests settle', async () => {
-    const tasks = Array.from({ length: 7 }, (_, i) => task(id(i + 1))); const { store } = await fixture(tasks);
-    const calls: { pending: ReturnType<typeof deferred<Response>>; signal: AbortSignal }[] = [];
-    const fetch = vi.fn((_url: string, init: RequestInit) => { const pending = deferred<Response>(); calls.push({ pending, signal: init.signal! }); return pending.promise; }); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', tasks.map((t) => t.id), true); expect(fetch).toHaveBeenCalledTimes(4);
-    const first = calls[0]!; first.pending.resolve(response(snapshot({ identity: { ...original.identity, taskId: tasks[0]!.id } }))); await settle();
-    expect(fetch).toHaveBeenCalledTimes(5);
-    store.setChain('chain', [], false); expect(calls.slice(1).every((c) => c.signal.aborted)).toBe(true);
-    store.setChain('chain', tasks.map((t) => t.id), true); expect(fetch).toHaveBeenCalledTimes(5);
-    calls[1]!.pending.resolve(response()); await settle(); expect(fetch).toHaveBeenCalledTimes(6);
+  it('does not publish a status inconsistent with its observed Task binding', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'working' }); const project = (await apply(scope, value)).project;
+    expect(() => store.replace({ project, observedBindings: new Map(), sessions: value.sync.sessions, receivedMonotonic: performance.now() })).toThrow(ApiError);
+    expect(() => store.replace({ project, observedBindings: new Map([[taskId, { ...taskExecutionBinding(project.summaries.get(taskId)!), worker: null }]]), sessions: value.sync.sessions, receivedMonotonic: performance.now() })).toThrow(ApiError);
+    expect(store.snapshot().size).toBe(0);
   });
-  it('eventually reads every visible member when slow refreshes compete with unread members', async () => {
-    const tasks = Array.from({ length: 9 }, (_, i) => task(id(i + 1)));
-    const { store } = await fixture(tasks);
-    const readIds: string[] = [];
-    vi.stubGlobal('fetch', vi.fn((url: string) => {
-      const currentTask = url.split('/tasks/')[1]!.split('/')[0]!;
-      readIds.push(currentTask);
-      return new Promise<Response>((resolve) => setTimeout(() => resolve(response(snapshot({
-        identity: { ...original.identity, taskId: currentTask }, activity: currentTask === id(9) ? 'idle' : 'working',
-      }))), 6000));
-    }));
-    store.setChain('chain', tasks.map((item) => item.id), true);
-    await vi.advanceTimersByTimeAsync(18_000);
-    expect(new Set(readIds)).toEqual(new Set(tasks.map((item) => item.id)));
-    expect(store.snapshot().get(id(9))?.indicator).toBe('warning');
+  it('rejects a late result from another manifest generation without clearing a current contribution', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'working' }); const project = (await apply(scope, value)).project; publish(store, value, project);
+    const listener = vi.fn(); store.subscribe(listener);
+    const stale = { ...project, manifest: { ...project.manifest, cacheGeneration: id(99) } };
+    publish(store, { ...value, sync: { ...value.sync, sessions: {} } }, stale);
+    expect(store.snapshot().get(taskId)?.indicator).toBe('working'); expect(listener).not.toHaveBeenCalled();
   });
-  it('hides failures and expired reads while preserving a readable initializing entry', async () => {
-    const { store } = await fixture(); const stalled = deferred<Response>();
-    const fetch = vi.fn().mockResolvedValueOnce(response(snapshot({ activity: 'initializing' }))).mockReturnValue(stalled.promise); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId], true); await settle();
-    expect(store.snapshot().get(taskId)).toMatchObject({ sessionId: original.sessionId, indicator: null });
-    await vi.advanceTimersByTimeAsync(15_001); expect(store.snapshot().has(taskId)).toBe(false);
-    stalled.reject(new Error('offline HTTP')); await settle(); expect(store.snapshot().has(taskId)).toBe(false);
-    fetch.mockResolvedValue(response(snapshot({ activity: 'waiting_input' }))); await vi.advanceTimersByTimeAsync(5000);
-    expect(store.snapshot().get(taskId)?.indicator).toBe('notice');
-  });
-  it('invalidates an old claim synchronously and rejects its late response', async () => {
-    const { scope, store } = await fixture(); const old = deferred<Response>(); const current = deferred<Response>();
-    const fetch = vi.fn().mockReturnValueOnce(old.promise).mockReturnValue(current.promise); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId], true);
-    const next = { ...task(taskId, id(50)), version: 2n, updatedAt: '2026-10-22T10:00:01Z' };
-    await apply(scope, [next]); expect(store.snapshot().has(taskId)).toBe(false);
-    expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true); expect(fetch).toHaveBeenCalledOnce();
-    old.resolve(response()); await settle(); expect(store.snapshot().has(taskId)).toBe(false);
-    current.resolve(response(snapshot({ claimId: id(50), activity: 'waiting_input' }))); await settle();
-    expect(store.snapshot().get(taskId)?.indicator).toBe('notice');
-    await apply(scope, [{ ...next, version: 3n, status: 'done', completedAt: '2026-10-22T10:00:02Z', updatedAt: '2026-10-22T10:00:02Z' }]);
-    expect(store.snapshot().has(taskId)).toBe(false);
-  });
-  it('rejects mismatched task, project and claim identities', async () => {
-    const { store } = await fixture();
-    const fetch = vi.fn().mockResolvedValueOnce(response(snapshot({ claimId: id(50) })))
-      .mockResolvedValueOnce(response(snapshot({ identity: { ...original.identity, taskId: id(2) } })))
-      .mockResolvedValueOnce(response(snapshot({ identity: { ...original.identity, projectId: id(3) } }))); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId], true); await settle(); expect(store.snapshot().size).toBe(0);
-    await vi.advanceTimersByTimeAsync(5000); expect(store.snapshot().size).toBe(0);
-    await vi.advanceTimersByTimeAsync(5000); expect(store.snapshot().size).toBe(0);
-  });
-  it('clears and cancels hidden pages, then immediately refreshes on return', async () => {
-    const { store } = await fixture(); const pending = deferred<Response>();
-    const fetch = vi.fn().mockResolvedValueOnce(response()).mockReturnValueOnce(pending.promise).mockImplementation(() => response()); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId], true); await settle(); await vi.advanceTimersByTimeAsync(5000);
-    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden'); document.dispatchEvent(new Event('visibilitychange'));
-    expect(store.snapshot().size).toBe(0); expect(fetch.mock.calls[1]![1].signal.aborted).toBe(true);
-    pending.resolve(response()); await settle(); await vi.advanceTimersByTimeAsync(30_000); expect(fetch).toHaveBeenCalledTimes(2);
-    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible'); document.dispatchEvent(new Event('visibilitychange')); await settle();
-    expect(fetch).toHaveBeenCalledTimes(3); expect(store.snapshot().get(taskId)?.indicator).toBe('working');
-  });
-  it('invalidates project access and scope identity without publishing late reads', async () => {
-    const { scope, store } = await fixture(); const pending = deferred<Response>(); const fetch = vi.fn().mockReturnValue(pending.promise); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId], true);
-    await scope.invalidateProject(projectId, new AbortController().signal);
-    expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true);
-    pending.resolve(response()); await settle(); expect(store.snapshot().size).toBe(0);
-    scope.dispose(); expect(store.snapshot().size).toBe(0);
-  });
-  it('clears data during authentication revalidation and waits before starting a new read', async () => {
-    const { store } = await fixture(); const fetch = vi.fn().mockImplementation(() => response()); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId], true); await settle(); const resume = pauseAuthRequests();
-    try { await vi.advanceTimersByTimeAsync(250); expect(store.snapshot().size).toBe(0); await vi.advanceTimersByTimeAsync(6000); expect(fetch).toHaveBeenCalledOnce(); }
+  it('clears synchronously during auth pause and requires a fresh accepted observation after resume', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'working' }); const project = (await apply(scope, value)).project; publish(store, value, project);
+    const resume = pauseAuthRequests();
+    try { expect(store.snapshot().size).toBe(0); publish(store, value, project); expect(store.snapshot().size).toBe(0); }
     finally { resume(); }
-    await vi.advanceTimersByTimeAsync(250); expect(fetch).toHaveBeenCalledTimes(2);
+    expect(store.snapshot().size).toBe(0);
+    publish(store, value, scope.getAuthorizedProject(projectId)!, performance.now()); expect(store.snapshot().has(taskId)).toBe(true);
   });
-  it('hides unknown, missing registration and denied reads without inventing offline warnings', async () => {
-    const { store } = await fixture();
-    const fetch = vi.fn().mockResolvedValueOnce(response(snapshot({ activity: 'unknown' })))
-      .mockResolvedValueOnce(resourceResponse({ status: 'not_registered', claimId: original.claimId, agentControlMode: 'web' }, TEST_VIEWER_ID))
-      .mockResolvedValueOnce(resourceResponse({ status: 'not_applicable', claimId: original.claimId, agentControlMode: 'herdr' }, TEST_VIEWER_ID))
-      .mockRejectedValueOnce(new Error('Permission denied'))
-      .mockResolvedValueOnce(response(snapshot({ connectionState: 'disconnected', activity: 'unknown' })));
-    vi.stubGlobal('fetch', fetch); store.setChain('chain', [taskId], true); await settle(); expect(store.snapshot().size).toBe(0);
-    for (let i = 0; i < 3; i++) { await vi.advanceTimersByTimeAsync(5000); expect(store.snapshot().size).toBe(0); }
-    await vi.advanceTimersByTimeAsync(5000); expect(store.snapshot().get(taskId)?.indicator).toBe('warning');
+  it('clears revoked access and disposed scopes and rejects their late observations', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'working' }); const project = (await apply(scope, value)).project; publish(store, value, project);
+    await scope.invalidateProject(projectId, new AbortController().signal); expect(store.snapshot().size).toBe(0);
+    publish(store, value, project); expect(store.snapshot().size).toBe(0);
+    scope.dispose(); publish(store, value, project); expect(store.snapshot().size).toBe(0);
   });
-  it('rejects a response served under another account and invalidates the account scope', async () => {
-    const { scope, store } = await fixture();
-    const fetch = vi.fn().mockImplementation(() => response(snapshot(), id(80))); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId], true); await settle(); expect(scope.isInvalidated).toBe(true); expect(store.snapshot().size).toBe(0);
-    await vi.advanceTimersByTimeAsync(20_000); expect(fetch).toHaveBeenCalledOnce();
-  });
-  it('never reads missing, herdr, todo or done tasks', async () => {
-    const { store } = await fixture([task(), { ...task(id(2)), properties: {} }, { ...task(id(3)), status: 'todo' }, { ...task(id(4)), status: 'done' },
-      { ...task(id(5)), properties: { worker: { ...worker(), agentControlMode: 'herdr' } } }]);
-    const fetch = vi.fn().mockImplementation(() => response()); vi.stubGlobal('fetch', fetch);
-    store.setChain('chain', [taskId, id(2), id(3), id(4), id(5)], true); await settle(); expect(fetch).toHaveBeenCalledOnce();
+  it('publishes Session-only changes without Task persistence, notifications or graph replacement', async () => {
+    const { scope, store } = await fixture(); const value = await read(scope, [task()], { [taskId]: 'working' }); const result = await apply(scope, value);
+    const events = vi.fn(); const unsubscribe = scope.subscribe(events); const transaction = vi.spyOn(IDBDatabase.prototype, 'transaction'); transaction.mockClear();
+    publish(store, value, result.project); publish(store, { ...value, sync: { ...value.sync, sessions: { [taskId]: 'notice' } } }, result.project);
+    expect(store.snapshot().get(taskId)?.indicator).toBe('notice'); expect(transaction).not.toHaveBeenCalled(); expect(events).not.toHaveBeenCalled();
+    expect(scope.getAuthorizedProject(projectId)?.graph).toBe(result.project.graph); expect(scope.getAuthorizedProject(projectId)?.index).toBe(result.project.index);
+    expect(scope.getAuthorizedProject(projectId)?.summaries.get(taskId)?.version).toBe(1n); unsubscribe();
   });
 });

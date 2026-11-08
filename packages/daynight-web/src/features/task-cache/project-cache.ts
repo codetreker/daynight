@@ -10,6 +10,7 @@ import { TASK_CACHE_STORES, TaskCacheDatabase, TaskCacheError, type CachedProfil
 import { validateProjectManifest, validateUserScope } from "./lifecycle";
 import { GraphDataError } from "../task-graph/model";
 import { compareTimestamps, maxUpdatedAt, projectSummaries, sameProject, sameSummary, type TaskProjection } from "./projection";
+import { taskExecutionBinding, type TaskExecutionBinding } from "./execution-binding";
 
 type Transaction = IDBPTransaction<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "readwrite">;
 export type SyncTicket = {
@@ -18,6 +19,9 @@ export type SyncTicket = {
   readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean;
   readonly admissionRevision?: number;
   readonly scopeRevision: number;
+};
+export type TaskSyncTicket = SyncTicket & {
+  readonly taskBindings: ReadonlyMap<string, TaskExecutionBinding>;
 };
 export type TaskReadFence = {
   readonly userId: string; readonly userFence: string; readonly projectId: string; readonly taskId: string;
@@ -919,7 +923,7 @@ export class TaskCacheScope {
     }
     return this.clearDeniedProject(ticket.projectId).then(() => true);
   }
-  async beginSync(projectId: string, signal: AbortSignal): Promise<SyncTicket> {
+  async beginSync(projectId: string, signal: AbortSignal): Promise<TaskSyncTicket> {
     projectId = requestId(projectId);
     const scopeRevision = this.projectRevisions.get(projectId) ?? 0;
     await this.ready(signal);
@@ -933,9 +937,10 @@ export class TaskCacheScope {
           manifest = invalidated(this.userId, projectId, userFence);
           await transaction.objectStore("projects").put(manifest);
         }
-        if (manifest.state === "active") await this.stored(transaction, manifest);
+        const tasks = manifest.state === "active" ? await this.stored(transaction, manifest) : [];
         return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt,
-          generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true, scopeRevision };
+          generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true, scopeRevision,
+          taskBindings: new Map(tasks.map((task) => [task.id, taskExecutionBinding(task)])) };
       }, signal);
       if (scopeRevision !== this.getProjectRevision(projectId)) return released();
       if (!this.histories.has(projectId)) this.histories.set(projectId, { epoch: ticket.epoch, generation: 0 });

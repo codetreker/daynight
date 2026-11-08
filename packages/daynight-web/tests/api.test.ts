@@ -320,7 +320,7 @@ describe("API requests", () => {
     fetcher.mockResolvedValue(new Response(`{"items":[${source}],"nextCursor":null}`, { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await listProjects({}, signal())).items[0]?.settings.version).toBe(version);
     fetcher.mockResolvedValue(new Response(rawSync(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
-    expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).project.settings.version).toBe(version);
+    expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).sync.project.settings.version).toBe(version);
   });
   it("uses relative URLs, explicit signal, no-store, and safely encoded opaque cursor", async () => {
     const fetchMock = mockResponse({ items: [project], nextCursor: "next" });
@@ -335,7 +335,7 @@ describe("API requests", () => {
 
   it("normalizes requested IDs and binds resource responses to requests", async () => {
     const fetchMock = mockResponse(sync);
-    await expect(getTaskSync(projectId.toUpperCase(), {}, TEST_VIEWER_ID, signal())).resolves.toEqual(parsedSync);
+    await expect(getTaskSync(projectId.toUpperCase(), {}, TEST_VIEWER_ID, signal())).resolves.toEqual({ sync: parsedSync, receivedMonotonic: expect.any(Number) });
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/task-sync`);
     fetchMock.mockResolvedValue(response(task));
     await expect(getTask(projectId.toUpperCase(), taskId.toUpperCase(), signal(), admission)).resolves.toMatchObject({ id: taskId, projectId });

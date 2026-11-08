@@ -136,6 +136,8 @@ export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
   readonly properties: TaskProperties;
 };
 
+export type TaskListSessionState = "working" | "notice" | "warning" | "pending";
+
 export type TaskSync = {
   readonly assigneeVersions: readonly ProjectPersonVersion[];
   readonly actorAccess: ProjectAccess;
@@ -144,6 +146,12 @@ export type TaskSync = {
   readonly project: Project;
   readonly observedAt: string;
   readonly tasks: readonly TaskSummary[];
+  readonly sessions: Readonly<Record<string, TaskListSessionState>>;
+};
+
+export type TaskSyncRead = {
+  readonly sync: TaskSync;
+  readonly receivedMonotonic: number;
 };
 
 export type {

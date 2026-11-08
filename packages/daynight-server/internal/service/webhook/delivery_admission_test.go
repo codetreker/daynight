@@ -14,16 +14,20 @@ import (
 )
 
 type admissionScope struct {
-	store.WebhookDeliveryScope
-	d           store.WebhookDelivery
-	s           store.WebhookAdmissionSources
-	a           []store.WebhookAttempt
-	insertError error
-	sourceError error
-	waitError   error
-	waitCalls   int
-	now         time.Time
-	waitUntil   *time.Time
+	deliveryUnexpectedScope
+	d                store.WebhookDelivery
+	s                store.WebhookAdmissionSources
+	a                []store.WebhookAttempt
+	existingAttempts []store.WebhookAttempt
+	updated          store.WebhookDelivery
+	updates          []store.WebhookDelivery
+	insertError      error
+	updateError      error
+	sourceError      error
+	waitError        error
+	waitCalls        int
+	now              time.Time
+	waitUntil        *time.Time
 }
 
 func (s *admissionScope) ObservedAt(context.Context) (time.Time, error) { return s.now, nil }
@@ -35,22 +39,20 @@ func (s *admissionScope) LockDelivery(context.Context, string) (store.WebhookDel
 	return s.d, nil
 }
 func (s *admissionScope) LockAttempts(context.Context, string) ([]store.WebhookAttempt, error) {
-	return s.a, nil
+	return s.existingAttempts, nil
 }
 func (s *admissionScope) LockWait(context.Context, string, int64) (store.WebhookEndpointWait, error) {
 	s.waitCalls++
 	return store.WebhookEndpointWait{Owner: s.d.Owner, NotBefore: s.waitUntil}, s.waitError
 }
 func (s *admissionScope) InsertAttempt(_ context.Context, a store.WebhookAttempt) error {
-	if s.insertError != nil {
-		return s.insertError
-	}
 	s.a = append(s.a, a)
-	return nil
+	return s.insertError
 }
 func (s *admissionScope) UpdateDelivery(_ context.Context, d store.WebhookDelivery) error {
-	s.d = d
-	return nil
+	s.updated = d
+	s.updates = append(s.updates, d)
+	return s.updateError
 }
 
 type admissionDB struct {
@@ -94,7 +96,7 @@ func admissionFixture(t *testing.T) (*Runner, *admissionScope, time.Time) {
 		schedule[i] = now.Add(time.Duration(i) * time.Minute)
 	}
 	d := store.WebhookDelivery{ID: "44444444-4444-4444-8444-444444444444", EventID: "a0be4d96-fb33-41ba-a7bd-7885c1e94247", EndpointID: ep.ID, Owner: owner, EventType: match.EventType, ProjectID: match.ProjectID, OccurredAt: now, OriginalMatchCount: 1, OriginalMatchSHA256: digest, PolicyVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: 1, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationConfiguration: target, DestinationOrigin: "https://example.com", RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte("[]"), Body: body, OriginalBodyBytes: len(body), BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: now.Add(72 * time.Hour), PayloadExpiresAt: now.Add(168 * time.Hour), AutomaticOpen: true, Generation: generation, State: "leased", Trigger: "automatic", ExpiresAt: now.Add(72 * time.Hour), LeaseToken: &token, LeaseClaimedAt: &now, LeaseUntil: &until, LeaseGeneration: &generation}
-	scope := &admissionScope{d: d, now: now, s: store.WebhookAdmissionSources{Event: store.WebhookCapturedEvent{ID: d.EventID, ProjectID: d.ProjectID, EventType: d.EventType, OccurredAt: now}, Endpoint: ep, SigningKeys: []wm.SigningKey{{ID: ep.ActiveKeyID, EndpointID: ep.ID, Slot: "current", Secret: key}}, Matches: []store.WebhookAdmissionMatch{{WebhookCapturedMatch: match, Continuous: true}}, TaskPresent: true, ProjectEligible: true, EndpointPresent: true}}
+	scope := &admissionScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, d: d, now: now, s: store.WebhookAdmissionSources{Event: store.WebhookCapturedEvent{ID: d.EventID, ProjectID: d.ProjectID, EventType: d.EventType, OccurredAt: now}, Endpoint: ep, SigningKeys: []wm.SigningKey{{ID: ep.ActiveKeyID, EndpointID: ep.ID, Slot: "current", Secret: key}}, Matches: []store.WebhookAdmissionMatch{{WebhookCapturedMatch: match, Continuous: true}}, TaskPresent: true, ProjectEligible: true, EndpointPresent: true}}
 	r := NewRunner(admissionDB{scope: scope, outcome: store.TransactionCommitted}, service, true)
 	return r, scope, now
 }
@@ -103,18 +105,19 @@ func TestAdmissionRequiresConfirmedCommit(t *testing.T) {
 	r.DB = admissionDB{scope: s, outcome: store.TransactionUnknown}
 	attempt, err := r.admit(context.Background(), s.d)
 	if err == nil || attempt != nil || len(s.a) != 1 {
-		t.Fatalf("unknown admission yielded dispatch: attempt=%v err=%v saved=%d", attempt, err, len(s.a))
+		t.Fatalf("unknown admission yielded dispatch: attempt=%v err=%v attempt_calls=%d", attempt, err, len(s.a))
 	}
 }
 func TestAdmissionFailureAndOriginalContinuity(t *testing.T) {
 	r, s, _ := admissionFixture(t)
 	s.insertError = errors.New("insert failed")
-	if attempt, err := r.admit(context.Background(), s.d); err == nil || attempt != nil || s.d.AutomaticAttemptCount != 0 || len(s.a) != 0 {
+	if attempt, err := r.admit(context.Background(), s.d); err == nil || attempt != nil || s.d.AutomaticAttemptCount != 0 || len(s.a) != 1 || len(s.updates) != 0 {
 		t.Fatalf("failed insert admitted: %v %v", attempt, err)
 	}
 	s.insertError = nil
+	s.a = nil
 	s.s.Matches[0].Continuous = false
-	if attempt, err := r.admit(context.Background(), s.d); err != nil || attempt != nil || s.d.State != "suppressed" || len(s.a) != 0 {
+	if attempt, err := r.admit(context.Background(), s.d); err != nil || attempt != nil || s.updated.State != "suppressed" || len(s.a) != 0 {
 		t.Fatalf("lost proof: %v %v %s", attempt, err, s.d.State)
 	}
 }
@@ -136,7 +139,7 @@ func TestAdmissionOnlyRequiresCurrentDestinationWait(t *testing.T) {
 	r, s, _ := admissionFixture(t)
 	s.waitError = errors.New("wait row missing")
 	s.s.Endpoint.DestinationRevision++
-	if a, err := r.admit(context.Background(), s.d); err != nil || a != nil || s.d.State != "suppressed" || s.waitCalls != 0 {
+	if a, err := r.admit(context.Background(), s.d); err != nil || a != nil || s.updated.State != "suppressed" || s.waitCalls != 0 {
 		t.Fatalf("old destination: attempt=%v err=%v state=%s waits=%d", a, err, s.d.State, s.waitCalls)
 	}
 	r, s, _ = admissionFixture(t)
@@ -149,12 +152,12 @@ func TestAdmissionOnlyRequiresCurrentDestinationWait(t *testing.T) {
 func TestAdmissionDoesNotConfuseInternalFailureWithRevocation(t *testing.T) {
 	r, s, _ := admissionFixture(t)
 	s.sourceError = errors.New("permission query unavailable")
-	if a, err := r.admit(context.Background(), s.d); err == nil || a != nil || s.d.State != "leased" || len(s.a) != 0 {
+	if a, err := r.admit(context.Background(), s.d); err == nil || a != nil || len(s.updates) != 0 || len(s.a) != 0 {
 		t.Fatalf("permission failure: %v %v %s", a, err, s.d.State)
 	}
 	r, s, _ = admissionFixture(t)
 	s.s.SigningKeys[0].Secret = nil
-	if a, err := r.admit(context.Background(), s.d); err == nil || a != nil || s.d.State != "leased" || len(s.a) != 0 {
+	if a, err := r.admit(context.Background(), s.d); err == nil || a != nil || len(s.updates) != 0 || len(s.a) != 0 {
 		t.Fatalf("missing key: %v %v %s", a, err, s.d.State)
 	}
 }
@@ -180,13 +183,13 @@ func TestAdmissionOldTokenAndBudget(t *testing.T) {
 	}
 	r, s, now = admissionFixture(t)
 	s.d.AutomaticAttemptCount = 10
-	if a, err := r.admit(context.Background(), s.d); err != nil || a != nil || s.d.State != "failed" || len(s.a) != 0 {
+	if a, err := r.admit(context.Background(), s.d); err != nil || a != nil || s.updated.State != "failed" || len(s.a) != 0 {
 		t.Fatalf("eleventh attempt: %v %v %s", a, err, s.d.State)
 	}
 	r, s, now = admissionFixture(t)
 	deadline := now.Add(-time.Microsecond)
 	s.d.ExpiresAt = deadline
-	if a, err := r.admit(context.Background(), s.d); err != nil || a != nil || s.d.State != "failed" || len(s.a) != 0 {
+	if a, err := r.admit(context.Background(), s.d); err != nil || a != nil || s.updated.State != "failed" || len(s.a) != 0 {
 		t.Fatalf("expired budget: %v %v %s", a, err, s.d.State)
 	}
 }
@@ -200,10 +203,10 @@ func TestAdmissionPausedAndWaitDoNotConsumeAttempts(t *testing.T) {
 		} else {
 			s.s.Endpoint.Enabled = false
 		}
-		if a, err := r.admit(context.Background(), s.d); err != nil || a != nil || s.d.State != "pending" || s.d.AutomaticAttemptCount != 0 || s.d.AutomaticPlanCursor != 0 || len(s.a) != 0 {
+		if a, err := r.admit(context.Background(), s.d); err != nil || a != nil || s.updated.State != "pending" || s.updated.AutomaticAttemptCount != 0 || s.updated.AutomaticPlanCursor != 0 || len(s.a) != 0 {
 			t.Fatalf("pause=%v: %v %v %s", useWait, a, err, s.d.State)
 		}
-		if s.d.NextAttemptAt == nil || s.d.NextAttemptAt.Before(now.Add(5*time.Second)) || !s.d.ExpiresAt.Equal(now.Add(72*time.Hour)) {
+		if s.updated.NextAttemptAt == nil || s.updated.NextAttemptAt.Before(now.Add(5*time.Second)) || !s.updated.ExpiresAt.Equal(now.Add(72*time.Hour)) {
 			t.Fatalf("pause moved deadline: %+v", s.d)
 		}
 	}
@@ -215,6 +218,8 @@ func TestAdmissionAfterPauseUsesOneMissedOpportunity(t *testing.T) {
 	if a, err := r.admit(context.Background(), s.d); err != nil || a != nil {
 		t.Fatalf("pause: %v %v", a, err)
 	}
+	s.d = s.updated
+	s.updates = nil
 	s.now = now.Add(7 * time.Minute)
 	s.s.Endpoint.Enabled = true
 	token := "99999999-9999-4999-8999-999999999999"
@@ -222,7 +227,7 @@ func TestAdmissionAfterPauseUsesOneMissedOpportunity(t *testing.T) {
 	generation := s.d.Generation
 	s.d.State, s.d.LeaseToken, s.d.LeaseClaimedAt, s.d.LeaseUntil, s.d.LeaseGeneration = "leased", &token, &s.now, &until, &generation
 	a, err := r.admit(context.Background(), s.d)
-	if err != nil || a == nil || len(s.a) != 1 || s.d.AutomaticAttemptCount != 1 || s.d.AutomaticPlanCursor != 8 || a.attempt.AutomaticPlanSlot == nil || *a.attempt.AutomaticPlanSlot != 8 {
+	if err != nil || a == nil || len(s.a) != 1 || s.updated.AutomaticAttemptCount != 1 || s.updated.AutomaticPlanCursor != 8 || a.attempt.AutomaticPlanSlot == nil || *a.attempt.AutomaticPlanSlot != 8 {
 		t.Fatalf("resumed backlog: attempt=%v err=%v count=%d cursor=%d", a, err, len(s.a), s.d.AutomaticPlanCursor)
 	}
 }
@@ -248,7 +253,7 @@ func TestAdmissionManualIntentPreservesAutomaticBudget(t *testing.T) {
 	s.d.Trigger, s.d.ManualOperationID = "manual", &op
 	s.d.AutomaticAttemptCount, s.d.ManualOperationCount = 3, 1
 	a, err := r.admit(context.Background(), s.d)
-	if err != nil || a == nil || a.attempt.ManualOperationID == nil || *a.attempt.ManualOperationID != op || a.attempt.AutomaticPlanSlot != nil || s.d.AutomaticAttemptCount != 3 || s.d.ManualOperationCount != 1 {
+	if err != nil || a == nil || a.attempt.ManualOperationID == nil || *a.attempt.ManualOperationID != op || a.attempt.AutomaticPlanSlot != nil || s.updated.AutomaticAttemptCount != 3 || s.updated.ManualOperationCount != 1 {
 		t.Fatalf("manual admission: %v %v", a, err)
 	}
 	r, s, _ = admissionFixture(t)
@@ -263,6 +268,7 @@ type admissionFaultScope struct {
 	clockCalls   int
 	clockTimes   []time.Time
 	clockFailure int
+	clockError   error
 	lockError    error
 	attemptError error
 }
@@ -270,9 +276,15 @@ type admissionFaultScope struct {
 func (s *admissionFaultScope) ObservedAt(context.Context) (time.Time, error) {
 	s.clockCalls++
 	if s.clockCalls == s.clockFailure {
-		return time.Time{}, errors.New("database clock unavailable")
+		if s.clockError == nil {
+			panic(s.unexpected("missing scripted clock error"))
+		}
+		return time.Time{}, s.clockError
 	}
-	if len(s.clockTimes) >= s.clockCalls {
+	if len(s.clockTimes) > 0 {
+		if s.clockCalls > len(s.clockTimes) {
+			panic(s.unexpected("ObservedAt beyond supplied clock script"))
+		}
 		return s.clockTimes[s.clockCalls-1], nil
 	}
 	return s.now, nil
@@ -281,7 +293,7 @@ func (s *admissionFaultScope) LockDelivery(context.Context, string) (store.Webho
 	return s.d, s.lockError
 }
 func (s *admissionFaultScope) LockAttempts(context.Context, string) ([]store.WebhookAttempt, error) {
-	return s.a, s.attemptError
+	return s.existingAttempts, s.attemptError
 }
 
 type admissionFaultDB struct{ scope store.WebhookDeliveryScope }
@@ -318,7 +330,7 @@ func TestAdmissionFailsClosedOnStorageErrors(t *testing.T) {
 	} {
 		t.Run(fault.name, func(t *testing.T) {
 			r, base, _ := admissionFixture(t)
-			scope := &admissionFaultScope{admissionScope: base}
+			scope := &admissionFaultScope{admissionScope: base, clockError: errors.New("database clock unavailable")}
 			fault.configure(scope)
 			r.DB = admissionFaultDB{scope: scope}
 			if attempt, err := r.admit(context.Background(), base.d); err == nil || attempt != nil || len(base.a) != 0 {

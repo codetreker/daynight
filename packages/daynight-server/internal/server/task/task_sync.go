@@ -61,6 +61,12 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 
 func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
 	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	if sync.Sessions != nil {
+		result.Sessions = make(map[string]string, len(sync.Sessions))
+		for taskID, state := range sync.Sessions {
+			result.Sessions[taskID] = string(state)
+		}
+	}
 	for _, person := range sync.AssigneeVersions {
 		result.AssigneeVersions = append(result.AssigneeVersions, api.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
 	}

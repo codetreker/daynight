@@ -194,8 +194,9 @@ snapshot or current records whose `updatedAt` is at least the supplied task
 watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
-derived blockers and readiness remain outside these summaries. Task rows and batched property rows share one
-repeatable-read snapshot. Every snapshot and delta, including an empty delta,
+derived blockers and readiness remain outside these summaries. Task rows and
+individually bounded complete-property reads share one repeatable-read snapshot.
+Every snapshot and delta, including an empty delta,
 also returns required top-level `actorAccess` using the access endpoint's DTO and
 complete `assigneeVersions` entries `{userId,version,hasProjectAccess}` for the
 qualified people catalogue. The existing admission result supplies access in the
@@ -204,7 +205,28 @@ People metadata contains no names or avatars, is UUID-sorted and distinct, and
 uses the same qualification and content versions as task-assignees. Any profile
 query, integrity or transaction failure fails the whole sync. Hashing reads all
 qualified profile content on each sync, costing O(people + total profile bytes);
-manifest transport is O(people). It introduces no PostgreSQL migration. Browser consumers publish access only
+manifest transport is O(people).
+
+Every successful response also includes a
+required, non-null `sessions` map from Task UUID to
+`working | notice | warning | pending`; an empty contribution set produces `{}`. This is
+complete for the project's relevant in-progress Task Sessions even when the
+Task delta is empty, and contains no execution IDs, catalogues, controls or raw
+Session state. A narrow callback-scoped `SessionReader` reads Worker bindings and
+persisted Session scalars in the same snapshot after existing admission and
+TaskSync checks succeed. TaskSync depends on its consumer-local, single-method
+`SessionStateReader`; application composition supplies the existing shared Engine.
+That Engine reads only committed live scalars, without loading Current or cloning live content. Missing live or a
+mismatched fence retains the existing disconnected warning; reliable initializing
+or synchronizing Sessions use pending, while unreliable bindings contribute no
+key. Persisted heartbeat and drain deadlines retain their existing rules.
+This read does not advance Session lifecycle or replace content authorization.
+Query, validation, Engine admission and transaction faults fail the whole sync;
+the complete encoded response, including the map, retains its 64 MiB limit.
+The [Session projection decision](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)
+records the narrow read and lock ownership. It introduces no PostgreSQL migration.
+
+Browser consumers publish access only
 to the current identity/project memory owner, outside persistent Project and Task
 records. Missing keys propagate removal through whole-summary
 replacement; ordinary property changes preserve the epoch. Invalid stored
@@ -623,9 +645,9 @@ the recovered value and stack are not printed by the HTTP server.
 ## Validate
 
 Install the root workspace dependencies with `pnpm install --frozen-lockfile`
-before validation. Tests require a real PostgreSQL database and fail when it is
-unavailable or
-`DAYNIGHT_TEST_DATABASE_URL` is missing. For a disposable local instance, use the
+before validation. The complete module check includes PostgreSQL integration
+tests and requires `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated database.
+Database-independent service and rule suites run separately without that URL. For a disposable local instance, use the
 same PostgreSQL **18.6-bookworm** image as CI:
 
 ```bash
@@ -645,7 +667,9 @@ docker rm --force --volumes daynight-server-tests
 ```
 
 The check builds and vets the Go module using its unit-test Web resource overlay,
-prepares the pinned UniAuth fixture, and runs module tests and coverage. The
+prepares the pinned UniAuth fixture, checks controlled Webhook Runner process
+recovery with its dedicated test transport build, and runs module tests and
+coverage. The
 optional `--coverage` argument selects the same check. A production build uses
 the real Web assets described under [Build and run](#build-and-run).
 
@@ -661,11 +685,35 @@ encoded-budget validation, Attachment input validation and invalid login scopes
 use these input-only fixtures; representative persisted refusals and accepted
 SDK paths retain real integration coverage.
 
-The Webhook source rollback matrix owns one isolated schema per injected failure
-phase and creates independent principals, teams, projects and subscriptions for
-each source operation. Database-state corruption stays inside its owning phase.
-The [fixture construction decision](../../.agents/notes/implemented/testing/2026-11-08-go-fixture-construction.md)
-records isolation and projection constraints.
+The complete `internal/service/webhook` suite uses narrow transaction and DAO
+mocks. The mocks return explicitly configured facts and projections, record
+requested writes, and fail on unexpected access. They do not simulate a database
+or interpret recorded writes as committed state. Time-dependent cases provide
+`ObservedAt` and `RecordedAt` values, and concurrent cases synchronize actual
+callback entry, cancellation and drain through channels. Call ordering is scoped
+to a logical operation or an explicit cross-operation barrier.
+
+From this module, run the database-independent suite with:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 ./internal/service/webhook
+```
+
+Capture source facts and producer invocation belong to their Task, Step, Thread
+and Worker owners. PostgreSQL tests retain the real operation fences, actor
+reads, multi-record rollback, source/capture atomicity, lease and retention locks,
+commit acknowledgement loss and fresh-process readback. The module check also
+runs `TestWebhookRunnerAbruptProcessRecovery` with `-tags=webhooktest`: committed
+claim/admission exit, real TLS response before finalization, and discarded
+finalize COMMIT acknowledgement followed by an enabled Runner restart. This
+focused process witness runs in ordinary validation; production-duration timeout
+and capacity stress cases remain separate. HTTP and protocol tests
+own response mappings, request digests, headers, projections and authentication.
+The [Webhook test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-service-dao-mocks.md)
+records the proof split; the earlier
+[fixture construction decision](../../.agents/notes/implemented/testing/2026-11-08-go-fixture-construction.md)
+preserves its original isolation rationale.
 
 PostgreSQL integration tests own real SQL, constraints, locking, commit and
 rollback, persisted readback and authority or version changes across operations.
@@ -715,8 +763,9 @@ records the input and error-chain guarantees.
 Task request tests separate service preflight from candidates that require a
 stored Task. Preflight rejects before storage; `PrepareUpdate` and `PrepareStatus`
 tests use `TaskWriteDAO` expectations for reads, version order, results and error
-chains. Real scope, refusal-without-mutation, graph, rollback, concurrency and
-all-status-pair/version observations remain PostgreSQL integration proofs. The
+chains. Service orchestration uses the same interface boundary for permission,
+state, proposed writes and transaction completion. Store tests retain real scope,
+query, locking, snapshot, commit and rollback observations. The
 [Task validation decision](../../.agents/notes/implemented/testing/2026-11-06-task-request-candidate-isolation.md)
 records the read-before-validation distinction.
 
@@ -727,16 +776,46 @@ queries and process crash recovery retain their PostgreSQL boundaries. The
 [record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
 records which storage facts are mocked and which durable operations remain real.
 
+### Task service and store tests
+
+The complete `internal/service/task` suite uses synthetic domain inputs and
+strict mocks of the existing DAO, snapshot and transaction scopes. Unconfigured
+calls fail explicitly. Callback execution and proposed writes remain separate
+from `committed`, `not_committed` and `unknown` results; tests retain their
+permission, version, error-chain, cancellation and source-fact assertions.
+
+Run this suite without a database from the module:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task
+```
+
+Existing PostgreSQL witnesses live in `internal/core/store/postgres` and use
+direct DAO and transaction scopes for physical query, locking, snapshot,
+partial-write rollback, Session and capture atomicity, and process-exit
+readback. Their test environment owns an isolated PostgreSQL instance and its
+cleanup. Store tests do not reproduce complete service flows. API integration
+and product E2E retain their normal-flow scope under the
+[test-writing rules](../../docs/writing_tests.md).
+
+Step service tests retain the real 64 MiB codec boundary: 170 escaped descriptions
+fit, 171 exceed the collection limit, and both Add and Update refuse before any
+write. Graph and Sync split physical dataset/query proof from service count
+admission. The [Task test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-task-service-test-ownership.md)
+records this correction of existing tests and the earlier fixture decisions.
+
 ### TaskSync lock and time windows
 
-TaskSync lock-wait regressions use a named 20-millisecond test overlap with real
-PostgreSQL transactions. After observing the blocked writer, they poll the
-database clock with a bounded deadline until that overlap has elapsed before
-releasing the Project lock. The old snapshot must retain committed versions
-while its observation time crosses the uncommitted write's window; subsequent
-delta reads must include both committed writes in timestamp order. Initial
-fixture rows share a database timestamp so setup latency cannot exclude either
-row from the short baseline window.
+TaskSync lock-wait regressions in store tests use a named 20-millisecond overlap
+with real PostgreSQL transactions. They observe the waiting transaction blocked
+by the held Project transaction's exact backend PID, then poll the database clock
+with a bounded deadline until the overlap has elapsed before releasing that
+lock. The old snapshot must retain committed versions while its observation
+time crosses the uncommitted write's window; subsequent delta reads must include
+both committed writes in timestamp order. Initial fixture rows share a database
+timestamp so setup latency cannot exclude either row from the short baseline
+window. Service tests separately control exact DAO windows and overlap admission.
 
 The production overlap and the independent 10-second, 30-second and nanosecond
 window cases remain separate. The [timing decision](../../.agents/notes/implemented/testing/2026-11-06-task-sync-lock-window.md)
@@ -809,13 +888,14 @@ records the equivalence and maintenance requirements.
 ### Task Graph boundary fixtures
 
 Graph boundary regressions retain the 1000-node backbone and 5000 dependency
-references, plus independent node and edge overflow cases. Connected service
+references, plus independent node and edge overflow cases. Connected store
 fixtures and the HTTP limit fixture run `ANALYZE tasks, task_dependencies` after
 all links are loaded and before graph queries. These private tables can be queried
 before autovacuum collects statistics; explicit collection gives the planner the
 loaded graph's cardinality without changing its rows or snapshot assertions.
-Preparation failures fail the test. Task service Graph and Sync seeds generate
-their ordered edge prefix directly while preserving its original topology. The
+Preparation failures fail the test. Graph and Sync store seeds generate their
+ordered edge prefix directly while preserving its original topology. Service
+DAO mocks retain independent node/edge limit admission before projection. The
 [fixture preparation decision](../../.agents/notes/implemented/testing/2026-11-06-task-graph-fixture-statistics.md)
 owns the rationale and proof boundary.
 
@@ -1685,14 +1765,21 @@ concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
-`TestStepsHTTPDelete*`. After preparing the normal auth fixture and an isolated PostgreSQL database, focused
-tests can be run from this module:
+`TestStepsHTTPDelete*`. Service Step cases run without a database:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task -run '^TestTaskSteps'
+```
+
+After preparing the normal auth fixture and an isolated PostgreSQL database,
+run the physical store and HTTP witnesses from this module:
 
 ```bash
 source scripts/env.sh
 export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-go test ./internal/core/store/postgres/... ./internal/service/task ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/... ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
 For the cross-process Step text admission check, build the CLI and set

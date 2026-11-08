@@ -57,6 +57,8 @@ detail and list reads in that same scope. A configuration GET404 remains separat
 from this history observation because retained history can still be authorized.
 Payload denial concerns individual resource access. URL redaction additionally
 restricts owner management authority without revoking its remaining read access.
+Secret and management-request denials use the same scoped authority distinction,
+owned by the [management-denial decision](../bug-fix/2026-11-08-webhook-management-denial.md).
 
 Payload publication evaluates its known expiry against fresh time. Local payload
 deadlines withdraw displayed bytes, and delayed responses cannot reinstall them.

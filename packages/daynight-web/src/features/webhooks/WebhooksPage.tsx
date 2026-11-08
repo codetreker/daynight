@@ -57,7 +57,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const data = useWebhookData(owner, route.endpointId, query, admission, canRead, directories.getAuthorization, directories.authorizationRevision, directories.observeConfiguration, directories.observeOwnerDenied);
   const sourceEndpoint = data.endpoint?.lifecycle === "active" ? data.endpoint : null;
   const secretAreaVisible = route.tab === "configuration" && (!narrow || route.endpointId !== null);
-  const controllers = useRef(new Map<string, WebhookIntentController>()), controllerAuthorizations = useRef(new Map<string, string>()), operationExpansions = useRef(new Map<string, boolean>()), live = useRef({ active: canRead, owner, endpoint: sourceEndpoint, catalog, secretAreaVisible, manageOwner: ownerAuthorization?.manage === true });
+  const controllers = useRef(new Map<string, WebhookIntentController>()), controllerAuthorizations = useRef(new Map<string, string>()), operationExpansions = useRef(new Map<string, boolean>()), live = useRef({ active: canRead, owner, endpoint: sourceEndpoint, endpointId: route.endpointId ?? data.endpointId, catalog, secretAreaVisible, manageOwner: ownerAuthorization?.manage === true });
   const deliveryAdmissions = useRef(new Map<string, (target: WebhookIntentTarget) => boolean>());
   const registerDeliveryAdmission = useCallback((owner: WebhookOwner, endpointId: string, check: (target: WebhookIntentTarget) => boolean) => {
     const key = `${webhookOwnerKey(owner)}:${endpointId}`; deliveryAdmissions.current.set(key, check);
@@ -88,7 +88,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const standaloneHistory = historyContextKey !== null && route.error === null && route.tab === "deliveries" && endpoint === null;
   const historyContextKind = historyContextKey !== null && missingConfigurations.current.has(historyContextKey) ? "retained-history" : "checking-configuration";
   const visibleItems = data.items === null ? null : data.items.filter(item => item.id !== deletedByReceipt);
-  live.current = { active: canRead, owner, endpoint, catalog, secretAreaVisible, manageOwner: ownerAuthorization?.manage === true };
+  live.current = { active: canRead, owner, endpoint, endpointId: historyEndpointId, catalog, secretAreaVisible, manageOwner: ownerAuthorization?.manage === true };
   const [modal, setModal] = useState<Modal | null>(null), [menu, setMenu] = useState<string | null>(null), [rotation, setRotation] = useState<"overlap" | "immediate">("overlap"), [secret, setSecret] = useState<{ readonly scope: string; readonly value: WebhookSecret } | null>(null), [secretBusy, setSecretBusy] = useState(false), [secretError, setSecretError] = useState<unknown>(null), [copyStatus, setCopyStatus] = useState<string | null>(null), [localError, setLocalError] = useState<unknown>(null);
   const secretSequence = useRef(0), handled = useRef(new Set<string>()), lifecycle = useRef(0), listRef = useRef<HTMLElement>(null);
   const writeFences = useRef(new Map<string, WebhookReadFence | null>());
@@ -126,8 +126,13 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const selectOwner = (kind: "personal" | "team", teamId: string | null) => { interactionSequence.current++; navigate(webhookUrl({ owner: kind, teamId, endpointId: null, tab: "configuration" })); };
   const select = (id: string) => { saveListPosition(); interactionSequence.current++; setMenu(null); navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: id, tab: route.tab })); };
   const open = (value: ModalBody, opener: HTMLElement | null) => { if (scope !== null) { interactionSequence.current++; setLocalError(null); setRotation("overlap"); setModal({ ...value, scope, opener } as Modal); setMenu(null); } };
+  const observeDenial = (error: unknown, requestedOwner: WebhookOwner, authorizationKey: string, management: boolean): void => {
+    if (!(error instanceof ApiError) || error.kind !== "server" || error.status !== 403 || error.code !== "forbidden" || admission.isInvalidated || live.current.owner?.kind !== requestedOwner.kind || live.current.owner.id !== requestedOwner.id || (management ? directories.getAuthorization(requestedOwner).key : directories.getAuthorization(requestedOwner).readKey) !== authorizationKey) return;
+    const authorization = management ? directories.observeManagementRestricted(requestedOwner, authorizationKey) : directories.observeOwnerDenied(requestedOwner, authorizationKey);
+    if (authorization.key !== authorizationKey) { setLocalError(error); directories.refresh(); }
+  };
   const submit = async (input: WebhookIntentInput): Promise<WebhookIntentState> => {
-    if (controller === null || scope === null || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
+    if (controller === null || scope === null || owner === null || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
     const state = controller.getSnapshot();
     if (state.reconciling || state.phase === "unknown") throw webhookAdmissionError("WebhookIntentBusy");
     if (!isBusy(state)) {
@@ -137,7 +142,23 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
       operationExpansions.current.set(scope, expansion); writeFences.current.set(scope, data.captureFence());
     }
     const fence = writeFences.current.get(scope) ?? null;
+    const submittedKind = input.kind, submittedEndpointId = input.kind === "delivery.redeliver" ? input.endpointId : null;
+    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).key, readAuthorizationKey = directories.getAuthorization(owner).readKey;
     const outcome = await controller.submit(input);
+    // A receipt read requires owner access; a rejected management request only
+    // disproves administrator authority, not the member's redacted reads.
+    if (submittedKind !== "delivery.redeliver" || outcome.phase !== "rejected") observeDenial(outcome.error, requestedOwner, outcome.phase === "rejected" ? authorizationKey : readAuthorizationKey, outcome.phase === "rejected");
+    if (submittedKind !== "delivery.redeliver") observeDenial(outcome.result?.currentError, requestedOwner, authorizationKey, true);
+    if (submittedKind === "delivery.redeliver" && submittedEndpointId !== null && outcome.phase === "rejected") {
+      const sameOwner = () => !admission.isInvalidated && live.current.owner?.kind === requestedOwner.kind && live.current.owner.id === requestedOwner.id && directories.getAuthorization(requestedOwner).readable;
+      if (sameOwner()) void (async () => {
+        try {
+          const read = await data.readEndpoint(submittedEndpointId);
+          if (read !== null && sameOwner() && live.current.endpointId === submittedEndpointId && !data.accept(read.endpoint, read.fence)) controller.forgetCurrentProjection();
+        } catch (error) { if (sameOwner() && live.current.endpointId === submittedEndpointId) setLocalError(error); }
+        finally { if (sameOwner()) { data.refreshCurrent(); directories.refresh(); } }
+      })();
+    }
     if (outcome.phase === "confirmed") {
       if (outcome.result?.endpoint !== undefined && !data.accept(outcome.result.endpoint, fence)) controller.forgetCurrentProjection();
       data.refresh(); directories.refresh();
@@ -145,8 +166,10 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     return outcome;
   };
   const reconcile = async () => {
-    if (controller === null || !canRead) return;
+    if (controller === null || owner === null || !canRead) return;
+    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).readKey;
     const outcome = await controller.reconcile();
+    observeDenial(outcome.error, requestedOwner, authorizationKey, false);
     if (outcome.phase === "confirmed") { data.refresh(); directories.refresh(); }
   };
   const patch = (body: WebhookIntentInput["body"]) => { if (endpoint !== null && manage) void submit({ kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body }).catch(setLocalError); };
@@ -159,7 +182,10 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
       const value = await getWebhookSecret(owner, endpoint.id, admission.signal, { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: signal => admission.ready(signal) });
       const current = live.current.endpoint;
       if (fence !== null && data.fenceCurrent(fence) && generation === secretSequence.current && live.current.active && live.current.secretAreaVisible && current?.id === requested.id && current.capabilities.readSecret && current.signing.activeKeyId === value.keyId && current.configVersion === value.configVersion && scope !== null) setSecret({ scope, value });
-    } catch (error) { if (generation === secretSequence.current && !admission.isInvalidated) setSecretError(error); }
+    } catch (error) {
+      if (fence !== null) observeDenial(error, owner, fence.authorizationKey, true);
+      if (generation === secretSequence.current && !admission.isInvalidated) setSecretError(error);
+    }
     finally { if (generation === secretSequence.current) setSecretBusy(false); }
   };
   const rowAction = async (item: WebhookEndpointSummary, action: "edit" | "toggle" | "delete", opener: HTMLElement) => {
@@ -212,16 +238,16 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
         {data.endpoint?.lifecycle === "deleted" ? <>
           <div className="detail-heading"><button className="text-button detail-back" type="button" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: null, tab: "configuration" }))}><WebhookIcon name="left" size={12}/>{m.back}</button><div className="detail-name"><h2>{m.deleted}</h2><div className="detail-id">{data.endpoint.id}</div></div><div className="detail-status"><span className="badge paused">configVersion {data.endpoint.configVersion}</span><time className="quiet">{data.endpoint.deletedAt}</time></div></div>
           <div className="tabs" role="tablist" aria-label="Webhook"><button id="webhook-tab-deliveries" className="tab" type="button" role="tab" aria-selected={route.tab === "deliveries"} aria-controls="webhook-panel-deliveries" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpoint!.id, tab: "deliveries" }))}>{m.deliveries}</button></div>
-          <div className="tab-panel">{owner !== null && ownerAuthorization !== null && <WebhookDeliveriesPanel owner={owner} endpoint={data.endpoint} admission={admission} active={canRead} visible={route.tab === "deliveries"} authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpoint!.id, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/>}</div>
+          <div className="tab-panel">{owner !== null && ownerAuthorization !== null && <WebhookDeliveriesPanel owner={owner} endpoint={data.endpoint} admission={admission} active={canRead} visible={route.tab === "deliveries"} authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onCheckOperation={() => { void reconcile(); }} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpoint!.id, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/>}</div>
         </> : standaloneHistory && owner !== null && ownerAuthorization !== null && historyEndpointId !== null ? <>
           <div className="detail-heading"><button className="text-button detail-back" type="button" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: null, tab: "configuration" }))}><WebhookIcon name="left" size={12}/>{m.back}</button><div className="detail-name"><h2>{m.deliveryHistory}</h2><div className="detail-id">{historyEndpointId}</div></div>{historyContextKind === "retained-history" && <p className="hint">{m.retainedHistory}</p>}</div>
           <div className="tabs" role="tablist" aria-label="Webhook"><button id="webhook-tab-deliveries" className="tab" type="button" role="tab" aria-selected aria-controls="webhook-panel-deliveries">{m.deliveries}</button></div>
-          <div className="tab-panel"><WebhookDeliveriesPanel owner={owner} endpoint={{ kind: historyContextKind, id: historyEndpointId }} admission={admission} active={canRead} visible authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: historyEndpointId, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/></div>
+          <div className="tab-panel"><WebhookDeliveriesPanel owner={owner} endpoint={{ kind: historyContextKind, id: historyEndpointId }} admission={admission} active={canRead} visible authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onCheckOperation={() => { void reconcile(); }} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: historyEndpointId, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/></div>
         </> : endpoint === null ? <div className="empty-detail"><div><WebhookIcon name="webhook" size={30}/><p>{m.selectDetail}</p></div></div> : <>
           <div className="detail-heading"><button className="text-button detail-back" type="button" onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: null, tab: route.tab }))}><WebhookIcon name="left" size={12}/>{m.back}</button><div className="detail-heading-top"><div className="detail-name"><h2>{endpoint.name}</h2><div className="detail-id">{endpoint.id}</div></div><button className="button ghost icon-only" type="button" aria-label={`${m.edit} ${endpoint.name}`} disabled={!manage} title={!endpoint.capabilities.manage ? m.readOnlyReason : undefined} onClick={event => open({ kind: "edit", endpoint }, event.currentTarget)}><WebhookIcon name="edit"/></button></div><div className="detail-status"><span className={`badge ${endpoint.enabled ? "success" : "paused"}`}>{endpoint.enabled ? <span className="status-dot"/> : <WebhookIcon name="pause" size={10}/>} {endpoint.enabled ? m.enabled : m.paused}</span><span className="quiet">{m.method}</span></div></div>
           <div className="tabs" role="tablist" aria-label="Webhook">{tabKeys.map((tab, index) => <button id={`webhook-tab-${tab}`} className="tab" type="button" role="tab" key={tab} aria-selected={route.tab === tab} aria-controls={`webhook-panel-${tab}`} tabIndex={route.tab === tab ? 0 : -1} onKeyDown={event => tabKey(event, index)} onClick={() => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: data.endpointId, tab }))}>{m[tab]}{tab === "subscriptions" && <span className="count"> {endpoint.subscriptions.length}</span>}</button>)}</div>
           <div className="tab-panel">
-            {owner !== null && ownerAuthorization !== null && <WebhookDeliveriesPanel owner={owner} endpoint={endpoint} admission={admission} active={canRead} visible={route.tab === "deliveries"} authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: endpoint.id, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/>}
+            {owner !== null && ownerAuthorization !== null && <WebhookDeliveriesPanel owner={owner} endpoint={endpoint} admission={admission} active={canRead} visible={route.tab === "deliveries"} authorizationKey={ownerAuthorization.readKey} catalog={catalog} controller={controller} intent={intent} submit={submit} onOwnerDenied={() => directories.observeOwnerDenied(owner, ownerAuthorization.readKey)} onManagementRestricted={() => directories.observeManagementRestricted(owner, ownerAuthorization.key)} registerAdmission={registerDeliveryAdmission} onCheckOperation={() => { void reconcile(); }} onRefreshEndpoint={data.refresh} routeDeliveryId={route.deliveryId ?? null} manageOwner={manageOwner} onSelectDelivery={deliveryId => navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: endpoint.id, tab: "deliveries", ...(deliveryId === null ? {} : { deliveryId }) }))}/>}
             <div id={`webhook-panel-${route.tab === "deliveries" ? "configuration" : route.tab}`} role="tabpanel" aria-labelledby={`webhook-tab-${route.tab === "deliveries" ? "configuration" : route.tab}`} hidden={route.tab === "deliveries"}>
             {route.tab === "configuration" ? <>
               <div className="settings-top"><div><strong>{m.enable}</strong><small>{m.enabledCopy}</small></div><button className="switch" type="button" role="switch" aria-checked={endpoint.enabled} aria-label={m.enable} disabled={!manage || !endpoint.enabled && (!catalog.service.configurationExpansionAvailable || endpoint.subscriptions.some(sub => sub.eligibility !== "eligible"))} onClick={() => patch({ enabled: !endpoint.enabled })}><span/></button></div>

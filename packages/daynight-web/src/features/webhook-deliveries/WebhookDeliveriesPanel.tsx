@@ -22,8 +22,8 @@ const timeOrder = (value: string): string => `${value.slice(0, 19)}${(value.matc
 export type WebhookHistoryEndpoint = WebhookEndpoint | { readonly kind: "retained-history" | "checking-configuration"; readonly id: string };
 const initialFilters = { eventType: "", state: "", projectId: "", from: "", to: "", limit: "50" };
 
-export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, visible, authorizationKey, catalog, controller, intent, submit, onOwnerDenied, onRefreshEndpoint, routeDeliveryId, onSelectDelivery, manageOwner, onManagementRestricted = () => {}, registerAdmission = () => () => {} }: {
-  readonly owner: WebhookOwner; readonly endpoint: WebhookHistoryEndpoint; readonly admission: TaskCacheScope; readonly active: boolean; readonly visible: boolean; readonly authorizationKey: string; readonly catalog: WebhookCatalog; readonly controller: WebhookIntentController | null; readonly intent: WebhookIntentState; readonly submit: (input: WebhookIntentInput) => Promise<WebhookIntentState>; readonly onOwnerDenied: () => void; readonly onRefreshEndpoint: () => void; readonly routeDeliveryId: string | null; readonly onSelectDelivery: (id: string | null) => void; readonly manageOwner: boolean; readonly onManagementRestricted?: () => void; readonly registerAdmission?: (owner: WebhookOwner, endpointId: string, check: (target: WebhookIntentTarget) => boolean) => () => void;
+export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, visible, authorizationKey, catalog, controller, intent, submit, onOwnerDenied, onRefreshEndpoint, routeDeliveryId, onSelectDelivery, manageOwner, onManagementRestricted = () => {}, registerAdmission = () => () => {}, onCheckOperation }: {
+  readonly owner: WebhookOwner; readonly endpoint: WebhookHistoryEndpoint; readonly admission: TaskCacheScope; readonly active: boolean; readonly visible: boolean; readonly authorizationKey: string; readonly catalog: WebhookCatalog; readonly controller: WebhookIntentController | null; readonly intent: WebhookIntentState; readonly submit: (input: WebhookIntentInput) => Promise<WebhookIntentState>; readonly onOwnerDenied: () => void; readonly onRefreshEndpoint: () => void; readonly routeDeliveryId: string | null; readonly onSelectDelivery: (id: string | null) => void; readonly manageOwner: boolean; readonly onCheckOperation: () => void; readonly onManagementRestricted?: () => void; readonly registerAdmission?: (owner: WebhookOwner, endpointId: string, check: (target: WebhookIntentTarget) => boolean) => () => void;
 }) => {
   const formId = useId();
   const currentEndpoint = "lifecycle" in endpoint && endpoint.lifecycle === "active" ? endpoint : null;
@@ -33,7 +33,7 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
   const [selection, setSelection] = useState<{ readonly scope: string; readonly id: string; readonly opener: HTMLElement | null } | null>(null), [detailState, setDetailState] = useState<{ readonly scope: string; readonly value: WebhookDelivery | null; readonly error: unknown; readonly refreshing: boolean }>({ scope, value: null, error: null, refreshing: false });
   const [payload, setPayload] = useState<{ readonly key: string; readonly value: WebhookPayload } | null>(null), [payloadError, setPayloadError] = useState<unknown>(null), [payloadBusy, setPayloadBusy] = useState(false), [confirm, setConfirm] = useState<{ readonly version: string; readonly generation: string } | null>(null), [writeError, setWriteError] = useState<unknown>(null);
   const [generationDraft, setGenerationDraft] = useState(""), [generation, setGeneration] = useState<string | undefined>(), [generationError, setGenerationError] = useState(false), [now, setNow] = useState(Date.now);
-  const detailRequest = useRef<AbortController | null>(null), detailSequence = useRef(0), payloadRequest = useRef<AbortController | null>(null), payloadSequence = useRef(0), detailRef = useRef(detailState), observations = useRef(new WebhookDeliveryObservations());
+  const detailRequest = useRef<AbortController | null>(null), detailSequence = useRef(0), payloadRequest = useRef<AbortController | null>(null), payloadSequence = useRef(0), detailRef = useRef(detailState), rejectedReads = useRef(new Set<AbortController>()), observations = useRef(new WebhookDeliveryObservations());
   detailRef.current = detailState;
   const selected = selection?.scope === scope ? selection : null;
   const live = useRef({ scope, active, visible, selected, endpoint, manageOwner }); live.current = { scope, active, visible, selected, endpoint, manageOwner };
@@ -110,6 +110,25 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
       const next = { scope: requested.scope, value: webhookHistoryMissing(error) || webhookHistoryDenied(error) ? null : old.scope === requested.scope && old.value?.id === requested.selected.id ? old.value : null, error, refreshing: false }; detailRef.current = next; setDetailState(next);
     }
   };
+  const revalidateRejectedDelivery = async (requestedScope: string, requestedId: string): Promise<void> => {
+    if (live.current.scope !== requestedScope || !live.current.active || admission.isInvalidated) return;
+    const controller = new AbortController(); rejectedReads.current.add(controller);
+    const signal = AbortSignal.any([admission.signal, controller.signal]), startedAt = observations.current.beginRead();
+    const current = () => !signal.aborted && !admission.isInvalidated && live.current.scope === requestedScope && live.current.active;
+    try {
+      const value = await getWebhookDelivery(owner, endpoint.id, requestedId, signal, requestAdmission);
+      await admission.ready(signal); if (!current()) return;
+      const projection = observeResource(value, startedAt);
+      if (projection === null) history.prune(item => item.id !== requestedId);
+      else history.mapItems(item => item.id === requestedId ? projection : item);
+      if (live.current.selected?.id === requestedId) publishDetail(projection);
+    } catch (error) {
+      if (!current()) return;
+      if (webhookHistoryMissing(error)) { restrictResource(requestedId, null); withdrawUnavailableHistory(requestedScope, requestedId, error); }
+      else if (webhookHistoryDenied(error)) onOwnerDenied();
+      else if (live.current.selected?.id === requestedId) { const next = { ...detailRef.current, error }; detailRef.current = next; setDetailState(next); }
+    } finally { rejectedReads.current.delete(controller); }
+  };
   useLayoutEffect(() => {
     const projection = intent.result?.delivery;
     if (projection === undefined) return;
@@ -133,7 +152,7 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
   }), [scope, registerAdmission, admission]);
   const readRef = useRef(readDetail); readRef.current = readDetail;
   useLayoutEffect(() => {
-    detailSequence.current++; detailRequest.current?.abort(); clearPayload(); setConfirm(null); setWriteError(null);
+    detailSequence.current++; detailRequest.current?.abort(); for (const request of rejectedReads.current) request.abort(); rejectedReads.current.clear(); clearPayload(); setConfirm(null); setWriteError(null);
     if (detailRef.current.scope !== scope) { observations.current.clear(); const empty = { scope, value: null, error: null, refreshing: false }; detailRef.current = empty; setDetailState(empty); }
   }, [scope]);
   useEffect(() => {
@@ -174,7 +193,7 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
     const timer = window.setInterval(() => history.check(), 30_000);
     return () => window.clearInterval(timer);
   }, [active, visible, selected?.id]);
-  useEffect(() => () => { detailSequence.current++; detailRequest.current?.abort(); payloadSequence.current++; payloadRequest.current?.abort(); }, []);
+  useEffect(() => () => { detailSequence.current++; detailRequest.current?.abort(); for (const request of rejectedReads.current) request.abort(); rejectedReads.current.clear(); payloadSequence.current++; payloadRequest.current?.abort(); }, []);
   const open = (value: WebhookDelivery, opener: HTMLElement) => { const known = observations.current.current(value.id); if (known === null) return; setNow(Date.now()); clearPayload(); setConfirm(null); setWriteError(null); const next = { scope, value: known === undefined ? value : known, error: null, refreshing: false }; detailRef.current = next; setDetailState(next); setSelection({ scope, id: value.id, opener }); onSelectDelivery(value.id); };
   const close = () => { detailSequence.current++; detailRequest.current?.abort(); clearPayload(); setSelection(null); setConfirm(null); onSelectDelivery(null); };
   const revealPayload = async () => {
@@ -206,7 +225,8 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
   useEffect(() => { if (receipt !== null && handled.current !== receipt.operationId) { handled.current = receipt.operationId; setConfirm(null); void readRef.current(false); attempts.refresh(); history.refresh(); onRefreshEndpoint(); } }, [receipt?.operationId]);
   const register = async () => {
     if (!canRedeliver || confirm === null || displayedDetail === null || controller === null || currentEndpoint === null) return;
-    try { const outcome = await submit({ kind: "delivery.redeliver", endpointId: endpoint.id, deliveryId: displayedDetail.id, ifVersion: confirm.version, ifGeneration: confirm.generation, destinationRevision: currentEndpoint.destinationRevision, body: {} }); if (outcome.phase === "confirmed") { setConfirm(null); void readRef.current(false); attempts.refresh(); history.refresh(); } }
+    const requestedScope = scope, requestedId = displayedDetail.id;
+    try { const outcome = await submit({ kind: "delivery.redeliver", endpointId: endpoint.id, deliveryId: requestedId, ifVersion: confirm.version, ifGeneration: confirm.generation, destinationRevision: currentEndpoint.destinationRevision, body: {} }); if (outcome.phase === "confirmed") { setConfirm(null); void readRef.current(false); attempts.refresh(); history.refresh(); } else if (outcome.phase === "rejected") { void revalidateRejectedDelivery(requestedScope, requestedId); } }
     catch (error) { setWriteError(error); }
   };
   const items = history.page?.items;
@@ -223,7 +243,7 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
     {history.page !== null && <div className="delivery-history-note"><p>{history.pendingQuery ? m.previousResults : history.page.nextCursor === null ? m.complete : m.historyIncomplete}</p><p>{m.historyIncomplete} {m.payloadDays}: {history.page.retention.payloadRetentionSeconds} {m.seconds} · {m.metadataDays}: {history.page.retention.metadataRetentionSeconds} {m.seconds}</p>{history.page.nextCursor !== null && <button className="text-button" type="button" disabled={!active || history.refreshing || history.pendingQuery} onClick={history.more}>{m.more}</button>}</div>}
     {selected !== null && visible && <WebhookDialog title={m.details} opener={selected.opener} onClose={close} footer={<><span className="tiny dialog-footer-spacer">{m.acknowledgementCopy}</span><button className="button" type="button" onClick={close}>{m.close}</button><button className="button primary" type="button" disabled={!canRedeliver} title={redeliveryReason ?? undefined} onClick={() => { if (displayedDetail !== null && currentEndpoint !== null) { setWriteError(null); setConfirm({ version: currentEndpoint.configVersion, generation: displayedDetail.generation }); } }}><WebhookIcon name="refresh" size={13}/>{m.redeliver}</button></>}>
       <div className="delivery-details">
-        <WebhookPendingNotice state={intent} active={active} onCheck={() => { void controller?.reconcile(); }}/>
+        <WebhookPendingNotice state={intent} active={active} onCheck={onCheckOperation}/>
         {receipt !== null && <div className="value-box delivery-receipt" role="status"><span><strong>{m.registered}</strong><br/>{m.registeredGeneration}: {receipt.generationAfter} · {m.currentGeneration}: {displayedDetail?.generation ?? "—"}<br/>{m.receiptCopy}</span></div>}
         {detailState.scope === scope && detailState.error !== null && <><WebhookError error={detailState.error}/><button className="text-button" type="button" disabled={!active || detailState.refreshing} onClick={() => { void readRef.current(true); }}>{m.readCurrent}</button></>}
         {historyExpired && <p className="inline-error" role="alert">{m.historyExpired}</p>}

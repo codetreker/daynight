@@ -1,5 +1,5 @@
 import { selectTaskList } from '../helpers/projectViews';
-import { createGraphSyncFixture } from "../helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "../helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -46,7 +46,7 @@ beforeEach(() => {
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
-    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+    return taskSyncReadFixture(syncFixture.toSync(value, query, replacementEpochs.get(value)));
   });
 });
 

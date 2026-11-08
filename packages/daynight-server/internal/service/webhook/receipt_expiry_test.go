@@ -28,7 +28,7 @@ func TestOperationReceiptDeadlineUsesObservedDatabaseTime(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, observed := range []time.Time{deadline, deadline.Add(time.Nanosecond)} {
-			expectFault(t, requireLiveOperation(t.Context(), receiptClockScope{at: observed}, op, code), code)
+			mgmtWantFault(t, requireLiveOperation(t.Context(), receiptClockScope{at: observed}, op, code), code)
 		}
 	}
 	failure := errors.New("database clock failed")

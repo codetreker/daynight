@@ -172,6 +172,7 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
     pendingQuery: snapshot.queryKey !== JSON.stringify(query),
     endpoint: snapshot.endpoint?.id === (endpointId ?? snapshot.endpointId) ? snapshot.endpoint : null,
     refresh: () => { if (owner !== null) void loadRef.current(owner, endpointId, query, false, true); },
+    refreshCurrent: () => { const target = current.current; if (target.owner !== null) void loadRef.current(target.owner, target.endpointId, target.query, false, false); },
     more: () => { if (owner !== null && snapshot.nextCursor !== null && !snapshot.refreshing) void loadRef.current(owner, endpointId, { ...query, cursor: snapshot.nextCursor }, true, true); },
     withdraw: (endpointId: string) => { if (owner !== null) update(webhookOwnerKey(owner), old => ({ ...old, items: old.items === null ? null : old.items.filter(item => item.id !== endpointId), endpoint: old.endpoint?.id === endpointId ? null : old.endpoint })); },
     captureFence, fenceCurrent, readEndpoint, accept,

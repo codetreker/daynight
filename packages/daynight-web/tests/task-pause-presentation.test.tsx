@@ -1,5 +1,8 @@
+import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { Project, TaskSummary } from '../src/api/types';
 import { projectSummaries } from '../src/features/task-cache/projection';
@@ -23,10 +26,14 @@ const summary = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => 
 const seeds = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { dependsOn: [id(1)], properties: { paused: true } }),
   summary(3, { status: 'in_progress', properties: { paused: true } }), summary(4, { properties: { paused: false } }), summary(5)];
 const snapshot = (tasks = seeds): GraphSnapshot => ({ ...projectSummaries(project, tasks, time), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
+let sessionScope: TaskCacheScope;
+let sessionStore: TaskSessionSummaryStore;
+beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
+afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
-const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace projectId={project.id} snapshot={value} activeView={activeView}
+const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView={activeView}
   unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
   chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
   standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop }} />;

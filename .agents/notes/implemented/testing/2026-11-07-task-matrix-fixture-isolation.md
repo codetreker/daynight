@@ -4,37 +4,49 @@ Status: implemented
 
 ## Problem
 
-Cancellation and dependency protection matrices repeatedly initialize and drop a
-complete PostgreSQL schema even though their cases can be isolated at a smaller
-scope. The tests must still exercise real transactions, cancellation causes,
-rollback, dependency protection and persisted task state.
+Cancellation and dependency protection matrices originally initialized and
+dropped a complete PostgreSQL schema for each row even when their mutable cases
+could be isolated at a smaller scope. The mixed service tests needed real
+transactions, cancellation causes, rollback, dependency protection and persisted
+Task state, so fixture reuse had to retain those observations.
 
 ## Decision
 
-The status cancellation matrix creates one fixture per transition and runs its
-cancellation positions sequentially against the same task graph. Each position
-owns its context and traced pool and checks both tasks against their complete
-pre-operation state. A failed position stops the remaining positions for that
-transition so a damaged graph cannot contaminate later observations.
+The original status cancellation matrix created one fixture per transition and
+ran its cancellation positions sequentially against the same Task graph. Each
+position owned its context and traced pool and checked both Tasks against their
+complete pre-operation state. A failed position stopped the remaining positions
+for that transition so a damaged graph could not contaminate later observations.
 
-The dependency protection matrix shares one schema and principal, but creates a
-separate project and task graph for every combination. Its twelve combinations
-retain their original status and dependency assertions.
+The original dependency protection matrix shared one schema and principal but
+created a separate Project and Task graph for every combination. Its twelve
+combinations retained their status and dependency assertions.
+
+The later [Task service ownership decision](2026-11-08-task-service-test-ownership.md)
+separates the mixed tests: service rules and cancellation coordination use
+explicit DAO outcomes, while direct store tests retain actual transaction,
+locking and rollback witnesses. The earlier reuse choice records how isolation
+was preserved while those responsibilities still shared a service fixture; it
+does not define the current service dependency.
 
 ## Alternatives
 
-**Keep a schema per case.** This provides isolation but repeats full schema
-initialization and cleanup for every row, although the tests do not alter the
+**Keep a schema per case.** This provided isolation but repeated full schema
+initialization and cleanup for every row, although the tests did not alter the
 schema itself.
 
-**Share a task graph across dependency rows.** Status transitions and dependency
-writes would carry state across rows, so independent projects retain the original
-case boundaries without needing another schema.
+**Share a Task graph across dependency rows.** Status transitions and dependency
+writes would carry state across rows. Independent Projects retained the original
+case boundaries without requiring another schema.
 
 ## Consequences
 
-The cancellation matrix initializes three schemas and the dependency matrix one,
-instead of nine and twelve respectively. A shared fixture is appropriate only
-while each cancellation proves rollback and each dependency row owns its project;
-other tests that mutate schema or share mutable state still require their own
-isolation. These changes do not establish a general fixture pooling policy.
+The original matrix organization used three cancellation schemas and one
+dependency schema, compared with nine and twelve respectively. That reuse was
+valid only while every cancellation proved rollback and every dependency row
+owned its Project. Tests that mutate schema or share mutable state still need
+isolation appropriate to those resources.
+
+The current service suite no longer uses those PostgreSQL fixtures. Physical
+proofs retain isolated database state in store tests. Neither the original reuse
+nor the later responsibility split establishes a general fixture-pooling policy.

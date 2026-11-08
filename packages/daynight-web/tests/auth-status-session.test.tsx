@@ -1,5 +1,5 @@
 import { selectTaskList } from './helpers/projectViews';
-import { directAccessFixture, taskSyncFromGraph, taskSyncEpoch } from "./helpers/taskSync";
+import { taskSyncReadFixture, directAccessFixture, taskSyncFromGraph, taskSyncEpoch } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getProjectAccess, getAuthConfig, listMembers, logout, me } from '../src/api/auth';
@@ -59,7 +59,7 @@ beforeEach(() => {
   serverDetails.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, userId, signal) => {
     expect(userId).toBe(currentUser.id);
-    return taskSyncFromGraph(await graphRequest(projectId, signal), { actorAccess: directAccessFixture(projectId, currentUser.id), query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version, propertiesForTask: () => serverDetail(projectId).properties });
+    return taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { actorAccess: directAccessFixture(projectId, currentUser.id), query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version, propertiesForTask: () => serverDetail(projectId).properties }));
   });
 });
 
