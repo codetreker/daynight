@@ -46,11 +46,43 @@ func (f *fakeBotOperations) Get(_ context.Context, p model.Principal, id string)
 	f.readID = id
 	return f.bot, f.err
 }
-func (f *fakeBotOperations) List(_ context.Context, p model.Principal, page model.PageRequest) (botcore.BotPage, error) {
+func (f *fakeBotOperations) ListAdmitted(_ context.Context, p model.Principal, workerID *string, page model.PageRequest, measure func([]model.Bot, *string) error) (botcore.BotPage, error) {
 	f.listCalls++
 	f.principal = p
 	f.pageInput = page
-	return f.page, f.err
+	if f.err != nil {
+		return botcore.BotPage{}, f.err
+	}
+	out := botcore.BotPage{Items: []model.Bot{}}
+	for i, bot := range f.page.Items {
+		cursor, err := query.EncodeListCursor(query.ListScope{Kind: "bots", WorkerUserID: &p.UserID, WorkerID: workerID}, bot.CreatedAt, bot.ID)
+		if err != nil {
+			return botcore.BotPage{}, err
+		}
+		var next *string
+		if i+1 < len(f.page.Items) || f.page.NextCursor != nil {
+			next = &cursor
+		}
+		candidate := append(out.Items, bot)
+		if err := measure(candidate, next); err != nil {
+			if len(out.Items) == 0 {
+				return botcore.BotPage{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Bot exceeds page limit."}
+			}
+			previous, err := query.EncodeListCursor(query.ListScope{Kind: "bots", WorkerUserID: &p.UserID, WorkerID: workerID}, out.Items[len(out.Items)-1].CreatedAt, out.Items[len(out.Items)-1].ID)
+			if err != nil {
+				return botcore.BotPage{}, err
+			}
+			out.NextCursor = &previous
+			return out, nil
+		}
+		out.Items = candidate
+		out.NextCursor = next
+		if len(out.Items) == page.Limit {
+			out.NextCursor = next
+			return out, nil
+		}
+	}
+	return out, nil
 }
 
 type fakeBotDeletion struct {
@@ -301,7 +333,7 @@ func TestBotListBudgetReturnsResumableCursor(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		bot := sampleBot()
 		bot.ID = fmt.Sprintf("%08x-aaaa-4aaa-8aaa-aaaaaaaaaaaa", i+1)
-		bot.RoleConfiguration = &model.BotRoleConfiguration{Instructions: strings.Repeat("a", 5000)}
+		bot.RoleConfiguration = &model.BotRoleConfiguration{Instructions: strings.Repeat("<", 1000000)}
 		ops.page.Items = append(ops.page.Items, bot)
 	}
 	h := botTools{bots: ops}
@@ -319,18 +351,11 @@ func TestBotListBudgetReturnsResumableCursor(t *testing.T) {
 		t.Fatalf("cursor: %+v %v", parsed, err)
 	}
 	ops.page.Items = ops.page.Items[:1]
-	ops.page.Items[0].RoleConfiguration.Instructions = strings.Repeat("a", 17000)
-	result, err = h.list(context.Background(), actor, botListInput{})
-	if err == nil || result.Refs["botId"] != ops.page.Items[0].ID || result.Refs["readTool"] != "bot_show" {
-		t.Fatalf("oversized first Bot: %+v %v", result, err)
-	}
-	cursor, ok := result.Refs["cursorAfterItem"].(string)
-	if !ok {
-		t.Fatalf("missing cursor: %+v", result.Refs)
-	}
-	parsed, err = query.ListPage(model.PageRequest{Limit: 1, Cursor: &cursor}, query.ListScope{Kind: "bots", WorkerUserID: ptr("alice")})
-	if err != nil || parsed.After == nil || parsed.After.ID != ops.page.Items[0].ID {
-		t.Fatalf("recovery cursor: %+v %v", parsed, err)
+	ops.page.Items[0].RoleConfiguration.Instructions = strings.Repeat("<", 1500000)
+	_, err = h.list(context.Background(), actor, botListInput{})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("oversized first Bot: %v", err)
 	}
 }
 

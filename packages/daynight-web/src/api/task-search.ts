@@ -1,13 +1,13 @@
 import { ApiError, assertResponsePrincipal, request, requestId, type TaskResponseAdmission } from './client';
 import { jsonObjectSources } from './json-source';
 import { parseServerError } from './parse';
-import { array, count, id, malformed, nonemptyString, nullableId, record, status, string, timestamp } from './validation';
+import { array, count, id, malformed, nonemptyString, nullableId, record, taskStatusFields, string, timestamp } from './validation';
 import type { TaskStatus } from './types';
 
 export type TaskSearchFilters = { readonly status: TaskStatus | ''; readonly assignedTo: string };
 export type TaskSearchItem = {
   readonly id: string; readonly projectId: string; readonly title: string; readonly status: TaskStatus;
-  readonly assignedTo: string | null; readonly updatedAt: string;
+  readonly assignedTo: string | null; readonly updatedAt: string; readonly cancelledAt: string | null;
   readonly context: { readonly taskId: string; readonly title: string } | null;
   readonly match: { readonly fields: readonly ('title' | 'description')[]; readonly descriptionSnippet: string | null };
 };
@@ -30,7 +30,7 @@ export const parseTaskSearchPage = (value: unknown, projectId: string, filters: 
   if (id(data.projectId) !== projectId) return malformed();
   const total = count(data.total);
   const items = array(data.items, (value): TaskSearchItem => {
-    const item = record(value), itemProject = id(item.projectId), itemStatus = status(item.status), assignedTo = nullableId(item.assignedTo);
+    const item = record(value), itemProject = id(item.projectId), itemTiming = taskStatusFields(item), itemStatus = itemTiming.status, assignedTo = nullableId(item.assignedTo);
     if (itemProject !== projectId || filters.status !== '' && itemStatus !== filters.status) return malformed();
     const assignment = filters.assignedTo === 'me' ? userId : filters.assignedTo === 'unassigned' ? null : filters.assignedTo === '' ? undefined : filters.assignedTo;
     if (assignment !== undefined && assignedTo !== assignment) return malformed();
@@ -41,7 +41,7 @@ export const parseTaskSearchPage = (value: unknown, projectId: string, filters: 
     if (fields.length > 2 || new Set(fields).size !== fields.length || fields.length === 2 && (fields[0] !== 'title' || fields[1] !== 'description')) return malformed();
     const descriptionSnippet = rawMatch.descriptionSnippet === null ? null : text(rawMatch.descriptionSnippet);
     if (descriptionSnippet !== null && (descriptionSnippet.length === 0 || Array.from(descriptionSnippet).length > 162) || fields.includes('description') !== (descriptionSnippet !== null)) return malformed();
-    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), context, match: { fields, descriptionSnippet } };
+    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, context, match: { fields, descriptionSnippet } };
   });
   if (items.length > limit || items.length > total || new Set(items.map(item => item.id)).size !== items.length) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);
@@ -72,7 +72,7 @@ const searchError = (body: unknown, source: string, httpStatus: number, query: s
 
 export const searchTasks = async (projectId: string, query: string, filters: TaskSearchFilters, cursor: string | null, signal: AbortSignal, admission: TaskResponseAdmission, correlation?: { readonly requestId: string; readonly onResponseId: (requestId: string) => void }): Promise<TaskSearchPage> => {
   const project = requestId(projectId), userId = requestId(admission.userId);
-  if (!query.isWellFormed() || query.includes('\0') || filters.status !== '' && filters.status !== 'todo' && filters.status !== 'in_progress' && filters.status !== 'done') throw new ApiError('protocol');
+  if (!query.isWellFormed() || query.includes('\0') || filters.status !== '' && filters.status !== 'todo' && filters.status !== 'in_progress' && filters.status !== 'done' && filters.status !== 'cancelled') throw new ApiError('protocol');
   const assignedTo = filters.assignedTo === '' ? undefined : filters.assignedTo === 'me' || filters.assignedTo === 'unassigned' ? filters.assignedTo : requestId(filters.assignedTo);
   if (cursor !== null && (cursor.trim() === '' || !cursor.isWellFormed() || cursor.includes('\0'))) throw new ApiError('protocol');
   const response = await request(`/api/v1/projects/${project}/tasks/search`, signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(correlation === undefined ? {} : { 'X-Request-ID': correlation.requestId }) }, body: JSON.stringify({ query, ...(filters.status === '' ? {} : { status: filters.status }), ...(assignedTo === undefined ? {} : { assignedTo }), limit: 15, ...(cursor === null ? {} : { cursor }) }) });

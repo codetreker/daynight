@@ -34,11 +34,19 @@ type TaskQuery struct {
 	AllowAgents        *bool
 	CompatiblePlatform *model.TaskPlatform
 	Worker             *WorkerQuery
+	// BoundedText withholds an irreducibly oversized candidate's text.
+	BoundedText bool
+	// LegacyProjection allows an incompatible worker claim to be omitted.
+	LegacyProjection bool
+	// CandidateOnly returns identity and bounded text without property loading.
+	CandidateOnly bool
 }
 
 type TaskPage struct {
 	Items   []model.Task
 	HasMore bool
+	// Oversized means the first candidate's text was withheld by the DAO.
+	Oversized bool
 }
 
 // TaskListFence covers every task header in a project, including deleted rows.
@@ -54,7 +62,7 @@ type TaskPriorityPosition struct {
 type TaskPriorityQuery struct {
 	AssignedTo         model.TaskAssignmentFilter
 	Status             *model.TaskStatus
-	ExcludeDone        bool
+	ExcludeTerminal    bool
 	Ready, AllowAgents *bool
 	CompatiblePlatform *model.TaskPlatform
 	After              *TaskPriorityPosition

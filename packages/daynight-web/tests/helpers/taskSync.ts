@@ -1,5 +1,5 @@
 import type { ProjectPersonVersion, ProjectAccess } from "../../src/api/auth-types";
-import type { GraphTask, TaskGraph, TaskProperties, TaskSummary, TaskSync } from '../../src/api/types';
+import type { GraphTask, TaskGraph, TaskProperties, TaskSummary, TaskSync, TaskSyncRead } from '../../src/api/types';
 import { stringifyWireJson, wireResponse } from './wireJson';
 
 export const TEST_VIEWER_ID = '00000000-0000-4000-8000-000000000201';
@@ -25,6 +25,7 @@ export const rememberTaskEpoch = (projectId: string, epoch: string): void => { o
 export const fixtureTaskEpoch = (projectId: string): string => observedEpochs.get(projectId) ?? worldEpoch ?? taskSyncEpoch(projectId);
 
 export type TaskSyncFixtureOptions = {
+  readonly sessions?: TaskSync['sessions'];
   readonly actorAccess?: ProjectAccess;
   readonly assigneeVersions?: readonly ProjectPersonVersion[];
   readonly query?: { readonly epoch?: string; readonly since?: string };
@@ -50,17 +51,17 @@ export const directAccessFixture = (projectId: string, userId = TEST_VIEWER_ID, 
 const graphAssigneeVersions = (graph: TaskGraph): readonly ProjectPersonVersion[] => [...new Set(graph.tasks.flatMap((task) => task.assignedTo === null ? [] : [task.assignedTo]))]
   .sort().map((userId) => ({ userId, version: TEST_PROFILE_VERSION, hasProjectAccess: true }));
 
-export const taskSyncFixture = (graph: TaskGraph, { assigneeVersions = graphAssigneeVersions(graph), actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}) }: TaskSyncFixtureOptions): WireTaskSync => {
+export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, assigneeVersions = graphAssigneeVersions(graph), actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}) }: TaskSyncFixtureOptions): WireTaskSync => {
   rememberTaskEpoch(graph.project.id, epoch);
   const mode = query.epoch === epoch ? 'delta' : 'snapshot';
   const lowerBound = mode === 'delta' && query.since !== undefined ? nanoseconds(query.since) - 10_000_000_000n : null;
   const tasks = graph.tasks.filter((task) => lowerBound === null || nanoseconds(task.updatedAt) >= lowerBound).map((task) => ({ assignedTo: task.assignedTo,
     id: task.id, version: versionForTask(task).toString(), properties: propertiesForTask(task), titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
     status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
-    allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt,
+    allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
     createdAt: task.createdAt, updatedAt: task.updatedAt,
   }));
-  return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks };
+  return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks, sessions };
 };
 
 export const taskSyncResponse = (graph: TaskGraph, { viewerId, ...options }: TaskSyncFixtureOptions & { readonly viewerId: string }, init: ResponseInit = {}): Response =>
@@ -75,6 +76,8 @@ export const taskSyncFromGraph = (graph: TaskGraph, options: TaskSyncFixtureOpti
   const sync = taskSyncFixture(graph, options);
   return { ...sync, tasks: sync.tasks.map((task) => ({ ...task, version: BigInt(task.version) })) };
 };
+
+export const taskSyncReadFixture = (sync: TaskSync, receivedMonotonic = performance.now()): TaskSyncRead => ({ sync, receivedMonotonic });
 
 export const createGraphSyncFixture = ({ propertiesForTask = () => ({}) }: { readonly propertiesForTask?: (task: GraphTask, projectId: string) => TaskProperties } = {}) => {
   const projects = new Map<string, Map<string, { version: bigint; signature: string }>>();

@@ -43,8 +43,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	}
 	handler, err := server.New(app, cfg, logger)
 	if err == nil {
-		runtime, startErr := server.Start(startup, cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, handler, handler.Shutdown, app.Engine.CancelWork, app.Engine.Stop, app.Close)
+		runtime, startErr := server.Start(startup, cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
 		if startErr == nil {
+			if startErr = app.Start(ctx); startErr != nil {
+				cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+				defer cancel()
+				err = errors.Join(startErr, runtime.Close(cleanup))
+				httpx.LogFailure(logger, ctx, "server", "startup", err)
+				return 1
+			}
 			cancelStartup()
 			if runErr := runtime.Run(ctx); runErr != nil {
 				httpx.LogFailure(logger, ctx, "server", "shutdown", runErr)
@@ -56,6 +63,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	}
 	cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if handler != nil {
+		handler.BeginShutdown()
+		err = errors.Join(err, handler.Shutdown(cleanup))
+	}
 	err = errors.Join(err, app.Close(cleanup))
 	httpx.LogFailure(logger, ctx, "server", "startup", err)
 	return 1

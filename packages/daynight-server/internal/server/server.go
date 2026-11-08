@@ -14,6 +14,7 @@ import (
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
+	webhookhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
@@ -85,6 +86,9 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
 	taskhttp.TaskSyncRoutes(mux, app.TaskSync, auth, logger, config.TaskSyncOverlap)
 	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger)
+	if app.Webhooks != nil {
+		webhookhttp.NewRoutes(app.Webhooks, auth, logger).RegisterRoutes(mux)
+	}
 	sessions := app.Sessions
 	deletions := app.BotDeletions
 	relay := sessionhttp.NewRoutes(sessions, auth, logger)
@@ -97,7 +101,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly}, nil
+	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
 }
 
 type sessionApplication struct {
@@ -107,9 +111,13 @@ type sessionApplication struct {
 	engine         *sessioncore.Engine
 	mcp            *mcphttp.Entry
 	workerReadOnly *workerhttp.ReadOnlyRoutes
+	stopClaims     func()
 }
 
 func (a *sessionApplication) BeginShutdown() {
+	if a.stopClaims != nil {
+		a.stopClaims()
+	}
 	if a.workerReadOnly != nil {
 		a.workerReadOnly.BeginShutdown()
 	}

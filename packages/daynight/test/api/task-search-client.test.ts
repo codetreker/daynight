@@ -4,7 +4,7 @@ import { createApiClient, createOperation } from "../../src/api/index.js";
 import type { Operation, OperationLimits } from "../../src/api/index.js";
 import { parseServerError } from "../../src/api/parse.js";
 
-// Captured from the server's real HTTP contract test, including its cursor and errors.
+// This corpus mirrors the server HTTP fixtures; its original cursor/error capture is retained.
 // https://github.com/codetreker/daynight/tree/4da0b3c005688eae5c873d4ba62d4595a878a670/packages/daynight-server/testdata/task-search
 const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../fixtures/task-search/${name}.json`, import.meta.url), "utf8"));
 const first = fixture("first-page"), next = fixture("next-page"), empty = fixture("empty-page");
@@ -27,7 +27,7 @@ describe("task search HTTP contract", () => {
     const page = (value: any) => ({ ...value, items: value.items.map((item: any) => ({ ...item, status: "done", assignedTo: userId, futureField: "not projected" })) });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(page(first))).mockResolvedValueOnce(json(page(next)));
     const result = await api(fetch).searchTasks(projectId.toUpperCase(), { query, status: "done", assignedTo: "me", ready: true, allowAgents: false, compatiblePlatform: "linux" });
-    expect(result).toEqual([first.items[0], next.items[0]].map(({ id, projectId, title, context, match }: any) => ({ id, projectId, title, status: "done", context, match })));
+    expect(result).toEqual([first.items[0], next.items[0]].map(({ id, projectId, title, cancelledAt, context, match }: any) => ({ id, projectId, title, status: "done", cancelledAt, context, match })));
     const requests = fetch.mock.calls.map(([url, init]) => ({ url: String(url), method: init!.method, cache: init!.cache, body: JSON.parse(String(init!.body)) }));
     expect(requests).toEqual([first, next].map((_, index) => ({ url: `http://localhost:8787/api/v1/projects/${projectId}/tasks/search`, method: "POST", cache: "no-store", body: { query, assignedTo: "me", status: "done", ready: true, allowAgents: false, compatiblePlatform: "linux", limit: 100, ...(index === 0 ? {} : { cursor: first.nextCursor }) } })));
   });
@@ -35,6 +35,17 @@ describe("task search HTTP contract", () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(empty));
     expect(await api(fetch).searchTasks(projectId, { query: "absent" })).toEqual([]);
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ query: "absent", limit: 100 });
+  });
+  it("reads cancelled search results and rejects inconsistent or missing cancellation time", async () => {
+    const cancelledAt = "2026-11-07T00:00:00.123456789Z";
+    const item = { ...first.items[0], status: "cancelled", cancelledAt };
+    const page = { ...first, total: 1, items: [item], nextCursor: null };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(page));
+    expect(await api(fetch).searchTasks(projectId, { query: "cache", status: "cancelled" })).toEqual([{ id: item.id, projectId, title: item.title, status: "cancelled", cancelledAt, context: item.context, match: item.match }]);
+    for (const invalid of [null, undefined, "invalid"]) {
+      const broken = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ ...page, items: [{ ...item, cancelledAt: invalid }] }));
+      await expect(api(broken).searchTasks(projectId, { query: "cache" })).rejects.toMatchObject({ phase: "protocol" });
+    }
   });
   const syntaxCases = [
     ["expected_operand", "中文 AND"], ["unexpected_token", 'x"y"'], ["unexpected_closing_group", "中文 )"],

@@ -119,13 +119,13 @@ const initialState = (): DetailState => ({ revision: 0, loadedRevision: null, de
 const canMutate = (state: DetailState): boolean => state.detail !== null && state.status === "ready" &&
   state.mutation.phase !== "pending" && state.mutation.phase !== "unknown" && !state.mutation.reconciling && state.mutation.reconciliationError === null && !state.requiresFreshRead && state.error === null;
 export const canDeleteTask = (state: DetailState): boolean => canMutate(state);
-export const canSetStatus = (state: DetailState): boolean => canMutate(state);
+export const canSetStatus = (state: DetailState): boolean => canMutate(state) && state.detail!.status !== "cancelled";
 export const canUnpause = (state: DetailState): boolean => canMutate(state) && readTaskPaused(state.detail!.properties) === true;
 export const canSetAgentPermission = (state: DetailState): boolean => state.detail !== null && state.detail.status !== "in_progress" && canMutate(state);
 export const canSetRequiredPlatform = canSetAgentPermission;
 export const canSetAssignedTo = canSetAgentPermission;
 export const canWithdrawClaim = (state: DetailState): boolean => {
-  if (!canMutate(state)) return false;
+  if (!canMutate(state) || state.detail!.status === "cancelled") return false;
   const worker = readWorkerClaim(state.detail!.properties);
   return worker !== undefined && worker.state !== "completed";
 };
@@ -136,7 +136,9 @@ const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorke
   (!preserveAssignment || before.assignedTo === after.assignedTo) &&
   sameIds(before.dependsOn, after.dependsOn) && sameIds(before.externalDependsOn, after.externalDependsOn);
 const validStatusTiming = (before: TaskDetail, after: TaskDetail, target: TaskStatus): boolean => {
-  if (before.status === target) return before.updatedAt === after.updatedAt && before.startedAt === after.startedAt && before.completedAt === after.completedAt;
+  if (before.status === target) return before.updatedAt === after.updatedAt && before.startedAt === after.startedAt && before.completedAt === after.completedAt && before.cancelledAt === after.cancelledAt;
+  if (target === "cancelled") return after.cancelledAt !== null && after.startedAt === before.startedAt && after.completedAt === before.completedAt;
+  if (after.cancelledAt !== null) return false;
   if (target === "todo") return after.startedAt === null && after.completedAt === null;
   if (target === "in_progress") return after.startedAt !== null && after.completedAt === null;
   return after.completedAt !== null && after.startedAt === (before.status === "in_progress" ? before.startedAt : null);
@@ -1046,7 +1048,7 @@ export class TaskDetailSessions {
   }
   setStatus(projectId: string, taskId: string, status: TaskStatus, version: bigint): void {
     const state = this.writableState(projectId, taskId);
-    if (!canSetStatus(state) || state.detail!.version !== version || !["todo", "in_progress", "done"].includes(status)) return;
+    if (!canSetStatus(state) || state.detail!.version !== version || !["todo", "in_progress", "done", "cancelled"].includes(status) || status === "cancelled" && readWorkerClaim(state.detail!.properties)?.state === "active") return;
     this.performMutation(projectId, taskId, { action: "status", status, version });
   }
   setAgentPermission(projectId: string, taskId: string, allowAgents: boolean, version: bigint): void {
@@ -1527,7 +1529,7 @@ export class TaskDetailSessions {
             entry.state = { ...entry.state, mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } };
             return;
           }
-          const preservesTiming = detail.startedAt === previous.startedAt && detail.completedAt === previous.completedAt;
+          const preservesTiming = detail.startedAt === previous.startedAt && detail.completedAt === previous.completedAt && detail.cancelledAt === previous.cancelledAt;
           const validResult = operation.action === "withdraw"
             ? detail.status === "todo" && !detail.allowAgents && readWorkerClaim(detail.properties) === undefined && detail.startedAt === null && detail.completedAt === null && detail.requiredPlatform === previous.requiredPlatform
             : operation.action === "allowAgents"

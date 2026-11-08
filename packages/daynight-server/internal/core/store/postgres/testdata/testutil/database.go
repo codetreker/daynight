@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ScopedDatabaseURL gives each test an isolated schema and removes it afterward.
+// ScopedDatabaseURL owns its management pool until schema cleanup completes.
 func ScopedDatabaseURL(t *testing.T) string {
 	t.Helper()
 	raw := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
@@ -26,9 +26,17 @@ func ScopedDatabaseURL(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(pool.Close)
+	return ScopedDatabaseURLWithPool(t, pool)
+}
+
+// ScopedDatabaseURLWithPool borrows the management pool; cleanup drops only the test schema.
+func ScopedDatabaseURLWithPool(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	schema := "test_" + strings.ToLower(rand.Text())
 	if _, err := pool.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		pool.Close()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -37,8 +45,8 @@ func ScopedDatabaseURL(t *testing.T) string {
 		if _, err := pool.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
 			t.Error(err)
 		}
-		pool.Close()
 	})
+	raw := pool.Config().ConnConfig.ConnString()
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		t.Fatal(err)

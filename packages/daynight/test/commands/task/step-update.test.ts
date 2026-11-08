@@ -114,6 +114,19 @@ describe("Step update and status input", () => {
 });
 
 describe("Step update and status write outcomes", () => {
+  it.each([["title", "é".repeat(512) + "x", 1025, 1024], ["description", "界".repeat(21845) + "ab", 65537, 65536]] as const)("forwards excess %s and reports the server field refusal", async (field, value, actual, max) => {
+    const f = fixture();
+    f.fetch.mockImplementation(async (_url, options) => {
+      const body = parseApiJson(String(options!.body)) as UpdateTaskStepInput;
+      expect(body[field]).toBe(value);
+      return json({ error: { code: "invalid_input", message: `${field}: ${actual} bytes exceeds maximum ${max}`, requestId: "field-refusal" } }, 400);
+    });
+    const args = f.args("update", ["--if-version=1"]).filter((arg) => field !== "title" || !arg.startsWith("--title="));
+    const error = await failure(f, [...args, `--${field}=${value}`]);
+    const diagnostic = formatError(error);
+    expect(diagnostic).toContain("code=invalid_input"); expect(diagnostic).toContain("outcome=refused");
+    expect(f.fetch).toHaveBeenCalledOnce(); expect(f.context.stdout).not.toHaveBeenCalled();
+  });
   it.each(["update", "set-status"] as const)("keeps %s refusal metadata without recovery or replay", async (name) => {
     const f = fixture(); let original = "";
     f.fetch.mockImplementation(async (_url, options) => { original = new Headers(options?.headers).get("X-Request-ID")!; return json({ error: { code: "steps_limit_exceeded", message: "Collection is full.", requestId: "server-body-id", details: { encodedBytes: 67_108_865, maxEncodedBytes: 67_108_864 } } }, 409, { "X-Request-ID": "server-header-id" }); });

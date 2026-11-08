@@ -1,23 +1,8 @@
 package api
 
-type WorkerConfigurationValue struct {
-	Value  *string `json:"value"`
-	Source string  `json:"source"`
-}
+import workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 
-type WorkerRuntimeNative struct {
-	Agent           string                   `json:"agent"`
-	Model           WorkerConfigurationValue `json:"model"`
-	ReasoningEffort WorkerConfigurationValue `json:"reasoningEffort"`
-}
-
-type WorkerRuntimeProject struct {
-	ProjectID string               `json:"projectId"`
-	Native    *WorkerRuntimeNative `json:"native"`
-}
-
-type WorkerRuntimeConfiguration struct {
-	SchemaVersion int64                  `json:"schemaVersion"`
-	Native        *WorkerRuntimeNative   `json:"native"`
-	Projects      []WorkerRuntimeProject `json:"projects"`
-}
+type WorkerConfigurationValue = workerprotocol.WorkerConfigurationValue
+type WorkerRuntimeNative = workerprotocol.WorkerRuntimeNative
+type WorkerRuntimeProject = workerprotocol.WorkerRuntimeProject
+type WorkerRuntimeConfiguration = workerprotocol.WorkerRuntimeConfiguration

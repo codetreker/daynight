@@ -19,7 +19,7 @@ func testCreateTeam(s *Store, ctx context.Context, userID, teamID, name string) 
 	return team, err
 }
 func testWriteTeam(s *Store, ctx context.Context, id string, op func(TeamWriteDAO) error) error {
-	_, err := s.WriteTeam(ctx, id, op)
+	_, err := s.WriteTeam(ctx, id, func(scope TeamWriteScope) error { return op(scope.TeamDAO()) })
 	return err
 }
 

@@ -74,6 +74,12 @@ export const executionPlatform = (value: unknown): ExecutionPlatform => {
 export const requiredPlatform = (value: unknown): ExecutionPlatform | null => value === null ? null : executionPlatform(value);
 
 export const status = (value: unknown): TaskStatus => {
-  if (value !== "todo" && value !== "in_progress" && value !== "done") return malformed();
+  if (value !== "todo" && value !== "in_progress" && value !== "done" && value !== "cancelled") return malformed();
   return value;
+};
+
+export const taskStatusFields = (data: Record<string, unknown>): { readonly status: TaskStatus; readonly cancelledAt: string | null } => {
+  const parsed = { status: status(data.status), cancelledAt: nullableTimestamp(data.cancelledAt) };
+  if ((parsed.status === "cancelled") !== (parsed.cancelledAt !== null)) return malformed();
+  return parsed;
 };

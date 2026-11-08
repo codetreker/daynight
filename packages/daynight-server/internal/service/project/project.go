@@ -10,6 +10,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 	"github.com/google/uuid"
 )
@@ -215,7 +216,10 @@ func (s *Projects) Transfer(ctx context.Context, p model.Principal, id string, i
 	c, err := s.store.WriteProject(ctx, id, func(scope store.ProjectWriteScope) error {
 		var err error
 		result, err = core.Transfer(ctx, scope.ProjectDAO(), p, id, source, target, input)
-		return err
+		if err != nil {
+			return err
+		}
+		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{ProjectID: id})
 	})
 	if err := completed(c, err, nil); err != nil {
 		return core.TransferReceipt{}, err

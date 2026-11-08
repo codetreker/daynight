@@ -14,15 +14,15 @@ const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-20T12:34:56.123456Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Core project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
-const task = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+const task = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo", version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
-const graphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+const graphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, titlePreview: "A task", titleTruncated: false, status: "todo",
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
-const summary = { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 };
+const summary = { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 };
 const graph = { observedAt: "2026-10-20T12:00:00Z", project, summary, tasks: [graphTask] };
 const sync = taskSyncFixture(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
 const parsedSync = taskSyncFromGraph(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
@@ -320,7 +320,7 @@ describe("API requests", () => {
     fetcher.mockResolvedValue(new Response(`{"items":[${source}],"nextCursor":null}`, { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await listProjects({}, signal())).items[0]?.settings.version).toBe(version);
     fetcher.mockResolvedValue(new Response(rawSync(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
-    expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).project.settings.version).toBe(version);
+    expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).sync.project.settings.version).toBe(version);
   });
   it("uses relative URLs, explicit signal, no-store, and safely encoded opaque cursor", async () => {
     const fetchMock = mockResponse({ items: [project], nextCursor: "next" });
@@ -335,7 +335,7 @@ describe("API requests", () => {
 
   it("normalizes requested IDs and binds resource responses to requests", async () => {
     const fetchMock = mockResponse(sync);
-    await expect(getTaskSync(projectId.toUpperCase(), {}, TEST_VIEWER_ID, signal())).resolves.toEqual(parsedSync);
+    await expect(getTaskSync(projectId.toUpperCase(), {}, TEST_VIEWER_ID, signal())).resolves.toEqual({ sync: parsedSync, receivedMonotonic: expect.any(Number) });
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/task-sync`);
     fetchMock.mockResolvedValue(response(task));
     await expect(getTask(projectId.toUpperCase(), taskId.toUpperCase(), signal(), admission)).resolves.toMatchObject({ id: taskId, projectId });

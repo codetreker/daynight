@@ -15,9 +15,13 @@ state, so deleting root files as a group would lose independent assertions.
 
 Domain packages own shared HTTP integration scenarios, including registration,
 strict input and authentication refusals, response-loss reconciliation,
-WebSocket transitions and archive readback. Their fixtures keep the production
-application, real database and UniAuth boundary. Mutable state and cleanup
-remain local to each test.
+WebSocket transitions and archive readback. Full-application fixtures keep the
+production application, real database and UniAuth boundary. The focused browser
+ping regression constructs the production Session adapter with real business
+services and authentication so it can use a test-local interval. Its protocol
+completion and cleanup are described by the
+[Session test completion decision](2026-11-07-session-protocol-test-completion.md).
+Mutable state and cleanup remain local to each test.
 
 The root package retains scenarios that require private composition access:
 runtime relay shutdown before dependency release and automation-recovery

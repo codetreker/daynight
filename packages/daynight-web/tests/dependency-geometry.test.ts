@@ -30,14 +30,14 @@ describe('independent production dependency geometry oracle', () => {
     value.nodes[0]!.bottom = 96;
     expect(inspectDependencySnapshot(value, expected)).toContain('source->target: wrong fixed left-to-right ports');
   });
-  it('derives projection identities only from API dependencies, including complete upstream context', () => {
+  it('derives projection identities only from ordinary membership and direct external prerequisites', () => {
     expect(expectedDependencyTopology([
       { id: 'A', dependsOn: [], externalDependsOn: [] }, { id: 'C', dependsOn: ['A', 'X'], externalDependsOn: ['X'] }, { id: 'P', dependsOn: [], externalDependsOn: [] },
       { id: 'X', dependsOn: ['P'], externalDependsOn: [] }, { id: 'Y', dependsOn: ['X'], externalDependsOn: [] }, { id: 'Z', dependsOn: [], externalDependsOn: [] },
     ], 'A')).toEqual({
       memberIds: ['A', 'C'],
-      nodes: [{ id: 'A' }, { id: 'C' }, { id: 'P' }, { id: 'X' }],
-      edges: [{ id: 'A->C', source: 'A', target: 'C', external: false }, { id: 'X->C', source: 'X', target: 'C', external: true }, { id: 'P->X', source: 'P', target: 'X', external: false }],
+      nodes: [{ id: 'A' }, { id: 'C' }, { id: 'X' }],
+      edges: [{ id: 'A->C', source: 'A', target: 'C', external: false }, { id: 'X->C', source: 'X', target: 'C', external: true }],
     });
   });
   it('checks actual quadratic bounds without any declared compiler input', () => {

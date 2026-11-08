@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
@@ -48,6 +49,9 @@ func workerAssistantHostInput(raw json.RawMessage) (*model.WorkerAssistantHost, 
 	if json.Unmarshal(fields["providers"], &providers) != nil || providers == nil {
 		return nil, httpx.InvalidInput("assistantHost.providers must be an array")
 	}
+	if len(providers) != 3 {
+		return nil, httpx.InvalidInput("assistantHost.providers must contain exactly three providers")
+	}
 	host.Providers = make([]model.WorkerAssistantProvider, 0, len(providers))
 	for _, raw := range providers {
 		provider, err := workerAssistantProviderInput(raw)
@@ -86,6 +90,9 @@ func workerAssistantProviderInput(raw json.RawMessage) (model.WorkerAssistantPro
 	var args []json.RawMessage
 	if json.Unmarshal(fields["args"], &args) != nil || args == nil {
 		return provider, httpx.InvalidInput("assistantHost provider args must be an array")
+	}
+	if len(args) > workercore.MaxNativeArgs {
+		return provider, httpx.InvalidInput("assistantHost provider args must contain at most 128 items")
 	}
 	provider.Args = make([]string, 0, len(args))
 	for _, raw := range args {

@@ -7,6 +7,7 @@ import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvid
 import { TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
 import { afterEach, expect, it, vi } from 'vitest';
 import { TaskDetailSurface } from '../src/features/task-detail/TaskDetailSurface';
+import { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
 import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { useDirectAssigneeCatalogue } from '../src/features/task-assignment/useDirectAssigneeCatalogue';
 import { detailFixture, graphFixture, resourceResponse } from './helpers/taskDetail';
@@ -170,6 +171,10 @@ function CatalogueProbe() {
   const catalogue = useDirectAssigneeCatalogue(projectId, taskId, true, 'test');
   return <><button onClick={catalogue.open}>Load catalogue</button><output data-testid="catalogue-status">{catalogue.status}</output></>;
 }
+function DirectProbe() {
+  const detail = useTaskDetail(projectId, taskId, { kind: 'direct' });
+  return detail.detail === null ? null : <h1>{detail.detail.title}</h1>;
+}
 function mountIdentityCheck(fetcher: ReturnType<typeof vi.fn>, probe = false) {
   vi.stubGlobal('fetch', fetcher);
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
@@ -179,7 +184,7 @@ function mountIdentityCheck(fetcher: ReturnType<typeof vi.fn>, probe = false) {
     const [checking, set] = useState(false); setChecking = set;
     const [navigation, setNavigation] = useState<{ tab: 'overview' | 'attachments' | 'steps' | 'discussion' | 'session'; path: string | null }>({ tab: 'overview', path: null });
     return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: null }} admissionBlocked={checking}>
-      <TaskDetailSessionProvider><Capture />{probe && <CatalogueProbe />}<TaskDetailSurface presentation="page" projectId={projectId} taskId={taskId} observation={{ kind: 'direct' }} navigation={navigation} onNavigate={setNavigation} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} fullscreen={{ active: false, onChange: vi.fn() }} /></TaskDetailSessionProvider>
+      <TaskDetailSessionProvider><Capture />{probe ? <><DirectProbe /><CatalogueProbe /></> : <TaskDetailSurface presentation="page" projectId={projectId} taskId={taskId} observation={{ kind: 'direct' }} navigation={navigation} onNavigate={setNavigation} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} fullscreen={{ active: false, onChange: vi.fn() }} />}</TaskDetailSessionProvider>
     </CurrentAccountProvider>;
   }
   const view = renderWithLocale(<Harness />, { locale: 'en', taskCache: { scope } });
@@ -280,17 +285,22 @@ it.each(['resume', 'retire'] as const)('settles an assignee catalogue after iden
   const { scope, setChecking, view } = mountIdentityCheck(fetcher, true);
   const database = (scope as unknown as { database: { open: () => Promise<unknown> } }).database;
   const open = database.open.bind(database); const verify = scope.verifyTaskRead.bind(scope);
-  let verifying = false; let held = false; let interruption: (() => void) | undefined;
+  const verifyCatalogue = sessions.verifyDirectQualificationHistory.bind(sessions);
+  let verifying = false; let held = false; let catalogueSignal: AbortSignal | undefined; let interruption: (() => void) | undefined;
+  vi.spyOn(sessions, 'verifyDirectQualificationHistory').mockImplementation(async (...args) => {
+    catalogueSignal = args[3];
+    try { return await verifyCatalogue(...args); } finally { catalogueSignal = undefined; }
+  });
   vi.spyOn(database, 'open').mockImplementation(async () => {
     const result = await open();
     if (verifying && !held) { held = true; entered.resolve(); await release.promise; }
     return result;
   });
   vi.spyOn(scope, 'verifyTaskRead').mockImplementation(async (fence, signal) => {
-    verifying = catalogueReads > 0 && !held;
+    verifying = catalogueReads > 0 && !held && signal === catalogueSignal;
     try { return await verify(fence, signal); }
     catch (error) {
-      if (held && error instanceof TaskCacheLifecycleChanged) {
+      if (verifying && held && error instanceof TaskCacheLifecycleChanged) {
         interruption?.(); interruption = undefined;
         // The pause may have ended before the rejected transaction is handled.
         const resumeAgain = pauseAuthRequests(); resumeAgain();
@@ -317,9 +327,15 @@ it.each(['pause', 'stale'] as const)('handles a false catalogue history verifica
     return Promise.resolve(identityResources(url));
   });
   const { scope, view } = mountIdentityCheck(fetcher, true);
+  const verifyCatalogue = sessions.verifyDirectQualificationHistory.bind(sessions);
   const verify = scope.verifyTaskRead.bind(scope);
+  let catalogueSignal: AbortSignal | undefined;
+  vi.spyOn(sessions, 'verifyDirectQualificationHistory').mockImplementation(async (...args) => {
+    catalogueSignal = args[3];
+    try { return await verifyCatalogue(...args); } finally { catalogueSignal = undefined; }
+  });
   vi.spyOn(scope, 'verifyTaskRead').mockImplementation(async (fence, signal) => {
-    if (catalogueReads > 0 && ++verificationAttempts === 1) {
+    if (catalogueReads > 0 && signal === catalogueSignal && ++verificationAttempts === 1) {
       if (reason === 'pause') { const resume = pauseAuthRequests(); resume(); }
       return false;
     }

@@ -50,7 +50,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 			version = "9007199254740993"
 		}
 		if got.ID != original.ID || got.Status != original.Status || got.Version != version || got.CreatedAt != original.CreatedAt || got.UpdatedAt != original.UpdatedAt ||
-			!reflect.DeepEqual(got.StartedAt, original.StartedAt) || !reflect.DeepEqual(got.CompletedAt, original.CompletedAt) || !reflect.DeepEqual(got.RequiredPlatform, original.RequiredPlatform) || got.AllowAgents != original.AllowAgents ||
+			!reflect.DeepEqual(got.StartedAt, original.StartedAt) || !reflect.DeepEqual(got.CompletedAt, original.CompletedAt) || !reflect.DeepEqual(got.CancelledAt, original.CancelledAt) || !reflect.DeepEqual(got.RequiredPlatform, original.RequiredPlatform) || got.AllowAgents != original.AllowAgents ||
 			!slices.Equal(got.DependsOn, original.DependsOn) || !slices.Equal(got.ExternalDependsOn, original.ExternalDependsOn) || got.DependsOn == nil || got.ExternalDependsOn == nil || got.Properties == nil || !reflect.DeepEqual(got.Properties, original.Properties) {
 			t.Fatalf("intrinsic task %d: %#v want %#v", index, got, original)
 		}
@@ -65,7 +65,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, task := range raw.Tasks {
-		if len(task) != 15 {
+		if len(task) != 16 {
 			t.Fatalf("unexpected summary fields: %#v", task)
 		}
 		for _, field := range []string{"description", "blockedBy", "ready"} {
@@ -96,7 +96,7 @@ func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
 	handler := projectTestHandler(t, database, &logs)
 	project := taskProject(t, handler)
 	base := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
-	if base.Tasks == nil || len(base.Tasks) != 0 {
+	if base.Tasks == nil || len(base.Tasks) != 0 || base.Sessions == nil || len(base.Sessions) != 0 {
 		t.Fatalf("empty tasks: %#v", base)
 	}
 	for _, query := range []string{

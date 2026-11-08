@@ -9,7 +9,7 @@ const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-22T12:34:56.123456Z";
-const task = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+const task = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null,
   id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo",
   version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
@@ -183,4 +183,13 @@ describe('shared status transport failures', () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); const controller = new AbortController(); const reason = new Error('project changed'); controller.abort(reason);
     await expect(setTaskStatus(projectId, taskId, target, 1n, controller.signal, admission)).rejects.toBe(reason); expect(fetcher).not.toHaveBeenCalled();
   });
+});
+
+it('submits the cancelled state through the existing exact-version endpoint and rejects malformed cancellation time', async () => {
+  const saved = { ...task, status: 'cancelled', ready: false, version: 2n, cancelledAt: time };
+  const fetch = fetchResponse(response(saved));
+  await expect(setTaskStatus(projectId, taskId, 'cancelled', 1n, signal(), admission)).resolves.toEqual(saved);
+  expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT', body: '{"version":1,"status":"cancelled"}' });
+  fetchResponse(response({ ...saved, cancelledAt: null }));
+  await expect(setTaskStatus(projectId, taskId, 'cancelled', 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
 });

@@ -5,6 +5,42 @@ import { browserNavigation } from './navigation';
 export type TaskDetailTab = "overview" | "steps" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
 
+export type WebhookRoute = {
+  readonly kind: "webhooks";
+  readonly owner: "personal" | "team";
+  readonly teamId: string | null;
+  readonly endpointId: string | null;
+  readonly tab: "configuration" | "subscriptions";
+  readonly error: string | null;
+};
+
+const webhookRoute = (search: string): WebhookRoute => {
+  const params = new URLSearchParams(search);
+  const fallback = { kind: "webhooks", owner: "personal", teamId: null, endpointId: null, tab: "configuration" } as const;
+  const allowed = ["owner", "teamId", "endpointId", "tab", "authError"];
+  if ([...params.keys()].some((key) => !allowed.includes(key) || params.getAll(key).length !== 1)) return { ...fallback, error: "invalid_query" };
+  const owner = params.get("owner") ?? "personal";
+  const team = params.get("teamId");
+  const endpoint = params.get("endpointId");
+  const tab = params.get("tab") ?? "configuration";
+  const teamId = team === null ? null : canonicalId(team);
+  const endpointId = endpoint === null ? null : canonicalId(endpoint);
+  if ((owner !== "personal" && owner !== "team") || (tab !== "configuration" && tab !== "subscriptions") ||
+      (owner === "personal" && team !== null) || (team !== null && teamId === null) || (endpoint !== null && endpointId === null) ||
+      (owner === "team" && teamId === null && endpointId !== null)) return { ...fallback, error: "invalid_query" };
+  return { kind: "webhooks", owner, teamId, endpointId, tab, error: null };
+};
+
+export const webhookUrl = (selection: Pick<WebhookRoute, "owner" | "teamId" | "endpointId" | "tab">): string => {
+  const params = new URLSearchParams({ owner: selection.owner });
+  if (selection.teamId !== null) params.set("teamId", selection.teamId);
+  if (selection.endpointId !== null) params.set("endpointId", selection.endpointId);
+  if (selection.tab !== "configuration") params.set("tab", selection.tab);
+  const url = `/webhooks?${params}`;
+  if (webhookRoute(`?${params}`).error !== null) throw new ApiError("protocol");
+  return url;
+};
+
 export type Route =
   | { readonly kind: "projects" }
   | { readonly kind: "project"; readonly projectId: string }
@@ -13,6 +49,7 @@ export type Route =
   | { readonly kind: "notFound" };
 
 export type ProtectedRoute = Route
+  | WebhookRoute
   | { readonly kind: "team" | "teamSettings" | "teamMembers"; readonly teamId: string }
   | { readonly kind: "sharedProjects" }
   | { readonly kind: "bots" }
@@ -65,6 +102,7 @@ export const parseRoute = (pathname: string, search = ""): Route => {
 };
 
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
+  if (pathname === "/webhooks") return webhookRoute(search);
   if (pathname === "/shared-projects") return { kind: "sharedProjects" };
   const team = /^\/teams\/([^/]+)(\/(?:settings|members))?$/.exec(pathname);
   if (team !== null) {

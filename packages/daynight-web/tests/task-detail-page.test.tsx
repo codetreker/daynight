@@ -4,7 +4,7 @@ import { saveDetail } from '../src/features/task-detail/detail-cache';
 import { TaskDetailPage } from '../src/features/task-detail/TaskDetailPage';
 import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { createTaskSessionWorld } from './helpers/taskSessions';
-import { TEST_VIEWER_ID, taskSyncFromGraph, taskSyncResponse, taskSyncQuery, fixtureTaskEpoch, viewerHeaders } from "./helpers/taskSync";
+import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph, taskSyncResponse, taskSyncQuery, fixtureTaskEpoch, viewerHeaders } from "./helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/app/App';
@@ -79,7 +79,7 @@ describe('standalone full task details', () => {
     const oldDelta = Promise.withResolvers<TaskSync>();
     const freshDetail = Promise.withResolvers<TaskDetail>();
     const applied = Promise.withResolvers<void>();
-    const readSync = vi.spyOn(client, 'getTaskSync').mockReturnValue(oldDelta.promise);
+    const readSync = vi.spyOn(client, 'getTaskSync').mockImplementation(async () => taskSyncReadFixture(await oldDelta.promise));
     const readDetail = vi.spyOn(client, 'getTask').mockReturnValue(freshDetail.promise);
     const apply = cold.applySync.bind(cold);
     vi.spyOn(cold, 'applySync').mockImplementation(async (...args) => { try { return await apply(...args); } finally { applied.resolve(); } });

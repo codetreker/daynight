@@ -7,9 +7,9 @@ export const inducedTopology = (full: DependencyTopology, nodeIds: readonly stri
   return { nodes: full.nodes.filter((node) => visible.has(node.id)), edges: full.edges.filter((edge) => visible.has(edge.source) && visible.has(edge.target)) };
 };
 
-export const expectedNodeHeights = (full: DependencyTopology, nodeIds: readonly string[]): { id: string; height: number }[] => {
+export const expectedNodeHeights = (full: ChainTopology, nodeIds: readonly string[]): { id: string; height: number }[] => {
   const visible = new Set(nodeIds);
-  return inducedTopology(full, nodeIds).nodes.map(({ id }) => ({ id, height: full.edges.some(({ source, target }) =>
+  return inducedTopology(full, nodeIds).nodes.map(({ id }) => ({ id, height: !full.memberIds.includes(id) || full.edges.some(({ source, target }) =>
     source === id && !visible.has(target) || target === id && !visible.has(source)) ? 136 : 96 }));
 };
 
@@ -65,15 +65,15 @@ export const expectedChainMembers = (tasks: readonly DependencyTask[], memberId:
 export const expectedDependencyTopology = (tasks: readonly DependencyTask[], representativeId: string): ChainTopology => {
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const memberIds = expectedChainMembers(tasks, representativeId);
-  const visible = new Set(memberIds); const ancestors = [...visible];
-  while (ancestors.length > 0) for (const id of byId.get(ancestors.pop()!)!.dependsOn) {
+  const visible = new Set(memberIds);
+  for (const member of memberIds) for (const id of byId.get(member)!.externalDependsOn) {
     if (!byId.has(id)) throw new Error('Dependency topology references an unknown prerequisite.');
-    if (!visible.has(id)) { visible.add(id); ancestors.push(id); }
+    visible.add(id);
   }
   return {
     memberIds,
     nodes: tasks.filter((task) => visible.has(task.id)).map(({ id }) => ({ id })),
-    edges: tasks.filter((task) => visible.has(task.id)).flatMap((task) => task.dependsOn.map((source) => ({
+    edges: tasks.filter((task) => visible.has(task.id)).flatMap((task) => task.dependsOn.filter((source) => visible.has(source)).map((source) => ({
       id: `${source}->${task.id}`, source, target: task.id, external: task.externalDependsOn.includes(source),
     }))),
   };

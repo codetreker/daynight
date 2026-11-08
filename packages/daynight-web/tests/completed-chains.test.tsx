@@ -1,5 +1,5 @@
 import { selectTaskList } from './helpers/projectViews';
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,7 +24,7 @@ vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, ro
 
 const projectId = '10000000-0000-0000-0000-000000000001';
 const time = '2026-10-20T12:00:00Z';
-const task = (id: string, status: GraphTask['status'], dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
+const task = (id: string, status: GraphTask['status'], dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null,
   id, titlePreview: `任务 ${id}`, titleTruncated: false, status, dependsOn, blockedBy: [], ready: false, createdAt: time, updatedAt: time,
 });
 const seeds = [task('00000000-0000-4000-8000-000000000001', 'done'), task('00000000-0000-4000-8000-000000000002', 'todo', ['00000000-0000-4000-8000-000000000001']), task('00000000-0000-4000-8000-000000000003', 'done'), task('00000000-0000-4000-8000-000000000004', 'done', ['00000000-0000-4000-8000-000000000003']), task('00000000-0000-4000-8000-000000000005', 'done'), task('00000000-0000-4000-8000-000000000006', 'todo'), task('00000000-0000-4000-8000-000000000007', 'todo', ['00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000006'], ['00000000-0000-4000-8000-000000000002']), task('00000000-0000-4000-8000-000000000008', 'done', ['00000000-0000-4000-8000-000000000005'])];
@@ -34,7 +34,7 @@ const graph = (items = seeds, id = projectId): TaskGraph => {
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time }, tasks,
-    summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length, done: tasks.filter((item) => item.status === 'done').length,
+    summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length, done: tasks.filter((item) => item.status === 'done').length, cancelled: 0,
       inProgress: tasks.filter((item) => item.status === 'in_progress').length, ready: tasks.filter((item) => item.ready).length,
       blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
 };
@@ -53,7 +53,7 @@ beforeEach(() => {
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
-    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+    return taskSyncReadFixture(syncFixture.toSync(value, query, replacementEpochs.get(value)));
   });
 });
 

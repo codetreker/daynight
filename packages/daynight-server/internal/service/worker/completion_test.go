@@ -2,12 +2,16 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"github.com/google/uuid"
 )
 
@@ -43,5 +47,114 @@ func TestUnconfirmedWorkerWritesDoNotReturnSuccess(t *testing.T) {
 		if _, err := workers.PutConfiguration(context.Background(), principal, id, "1", configuration); err == nil || !strings.Contains(err.Error(), "transaction did not confirm commit") {
 			t.Fatalf("configuration accepted %s: %v", outcome, err)
 		}
+	}
+}
+
+type listTestStore struct {
+	store.WorkerWriter
+	items    []store.WorkerSummary
+	observed time.Time
+	clockErr error
+	readErr  error
+}
+type listTestScope struct {
+	store.SnapshotScope
+	source *listTestStore
+}
+type listTestReader struct {
+	store.WorkerReader
+	source *listTestStore
+}
+
+func (s *listTestStore) ReadSnapshot(_ context.Context, operation func(store.SnapshotScope) error) error {
+	if s.readErr != nil {
+		return s.readErr
+	}
+	return operation(listTestScope{source: s})
+}
+func (s listTestScope) ObservedAt(context.Context) (time.Time, error) {
+	return s.source.observed, s.source.clockErr
+}
+func (s listTestScope) WorkerDAO() store.WorkerReader { return listTestReader{source: s.source} }
+func (r listTestReader) WorkerSummaries(_ context.Context, _ string, _ time.Time, page store.Page, accept func(store.WorkerSummary) (bool, error)) error {
+	for i, item := range r.source.items {
+		if i > page.Limit {
+			break
+		}
+		more, err := accept(item)
+		if err != nil {
+			return err
+		}
+		if !more {
+			break
+		}
+	}
+	return nil
+}
+
+func TestWorkerListReadFailuresAndOversizedProjection(t *testing.T) {
+	principal := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	item := store.WorkerSummary{WorkerID: uuid.NewString(), CreatedAt: now, LastReportedAt: now, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine"}}
+	sentinel := errors.New("snapshot unavailable")
+	for _, source := range []*listTestStore{{observed: now, readErr: sentinel}, {observed: now, clockErr: sentinel}} {
+		if _, err := NewWorkers(source).List(context.Background(), principal, model.PageRequest{Limit: 2}); !errors.Is(err, sentinel) {
+			t.Fatalf("read failure: %v", err)
+		}
+	}
+	badCursor := item
+	badCursor.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := NewWorkers(&listTestStore{observed: now, items: []store.WorkerSummary{badCursor}}).List(context.Background(), principal, model.PageRequest{Limit: 2}); err == nil {
+		t.Fatal("invalid cursor time accepted")
+	}
+	badTime := item
+	badTime.LastReportedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := NewWorkers(&listTestStore{observed: now, items: []store.WorkerSummary{badTime}}).List(context.Background(), principal, model.PageRequest{Limit: 2}); err == nil {
+		t.Fatal("invalid response time accepted")
+	}
+	oversized := item
+	oversized.Oversized = true
+	_, err := NewWorkers(&listTestStore{observed: now, items: []store.WorkerSummary{oversized}}).List(context.Background(), principal, model.PageRequest{Limit: 2})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("oversized first item: %v", err)
+	}
+	page, err := NewWorkers(&listTestStore{observed: now, items: []store.WorkerSummary{item, oversized}}).List(context.Background(), principal, model.PageRequest{Limit: 2})
+	if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != item.WorkerID || page.NextCursor == nil {
+		t.Fatalf("oversized next item: %+v %v", page, err)
+	}
+}
+
+func TestWorkerListItemFitsOnlyWithoutContinuation(t *testing.T) {
+	principal := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	first := store.WorkerSummary{WorkerID: uuid.NewString(), CreatedAt: now, LastReportedAt: now, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: ""}}
+	second := store.WorkerSummary{WorkerID: uuid.NewString(), CreatedAt: now.Add(time.Second), LastReportedAt: now, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: ""}}
+	third := store.WorkerSummary{WorkerID: uuid.NewString(), CreatedAt: now.Add(2 * time.Second), LastReportedAt: now, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "tail"}}
+	wire := func(item store.WorkerSummary) workerprotocol.WorkerSummary {
+		return workerprotocol.WorkerSummary{WorkerID: item.WorkerID, Machine: workerprotocol.WorkerMachine{ID: item.Machine.ID, Name: item.Machine.Name}, LastReportedAt: item.LastReportedAt}
+	}
+	fit := func(items []workerprotocol.WorkerSummary) string {
+		raw, err := json.Marshal(workerprotocol.WorkerPage{ObservedAt: now, Items: items})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Repeat("x", workercore.MaxPageResponseJSONBytes-len(raw)-1)
+	}
+	first.Machine.Name = fit([]workerprotocol.WorkerSummary{wire(first)})
+	page, err := NewWorkers(&listTestStore{observed: now, items: []store.WorkerSummary{first}}).List(context.Background(), principal, model.PageRequest{Limit: 10})
+	if err != nil || len(page.Items) != 1 || page.NextCursor != nil {
+		t.Fatalf("last item: %v", err)
+	}
+	_, err = NewWorkers(&listTestStore{observed: now, items: []store.WorkerSummary{first, third}}).List(context.Background(), principal, model.PageRequest{Limit: 10})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("first item needs cursor: %v", err)
+	}
+	first.Machine.Name = "small"
+	second.Machine.Name = fit([]workerprotocol.WorkerSummary{wire(first), wire(second)})
+	page, err = NewWorkers(&listTestStore{observed: now, items: []store.WorkerSummary{first, second, third}}).List(context.Background(), principal, model.PageRequest{Limit: 10})
+	if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != first.WorkerID || page.NextCursor == nil {
+		t.Fatalf("prefix: %v", err)
 	}
 }

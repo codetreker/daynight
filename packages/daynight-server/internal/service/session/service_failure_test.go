@@ -213,8 +213,7 @@ func TestServiceDispatchAuthorizationUsesCurrentCredentials(t *testing.T) {
 			}
 			defer op.Close()
 			err = f.service.write(ctx, op, func(scope store.SessionScope) error {
-				_, e := f.service.authorize(ctx, op, scope, tc.principal, tc.authority)
-				return e
+				return f.service.authorize(ctx, op, scope, tc.principal, tc.authority)
 			})
 			if (err != nil) != tc.fail {
 				t.Fatalf("authorization: %v", err)

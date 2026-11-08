@@ -160,7 +160,9 @@ export const login = async (options: {
     if (response.status !== status || response.headers.get("location") === null) throw new Error(`Authentication fixture expected HTTP ${status} redirect.`);
     return new URL(response.headers.get("location")!, url);
   };
-  const authorize = await redirect(new URL("/api/v1/auth/login?provider=github", origin), 303);
+  const loginURL = new URL("/api/v1/auth/login?provider=github", origin);
+  let authorize = await redirect(loginURL, 303);
+  if (authorize.href === loginURL.href) authorize = await redirect(loginURL, 303);
   const upstream = await redirect(authorize, 302);
   if (upstream.origin !== "https://github.com" || upstream.pathname !== "/login/oauth/authorize" || upstream.searchParams.get("code_challenge_method") !== "S256" || !upstream.searchParams.get("code_challenge")) throw new Error("Real GitHub authorization or PKCE challenge changed.");
   const callback = new URL(upstream.searchParams.get("redirect_uri")!);

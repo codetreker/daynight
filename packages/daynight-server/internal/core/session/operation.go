@@ -24,15 +24,16 @@ type Operation struct {
 type TransactionRunner func(context.Context, *Operation, func(store.SessionScope) error) error
 type BrowserRunner func(context.Context, model.Principal, string, string, string, func(*Access) error) error
 type ControllerRunner func(context.Context, sp.ControllerFence, func(*Access) error) error
+type ArchivePreflightRunner func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error)
 type ArchiveRunner func(context.Context, model.Principal, string, string, string, bool, func(*Access) error) error
 type TerminalRunner func(context.Context, model.Principal, string, string, string, bool, func(*TerminalAccess) error) error
 type TaskRegistrationRunner func(context.Context, model.Principal, string, string, sp.Registration, func(*Operation, store.SessionScope, *Access) error) error
 type TestRegistrationRunner func(context.Context, model.Principal, sp.TestRegistration, func(*Operation, store.SessionScope, *Access) error) error
 type GrantRunner func(context.Context, []byte, func(*Access) error) error
-type TaskRunner func(context.Context, model.Principal, string, string, func(*Operation, store.SessionScope, *TaskAccess, bool, func(string) (*Access, error)) error) error
+type TaskRunner func(context.Context, model.Principal, string, string, func(*Operation, store.SessionScope, *TaskAccess, func(string) (*Access, error)) error) error
 type CredentialRunner func(context.Context, model.Principal, func(*Operation, store.SessionScope) error) error
 type TerminalRegistrationRunner func(context.Context, model.Principal, string, string, func(*Operation, store.SessionScope, *TaskAccess) error) error
-type AuthorizationRunner func(context.Context, *Operation, store.SessionScope, model.Principal, Authority) (bool, error)
+type AuthorizationRunner func(context.Context, *Operation, store.SessionScope, model.Principal, Authority) error
 type BotRunner func(context.Context, model.Principal, string, string, func(model.Bot) error, func(model.Bot, *Access) error, func(*Operation, store.SessionScope, model.Bot, *Access, func(model.Principal) error) error) error
 
 // Execution binds the shared engine to its application's transaction runner.
@@ -42,6 +43,7 @@ type Execution struct {
 	browserRun              BrowserRunner
 	controllerRun           ControllerRunner
 	archiveRun              ArchiveRunner
+	archivePreflightRun     ArchivePreflightRunner
 	terminalRun             TerminalRunner
 	taskRegistrationRun     TaskRegistrationRunner
 	testRegistrationRun     TestRegistrationRunner

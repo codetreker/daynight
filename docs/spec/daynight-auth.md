@@ -45,7 +45,14 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 入口。完整 provider-qualified id 映射到本地 UUID，不同身份不按同邮箱自动合并。
 资料更新不改变本地用户和成员关系。每个用户恰有一个 Personal Team，包含其真实 owner admin 行；
 规范用户建立、Personal 初始化与浏览器 session 原子提交。重复及并发登录复用相同归属，
-已有 Personal 关系损坏明确失败。登录页只能展示当前 UniAuth App 同时允许且
+已有 Personal 关系损坏明确失败。身份领取的实际解压响应最多 2097152 bytes，期限为 15 秒。
+外部身份 ID、姓名和邮箱各最多 1024 UTF-8 bytes，头像 URL 最多 524288 UTF-8 bytes；
+完整规范化 profile JSON 还须不超过 1048576 bytes，字段上限与整体上限同时生效。
+可空字段保持原值；头像 data URL 原样保存，不增加 scheme 限制。上游响应协议错误（含读取、
+关闭失败）或 profile 准入失败时，可响应的请求返回 502 `identity_unavailable`，不提交新用户、
+资料、Personal Team 或 session，既有资料不变。
+已消费的一次性登录事务保持消费，必须重新登录，不能重试同一 code。
+登录页只能展示当前 UniAuth App 同时允许且
 已启用的 provider。前端通过 `GET /api/v1/auth/providers` 读取 `{providers:[ids]}`；
 读取失败显示可重试错误，空列表显示无可用登录方式，不能硬编码 provider 或以
 全局启用状态代替 App 范围。服务使用固定版本的 UniAuth SDK 实时读取当前 App
@@ -59,7 +66,7 @@ ID 为真实且唯一的 Personal Team UUID。CLI 与 Web 严格拒绝缺失、�
 浏览器使用服务端持久化的主站会话。生产 Cookie 为 host-only、Secure、HttpOnly、
 SameSite=Lax；显式 HTTP 主站测试配置使用不带 Secure/`__Host-` 的测试 Cookie
 名称，仍为 host-only、HttpOnly、Lax。它与 SDK gateway 的回环 HTTP 开关独立。
-返回位置限主站内部路径。注销终止当前 Daynight 会话，上游登录状态由 UniAuth 管理。
+返回位置限主站内部路径，解码后的 UTF-8 内容最多 4096 bytes。首次合法登录请求缺少有效的第一方 scope Cookie 时，服务设置该 Cookie 并以 303 返回同一登录 URL，不建立交易。支持 Cookie 的客户端返回后才创建交易；每个 scope 最多有 5 条未完成且未过期的交易，全服务最多有 10000 条，期限为 10 分钟。scope 超限返回 429 `rate_limited`，全服务满时返回 503 `capacity_exhausted` 和 `Retry-After`；拒绝不撤销已有交易。scope 表示 Cookie 标识的逻辑浏览器，清除 Cookie 或并发首次请求无法关联为同一物理浏览器。注销终止当前 Daynight 会话，上游登录状态由 UniAuth 管理。
 Cookie 写请求校验精确主站 Origin；明确提供无效 Bearer 时拒绝，不回退到 Cookie。
 
 浏览器会话绝对有效期七天，与 PAT 的到期规则独立。PAT 由 Web 会话显式创建，或由该会话批准的
@@ -178,8 +185,9 @@ Team API 使用既有 session/PAT、Cookie 写请求 Origin 校验、`Daynight-U
 
 任意登录用户可创建普通 Team；Team 与创建者的真实 admin 行原子提交。普通名称必须是合法
 Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原始文字及首尾空白完整保存，
-允许重名，不增加字符数上限。通用请求大小限制保持。未知、重复、缺失、null、错误类型字段，
-非法 Unicode 转义、非规范 UUID，以及非正或越界版本返回 `400 invalid_input`。
+允许重名，且同时不超过 256 个 Unicode code points 和 1024 个 UTF-8 bytes。通用请求大小限制保持。
+创建或真实改名时的超限名称、未知、重复、缺失、null、错误类型字段、非法 Unicode 转义、非规范 UUID，以及非正或越界版本
+返回 `400 invalid_input`；名称拒绝不改变 Team、成员关系或版本。
 
 所有 Team 管理写入在任何领域 SQL 前核对 expectedUserId 与实际 principal；错主体返回
 `409 identity_mismatch`，Team、成员和 ownership 行及版本均不变。读取权不包含管理权，
@@ -187,7 +195,7 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 `409 personal_team_immutable`。
 
 改名先比较元数据 version，过期请求即使 name 恰与当前原文相同也返回 `409 version_conflict`。
-精确版本下的相同原文是 no-op，保留版本和全部时间；真实名称改变使元数据版本加一。
+精确版本下的相同原文是 no-op，保留版本和全部时间；这也适用于限额生效前保存的超长名称。真实名称改变使元数据版本加一。
 元数据版本达到最大正 int64 时仍接受同值 no-op，真实改名返回 `409 version_exhausted`。
 删除同时核对精确元数据版本和当前名称原文，任一不符返回 `409 version_conflict`；只有没有
 活跃 Project 的 ownership 引用的普通 Team 可删除，否则返回 `409 team_not_empty`。删除原子移除
@@ -387,8 +395,9 @@ participant 新增单独授权，或修改、移除真实 grant；操作前确�
 进入 `/login?returnPath=...` 并保留目标的路径、query 和所选页签。缺少目标才使用默认值；
 已提供的目标必须是有效站内目标，外部地址、协议相对路径、反斜线、控制字符、登录循环
 和不支持的页面明确拒绝。已有会话访问 `/login` 直接进入有效目标或 `/projects`，
-历史返回不应反复显示中间登录页。已知登录事务的 callback 失败显示独立登录错误并保留
-有效目标，包括建立本地 session 失败；失败不重放可能已消费的身份 code。
+历史返回不应反复显示中间登录页。已知登录事务的 callback 失败时，除上游响应协议错误或
+profile 准入失败返回 502 外，显示独立登录错误并保留有效目标，包括建立本地 session 失败；
+失败不重放可能已消费的身份 code。
 
 邀请凭据在跳转前从 fragment 同步捕获并移出地址；以有效回跳目标识别同一邀请流程，
 经过 `/login?returnPath=/invitations` 或 `/login?returnPath=/team-invitations` 和账号切换时保留，凭据不进入回跳参数。主动离开邀请
@@ -476,7 +485,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 两个开关互不替代。HTTPS 主站可搭配显式允许的回环 HTTP gateway；HTTP 主站测试
 仍需自己的开关。Go listener 保持数值 loopback；沿用一个应用 origin、现有部署
 入口和附件执行模型，没有关闭鉴权或匿名业务模式。`/healthz` 与 `/readyz` 为公开、
-无业务数据的健康入口；readyz 仅检查数据库可用性，不以匿名项目列表或上游登录
+无业务数据的健康入口；readyz 检查数据库可用性与 Webhook 后台工作故障，不以匿名项目列表或上游登录
 探测作为就绪条件。
 
 ## 错误与准入
@@ -506,8 +515,9 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 撤销无需等待文件 IO，已准入变更允许完成；后续请求重新认证和授权。保留 K1，不在文件
 IO 之后追加成员复查。
 
-数据 API 不跳转登录 HTML。已验证并消费的 callback 失败时进入 `/login` 的通用登录错误
-状态并保留该事务已验证的目标，错误绑定明确拒绝。Web 处理登录状态，CLI 提示 `daynight login`；失败不得伪装成空
+数据 API 不跳转登录 HTML。已验证并消费的 callback 在上游响应协议错误或 profile 准入失败时，
+可响应的请求返回 502 `identity_unavailable`；其他失败进入 `/login` 的通用登录错误状态并保留该事务已验证的
+目标，错误绑定明确拒绝。Web 处理登录状态，CLI 提示 `daynight login`；失败不得伪装成空
 项目或空成员。日志及验收回执不包含 Cookie、Authorization、Set-Cookie、PAT、
 App Secret、一次性 code 或邀请秘密。
 

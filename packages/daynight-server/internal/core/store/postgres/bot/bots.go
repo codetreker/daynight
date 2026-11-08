@@ -3,6 +3,9 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"reflect"
+	"strings"
 
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 
@@ -159,4 +162,183 @@ func (s *Reader) Bots(ctx context.Context, ownerID string, workerID *string, pag
 		items = items[:page.Limit]
 	}
 	return store.BotPage{Items: items, HasMore: hasMore}, nil
+}
+
+// boundedBotRow adds a size flag without transferring omitted large fields.
+type boundedBotRow struct {
+	pgx.Row
+	oversized bool
+	malformed bool
+}
+
+func (r *boundedBotRow) Scan(dest ...any) error {
+	return r.Row.Scan(append(dest, &r.oversized, &r.malformed)...)
+}
+
+// BotsBounded reads only fields used by the selected response. The conservative
+// lower bound prevents transferring arbitrarily large historical fields while
+// leaving final admission to the exact protocol encoder.
+func (s *Reader) BotsBounded(ctx context.Context, ownerID string, workerID *string, page store.Page) (store.BotPage, error) {
+	afterTime, afterID := pg.PageValues(page)
+	malformed := `(` + strings.Join([]string{
+		pg.JSONShapeError("b.requested_overrides", reflect.TypeOf(model.BotOverrides{})),
+		pg.JSONShapeError("b.resolved_configuration", reflect.TypeOf(model.BotConfiguration{})),
+		pg.JSONShapeError("b.role_configuration", reflect.TypeOf(model.BotRoleConfiguration{})),
+		pg.JSONShapeError("b.startup_result", reflect.TypeOf(model.BotStartupResult{})),
+		pg.JSONShapeError("b.deletion", reflect.TypeOf(botDeletionShape{})),
+		botInvalidQuotedVersion("b.deletion"),
+	}, " OR ") + `)`
+	overrides := botJSONProjection("b.requested_overrides", []botField{{"workerId", true}, {"cwd", true}, {"provider", true}, {"model", true}, {"reasoningEffort", true}})
+	configuration := botJSONProjection("b.resolved_configuration", []botField{{"workerId", false}, {"cwd", false}, {"provider", false}, {"model", true}, {"reasoningEffort", true}})
+	args, oversizedArgs := botArgsProjection("b.resolved_configuration")
+	selectionLast := botJSONLast("b.resolved_configuration", "selection", true)
+	selection := `CASE WHEN ` + selectionLast + ` IS NULL OR ` + selectionLast + `='null'::jsonb THEN NULL::jsonb ELSE ` + botNestedProjection("b.resolved_configuration", "selection", true, []botField{{"schemaVersion", false}, {"modelSource", false}, {"reasoningEffortSource", false}, {"configurationGeneration", false}, {"catalogGeneration", false}}) + ` END`
+	configuration = `(` + configuration + ` || jsonb_build_object('args',` + args + `,'selection',` + selection + `))`
+	role := botJSONProjection("b.role_configuration", []botField{{"instructions", false}, {"revision", false}, {"digest", false}})
+	startup := botJSONProjection("b.startup_result", []botField{{"state", false}, {"code", true}})
+	deletion := botJSONProjection("b.deletion", []botField{{"deletionId", false}})
+	deletion = `(` + deletion + ` || jsonb_build_object('requestedVersion',` + botQuotedVersion("b.deletion") + `))`
+	deletion = `(` + deletion + ` || jsonb_build_object('workerCleanup',` + botNestedProjection("b.deletion", "workerCleanup", false, []botField{{"state", false}, {"code", true}}) + `,'serverCleanup',` + botNestedProjection("b.deletion", "serverCleanup", false, []botField{{"state", false}, {"code", true}}) + `))`
+	rows, err := s.tx.Query(ctx, `WITH candidates AS (
+        SELECT * FROM bots WHERE owner_user_id=$1
+        AND (($2::uuid IS NULL AND deletion IS NULL) OR (worker_id=$2 AND (deletion IS NULL OR deletion->'workerCleanup'->>'state'<>'completed' OR deletion->'serverCleanup'->>'state'<>'completed')))
+        AND ($3::timestamptz IS NULL OR (created_at,id)>($3,$4::uuid)) ORDER BY created_at,id LIMIT $5
+    )
+    SELECT b.id::text,b.owner_user_id::text,b.worker_id::text,
+        CASE WHEN z.oversized OR z.malformed THEN '' ELSE b.name END,b.version,b.creation_order,''::text,
+        CASE WHEN z.oversized OR z.malformed THEN '{}'::jsonb ELSE p.overrides END,
+        CASE WHEN z.oversized OR z.malformed THEN '{}'::jsonb ELSE p.configuration END,
+        CASE WHEN z.oversized OR z.malformed THEN NULL::jsonb ELSE p.role END,
+        b.session_id::text,
+        CASE WHEN z.oversized OR z.malformed THEN '{}'::jsonb ELSE p.startup END,
+        CASE WHEN z.oversized OR z.malformed THEN NULL::jsonb ELSE p.deletion END,
+        b.created_at,b.updated_at,
+        (SELECT bound.test_execution_id::text FROM task_sessions bound WHERE bound.id=b.session_id AND bound.bot_id=b.id),z.oversized,z.malformed
+    FROM candidates b
+    CROSS JOIN LATERAL (SELECT
+       CASE WHEN b.deletion IS NOT NULL THEN '{}'::jsonb ELSE `+overrides+` END AS overrides,
+       CASE WHEN b.deletion IS NOT NULL THEN '{}'::jsonb ELSE `+configuration+` END AS configuration,
+       CASE WHEN b.deletion IS NOT NULL OR b.role_configuration IS NULL OR b.role_configuration='null'::jsonb THEN NULL::jsonb ELSE `+role+` END AS role,
+       CASE WHEN b.deletion IS NOT NULL THEN '{}'::jsonb ELSE `+startup+` END AS startup,
+       CASE WHEN b.deletion IS NULL THEN NULL::jsonb ELSE `+deletion+` END AS deletion
+    ) p
+    CROSS JOIN LATERAL (SELECT (CASE WHEN b.deletion IS NULL THEN octet_length(b.name)::bigint ELSE 0 END +
+       coalesce(octet_length(p.overrides::text),0)::bigint + coalesce(octet_length(p.configuration::text),0)::bigint +
+       coalesce(octet_length(p.role::text),0)::bigint + coalesce(octet_length(p.startup::text),0)::bigint + coalesce(octet_length(p.deletion::text),0)::bigint > 16781312 OR (b.deletion IS NULL AND `+oversizedArgs+`)) AS oversized, `+malformed+` AS malformed) z
+    ORDER BY b.created_at,b.id`, ownerID, workerID, afterTime, afterID, page.Limit+1)
+	if err != nil {
+		return store.BotPage{}, pg.QueryError("list bounded bots", err)
+	}
+	defer rows.Close()
+	result := store.BotPage{Items: []model.Bot{}}
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return store.BotPage{}, pg.QueryError("list bounded bots", err)
+		}
+		row := &boundedBotRow{Row: rows}
+		item, err := scanBot(row)
+		if err != nil {
+			return store.BotPage{}, pg.QueryError("list bounded bots", err)
+		}
+		if row.malformed {
+			return store.BotPage{}, pg.QueryError("decode bounded bot", fmt.Errorf("stored Bot fields are malformed"))
+		}
+		if len(result.Items) == page.Limit {
+			result.HasMore = true
+			break
+		}
+		if row.oversized {
+			if len(result.Items) == 0 {
+				result.OversizedBotID = item.ID
+			}
+			result.HasMore = true
+			break
+		}
+		result.Items = append(result.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return store.BotPage{}, pg.QueryError("list bounded bots", err)
+	}
+	return result, nil
+}
+
+// botDeletionShape models the JSON types read by the string-tagged version.
+type botDeletionShape struct {
+	ReceiptDigest    string                 `json:"receiptDigest"`
+	DeletionID       string                 `json:"deletionId"`
+	RequestedVersion *string                `json:"requestedVersion"`
+	WorkerCleanup    model.BotCleanupResult `json:"workerCleanup"`
+	ServerCleanup    model.BotCleanupResult `json:"serverCleanup"`
+}
+
+type botField struct {
+	name          string
+	nullOverrides bool
+}
+
+func botJSONEntries(expr string) string {
+	return `jsonb_each(CASE WHEN jsonb_typeof(` + expr + `)='object' THEN ` + expr + ` ELSE '{}'::jsonb END) WITH ORDINALITY`
+}
+
+// botJSONLast follows the original JSONB iteration order used by Go's decoder.
+// Null leaves scalar values unchanged, but resets pointers and slices.
+func botJSONLast(expr, field string, nullOverrides bool) string {
+	condition := pg.JSONFold("entry.key") + `='` + strings.ToLower(field) + `'`
+	if !nullOverrides {
+		condition += ` AND entry.value <> 'null'::jsonb`
+	}
+	return `(SELECT entry.value FROM ` + botJSONEntries(expr) + ` AS entry(key,value,ord) WHERE ` + condition + ` ORDER BY entry.ord DESC LIMIT 1)`
+}
+
+func botJSONProjection(expr string, fields []botField) string {
+	values := make([]string, 0, len(fields)*2)
+	for _, field := range fields {
+		values = append(values, `'`+field.name+`'`, botJSONLast(expr, field.name, field.nullOverrides))
+	}
+	return `jsonb_build_object(` + strings.Join(values, ",") + `)`
+}
+
+// A non-pointer nested object merges aliases, ignoring null. A pointer object
+// resets on null; only fields after the last reset can survive.
+func botNestedLast(expr, outer, inner string, reset, nullOverrides bool) string {
+	condition := pg.JSONFold("parent.key") + `='` + strings.ToLower(outer) + `' AND ` + pg.JSONFold("child.key") + `='` + strings.ToLower(inner) + `'`
+	if !nullOverrides {
+		condition += ` AND child.value <> 'null'::jsonb`
+	}
+	if reset {
+		resetPos := `(SELECT max(resetrow.ord) FROM ` + botJSONEntries(expr) + ` AS resetrow(key,value,ord) WHERE ` + pg.JSONFold("resetrow.key") + `='` + strings.ToLower(outer) + `' AND resetrow.value='null'::jsonb)`
+		condition += ` AND parent.ord > coalesce(` + resetPos + `,0)`
+	}
+	return `(SELECT child.value FROM ` + botJSONEntries(expr) + ` AS parent(key,value,ord) CROSS JOIN LATERAL ` + botJSONEntries("parent.value") + ` AS child(key,value,ord) WHERE ` + condition + ` ORDER BY parent.ord DESC,child.ord DESC LIMIT 1)`
+}
+
+func botNestedProjection(expr, outer string, reset bool, fields []botField) string {
+	values := make([]string, 0, len(fields)*2)
+	for _, field := range fields {
+		values = append(values, `'`+field.name+`'`, botNestedLast(expr, outer, field.name, reset, field.nullOverrides))
+	}
+	return `jsonb_build_object(` + strings.Join(values, ",") + `)`
+}
+
+// Go reuses slice capacity across nonempty array aliases. A null element leaves
+// an existing string unchanged, even after an intervening shorter array. Null
+// or empty array values reset the slice and discard that earlier capacity.
+func botArgsProjection(expr string) (string, string) {
+	last := botJSONLast(expr, "args", true)
+	lastCount := `CASE WHEN jsonb_typeof(` + last + `)='array' THEN jsonb_array_length(` + last + `) ELSE 0 END`
+	oversized := `(` + lastCount + ` > 2796203)`
+	resetPos := `(SELECT max(resetrow.ord) FROM ` + botJSONEntries(expr) + ` AS resetrow(key,value,ord) WHERE ` + pg.JSONFold("resetrow.key") + `='args' AND (resetrow.value='null'::jsonb OR CASE WHEN jsonb_typeof(resetrow.value)='array' THEN jsonb_array_length(resetrow.value)=0 ELSE false END))`
+	value := `(SELECT entry.value->indexvalue.i FROM ` + botJSONEntries(expr) + ` AS entry(key,value,ord) WHERE ` + pg.JSONFold("entry.key") + `='args' AND entry.ord > coalesce(` + resetPos + `,0) AND CASE WHEN jsonb_typeof(entry.value)='array' THEN jsonb_array_length(entry.value)>indexvalue.i ELSE false END AND jsonb_typeof(entry.value->indexvalue.i)='string' ORDER BY entry.ord DESC LIMIT 1)`
+	array := `(SELECT jsonb_agg(coalesce(` + value + `,'""'::jsonb) ORDER BY indexvalue.i) FROM generate_series(0,` + lastCount + `-1) AS indexvalue(i))`
+	return `CASE WHEN ` + last + ` IS NULL OR ` + last + `='null'::jsonb THEN NULL::jsonb WHEN jsonb_typeof(` + last + `)<>'array' THEN ` + last + ` WHEN ` + lastCount + `=0 OR ` + oversized + ` THEN '[]'::jsonb ELSE ` + array + ` END`, oversized
+}
+
+func botInvalidQuotedVersion(expr string) string {
+	return `EXISTS (SELECT 1 FROM ` + botJSONEntries(expr) + ` AS entry(key,value,ord) WHERE ` + pg.JSONFold("entry.key") + `='requestedversion' AND jsonb_typeof(entry.value)='string' AND entry.value#>>'{}'<>'null' AND ((entry.value#>>'{}') !~ '^[+-]?[0-9]+$' OR NOT pg_input_is_valid(entry.value#>>'{}','bigint')))`
+}
+
+// Go treats the quoted literal "null" as a no-op for a ,string integer, just
+// like JSON null. Earlier aliases may still have set the value.
+func botQuotedVersion(expr string) string {
+	return `(SELECT entry.value FROM ` + botJSONEntries(expr) + ` AS entry(key,value,ord) WHERE ` + pg.JSONFold("entry.key") + `='requestedversion' AND entry.value <> 'null'::jsonb AND entry.value <> '"null"'::jsonb ORDER BY entry.ord DESC LIMIT 1)`
 }

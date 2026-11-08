@@ -5,13 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
 	"strings"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 // RegistrationService applies public admission before allocating a client.
@@ -26,24 +28,27 @@ func Handler(service RegistrationService) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.Method == http.MethodOptions {
+			httpx.CloseUnreadBody(w, r)
 			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		if r.Method != http.MethodPost {
+			httpx.CloseUnreadBody(w, r)
 			w.Header().Set("Allow", "POST, OPTIONS")
 			writeError(w, http.StatusMethodNotAllowed, "invalid_request")
 			return
 		}
 		media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if err != nil || media != "application/json" || len(params) > 1 || (len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8")) {
+			httpx.CloseUnreadBody(w, r)
 			writeError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, core.MetadataLimit))
+		body, err := httpx.ReadBody(w, r, core.MetadataLimit, transport.JSONBodyReadTimeout)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request")
+			httpx.WriteBodyError(w, r, slog.Default(), "oauth", "registration_body", err)
 			return
 		}
 		source := r.RemoteAddr

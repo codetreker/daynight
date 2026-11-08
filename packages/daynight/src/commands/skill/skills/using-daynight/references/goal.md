@@ -113,6 +113,11 @@ Registration and solution completion do not start delivery or enable automatic-e
 
 Complete each task through the selected execution workflow; reading the Goal protocol does not change the return boundaries of ordinary or managed workflows.
 A single done task, an empty ready page, completed requirements, or a completed solution does not mean the whole Goal has been delivered.
+Done and cancelled are both scheduling terminal states. A Goal whose members are
+all terminal has ended, but cancelled members do not establish successful delivery.
+Cancellation cannot replace a required stage result, source artifact, user
+confirmation or whole-Goal acceptance; judge delivery against the current confirmed
+scope and actual results.
 
 Before reporting the whole Goal complete, verify the full confirmed scope, every delivery result, and the actual merge status of all required PRs, and perform final acceptance on the combined results.
 Discussion confirmation, registration, and prerequisite completion do not automatically select successor work.

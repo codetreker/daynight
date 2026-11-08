@@ -34,7 +34,7 @@ Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行
 
 ## 默认解析与偏好事务
 
-`core/bot` 统一 defaults 预览与首次创建的解析规则，`service/bot` 选择读取快照或创建事务。快照的 `BotReader.BotDefaults` 提供服务端时间、Owner Worker 列表与偏好；写入作用域的 `BotWriteDAO.BotDefaults` 在原创建事务中读取同样的数据。默认解析的时效判断时间在 Worker 与偏好读取后由数据库取得，避免 ReadCommitted 的新心跳晚于先前时间而被误判为未来；该时间只用于时效判断，不代表跨多次 SQL 的快照边界。列表按 `(created_at,worker_id)` 排序，不套用普通 Worker 列表的 72 小时隐藏或 Task 库存投影，因此过期的显式 Worker 仍能返回具体不可用原因。
+`core/bot` 统一 defaults 预览与首次创建的解析规则，`service/bot` 选择读取快照或创建事务。`BotReader.BotDefaults` 为预览读取完整 Owner Worker 目录与偏好，保持历史项及其原因。创建使用独立窄读合同：显式目标只读取该 Owner 的目标配置与偏好；自动选择先评估偏好目标，必要时读取按 `(created_at,worker_id)` 排序的 active 候选小投影，并以第 101 项检测超额。核心复用相同解析规则选择后，才读取目标的完整原生配置及偏好，并在创建事务中重新选择和验证。候选投影不解码任务快照或其他 Worker 的完整遥测。默认解析的时效判断时间在相关 Worker 与偏好读取后由数据库取得，避免 ReadCommitted 的新心跳晚于先前时间而被误判为未来；该时间只用于时效判断，不代表跨多次 SQL 的快照边界。完整目录不套用普通 Worker 列表的 72 小时隐藏，因此过期的显式 Worker 仍能返回具体不可用原因。
 
 解析先处理显式 Worker；没有显式 Worker 时尝试成功 Worker 偏好，再按稳定顺序选择可用配置。每个候选先经过 `WorkerAssistantHostState` 的托管版本、在线及观测时效检查，再为该机器选择目录与 Provider。每项使用显式值、该 Worker 偏好、报告默认的顺序。模型与 effort 使用单助手显式值和按 Worker/Provider/模型绑定的成功偏好，其后读取目标 Provider 的有效默认。基础 args 只读取目标 Provider 的报告。失败目标保留原因，不在同一 Worker 上另猜一个 Provider。目录按 Worker 平台验证；真实文件系统与启动预检由绑定 Worker 负责。
 
@@ -130,6 +130,6 @@ SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_op
 
 公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。助手导航与正式 Worker 托管在同一产品组合中启用。Worker 的[角色与 CLI 环境准备](bot-role-environment.md)提供单一版本化模板、持久角色选择和当前认证检查。Provider 实际启动与恢复、首次角色持久化与冻结接入、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。删除消费者必须保留原停证、重复请求对账和两方阶段判定，公开创建返回 pending 不表示完整托管功能可用。
 
-默认与偏好取舍见[默认解析决策](../../.agents/notes/archived/architecture/2026-11-04-bot-default-resolution.md)。管理定义取舍见[管理定义决策](../../.agents/notes/archived/architecture/2026-11-04-bot-definition-storage.md)。
+默认与偏好取舍见[默认解析决策](../../.agents/notes/archived/architecture/2026-11-04-bot-default-resolution.md)及[有界创建选择决策](../../.agents/notes/implemented/architecture/2026-11-07-bounded-bot-creation-selection.md)。管理定义取舍见[管理定义决策](../../.agents/notes/archived/architecture/2026-11-04-bot-definition-storage.md)。
 
 Session 绑定、同步事实和准入取舍见[Session 准入决策](../../.agents/notes/archived/architecture/2026-11-04-bot-session-admission.md)。

@@ -13,6 +13,7 @@ type ThreadWriter interface {
 }
 
 type ThreadScope interface {
+	CaptureDAO() WebhookCaptureDAO
 	TaskDAO() ThreadTaskDAO
 	CredentialDAO() ThreadCredentialDAO
 	ProjectDAO() ThreadProjectDAO

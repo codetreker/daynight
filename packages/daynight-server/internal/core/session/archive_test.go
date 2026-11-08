@@ -81,8 +81,11 @@ func TestArchiveImmutableReadAfterControllerAndClaimDisappear(t *testing.T) {
 	// A fresh service has no controller connection or live in-memory session state.
 	restarted := New(f.db, f.s.files)
 	got, err := restarted.ArchiveContent(ctx, f.p, f.project, f.task, v.SessionID)
-	if err != nil || !bytes.Equal(got, data) {
+	if err != nil || !bytes.Equal(got.Data, data) {
 		t.Fatal("offline archive", err)
+	}
+	if err := got.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if _, err = restarted.Submit(ctx, f.p, f.project, f.task, v.SessionID, sp.Command{Fence: v.Fence, Kind: "refresh_controls", OperationID: uuid.NewString()}); err == nil {
 		t.Fatal("archive authorized control")
@@ -212,7 +215,11 @@ func TestStandaloneArchiveAfterStop(t *testing.T) {
 	if !strings.HasPrefix(physicalPath, expected) {
 		t.Fatalf("standalone archive is outside its user's shard: %s", physicalPath)
 	}
-	if _, err = f.s.ArchiveContent(ctx, f.p, "", "", v.SessionID); err != nil {
+	content, err := f.s.ArchiveContent(ctx, f.p, "", "", v.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = content.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID); err != nil {
@@ -250,8 +257,12 @@ func TestArchiveMemberCanReadButCannotPublish(t *testing.T) {
 	if _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := f.s.ArchiveContent(ctx, member, f.project, f.task, v.SessionID); err != nil || !bytes.Equal(got, data) {
+	got, err := f.s.ArchiveContent(ctx, member, f.project, f.task, v.SessionID)
+	if err != nil || !bytes.Equal(got.Data, data) {
 		t.Fatal("member cannot read archive", err)
+	}
+	if err = got.Close(); err != nil {
+		t.Fatal(err)
 	}
 	update.ExecutionGeneration = "2"
 	if _, err := f.s.UpdateArchive(ctx, f.p, f.project, f.task, v.SessionID, update); err == nil {

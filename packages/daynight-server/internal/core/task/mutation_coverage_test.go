@@ -26,9 +26,9 @@ func (d *mutationDAO) UpdateTask(_ context.Context, id string, _ store.TaskWrite
 	d.action = "update"
 	return model.Task{ID: id}, d.err
 }
-func (d *mutationDAO) DeleteTask(_ context.Context, _ string, _ bool) error {
+func (d *mutationDAO) DeleteTask(_ context.Context, _ string, _ bool) (model.TaskTombstone, error) {
 	d.action = "delete"
-	return d.err
+	return model.TaskTombstone{}, d.err
 }
 
 func TestMutationPreparationAndApply(t *testing.T) {

@@ -16,6 +16,7 @@ type TaskGraphProps = {
   directionIssue?: 'read' | 'invalid' | 'write' | undefined;
   rootId: string;
   onOpenTask: (id: string, trigger: HTMLElement) => void;
+  onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
   fullscreen?: { readonly active: boolean; readonly onToggle: () => void; readonly buttonRef: RefObject<HTMLButtonElement | null> };
 };
 
@@ -80,7 +81,7 @@ const InitialViewport = ({ geometry, rootId, folded, action, resetButton }: { ge
 
 type CanvasProps = TaskGraphProps & { topologyKey: string; selectedTaskId: string | null; onInspectTask: (id: string) => void; clearInspection: () => void; geometry: CanvasLayout; projection: ChainProjection; visibleIds: ReadonlySet<string>; expansions: ReadonlyMap<string, TaskExpansions>; action: ViewportAction | null; onExpandTask: (id: string, direction: TaskExpansionDirection) => void; onResetOverview: () => void };
 
-const TaskCanvas = ({ index, rootId, onOpenTask, fullscreen, direction = 'horizontal', onDirectionChange, directionIssue, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
+const TaskCanvas = ({ index, rootId, onOpenTask, onNavigateExternalTask = onOpenTask, fullscreen, direction = 'horizontal', onDirectionChange, directionIssue, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
   const { messages: { graph: m } } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const resetButton = useRef<HTMLButtonElement>(null);
@@ -104,11 +105,11 @@ const TaskCanvas = ({ index, rootId, onOpenTask, fullscreen, direction = 'horizo
       task: index.nodes.get(node.id)!, kind: node.kind,
       center: { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 },
       size: { width: node.width, height: node.height },
-      onInspectTask, onOpenTask, onExpandTask,
+      onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask,
       revealRequest: action?.kind === 'expand' && action.anchorId === node.id ? action.sequence : null,
       expansions: expansions.get(node.id)!,
     },
-  })), [geometry, index, expansions, action, onInspectTask, onOpenTask, onExpandTask]);
+  })), [geometry, index, expansions, action, onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask]);
   const canvas = useMemo(() => (
     <ReactFlow<TaskFlowNode>
       id={`flow-${rootId}`}
@@ -213,11 +214,11 @@ const VisibleTaskGraph = ({ projection, ...props }: TaskGraphProps & { projectio
     try {
       performance.clearMeasures('daynight:task-layout');
       const started = performance.now();
-      const geometry = layoutGraph(visibleProjection, new Map([...expansions].map(([id, directions]) => [id, getTaskNodeHeight(directions)])), props.direction ?? 'horizontal');
+      const geometry = layoutGraph(visibleProjection, new Map([...expansions].map(([id, directions]) => [id, getTaskNodeHeight(directions, projection.externalIds.has(id))])), props.direction ?? 'horizontal');
       performance.measure('daynight:task-layout', { start: started, end: performance.now(), detail: { rootId: props.rootId } });
       return { kind: 'ready' as const, geometry };
     } catch (error) { return { kind: 'error' as const, error }; }
-  }, [visibleProjection, expansions, props.rootId, props.direction]);
+  }, [visibleProjection, expansions, projection.externalIds, props.rootId, props.direction]);
   const onInspectTask = useCallback((id: string) => {
     setVisibility((current) => ({ ...current, inspectionId: current.inspectionId === id ? null : id }));
   }, []);

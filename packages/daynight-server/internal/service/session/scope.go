@@ -86,15 +86,14 @@ func (s *Service) browser(ctx context.Context, principal model.Principal, projec
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		access, err := loadSession(ctx, op, scope, id)
 		if err != nil {
 			return err
 		}
-		if err = op.BindTaskBrowser(ctx, access, task, principal, project, taskID, admin); err != nil {
+		if err = op.BindTaskBrowser(ctx, access, task, principal, project, taskID); err != nil {
 			return err
 		}
 		return work(access)
@@ -135,7 +134,7 @@ func (s *Service) controller(ctx context.Context, fence sp.ControllerFence, work
 			if err = op.LockCredential(ctx, scope, owner); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, owner, authority.ProjectID); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, owner, authority.ProjectID); err != nil {
 				return err
 			}
 		}

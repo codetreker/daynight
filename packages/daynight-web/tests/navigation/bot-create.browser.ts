@@ -4,7 +4,7 @@ import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId, botWorkerDefault
 import type { CreateBotInput } from '../../src/api/bots';
 
 const workerName = '工作站 Workstation '.repeat(8), directory = '/projects/' + '很长的目录-long-directory/'.repeat(8);
-async function install(page: Page) {
+async function install(page: Page, options: { nativeDefault?: boolean; hiddenDefault?: boolean } = {}) {
   const personal = { id: botId(100), kind: 'personal', name: null };
   const posts: CreateBotInput[] = [], reads: { worker: string; operation: string; input: Record<string, unknown> }[] = [];
   let unknown = false, noWorker = false, capabilityError = false, paginated = false;
@@ -18,7 +18,7 @@ async function install(page: Page) {
     if (path === '/api/v1/me/bots/defaults') {
       if (noWorker) return send({ ...botDefaults(), workerId: null, configuration: null, workers: [], reason: 'no_available_worker' });
       const workerId = url.searchParams.get('workerId') ?? botId(20);
-      const configuration = { ...botDefaults().configuration, workerId, cwd: url.searchParams.get('cwd') ?? directory, provider: url.searchParams.get('provider') ?? 'codex', model: url.searchParams.get('model') ?? 'model-a', reasoningEffort: url.searchParams.get('reasoningEffort') ?? 'high', selection: { schemaVersion: 1, modelSource: url.searchParams.has('model') ? 'explicit' : 'local', reasoningEffortSource: url.searchParams.has('reasoningEffort') ? 'explicit' : 'local' } };
+      const configuration = { ...botDefaults().configuration, workerId, cwd: url.searchParams.get('cwd') ?? directory, provider: url.searchParams.get('provider') ?? 'codex', model: url.searchParams.get('model') ?? (options.nativeDefault && !url.searchParams.has('reasoningEffort') ? null : 'model-a'), reasoningEffort: url.searchParams.get('reasoningEffort') ?? (options.nativeDefault ? null : 'high'), selection: { schemaVersion: 1, modelSource: url.searchParams.has('model') ? 'explicit' : options.nativeDefault ? 'native' : 'local', reasoningEffortSource: url.searchParams.has('reasoningEffort') ? 'explicit' : options.nativeDefault ? 'native' : 'local' } };
       return send({ ...botDefaults(), workerId, configuration, workers: [20, 21].map(n => ({ ...botWorkerDefaults(n), machine: { id: botId(120 + n), name: n === 20 ? workerName : 'Second Worker' }, configuration: { ...configuration, workerId: botId(n) } })) });
     }
     if (path.endsWith('/readonly/requests')) {
@@ -31,7 +31,7 @@ async function install(page: Page) {
         if (paginated) return send({ ...envelope, result: { path, parentPath: '/projects', entries: body.input.cursor ? [{ name: 'Second page folder', path: `${path}second` }] : [{ name: 'First page folder', path: `${path}first` }], nextCursor: body.input.cursor ? null : 'page-2' } });
         return send({ ...envelope, result: { path, parentPath: path === directory ? '/projects' : directory, entries: path === directory ? [{ name: '选择我 chosen', path: `${directory}chosen` }] : [], nextCursor: null } });
       }
-      return send({ ...envelope, result: { schemaVersion: 1, provider: body.input.provider, cwd: body.input.cwd ?? directory, configurationGeneration: 'a'.repeat(64), catalogGeneration: botId(502), models: [{ id: 'model-a', label: 'Model A', aliases: [], hidden: false, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' }, { id: 'model-b', label: 'Model B', aliases: [], hidden: false, reasoningEfforts: [], defaultReasoningEffort: null }], defaults: { model: { value: body.input.model ?? 'model-a', source: body.input.model ? 'explicit' : 'local' }, reasoningEffort: { value: 'high', source: 'local' } }, selectionError: null, nextCursor: null } });
+      return send({ ...envelope, result: { schemaVersion: 1, provider: body.input.provider, cwd: body.input.cwd ?? directory, configurationGeneration: 'a'.repeat(64), catalogGeneration: botId(502), models: [{ id: 'model-a', label: 'Model A', aliases: [], hidden: options.hiddenDefault ?? false, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' }, { id: 'model-b', label: 'Model B', aliases: [], hidden: false, reasoningEfforts: [], defaultReasoningEffort: null }], defaults: { model: { value: body.input.model ?? 'model-a', source: body.input.model ? 'explicit' : options.nativeDefault ? 'native' : 'local' }, reasoningEffort: { value: 'high', source: options.nativeDefault ? 'native' : 'local' } }, selectionError: null, nextCursor: null } });
     }
     if (path === '/api/v1/me/bots' && request.method() === 'POST') {
       const body = request.postDataJSON(); posts.push(body);
@@ -185,4 +185,29 @@ test('cancelling the native model menu keeps the dialog and restores model focus
   await page.keyboard.press('Escape');
   await expect(page.locator('dialog.bot-create-dialog')).toBeVisible(); await expect(model).toBeFocused();
   await expect(model).toHaveValue(''); expect(fixture.posts).toHaveLength(0);
+});
+
+
+for (const hiddenDefault of [false, true]) test(`native default permits effort-only creation with hidden model ${hiddenDefault}`, async ({ page }, info) => {
+  const fixture = await install(page, { nativeDefault: true, hiddenDefault });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/bots'); await open(page);
+  await page.locator('#bot-name').fill('Native effort only');
+  await page.locator('.bot-create-advanced > summary').click();
+  await expect(page.locator('#bot-effort')).toBeEnabled();
+  await expect(page.locator('#bot-model')).toHaveValue('');
+  await expect(page.locator('#bot-model option:checked')).toContainText('model-a');
+  await expect(page.locator('#bot-effort option:checked')).toContainText('high');
+  if (hiddenDefault) await expect(page.getByRole('option', { name: 'Model A', exact: true })).toHaveCount(0);
+  expect(fixture.reads.filter(read => read.operation === 'model.list').every(read => read.input.includeHidden === true)).toBe(true);
+  await page.locator('#bot-effort').selectOption('low');
+  await expect(page.locator('#bot-worker')).toHaveValue(botId(20));
+  await expect(page.locator('.bot-create-actions .primary')).toBeEnabled();
+  await page.locator('#bot-effort').scrollIntoViewIfNeeded();
+  const measured = await bounded(page);
+  await page.screenshot({ path: info.outputPath('native-effort-only.png') });
+  await page.locator('.bot-create-actions .primary').click();
+  await expect.poll(() => fixture.posts.length).toBe(1);
+  expect(fixture.posts[0]).toEqual({ id: expect.any(String), name: 'Native effort only', overrides: { workerId: botId(20), reasoningEffort: 'low' } });
+  await writeFile(info.outputPath('native-effort-only.json'), JSON.stringify({ boundary: 'Production app and typed clients with controlled HTTP/Worker responses.', hiddenDefault, geometry: measured, posts: fixture.posts, reads: fixture.reads }, null, 2));
 });

@@ -18,6 +18,8 @@ read after self-exit. Scoped member pages authorize in the same snapshot as the
 bounded DAO query, and cursors bind the account and Team. List items remain
 complete; an item that exceeds the response budget returns an explicit error.
 Member profile fields are bounded before materialization.
+The [encoded response budgets decision](2026-11-07-encoded-response-budgets.md)
+describes the shared limits and continuation behavior.
 
 The [authentication design](../../../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
 describes write serialization and the last-administrator rule. The [MCP entry decision](2026-11-06-mcp-http-entry.md)

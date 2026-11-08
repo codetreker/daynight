@@ -10,7 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
+	modellimit "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -25,7 +25,7 @@ var botToolsJSON []byte
 type botOperations interface {
 	CreateResolved(context.Context, model.Principal, botcore.CreateBot) (model.Bot, error)
 	Get(context.Context, model.Principal, string) (model.Bot, error)
-	List(context.Context, model.Principal, model.PageRequest) (botcore.BotPage, error)
+	ListAdmitted(context.Context, model.Principal, *string, model.PageRequest, func([]model.Bot, *string) error) (botcore.BotPage, error)
 }
 type botDeletion interface {
 	DeleteBot(context.Context, model.Principal, string, store.DeleteBot) (model.Bot, error)
@@ -89,47 +89,28 @@ func (h *botTools) list(ctx context.Context, actor RequestActor, in botListInput
 	if in.Limit != nil {
 		limit = *in.Limit
 	}
-	page, err := h.bots.List(ctx, actor.Principal, model.PageRequest{Limit: limit, Cursor: in.Cursor})
+	project := func(items []model.Bot, cursor *string) botPage {
+		out := botPage{Items: make([]api.Bot, 0, len(items)), NextCursor: cursor}
+		for _, item := range items {
+			out.Items = append(out.Items, bothttp.Response(item))
+		}
+		return out
+	}
+	page, err := h.bots.ListAdmitted(ctx, actor.Principal, nil, model.PageRequest{Limit: limit, Cursor: in.Cursor}, func(items []model.Bot, cursor *string) error {
+		raw, err := json.Marshal(envelope{Data: project(items, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}})
+		if err != nil {
+			return err
+		}
+		if len(raw) > botcore.MaxCandidatePageResponseJSONBytes {
+			return &modellimit.Violation{Field: "bot.page", Actual: int64(len(raw)), Max: botcore.MaxCandidatePageResponseJSONBytes, Unit: "bytes"}
+		}
+		return nil
+	})
 	if err != nil {
 		return ToolResult{}, err
 	}
-	out := botPage{Items: make([]api.Bot, 0, len(page.Items)), NextCursor: page.NextCursor}
-	cursorFor := func(bot model.Bot) (string, error) {
-		return query.EncodeListCursor(query.ListScope{Kind: "bots", WorkerUserID: &actor.Principal.UserID}, bot.CreatedAt, bot.ID)
-	}
-	for i, bot := range page.Items {
-		out.Items = append(out.Items, bothttp.Response(bot))
-		if i < len(page.Items)-1 || page.NextCursor != nil {
-			cursor, err := cursorFor(bot)
-			if err != nil {
-				return ToolResult{}, err
-			}
-			out.NextCursor = &cursor
-		} else {
-			out.NextCursor = nil
-		}
-		encoded, err := json.Marshal(envelope{Data: out, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-		if err != nil {
-			return ToolResult{}, err
-		}
-		if len(encoded) > 16<<10 {
-			out.Items = out.Items[:len(out.Items)-1]
-			if len(out.Items) == 0 {
-				cursor, err := cursorFor(bot)
-				if err != nil {
-					return ToolResult{}, err
-				}
-				return ToolResult{Refs: map[string]any{"botId": bot.ID, "readTool": "bot_show", "cursorAfterItem": cursor}}, &model.Fault{Code: "resource_conflict", Message: "Bot exceeds the page budget; read it with bot_show before continuing with cursorAfterItem."}
-			}
-			cursor, err := cursorFor(page.Items[i-1])
-			if err != nil {
-				return ToolResult{}, err
-			}
-			out.NextCursor = &cursor
-			break
-		}
-	}
-	return ToolResult{Data: out}, nil
+	return ToolResult{Data: project(page.Items, page.NextCursor)}, nil
+
 }
 func (h *botTools) show(ctx context.Context, actor RequestActor, in botShowInput) (ToolResult, error) {
 	bot, err := h.bots.Get(ctx, actor.Principal, in.BotID)

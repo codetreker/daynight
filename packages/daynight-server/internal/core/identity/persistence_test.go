@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -77,7 +78,11 @@ func TestIdentityDomainAgainstDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = write(func(scope store.IdentityScope) error { return m.CreateLogin(ctx, scope.IdentityDAO(), pending, now) }); err != nil {
+	pending.ScopeHash = secret.Hash(secret.Random(""))
+	if err = write(func(scope store.IdentityScope) error {
+		_, err := m.CreateLogin(ctx, scope.IdentityDAO(), pending, now)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err = write(func(scope store.IdentityScope) error {

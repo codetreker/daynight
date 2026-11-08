@@ -5,6 +5,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
+	"io"
 	"net/url"
 	"regexp"
 	"strings"
@@ -12,8 +14,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -25,7 +25,7 @@ var projectToolsJSON []byte
 type projectOperations interface {
 	RegisterRepository(context.Context, model.Principal, coreproject.CreateProject, bool) (model.Project, bool, error)
 	Get(context.Context, model.Principal, string) (model.Project, error)
-	List(context.Context, model.Principal, model.PageRequest) (coreproject.ProjectPage, error)
+	ListAdmitted(context.Context, model.Principal, coreproject.ProjectListRequest, func([]model.Project, *string) error) (coreproject.ProjectPage, error)
 	TransferPreview(context.Context, model.Principal, string, string) (coreproject.TransferPreview, error)
 	Transfer(context.Context, model.Principal, string, coreproject.TransferInput) (coreproject.TransferReceipt, error)
 }
@@ -137,44 +137,22 @@ func (h *projectTools) list(ctx context.Context, actor RequestActor, in projectL
 	if in.Limit != nil {
 		limit = *in.Limit
 	}
-	page, err := h.projects.List(ctx, actor.Principal, model.PageRequest{Limit: limit, Cursor: in.Cursor})
+	project := func(items []model.Project, cursor *string) projectPage {
+		out := projectPage{Items: make([]Project, 0, len(items)), NextCursor: cursor}
+		for _, item := range items {
+			out.Items = append(out.Items, MapProject(item))
+		}
+		return out
+	}
+	page, err := h.projects.ListAdmitted(ctx, actor.Principal, coreproject.ProjectListRequest{Page: model.PageRequest{Limit: limit, Cursor: in.Cursor}}, func(items []model.Project, cursor *string) error {
+		_, err := measure.JSON(io.Discard, "project.page", coreproject.MaxPageResponseJSONBytes, envelope{Data: project(items, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
+		return err
+	})
 	if err != nil {
 		return ToolResult{}, err
 	}
-	out := projectPage{Items: make([]Project, 0, len(page.Items)), NextCursor: page.NextCursor}
-	for i, project := range page.Items {
-		out.Items = append(out.Items, MapProject(project))
-		if i < len(page.Items)-1 || page.NextCursor != nil {
-			cursor, err := query.EncodeProjectCursor(project, actor.Principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
-			if err != nil {
-				return ToolResult{}, err
-			}
-			out.NextCursor = &cursor
-		} else {
-			out.NextCursor = nil
-		}
-		encoded, err := json.Marshal(envelope{Data: out, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-		if err != nil {
-			return ToolResult{}, err
-		}
-		if len(encoded) > 16<<10 {
-			out.Items = out.Items[:len(out.Items)-1]
-			if len(out.Items) == 0 {
-				cursor, err := query.EncodeProjectCursor(project, actor.Principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
-				if err != nil {
-					return ToolResult{}, err
-				}
-				return ToolResult{Refs: map[string]any{"projectId": project.ID, "readTool": "project_show", "nextCursor": cursor}}, &model.Fault{Code: "resource_conflict", Message: "Project exceeds the page budget; use project_show and continue with nextCursor."}
-			}
-			cursor, err := query.EncodeProjectCursor(page.Items[i-1], actor.Principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
-			if err != nil {
-				return ToolResult{}, err
-			}
-			out.NextCursor = &cursor
-			break
-		}
-	}
-	return ToolResult{Data: out}, nil
+	return ToolResult{Data: project(page.Items, page.NextCursor)}, nil
+
 }
 
 var teamLink = regexp.MustCompile(`(?i)^(https?://[^\s\\/?#@]+)(/teams/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))$`)

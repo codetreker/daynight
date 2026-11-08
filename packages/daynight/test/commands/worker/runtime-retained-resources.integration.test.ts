@@ -73,7 +73,7 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
   const original = webStore.register({ projectId, taskId, claimId, worktreeId, project, serverOrigin, workerId, userId, configuration: frozen }, Date.now());
   const task: Task = {
     id: taskId, projectId, title: "Retained Web execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
-    requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, version: 1n,
+    requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };

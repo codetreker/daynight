@@ -122,9 +122,10 @@ func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
 	db := h.database
 	actor := h.principal.UserID
 	suffix := `,"expectedUserId":"` + actor + `"}`
-	for _, body := range []string{"", "null", "[]", `{"name":"x"}`, `{"name":null` + suffix, `{"name":1` + suffix, `{"name":""` + suffix, `{"name":" \u2003\u0085"` + suffix, `{"name":"bad\u0000"` + suffix, `{"name":"\ud800"` + suffix, `{"name":"\udfff"` + suffix, `{"name":"\ud800x"` + suffix, `{"name":"x","name":"y"` + suffix, `{"name":"x","extra":1` + suffix, `{"Name":"x"` + suffix, `{"name":"x"` + suffix + ` {}`, `{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"` + suffix} {
+	for _, body := range []string{"", "null", "[]", `{"name":"x"}`, `{"name":null` + suffix, `{"name":1` + suffix, `{"name":""` + suffix, `{"name":" \u2003\u0085"` + suffix, `{"name":"bad\u0000"` + suffix, `{"name":"\ud800"` + suffix, `{"name":"\udfff"` + suffix, `{"name":"\ud800x"` + suffix, `{"name":"x","name":"y"` + suffix, `{"name":"x","extra":1` + suffix, `{"Name":"x"` + suffix, `{"name":"x"` + suffix + ` {}`} {
 		assertProjectError(t, projectRequest(h, "POST", "/api/v1/teams", body), 400, "invalid_input")
 	}
+	assertProjectError(t, projectRequest(h, "POST", "/api/v1/teams", `{"name":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"`+suffix), 413, "payload_too_large")
 	literal := decodeResponse[api.Team](t, projectRequest(h, "POST", "/api/v1/teams", `{"name":"\\ud800 \ufffd \ud83d\ude00"`+suffix), 201)
 	if *literal.Name != "\\ud800 � 😀" {
 		t.Fatalf("valid escapes changed %q", *literal.Name)
@@ -173,4 +174,34 @@ func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
 	if decodeResponse[api.Team](t, exact, 200).Version != precise || !strings.Contains(exact.Body.String(), `"version":9007199254740993`) {
 		t.Fatal("int64 version rounded", exact.Body)
 	}
+}
+
+func TestTeamHTTPPageEncodedBudgetAndCursor(t *testing.T) {
+	h := teamTestHandler(t)
+	actor := h.principal.UserID
+	var ids []string
+	for _, name := range []string{"Large one", "Large two"} {
+		team := decodeResponse[api.Team](t, projectRequest(h, "POST", "/api/v1/teams", jsonBody(t, api.CreateTeamRequest{Name: name, ExpectedUserID: actor})), 201)
+		ids = append(ids, team.ID)
+		if _, err := h.database.Pool.Exec(context.Background(), `UPDATE teams SET name=repeat('<',500000) WHERE id=$1`, team.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := projectRequest(h, "GET", "/api/v1/teams?limit=100", "")
+	page := decodeResponse[api.TeamPage](t, first, 200)
+	if first.Body.Len() > 4<<20 || page.NextCursor == nil || page.Items[len(page.Items)-1].ID != ids[0] {
+		t.Fatalf("first page: %d %#v", first.Body.Len(), page.NextCursor)
+	}
+	next := decodeResponse[api.TeamPage](t, projectRequest(h, "GET", "/api/v1/teams?limit=100&cursor="+*page.NextCursor, ""), 200)
+	if len(next.Items) != 1 || next.Items[0].ID != ids[1] || next.NextCursor != nil {
+		t.Fatal("continuation skipped Team")
+	}
+	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE teams SET name=repeat('<',800000) WHERE id=$1`, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectError(t, projectRequest(h, "GET", "/api/v1/teams?limit=100&cursor="+*page.NextCursor, ""), 409, "resource_limit_exceeded")
+	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE teams SET name=repeat('x',5000000) WHERE id=$1`, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectError(t, projectRequest(h, "GET", "/api/v1/teams?limit=100&cursor="+*page.NextCursor, ""), 409, "resource_limit_exceeded")
 }

@@ -8,9 +8,12 @@ import (
 )
 
 const (
-	maxBytes = 8 * 1024
-	maxTerms = 128
-	maxDepth = 32
+	// MaxBytes bounds the encoded Search expression before parsing.
+	MaxBytes = 8 * 1024
+	// MaxTerms bounds the number of terms in an expression.
+	MaxTerms = 128
+	// MaxDepth bounds nested expression groups.
+	MaxDepth = 32
 )
 
 type tokenKind uint8
@@ -41,7 +44,7 @@ func syntax(reason string, t token) error {
 func tokenize(raw string) ([]token, error) {
 	position := 1
 	for offset, r := range raw {
-		if offset+utf8.RuneLen(r) > maxBytes {
+		if offset+utf8.RuneLen(r) > MaxBytes {
 			return nil, &Error{Reason: "query_too_large", Position: position, Length: 1}
 		}
 		position++
@@ -230,7 +233,7 @@ func negate(n *tasksearch.Node) {
 func (p *parser) parsePrimary() (*tasksearch.Node, error) {
 	t := p.current()
 	if t.kind == tLeft {
-		if p.depth == maxDepth {
+		if p.depth == MaxDepth {
 			return nil, syntax("nesting_too_deep", t)
 		}
 		p.take()
@@ -282,7 +285,7 @@ func (p *parser) parsePrimary() (*tasksearch.Node, error) {
 		p.take()
 	}
 	p.terms++
-	if p.terms > maxTerms {
+	if p.terms > MaxTerms {
 		return nil, syntax("too_many_terms", start)
 	}
 	return &tasksearch.Node{Kind: tasksearch.Leaf, Atom: tasksearch.Atom{Field: field, Term: FoldASCII(t.value)}, Position: start.pos, Length: t.pos + t.length - start.pos}, nil

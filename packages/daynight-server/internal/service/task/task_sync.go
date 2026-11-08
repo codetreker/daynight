@@ -16,7 +16,12 @@ import (
 
 type TaskSync struct {
 	store   store.SnapshotReader
+	engine  SessionStateReader
 	overlap time.Duration
+}
+
+type SessionStateReader interface {
+	TaskListSessionStates(context.Context, []store.TaskSessionSource) (map[string]model.SessionListState, error)
 }
 
 type TaskSyncRequest struct {
@@ -24,8 +29,8 @@ type TaskSyncRequest struct {
 	Since *time.Time
 }
 
-func NewTaskSync(database store.SnapshotReader, overlap time.Duration) *TaskSync {
-	return &TaskSync{store: database, overlap: overlap}
+func NewTaskSync(database store.SnapshotReader, engine SessionStateReader, overlap time.Duration) *TaskSync {
+	return &TaskSync{store: database, engine: engine, overlap: overlap}
 }
 
 func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID string, input TaskSyncRequest) (model.TaskSync, error) {
@@ -59,6 +64,14 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 			return err
 		}
 		result, refusal, err = taskcore.ReadSync(ctx, snapshot.TaskDAO(), snapshot.ObservedAt, projectID, input.Epoch, input.Since, s.overlap, result)
+		if err != nil || refusal != nil {
+			return err
+		}
+		sources, err := snapshot.SessionDAO().CurrentTaskSessionSources(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		result.Sessions, err = s.engine.TaskListSessionStates(ctx, sources)
 		return err
 	})
 	if err != nil {

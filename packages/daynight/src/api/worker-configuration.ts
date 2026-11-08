@@ -35,7 +35,16 @@ const exact = (value: unknown, names: readonly string[]): Record<string, unknown
   if (names.some(name => !Object.hasOwn(data, name))) return malformed();
   return data;
 };
-const nativeText = (value: unknown): string => typeof value === "string" && value.trim() !== "" && value.isWellFormed() && !/\p{Cc}/u.test(value) ? value : malformed();
+const nativeText = (value: unknown, limit: number): string => typeof value === "string" && value.trim() !== "" && value.isWellFormed() && !/\p{Cc}/u.test(value) && Buffer.byteLength(value, "utf8") <= limit ? value : malformed();
+const nativeModel = (value: unknown, limits: boolean): string => nativeText(value, limits ? 256 : Infinity);
+const nativeArgs = (value: unknown, limits: boolean): string[] => {
+  if (!Array.isArray(value) || limits && value.length > 128) return malformed();
+  return array(value, item => nativeText(item, limits ? 4096 : Infinity));
+};
+const boundedArray = <T>(value: unknown, limit: number, parse: (item: unknown) => T): T[] => {
+  if (!Array.isArray(value) || value.length > limit) return malformed();
+  return array(value, parse);
+};
 const agent = (value: unknown): WorkerCloudNative["agent"] => value === "codex" || value === "copilot" || value === "claude" ? value : malformed();
 const scalar = (value: unknown, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number => typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum ? value : malformed();
 const instant = (value: unknown): string => {
@@ -47,29 +56,29 @@ export const parseWorkerCloudRevision = (value: unknown, allowZero = false): str
   if (typeof value !== "string" || value.length > 19 || !/^(?:0|[1-9][0-9]*)$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n || !allowZero && value === "0") return malformed();
   return value;
 };
-export const parseWorkerCloudNative = (value: unknown): WorkerCloudNative => {
+export const parseWorkerCloudNative = (value: unknown, limits = true): WorkerCloudNative => {
   const data = exact(value, ["agent", "model", "args"]);
-  return { agent: agent(data.agent), model: data.model === null ? null : nativeText(data.model), args: array(data.args, nativeText) };
+  return { agent: agent(data.agent), model: data.model === null ? null : nativeModel(data.model, limits), args: nativeArgs(data.args, limits) };
 };
-export const parseWorkerCloudValue = (value: unknown): WorkerCloudValue => {
+export const parseWorkerCloudValue = (value: unknown, limits = true): WorkerCloudValue => {
   const data = exact(value, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "native", "projects"]);
   const seen = new Set<string>();
-  const projects = array(data.projects, value => {
+  const projects = boundedArray(data.projects, limits ? 128 : Infinity, value => {
     const project = exact(value, ["projectId", "nativeOverrides"]), projectId = id(project.projectId);
     if (seen.has(projectId)) return malformed();
     seen.add(projectId);
     const overrides = fields(project.nativeOverrides, ["agent", "model", "args"]);
     return { projectId, nativeOverrides: {
       ...(Object.hasOwn(overrides, "agent") ? { agent: agent(overrides.agent) } : {}),
-      ...(Object.hasOwn(overrides, "model") ? { model: overrides.model === null ? null : nativeText(overrides.model) } : {}),
-      ...(Object.hasOwn(overrides, "args") ? { args: array(overrides.args, nativeText) } : {}),
+      ...(Object.hasOwn(overrides, "model") ? { model: overrides.model === null ? null : nativeModel(overrides.model, limits) } : {}),
+      ...(Object.hasOwn(overrides, "args") ? { args: nativeArgs(overrides.args, limits) } : {}),
     } };
   });
-  return { maxConcurrent: scalar(data.maxConcurrent, 1), pollIntervalMs: scalar(data.pollIntervalMs, 1, 2_147_483_647), recoveryLimit: scalar(data.recoveryLimit, 0), native: parseWorkerCloudNative(data.native), projects };
+  return { maxConcurrent: scalar(data.maxConcurrent, 1, limits ? 64 : Number.MAX_SAFE_INTEGER), pollIntervalMs: scalar(data.pollIntervalMs, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647), recoveryLimit: scalar(data.recoveryLimit, 0, limits ? 10 : Number.MAX_SAFE_INTEGER), native: parseWorkerCloudNative(data.native, limits), projects };
 };
-export const parseWorkerCloudDesired = (value: unknown): WorkerCloudDesired => {
+export const parseWorkerCloudDesired = (value: unknown, limits = true): WorkerCloudDesired => {
   const data = exact(value, ["revision", "updatedAt", "value"]);
-  return { revision: parseWorkerCloudRevision(data.revision), updatedAt: instant(data.updatedAt), value: parseWorkerCloudValue(data.value) };
+  return { revision: parseWorkerCloudRevision(data.revision), updatedAt: instant(data.updatedAt), value: parseWorkerCloudValue(data.value, limits) };
 };
 export const parseWorkerCloudFailure = (value: unknown): WorkerCloudFailure => {
   const data = exact(value, ["code", "category", "phase", "occurredAt"]);
@@ -79,7 +88,7 @@ export const parseWorkerCloudFailure = (value: unknown): WorkerCloudFailure => {
   if (phase !== "validate" && phase !== "prepare" && phase !== "apply" && phase !== "stop" && phase !== "persist") return malformed();
   return { code, category, phase, occurredAt: instant(data.occurredAt) };
 };
-export const parseWorkerCloudItem = (value: unknown): WorkerCloudItem => {
+export const parseWorkerCloudItem = (value: unknown, limits = true): WorkerCloudItem => {
   const data = exact(value, ["key", "targetRevision", "appliedValue", "state", "error", "lastFailure", "nextAttemptAt"]);
   const keyData = record(data.key), kind = keyData.kind;
   let key: WorkerCloudItemKey;
@@ -97,10 +106,10 @@ export const parseWorkerCloudItem = (value: unknown): WorkerCloudItem => {
   let appliedValue: WorkerCloudItem["appliedValue"] = null;
   if (data.appliedValue !== null) {
     switch (kind) {
-      case "native": case "projectNative": appliedValue = parseWorkerCloudNative(data.appliedValue); break;
-      case "maxConcurrent": appliedValue = scalar(data.appliedValue, 1); break;
-      case "pollIntervalMs": appliedValue = scalar(data.appliedValue, 1, 2_147_483_647); break;
-      case "recoveryLimit": appliedValue = scalar(data.appliedValue, 0); break;
+      case "native": case "projectNative": appliedValue = parseWorkerCloudNative(data.appliedValue, limits); break;
+      case "maxConcurrent": appliedValue = scalar(data.appliedValue, 1, limits ? 64 : Number.MAX_SAFE_INTEGER); break;
+      case "pollIntervalMs": appliedValue = scalar(data.appliedValue, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647); break;
+      case "recoveryLimit": appliedValue = scalar(data.appliedValue, 0, limits ? 10 : Number.MAX_SAFE_INTEGER); break;
       default: if (data.appliedValue !== true) return malformed(); appliedValue = true;
     }
   }
@@ -108,10 +117,10 @@ export const parseWorkerCloudItem = (value: unknown): WorkerCloudItem => {
     error: data.error === null ? null : parseWorkerCloudFailure(data.error),
     lastFailure: data.lastFailure === null ? null : parseWorkerCloudFailure(data.lastFailure), nextAttemptAt: data.nextAttemptAt === null ? null : instant(data.nextAttemptAt) };
 };
-export const parseWorkerCloudObservation = (value: unknown): WorkerCloudObservation => {
+export const parseWorkerCloudObservation = (value: unknown, limits = true): WorkerCloudObservation => {
   const data = exact(value, ["baseRevision", "desiredRevision", "items"]);
   const desiredRevision = parseWorkerCloudRevision(data.desiredRevision), seen = new Set<string>();
-  const items = array(data.items, parseWorkerCloudItem);
+  const items = boundedArray(data.items, limits ? 1024 : Infinity, item => parseWorkerCloudItem(item, limits));
   for (const item of items) {
     const key = `${item.key.kind}:${"projectId" in item.key ? item.key.projectId : ""}`;
     if (seen.has(key) || BigInt(item.targetRevision) > BigInt(desiredRevision)) return malformed();
@@ -125,11 +134,11 @@ export const parseWorkerCloudReport = (value: unknown): WorkerCloudReport => {
 };
 export const parseWorkerCloudResource = (value: unknown): WorkerCloudResource => {
   const data = exact(value, ["desired", "observationRevision", "observation"]);
-  const desired = data.desired === null ? null : parseWorkerCloudDesired(data.desired), observationRevision = parseWorkerCloudRevision(data.observationRevision, true);
+  const desired = data.desired === null ? null : parseWorkerCloudDesired(data.desired, false), observationRevision = parseWorkerCloudRevision(data.observationRevision, true);
   let observation: WorkerCloudResource["observation"] = null;
   if (data.observation !== null) {
     const observed = exact(data.observation, ["baseRevision", "desiredRevision", "items", "reportedAt"]);
-    observation = { ...parseWorkerCloudObservation({ baseRevision: observed.baseRevision, desiredRevision: observed.desiredRevision, items: observed.items }), reportedAt: instant(observed.reportedAt) };
+    observation = { ...parseWorkerCloudObservation({ baseRevision: observed.baseRevision, desiredRevision: observed.desiredRevision, items: observed.items }, false), reportedAt: instant(observed.reportedAt) };
     if (desired === null || BigInt(observation.desiredRevision) > BigInt(desired.revision) || BigInt(observation.baseRevision) + 1n !== BigInt(observationRevision)) return malformed();
   }
   if ((observation === null) !== (observationRevision === "0") || desired === null && observation !== null) return malformed();
@@ -137,7 +146,7 @@ export const parseWorkerCloudResource = (value: unknown): WorkerCloudResource =>
 };
 export const parseWorkerCloudReceipt = (value: unknown): WorkerCloudReceipt => {
   const data = exact(value, ["desired", "observationRevision", "observationAccepted"]);
-  const desired = data.desired === null ? null : parseWorkerCloudDesired(data.desired), observationRevision = parseWorkerCloudRevision(data.observationRevision, true), observationAccepted = bool(data.observationAccepted);
+  const desired = data.desired === null ? null : parseWorkerCloudDesired(data.desired, false), observationRevision = parseWorkerCloudRevision(data.observationRevision, true), observationAccepted = bool(data.observationAccepted);
   if (desired === null && observationRevision !== "0" || observationAccepted && (desired === null || observationRevision === "0")) return malformed();
   return { desired, observationRevision, observationAccepted };
 };

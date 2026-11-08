@@ -19,21 +19,23 @@ const operations = () => {
   } };
 };
 
-test('quality mode keeps full checks and deadlines with four coverage workers', async () => {
+test('quality mode checks workspace types and the production Docker context before coverage', async () => {
   const observed = operations();
   const controller = new AbortController();
   await runCi('quality', controller, observed);
   assert.deepEqual(observed.calls.map(({ file, args }) => [file, args]), [
+    ['pnpm', ['web:typecheck']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'test:harness']],
+    ['docker', ['build', '--progress=plain', '--target', 'web', '--file', 'deployment/localhost/Dockerfile', '.']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'vitest', 'run', '--coverage']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'node', 'scripts/coverage.mts']],
   ]);
-  assert.deepEqual(observed.calls.map(({ options }) => options.timeoutMs), [180_000, 900_000, 60_000]);
+  assert.deepEqual(observed.calls.map(({ options }) => options.timeoutMs), [60_000, 180_000, 300_000, 900_000, 60_000]);
   for (const call of observed.calls) {
     assert.equal(call.options.cwd, repositoryRoot);
     assert.equal(call.options.signal, controller.signal);
   }
-  assert.equal(observed.calls[1]!.options.env!.VITEST_MAX_WORKERS, '4');
+  assert.equal(observed.calls[3]!.options.env!.VITEST_MAX_WORKERS, '4');
 
 });
 
@@ -47,22 +49,22 @@ test('invalid CI modes start no command', async () => {
 });
 
 test('command failures retain the original error and prevent later serial commands', async () => {
-  for (const { mode, failingCommand } of [{ mode: 'quality', failingCommand: 1 }, { mode: 'quality', failingCommand: 2 }, { mode: 'quality', failingCommand: 3 }]) {
+  for (const failingCommand of [1, 2, 3, 4, 5]) {
     const observed = operations();
-    const failure = new Error(`${mode} command failed`);
+    const failure = new Error('quality command failed');
     observed.command = async (file, args, options) => {
       observed.calls.push({ file, args, options });
       if (observed.calls.length === failingCommand) throw failure;
       return '';
     };
-    await assert.rejects(runCi(mode, new AbortController(), observed), (error) => error === failure);
+    await assert.rejects(runCi('quality', new AbortController(), observed), (error) => error === failure);
     assert.equal(observed.calls.length, failingCommand);
 
   }
 });
 
 test('cancellation prevents new work after a completed serial command', async () => {
-  for (const { mode, completedCommand } of [{ mode: 'quality', completedCommand: 1 }, { mode: 'quality', completedCommand: 2 }]) {
+  for (const completedCommand of [1, 2, 3, 4]) {
     const observed = operations();
     const controller = new AbortController();
     const reason = new Error('CI cancelled');
@@ -71,11 +73,11 @@ test('cancellation prevents new work after a completed serial command', async ()
       if (observed.calls.length === completedCommand) controller.abort(reason);
       return '';
     };
-    await assert.rejects(runCi(mode, controller, observed), (error) => error === reason);
+    await assert.rejects(runCi('quality', controller, observed), (error) => error === reason);
     assert.equal(observed.calls.length, completedCommand);
 
     observed.calls.length = 0;
-    await assert.rejects(runCi(mode, controller, observed), (error) => error === reason);
+    await assert.rejects(runCi('quality', controller, observed), (error) => error === reason);
     assert.deepEqual(observed.calls, []);
   }
 });

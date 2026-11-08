@@ -14,7 +14,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 	"github.com/codetreker/uniauth/sdk/go"
 )
 
@@ -23,6 +26,8 @@ type App struct {
 	*application.Application
 	Web              *webresources.Resources
 	Ready            func(context.Context) error
+	Webhooks         *webhook.Service
+	webhookRuntime   *webhookRuntime
 	OAuthProfile     *OAuthProfile
 	OAuthError       error
 	oauthMaintenance *oauthservice.MaintenanceRunner
@@ -47,7 +52,7 @@ type OAuthProfile struct {
 
 // NewIdentityClient constructs the one application client before opening resources.
 func NewIdentityClient(c config.Config) (*uniauth.Client, error) {
-	client, err := uniauth.New(uniauth.Config{BaseURL: c.UniAuthURL, AppID: c.UniAuthAppID, AppSecret: c.UniAuthAppSecret, AllowLoopbackHTTP: c.AllowLoopbackHTTP})
+	client, err := uniauth.New(uniauth.Config{BaseURL: c.UniAuthURL, AppID: c.UniAuthAppID, AppSecret: c.UniAuthAppSecret, AllowLoopbackHTTP: c.AllowLoopbackHTTP, HTTPClient: identityHTTPClient()})
 	if err != nil {
 		return nil, &config.ConfigurationError{Field: "DAYNIGHT_UNIAUTH_URL / DAYNIGHT_UNIAUTH_APP_ID / DAYNIGHT_UNIAUTH_APP_SECRET", Rule: "must identify a valid UniAuth origin and backend App credentials", Cause: err}
 	}
@@ -56,9 +61,9 @@ func NewIdentityClient(c config.Config) (*uniauth.Client, error) {
 
 // NewModules assembles modules from already-owned dependencies. Their owner must
 // stop the engine before closing those dependencies.
-func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client) *App {
+func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
 	app := &App{
-		Application: application.New(database, files, client, c.UniAuthCallbackURL, c.TaskSyncOverlap),
+		Application: application.New(database, files, client, c.UniAuthCallbackURL, c.TaskSyncOverlap, capture...),
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
@@ -119,16 +124,32 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	if err != nil {
 		return nil, errors.Join(err, files.Close())
 	}
-	app := NewModules(c, database.Transactions, database.Ready, files, client)
+	if err := validateWebhookStartup(startup, database.Transactions); err != nil {
+		database.Close()
+		return nil, errors.Join(err, files.Close())
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	capture := &webhook.Capturer{Logger: logger, RequestID: requestid.From}
+	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
 	app.files, app.persistence = files, database
+	failOpen := func(cause error) (*App, error) {
+		cleanup, done := context.WithTimeout(context.Background(), c.ShutdownTimeout)
+		defer done()
+		return nil, errors.Join(cause, app.Close(cleanup))
+	}
+	if err := app.assembleWebhooks(database.Transactions, c.WebhookEnabled, logger); err != nil {
+		return failOpen(err)
+	}
 	if app.PrivateContent == nil {
-		return nil, errors.Join(errors.New("private transfer storage is unavailable"), app.Close(context.Background()))
+		return failOpen(errors.New("private transfer storage is unavailable"))
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if app.OAuthProfile == nil {
-		return nil, errors.Join(errors.New("OAuth public profile is unavailable"), app.OAuthError, app.Close(context.Background()))
+		return failOpen(errors.Join(errors.New("OAuth public profile is unavailable"), app.OAuthError))
 	}
 	app.oauthMaintenance = oauthservice.StartMaintenance(app.OAuthProfile.Maintenance, func(error) {
 		logger.Error("OAuth maintenance failed", "component", "oauth", "operation", "maintain")
@@ -137,7 +158,7 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	if err := app.PrivateContent.Start(func(error) {
 		logger.Error("private transfer maintenance failed", "component", "mcptransfer", "operation", "maintain")
 	}); err != nil {
-		return nil, errors.Join(err, app.Close(context.Background()))
+		return failOpen(err)
 	}
 	return app, nil
 }
@@ -158,6 +179,9 @@ func (a *App) Close(ctx context.Context) error {
 	}
 	if a.closed {
 		return a.closeErr
+	}
+	if err := a.Drain(ctx); err != nil {
+		return err
 	}
 	if a.oauthMaintenance != nil {
 		if err := a.oauthMaintenance.Stop(ctx); err != nil {

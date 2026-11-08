@@ -3,6 +3,7 @@ package task_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,112 +13,172 @@ import (
 )
 
 func TestMCPListAuthorizationMaterializationAndFailures(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	ctx := context.Background()
+	f := newTaskRuleFixture(t)
+	ctx := t.Context()
 	visit := func(store.TaskPriorityItem, string, bool) bool { return true }
 	request := taskcore.MCPListRequest{Limit: 2, View: "full"}
-	if err := tasks.MCPList(ctx, model.Principal{}, project.ID, request, visit); err == nil {
-		t.Fatal("missing principal accepted")
+	for _, input := range []struct {
+		principal model.Principal
+		project   string
+		request   taskcore.MCPListRequest
+	}{
+		{model.Principal{}, f.project.ID, request},
+		{f.principal, "invalid", request},
+		{f.principal, f.project.ID, taskcore.MCPListRequest{Limit: 101}},
+	} {
+		if err := f.tasks.MCPList(ctx, input.principal, input.project, input.request, visit); err == nil {
+			t.Fatal("invalid list accepted")
+		}
 	}
-	if err := tasks.MCPList(ctx, principal, "invalid", request, visit); err == nil {
-		t.Fatal("invalid project accepted")
+	f.read(ctx)
+	missing := "00000000-0000-4000-8000-000000000099"
+	f.projectReader.ProjectAccessFn = func(actual context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+		if actual != ctx || actor != f.principal || id != missing {
+			t.Fatal("missing Project authorization changed")
+		}
+		return model.ProjectAccess{}, model.ErrNotFound
 	}
-	if err := tasks.MCPList(ctx, principal, project.ID, taskcore.MCPListRequest{Limit: 101}, visit); err == nil {
-		t.Fatal("invalid limit accepted")
+	if err := f.tasks.MCPList(ctx, f.principal, missing, request, visit); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing Project cause: %v", err)
 	}
-	if err := tasks.MCPList(ctx, principal, "00000000-0000-4000-8000-000000000099", request, visit); err == nil {
-		t.Fatal("missing project accepted")
+	f.projectReader.ProjectAccessFn = func(actual context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+		if actual != ctx || actor != f.principal || id != f.project.ID {
+			t.Fatal("list authorization changed")
+		}
+		return taskMockAccess(f.project, f.principal), nil
 	}
-	created, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "First", Description: "Complete description"})
-	if err != nil {
-		t.Fatal(err)
+	first := f.target
+	first.Description = "Complete description"
+	second := ruleTask("a1111111-1111-4111-8111-111111111111", "Second")
+	f.reader.TaskListFenceFn = func(actual context.Context, id string) (store.TaskListFence, error) {
+		if actual != ctx || id != f.project.ID {
+			t.Fatal("list fence changed snapshot identity")
+		}
+		return store.TaskListFence{Count: "2", VersionSum: "2"}, nil
 	}
-	createTask(t, tasks, principal, project.ID, "Second")
+	f.reader.TaskPriorityListFn = func(actual context.Context, id string, q store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
+		if actual != ctx || id != f.project.ID || q.Limit != 2 || !q.ExcludeTerminal || q.After != nil {
+			t.Fatalf("list query: %#v", q)
+		}
+		return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: first}, {Task: second}}}, nil
+	}
+	fullReads := 0
+	f.reader.TaskFn = func(actual context.Context, projectID, id string) (model.Task, error) {
+		fullReads++
+		if actual != ctx || projectID != f.project.ID || id != first.ID {
+			t.Fatal("visitor stop still materialized another task")
+		}
+		return first, nil
+	}
 	count := 0
-	err = tasks.MCPList(ctx, principal, project.ID, request, func(item store.TaskPriorityItem, cursor string, more bool) bool {
+	err := f.tasks.MCPList(ctx, f.principal, f.project.ID, request, func(item store.TaskPriorityItem, cursor string, more bool) bool {
 		count++
-		if item.Task.ID != created.ID || item.Task.Description != "Complete description" || cursor == "" || !more {
+		if !reflect.DeepEqual(item.Task, first) || cursor == "" || !more {
 			t.Fatalf("full first item: %#v cursor=%q more=%v", item, cursor, more)
 		}
 		return false
 	})
-	if err != nil || count != 1 {
-		t.Fatalf("visitor stop: count=%d err=%v", count, err)
+	if err != nil || count != 1 || fullReads != 1 {
+		t.Fatalf("visitor stop: count=%d fullReads=%d err=%v", count, fullReads, err)
 	}
 	cancelled, cancel := context.WithCancel(ctx)
 	defer cancel()
-	traced := tracedTasks(t, databaseURL, taskQueryAction{
-		match: func(sql string) bool { return strings.Contains(sql, "t.title, t.description") },
-		start: cancel,
-	})
-	err = traced.MCPList(cancelled, principal, project.ID, request, visit)
+	f.read(cancelled)
+	f.projectReader.ProjectAccessFn = func(context.Context, model.Principal, string) (model.ProjectAccess, error) {
+		return taskMockAccess(f.project, f.principal), nil
+	}
+	f.reader.TaskListFenceFn = func(context.Context, string) (store.TaskListFence, error) {
+		return store.TaskListFence{Count: "2", VersionSum: "2"}, nil
+	}
+	f.reader.TaskPriorityListFn = func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
+		return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: first}}}, nil
+	}
+	f.reader.TaskFn = func(actual context.Context, projectID, id string) (model.Task, error) {
+		if actual != cancelled || projectID != f.project.ID || id != first.ID {
+			t.Fatal("full materialization changed canceled scope")
+		}
+		cancel()
+		return model.Task{}, actual.Err()
+	}
+	err = f.tasks.MCPList(cancelled, f.principal, f.project.ID, request, visit)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("full materialization cancellation lost: %v", err)
 	}
-	database.Close()
-	if err := tasks.MCPList(ctx, principal, project.ID, request, visit); err == nil {
-		t.Fatal("closed snapshot store accepted")
+	closed := errors.New("snapshot store closed")
+	f.database.ReadSnapshotFn = func(context.Context, func(store.SnapshotScope) error) error { return closed }
+	if err := f.tasks.MCPList(ctx, f.principal, f.project.ID, request, visit); !errors.Is(err, closed) {
+		t.Fatalf("snapshot failure lost: %v", err)
 	}
 }
 
 func TestMCPReadyCandidatesAndFullSnapshot(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	ctx := context.Background()
-	dependency := createTask(t, tasks, principal, project.ID, "Incomplete dependency")
-	createTask(t, tasks, principal, project.ID, "Blocked", dependency.ID)
-	first, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "First allowed", Description: strings.Repeat("d", 16<<10), RequiredPlatform: pointer(model.PlatformLinux)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	first = updateTask(t, tasks, principal, first, taskcore.UpdateTask{AllowAgents: pointer(true)})
-	second := createTask(t, tasks, principal, project.ID, "Second allowed")
-	second = updateTask(t, tasks, principal, second, taskcore.UpdateTask{AllowAgents: pointer(true)})
-	windows, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Windows only", RequiredPlatform: pointer(model.PlatformWindows)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	updateTask(t, tasks, principal, windows, taskcore.UpdateTask{AllowAgents: pointer(true)})
+	f := newTaskRuleFixture(t)
+	ctx := t.Context()
+	f.read(ctx)
+	first := f.target
+	first.Title, first.Description, first.AllowAgents = "First allowed", strings.Repeat("d", 16<<10), true
+	first.RequiredPlatform = pointer(model.PlatformLinux)
+	second := ruleTask("a1111111-1111-4111-8111-111111111111", "Second allowed")
+	second.AllowAgents = true
 	request := taskcore.MCPReadyRequest{Limit: 1, View: "full", AllowAgents: pointer(true), CompatiblePlatform: pointer(model.PlatformLinux)}
-	items, err := tasks.MCPReady(ctx, principal, project.ID, request)
-	if err != nil || len(items) != 1 || items[0].Task.ID != first.ID || items[0].Task.Description != first.Description {
-		t.Fatalf("first filtered full candidate: %#v %v", items, err)
+	queryCalls, fullReads := 0, 0
+	f.reader.TaskPriorityListFn = func(actual context.Context, id string, q store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
+		queryCalls++
+		if actual != ctx || id != f.project.ID || q.Limit != request.Limit || q.Status == nil || *q.Status != model.TaskTodo || q.Ready == nil || !*q.Ready || !reflect.DeepEqual(q.AllowAgents, request.AllowAgents) || !reflect.DeepEqual(q.CompatiblePlatform, request.CompatiblePlatform) || q.After != nil || q.ExcludeTerminal || q.AssignedTo.Mode != model.TaskAssignmentAll {
+			t.Fatalf("ready selection: %#v", q)
+		}
+		summary := first
+		summary.Description = ""
+		items := []store.TaskPriorityItem{{Task: summary}}
+		if q.Limit > 1 {
+			items = append(items, store.TaskPriorityItem{Task: second})
+		}
+		return store.TaskPriorityPage{Items: items}, nil
+	}
+	f.reader.TaskFn = func(actual context.Context, projectID, id string) (model.Task, error) {
+		fullReads++
+		if actual != ctx || projectID != f.project.ID {
+			t.Fatal("full read changed selection snapshot")
+		}
+		switch id {
+		case first.ID:
+			return first, nil
+		case second.ID:
+			return second, nil
+		default:
+			t.Fatalf("unselected task materialized: %s", id)
+			panic("unselected Task")
+		}
+	}
+	items, err := f.tasks.MCPReady(ctx, f.principal, f.project.ID, request)
+	if err != nil || len(items) != 1 || !reflect.DeepEqual(items[0].Task, first) || fullReads != 1 {
+		t.Fatalf("first filtered full candidate: %#v %v reads=%d", items, err, fullReads)
 	}
 	request.Limit = 20
-	items, err = tasks.MCPReady(ctx, principal, project.ID, request)
-	if err != nil || len(items) != 2 || items[0].Task.ID != first.ID || items[1].Task.ID != second.ID {
-		t.Fatalf("ordered filtered candidates: %#v %v", items, err)
+	items, err = f.tasks.MCPReady(ctx, f.principal, f.project.ID, request)
+	if err != nil || len(items) != 2 || !reflect.DeepEqual(items[0].Task, first) || !reflect.DeepEqual(items[1].Task, second) || fullReads != 3 {
+		t.Fatalf("ordered filtered candidates: %#v %v reads=%d", items, err, fullReads)
 	}
 	request.View = "summary"
-	items, err = tasks.MCPReady(ctx, principal, project.ID, request)
-	if err != nil || len(items) != 2 || items[0].Task.Description != "" || !items[0].Task.Ready {
+	f.reader.TaskFn = nil
+	items, err = f.tasks.MCPReady(ctx, f.principal, f.project.ID, request)
+	if err != nil || len(items) != 2 || items[0].Task.Description != "" || !items[0].Task.Ready || queryCalls != 3 {
 		t.Fatalf("bounded summary projections: %#v %v", items, err)
-	}
-	traced := tracedTasks(t, databaseURL, taskQueryAction{
-		match: func(sql string) bool {
-			return strings.Contains(sql, "FROM tasks t WHERE") && strings.Contains(sql, "left(t.title,513)")
-		},
-		end: func() {
-			if _, err := database.Pool.Exec(ctx, "UPDATE tasks SET description='Changed after selection',version=version+1 WHERE id=$1", first.ID); err != nil {
-				t.Fatal(err)
-			}
-		},
-	})
-	request.View = "full"
-	items, err = traced.MCPReady(ctx, principal, project.ID, request)
-	if err != nil || len(items) != 2 || items[0].Task.Description != first.Description || items[0].Task.Version != first.Version {
-		t.Fatalf("full read mixed snapshots: %#v %v", items, err)
-	}
-	fresh, err := tasks.Get(ctx, principal, project.ID, first.ID)
-	if err != nil || fresh.Description != "Changed after selection" {
-		t.Fatalf("concurrent update did not happen: %#v %v", fresh, err)
 	}
 }
 
 func TestMCPReadyAuthorizationAndFailures(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	ctx := context.Background()
+	f := newTaskRuleFixture(t)
+	ctx := t.Context()
 	request := taskcore.MCPReadyRequest{Limit: 5, View: "full"}
-	if items, err := tasks.MCPReady(ctx, principal, project.ID, request); err != nil || len(items) != 0 {
+	f.read(ctx)
+	f.reader.TaskPriorityListFn = func(actual context.Context, id string, q store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
+		if actual != ctx || id != f.project.ID || q.Limit != 5 {
+			t.Fatal("empty ready query changed")
+		}
+		return store.TaskPriorityPage{Items: []store.TaskPriorityItem{}}, nil
+	}
+	if items, err := f.tasks.MCPReady(ctx, f.principal, f.project.ID, request); err != nil || items == nil || len(items) != 0 {
 		t.Fatalf("empty: %#v %v", items, err)
 	}
 	for _, input := range []struct {
@@ -125,27 +186,56 @@ func TestMCPReadyAuthorizationAndFailures(t *testing.T) {
 		project   string
 		request   taskcore.MCPReadyRequest
 	}{
-		{model.Principal{}, project.ID, request},
-		{principal, "invalid", request},
-		{principal, project.ID, taskcore.MCPReadyRequest{Limit: 21, View: "full"}},
-		{principal, "00000000-0000-4000-8000-000000000099", request},
+		{model.Principal{}, f.project.ID, request},
+		{f.principal, "invalid", request},
+		{f.principal, f.project.ID, taskcore.MCPReadyRequest{Limit: 21, View: "full"}},
 	} {
-		if items, err := tasks.MCPReady(ctx, input.principal, input.project, input.request); err == nil || len(items) != 0 {
+		if items, err := f.tasks.MCPReady(ctx, input.principal, input.project, input.request); err == nil || len(items) != 0 {
 			t.Fatalf("invalid read returned candidates: %#v %v", items, err)
 		}
 	}
-	createTask(t, tasks, principal, project.ID, "Ready")
-	for _, fragment := range []string{"left(t.title,513)", "t.title, t.description", "FROM project_grants"} {
-		cancelled, cancel := context.WithCancel(ctx)
-		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }, start: cancel})
-		items, err := traced.MCPReady(cancelled, principal, project.ID, request)
-		cancel()
-		if !errors.Is(err, context.Canceled) || len(items) != 0 {
-			t.Fatalf("%s cancellation lost: %#v %v", fragment, items, err)
-		}
+	f.projectReader.ProjectAccessFn = func(context.Context, model.Principal, string) (model.ProjectAccess, error) {
+		return model.ProjectAccess{}, model.ErrNotFound
 	}
-	database.Close()
-	if items, err := tasks.MCPReady(ctx, principal, project.ID, request); err == nil || len(items) != 0 {
-		t.Fatalf("closed snapshot store returned candidates: %#v %v", items, err)
+	if items, err := f.tasks.MCPReady(ctx, f.principal, "00000000-0000-4000-8000-000000000099", request); !errors.Is(err, model.ErrNotFound) || len(items) != 0 {
+		t.Fatalf("missing Project candidates: %#v %v", items, err)
+	}
+	for _, phase := range []string{"authorization", "selection", "full read"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newTaskRuleFixture(t)
+			cancelled, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			f.read(cancelled)
+			f.projectReader.ProjectAccessFn = func(actual context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+				if phase == "authorization" {
+					cancel()
+					return model.ProjectAccess{}, actual.Err()
+				}
+				return taskMockAccess(f.project, f.principal), nil
+			}
+			f.reader.TaskPriorityListFn = func(actual context.Context, id string, q store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
+				if phase == "selection" {
+					cancel()
+					return store.TaskPriorityPage{}, actual.Err()
+				}
+				return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: f.target}}}, nil
+			}
+			f.reader.TaskFn = func(actual context.Context, projectID, id string) (model.Task, error) {
+				if actual != cancelled || projectID != f.project.ID || id != f.target.ID {
+					t.Fatal("cancellation scope changed")
+				}
+				cancel()
+				return model.Task{}, actual.Err()
+			}
+			items, err := f.tasks.MCPReady(cancelled, f.principal, f.project.ID, request)
+			if !errors.Is(err, context.Canceled) || len(items) != 0 {
+				t.Fatalf("%s cancellation lost: %#v %v", phase, items, err)
+			}
+		})
+	}
+	closed := errors.New("snapshot store closed")
+	f.database.ReadSnapshotFn = func(context.Context, func(store.SnapshotScope) error) error { return closed }
+	if items, err := f.tasks.MCPReady(ctx, f.principal, f.project.ID, request); !errors.Is(err, closed) || len(items) != 0 {
+		t.Fatalf("snapshot failure returned candidates: %#v %v", items, err)
 	}
 }

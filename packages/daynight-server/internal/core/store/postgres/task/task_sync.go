@@ -2,12 +2,18 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 )
 
 func (s *Reader) TaskCacheEpoch(ctx context.Context, projectID string) (string, error) {
@@ -30,7 +36,7 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 		lower = &boundary
 	}
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, left(t.title, $2), char_length(t.title) > $2,
-		t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`
+		t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`
 		FROM tasks t WHERE t.project_id = $1 AND t.deleted_at IS NULL AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
 		ORDER BY t.created_at, t.id`, projectID, previewCharacters, lower)
 	if err != nil {
@@ -41,7 +47,7 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 	for rows.Next() {
 		var task model.TaskViewRecord
 		if err := rows.Scan(&task.ID, &task.TitlePreview, &task.TitleTruncated, &task.Status, &task.Version,
-			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn); err != nil {
+			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn); err != nil {
 			return nil, pg.QueryError("read task sync", err)
 		}
 		if !task.Status.Valid() {
@@ -51,22 +57,32 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 		task.UpdatedAt = task.UpdatedAt.UTC()
 		task.StartedAt = pg.UTCTime(task.StartedAt)
 		task.CompletedAt = pg.UTCTime(task.CompletedAt)
+		task.CancelledAt = pg.UTCTime(task.CancelledAt)
 		tasks = append(tasks, task)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, pg.QueryError("read task sync", err)
 	}
 	rows.Close()
-	ids := make([]string, len(tasks))
+	var used int64
 	for index := range tasks {
-		ids[index] = tasks[index].ID
-	}
-	properties, err := pg.LoadTaskProperties(ctx, s.tx, ids)
-	if err != nil {
-		return nil, pg.QueryError("read task sync properties", err)
-	}
-	for index := range tasks {
-		tasks[index].Properties = properties[tasks[index].ID]
+		properties, err := pg.LoadTaskPropertiesBounded(ctx, s.tx, tasks[index].ID, taskcore.MaxSyncResponseJSONBytes-used, false)
+		if err != nil {
+			return nil, pg.QueryError("read task sync properties", err)
+		}
+		tasks[index].Properties = properties
+		// The complete response also contains an envelope, commas and assignees.
+		// A task-only excess is therefore a definite overflow, and permits early
+		// refusal before materializing the remaining task properties.
+		n, err := measure.JSON(io.Discard, "task sync", taskcore.MaxSyncResponseJSONBytes-used, taskprotocol.RESTSyncRecord(tasks[index]), false)
+		var violation *limit.Violation
+		if errors.As(err, &violation) {
+			return nil, &model.Fault{Code: "resource_limit_exceeded", Message: "Task sync exceeds the encoded resource limit.", Cause: err}
+		}
+		if err != nil {
+			return nil, err
+		}
+		used += n
 	}
 	return tasks, nil
 }

@@ -11,6 +11,7 @@ working directory is specified.
 - [Local server deployment](#local-server-deployment)
 - [Server development](#server-development)
 - [Web development](#web-development)
+- [Product E2E](#product-e2e)
 - [Package versions](#package-versions)
 - [npm publication](#npm-publication)
 - [CI selection](#ci-selection)
@@ -45,13 +46,13 @@ pnpm daynight --version
 
 `pnpm check` runs type checking and tests. Standalone `pnpm test` and
 `pnpm acceptance` build the package before exercising the compiled CLI. Native CI
-runs ordinary tests and installed acceptance independently on Linux and Windows.
-macOS uses one allocation for the same two complete phases in sequence. Both
-logical phases retain all three platforms, their own validation build and
-outcome, and 10-minute validation bounds; the ordinary phase also typechecks and
-tests the local development installer. The macOS job shares dependency setup and
-has a 20-minute outer limit. Ordinary suites exclude `.stress.ts` files; explicit
-local stress commands select those workloads separately, as described in
+runs ordinary tests and installed acceptance in independent jobs on Linux,
+Windows and macOS ARM64. Each job prepares its own dependencies, builds the CLI
+and records its own outcome. The ordinary jobs also typecheck and test the local
+development installer. Both native matrices include `ubuntu-latest`,
+`windows-latest` and `macos-15`, with a 10-minute limit for every job. Ordinary
+suites exclude `.stress.ts` files; explicit local stress commands select those
+workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
 package's `dist/`, compiles
 `packages/daynight/dist/main.js`, then runs `scripts/copy-resources.ts`. That step
@@ -249,17 +250,19 @@ loading guarantees.
 
 Native development and validation support Linux, Windows and Apple Silicon
 (ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
-build and tests on native Linux, macOS 15 ARM64 and Windows runners. macOS uses
-the standard `macos-15` label for one `verify-macos` allocation, retaining Darwin
-ARM64 verification and the complete ordinary and installed phases. The [platform decision](../.agents/notes/archived/testing/2026-11-04-macos-arm64-support.md) records the rationale for the support boundary; the [image availability decision](../.agents/notes/implemented/testing/2026-11-05-macos-ci-image-availability.md)
+build and tests on native Linux, macOS 15 ARM64 and Windows runners. The
+ordinary `verify` and installed `verify-installed` matrices both include the
+standard `macos-15` label. Their macOS entries assert Darwin ARM64 and execute
+their complete phase workload. The [platform decision](../.agents/notes/archived/testing/2026-11-04-macos-arm64-support.md) records the rationale for the support boundary; the [image availability decision](../.agents/notes/implemented/testing/2026-11-05-macos-ci-image-availability.md)
 records the explicit image selection and its limits. Hosted capacity failures
 require diagnosis within this ARM64 runner policy, and a supported label still
 requires real allocation and complete native test results.
 Each native job resolves the latest available Node.js 24 patch.
 The ordinary Ubuntu job builds and packs the Node.js 24 artifact consumed by the
-separate runtime matrix. Runtime jobs wait for the ordinary Linux/Windows
-producer matrix, without an installed-acceptance or macOS dependency, and check
-that packed artifact with Node.js
+separate runtime matrix. Runtime jobs depend on module detection and the
+ordinary `verify` matrix, so they wait for ordinary verification on Linux,
+Windows and macOS. They do not depend on installed acceptance and check the
+Ubuntu-produced packed artifact with Node.js
 `22.14.0`, the latest `22` and `24` releases, and current
 `node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
 and exercises CLI commands, interactive prompt dependencies and SQLite. These
@@ -269,15 +272,14 @@ PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs both phases on every
 native platform, the runtime compatibility matrix and the dedicated Linux shell
-completion job. Both Linux/Windows matrices and the macOS job need only module
-detection. Within macOS, installed validation runs after ordinary validation even
-if the latter fails, provided shared preparation and architecture checks passed
-and the job was not cancelled. Ordinary environment/probe uploads run before the
-fixed receipt paths are cleared and the installed recorder starts. Each phase
-retains its own outcome, artifacts, build and cleanup; an ordinary failure still
-fails the job and final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
-records the original parallel model; the [single macOS allocation decision](../.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
-owns its partial replacement, failure handling and budget trade-off.
+completion job. Both native matrices need only module detection, so ordinary
+validation does not gate installed validation. Each job owns its checkout,
+toolchain, dependencies, environment recorder, build, fixtures, cleanup and
+artifacts. The two macOS jobs use separate workspaces, so their fixed
+receipt paths need no phase handoff or clearing. A failure or cancellation in
+either job fails the final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
+records the original parallel model; the [independent macOS validation decision](../.agents/notes/implemented/testing/2026-11-07-independent-macos-cli-validation.md)
+owns the current macOS topology and its allocation trade-off.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -292,9 +294,8 @@ receipts and diagnostics use `daynight-cli-installed-*` and
 `daynight-cli-installed-probes-*`. The installed receipts include the environment,
 curated acceptance outputs and canonical preparation/cleanup result. Every
 native version and both complete phase workloads remain required whenever CLI
-validation is selected. Linux/Windows phases each have a 600-second job gate;
-macOS retains a 600-second limit per validation phase inside one 1200-second
-job, including shared setup and uploads. The
+validation is selected. Every ordinary and installed matrix job has a 600-second
+limit, including setup, validation and uploads. The
 [cold-start decision](../.agents/notes/archived/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 records the measurements, deadline semantics and remaining limits.
 
@@ -520,14 +521,16 @@ bash scripts/check.sh
 ```
 
 The check builds and vets the Go module using a unit-test Web resource overlay,
-prepares the pinned UniAuth fixture, clears cached Go test results and runs
-module tests and coverage. Production builds use real Web assets. The configured
+prepares the pinned UniAuth fixture, checks the focused Webhook Runner process
+recovery witness with its dedicated test build, clears cached Go test results and
+runs module tests and coverage. Production builds use real Web assets. The configured
 package and function thresholds are 85% and 80%, with no production exclusions;
 the raw statement coverage must be strictly greater than 90%. Critical-block
-failure is disabled; the check enables race locally but not in CI. The
+failure is disabled; race is enabled locally and for main pushes, while PR CI
+disables it explicitly. The
 [server guide](../packages/daynight-server/README.md#race-instrumentation)
-describes the actual check. Tests require the isolated PostgreSQL instance and
-fail if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
+describes the actual check. The complete module check requires an isolated
+PostgreSQL instance and fails if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
 Business-rule unit tests use domain facts and DAO-interface mocks without a
@@ -535,7 +538,10 @@ PostgreSQL fixture; SQL, transaction, persistence and cross-operation authority
 proofs remain integration tests. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns their scope and failure expectations. A selected pure-rule test must run
-without a database URL; the full module check still includes real PostgreSQL.
+without a database URL; the complete `internal/service/webhook` suite also has
+this property. Its source producers, HTTP/protocol adapters and PostgreSQL
+contracts retain their own proofs. The server guide owns the standalone command;
+the full module check still includes real PostgreSQL.
 
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;
@@ -596,9 +602,10 @@ pnpm web:test:browser
 
 The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes them into the Go embed directory. A production Go build
-requires generated assets. Web quality runs the module harness, Vitest/V8 suite
-and a statement gate strictly greater than 90%; it does not start the Go service
-or an installed CLI. `pnpm web:test:browser` separately runs the controlled
+requires generated assets. Web quality runs full Web typechecking, the module
+harness, the production Docker Web build, the Vitest/V8 suite and a statement
+gate strictly greater than 90%; it does not start the Go service or an installed
+CLI. `pnpm web:test:browser` separately runs the controlled
 module browser fixtures after Playwright Chromium is installed; see the
 [Web guide](../packages/daynight-web/README.md#validation-and-build). The CI Web quality job contributes its result to the final
 `checks` gate alongside the independent Web browser job; both must succeed when
@@ -612,6 +619,35 @@ containers, volume, network and image tag after completion, failure or cancellat
 The [independent browser checks](../packages/daynight-web/README.md#independent-browser-checks)
 include Project withdrawal against controlled API responses and real browser
 storage; they do not establish live-service behavior.
+
+## Product E2E
+
+`packages/e2e_tests` owns the complete-product Linux runner. It compiles the CLI,
+production Web and full Go Server from the current checkout, builds the pinned
+unmodified UniAuth command and Console, and starts a dedicated PostgreSQL
+instance and auth runtime on dedicated networks. The database network is internal;
+a private ingress bridge publishes loopback ports, and the application removes
+its default route before starting services.
+
+```bash
+pnpm --filter @codetreker/daynight-e2e typecheck
+pnpm e2e:test:harness
+pnpm e2e:test
+```
+
+The product entry performs normal browser/CLI login and same-data task workflows.
+Module test jobs do not execute it. The independent `verify-e2e` Linux CI job
+runs the same explicit product entry after framework types and harness checks.
+Installed CLI checks retain packaging and platform responsibilities. Framework self-tests own
+setup, timeout, cancellation and cleanup failures; business fault and concurrency
+matrices remain in their modules.
+
+The [Product E2E guide](../packages/e2e_tests/README.md) owns exact prerequisites,
+optional pinned-source reuse, local OAuth provider behavior, source/artifact
+receipts and resource cleanup. CI reserves a separate always-run recovery step
+before uploading only result and log directories; it does not upload private
+credentials, database data or copied artifacts. Preparation can fetch dependencies; the running
+system does not require an external database, auth deployment or GitHub account.
 
 ## Local stress validation
 
@@ -745,46 +781,53 @@ records the new-artifact identity, OIDC and public-verification choices. The
 ## CI selection
 
 The [`checks` workflow](../.github/workflows/checks.yml) compares the explicit PR
-head with its merge base using the complete Git history and NUL-delimited paths.
+head with its merge base using complete Git history and NUL-delimited paths.
 Deletions and both sides of renames count. The
-[selector](../.github/scripts/ci-modules.mts) assigns each application directory
-to its module; the [root routing table](../README.md#ci-selection) owns that map.
-Mixed changes select their union, and unclassified paths select all modules.
+[selector](../.github/scripts/ci-modules.mts) assigns module tests by directory
+and product E2E by its framework and production build inputs; the
+[root routing table](../README.md#ci-selection) owns the summary map. Mixed
+changes select their union, and unknown paths select all jobs.
 
-Implementations, fixtures and test tooling follow their containing module,
-including CLI source imported by Web and Session fixtures read by Go tests.
-Root Node workspace manifests, npm configuration and the entire `patches/`
-directory select CLI and Web. These Node inputs do not select Go. A simultaneous
-Go-directory change still selects Go regardless of path order. Documentation
-and repository-instruction exclusions remain effective inside module directories,
-except that bundled CLI source Markdown retains CLI validation. The
-[module routing decision](../.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
-records this policy and the role of complete main-push validation.
+Implementations, fixtures and test tooling select their containing module.
+Production CLI, Web and Go inputs additionally select product E2E; module-only
+tests and fixtures do not. Root Node inputs and dependency patches select CLI,
+Web and product E2E, without inventing a Go-module dependency. Documentation and
+instruction exclusions remain effective inside directories, except for bundled
+CLI source resources. Deployment changes select Web and do not become product
+E2E inputs merely because both environments use Docker.
 
-For a CLI `package.json` modification, a PR containing only a regular-file
-version change and no other semantic change selects no application jobs. The
-routing tests and final gate still run; publication validates the artifact at its
-release commit. Other changes retain normal selection, and malformed manifests
-or Git read failures fail detection. Documentation exclusions do not suppress
-jobs selected by other paths.
+A PR changing only the CLI manifest's regular-file version, with no other
+semantic or mode change, selects no application jobs. Routing tests and the
+final gate still run; publication validates its frozen artifact separately.
+Malformed manifests or Git failures fail detection.
 
-CLI selection runs ordinary and installed phases on Linux, Windows and macOS
-ARM64, a Node compatibility matrix, and the Linux shell-completion job. The
-ordinary Ubuntu job supplies the runtime package. macOS runs its ordinary and
-installed phases in sequence with separate builds, outcomes and artifacts. Go
-has its own PostgreSQL service and uploads the raw coverage profile. Web selection
-starts two jobs that depend only on module detection. `verify-web-quality` runs
-the harness, Vitest coverage and source-inventory checker with bounded stages,
-then uploads coverage evidence. `verify-web-browser` prepares its own locked
-dependencies and Chromium, runs the configured assistant Playwright suite, and
-uploads JUnit results and browser captures. Each Web job has a 20-minute limit;
-neither waits for the other. The final gate accepts only successful or skipped
-preceding jobs and requires both Web jobs to succeed when selected. Stress
-workloads remain local-only.
+CLI selection runs ordinary and installed phases independently on Linux,
+Windows and macOS ARM64, plus Node compatibility and shell checks. Go has its
+own PostgreSQL-backed module gate and coverage artifact. Web quality owns full
+typechecking, harness, production Docker Web build and coverage; its separate
+browser job owns frontend fixtures. Product E2E waits only for detection and
+prepares its own Node.js, pnpm, Go, Chromium, database and complete auth system.
+It rebuilds every runtime product from the checked-out source, even on a
+build-dependency cache hit.
+
+The E2E job has a 40-minute outer limit. Every preparation step is bounded; all
+step maxima total 38 minutes, leaving 2 minutes of job margin. The journey is
+bounded to 15 minutes, followed by an always-run recovery step bounded to
+3 minutes and a bounded evidence upload. Recovery uses the
+saved exact run identity to remove its Docker resources and private files after
+normal completion, failure or runner termination. Original scenario and cleanup
+failures stay observable. Uploads include only `.tmp/product-e2e/*/results/**`
+and `*/logs/**`, with 30-day retention.
+
+Final `checks` wait for every independent job. Failure and cancellation are
+rejected; selected Web and product E2E jobs must equal `success`, so an unexpected
+skip cannot pass their gate. Routine CI excludes stress workloads. The
+[test-writing rules](writing_tests.md) own test boundaries, while the
+[product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
 Workflow concurrency cancels an older PR run for the same ref; main pushes queue
 without cancelling an active run. Documentation-only PRs run routing tests and
-the gate. Every main push selects all modules. npm publication performs its own
+the gate. Every main push selects all modules and product E2E. npm publication performs its own
 CLI validation at the frozen release commit.
 
 To validate routing rules locally without application dependencies, run:

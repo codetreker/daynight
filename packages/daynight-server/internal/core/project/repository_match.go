@@ -9,6 +9,9 @@ type RepositoryMatch struct {
 }
 
 func NewRepositoryMatch(address string) (*RepositoryMatch, error) {
+	if err := validateRepoURLSize(address); err != nil {
+		return nil, err
+	}
 	identity, err := RepositoryIdentity(address)
 	if err != nil {
 		return nil, err

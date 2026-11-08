@@ -119,9 +119,18 @@ removed the separate Go E2E job. Pair validation follows the current module jobs
 including Go and Web quality with their current coverage gates. The independent
 [Web job separation](https://github.com/codetreker/daynight/commit/903d6ab9e8f2bbb28fa76ed10b3d7e3e0cd4e335)
 places the frontend Playwright regressions in their own job. Both Web jobs verify
-the fixed input before installation and publish distinct receipts; neither
-restores a removed cross-product runner. The final gate expects 14 pairing
-receipts when all modules are selected.
+the fixed input before installation and publish distinct receipts.
+
+The [native CLI matrices](2026-11-07-independent-macos-cli-validation.md) run
+ordinary and installed validation independently on all three platforms. Each
+macOS job validates and reports its own fixed input. The separate
+[product E2E framework](2026-11-08-self-contained-product-e2e.md) builds the CLI,
+Server and production Web from one checkout; it validates the same fixed input
+before dependency installation and publishes its own receipt. Its existing
+selection, build, isolation, cleanup and evidence rules remain authoritative.
+The final gate expects 16 pairing receipts when all modules are selected:
+detection, eleven CLI consumers, Go, both Web jobs and product E2E. Unselected
+jobs do not imply successful validation of their modules or product behavior.
 
 ## Alternatives
 

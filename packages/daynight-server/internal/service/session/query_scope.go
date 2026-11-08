@@ -8,7 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func (s *Service) taskQuery(ctx context.Context, principal model.Principal, project, taskID string, work func(*sessioncore.Operation, store.SessionScope, *sessioncore.TaskAccess, bool, func(string) (*sessioncore.Access, error)) error) error {
+func (s *Service) taskQuery(ctx context.Context, principal model.Principal, project, taskID string, work func(*sessioncore.Operation, store.SessionScope, *sessioncore.TaskAccess, func(string) (*sessioncore.Access, error)) error) error {
 	op, err := s.engine.BeginOperation()
 	if err != nil {
 		return err
@@ -22,12 +22,11 @@ func (s *Service) taskQuery(ctx context.Context, principal model.Principal, proj
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		load := func(id string) (*sessioncore.Access, error) { return loadSession(ctx, op, scope, id) }
-		return work(op, scope, task, admin, load)
+		return work(op, scope, task, load)
 	})
 }
 
@@ -45,23 +44,23 @@ func (s *Service) credential(ctx context.Context, principal model.Principal, wor
 	})
 }
 
-func (s *Service) authorize(ctx context.Context, op *sessioncore.Operation, scope store.SessionScope, p model.Principal, authority sessioncore.Authority) (bool, error) {
+func (s *Service) authorize(ctx context.Context, op *sessioncore.Operation, scope store.SessionScope, p model.Principal, authority sessioncore.Authority) error {
 	if err := op.LockCredential(ctx, scope, p); err != nil {
-		return false, err
+		return err
 	}
 	if !authority.Test {
-		return op.ProjectAdmin(ctx, scope, p, authority.ProjectID)
+		return op.CheckProjectAccess(ctx, scope, p, authority.ProjectID)
 	}
 	if p.UserID != authority.OwnerID {
-		return false, &model.Fault{Code: "forbidden", Message: "Session access is not available."}
+		return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
 	}
 	if authority.ParentCredentialID != "" {
 		parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
 		if err := op.LockCredential(ctx, scope, parent); err != nil {
-			return false, err
+			return err
 		}
 	}
-	return true, nil
+	return nil
 }
 
 func (s *Service) registerTerminal(ctx context.Context, principal model.Principal, project, taskID string, work func(*sessioncore.Operation, store.SessionScope, *sessioncore.TaskAccess) error) error {
@@ -81,7 +80,7 @@ func (s *Service) registerTerminal(ctx context.Context, principal model.Principa
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		if _, err = op.ProjectAdmin(ctx, scope, principal, project); err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		return work(op, scope, task)

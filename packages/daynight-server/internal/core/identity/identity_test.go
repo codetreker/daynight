@@ -18,16 +18,18 @@ import (
 // are exercised through the module rather than reproduced by the fixture.
 type identityDAO struct {
 	store.IdentityDAO
-	failures  map[string]error
-	calls     []string
-	pending   model.LoginTransaction
-	user      model.User
-	principal model.Principal
-	facts     store.PersonalTeamFacts
-	pat       model.PersonalAccessToken
-	pats      []model.PersonalAccessToken
-	device    model.DeviceAuthorization
-	attempts  int
+	failures      map[string]error
+	calls         []string
+	pending       model.LoginTransaction
+	user          model.User
+	principal     model.Principal
+	facts         store.PersonalTeamFacts
+	pat           model.PersonalAccessToken
+	pats          []model.PersonalAccessToken
+	device        model.DeviceAuthorization
+	attempts      int
+	admissionTime time.Time
+	rejection     string
 }
 
 func (d *identityDAO) hit(name string) error {
@@ -35,6 +37,12 @@ func (d *identityDAO) hit(name string) error {
 	return d.failures[name]
 }
 func (d *identityDAO) CleanupCredentials(context.Context, time.Time) error { return d.hit("cleanup") }
+func (d *identityDAO) CleanupLoginCredentials(context.Context, time.Time, time.Time) error {
+	return d.hit("cleanup")
+}
+func (d *identityDAO) AdmitLogin(_ context.Context, _ []byte, _, _ int) (time.Time, string, error) {
+	return d.admissionTime, d.rejection, d.hit("admit")
+}
 func (d *identityDAO) InsertLogin(_ context.Context, p model.LoginTransaction) error {
 	d.pending = p
 	return d.hit("insert-login")
@@ -116,7 +124,7 @@ func TestLoginRulesAndPersistenceFailures(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	m := NewIdentity("https://example.test/auth/callback")
-	d := &identityDAO{}
+	d := &identityDAO{admissionTime: now}
 	failure := errors.New("database failure")
 	if m.CallbackURL() != "https://example.test/auth/callback" {
 		t.Fatal("callback changed")
@@ -133,13 +141,33 @@ func TestLoginRulesAndPersistenceFailures(t *testing.T) {
 		t.Fatalf("login preparation: %#v %#v %v", start, pending, err)
 	}
 	d.failures = map[string]error{"cleanup": failure}
-	if err = m.CreateLogin(ctx, d, pending, now); !errors.Is(err, failure) {
+	if _, err = m.CreateLogin(ctx, d, pending, now); !errors.Is(err, failure) {
 		t.Fatalf("cleanup failure: %v", err)
 	}
 	d.failures = nil
-	if err = m.CreateLogin(ctx, d, pending, now); err != nil || d.pending.ID != start.ID {
+	if _, err = m.CreateLogin(ctx, d, pending, now); err != nil || d.pending.ID != start.ID {
 		t.Fatalf("login persistence: %v", err)
 	}
+	d.failures = map[string]error{"admit": failure}
+	d.calls = nil
+	if _, err = m.CreateLogin(ctx, d, pending, now); !errors.Is(err, failure) || len(d.calls) != 1 {
+		t.Fatalf("admission failure: %v, %v", err, d.calls)
+	}
+	d.failures = map[string]error{"insert-login": failure}
+	if _, err = m.CreateLogin(ctx, d, pending, now); !errors.Is(err, failure) {
+		t.Fatalf("insert failure: %v", err)
+	}
+	d.failures = nil
+	for _, code := range []string{"rate_limited", "capacity_exhausted"} {
+		d.calls = nil
+		d.rejection = code
+		_, err = m.CreateLogin(ctx, d, pending, now)
+		checkFault(t, err, code)
+		if len(d.calls) != 1 || d.calls[0] != "admit" {
+			t.Fatalf("rejected login performed writes: %v", d.calls)
+		}
+	}
+	d.rejection = ""
 	for _, q := range []url.Values{{}, {"state": {"bad"}}, {"state": {start.State, start.State}}} {
 		checkFault(t, ValidateCallback(q, start.BrowserBinding), "unauthenticated")
 	}
@@ -203,6 +231,20 @@ func TestLoginRulesAndPersistenceFailures(t *testing.T) {
 	if p, err := m.Providers([]string{"github"}, "", nil); err != nil || len(p) != 1 {
 		t.Fatalf("providers: %v %v", p, err)
 	}
+}
+
+func TestLoginReturnPathByteLimit(t *testing.T) {
+	m := NewIdentity("https://example.test/auth/callback")
+	for _, value := range []string{
+		"/" + strings.Repeat("a", MaxReturnPathBytes-1),
+		"/" + strings.Repeat("界", (MaxReturnPathBytes-1)/3),
+	} {
+		if err := m.ValidateLogin("github", value); err != nil {
+			t.Fatalf("valid boundary rejected: %v", err)
+		}
+		checkFault(t, m.ValidateLogin("github", value+"a"), "invalid_input")
+	}
+	checkFault(t, m.ValidateLogin("github", "/"+strings.Repeat("a", MaxReturnPathBytes)+"%zz"), "invalid_input")
 }
 
 func TestPATLifecycleValidationAndFailures(t *testing.T) {

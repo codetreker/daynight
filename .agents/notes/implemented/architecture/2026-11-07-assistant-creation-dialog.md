@@ -25,9 +25,14 @@ resizing the list or replacing the existing Session host.
 
 The form stores explicit choices separately from effective values. Bot defaults
 resolve successful preferences and configuration sources. Native model discovery
-supplies the available catalog and per-model reasoning capability; its defaults
-do not replace Bot defaults. Browsing and reading a menu leave the request
-implicit. Confirming a directory or selecting a machine-dependent option pins the
+supplies the bounded catalog, including hidden models, and per-model reasoning
+capability. Its successful default observation fills a native/null delegation
+without replacing an explicit choice or a value already resolved by Bot defaults.
+The effort fallback must belong to the same effective model, including its
+aliases. Hidden models participate in capability matching but stay out of new
+model choices; a previously explicit hidden value remains available for reset.
+Browsing and reading a menu leave the request implicit, and choosing only effort
+never promotes an observed model into an explicit override. Confirming a directory or selecting a machine-dependent option pins the
 resolved Worker. Worker, Provider and model changes clear the appropriate
 subordinate form overrides and trigger fresh resolution. Current explicit Worker
 configuration errors remain visible.
@@ -63,6 +68,11 @@ preferences and could bind a previously automatic request to stale preview
 values. The form submits only explicit choices and leaves resolution with the
 server. The model catalog remains a capability source, not a second preference
 resolver.
+
+**Require a model selection before choosing effort.** Native delegation is a valid
+model choice. Requiring an explicit model would change the request and its future
+successful preference merely to expose a supported effort control. A successful
+catalog observation supplies that control without altering the request.
 
 ## Consequences
 

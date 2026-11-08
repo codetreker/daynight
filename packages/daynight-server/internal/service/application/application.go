@@ -19,6 +19,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
@@ -49,7 +50,11 @@ type Application struct {
 	Sessions       *session.Service
 }
 
-func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration) *Application {
+func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration, capture ...task.Capturer) *Application {
+	var capturer task.Capturer = &webhook.Capturer{}
+	if len(capture) != 0 && capture[0] != nil {
+		capturer = capture[0]
+	}
 	engine := sessioncore.NewEngine(files)
 	workerReadOnly := worker.NewReadOnly(database)
 	return &Application{
@@ -63,11 +68,11 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		WorkerReadOnly: workerReadOnly,
 		Bots:           bot.NewWithNativeDiscovery(database, workerReadOnly),
 		BotDeletions:   bot.NewDeletions(database, files, engine),
-		Tasks:          task.NewTasks(database),
+		Tasks:          task.NewTasks(database, capturer),
 		TaskSearch:     database,
-		TaskSteps:      task.NewTaskSteps(database),
-		TaskThreads:    task.NewTaskThreads(database),
-		TaskSync:       task.NewTaskSync(database, overlap),
+		TaskSteps:      task.NewTaskSteps(database, capturer),
+		TaskThreads:    task.NewTaskThreads(database, capturer),
+		TaskSync:       task.NewTaskSync(database, engine, overlap),
 		Attachments:    attachment.NewAttachments(database, database, files),
 		Engine:         engine,
 		Sessions:       session.New(database, engine),

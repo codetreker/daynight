@@ -275,7 +275,7 @@ func TestTeamMemberPageDoesNotMaterializeOversizedProfile(t *testing.T) {
 	s, _, team := storeTeamFixture(t)
 	_, other, _ := testAuthRecords(t, s)
 	mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, other.UserID)
-	mustQueryExec(t, s, `UPDATE users SET name=repeat('x',1000000) WHERE id=$1`, other.UserID)
+	mustQueryExec(t, s, `UPDATE users SET name=repeat('x',$2) WHERE id=$1`, other.UserID, TeamMemberProfileByteLimit+1)
 	ctx := context.Background()
 	var checked bool
 	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {

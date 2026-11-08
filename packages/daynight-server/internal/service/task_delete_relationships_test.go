@@ -1,6 +1,7 @@
 package service
 
 import (
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
@@ -60,7 +61,7 @@ func TestTaskDeletionRemovesIncomingRelationshipsAndPreservesSourceFacts(t *test
 		data, marker, updated, version := deletedTaskStorage(t, database, source)
 		before[source.ID] = facts{data, marker, updated, version}
 	}
-	sync := taskservice.NewTaskSync(database, time.Second)
+	sync := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), time.Second)
 	baseline, err := sync.Get(ctx, principal, projectID, taskservice.TaskSyncRequest{})
 	if err != nil {
 		t.Fatal(err)

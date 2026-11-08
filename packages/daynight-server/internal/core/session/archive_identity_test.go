@@ -74,8 +74,11 @@ func TestArchiveNativeIdentitySurvivesAnotherRelayLiveCache(t *testing.T) {
 				t.Fatal("terminal read regressed persisted identity", savedNative, savedLifecycle, err)
 			}
 			got, err := f.s.ArchiveContent(ctx, f.p, f.project, f.task, v.SessionID)
-			if err != nil || !bytes.Equal(got, data) {
+			if err != nil || !bytes.Equal(got.Data, data) {
 				t.Fatal("archive differs across relay instances", err)
+			}
+			if err := got.Close(); err != nil {
+				t.Fatal(err)
 			}
 			if _, err = f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); err != nil {
 				t.Fatal("original relay rejected identical archive retry", err)

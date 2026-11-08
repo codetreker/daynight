@@ -1,82 +1,95 @@
 package task_test
 
 import (
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
-	"context"
+	"encoding/json"
+	"errors"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	ctx := context.Background()
-	target := createTask(t, tasks, principal, project.ID, "Atomic property snapshot")
-	before, err := tasks.SetProperty(ctx, principal, project.ID, target.ID, "pullRequests", `[{"url":"before\u0000中文","title":"same"},{"url":"before\u0000中文","title":"same"}]`, target.Version)
+	f := newTaskReadFixture(t)
+	epoch := taskReadID(90)
+	raw, err := taskproperties.ParseInput("pullRequests", "[{\"url\":\"before\\u0000中文\",\"title\":\"same\"},{\"url\":\"before\\u0000中文\",\"title\":\"same\"}]")
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseline, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var after model.Task
-	writes := 0
-	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool {
-		return strings.Contains(sql, "SELECT task_id::text,name,value FROM task_properties")
-	}, start: func() {
-		writes++
-		var writeErr error
-		after, writeErr = tasks.SetProperty(ctx, principal, project.ID, target.ID, "pullRequests", `[]`, before.Version)
-		if writeErr != nil {
-			t.Fatal(writeErr)
+	before := taskReadView(taskReadID(1), "Atomic property snapshot", 2, f.observed)
+	before.Properties = model.TaskProperties{"pullRequests": raw}
+	after := before
+	after.Version = 3
+	after.UpdatedAt = before.UpdatedAt.Add(time.Second)
+	after.Properties = model.TaskProperties{"pullRequests": json.RawMessage("[]")}
+	removed := after
+	removed.Version = 4
+	removed.UpdatedAt = after.UpdatedAt.Add(time.Second)
+	removed.Properties = model.TaskProperties{}
+	var first model.TaskSync
+	for index, row := range []model.TaskViewRecord{before, after, removed} {
+		request := taskservice.TaskSyncRequest{Epoch: epoch}
+		var wantLower *time.Time
+		if index > 0 {
+			since := before.UpdatedAt
+			if index == 2 {
+				since = after.UpdatedAt
+			}
+			request.Since = &since
+			wantLower = pointer(since.Add(-10 * time.Second))
 		}
-	}})
-	old, err := taskservice.NewTaskSync(traced.store, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch})
-	if err != nil || writes != 1 || len(old.Tasks) != 1 || old.Epoch != baseline.Epoch || old.Tasks[0].Version != before.Version || !taskproperties.Equal(old.Tasks[0].Properties, before.Properties) {
-		t.Fatalf("mixed task/property snapshot: %#v %v writes=%d", old, err, writes)
+		sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+			if !model.EqualOptional(lower, wantLower) {
+				t.Fatalf("property delta lower=%v want=%v", lower, wantLower)
+			}
+			return []model.TaskViewRecord{row}, nil
+		}, []model.TaskAssigneeFact{}, 10*time.Second)
+		result, err := sync.Get(f.ctx, f.principal, f.project.ID, request)
+		if err != nil || result.Mode != "delta" || result.Epoch != epoch || len(result.Tasks) != 1 || result.Tasks[0].Version != row.Version || !taskproperties.Equal(result.Tasks[0].Properties, row.Properties) || result.Tasks[0].Properties == nil {
+			t.Fatalf("version/property scope changed: %#v %v", result, err)
+		}
+		if index == 0 {
+			first = result
+		}
+		if !taskproperties.Equal(first.Tasks[0].Properties, before.Properties) || first.Tasks[0].Version != before.Version {
+			t.Fatal("later scope changed an earlier property/version response")
+		}
 	}
-	fresh, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &before.UpdatedAt})
-	if err != nil || fresh.Mode != "delta" || fresh.Epoch != baseline.Epoch || len(fresh.Tasks) != 1 || fresh.Tasks[0].Version != after.Version || !taskproperties.Equal(fresh.Tasks[0].Properties, after.Properties) {
-		t.Fatalf("new property state missing: %#v %v", fresh, err)
-	}
-	removed, err := tasks.RemoveProperty(ctx, principal, project.ID, target.ID, "pullRequests", after.Version)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fresh, err = taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &after.UpdatedAt})
-	if err != nil || len(fresh.Tasks) != 1 || fresh.Tasks[0].Version != removed.Version || fresh.Tasks[0].Properties == nil || len(fresh.Tasks[0].Properties) != 0 || fresh.Epoch != baseline.Epoch {
-		t.Fatalf("removed property returned a default or rotated epoch: %#v %v", fresh, err)
+	if f.reads != 3 {
+		t.Fatalf("property states used %d snapshots", f.reads)
 	}
 }
 
 func TestTaskSyncWindowOnlyValidatesReturnedProperties(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	ctx := context.Background()
-	old := createTask(t, tasks, principal, project.ID, "Outside delta")
-	recent := createTask(t, tasks, principal, project.ID, "Inside delta")
-	baseline, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
-	if err != nil {
-		t.Fatal(err)
+	f := newTaskReadFixture(t)
+	epoch := taskReadID(90)
+	recent := taskReadView(taskReadID(2), "Inside delta", 1, f.observed)
+	_, invalid := taskproperties.ParseInput("unknown-property", "[]")
+	if invalid == nil {
+		t.Fatal("corrupt property fixture was accepted")
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET updated_at=$2 WHERE id=$1`, old.ID, recent.UpdatedAt.Add(-time.Hour)); err != nil {
-		t.Fatal(err)
+	since := recent.UpdatedAt
+	sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 2}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+		if lower == nil {
+			return nil, invalid
+		}
+		want := since.Add(-10 * time.Second)
+		if *lower != want {
+			t.Fatalf("selected property window=%v want=%v", lower, want)
+		}
+		return []model.TaskViewRecord{recent}, nil
+	}, []model.TaskAssigneeFact{}, 10*time.Second)
+	delta, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: epoch, Since: &since})
+	if err != nil || !reflect.DeepEqual(delta.Tasks, []model.TaskViewRecord{recent}) || delta.Tasks[0].Properties == nil || len(delta.Tasks[0].Properties) != 0 {
+		t.Fatalf("selected properties changed: %#v %v", delta, err)
 	}
-	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'unknown-property',$2)`, old.ID, `[]`); err != nil {
-		t.Fatal(err)
-	}
-	delta, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &recent.UpdatedAt})
-	if err != nil || len(delta.Tasks) != 1 || delta.Tasks[0].ID != recent.ID || delta.Tasks[0].Properties == nil || len(delta.Tasks[0].Properties) != 0 {
-		t.Fatalf("window scanned or synthesized unrelated properties: %#v %v", delta, err)
-	}
-	snapshot, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
-	requireFault(t, err, "invalid_input")
-	if !reflect.DeepEqual(snapshot, model.TaskSync{}) {
-		t.Fatalf("snapshot accepted corrupt sibling or returned partial state: %#v", snapshot)
+	snapshot, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
+	fault := requireFault(t, err, "invalid_input")
+	if !errors.Is(fault, invalid) || !reflect.DeepEqual(snapshot, model.TaskSync{}) {
+		t.Fatalf("corrupt snapshot leaked partial rows or cause: %#v %v", snapshot, err)
 	}
 }

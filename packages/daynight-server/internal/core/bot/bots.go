@@ -71,7 +71,7 @@ func NormalizeBotRequest(input CreateBot) (CreateBot, string, error) {
 		return input, "", invalidInput("Bot name must be valid Unicode without control characters.")
 	}
 	input.Name = strings.TrimSpace(input.Name)
-	if count := utf8.RuneCountInString(input.Name); count < 1 || count > 40 {
+	if count := utf8.RuneCountInString(input.Name); count < 1 || count > MaxNameCodePoints {
 		return input, "", invalidInput("Bot name must contain 1 to 40 characters.")
 	}
 	if input.Overrides.WorkerID != nil {
@@ -224,6 +224,19 @@ func List(ctx context.Context, snapshot store.SnapshotScope, principal model.Pri
 		}
 	}
 	return snapshot.BotDAO().Bots(ctx, principal.UserID, workerID, page)
+}
+
+// ListBounded authorizes the same scopes as List and reads one bounded projection page.
+func ListBounded(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, workerID *string, page store.Page) (store.BotPage, error) {
+	if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
+		return store.BotPage{}, botCredentialError(err)
+	}
+	if workerID != nil {
+		if err := botWorkerError(snapshot.BotDAO().BotWorker(ctx, principal.UserID, *workerID)); err != nil {
+			return store.BotPage{}, err
+		}
+	}
+	return snapshot.BotDAO().BotsBounded(ctx, principal.UserID, workerID, page)
 }
 
 func ListPage(principal model.Principal, workerID *string, request model.PageRequest) (store.Page, error) {

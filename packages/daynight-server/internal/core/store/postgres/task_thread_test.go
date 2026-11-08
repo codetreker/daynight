@@ -157,6 +157,8 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	name := "Alice"
+	mustQueryExec(t, database, `UPDATE users SET name=$2 WHERE id=$1`, principal.UserID, name)
 	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
 		head, err := tx.ThreadDAO().LockHead(ctx, task.ID)
 		if err != nil || head == nil || *head != first.Position() {
@@ -165,7 +167,11 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 		if _, err := tx.ThreadDAO().ThreadMessage(ctx, task.ID, first.ID); err != nil {
 			return err
 		}
-		reply, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID, Agent: true,
+		named, err := tx.CredentialDAO().AuthorName(ctx, principal.UserID)
+		if err != nil || named == nil || *named != name {
+			t.Fatalf("current author name: %#v %v", named, err)
+		}
+		reply, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID, DisplayName: named, Agent: true,
 			Execution: &model.ThreadExecution{ClaimID: queryID(900), WorkerID: queryID(901), Provider: "codex"}}, Body: "reply", ReplyTo: &first.ID})
 		if err != nil {
 			return err
@@ -177,7 +183,7 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	mustQueryExec(t, database, `UPDATE users SET name='Renamed' WHERE id=$1`, principal.UserID)
+	mustQueryExec(t, database, `UPDATE users SET name=$2 WHERE id=$1`, principal.UserID, strings.Repeat("later-name", 10000))
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return err
@@ -195,7 +201,7 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 			t.Fatalf("immutable original: %#v %v", read, err)
 		}
 		read, err = snapshot.TaskDAO().ThreadMessage(ctx, task.ID, reply.ID)
-		if err != nil || !reflect.DeepEqual(read, reply) {
+		if err != nil || !reflect.DeepEqual(read, reply) || read.Author.DisplayName == nil || *read.Author.DisplayName != name {
 			t.Fatalf("immutable reply/source: %#v %v", read, err)
 		}
 		for _, before := range []bool{false, true} {

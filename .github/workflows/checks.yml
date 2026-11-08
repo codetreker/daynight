@@ -26,6 +26,7 @@ jobs:
       cli: ${{ steps.modules.outputs.cli }}
       server: ${{ steps.modules.outputs.server }}
       web: ${{ steps.modules.outputs.web }}
+      e2e: ${{ steps.modules.outputs.e2e }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,7 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
@@ -104,6 +105,9 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        if: matrix.os == 'macos-15'
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
       - name: Record native validation environment
         id: environment
         run: node packages/daynight/scripts/validation-environment.ts
@@ -112,7 +116,11 @@ jobs:
       - name: Test the local development installer
         run: pnpm dev:test
       - name: Test the compiled CLI
+        if: matrix.os != 'macos-15'
         run: pnpm --filter @codetreker/daynight exec vitest run
+      - name: Test the compiled CLI with macOS termination diagnostics
+        if: matrix.os == 'macos-15'
+        run: node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run
       - name: Pack the CLI for runtime compatibility checks
         if: matrix.os == 'ubuntu-latest'
         run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
@@ -143,6 +151,16 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() && matrix.os == 'macos-15' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-termination-macos-15
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload protected image test input evidence
         if: ${{ always() && steps.image-pairs.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -160,7 +178,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
@@ -193,6 +211,9 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Require macOS ARM64
+        if: matrix.os == 'macos-15'
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
       - name: Record native validation environment
         id: environment
         run: node packages/daynight/scripts/validation-environment.ts
@@ -224,131 +245,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: daynight-image-test-pairs-verify-installed-${{ matrix.os }}
-          path: .tmp/image-test-pairs.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-
-  verify-macos:
-    name: verify (macOS ARM64)
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
-    runs-on: macos-15
-    timeout-minutes: 20
-    env:
-      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
-      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          check-latest: true
-          package-manager-cache: false
-      - name: Validate and materialize protected image test inputs
-        id: image-pairs
-        working-directory: ${{ github.workspace }}
-        env:
-          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
-          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
-          IMAGE_PAIR_EVENT: ${{ github.event_name }}
-          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node .github/scripts/image-test-pairs.mts
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          version: 11.28.6
-          run_install: false
-          dest: ${{ github.workspace }}/.tmp/pnpm
-      - name: Install native CLI dependencies
-        id: preparation
-        run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
-      - name: Require macOS ARM64
-        id: architecture
-        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
-      - name: Record ordinary CLI environment
-        id: ordinary-environment
-        run: node packages/daynight/scripts/validation-environment.ts
-      - name: Verify ordinary CLI
-        id: ordinary-validation
-        timeout-minutes: 10
-        run: |
-          pnpm typecheck
-          pnpm build
-          pnpm dev:test
-          node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run
-      - name: Upload ordinary CLI environment
-        if: ${{ always() && steps.ordinary-environment.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-tests-macos-15
-          path: .tmp/validation-environment.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Upload ordinary CLI probe diagnostics
-        if: ${{ always() && steps.ordinary-environment.outcome != 'skipped' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-tests-probes-macos-15
-          path: .tmp/validation-probes.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Upload macOS test termination diagnostics
-        if: ${{ always() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-tests-termination-macos-15
-          path: .tmp/native-validation/
-          include-hidden-files: true
-          if-no-files-found: warn
-          retention-days: 30
-      - name: Clear installed CLI evidence paths
-        id: installed-evidence
-        if: ${{ !cancelled() && steps.preparation.outcome == 'success' && steps.architecture.outcome == 'success' }}
-        run: |
-          node --input-type=module -e "import { rm } from 'node:fs/promises'; await Promise.all(['.tmp/validation-environment.json', '.tmp/validation-probes.json'].map((path) => rm(path, { force: true })));"
-      - name: Record installed CLI environment
-        id: installed-environment
-        if: ${{ !cancelled() && steps.preparation.outcome == 'success' && steps.architecture.outcome == 'success' && steps.installed-evidence.outcome == 'success' }}
-        run: node packages/daynight/scripts/validation-environment.ts
-      - name: Verify installed CLI
-        id: installed-validation
-        if: ${{ !cancelled() && steps.installed-environment.outcome == 'success' }}
-        timeout-minutes: 10
-        run: |
-          pnpm build
-          pnpm --filter @codetreker/daynight exec vitest run --config vitest.acceptance.config.ts
-      - name: Upload installed CLI acceptance evidence
-        if: ${{ always() && steps.installed-environment.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-installed-macos-15
-          path: |
-            .tmp/validation-environment.json
-            .tmp/installed-cli-preparation.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Upload installed CLI probe diagnostics
-        if: ${{ always() && steps.installed-evidence.outcome == 'success' && steps.installed-environment.outcome != 'skipped' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-cli-installed-probes-macos-15
-          path: .tmp/validation-probes.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-      - name: Upload protected image test input evidence
-        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-image-test-pairs-verify-macos
           path: .tmp/image-test-pairs.json
           include-hidden-files: true
           if-no-files-found: error
@@ -585,7 +481,7 @@ jobs:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.web == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
       XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
@@ -615,7 +511,7 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
-      - name: Verify the complete Web harness and coverage
+      - name: Verify Web types, production build, harness and coverage
         id: web-quality
         run: node packages/daynight-web/scripts/ci.mts quality
       - name: Upload complete web coverage evidence
@@ -703,9 +599,105 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  verify-e2e:
+    name: verify (product E2E)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 42
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tmp/playwright-browsers
+      DAYNIGHT_E2E_RUN_POINTER: ${{ github.workspace }}/.tmp/product-e2e-run.json
+      GOCACHE: ${{ github.workspace }}/.tmp/product-e2e-cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.tmp/product-e2e-cache/go-mod
+      GOPATH: ${{ github.workspace }}/.tmp/product-e2e-cache/go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        timeout-minutes: 2
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        timeout-minutes: 1
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        timeout-minutes: 2
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Prepare product E2E build caches
+        timeout-minutes: 1
+        run: mkdir -p .tmp/product-e2e-cache/go-build .tmp/product-e2e-cache/go-mod .tmp/product-e2e-cache/go
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        timeout-minutes: 3
+        with:
+          go-version: 1.27.2
+          cache: true
+          cache-dependency-path: |
+            packages/daynight-server/go.sum
+            packages/e2e_tests/src/build.ts
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+        timeout-minutes: 3
+      - name: Install the locked product E2E Chromium browser
+        timeout-minutes: 4
+        run: pnpm --filter @codetreker/daynight-e2e exec playwright install --with-deps chromium
+      - name: Verify product E2E types
+        timeout-minutes: 1
+        run: pnpm --filter @codetreker/daynight-e2e typecheck
+      - name: Verify product E2E harness behavior
+        timeout-minutes: 1
+        run: pnpm e2e:test:harness
+      - name: Verify the complete isolated product journey
+        id: product-e2e
+        timeout-minutes: 15
+        run: pnpm e2e:test
+      - name: Reconcile product E2E resources after execution
+        if: ${{ always() && steps.product-e2e.outcome != 'skipped' }}
+        timeout-minutes: 3
+        run: pnpm e2e:cleanup
+      - name: Upload product E2E evidence
+        timeout-minutes: 1
+        if: ${{ always() && steps.product-e2e.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-product-e2e
+          path: |
+            .tmp/product-e2e/*/results/**
+            .tmp/product-e2e/*/logs/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload protected image test input evidence
+        timeout-minutes: 1
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-e2e
+          path: .tmp/image-test-pairs.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, verify-macos, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web-browser]
+    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web-browser, verify-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -719,6 +711,11 @@ jobs:
           WEB_QUALITY_RESULT: ${{ needs.verify-web-quality.result }}
           WEB_BROWSER_RESULT: ${{ needs.verify-web-browser.result }}
         run: test "$WEB_QUALITY_RESULT" = success && test "$WEB_BROWSER_RESULT" = success
+      - name: Require selected product E2E to succeed
+        if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
+        env:
+          E2E_RESULT: ${{ needs.verify-e2e.result }}
+        run: test "$E2E_RESULT" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -767,12 +764,18 @@ jobs:
         with:
           name: daynight-image-test-pairs-verify-installed-windows-latest
           path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-installed-windows-latest
-      - name: Download pairing evidence for verify-macos
+      - name: Download pairing evidence for verify-macos-15
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: daynight-image-test-pairs-verify-macos
-          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-macos
+          name: daynight-image-test-pairs-verify-macos-15
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-macos-15
+      - name: Download pairing evidence for verify-installed-macos-15
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-installed-macos-15
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-installed-macos-15
       - name: Download pairing evidence for verify-runtime-22.14.0
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -821,6 +824,12 @@ jobs:
         with:
           name: daynight-image-test-pairs-verify-web-browser
           path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-web-browser
+      - name: Download pairing evidence for verify-e2e
+        if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-e2e
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-e2e
       - name: Verify pairing evidence from every selected job
         env:
           IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
@@ -831,16 +840,18 @@ jobs:
           IMAGE_PAIR_CLI: ${{ needs.detect-changes.outputs.cli }}
           IMAGE_PAIR_SERVER: ${{ needs.detect-changes.outputs.server }}
           IMAGE_PAIR_WEB: ${{ needs.detect-changes.outputs.web }}
+          IMAGE_PAIR_E2E: ${{ needs.detect-changes.outputs.e2e }}
         run: |
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { readdirSync, readFileSync } from 'node:fs';
           for (const field of ['IMAGE_PAIR_MANIFEST_COMMIT', 'IMAGE_PAIR_EXPECTED_COMBINED_TREE', 'IMAGE_PAIR_COMBINED_COMMIT', 'IMAGE_PAIR_PRODUCTION_TREE', 'IMAGE_PAIR_HEAD']) assert.match(process.env[field], /^[0-9a-f]{40}$/, field);
-          for (const field of ['IMAGE_PAIR_CLI', 'IMAGE_PAIR_SERVER', 'IMAGE_PAIR_WEB']) assert.ok(['true', 'false'].includes(process.env[field]), field);
+          for (const field of ['IMAGE_PAIR_CLI', 'IMAGE_PAIR_SERVER', 'IMAGE_PAIR_WEB', 'IMAGE_PAIR_E2E']) assert.ok(['true', 'false'].includes(process.env[field]), field);
           const expected = ['detect-changes'];
-          if (process.env.IMAGE_PAIR_CLI === 'true') expected.push('verify-ubuntu-latest', 'verify-windows-latest', 'verify-installed-ubuntu-latest', 'verify-installed-windows-latest', 'verify-macos', 'verify-runtime-22.14.0', 'verify-runtime-22', 'verify-runtime-24', 'verify-runtime-node', 'verify-completion');
+          if (process.env.IMAGE_PAIR_CLI === 'true') expected.push('verify-ubuntu-latest', 'verify-windows-latest', 'verify-installed-ubuntu-latest', 'verify-installed-windows-latest', 'verify-macos-15', 'verify-installed-macos-15', 'verify-runtime-22.14.0', 'verify-runtime-22', 'verify-runtime-24', 'verify-runtime-node', 'verify-completion');
           if (process.env.IMAGE_PAIR_SERVER === 'true') expected.push('verify-server');
           if (process.env.IMAGE_PAIR_WEB === 'true') expected.push('verify-web-quality', 'verify-web-browser');
+          if (process.env.IMAGE_PAIR_E2E === 'true') expected.push('verify-e2e');
           const root = '.tmp/image-pair-jobs';
           const names = expected.map(name => `daynight-image-test-pairs-${name}`);
           assert.deepEqual(readdirSync(root).sort(), names.sort(), 'Every selected job must provide exactly one pairing receipt.');

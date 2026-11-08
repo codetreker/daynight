@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
@@ -52,34 +53,61 @@ func TestSchemaSnapshotMatchesMigrations(t *testing.T) {
 	if difference := schemaSnapshotDifference(want, readSchemaSnapshotState(t, actual)); difference != "" {
 		t.Fatal(difference)
 	}
-}
-
-func TestSchemaSnapshotComparisonDetectsMissingState(t *testing.T) {
-	history := emptyPool(t)
-	if err := migrate(context.Background(), history, schemaMigrations); err != nil {
-		t.Fatal(err)
-	}
-	want := readSchemaSnapshotState(t, history)
-	for _, test := range []struct{ name, mutation, section string }{
-		{"index", "DROP INDEX tasks_project_id_id_idx", "catalog"},
-		{"constraint", "ALTER TABLE tasks DROP CONSTRAINT tasks_title_check", "catalog"},
-		{"seed", "DELETE FROM private_transfer_ledger", "data"},
-		{"sequence state", "SELECT nextval('team_member_versions')", "sequences"},
-		{"sequence ownership", "ALTER SEQUENCE team_member_versions OWNED BY team_members.version", "catalog"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			actual := emptyPool(t)
-			if _, err := actual.Exec(context.Background(), currentSchemaSnapshot); err != nil {
-				t.Fatal(err)
+	t.Run("comparison detects missing state", func(t *testing.T) {
+		for _, test := range []struct {
+			name, mutation, section string
+			restoreSequence         bool
+		}{
+			{"index", "DROP INDEX tasks_project_id_id_idx", "catalog", false},
+			{"constraint", "ALTER TABLE tasks DROP CONSTRAINT tasks_title_check", "catalog", false},
+			{"seed", "DELETE FROM private_transfer_ledger", "data", false},
+			{"sequence state", "SELECT nextval('team_member_versions')", "sequences", true},
+			{"sequence ownership", "ALTER SEQUENCE team_member_versions OWNED BY team_members.version", "catalog", false},
+		} {
+			if !t.Run(test.name, func(t *testing.T) {
+				ctx := context.Background()
+				var last int64
+				var called bool
+				if test.restoreSequence {
+					if err := actual.QueryRow(ctx, "SELECT last_value,is_called FROM team_member_versions").Scan(&last, &called); err != nil {
+						t.Fatal(err)
+					}
+				}
+				tx, err := actual.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := tx.Rollback(ctx); err != nil {
+						t.Errorf("restore schema mutation: %v", err)
+						return
+					}
+					if test.restoreSequence {
+						// nextval survives transaction rollback, including its is_called change.
+						if _, err := actual.Exec(ctx, "SELECT setval('team_member_versions',$1,$2)", last, called); err != nil {
+							t.Errorf("restore sequence state: %v", err)
+							return
+						}
+						var restoredLast int64
+						var restoredCalled bool
+						if err := actual.QueryRow(ctx, "SELECT last_value,is_called FROM team_member_versions").Scan(&restoredLast, &restoredCalled); err != nil || restoredLast != last || restoredCalled != called {
+							t.Errorf("sequence state was not restored: %d %t, %v", restoredLast, restoredCalled, err)
+						}
+					}
+				})
+				if _, err := tx.Exec(ctx, test.mutation); err != nil {
+					t.Fatal(err)
+				}
+				if difference := schemaSnapshotDifference(want, readSchemaSnapshotState(t, tx)); !strings.HasPrefix(difference, test.section+" ") {
+					t.Fatalf("missing %s escaped comparison: %q", test.name, difference)
+				}
+			}) {
+				return
 			}
-			if _, err := actual.Exec(context.Background(), test.mutation); err != nil {
-				t.Fatal(err)
-			}
-			if difference := schemaSnapshotDifference(want, readSchemaSnapshotState(t, actual)); !strings.HasPrefix(difference, test.section+" ") {
-				t.Fatalf("missing %s escaped comparison: %q", test.name, difference)
-			}
-		})
-	}
+		}
+	})
 }
 
 func TestSchemaSnapshotSQLNormalizationPreservesLiteralData(t *testing.T) {
@@ -154,16 +182,21 @@ type schemaSnapshotState struct {
 	sequences []string
 }
 
-func readSchemaSnapshotState(t *testing.T, pool *pgxpool.Pool) schemaSnapshotState {
+type schemaSnapshotReader interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func readSchemaSnapshotState(t *testing.T, reader schemaSnapshotReader) schemaSnapshotState {
 	t.Helper()
 	ctx := context.Background()
 	var schema string
-	if err := pool.QueryRow(ctx, "SELECT current_schema()").Scan(&schema); err != nil {
+	if err := reader.QueryRow(ctx, "SELECT current_schema()").Scan(&schema); err != nil {
 		t.Fatal(err)
 	}
 	var result schemaSnapshotState
 	for _, query := range schemaSnapshotCatalogQueries {
-		rows, err := pool.Query(ctx, query)
+		rows, err := reader.Query(ctx, query)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +214,7 @@ func readSchemaSnapshotState(t *testing.T, pool *pgxpool.Pool) schemaSnapshotSta
 			t.Fatal(err)
 		}
 	}
-	rows, err := pool.Query(ctx, `SELECT relname,relkind::text FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relkind IN ('r','p','S') ORDER BY relname`)
+	rows, err := reader.Query(ctx, `SELECT relname,relkind::text FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relkind IN ('r','p','S') ORDER BY relname`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +237,7 @@ func readSchemaSnapshotState(t *testing.T, pool *pgxpool.Pool) schemaSnapshotSta
 		if relation.kind == "S" {
 			var last string
 			var called bool
-			if err := pool.QueryRow(ctx, "SELECT last_value::text,is_called FROM "+pgx.Identifier{relation.name}.Sanitize()).Scan(&last, &called); err != nil {
+			if err := reader.QueryRow(ctx, "SELECT last_value::text,is_called FROM "+pgx.Identifier{relation.name}.Sanitize()).Scan(&last, &called); err != nil {
 				t.Fatal(err)
 			}
 			result.sequences = append(result.sequences, fmt.Sprintf("%s: %s %t", relation.name, last, called))
@@ -214,7 +247,7 @@ func readSchemaSnapshotState(t *testing.T, pool *pgxpool.Pool) schemaSnapshotSta
 			continue
 		}
 		var data string
-		if err := pool.QueryRow(ctx, "SELECT COALESCE(jsonb_agg(row_data ORDER BY row_data),'[]'::jsonb)::text FROM (SELECT to_jsonb(row_value) AS row_data FROM "+pgx.Identifier{relation.name}.Sanitize()+" AS row_value) AS data").Scan(&data); err != nil {
+		if err := reader.QueryRow(ctx, "SELECT COALESCE(jsonb_agg(row_data ORDER BY row_data),'[]'::jsonb)::text FROM (SELECT to_jsonb(row_value) AS row_data FROM "+pgx.Identifier{relation.name}.Sanitize()+" AS row_value) AS data").Scan(&data); err != nil {
 			t.Fatal(err)
 		}
 		result.data = append(result.data, relation.name+": "+data)

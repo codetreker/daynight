@@ -4,7 +4,7 @@ import type { ProjectPerson } from "../../api/auth-types";
 import type { SessionHistoryItem } from "../../api/terminal-sessions";
 
 export const TASK_CACHE_DATABASE = "daynight-task-cache";
-export const TASK_CACHE_SCHEMA = 8;
+export const TASK_CACHE_SCHEMA = 9;
 export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details", "profiles", "sessionHistory"] as const;
 export type UserScopeRecord = { readonly userId: string; readonly userFence: string };
 export type ProjectRecord = {
@@ -82,10 +82,10 @@ export class TaskCacheDatabase {
             store.createIndex("by-user", "userId");
             store.createIndex("by-project", ["userId", "projectId"]);
           }
-        } else if (oldVersion < 5) {
+        } else if (oldVersion < 9) {
           const rebuild = async () => {
             for (const name of ["projects", "summaries", "details"] as const) await transaction.objectStore(name).clear();
-            for await (const cursor of transaction.objectStore("userScopes")) await cursor.update({ userId: cursor.value.userId, userFence: crypto.randomUUID() });
+            if (oldVersion < 5) for await (const cursor of transaction.objectStore("userScopes")) await cursor.update({ userId: cursor.value.userId, userFence: crypto.randomUUID() });
           };
           void rebuild().catch((error: unknown) => { upgradeFailure = error; try { transaction.abort(); } catch { /* The failed upgrade may already be aborted. */ } });
         }

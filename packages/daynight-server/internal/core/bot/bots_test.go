@@ -56,6 +56,29 @@ func (d *botDAO) Worker(context.Context, string, string) error { return d.fail["
 func (d *botDAO) BotDefaults(context.Context, string) (model.BotDefaultsInput, error) {
 	return d.defaults, d.fail["defaults"]
 }
+func (d *botDAO) BotPreferredWorker(context.Context, string) (*string, error) {
+	return d.defaults.PreferredWorkerID, d.fail["defaults"]
+}
+func (d *botDAO) BotCreationCandidate(_ context.Context, _ string, id string) (model.BotDefaultsInput, error) {
+	return selectTestWorker(d.defaults, id), d.fail["defaults"]
+}
+func (d *botDAO) BotCreationCandidates(context.Context, string) (model.BotDefaultsInput, error) {
+	return d.defaults, d.fail["defaults"]
+}
+func (d *botDAO) BotCreationWorker(_ context.Context, _ string, id string) (model.BotDefaultsInput, error) {
+	return selectTestWorker(d.defaults, id), d.fail["defaults"]
+}
+func selectTestWorker(input model.BotDefaultsInput, id string) model.BotDefaultsInput {
+	result := input
+	result.Workers = nil
+	for _, worker := range input.Workers {
+		if worker.WorkerID == id {
+			result.Workers = append(result.Workers, worker)
+		}
+	}
+	return result
+}
+
 func (d *botDAO) InsertBot(_ context.Context, b model.Bot) error {
 	if e := d.fail["insert"]; e != nil {
 		return e
@@ -67,15 +90,24 @@ func (d *botDAO) InsertBot(_ context.Context, b model.Bot) error {
 
 type reader struct {
 	store.BotReader
-	current  model.Bot
-	records  store.BotPage
-	defaults model.BotDefaultsInput
-	fail     map[string]error
+	current       model.Bot
+	records       store.BotPage
+	defaults      model.BotDefaultsInput
+	fail          map[string]error
+	boundedCalls  int
+	boundedOwner  string
+	boundedWorker *string
+	boundedPage   store.Page
 }
 
 func (r *reader) Bot(context.Context, string) (model.Bot, error) { return r.current, r.fail["bot"] }
 func (r *reader) Bots(context.Context, string, *string, store.Page) (store.BotPage, error) {
 	return r.records, r.fail["list"]
+}
+func (r *reader) BotsBounded(_ context.Context, owner string, worker *string, page store.Page) (store.BotPage, error) {
+	r.boundedCalls++
+	r.boundedOwner, r.boundedWorker, r.boundedPage = owner, worker, page
+	return r.records, r.fail["bounded"]
 }
 func (r *reader) BotWorker(context.Context, string, string) error { return r.fail["worker"] }
 func (r *reader) BotDefaults(context.Context, string) (model.BotDefaultsInput, error) {
@@ -236,5 +268,39 @@ func TestReadScopeAndCompletionErrors(t *testing.T) {
 	var op *model.BotOperationError
 	if !errors.As(ResultError("create", tx), &op) {
 		t.Fatal("uncertain cleanup became refusal")
+	}
+}
+
+func TestListBoundedAuthorizationAndStorageFailures(t *testing.T) {
+	ctx := context.Background()
+	principal := model.Principal{UserID: "owner"}
+	target := workerID
+	request := store.Page{Limit: 2}
+	database := &reader{fail: map[string]error{}, records: store.BotPage{Items: []model.Bot{{ID: botID}}}}
+	_, err := ListBounded(ctx, snapshot{r: database, err: model.ErrNotFound}, principal, &target, request)
+	assertFault(t, err, "unauthenticated")
+	if database.boundedCalls != 0 {
+		t.Fatal("queried Bots without a credential")
+	}
+	database.fail["worker"] = model.ErrNotFound
+	_, err = ListBounded(ctx, snapshot{r: database}, principal, &target, request)
+	assertFault(t, err, "forbidden")
+	if database.boundedCalls != 0 {
+		t.Fatal("queried Bots without Worker access")
+	}
+	sentinel := errors.New("worker lookup failed")
+	database.fail["worker"] = sentinel
+	if _, err = ListBounded(ctx, snapshot{r: database}, principal, &target, request); !errors.Is(err, sentinel) {
+		t.Fatalf("worker cause: %v", err)
+	}
+	delete(database.fail, "worker")
+	database.fail["bounded"] = sentinel
+	if _, err = ListBounded(ctx, snapshot{r: database}, principal, &target, request); !errors.Is(err, sentinel) {
+		t.Fatalf("list cause: %v", err)
+	}
+	delete(database.fail, "bounded")
+	result, err := ListBounded(ctx, snapshot{r: database}, principal, &target, request)
+	if err != nil || len(result.Items) != 1 || database.boundedOwner != principal.UserID || database.boundedWorker == nil || *database.boundedWorker != target || database.boundedPage.Limit != request.Limit {
+		t.Fatalf("scope: %+v %v", result, err)
 	}
 }

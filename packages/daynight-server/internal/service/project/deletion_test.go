@@ -99,6 +99,11 @@ func TestDeletionServicePreviewPermissionsAndClaims(t *testing.T) {
 	if err != nil || len(fresh.ActiveClaims) != 1 || fresh.ActiveClaims[0].Connectivity != "online" {
 		t.Fatalf("fresh worker: %+v %v", fresh, err)
 	}
+	exec(`UPDATE workers SET last_seen_at=now()+interval '1 hour' WHERE user_id=$1 AND worker_id=$2`, actor.UserID, claim.WorkerID)
+	future, err := s.DeletionPreview(ctx, actor, project.ID, model.PageRequest{Limit: 1})
+	if err != nil || len(future.ActiveClaims) != 1 || future.ActiveClaims[0].Connectivity != "offline" {
+		t.Fatalf("future worker: %+v %v", future, err)
+	}
 	_, err = s.Delete(ctx, actor, project.ID)
 	transferFault(t, err, "active_worker_claims")
 	exec(`DELETE FROM task_properties WHERE name='worker' AND task_id IN (SELECT id FROM tasks WHERE project_id=$1)`, project.ID)

@@ -28,10 +28,11 @@ function fixture(consumer: Consumer = 'assistant') {
   if (consumer === 'task') {
     const snapshot: TaskSessionSnapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
     session.change({ ...snapshot, sessionId: session.binding.sessionId, lastEventSeq: '0' });
-    client = new TaskSessionClient({ ...options, projectId: snapshot.identity.projectId, taskId: snapshot.identity.taskId, claimId: snapshot.claimId });
+    client = new TaskSessionClient({ ...options, projectId: snapshot.identity.projectId, taskId: snapshot.identity.taskId, claimId: snapshot.claimId, ownerUserId: botOwner });
   } else {
     client = new TaskSessionClient({ ...options, testSessionId: session.binding.sessionId, ...(consumer === 'assistant' ? { bot: session.binding } : {}) });
   }
+  client.setCurrentReadVisible(true);
   clients.push(client);
   const bot = { ...botDefinition(), id: session.binding.botId, ownerUserId: botOwner, sessionId: session.binding.sessionId, testExecutionId: session.binding.testExecutionId, startupResult: { state: 'ready' as const, code: null } };
   const target: BotConversationTarget = { bot, name: bot.name, worker: botWorkerDefaults(), stale: false, detailsId: 'current-assistant-details', detailsOpen: false, detailsOpener: createRef(), onDetails: vi.fn(), follow: vi.fn(event => event.preventDefault()) };

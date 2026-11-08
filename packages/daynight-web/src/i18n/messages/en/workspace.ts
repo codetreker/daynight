@@ -17,14 +17,14 @@ export const workspace: WorkspaceMessages = {
     moreFailed: "More projects could not be loaded. Previously loaded projects remain available.", loadingMore: "Loading more…", retryMore: "Retry loading more", loadMore: "Load more", allLoaded: "All projects loaded",
   },
   project: {
-    statusFilter: "Status", allStatuses: "All statuses", statusOptions: { todo: "To do", in_progress: "In progress", done: "Done" },
+    statusFilter: "Status", allStatuses: "All statuses", statusOptions: { todo: "To do", in_progress: "In progress", done: "Done", cancelled: "Cancelled" },
     back: "← Projects", lastRefreshed: ({ time }) => `Last successful refresh ${time}`, refreshing: "Refreshing…", loading: "Loading task graph", loadingDetail: "Reading project tasks and dependencies.",
     notFound: "Project not found", graphLimit: "Task graph exceeds the display limit", incomplete: "Task graph data is incomplete", loadingFailed: "Project could not be loaded",
     networkError: "Cannot connect to the service. Check the local service and try again.", protocolError: "Task graph data is incomplete or inconsistent. Try again.",
     notFoundDetail: "This project does not exist. Return to the project list.", graphLimitDetail: "The complete task graph exceeds the supported display size.", readError: "The task graph cannot be read right now. Try again.",
     graphLimitCounts: ({ nodes, edges, maxNodes, maxEdges }) => `The graph has ${number(nodes)} ${nodes === 1 ? "task" : "tasks"} and ${number(edges)} ${edges === 1 ? "dependency" : "dependencies"}; up to ${number(maxNodes)} ${maxNodes === 1 ? "task" : "tasks"} and ${number(maxEdges)} ${maxEdges === 1 ? "dependency" : "dependencies"} are supported.`,
     refreshFailed: "Refresh failed", showingSnapshot: "Showing the last successfully loaded data.", retryRefresh: "Retry refresh", selectedTaskRemoved: "The selected task is no longer in the updated task graph. Its details have been closed.", dismissNotice: "Dismiss notification",
-    statistics: "Project task statistics", totalTasks: "Total tasks", uniqueTasks: "Unique task IDs", completion: ({ percent }) => `${number(percent)}% complete`, waiting: "Waiting to start", advancing: "Work in progress", ready: "Ready", blocked: "Blocked", todoSubset: "A subset of to-do tasks", empty: "No tasks yet", emptyDetail: "Project tasks will appear here. Create a task, then refresh to see it.", chains: "Task dependency chains",
+    statistics: "Project task statistics", totalTasks: "Total tasks", uniqueTasks: "Unique task IDs", completion: ({ percent }) => `${number(percent)}% complete`, endedBreakdown: ({ done, cancelled, percent }) => `${number(done)} completed · ${number(cancelled)} cancelled · ${number(percent)}% ended`, waiting: "Waiting to start", advancing: "Work in progress", ready: "Ready", blocked: "Blocked", todoSubset: "A subset of to-do tasks", empty: "No tasks yet", emptyDetail: "Project tasks will appear here. Create a task, then refresh to see it.", chains: "Task dependency chains",
   },
   search: {
     form: "Search project tasks", input: "Search task titles and descriptions", placeholder: "Search titles and descriptions with AND, OR, NOT…", submit: "Search", clear: "Clear search",
@@ -38,7 +38,7 @@ export const workspace: WorkspaceMessages = {
     heading: "Overall progress", standalone: "Standalone tasks", standaloneScope: "Unfinished tasks + tasks completed today or in the previous 6 days",
     allCompleted: "No recent tasks", allCompletedDetail: "There are no unfinished tasks or tasks completed today or in the previous 6 days.",
     targetUnavailable: "That task group is no longer visible. Choose a task from the task list.",
-    rowLabel: ({ title, done, total, percent }) => `${title}, ${number(done)} / ${number(total)} complete, ${number(percent)}%, view task list`,
+    rowLabel: ({ title, done, cancelled, total, percent }) => cancelled === 0 ? `${title}, ${number(done)} / ${number(total)} complete, ${number(percent)}%, view task list` : `${title}, ${number(done + cancelled)} / ${number(total)} ended, ${number(done)} completed, ${number(cancelled)} cancelled, ${number(percent)}%, view task list`,
   },
   standalone: {
     list: "Standalone task list",

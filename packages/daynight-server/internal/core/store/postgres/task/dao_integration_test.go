@@ -131,7 +131,8 @@ func TestWriterPersistenceDependenciesAndDeletion(t *testing.T) {
 	if observed.IsZero() || observed.Location() != time.UTC {
 		t.Fatalf("clock: %v", observed)
 	}
-	mustOK(t, w.DeleteTask(ctx, a.ID, true))
+	_, e = w.DeleteTask(ctx, a.ID, true)
+	mustOK(t, e)
 	updated, e = w.Task(ctx, b.ID)
 	mustOK(t, e)
 	if len(updated.DependsOn) != 0 || updated.Version != b.Version+2 {
@@ -145,7 +146,7 @@ func TestWriterPersistenceDependenciesAndDeletion(t *testing.T) {
 	if _, e = r.Task(ctx, f.project, a.ID); !errors.Is(e, model.ErrNotFound) {
 		t.Fatalf("deleted read: %v", e)
 	}
-	if e = w.DeleteTask(ctx, a.ID, false); !errors.Is(e, model.ErrNotFound) {
+	if _, e = w.DeleteTask(ctx, a.ID, false); !errors.Is(e, model.ErrNotFound) {
 		t.Fatalf("repeat delete: %v", e)
 	}
 	if _, e = w.UpdateTask(ctx, uuid.NewString(), store.TaskWrite{Status: model.TaskTodo}); !errors.Is(e, model.ErrNotFound) {
@@ -416,5 +417,27 @@ func TestWorkerInventoryFilteringAndThreadSource(t *testing.T) {
 	mustOK(t, e)
 	if decoded.ClaimID != worker.ClaimID || decoded.State != model.WorkerActive {
 		t.Fatalf("thread source worker: %+v", decoded)
+	}
+}
+
+func TestBoundedTaskPageWithholdsHistoricalText(t *testing.T) {
+	f := newFixture(t)
+	w := task.NewWriter(f.tx, f.project)
+	r := task.NewReader(f.tx)
+	first := mustTask(t, w, store.TaskWrite{Title: "First"})
+	second := mustTask(t, w, store.TaskWrite{Title: "Second"})
+	_, err := f.tx.Exec(t.Context(), `UPDATE tasks SET description=repeat('x', 12582912) WHERE id=$1`, second.ID)
+	mustOK(t, err)
+	query := store.TaskQuery{Page: store.Page{Limit: 1}, BoundedText: true}
+	page, err := r.Tasks(t.Context(), f.project, query)
+	mustOK(t, err)
+	if len(page.Items) != 1 || page.Items[0].ID != first.ID || page.Oversized || !page.HasMore {
+		t.Fatalf("first page: %+v", page)
+	}
+	query.Page.After = &store.Position{CreatedAt: first.CreatedAt, ID: first.ID}
+	page, err = r.Tasks(t.Context(), f.project, query)
+	mustOK(t, err)
+	if len(page.Items) != 1 || page.Items[0].ID != second.ID || !page.Oversized || page.Items[0].Description != "" {
+		t.Fatalf("candidate was not withheld: %+v", page)
 	}
 }

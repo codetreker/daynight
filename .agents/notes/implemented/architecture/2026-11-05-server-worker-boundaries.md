@@ -15,7 +15,9 @@ with Task claim authority.
 freshness and configuration revision rules. `service/worker` selects the
 snapshot and Worker write scopes and coordinates inventory and configuration;
 `server/worker` adapts the authenticated HTTP resources. The Worker DAO binds
-batch queries and configuration writes to the existing Read Committed scope.
+account admission, batch queries and configuration writes to the existing Read
+Committed scope. The [active admission decision](2026-11-07-worker-active-admission.md)
+explains its per-account serialization and capacity rules.
 Task claim rules remain owned by `core/task`.
 
 The [snapshot decision](../../archived/architecture/2026-10-28-worker-runtime-snapshots.md) explains the

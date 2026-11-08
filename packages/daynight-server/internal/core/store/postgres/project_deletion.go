@@ -8,6 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
@@ -61,8 +62,9 @@ func (s *Store) WriteProjectDeletion(ctx context.Context, id string, operation f
 	return teamCompletion("project deletion", err)
 }
 
-func (s *deletionSnapshot) ProjectDAO() store.ProjectReader   { return project.NewReader(s.tx) }
-func (s *deletionScope) ProjectDAO() store.ProjectDeletionDAO { return &s.projectDeletion }
+func (s *deletionSnapshot) ProjectDAO() store.ProjectReader          { return project.NewReader(s.tx) }
+func (s *deletionScope) ProjectDAO() store.ProjectDeletionDAO        { return &s.projectDeletion }
+func (s *deletionScope) EligibilityDAO() store.WebhookEligibilityDAO { return eligibility.New(s.tx) }
 func (s *deletionScope) SessionDAO() store.ProjectSessionRetirementDAO {
 	return session.NewProjectRetirementDAO(s.tx, s.projectID)
 }
@@ -87,7 +89,7 @@ func (s *deletionSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
 }
 func (s *deletionSnapshot) Summary(ctx context.Context) (store.ProjectDeletionSummary, error) {
 	var out store.ProjectDeletionSummary
-	err := s.tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE status <> 'done'),
+	err := s.tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE status NOT IN ('done', 'cancelled')),
         (SELECT count(*) FROM task_attachments a JOIN tasks at ON at.id=a.task_id AND at.project_id=a.project_id WHERE at.project_id=$1 AND at.deleted_at IS NULL)
         FROM tasks WHERE project_id=$1 AND deleted_at IS NULL`, s.projectID).Scan(&out.TaskCount, &out.UnfinishedTaskCount, &out.AttachmentCount)
 	if err != nil {

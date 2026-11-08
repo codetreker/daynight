@@ -67,3 +67,37 @@ func TestInvalidValueSchemaFailsBeforeDefinitionsCanBePublished(t *testing.T) {
 		}
 	}
 }
+
+func TestIndependentValueBudgetsForFutureDefinitions(t *testing.T) {
+	// The current catalog has only one property whose schema can reach 8 KiB.
+	// Two temporary definitions exercise the per-value rule without publishing
+	// additional product properties.
+	for _, name := range []string{"testFirst", "testSecond"} {
+		definitions[name] = Definition{Name: name, kind: "string", Normalize: func(raw json.RawMessage) (json.RawMessage, error) {
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return nil, err
+			}
+			return json.Marshal(value)
+		}}
+		t.Cleanup(func() { delete(definitions, name) })
+	}
+	value, err := json.Marshal(strings.Repeat("x", MaxValueBytes-2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := Normalize(map[string]json.RawMessage{"testFirst": value, "testSecond": value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Admit(values); err != nil {
+		t.Fatalf("independent maximum values: %v", err)
+	}
+	values["testSecond"], err = json.Marshal(strings.Repeat("x", MaxValueBytes-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Admit(values); err == nil {
+		t.Fatal("oversized second value accepted")
+	}
+}

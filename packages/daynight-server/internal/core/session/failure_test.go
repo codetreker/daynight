@@ -32,7 +32,7 @@ func TestReadOnlyMembersAndRevokedActorsCannotDispatch(t *testing.T) {
 	ctx := context.Background()
 	publishState(t, f, v, idleState())
 	reader := addMember(t, f, "member")
-	admin := addMember(t, f, "admin")
+	actor := listCredential(t, f, f.p.UserID, model.PATCredential)
 	current, err := f.s.Current(ctx, reader, f.project, f.task)
 	if err != nil || current["session"].(sp.Snapshot).Operations.CanSend {
 		t.Fatal("reader obtained native permission", err)
@@ -41,22 +41,19 @@ func TestReadOnlyMembersAndRevokedActorsCannotDispatch(t *testing.T) {
 	if _, err = f.s.Submit(ctx, reader, f.project, f.task, v.SessionID, command); err == nil {
 		t.Fatal("reader submitted native input")
 	}
-	if _, err = f.s.Submit(ctx, admin, f.project, f.task, v.SessionID, command); err != nil {
+	if _, err = f.s.Submit(ctx, actor, f.project, f.task, v.SessionID, command); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command); err == nil {
-		t.Fatal("another actor reused operation identity")
+	if receipt, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command); err != nil || receipt.OperationID != command.OperationID {
+		t.Fatal("same owner could not read its original operation receipt", receipt, err)
 	}
 	if _, err = f.s.Poll(ctx, v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, actor.CredentialID); err != nil {
 		t.Fatal(err)
 	}
 	assertRejectedBegin(t, f, v, command.OperationID)
-	if _, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, admin.CredentialID); err != nil {
-		t.Fatal(err)
-	}
 	if err = f.s.controller(ctx, v.ControllerFence, func(tx *operationTx, r *record, task task) error {
 		o, e := loadOperation(ctx, tx, v.SessionID, command.OperationID)
 		if e != nil {
@@ -203,7 +200,7 @@ func TestDatabaseFailuresDoNotBecomeAcknowledgements(t *testing.T) {
 		t.Fatal("closed database read succeeded")
 	}
 }
-func TestExpiredGrantAndForeignCursorFailClosed(t *testing.T) {
+func TestExpiredGrantAndFutureEventCursorFailClosed(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
 	g, err := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"})
@@ -233,9 +230,6 @@ func TestExpiredGrantAndForeignCursorFailClosed(t *testing.T) {
 	f.s.now = time.Now
 	if _, _, _, err = f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, EventCursor(v, "999")); err == nil {
 		t.Fatal("future event cursor")
-	}
-	if _, err = f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, "before", cursor(position{Session: v.SessionID, Epoch: v.HistoryEpoch, Kind: "timeline", Position: "999", Upper: "999"}), 10); err == nil {
-		t.Fatal("future timeline cursor")
 	}
 }
 

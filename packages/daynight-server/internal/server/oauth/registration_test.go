@@ -112,7 +112,7 @@ func TestRegistrationHTTPFailuresAndLimits(t *testing.T) {
 		{http.MethodPost, "text/plain", 0, http.StatusBadRequest},
 		{http.MethodPost, "application/json; charset=ascii", 0, http.StatusBadRequest},
 		{http.MethodPost, "application/json; unknown=x", 0, http.StatusBadRequest},
-		{http.MethodPost, "application/json", core.MetadataLimit + 1, http.StatusBadRequest},
+		{http.MethodPost, "application/json", core.MetadataLimit + 1, http.StatusRequestEntityTooLarge},
 	} {
 		w := request(tc.method, tc.contentType, tc.size)
 		if w.Code != tc.status || w.Header().Get("Cache-Control") != "no-store" {

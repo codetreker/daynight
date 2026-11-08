@@ -53,7 +53,7 @@ interaction without granting input outside the existing native operation gates.
 
 Users can distinguish blocked recovery from active synchronization without
 exposing private logs. Stable drafts, timeline identity and archive reads retain
-their existing owners. Active task views incur one current read every three
-seconds; standalone and Bot sessions do not poll Worker reports. Controlled
+their existing owners. Selected Task Session views in visible documents incur one current read every
+three seconds under the [current-read visibility decision](../architecture/2026-11-08-task-current-read-visibility.md); standalone and Bot sessions do not poll Worker reports. Controlled
 browser fixtures demonstrate rendering and HTTP/WebSocket behavior, not the cause
 or repair of a real provider initialization timeout.

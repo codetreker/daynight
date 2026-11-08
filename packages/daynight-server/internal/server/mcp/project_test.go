@@ -43,8 +43,39 @@ func (f *fakeProjectOperations) RegisterRepository(_ context.Context, _ model.Pr
 func (f *fakeProjectOperations) Get(context.Context, model.Principal, string) (model.Project, error) {
 	return f.project, f.err
 }
-func (f *fakeProjectOperations) List(context.Context, model.Principal, model.PageRequest) (coreproject.ProjectPage, error) {
-	return f.page, f.err
+func (f *fakeProjectOperations) ListAdmitted(_ context.Context, principal model.Principal, request coreproject.ProjectListRequest, measure func([]model.Project, *string) error) (coreproject.ProjectPage, error) {
+	if f.err != nil {
+		return coreproject.ProjectPage{}, f.err
+	}
+	out := coreproject.ProjectPage{Items: []model.Project{}}
+	for i, item := range f.page.Items {
+		cursor, err := query.EncodeProjectCursor(item, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
+		if err != nil {
+			return coreproject.ProjectPage{}, err
+		}
+		var next *string
+		if i+1 < len(f.page.Items) || f.page.NextCursor != nil {
+			next = &cursor
+		}
+		candidate := append(out.Items, item)
+		if err := measure(candidate, next); err != nil {
+			if len(out.Items) == 0 {
+				return coreproject.ProjectPage{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Project exceeds the encoded page limit."}
+			}
+			previous, err := query.EncodeProjectCursor(out.Items[len(out.Items)-1], principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
+			if err != nil {
+				return coreproject.ProjectPage{}, err
+			}
+			out.NextCursor = &previous
+			return out, nil
+		}
+		out.Items = candidate
+		if len(out.Items) == request.Page.Limit {
+			out.NextCursor = next
+			return out, nil
+		}
+	}
+	return out, nil
 }
 func (f *fakeProjectOperations) TransferPreview(context.Context, model.Principal, string, string) (coreproject.TransferPreview, error) {
 	f.previews++
@@ -139,7 +170,7 @@ func TestProjectListBudgetRetainsCursorAtLastIncludedItem(t *testing.T) {
 	f := &fakeProjectOperations{}
 	for i := range 5 {
 		p := sampleProject(fmt.Sprintf("%08x-1111-4111-8111-111111111111", i+1))
-		p.Name = strings.Repeat("a", 5000)
+		p.Name = strings.Repeat("<", 500000)
 		f.page.Items = append(f.page.Items, p)
 	}
 	h := projectTools{projects: f}
@@ -160,15 +191,12 @@ func TestProjectListBudgetRetainsCursorAtLastIncludedItem(t *testing.T) {
 
 func TestProjectListOversizedFirstItemProvidesRecovery(t *testing.T) {
 	project := sampleProject(testProjectID)
-	project.Name = strings.Repeat("a", 17000)
+	project.Name = strings.Repeat("<", 800000)
 	h := projectTools{projects: &fakeProjectOperations{page: coreproject.ProjectPage{Items: []model.Project{project}}}}
-	result, err := h.list(context.Background(), projectActor(), projectListInput{})
-	if err == nil || result.Refs["projectId"] != testProjectID || result.Refs["readTool"] != "project_show" {
-		t.Fatalf("result %+v, %v", result, err)
-	}
-	id, err := queryProjectCursor(result.Refs["nextCursor"].(string))
-	if err != nil || id != testProjectID {
-		t.Fatalf("cursor %q %v", id, err)
+	_, err := h.list(context.Background(), projectActor(), projectListInput{})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("oversized: %v", err)
 	}
 }
 func queryProjectCursor(cursor string) (string, error) {

@@ -23,27 +23,29 @@ const PollInterval = 250 * time.Millisecond
 const HeartbeatTimeout = 30 * time.Second
 
 type Engine struct {
-	Origin              string
-	files               filestorage.Storage
-	now                 func() time.Time
-	liveMutex           sync.Mutex
-	live                map[string]*liveCell
-	instance            string
-	content             contentBroker
-	terminalMutex       sync.Mutex
-	terminalPending     map[string]map[string]*terminalBodyWrite
-	terminalFrames      map[string]*terminalFrameWrite
-	terminalFrameWrites map[string]*terminalFrameWrite
-	admissionMutex      sync.Mutex
-	closing             bool
-	activeOperations    int
-	idle                chan struct{}
-	stopping            chan struct{}
-	workCanceled        bool
+	archiveSlots          chan struct{}
+	archivePreflightSlots chan struct{}
+	Origin                string
+	files                 filestorage.Storage
+	now                   func() time.Time
+	liveMutex             sync.Mutex
+	live                  map[string]*liveCell
+	instance              string
+	content               contentBroker
+	terminalMutex         sync.Mutex
+	terminalPending       map[string]map[string]*terminalBodyWrite
+	terminalFrames        map[string]*terminalFrameWrite
+	terminalFrameWrites   map[string]*terminalFrameWrite
+	admissionMutex        sync.Mutex
+	closing               bool
+	activeOperations      int
+	idle                  chan struct{}
+	stopping              chan struct{}
+	workCanceled          bool
 }
 
 func NewEngine(files filestorage.Storage) *Engine {
-	return &Engine{files: files, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
+	return &Engine{archiveSlots: make(chan struct{}, 1), archivePreflightSlots: make(chan struct{}, 1), files: files, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
 }
 func fault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func conflict() error {

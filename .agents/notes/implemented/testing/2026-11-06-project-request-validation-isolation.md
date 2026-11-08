@@ -4,15 +4,15 @@ Status: implemented
 
 ## Problem
 
-UUID, Project creation input and pagination tests created a PostgreSQL service
-fixture only to obtain a principal. Their assertions use pure parsing or reject
+UUID, Project creation input, settings and pagination tests created a PostgreSQL
+service fixture only to obtain a principal. Their assertions use pure parsing or reject
 requests before storage, so database initialization and seeding add cost without
 proving those rules. Entropy failure is also required to remain an operational
 error before any transaction begins.
 
 ## Decision
 
-The three request-validation tests construct a valid Session principal with
+Request-validation tests construct a valid Session principal with
 canonical nonzero user and credential IDs. Their Project service uses a
 fail-on-call mock of its existing storage interfaces: snapshot reads, Project
 writes and Project creation writes panic immediately if reached, without
@@ -20,7 +20,8 @@ invoking a callback. No new production interface or database implementation is
 introduced.
 
 All original UUID spellings, invalid names, credential-bearing repository URLs,
-page limits and cursor fields remain checked. Creation inputs retain the
+settings versions and values, page limits, byte budgets and cursor fields remain
+checked. Creation inputs retain the
 principal's expected user ID. The entropy sentinel must still be discoverable
 through `errors.Is`, must not become a business Fault, and the UUID entropy hook
 is restored through test cleanup.
@@ -28,7 +29,9 @@ is restored through test cleanup.
 Creation, database readback, keyset paging, operational database errors and
 transaction tests keep their PostgreSQL fixtures. The
 [server test guide](../../../../packages/daynight-server/README.md#business-rules-and-dao-mocks)
-owns the shared DAO mock and integration policy.
+owns the shared DAO mock and integration policy. The
+[fixture construction decision](2026-11-08-go-fixture-construction.md) records the
+associated input-only and native fixture preparation boundaries.
 
 ## Alternatives
 

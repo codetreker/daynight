@@ -39,7 +39,7 @@ function setup(completed = false, live = false) {
   function Harness() {
     const [, setChecking] = useState(false); rerenderChecking = setChecking;
     const task = useTaskDetail(projectId, taskId, { kind: 'direct' });
-    return <TaskSessionHost projectId={projectId} taskId={taskId} {...(completed || live ? { claimId, mode: 'herdr' as const, completed } : {})} active current={task.sessionCurrent} direct />;
+    return <TaskSessionHost projectId={projectId} taskId={taskId} {...(completed || live ? { claimId, ownerUserId: TEST_VIEWER_ID, mode: 'herdr' as const, completed } : {})} active current={task.sessionCurrent} direct />;
   }
   const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><Harness /></TaskDetailSessionProvider></TaskCacheProvider>);
   return { scope, api, fetcher, view, setChecking: (value: boolean) => rerenderChecking(value) };

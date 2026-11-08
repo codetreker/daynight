@@ -1,5 +1,5 @@
 import { selectTaskList } from './helpers/projectViews';
-import { directAccessFixture, taskSyncFromGraph, taskSyncEpoch } from "./helpers/taskSync";
+import { taskSyncReadFixture, directAccessFixture, taskSyncFromGraph, taskSyncEpoch } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getProjectAccess, getAuthConfig, listMembers, logout, me } from '../src/api/auth';
@@ -34,7 +34,7 @@ const returnFromAnotherWindow = () => {
   topLevelFocused = false; fireEvent(window, new Event('blur'));
   topLevelFocused = true; fireEvent(window, new Event('focus'));
 };
-const initial = (projectId = project): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: projectId === project ? task : otherTask, projectId,
+const initial = (projectId = project): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: projectId === project ? task : otherTask, projectId,
   version: 9007199254740993n, title: `${currentUser.name} task ${projectId === project ? 'P' : 'Q'}`, description: `${currentUser.name} reviewed content`,
   properties: { pullRequests: [] }, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp });
 const serverDetails = new Map<string, TaskDetail>();
@@ -47,8 +47,8 @@ const serverDetail = (projectId: string): TaskDetail => {
 const graph = (projectId: string): TaskGraph => {
   const detail = serverDetail(projectId);
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: `${currentUser.name} project ${projectId === project ? 'P' : 'Q'}`, repoUrl: 'https://example.com/repo', createdAt: stamp, updatedAt: stamp },
-    tasks: [{ assignedTo: detail.assignedTo, requiredPlatform: detail.requiredPlatform, allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: detail.startedAt, completedAt: detail.completedAt, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: detail.blockedBy, ready: detail.ready, createdAt: detail.createdAt, updatedAt: detail.updatedAt }],
-    summary: { total: 1, todo: detail.status === 'todo' ? 1 : 0, inProgress: detail.status === 'in_progress' ? 1 : 0, done: detail.status === 'done' ? 1 : 0, ready: detail.ready ? 1 : 0, blocked: 0 } };
+    tasks: [{ assignedTo: detail.assignedTo, requiredPlatform: detail.requiredPlatform, allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: detail.startedAt, completedAt: detail.completedAt, cancelledAt: detail.cancelledAt, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: detail.blockedBy, ready: detail.ready, createdAt: detail.createdAt, updatedAt: detail.updatedAt }],
+    summary: { total: 1, todo: detail.status === 'todo' ? 1 : 0, inProgress: detail.status === 'in_progress' ? 1 : 0, done: detail.status === 'done' ? 1 : 0, cancelled: 0, ready: detail.ready ? 1 : 0, blocked: 0 } };
 };
 const deferred = <T,>() => {
   let resolve!: (value: T) => void; let reject!: (error: unknown) => void;
@@ -59,7 +59,7 @@ beforeEach(() => {
   serverDetails.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, userId, signal) => {
     expect(userId).toBe(currentUser.id);
-    return taskSyncFromGraph(await graphRequest(projectId, signal), { actorAccess: directAccessFixture(projectId, currentUser.id), query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version, propertiesForTask: () => serverDetail(projectId).properties });
+    return taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { actorAccess: directAccessFixture(projectId, currentUser.id), query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version, propertiesForTask: () => serverDetail(projectId).properties }));
   });
 });
 
