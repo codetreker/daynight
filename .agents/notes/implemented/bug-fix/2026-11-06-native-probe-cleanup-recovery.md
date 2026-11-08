@@ -29,8 +29,12 @@ close, and errors without the runner's confirmation handle remain insufficient.
 Queries traverse cause and aggregate members without clearing another owner's
 unconfirmed responsibility.
 
-Each assistantHost provider retains its own failed command; versions independently
-retains its own per-tool error and cache. On a normal collection after confirmation,
+Each assistantHost provider retains its own failed command; versions retains
+its own per-tool error and cache. The [composed Codex ownership decision](2026-11-04-codex-reporting-probe-ownership.md)
+shares replacement refusal for matching Codex invocation inputs and invalidates
+the ordinary cache after either matching chain loses cleanup confirmation.
+This shared refusal still queries the original command confirmation and cannot
+acknowledge another responsibility. On a normal collection after confirmation,
 the owner removes only the corresponding barrier and stale failure cache, then
 probes again within the existing budget. Confirmation restores eligibility, never
 availability. A new failure remains observable and a new cleanup error has its own
