@@ -93,6 +93,9 @@ func TestWebhookRotationReceiptRetainsResultAfterKeyAndEndpointRemoval(t *testin
 			assertOriginalReceipt("key replacement")
 			deleted := time.Now().UTC().Truncate(time.Microsecond)
 			endpoint.DeletedAt, endpoint.ConfigVersion = &deleted, 4
+			endpoint.Enabled, endpoint.UpdatedAt = false, deleted
+			endpoint.Name, endpoint.DestinationKind, endpoint.AdapterVersion, endpoint.Origin, endpoint.ActiveKeyID = "", "", "", "", ""
+			endpoint.DestinationConfiguration = nil
 			completion, err = s.WriteWebhook(ctx, owner, uuid.NewString(), func(sc store.WebhookWriteScope) error {
 				dao := sc.WebhookWriter()
 				if err := dao.PutEndpoint(ctx, endpoint); err != nil {
@@ -112,7 +115,7 @@ func TestWebhookRotationReceiptRetainsResultAfterKeyAndEndpointRemoval(t *testin
 				if err != nil {
 					return err
 				}
-				if current.DeletedAt == nil || current.ActiveKeyID != "" || len(keys) != 0 {
+				if current.DeletedAt == nil || current.Enabled || current.ActiveKeyID != "" || len(keys) != 0 {
 					t.Fatalf("target was not tombstoned/key-free: endpoint=%+v keys=%+v", current, keys)
 				}
 				return nil
