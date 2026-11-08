@@ -776,6 +776,36 @@ queries and process crash recovery retain their PostgreSQL boundaries. The
 [record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
 records which storage facts are mocked and which durable operations remain real.
 
+### Attachment HTTP tests
+
+The `internal/server/attachment` suite assembles the real HTTP, authentication
+and attachment service adapters with controlled identity facts and strict DAO
+and scope callbacks. Existing route, request, header and response cases execute
+without preparing PostgreSQL or a complete product login flow. Unconfigured
+storage access fails explicitly; fixture writes do not simulate committed state.
+
+Run the suite from this module with the unit Web-resource overlay:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE GOFLAGS='-overlay=scripts/unit-overlay.json' go test -race -count=1 -timeout=5m ./internal/server/attachment
+```
+
+Tests retain actual TCP body reading and local file storage when those resources
+are the mechanism under test. The stalled-upload case uses the attachment
+handler's test-local read duration through the same `NewDeadlineBody` path,
+verifies `408 request_timeout`, no partial publication, capacity release and a
+subsequent successful upload. Production route registration still initializes
+the handler duration to the existing 60-second attachment deadline.
+
+The real 5 MiB content boundary, fixed-length and chunked requests, path guards,
+preview/download headers and error responses remain HTTP or native-resource
+assertions. Existing store metadata tests retain actual SQL, transaction and
+unchanged-state readback; native attachment lifecycle and process tests retain
+admission/publication barriers and exact metadata and bytes across restart. The
+[Attachment HTTP ownership decision](../../.agents/notes/implemented/testing/2026-11-08-attachment-http-test-ownership.md)
+records this correction of existing tests and their retained proof boundaries.
+
 ### Task service and store tests
 
 The complete `internal/service/task` suite uses synthetic domain inputs and
@@ -823,12 +853,15 @@ records why database clocks and lock observations are required together.
 
 ### HTTP scenario ownership
 
-Domain packages own their HTTP integration scenarios, including those that
-construct the production application and use real PostgreSQL and UniAuth
-fixtures. The root `internal/server` package retains tests that need internal
-composition access, shared startup/channel fixtures and runtime shutdown
-ordering. Shared scenarios run once in their domain owner; internal-only
-assertions remain in the root package. The
+Domain packages own their HTTP tests. Attachment protocol fixtures assemble real
+adapters with controlled authentication and DAO facts; their
+[test guide](#attachment-http-tests) identifies the native transport and storage
+boundaries. Existing tests that require complete application composition still
+use the production application with real PostgreSQL and UniAuth fixtures. The
+root `internal/server` package retains tests that need internal composition
+access, shared startup/channel fixtures and runtime shutdown ordering. Shared
+scenarios run once in their domain owner; internal-only assertions remain in the
+root package. The
 [HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
 records the distinction and preservation requirements.
 

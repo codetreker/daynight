@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path"
 	"strconv"
+	"time"
 
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
@@ -22,21 +23,30 @@ import (
 )
 
 type attachmentHandler struct {
-	attachments *attachmentservice.Attachments
-	logger      *slog.Logger
+	attachments     *attachmentservice.Attachments
+	logger          *slog.Logger
+	bodyReadTimeout time.Duration
 }
 
 func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
-	handler := &attachmentHandler{attachments: attachments, logger: logger}
+	handler := newAttachmentHandler(attachments, logger)
+	handler.registerRoutes(mux, auth)
+}
+
+func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *slog.Logger) *attachmentHandler {
+	return &attachmentHandler{attachments: attachments, logger: logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout}
+}
+
+func (handler *attachmentHandler) registerRoutes(mux *http.ServeMux, auth *authhttp.Authentication) {
 	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
 	mux.HandleFunc("GET "+base+"/attachments", auth.Require(handler.list))
 	mux.HandleFunc("PUT "+base+"/attachments/files/{path...}", auth.Require(handler.put))
 	mux.HandleFunc("GET "+base+"/attachments/files/{path...}", auth.Require(handler.download))
 	mux.HandleFunc("DELETE "+base+"/attachments/files/{path...}", auth.Require(handler.delete))
 	mux.HandleFunc("GET "+base+"/preview/{path...}", auth.Require(handler.preview))
-	mux.HandleFunc(base+"/attachments", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/attachments/files/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT, DELETE")))
-	mux.HandleFunc(base+"/preview/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc(base+"/attachments", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
+	mux.HandleFunc(base+"/attachments/files/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD, PUT, DELETE")))
+	mux.HandleFunc(base+"/preview/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
 }
 
 func attachmentResponse(attachment model.Attachment) api.Attachment {
@@ -92,7 +102,7 @@ func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, pr
 		httpx.WriteError(w, request, logger, "attachment", "put", httpx.InvalidInput("Content-Type must be a valid media type"))
 		return
 	}
-	body := httpx.NewDeadlineBody(w, request, transport.AttachmentBodyReadTimeout)
+	body := httpx.NewDeadlineBody(w, request, h.bodyReadTimeout)
 	attachment, created, lease, err := h.attachments.PutRetained(request.Context(), principal, projectID, taskID,
 		request.PathValue("path"), contentType, body)
 	if lease != nil {
