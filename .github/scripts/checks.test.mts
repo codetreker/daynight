@@ -580,7 +580,17 @@ test("main-pinned combinations retain Go module coverage and its current artifac
   assert.ok(validation);
   assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
   assert.ok(server.indexOf(pairStep(server)!) < server.indexOf(validation));
-  assert.doesNotMatch(server, /pnpm\/action-setup|Install frontend build dependencies|pnpm .*install/);
+  assert.doesNotMatch(validation, /pnpm\/action-setup|Install frontend build dependencies|pnpm .*install|pnpm (?:web:)?test/);
+  const preparation = workflowSteps(server).find((entry) => entry.includes("name: Prepare production Web resources for API integration\n"));
+  assert.ok(preparation);
+  assert.ok(preparation.includes("pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
+  assert.ok(preparation.includes("pnpm web:build"));
+  assert.ok(server.indexOf(pairStep(server)!) < server.indexOf(preparation));
+  const integration = workflowSteps(server).find((entry) => entry.includes("id: server-integration\n"));
+  assert.ok(integration);
+  assert.ok(integration.includes("run: bash scripts/integration.sh\n"));
+  assert.ok(server.indexOf(preparation) < server.indexOf(integration));
+  assert.doesNotMatch(server, /pnpm (?:web:test|test|e2e:test)|vitest|playwright/);
   const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance");
   assert.ok(coverage);
   assert.deepEqual(artifactPaths(coverage), ["packages/daynight-server/coverage.out"]);
