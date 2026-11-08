@@ -2152,6 +2152,16 @@ absence and duplicate-control assertions retain document-wide scope. The
 [settings and management observation decision](../../.agents/notes/implemented/testing/2026-11-07-settings-management-test-observations.md)
 records these query and waiting boundaries.
 
+Webhook page tests independently observe request preparation, dispatch and the
+resulting UI. Native SHA-256 preparation is held by explicit promise gates in the
+restrictive cleanup case; each release retains the real digest computation.
+Exact write counts and distinct operation IDs identify sequential mutations.
+Controlled API responses settle within React `act` before stale-response and
+privacy checks, while rendered errors, secrets, dialogs and focus use DOM
+readiness predicates. Cached owner-role labels, fresh detail controls and list
+error removal remain separate observations. The [Webhook observation decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-observation-boundaries.md)
+records the retained fixtures and the limits of these frontend checks.
+
 Step panel DOM tests retain the full pagination fixtures and resolve visible
 controls by role and accessible name within their current row, form, toolbar,
 pagination or confirmation dialog. Whole-page counts retain document-wide scope.
