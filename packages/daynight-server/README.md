@@ -835,8 +835,16 @@ snapshot database through PostgreSQL catalogs and initial table data. It checks
 visible column order, types, defaults, nullability, constraints, indexes,
 sequence definitions, ownership and state, and the routines, views and triggers
 present in the format. Only instance identifiers and schema qualification are
-normalized. The snapshot version must match the latest migration, so every
+normalized. Parity and comparator faults share one historical replay and one
+snapshot; fault mutations roll back, with explicit restoration of nontransactional
+sequence state. The snapshot version must match the latest migration, so every
 migration change requires refreshing and verifying the snapshot.
+
+The PostgreSQL root test package shares only its management connection pool,
+closing it after all schema cleanups. Operational pools and schema namespaces
+remain fixture-owned. Selected error matrices reuse restored or read-only
+fixtures; [the preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
+records their isolation and expiry guarantees.
 
 Regenerate from a fresh historical schema with a PostgreSQL 18 `pg_dump` client:
 

@@ -21,7 +21,7 @@ func TestReadOnlySnapshotCleansConnectionAfterQueryDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready.Release()
-	ctx, cancel := context.WithTimeout(bounded, time.Second)
+	ctx, cancel := context.WithTimeout(bounded, 250*time.Millisecond)
 	defer cancel()
 	err = ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error { return interruptObservedQuery(t, ctx, nil, observer, tx) })
 	observer.Release()

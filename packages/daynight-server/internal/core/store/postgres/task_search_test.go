@@ -316,8 +316,9 @@ func TestTaskSearchProjectionBoundsHistoricalDescription(t *testing.T) {
 		if len(page.Items) != 1 || page.Items[0].Description != "" || len(page.Items[0].Hits) != 1 {
 			t.Fatalf("unbounded projection: %+v", page)
 		}
-		evidence := query.Evaluate(root, "small", description)
-		if !page.Items[0].Hits[0].Description || !reflect.DeepEqual(page.Items[0].Hits[0].Snippet, query.Snippet(description, evidence)) {
+		want := "…" + strings.Repeat("界", 80) + "needle" + strings.Repeat("😀", 74) + "…"
+		hit := page.Items[0].Hits[0]
+		if !hit.Description || hit.Snippet == nil || *hit.Snippet != want {
 			t.Fatalf("snippet differs: %+v", page.Items[0].Hits[0])
 		}
 		return nil

@@ -225,23 +225,23 @@ func TestTaskAssigneeStoreRejectsMissingQualifiedProfiles(t *testing.T) {
 
 func TestTaskAssigneeStoreQueryAndRowFailuresPreserveCauses(t *testing.T) {
 	for _, kind := range []string{"query", "scan", "iteration"} {
+		database := isolatedStore(t)
+		project := queryProject(t, database, 1)
+		storeAssigneeUser(t, database, project.ID, 101, true)
+		storeAssigneeUser(t, database, project.ID, 102, true)
+		switch kind {
+		case "query":
+			mustQueryExec(t, database, `DROP TABLE tasks CASCADE`)
+		case "scan":
+			mustQueryExec(t, database, `ALTER TABLE users RENAME TO assignee_user_source;
+				CREATE VIEW users AS SELECT id,uniauth_id,email,email_verified,'\x01'::bytea AS name,avatar_url,created_at,updated_at FROM assignee_user_source`)
+		case "iteration":
+			mustQueryExec(t, database, `CREATE FUNCTION refuse_assignee_profile(id uuid) RETURNS text LANGUAGE plpgsql AS $$
+				BEGIN IF id='00000000-0000-4000-8000-000000000102'::uuid THEN RAISE EXCEPTION USING ERRCODE='P1032',MESSAGE='private profile diagnostic'; END IF; RETURN 'Visible'; END $$;
+				ALTER TABLE users RENAME TO assignee_user_source;
+				CREATE VIEW users AS SELECT id,uniauth_id,email,email_verified,refuse_assignee_profile(id) AS name,avatar_url,created_at,updated_at FROM assignee_user_source`)
+		}
 		for _, resolve := range []bool{false, true} {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			storeAssigneeUser(t, database, project.ID, 101, true)
-			storeAssigneeUser(t, database, project.ID, 102, true)
-			switch kind {
-			case "query":
-				mustQueryExec(t, database, `DROP TABLE tasks CASCADE`)
-			case "scan":
-				mustQueryExec(t, database, `ALTER TABLE users RENAME TO assignee_user_source;
-					CREATE VIEW users AS SELECT id,uniauth_id,email,email_verified,'\x01'::bytea AS name,avatar_url,created_at,updated_at FROM assignee_user_source`)
-			case "iteration":
-				mustQueryExec(t, database, `CREATE FUNCTION refuse_assignee_profile(id uuid) RETURNS text LANGUAGE plpgsql AS $$
-					BEGIN IF id='00000000-0000-4000-8000-000000000102'::uuid THEN RAISE EXCEPTION USING ERRCODE='P1032',MESSAGE='private profile diagnostic'; END IF; RETURN 'Visible'; END $$;
-					ALTER TABLE users RENAME TO assignee_user_source;
-					CREATE VIEW users AS SELECT id,uniauth_id,email,email_verified,refuse_assignee_profile(id) AS name,avatar_url,created_at,updated_at FROM assignee_user_source`)
-			}
 			var ids []string
 			if resolve {
 				ids = []string{queryID(101), queryID(102)}
