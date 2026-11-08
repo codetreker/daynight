@@ -220,7 +220,7 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText，服务端解析与校验后设置完整单值，返回 200 属性资源 |
 | `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version，真正移除可写属性，返回 200 属性资源 |
 | `GET` | `/api/v1/projects/{projectId}/task-graph?taskId={taskId}` | 返回同一快照中的 project、完整本链及一层外部前置、相应统计 |
-| `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta，使用 epoch 与任务最大 updatedAt 水位 |
+| `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta 及完整轻量 sessions，使用 epoch 与任务最大 updatedAt 水位 |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`，四状态精确版本设置，返回完整任务 |
 | `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 精确版本软删除；可选 removeDepends=true 原子解除全部传入引用，成功 `204`，保留任务与附件数据 |
@@ -324,7 +324,8 @@ Worker 资源归属来自认证 principal，报告不能提供 userId 或权威�
 Project、缓存 epoch、完整容量检查、匹配任务和 observedAt 来自一次只读快照；
 即使窗口只命中少量任务，项目超过 1,000/5,000 上限也明确拒绝。摘要的业务 version
 使用精确十进制字符串，包含 requiredPlatform、明确 nullable 的 assignedTo 与完整 properties，省略 description 及派生 ready/blockedBy。
-任务行与批量属性来自同一快照，缺失属性不补默认值。非法存储属性使整个请求返回 400 invalid_input；数据库或事务完成故障仍返回 500 internal_error，且优先于已发现的属性拒绝。
+任务行及逐返回项有预算读取的完整属性来自同一快照，缺失属性不补默认值。非法存储属性使整个请求返回 400 invalid_input；数据库或事务完成故障仍返回 500 internal_error，且优先于已发现的属性拒绝。
+每个成功响应必含非 null 的 `sessions: Record<TaskId, "working" | "notice" | "warning" | "pending">`，没有贡献时为 `{}`。它是全项目未删除且进行中 Task 的可靠当前 Web Session 状态集合，独立于任务窗口；即使 `tasks=[]` 也完整返回。键用 Task ID，不重复执行或 Session 身份，不含完整 Current 数据，不维护 Session 增量。状态、适用范围与失败规则由[任务缓存需求](daynight-task-sync.md#服务端轻量-session-集合)拥有。Task、Worker 和持久 Session 来自同一只读快照，live 标量取自共享 Engine 的已提交状态；不推进 Session 生命周期。完整 JSON 含状态 map 仍受 64 MiB 上限限制，超限整体返回 `409 resource_limit_exceeded`。
 纳秒下界向上对齐到 PostgreSQL 微秒精度，避免驱动截断造成边界外记录进入结果。
 身份/权限、HEAD、no-store 和错误优先级服从既有合同。完整行为由
 [任务缓存需求](daynight-task-sync.md)拥有；Web 已使用持久摘要及本地完整图投影。

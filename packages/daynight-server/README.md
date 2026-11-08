@@ -194,8 +194,9 @@ snapshot or current records whose `updatedAt` is at least the supplied task
 watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
-derived blockers and readiness remain outside these summaries. Task rows and batched property rows share one
-repeatable-read snapshot. Every snapshot and delta, including an empty delta,
+derived blockers and readiness remain outside these summaries. Task rows and
+individually bounded complete-property reads share one repeatable-read snapshot.
+Every snapshot and delta, including an empty delta,
 also returns required top-level `actorAccess` using the access endpoint's DTO and
 complete `assigneeVersions` entries `{userId,version,hasProjectAccess}` for the
 qualified people catalogue. The existing admission result supplies access in the
@@ -204,7 +205,28 @@ People metadata contains no names or avatars, is UUID-sorted and distinct, and
 uses the same qualification and content versions as task-assignees. Any profile
 query, integrity or transaction failure fails the whole sync. Hashing reads all
 qualified profile content on each sync, costing O(people + total profile bytes);
-manifest transport is O(people). It introduces no PostgreSQL migration. Browser consumers publish access only
+manifest transport is O(people).
+
+Every successful response also includes a
+required, non-null `sessions` map from Task UUID to
+`working | notice | warning | pending`; an empty contribution set produces `{}`. This is
+complete for the project's relevant in-progress Task Sessions even when the
+Task delta is empty, and contains no execution IDs, catalogues, controls or raw
+Session state. A narrow callback-scoped `SessionReader` reads Worker bindings and
+persisted Session scalars in the same snapshot after existing admission and
+TaskSync checks succeed. TaskSync depends on its consumer-local, single-method
+`SessionStateReader`; application composition supplies the existing shared Engine.
+That Engine reads only committed live scalars, without loading Current or cloning live content. Missing live or a
+mismatched fence retains the existing disconnected warning; reliable initializing
+or synchronizing Sessions use pending, while unreliable bindings contribute no
+key. Persisted heartbeat and drain deadlines retain their existing rules.
+This read does not advance Session lifecycle or replace content authorization.
+Query, validation, Engine admission and transaction faults fail the whole sync;
+the complete encoded response, including the map, retains its 64 MiB limit.
+The [Session projection decision](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)
+records the narrow read and lock ownership. It introduces no PostgreSQL migration.
+
+Browser consumers publish access only
 to the current identity/project memory owner, outside persistent Project and Task
 records. Missing keys propagate removal through whole-summary
 replacement; ordinary property changes preserve the epoch. Invalid stored

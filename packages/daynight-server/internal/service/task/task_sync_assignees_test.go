@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
@@ -45,7 +46,7 @@ func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) 
 	former := workerMember(t, database, project.ID)
 	retained := createAssignedTask(t, tasks, admin, project.ID, &former.UserID)
 	other := servicePrincipal(t, database)
-	sync := taskservice.NewTaskSync(database, 10*time.Second)
+	sync := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second)
 	read := func() (model.TaskSync, map[string]model.TaskAssigneeVersion) {
 		t.Helper()
 		result, err := sync.Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{})
@@ -129,7 +130,7 @@ func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
 	member := workerMember(t, database, project.ID)
 	unreferenced := workerMember(t, database, project.ID)
 	task := createAssignedTask(t, tasks, admin, project.ID, &member.UserID)
-	baseline, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{})
+	baseline, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,11 +144,11 @@ func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}})
-	old, err := taskservice.NewTaskSync(traced.store, 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch})
+	old, err := taskservice.NewTaskSync(traced.store, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch})
 	if err != nil || !reflect.DeepEqual(syncAssigneeVersions(t, old), initial) || old.Tasks[0].TitlePreview != task.Title {
 		t.Fatalf("task-sync mixed people and task snapshots: %#v %v", old, err)
 	}
-	fresh, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch})
+	fresh, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, admin, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +164,7 @@ func TestTaskSyncAssigneeIntegrityFailureReturnsNoSnapshot(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, member.UserID); err != nil {
 		t.Fatal(err)
 	}
-	result, err := taskservice.NewTaskSync(database, 10*time.Second).Get(context.Background(), admin, project.ID, taskservice.TaskSyncRequest{})
+	result, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second).Get(context.Background(), admin, project.ID, taskservice.TaskSyncRequest{})
 	assertOperational(t, err)
 	if !reflect.DeepEqual(result, model.TaskSync{}) {
 		t.Fatalf("missing qualified profile produced a partial task snapshot: %#v", result)

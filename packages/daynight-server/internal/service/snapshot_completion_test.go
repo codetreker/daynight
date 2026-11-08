@@ -1,6 +1,7 @@
 package service
 
 import (
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
@@ -78,7 +79,7 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return taskservice.NewTasks(db).Graph(ctx, principal, missing, task.ID)
 		}},
 		{"sync project missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
-			return taskservice.NewTaskSync(db, 10*time.Second).Get(ctx, principal, missing, taskservice.TaskSyncRequest{})
+			return taskservice.NewTaskSync(db, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, principal, missing, taskservice.TaskSyncRequest{})
 		}},
 		{"assignees project missing", true, func(ctx context.Context, db *postgres.Store) (any, error) {
 			return taskservice.NewTasks(db).Assignees(ctx, principal, missing, taskservice.TaskAssigneesRequest{})
@@ -286,7 +287,7 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 			if test.missing {
 				id = "00000000-0000-4000-8000-000000000099"
 			}
-			result, err := taskservice.NewTaskSync(traced.store, 10*time.Second).Get(ctx, principal, id, taskservice.TaskSyncRequest{})
+			result, err := taskservice.NewTaskSync(traced.store, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, principal, id, taskservice.TaskSyncRequest{})
 			assertOperational(t, err)
 			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(result, model.TaskSync{}) {
 				t.Fatalf("completion precedence: %#v %v", result, err)
@@ -295,7 +296,7 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 	}
 	_, database, project, _, principal := taskService(t)
 	database.Close()
-	_, err := taskservice.NewTaskSync(database, 10*time.Second).Get(context.Background(), principal, project.ID, taskservice.TaskSyncRequest{})
+	_, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second).Get(context.Background(), principal, project.ID, taskservice.TaskSyncRequest{})
 	assertOperational(t, err)
 }
 
@@ -328,7 +329,7 @@ func TestTaskSyncIllegalPropertiesPreserveTransactionCompletionPriority(t *testi
 				}, start: cancel})
 				source = traced.store
 			}
-			result, err := taskservice.NewTaskSync(source, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
+			result, err := taskservice.NewTaskSync(source, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
 			if !reflect.DeepEqual(result, model.TaskSync{}) {
 				t.Fatalf("failed sync returned partial state: %#v", result)
 			}

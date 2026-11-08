@@ -74,13 +74,13 @@ HTTP 接受且仅接受一个必填 taskId query，返回 no-store，沿用 requ
 
 ## 时间窗口摘要读取
 
-`NewTaskSync(store, overlap)` 接收已验证的配置，独立的 `taskSyncRoutes` 与原任务/图路由共同注册。
+`NewTaskSync(store, engine, overlap)` 接收消费方定义的单方法 `SessionStateReader` 及已验证的配置；应用组装注入同一个共享 Session Engine，独立的 `taskSyncRoutes` 与原任务/图路由共同注册。
 服务复用具体 store、项目读授权及 `ReadSnapshot`，在同一快照中取得 Project、
-`task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。域拒绝在事务成功结束后返回，
+`task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。已有授权、Project 和 ReadSync 成功且无 refusal 后，同一 SnapshotScope 的只读 SessionReader 查询全项目当前 Task Session source；共享 Engine 只读已提交 live 标量，投影完整最小 `sessions` 集合，不读完整 Current 或持有 live draft。域拒绝在事务成功结束后返回，
 操作和清理失败优先，与任务链图查询相同。
 
 store 先投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、assignedTo、时间和两类依赖，
-关闭任务 rows 后复用 loadTaskProperties 批量装配完整属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
+关闭任务 rows 后逐返回项有预算读取并装配完整属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
 [时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整属性，普通属性变化不轮换 epoch。服务在快照回调内保存属性校验拒绝，正常完成后才返回 400；数据库和事务完成错误优先，保持 500。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
@@ -134,7 +134,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 调用方向为 `server → service → core/store`。传输层将 API DTO 转换为 service
 参数，core 不依赖 HTTP，store 不决定状态转换或依赖规则。事务内查询所需的数据、
 加锁和持久化操作由 store 提供，已拆分领域的候选变更由 core 判断，service 编排作用域与跨领域操作。现有关系型数据只有 PostgreSQL 一个实现，
-`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task 与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力；离线维护使用独立连接及维护合同。附件的字节存储接口由其独立
+`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Session、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task 与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力；离线维护使用独立连接及维护合同。附件的字节存储接口由其独立
 架构拥有，不替代这里的具体 PostgreSQL store。
 
 独立模块允许服务拥有自己的 Go/PostgreSQL 生命周期，避免将数据库事务接入现有
