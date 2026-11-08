@@ -620,3 +620,68 @@
 
 .webhook-dialog .webhook-field-conflict { display: grid; gap: 8px; }
 .webhook-dialog .webhook-field-conflict-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.webhooks .delivery-tools { display:flex;gap:2px }
+.webhooks .deliveries-heading { display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px }
+.webhooks .deliveries-heading h3 { font-size:12px;font-weight:600;color:#55637b }
+.webhooks .delivery-list { margin:0 -23px -23px }
+.webhooks .delivery-row { width:100%;display:block;padding:15px 23px;border:0;background:#fff;text-align:left;border-top:1px solid #edf0f4 }
+.webhooks .delivery-row:hover { background:#fafbfe }
+.webhooks .delivery-row-top { display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px }
+.webhooks .delivery-event, .webhook-dialog .delivery-event { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;color:#5a6780;overflow-wrap:anywhere }
+.webhooks .delivery-meta { display:flex;align-items:center;justify-content:space-between;gap:7px;color:#929bad;font-size:10px }
+.webhooks .delivery-meta span { min-width:0;overflow-wrap:anywhere }
+.webhooks .delivery-meta time { flex:none }
+.webhooks .delivery-response { font-size:10px;color:#939cae;margin-top:7px;display:flex;align-items:flex-start;gap:5px }
+.webhooks .delivery-response svg { margin-top:3px }
+.webhooks .delivery-history-note { padding:15px 0 0;margin-top:23px;border-top:1px solid var(--line);font-size:10px;color:#9aa2b0;line-height:1.7 }
+.webhooks .delivery-loading { min-height:120px;display:grid;place-items:center;color:#97a0b0;font-size:12px }
+.webhooks .delivery-filters { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px;padding:12px;border:1px solid #e5e8f0;border-radius:7px }
+.webhooks .delivery-filters .form-field { min-width:0 }
+.webhooks .delivery-filter-actions, .webhook-dialog .delivery-filter-actions { display:flex;gap:9px;align-items:center;grid-column:1/-1 }
+.webhooks .delivery-filters .inline-error { grid-column:1/-1;margin:0 }
+.webhook-dialog:has(.delivery-details) { width:min(720px,calc(100vw - 40px)) }
+.webhook-dialog .delivery-summary { display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:20px }
+.webhook-dialog .delivery-resource { font-size:12px;color:#7d899d;margin-top:6px }
+.webhook-dialog .record-grid { display:grid;gap:10px;padding:15px 0 20px;margin:0;font-size:11px }
+.webhook-dialog .record-entry { display:grid;grid-template-columns:100px minmax(0,1fr);gap:14px }
+.webhook-dialog .record-grid dt { color:#919bad }
+.webhook-dialog .record-grid dd { margin:0;color:#59677f;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;min-width:0 }
+.webhook-dialog .section-title { font-size:12px;font-weight:600;color:#5a6780;margin:20px 0 12px }
+.webhook-dialog .delivery-attempt-heading { display:flex;justify-content:space-between;align-items:baseline;gap:8px }
+.webhook-dialog .delivery-generation-filter { display:flex;gap:9px;align-items:flex-end;margin-bottom:17px }
+.webhook-dialog .delivery-generation-filter form { max-width:210px;min-width:0;flex:1 }
+.webhook-dialog .timeline { display:grid;gap:0 }
+.webhook-dialog .attempt { position:relative;margin-left:5px;border-left:1px solid #e5e8ee;padding:0 0 17px 21px }
+.webhook-dialog .attempt:last-child { padding-bottom:0;border-left-color:transparent }
+.webhook-dialog .attempt::before { content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:#c9cfda;left:-4px;top:5px;box-shadow:0 0 0 3px #fff }
+.webhook-dialog .attempt.success::before { background:#69ac8a }
+.webhook-dialog .attempt.failed::before { background:#d09d64 }
+.webhook-dialog .attempt-title { font-size:11px;color:#626f87;display:flex;justify-content:space-between;gap:9px;align-items:flex-start }
+.webhook-dialog .attempt-title strong { font-weight:500 }
+.webhook-dialog .attempt-title time { font-size:10px;color:#98a2b3;white-space:nowrap }
+.webhook-dialog .attempt p { font-size:10px;color:#949eaf;margin-top:5px;overflow-wrap:anywhere }
+.webhook-dialog .attempt .record-grid { padding:10px 0;gap:6px }
+.webhook-dialog .delivery-late-result { border:1px solid #e4e8f0;border-radius:6px;padding:9px 11px;margin-top:9px;font-size:10px;color:#68778f }
+.webhook-dialog .code-block { padding:13px 15px;border:1px solid #e5e9f0;border-radius:7px;background:#f8fafc;color:#68778f;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto;margin:0 }
+.webhook-dialog .payload-summary { display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px }
+.webhook-dialog .payload-summary h3 { font-size:12px;color:#5a6780;font-weight:600 }
+.webhook-dialog .delivery-payload-hash { overflow-wrap:anywhere }
+.webhook-dialog .dialog-footer-spacer { margin-right:auto;max-width:350px }
+.webhook-dialog .delivery-receipt { margin-bottom:18px }
+.webhook-dialog .delivery-redelivery-confirm h3 { font-size:12px;margin-bottom:7px }
+.webhook-dialog .delivery-redelivery-confirm .delivery-filter-actions { justify-content:flex-end;margin-top:12px }
+@media(max-width:450px) {
+  .webhooks .delivery-list { margin:0 -16px -18px }
+  .webhooks .delivery-row { padding:14px 16px }
+  .webhooks .delivery-meta { flex-wrap:wrap }
+  .webhooks .delivery-filters { grid-template-columns:1fr }
+  .webhook-dialog:has(.delivery-details) { width:calc(100vw - 22px);max-width:calc(100vw - 22px) }
+  .webhook-dialog .record-entry { grid-template-columns:79px minmax(0,1fr);gap:9px }
+  .webhook-dialog .record-grid { font-size:10px;gap:9px }
+  .webhook-dialog .delivery-summary { align-items:flex-start }
+  .webhook-dialog .delivery-summary .badge { margin-top:2px }
+  .webhook-dialog .attempt-title { flex-wrap:wrap }
+  .webhook-dialog .delivery-attempt-heading { flex-wrap:wrap }
+  .webhook-dialog .dialog-footer-spacer { max-width:100%;width:100% }
+}

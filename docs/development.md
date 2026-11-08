@@ -536,19 +536,19 @@ owns prerequisites and focused commands.
 The [test-writing rules](writing_tests.md) define test ownership. Task HTTP unit
 tests mock the directly called service/use-case operations while exercising real
 routing, credential middleware, parsing, responses and request lifecycle. Core
-rules use domain facts and required DAO mocks; service tests control lower
-operations and scope/transaction results. These unit selections execute without
-PostgreSQL. Store tests retain actual SQL, transaction, persistence and storage
-consistency proofs. The
+rules use domain facts and required DAO, scope and transaction mocks; service
+tests control lower operations and completion results. These unit selections
+execute without PostgreSQL. Store tests retain actual SQL, locking, transaction,
+persistence and database recheck mechanisms. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns focused commands and failure expectations. The complete
-`internal/service/webhook` suite also executes without a database URL; its source
-producers, HTTP/protocol adapters and PostgreSQL contracts retain their own
-proofs. Task HTTP's `!stress` TestMain clears the database and UniAuth fixture
-variables in its test binary even when the complete module check supplies them
-to other packages. It executes the whole regular suite with that boundary;
+`internal/core/session` and `internal/service/webhook` suites execute without a
+database URL. Their producer, service, HTTP/protocol and PostgreSQL owners retain
+distinct proofs. Task HTTP's `!stress` TestMain clears the database and UniAuth
+fixture variables in its test binary even when the complete module check supplies
+them to other packages. It executes the whole regular suite with that boundary;
 stress workloads use their separate fixture. The complete module check still
-includes real PostgreSQL.
+includes isolated real PostgreSQL.
 
 The explicitly tagged `cmd/integration_tests` suite runs normal API flows through
 a production Server process and Go HTTP client. Build production Web resources

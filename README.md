@@ -354,10 +354,12 @@ SQLite SQL directories with the compiled dist tree; the
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
-`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. Task HTTP and
-Webhook service unit suites run independently without PostgreSQL; the
+`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. Task HTTP, complete
+Session core and Webhook service unit suites run independently without
+PostgreSQL; the
 [server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks)
-owns their focused commands. Normal Go API flows use the separate
+owns their focused commands and dependency boundaries. Normal Go API flows use
+the separate
 [API integration runner](packages/daynight-server/README.md#go-api-integration),
 which builds the production Server and uses a Go HTTP client with real
 authentication and an isolated database. See the

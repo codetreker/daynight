@@ -29,14 +29,16 @@ func TestOperationRetryPreservesHistoricalCanonicalHash(t *testing.T) {
 	if !bytes.Contains(legacy, []byte(`\u003c`)) || !bytes.Equal(commandHash(c), expected[:]) {
 		t.Fatal("historical operation canonicalization changed")
 	}
-	if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
+	if _, err = f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, c); err != nil {
 		t.Fatal(err)
 	}
-	// Install an independently computed pre-upgrade hash in the durable ledger.
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE session_operations SET body_hash=$1 WHERE operation_id=$2`, expected[:], c.OperationID); err != nil {
-		t.Fatal(err)
+	if f.writes.Operation == nil || !bytes.Equal(f.writes.Operation.Hash, expected[:]) {
+		t.Fatal("operation write omitted the canonical intent hash")
 	}
-	if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
+	f.SelectOperationWrite(t)
+	f.SelectSessionWrite(t)
+	f.data.Operation.Hash = expected[:]
+	if _, err = f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, c); err != nil {
 		t.Fatal("historical retry rejected", err)
 	}
 }
@@ -65,7 +67,8 @@ func TestLiveCapacityDoesNotHTMLExpandPendingApprovals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.s.Handle(context.Background(), decoded); err != nil {
+	if _, err = f.s.Handle(f.ControllerPhase(context.Background(), map[string]int{"UnreconciledSessionOperationCount": 1, "TouchSession": 1, "SaveSession": 1}), decoded); err != nil {
 		t.Fatal("bounded native approval sync rejected", err)
 	}
+	selectContentHandle(t, f)
 }

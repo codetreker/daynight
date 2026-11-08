@@ -19,7 +19,9 @@ func TestStopCancelsAndWaitsForOnlineContent(t *testing.T) {
 	syncContent(t, f, snapshot)
 	result := make(chan error, 1)
 	go func() {
-		_, err := f.s.Timeline(context.Background(), f.p, f.project, f.task, snapshot.SessionID, "tail", "", 10)
+		phase := contentReadPhase(f, context.Background(), 1)
+		_, err := f.s.Timeline(phase, f.p, f.project, f.task, snapshot.SessionID, "tail", "", 10)
+		f.dao.FinishContext(phase)
 		result <- err
 	}()
 	_ = nextContent(t, f, snapshot)
@@ -53,7 +55,9 @@ func TestStopCancelsMultichunkResource(t *testing.T) {
 	descriptor := sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "local.txt", ByteLength: &size, SHA256: &digest, MediaType: &media}
 	result := make(chan error, 1)
 	go func() {
-		_, _, err := f.s.Resource(context.Background(), f.p, f.project, f.task, snapshot.SessionID, descriptor.ResourceID)
+		phase := contentReadPhase(f, context.Background(), 3)
+		_, _, err := f.s.Resource(phase, f.p, f.project, f.task, snapshot.SessionID, descriptor.ResourceID)
+		f.dao.FinishContext(phase)
 		result <- err
 	}()
 	request := nextContent(t, f, snapshot)
