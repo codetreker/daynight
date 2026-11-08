@@ -7,6 +7,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
