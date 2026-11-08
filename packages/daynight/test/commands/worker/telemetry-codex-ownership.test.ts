@@ -162,7 +162,10 @@ describe("composed Codex probe ownership", () => {
 // Keep the production host and both collectors in the closure; only stores, remotes and command effects are replaced.
 describe("production Bot host Codex ownership", () => {
   const instance = () => {
-    vi.stubEnv("PATH", environment.PATH);
+    const searchEnvironment = { ...environment, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+    vi.stubEnv("PATH", searchEnvironment.PATH);
+    vi.stubEnv("PATHEXT", searchEnvironment.PATHEXT);
+    mocks.nativeEnvironment.mockReturnValue(searchEnvironment);
     const paths = resolveWorkerPaths(path.resolve("fixture-home"));
     const host = createWorkerBotHost({ homeDirectory: path.resolve("fixture-home"), packageDirectory: path.resolve("fixture-package"), workingDirectory: cwd, paths,
       owner: { serverOrigin: "https://daynight.example", ownerUserId: "fixture-owner", workerId: "fixture-worker" }, serverToken: "fixture-placeholder", emit: () => {},
