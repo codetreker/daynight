@@ -52,7 +52,7 @@ if [[ -z "${DAYNIGHT_TEST_DATABASE_URL:-}" ]]; then
   ready=false
   ready_deadline=$((SECONDS + 20))
   while (( SECONDS < ready_deadline )); do
-    if timeout --signal=TERM --kill-after=2s 2s docker exec "$database_id" pg_isready -U daynight -d daynight >/dev/null 2>&1; then ready=true; break; fi
+    if timeout --signal=TERM --kill-after=2s 2s docker exec "$database_id" pg_isready -h 127.0.0.1 -U daynight -d daynight >/dev/null 2>&1; then ready=true; break; fi
     sleep 0.1
   done
   if [[ "$ready" != true ]]; then
