@@ -97,8 +97,12 @@ after a candidate is reopened. Retained cancelled records count toward the
 100-pair limit; exceeding that limit fails explicitly.
 
 A temporary Git index composes the tests and verifies the recorded production
-tree. Raw reviewed blobs are written atomically and checked byte for byte. Local
-Git operations receive no API token and disable filters and hooks. Immutable Git
+tree. Raw reviewed blobs are written atomically and checked byte for byte. The
+checkout index is refreshed after materialization even when the combined tree
+already matches HEAD: replacing a CRLF checkout with the reviewed LF bytes can
+otherwise leave Git reporting a modification with an empty diff. HEAD changes
+only when the combined tree differs. Local Git operations receive no API token
+and disable filters and hooks. Immutable Git
 fetches use a separate read-only credential environment without persistence.
 Jobs expose the API token only to validation, not to later candidate execution.
 
