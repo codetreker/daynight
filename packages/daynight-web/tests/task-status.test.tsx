@@ -1,7 +1,7 @@
 import { selectTaskList } from './helpers/projectViews';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
-import { TEST_VIEWER_ID, taskSyncFromGraph, directAccessFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph, directAccessFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor as waitForWithRealTimers, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
@@ -70,7 +70,7 @@ const deferred = <T,>() => {
 const stat = (label: string) => screen.getByText(label, { selector: '.stat-label' }).parentElement!.querySelector('.stat-number')!;
 let root: HTMLDivElement;
 beforeEach(() => {
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.version, propertiesForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.properties }));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.version, propertiesForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.properties })));
 });
 
 beforeEach(() => {

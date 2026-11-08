@@ -18,7 +18,7 @@ it('keeps the profile-free grant version exact in GET access and task-sync witho
   expect((await getProjectAccess(projectId, signal(), admission())).directGrant!.version).toBe(9_223_372_036_854_775_807n);
   const detail = detailFixture(projectId, otherId);
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(taskSyncResponse(graphFixture([detail]), { viewerId: TEST_VIEWER_ID, actorAccess: exact, versionForTask: () => 1n, propertiesForTask: () => ({ future: { version: 42 } }) })));
-  const sync = await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal());
+  const { sync } = await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal());
   expect(sync.actorAccess.directGrant!.version).toBe(exact.directGrant.version);
   expect(sync.tasks[0]!.properties).toEqual({ future: { version: 42 } });
 });

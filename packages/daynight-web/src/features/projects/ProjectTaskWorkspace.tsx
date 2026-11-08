@@ -8,12 +8,14 @@ import { ProjectTaskTabs } from "./ProjectTaskTabs";
 import { StandaloneList } from "./StandaloneList";
 import type { TaskView } from "./useProjectViewPreferences";
 import type { GraphSnapshot } from "./useTaskGraph";
+import type { TaskSessionSummaryStore } from "../task-session-summary/store";
 
-export const ProjectTaskWorkspace = ({ projectId, snapshot, active = true, activeView, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, onViewChange, filter, chains, standalone }: {
+export const ProjectTaskWorkspace = ({ projectId, snapshot, sessionStore, active = true, activeView, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, onViewChange, filter, chains, standalone }: {
   readonly projectId: string;
   readonly active?: boolean;
   readonly filter?: ReactNode;
   readonly snapshot: GraphSnapshot;
+  readonly sessionStore: TaskSessionSummaryStore;
   readonly activeView: TaskView;
   readonly unfinishedStandaloneTaskCount: number;
   readonly unfinishedChainTaskCount: number;
@@ -30,7 +32,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, active = true, activ
           unfinishedChainTaskCount={unfinishedChainTaskCount} onViewChange={onViewChange} />
         {filter}
         <div role="tabpanel" id="project-task-panel-chains" aria-labelledby="project-task-tab-chains" hidden={activeView !== "chains"}>
-          {activeView === "chains" && <TaskSessionSummaryProvider projectId={projectId} active={active}><section aria-label={m.chains}><ChainList index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section></TaskSessionSummaryProvider>}
+          {activeView === "chains" && <TaskSessionSummaryProvider store={sessionStore} active={active}><section aria-label={m.chains}><ChainList index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section></TaskSessionSummaryProvider>}
         </div>
         <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"} tabIndex={-1}>
           {activeView === "standalone" && <StandaloneList index={snapshot.index} {...standalone} />}
