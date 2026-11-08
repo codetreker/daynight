@@ -66,8 +66,9 @@ component styles and local geometry.
 
 ## Consequences
 
-Configuration, subscriptions and signing secrets share one submission and
-recovery mechanism. Delivery diagnostics can reuse it with their own target and
+Configuration, subscriptions, signing secrets and delivery registration share
+one submission and recovery mechanism. The [delivery observation decision](2026-11-08-webhook-web-deliveries.md)
+extends it with independent resource disclosure, payload integrity and original
 generation validation. Mutation admission distinguishes receipt reads from
 writes and checks current catalog expansion permission before preparing and
 dispatching an intent; restrictive changes remain available. Finite receipt retention limits confirmation availability;

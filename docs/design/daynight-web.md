@@ -30,7 +30,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 完整依赖用于验证、上下文和检查；关系标签和虚线消费显式性质，卡片角色另按成员集合计算。
 项目阈值、精确设置版本、管理员设置页及局部执行计时/提醒共同接入。
 
-[Webhook Web设计](webhook-web.md)拥有已认证工作区的显式归属配置页面、严格wire读取、固定操作意图、GET-only未知恢复与私有资料清理；[Web配置规格](../spec/webhook-web.md)拥有业务结果和机器验证。页面复用生产shell，catalog按当前service/principal决定新请求准入，与侧栏默认Team偏好解耦。
+[Webhook Web设计](webhook-web.md)拥有已认证工作区的显式归属配置、订阅与投递排错页面、严格wire读取、固定操作意图、GET-only未知恢复、独立载荷完整性及私有资料观察；[Web规格](../spec/webhook-web.md)拥有业务结果和机器验证。页面复用生产shell，catalog按当前service/principal决定新请求准入，与侧栏默认Team偏好解耦。
 
 ## 目标与现有基础
 

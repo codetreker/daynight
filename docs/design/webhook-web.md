@@ -1,37 +1,55 @@
-# Webhook Web 配置架构
+# Webhook Web 管理与投递架构
 
 ## 组件与导航
 
-`AuthenticatedApp`在已认证的TaskCacheScope下提供独立`WebhookCatalogProvider`，与侧栏默认Team选择解耦。`WorkspaceSidebar`只有验证过当前服务/主体catalog后展示入口；`/webhooks`的查询明确表达owner、teamId、endpointId和configuration/subscriptions。非法查询保留错误，不作为个人归属读取。
+`AuthenticatedApp`在已认证的TaskCacheScope下提供独立`WebhookCatalogProvider`，与侧栏默认Team选择解耦。`WorkspaceSidebar`只有验证过当前service/principal的catalog后展示入口；`/webhooks`的查询明确表达owner、teamId、endpointId和configuration/subscriptions/deliveries。deliveryId必须配合endpointId及deliveries；非法查询保留错误，不作为另一个归属读取。筛选按主体、owner和endpoint隔离在内存中，不扩展URL或Task IndexedDB。
 
-`WebhooksPage`按配置、订阅、秘密、列表和原生dialog组织交互；`useWebhookData`管理按owner与查询隔离的读取，`useWebhookDirectories`读取实际Team/Project目录。页面保持生产shell，Webhook组件使用独立作用域样式。要求由[Web配置规格](../spec/webhook-web.md)拥有，服务端权限、订阅和回执由[管理设计](webhook-management.md)拥有。
+`WebhooksPage`组织配置、订阅、秘密和投递页签；`useWebhookData`管理配置列表与详情，`useWebhookDirectories`读取实际Team/Project目录。`WebhookDeliveriesPanel`拥有Delivery列表、详情dialog、Attempt分页、独立payload及重投确认；`useWebhookHistory`共用历史读取、页数和错误保留逻辑，`useScopedState`隔离筛选。正常配置GC在Delivery仍引用endpoint时保留墓碑，页面可挂载只读投递页签。有效归属的deliveries地址在配置GET返回真实404且配置未加载时，使用`WebhookHistoryEndpoint`的`{kind:"retained-history",id}`分支挂载独立历史读取。它只持有endpoint ID，不合成配置名称、版本、capabilities或活跃endpoint；历史自身的200/403/404由严格读取处理。墓碑与缺失配置上下文均无重投入口资格。页面保持生产shell，Webhook组件使用独立作用域样式。可见结果由[Web规格](../spec/webhook-web.md)拥有，服务端管理和历史机制分别见[管理设计](webhook-management.md)与[历史设计](webhook-history.md)。
 
-## 请求与发布
+## 请求与配置发布
 
-`api/webhooks.ts`复用现有同源request、取消、401清理与requestId机制。成功及非401错误响应先校验当前主体，成功再验证严格DTO和请求资源；浏览器使用Web Crypto，不导入CLI的Node依赖。配置版本与目的地代次为规范int64字符串，nullable和数组必须真实存在。
+`api/webhooks.ts`复用现有同源request、取消、401清理与requestId机制。成功及非401错误响应先校验当前主体，成功再验证严格DTO和请求资源；浏览器使用Web Crypto，不导入CLI的Node依赖。配置版本、destinationRevision和generation为规范int64字符串，nullable和数组必须真实存在。历史参数、顺序、重复ID与cursor严格验证；UTC筛选按服务端纳秒精度比较，Attempt代次使用BigInt。
 
-读取按服务/主体/owner/endpoint/查询代次发布；旧请求、低版本和错主体不能覆盖新视图。Endpoint读取和辅助请求共用owner发布围栏；Team归属的已确认membership role/version另约束配置、列表、秘密、管理控件及弹窗。团队目录确认降权或关系失效时，撤下旧管理员资料并失效其读取依据，迟到响应和返回该归属的缓存不能恢复旧权限；较新的限制性Endpoint或列表摘要投影也立即推进归属权限观察，不等待后续页或详情；只有主体、媒体和错误DTO均验证成立的server forbidden403才撤销该归属全部私有投影，server not_found404仅表示资源当前不可用；带403/404状态的协议损坏不构成授权或资源不存在事实，保留合法数据和草稿并允许恢复读取。撤下旧摘要和管理能力；未变化的旧管理员目录不能恢复它，新的membership身份或版本提供复权依据。原操作回执独立保留。权限披露变化使用当前值，URL=null不能回退到旧敏感值。原生dialog与草稿不因背景读取卸载。分页记录查询与已经读取的页数，同查询刷新读取相同权威cursor范围，整批成功才替换；失败保留原集合，改变查询时明确区分旧集合和新结果。
+读取按service/principal/owner/endpoint/查询代次发布；旧请求、低版本和错主体不能覆盖新视图。Endpoint读取和辅助请求共用owner发布围栏；Team归属的已确认membership role/version另约束配置、列表、秘密、管理控件及弹窗。团队目录确认降权或关系失效时，撤下旧管理员资料并失效其读取依据，迟到响应和返回该归属的缓存不能恢复旧权限；较新的限制性Endpoint或列表摘要投影也立即推进归属权限观察，不等待后续页或详情。只有主体、媒体和错误DTO均验证成立的server forbidden403才作为对应请求的权限事实，协议损坏保留合法数据和恢复能力；owner读取403撤销owner投影，资源404只撤回当前资源。未变化的旧管理员目录不能恢复权限，新的membership身份或版本提供复权依据。原操作回执独立保留，nullable披露值不能回退到旧敏感值。
 
-catalog首次加载决定私有读取准入；背景验证保留已展示页面并暂停新准入，成功恢复，真实错误保持可重试。新确认身份撤销旧TaskCacheScope及客户端私有状态。Webhook配置不写任务IndexedDB。
+catalog首次加载决定私有读取准入；背景验证保留已展示页面并暂停新准入，成功恢复后仅重新读取。确认身份变化撤销旧TaskCacheScope及客户端私有状态。准入暂停不卸载dialog、载荷、重投确认或草稿；身份失效、离页及确认的权限、资料或期限变化按实际范围清理。
+
+## 投递资料的共同观察
+
+配置版本和投递generation不随每次资料权限变化推进，单独给列表与详情分配请求序号不足以隔离跨请求迟到披露。`WebhookDeliveryObservations`为同一endpoint内的每个Delivery保存读取观察代次、generation及当前投影。列表和详情在发起GET时记录代次；metadata_only、载荷不可用、有效payload403/410/404及已知载荷逻辑到期推进同一个限制观察。早于该观察开始的读取返回当前受限投影，不能重新安装旧full资料；新发起的获权读取可以恢复完整视图，并保留新的观察水位以拒绝更旧响应。低generation不能覆盖较新的事实。
+
+列表在每页响应和最终组装时经过共同投影；追加或后续页失败也使用当前已经脱敏的集合，不能从读取开始时捕获的旧页恢复内容。详情限制立即撤回对应列表和payload，payload403保持在Delivery资料范围，不撤销整个owner。限制还移除意图控制器中相同Delivery的当前私有投影，原不可变回执保留；后到的控制器结果同样经过当前限制检查。
+
+payloadExpiresAt是已知载荷截止，响应发布时读取新鲜Date.now()，并为未来载荷期限安排本地定时撤回；迟到且已经跨该期限的正文不能发布。元数据保留会受到活动、Attempt和保留状态影响，HTTP投影没有精确元数据截止，客户端不能用occurredAt加retention秒数计算删除时间。历史通过权威GET持续核验，以真实404或限制投影撤下对应资料；载荷本地清理和历史权威撤回均不宣称数据库已物理GC。发送后续结果与历史新鲜度检查只使用GET。准入可用且投递页签可见时，所选pending/leased每两秒核验详情、Attempt与列表，终态每30秒核验；未选择详情时列表每30秒核验。focus/visibility触发同一读取，离页或准入暂停清除定时器，背景检查保留未变化节点、焦点、滚动和选择。
+
+历史分页保存查询与已读页数，同查询刷新沿当前权威cursor读取相同范围，整批成功才替换；失败保留当前合法集合，改变查询明确区分旧集合和新结果。保留策略与historyMayBeIncomplete一直表达历史可用范围，不把空页或404推断为从未发生。Attempt的正常结果、recoveredUnknownAt和lateResult各自呈现；配置最新摘要、过去lastAcknowledgedAt和后来失败保持独立。
+
+## 原载荷验证
+
+payload只在明确请求时调用独立GET，不能凭endpoint可见性或已有历史DTO跳过授权。包装先验证owner、endpointId、deliveryId及已观察eventId、媒体、编码、规范Base64、字节长度和65,536字节上限；Web Crypto对解码原字节计算SHA-256，随后严格UTF-8解码。取消、身份或资源变化继续约束发布，校验完成前没有可显示正文。
+
+`pre`使用文本子节点展示原内容，原字节及hash单独保留用于核对。资源名称和错误同样使用文本；没有可执行frame、innerHTML、Task回填或目标重构。离开详情、身份变化、限制或期限到达取消未完成payload请求并删除内存正文。URL、sessionStorage和日志不保存payload。
 
 ## 固定意图控制器
 
-`WebhookIntentController`在首次实际提交时建立固定元数据与最终body，用Web Crypto计算SHA-256。一个owner内未决操作阻止冲突的新意图；重复或重入提交共享同一结果。写入在准备、认证恢复及实际fetch前检查当前准入。读取核对与写入使用不同pending种类；核对期间的新写明确拒绝，不能把旧操作的读取结果当作新写入结果。已知configurationExpansionAvailable=false时，统一准入分类阻止目的地变化、新资源/事件扩大、确认或启用，保留名称、范围收缩、暂停和删除。
+`WebhookIntentController`在首次实际提交时建立固定元数据与最终body，用Web Crypto计算SHA-256。一个owner内未决操作阻止冲突的新意图；重复或重入提交共享同一结果。写入在准备、认证恢复及实际fetch前检查当前准入。读取核对与写入使用不同pending种类；核对期间的新写明确拒绝，不能把旧操作的读取结果当作新写入结果。准入按操作种类区分配置扩张和重投：已知configurationExpansionAvailable=false时阻止目的地变化、新资源/事件扩大、确认或启用，保留名称、范围收缩、暂停和删除；delivery.redeliver另检查dispatchEnabled及当前Delivery资格。
 
-状态区分idle、preparing、submitting、unknown、rejected和confirmed。确认使用原operationId、issuedAt、actor、owner、种类、目标、hash和版本关系；首次确认的operation结果作为该意图不可变的已知事实保留，后续矛盾的结果字段报告协议错误且不替换它。响应中的历史operation与当前endpoint分别解析，当前投影损坏不能否定已经匹配的原效果。
+状态区分idle、preparing、submitting、unknown、rejected和confirmed。确认使用原operationId、issuedAt、actor、owner、种类、目标、hash和版本关系；首次确认的operation结果作为该意图不可变的已知事实保留，后续矛盾的结果字段报告协议错误且不替换它。响应中的历史operation与当前endpoint/Delivery分别解析，当前投影损坏或随后读取失败不能否定已匹配的原效果。
 
-unknown自动活动仅尝试读取原GET回执，失败保留unknown和原ID，显式核对继续使用原scope。sessionStorage仅存最小prepared metadata；body只在内存。重载后没有body不能重发。只有读取、解析并绑定scope成功的prepared metadata才恢复为unknown；存储不可读或损坏时保留明确persistenceError，不宣称旧操作回滚或记录已清理，当前文档中的新明确提交仍使用完整固定意图并保留核对ID。删除pending记录核对原operationId，旧控制器不能清除另一个操作；dispose移除内存正文与私有投影。存储清理返回失败，由认证壳继续完成身份隔离并保留可重试的opaque主体记录。
+delivery.redeliver descriptor固定endpointId、deliveryId、ifVersion、ifGeneration和原destinationRevision，请求body只添加操作元数据。仅202进入重投登记确认：configVersionAfter不变，generationAfter为原ifGeneration+1，目标revision不变。当前Delivery可已到更高generation，不能要求它等于原回执；页面分别显示原登记generation和当前generation，实际发送通过后续GET读取。原事件、body、目标、计划与手动机会由服务端[历史设计](webhook-history.md#重投与执行)裁决，浏览器不生成替代事件或重置预算。
 
-回执nullable overlapUntil来自原持久化结果；逻辑到期由数据库时钟决定。GET404和重放410只说明回执当前不可确认，不能证明回滚，详见[回执决策](../../.agents/notes/implemented/bug-fix/2026-11-08-webhook-receipt-results.md)。
+unknown自动活动仅尝试读取原GET回执，失败保留unknown和原ID，显式核对继续使用原scope。sessionStorage仅存最小prepared metadata，body只在内存；重载后没有body不能重发。只有读取、解析并绑定scope成功的prepared metadata才恢复为unknown；存储不可读或损坏保留明确persistenceError，不宣称原操作回滚或记录已清理，当前文档的新明确提交仍保留完整固定意图和核对ID。删除pending记录核对原operationId，旧控制器不能清除另一个操作；dispose移除内存正文与私有投影。存储清理失败由认证壳继续完成身份隔离并保留可重试的opaque主体记录。
+
+回执nullable overlapUntil来自原持久化结果；逻辑到期由数据库时钟决定。GET404和重放410只说明回执当前不可确认，不能证明回滚，详见[回执决策](../../.agents/notes/implemented/bug-fix/2026-11-08-webhook-receipt-results.md)。[浏览器管理决策](../../.agents/notes/implemented/architecture/2026-11-08-webhook-web-management.md)记录共有基础，[投递资料决策](../../.agents/notes/implemented/architecture/2026-11-08-webhook-web-deliveries.md)记录共同观察与原字节验证的原因。
 
 ## 配置、资格和秘密
 
 配置对话框将明确编辑字段与版本基线分开保存。手动查看冲突后的当前版本刷新未编辑值，保留编辑值；双方都改变的字段须明确选用当前值、保留本人修改或重新编辑，重复查看不会自动解除冲突。提交只包含已明确解决的编辑字段与观察版本；订阅dialog提交完整最终数组及显式confirmProjectIds。服务端裁决实际资格和字节边界，前端目录不替代授权。扩大与启用遵循catalog能力，暂停、删除和范围收缩仍使用管理权与原CAS。
 
-独立secret GET只在当前capability获准时读取。返回key与当前版本匹配才展示；离开配置区域、窄屏返回列表、响应式切入列表模式、轮换、降权或账号变化撤下旧值并失效未完成秘密读取；再次进入须重新GET，隐藏面板不保留可显示秘密。复制失败提供可选中明文的当前文档操作，不写额外持久存储。历史轮换结果保持原key和截止，当前secret另读。
+独立secret GET只在当前capability获准时读取。返回key与当前版本匹配才展示；离开配置区域、窄屏返回列表、响应式切入列表模式、轮换、降权或账号变化撤下旧值并失效未完成秘密读取，再次进入须重新GET，隐藏面板不保留可显示秘密。复制失败提供可选中明文的当前文档操作，不写额外持久存储。历史轮换结果保持原key和截止，当前secret另读。
 
 ## 验证与交付
 
-单元验证负责wire、版本、状态机、存储和UI生命周期边界。无头浏览器连接同一生产RegisterRoutes、真实认证和PostgreSQL，通过真实第二客户端、barrier及仅转发的故障层验证业务效果。临时fixture只接线模块，不复制业务handler或成功JSON。
+单元验证负责wire、版本、状态机、存储和UI生命周期边界，包含跨列表/详情/payload限制、跨载荷期限迟到响应及权威历史失效。无头浏览器连接同一生产RegisterRoutes、真实认证和PostgreSQL，通过真实第二客户端、barrier及仅转发的故障层验证业务效果；接收结果与签名使用实际发送器和受控HTTPS接收方。临时fixture只接线模块，不复制业务handler或成功JSON。合法边界载荷fixture只证明独立原字节接口与浏览器上限，不把安装的边界内容冒称实际事件渲染输出。
 
-内容区与dialog对照视觉输入的样式向量、局部geometry和像素，生产shell单独核对控件、响应式与导航。全页截图保留shell起点、宽度、页头及边距差异，只允许对齐外层可用内容盒。未变化背景检查同时验证节点身份、草稿、选区、焦点、滚动和分页；产品测试不导入原型或场景状态。
+内容区与dialog对照视觉输入的样式向量、局部geometry和像素，生产shell单独核对控件、响应式与导航。全页截图保留shell起点、宽度、页头及边距差异，只允许对齐外层可用内容盒。未变化背景检查同时验证节点身份、草稿、选区、焦点、滚动和分页；产品测试不导入原型或场景状态。局部模块验证不替代完整应用生命周期与物理保留清理的组合证明。

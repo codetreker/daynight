@@ -38,21 +38,38 @@ and keyboard behavior remain unchanged.
 The [Web workspace decision](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md) records the rationale for the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for production composition and credential-private acceptance.
 
-## Webhook configuration
+## Webhook management and delivery diagnostics
 
 Open Webhooks in the authenticated sidebar to visit `/webhooks`. Its catalog is
 validated for the current service and account before private requests are admitted.
 Choose Personal or an explicit Team in the page; this selection is independent
-of the sidebar Team. Configuration and subscriptions share one list/detail page,
-with native dialogs for changes and signing-key maintenance.
+of the sidebar Team. Configuration, subscriptions and deliveries share one
+list/detail page, with native dialogs for changes, signing-key maintenance and
+original delivery inspection. Explicit Delivery links retain their endpoint and
+owner. Deleted configurations expose retained history as a read-only view. If
+the endpoint configuration is missing but history remains readable, the explicit
+history route uses an ID-only context without invented configuration fields or
+redelivery admission.
+
+Delivery history supports server filtering and pagination, original targets,
+attempts, historical acknowledgements, current failures and late observations.
+Payloads require an explicit independent read and are displayed as text only after
+identity, canonical Base64, length, SHA-256 and UTF-8 verification. A shared resource
+observation prevents old list or detail responses from restoring withdrawn private
+data. Retention deadlines also apply to delayed responses.
 
 Changes use the observed configuration version and one fixed operation identity,
-request body and digest. Unknown results reconcile the original receipt using GET;
-reloading keeps minimal operation metadata and never resends a missing body.
-Private URLs and secrets stay in scoped memory, and background checks preserve
-drafts, focus and loaded pages. Storage cleanup failures remain visible without
-blocking logout or identity invalidation. The [Web requirements](../../docs/spec/webhook-web.md)
-and [design](../../docs/design/webhook-web.md) own this behavior.
+request body and digest. Manual redelivery adds the observed original generation;
+202 confirms registration, and subsequent reads observe actual sending. Its
+original receipt and current Delivery generation stay distinct. Unknown results
+reconcile the original receipt using GET; reloading keeps minimal operation
+metadata and never resends a missing body. Private URLs, secrets and payloads stay
+in scoped memory. Background verification pauses new admission while preserving
+drafts, focus, open dialogs and loaded pages; confirmed access and expiry changes
+withdraw the corresponding content. Storage cleanup failures remain visible
+without blocking logout or identity invalidation. The
+[Web requirements](../../docs/spec/webhook-web.md) and
+[design](../../docs/design/webhook-web.md) own this behavior.
 
 ## Assistants
 

@@ -25,6 +25,14 @@ export type WebhookIntentInput = {
   readonly ifVersion?: string;
   readonly destinationRevision?: string;
   readonly body: WebhookConfigurationInput | { readonly mode: "overlap" | "immediate" };
+} | {
+  readonly kind: "delivery.redeliver";
+  readonly endpointId: string;
+  readonly deliveryId: string;
+  readonly ifVersion: string;
+  readonly ifGeneration: string;
+  readonly destinationRevision: string;
+  readonly body: Record<string, never>;
 };
 export type WebhookIntentState = {
   readonly phase: "idle" | "preparing" | "submitting" | "unknown" | "rejected" | "confirmed";
@@ -40,7 +48,7 @@ type Options = {
   readonly admission: WebhookAdmission;
   readonly signal: AbortSignal;
   readonly storage?: Storage;
-  readonly canSubmit?: () => boolean;
+  readonly canSubmit?: (kind: WebhookOperationKind) => boolean;
 };
 class WebhookIntentBusy extends Error {
   constructor() {
@@ -96,9 +104,9 @@ const assertReceiptUnchanged = (receipt: WebhookReceipt, confirmed: WebhookRecei
 };
 
 const inputBody = (input: WebhookIntentInput): Record<string, unknown> => {
-  if (!kindChoices.includes(input.kind) || input.kind === ("delivery.redeliver" as WebhookOperationKind)) return invalid();
+  if (!kindChoices.includes(input.kind)) return invalid();
   const body = record(input.body);
-  const create = input.kind === "endpoint.create", rotate = input.kind === "signing-secret.rotate", remove = input.kind === "endpoint.delete";
+  const create = input.kind === "endpoint.create", rotate = input.kind === "signing-secret.rotate", remove = input.kind === "endpoint.delete" || input.kind === "delivery.redeliver";
   const allowed = rotate ? ["mode"] : remove ? [] : ["name", "enabled", "destination", "subscriptions", ...(create ? [] : ["confirmProjectIds"])];
   if (Object.keys(body).some(field => !allowed.includes(field)) || create && ["name", "enabled", "destination", "subscriptions"].some(field => !Object.hasOwn(body, field)) || input.kind === "endpoint.patch" && Object.keys(body).length === 0) return invalid();
   if (rotate && body.mode !== "overlap" && body.mode !== "immediate") return invalid();
@@ -188,19 +196,21 @@ export class WebhookIntentController {
       return this.#pending;
     }
     if (this.#state.phase === "unknown") return Promise.resolve(this.#state);
-    if (this.#options.canSubmit !== undefined && !this.#options.canSubmit()) throw new ApiError("server", 503, "webhooks_unavailable");
+    if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(input.kind)) throw new ApiError("server", 503, "webhooks_unavailable");
     const signal = this.#signal();
     signal.throwIfAborted();
-    const body = inputBody(input), create = input.kind === "endpoint.create";
+    const body = inputBody(input), create = input.kind === "endpoint.create", redeliver = input.kind === "delivery.redeliver";
     const endpointId = create ? null : uuid(input.endpointId), ifVersion = create ? null : webhookVersion(input.ifVersion);
     if (create && (input.endpointId !== undefined || input.ifVersion !== undefined)) return invalid();
-    const destinationRevision = input.destinationRevision === undefined ? null : webhookVersion(input.destinationRevision);
+    const deliveryId = redeliver ? uuid(input.deliveryId) : null, ifGeneration = redeliver ? webhookVersion(input.ifGeneration) : null;
+    if (!redeliver && (Object.hasOwn(input, "deliveryId") || Object.hasOwn(input, "ifGeneration"))) return invalid();
+    const destinationRevision = redeliver ? webhookVersion(input.destinationRevision) : input.destinationRevision === undefined ? null : webhookVersion(input.destinationRevision);
     const operationId = uuid(crypto.randomUUID()), issuedAt = new Date().toISOString();
-    const serializedBody = JSON.stringify({ operationId, issuedAt, expectedUserId: this.#options.admission.userId, ...(ifVersion === null ? {} : { ifVersion }), ...body });
+    const serializedBody = JSON.stringify({ operationId, issuedAt, expectedUserId: this.#options.admission.userId, ...(ifVersion === null ? {} : { ifVersion }), ...(ifGeneration === null ? {} : { ifGeneration }), ...body });
     const bytes = new TextEncoder().encode(serializedBody);
     if (bytes.length > 262_144) return invalid();
     this.#body = serializedBody;
-    const pending = Promise.resolve().then(() => this.#prepareAndSubmit(input.kind, endpointId, ifVersion, destinationRevision, operationId, issuedAt, bytes, signal));
+    const pending = Promise.resolve().then(() => this.#prepareAndSubmit(input.kind, endpointId, deliveryId, ifVersion, ifGeneration, destinationRevision, operationId, issuedAt, bytes, signal));
     this.#pending = pending;
     this.#pendingKind = "write";
     this.#publish({ ...this.#state, phase: "preparing", prepared: null, result: null, error: null, reconciling: false });
@@ -208,18 +218,18 @@ export class WebhookIntentController {
     return pending;
   };
 
-  async #prepareAndSubmit(kind: WebhookIntentInput["kind"], endpointId: string | null, ifVersion: string | null, destinationRevision: string | null, operationId: string, issuedAt: string, bytes: Uint8Array<ArrayBuffer>, signal: AbortSignal): Promise<WebhookIntentState> {
+  async #prepareAndSubmit(kind: WebhookIntentInput["kind"], endpointId: string | null, deliveryId: string | null, ifVersion: string | null, ifGeneration: string | null, destinationRevision: string | null, operationId: string, issuedAt: string, bytes: Uint8Array<ArrayBuffer>, signal: AbortSignal): Promise<WebhookIntentState> {
     let dispatched = false;
     try {
       const digest = await crypto.subtle.digest("SHA-256", bytes);
       signal.throwIfAborted();
-      const prepared: WebhookPreparedMetadata = { serviceOrigin: this.#options.serviceOrigin, actorUserId: this.#options.admission.userId, owner: this.#options.owner, operationId, issuedAt, requestSha256: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join(""), kind, endpointId, deliveryId: null, ifVersion, ifGeneration: null, destinationRevision };
+      const prepared: WebhookPreparedMetadata = { serviceOrigin: this.#options.serviceOrigin, actorUserId: this.#options.admission.userId, owner: this.#options.owner, operationId, issuedAt, requestSha256: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join(""), kind, endpointId, deliveryId, ifVersion, ifGeneration, destinationRevision };
       this.#publish({ ...this.#state, phase: "submitting", prepared });
       this.#persist(prepared);
       const admission: WebhookAdmission = { ...this.#options.admission, ready: async requestSignal => {
         await this.#options.admission.ready?.(requestSignal);
         requestSignal.throwIfAborted();
-        if (this.#options.canSubmit !== undefined && !this.#options.canSubmit()) throw new ApiError("server", 503, "webhooks_unavailable");
+        if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(kind)) throw new ApiError("server", 503, "webhooks_unavailable");
       } };
       const body = this.#body;
       if (body === null) throw new DOMException("The pending request body was cleared.", "AbortError");
@@ -229,9 +239,9 @@ export class WebhookIntentController {
         this.#persist(null);
       }, () => {
         if (this.#body === null) throw new DOMException("The pending request body was cleared.", "AbortError");
-        if (this.#options.canSubmit !== undefined && !this.#options.canSubmit()) throw new ApiError("server", 503, "webhooks_unavailable");
+        if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(kind)) throw new ApiError("server", 503, "webhooks_unavailable");
         dispatched = true;
-      });
+      }, deliveryId);
       this.#body = null;
       return this.#publish({ ...this.#state, phase: "confirmed", result, error: result.currentError ?? null });
     } catch (error) {
@@ -274,8 +284,8 @@ export class WebhookIntentController {
   forgetCurrentProjection = (): void => {
     this.#body = null;
     const result = this.#state.result;
-    if (result?.endpoint === undefined) return;
-    const { endpoint: _endpoint, ...retained } = result;
+    if (result?.endpoint === undefined && result?.delivery === undefined) return;
+    const { endpoint: _endpoint, delivery: _delivery, ...retained } = result!;
     this.#publish({ ...this.#state, result: retained });
   };
 
