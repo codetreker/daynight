@@ -42,10 +42,6 @@ func TestBotRegistrationFreezesRoleAndReconcilesOriginalBinding(t *testing.T) {
 	if _, err := f.s.RegisterTest(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 1, "LockTestOwner": 1, "FindTestRegistration": 1}), f.p, input.Registration); err == nil {
 		t.Fatal("ordinary registration accessed Bot")
 	}
-	page, err := f.s.ListTest(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 1, "ListTestSessions": 1}), f.p, "", 10, false)
-	if err != nil || len(page.Items) != 0 {
-		t.Fatalf("Bot leaked into ordinary inventory: %+v %v", page, err)
-	}
 }
 
 func TestBotGrantAndReportRequireCurrentBindingAndLiveSynchronization(t *testing.T) {

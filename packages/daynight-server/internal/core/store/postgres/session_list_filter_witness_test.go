@@ -3,9 +3,11 @@ package postgres
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -15,17 +17,19 @@ type sessionListFilterRow struct {
 	id, owner, lifecycle, connection string
 	created                          time.Time
 	parent, connectionParent         *string
+	bot                              *string
 	seen, expiry, drain              *time.Time
 }
 
 func insertSessionListFilterRow(t *testing.T, database *Store, row sessionListFilterRow) {
 	t.Helper()
-	snapshot, err := json.Marshal(sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: row.id, TestExecutionID: uuid.NewString(), ExecutionGeneration: "1"}}, Lifecycle: row.lifecycle, ConnectionState: row.connection})
+	execution := uuid.NewString()
+	snapshot, err := json.Marshal(sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: row.id, TestExecutionID: execution, ExecutionGeneration: "1"}}, Lifecycle: row.lifecycle, ConnectionState: row.connection})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustQueryExec(t, database, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id,created_at,parent_credential_id,connection_parent_credential_id,last_seen,connection_expires_at,draining_until)
- VALUES($1,$2,$1,'{}',$3,'test',$4,$5,$6,$7,$8,$9,$10)`, row.id, row.owner, snapshot, uuid.NewString(), row.created, row.parent, row.connectionParent, row.seen, row.expiry, row.drain)
+	mustQueryExec(t, database, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id,created_at,parent_credential_id,connection_parent_credential_id,last_seen,connection_expires_at,draining_until,bot_id)
+ VALUES($1,$2,$1,'{}',$3,'test',$4,$5,$6,$7,$8,$9,$10,$11)`, row.id, row.owner, snapshot, execution, row.created, row.parent, row.connectionParent, row.seen, row.expiry, row.drain, row.bot)
 }
 
 func TestSessionListOnlineFiltersBeforePagination(t *testing.T) {
@@ -135,4 +139,45 @@ func TestSessionListParentOwnershipAndTiedCursor(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestSessionListExcludesBotSessionsBeforePagination(t *testing.T) {
+	database := isolatedStore(t)
+	bot, actor := storedBotCandidate(t, database)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	parent := uuid.NewString()
+	hash := sha256.Sum256([]byte(parent))
+	mustQueryExec(t, database, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, parent, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
+	sessionDAOTransaction(t, database, func(scope store.SessionScope) error {
+		return scope.BotDAO().InsertBot(t.Context(), bot)
+	})
+	first, middle, last := queryID(602), queryID(601), queryID(600)
+	for index, id := range []string{first, middle, last} {
+		row := sessionListFilterRow{id: id, owner: actor.UserID, lifecycle: "active", connection: "connected", created: now.Add(-time.Minute), parent: &parent, connectionParent: &parent, seen: ptrTime(now.Add(-time.Duration(index) * time.Second)), expiry: ptrTime(now.Add(time.Hour))}
+		if id == middle {
+			row.bot = &bot.ID
+		}
+		insertSessionListFilterRow(t, database, row)
+	}
+	sessionDAOTransaction(t, database, func(scope store.SessionScope) error {
+		_, err := scope.BotDAO().BindBotSession(t.Context(), bot.ID, 1, middle, model.BotRoleConfiguration{Instructions: "List fixture", Revision: "1", Digest: strings.Repeat("a", 64)})
+		return err
+	})
+	for _, online := range []bool{false, true} {
+		t.Run(map[bool]string{false: "all", true: "online"}[online], func(t *testing.T) {
+			sessionDAOTransaction(t, database, func(scope store.SessionScope) error {
+				dao := scope.SessionDAO()
+				items, err := dao.ListTestSessions(t.Context(), actor.UserID, now, 1, online, now.Add(-30*time.Second), nil, "")
+				if err != nil || len(items) != 2 || items[0].Snapshot.SessionID != first || items[1].Snapshot.SessionID != last {
+					t.Fatalf("Bot consumed ordinary inventory lookahead: %+v %v", items, err)
+				}
+				cursor := items[0].UpdatedAt
+				items, err = dao.ListTestSessions(t.Context(), actor.UserID, now, 1, online, now.Add(-30*time.Second), &cursor, first)
+				if err != nil || len(items) != 1 || items[0].Snapshot.SessionID != last {
+					t.Fatalf("Bot appeared in ordinary inventory cursor tail: %+v %v", items, err)
+				}
+				return nil
+			})
+		})
+	}
 }

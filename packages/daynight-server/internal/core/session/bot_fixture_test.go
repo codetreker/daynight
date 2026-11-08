@@ -111,9 +111,6 @@ func botFixture(t *testing.T) (fixture, model.Bot, BotRegistration) {
 		}
 		return nil
 	}
-	f.dao.ListTestSessionsFn = func(context.Context, string, time.Time, int, bool, time.Time, *time.Time, string) ([]store.TestSessionListItem, error) {
-		return []store.TestSessionListItem{}, nil
-	}
 	f.dao.ArchiveMetadataFn = func(_ context.Context, id string) (store.ArchiveMetadata, error) {
 		if f.data.Session == nil || id != f.data.Session.Snapshot.SessionID {
 			return store.ArchiveMetadata{}, model.ErrNotFound
