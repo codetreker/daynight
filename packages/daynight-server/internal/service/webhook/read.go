@@ -53,8 +53,22 @@ func opView(o wm.Operation) map[string]any {
 	if o.GenerationAfter != nil {
 		generationAfter = version(*o.GenerationAfter)
 	}
-	return map[string]any{"operationId": o.ID, "kind": wireOperationKind(o.Kind), "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": deliveryID, "generationAfter": generationAfter, "keyId": key, "recordedAt": o.RecordedAt.UTC(), "expiresAt": o.ExpiresAt.UTC()}
+	return map[string]any{"operationId": o.ID, "kind": wireOperationKind(o.Kind), "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": deliveryID, "generationAfter": generationAfter, "keyId": key, "overlapUntil": utcTime(o.OverlapUntil), "recordedAt": o.RecordedAt.UTC(), "expiresAt": o.ExpiresAt.UTC()}
 }
+func requireLiveOperation(ctx context.Context, sc store.WebhookReadScope, op wm.Operation, code string) error {
+	now, err := sc.ObservedAt(ctx)
+	if err != nil {
+		return err
+	}
+	if !op.ExpiresAt.After(now) {
+		if code == "not_found" {
+			return fault(code, "Webhook resource was not found.")
+		}
+		return fault(code, "Operation has expired.")
+	}
+	return nil
+}
+
 func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope, e wm.Endpoint, actor string, manage bool) (map[string]any, error) {
 	owner := map[string]any{"kind": e.Owner.Kind, "id": e.Owner.ID}
 	if e.DeletedAt != nil {
@@ -119,6 +133,9 @@ func (s *Service) Operation(ctx context.Context, p model.Principal, o Owner, id 
 		}
 		if !m && op.ActorID != p.UserID {
 			return fault("forbidden", "Access to this operation is denied.")
+		}
+		if e = requireLiveOperation(ctx, sc, op, "not_found"); e != nil {
+			return e
 		}
 		v = opView(op)
 		return nil

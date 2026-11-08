@@ -782,7 +782,11 @@ the original outcome. To resume, use `--resume-operation <path>` on the original
 write command and supply the same owner, targets, versions, mode and input. It
 verifies the record and exact request hash before reading the receipt. A matching
 receipt confirms the original operation without another write. The CLI rejects a
-receipt whose expiry is at or before the local clock. A missing receipt
+receipt whose expiry is at or before the local clock. The service also enforces
+expiry with its database clock: expired receipt reads return `404 not_found`,
+and matching retained expired replays return `410 operation_expired`. Rotation
+receipts retain their original `keyId` and nullable `overlapUntil` even after
+later rotations or endpoint deletion. A missing receipt
 permits at most one identical submission only with `--confirm`, complete original
 input and an issued time within the service's admission window (five minutes
 past and sixty seconds future). An inaccessible receipt or expired window leaves

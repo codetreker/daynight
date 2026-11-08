@@ -140,14 +140,10 @@ func TestReceiptGCManagementReplayInterleavings(t *testing.T) {
 					t.Fatalf("collection while replay owns fence: %d %v", n, err)
 				}
 				receipt, err = f.svc.Operation(f.ctx, p, owner, original.OperationID)
-				if err != nil || receipt.(map[string]any)["operationId"] != original.OperationID {
-					t.Fatalf("read during replay: %v %v", receipt, err)
-				}
+				expectFault(t, err, "not_found")
 				gate.open()
 				finished := <-replayDone
-				if finished.err != nil || !finished.result.Replay {
-					t.Fatalf("winning replay: %+v %v", finished.result, finished.err)
-				}
+				expectFault(t, finished.err, "operation_expired")
 				f.svc.DB = f.db
 				// A busy candidate advances the cursor; the next scan wraps before retrying.
 				for i := 0; i < 3 && n == 0; i++ {
@@ -170,9 +166,7 @@ func TestReceiptGCManagementReplayInterleavings(t *testing.T) {
 					t.Fatal(f.ctx.Err())
 				}
 				receipt, err = f.svc.Operation(f.ctx, p, owner, original.OperationID)
-				if err != nil || receipt.(map[string]any)["operationId"] != original.OperationID {
-					t.Fatalf("read while GC holds fence: %v %v", receipt, err)
-				}
+				expectFault(t, err, "not_found")
 				replayDone := make(chan operationReplayResult, 1)
 				go func() { r, e := f.svc.Mutate(f.ctx, p, owner, original); replayDone <- operationReplayResult{r, e} }()
 				waitReceiptFenceBlocked(t, f, owner, original.OperationID)
