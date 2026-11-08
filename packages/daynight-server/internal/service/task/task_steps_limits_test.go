@@ -175,64 +175,103 @@ func TestTaskStepsLegacyLongTextRemainsReadableAndMovable(t *testing.T) {
 		t.Fatalf("historical content unreadable: %v", err)
 	}
 	observed := time.Date(2026, 3, 4, 5, 6, 7, 123456000, time.UTC)
-	f := newStepWriteFixture(t, header, rows, store.TransactionCommitted)
-	f.Writer.ObservedAtFn = func(context.Context) (time.Time, error) { return observed, nil }
-	f.Writer.MoveTaskStepFn = func(ctx context.Context, id, stepID string, from, to int64) error {
-		if ctx != f.Ctx || id != header.ID || stepID != "00000000" || from != 0 || to != 1 {
-			t.Fatal("historical move changed interval")
-		}
-		return nil
-	}
-	f.Writer.TouchTaskFn = func(ctx context.Context, id string, at time.Time) error {
-		if ctx != f.Ctx || id != header.ID || at != observed {
-			t.Fatal("historical mutation changed parent touch")
-		}
-		return nil
-	}
-	post := header
-	post.Version++
-	f.ExpectCapture(post, func(protocol.Fact) {})
-	moved, err := f.Steps.Move(f.Ctx, f.Principal, header.ProjectID, header.ID, "00000000", taskservice.MoveTaskStep{Version: header.Version, After: pointer("abcdef01")})
-	requireChangeCommitted(t, moved, err, true)
-	if moved.Resource.Steps[1].Title != title || moved.Resource.Steps[1].Description != description {
-		t.Fatal("move altered historical text")
-	}
 	movedRows := []model.TaskStep{rows[1], rows[0]}
 	movedRows[0].Position, movedRows[1].Position = 0, 1
-	f = newStepWriteFixture(t, post, movedRows, store.TransactionCommitted)
-	f.Writer.ObservedAtFn = func(context.Context) (time.Time, error) { return observed, nil }
-	f.Writer.DeleteTaskStepFn = func(ctx context.Context, id, stepID string, from, tail int64) error {
-		if ctx != f.Ctx || id != post.ID || stepID != "abcdef01" || from != 0 || tail != 1 {
-			t.Fatal("historical delete changed interval")
-		}
-		return nil
-	}
-	f.Writer.TouchTaskFn = func(context.Context, string, time.Time) error { return nil }
-	deletedHeader := post
-	deletedHeader.Version++
-	f.ExpectCapture(deletedHeader, func(protocol.Fact) {})
-	deleted, err := f.Steps.Delete(f.Ctx, f.Principal, post.ProjectID, post.ID, "abcdef01", taskservice.DeleteTaskStep{Version: post.Version})
-	requireChangeCommitted(t, deleted, err, true)
-	if len(deleted.Resource.Steps) != 1 || deleted.Resource.Steps[0].Title != title || deleted.Resource.Steps[0].Description != description {
-		t.Fatal("delete altered historical text")
-	}
 	remaining := []model.TaskStep{rows[0]}
 	remaining[0].Position = 0
-	f = newStepWriteFixture(t, deletedHeader, remaining, store.TransactionCommitted)
-	f.Writer.ObservedAtFn = func(context.Context) (time.Time, error) { return observed, nil }
-	f.Writer.UpdateTaskStepFn = func(ctx context.Context, id string, step model.TaskStep) error {
-		if ctx != f.Ctx || id != deletedHeader.ID || step.ID != "00000000" || step.Title != "corrected" || step.Description != "" {
-			t.Fatal("historical correction changed admitted text")
-		}
-		return nil
-	}
-	f.Writer.TouchTaskFn = func(context.Context, string, time.Time) error { return nil }
-	correctedHeader := deletedHeader
-	correctedHeader.Version++
-	f.ExpectCapture(correctedHeader, func(protocol.Fact) {})
-	corrected, err := f.Steps.Update(f.Ctx, f.Principal, deletedHeader.ProjectID, deletedHeader.ID, "00000000", taskservice.UpdateTaskStep{Version: deletedHeader.Version, Title: pointer("corrected"), Description: pointer("")})
-	requireChangeCommitted(t, corrected, err, true)
-	if corrected.Resource.Steps[0].Title != "corrected" || corrected.Resource.Steps[0].Description != "" {
-		t.Fatal("could not correct historical content")
+	corrected := slices.Clone(remaining)
+	corrected[0].Title, corrected[0].Description, corrected[0].UpdatedAt = "corrected", "", observed
+	for _, operation := range []struct {
+		name              string
+		header            model.TaskHeader
+		current, expected []model.TaskStep
+		mutation          string
+		action            string
+		stepID            string
+		configure         func(*stepWriteFixture)
+		invoke            func(*stepWriteFixture) (taskservice.StepsWriteResult, error)
+	}{
+		{
+			name: "move", header: stepMutationHeader(1), current: rows, expected: movedRows,
+			mutation: "task.MoveTaskStep", action: "moved", stepID: "00000000",
+			configure: func(f *stepWriteFixture) {
+				f.Writer.MoveTaskStepFn = func(ctx context.Context, id, stepID string, from, to int64) error {
+					if ctx != f.Ctx || id != f.Header.ID || stepID != "00000000" || from != 0 || to != 1 {
+						f.T.Fatal("historical move changed interval")
+					}
+					return nil
+				}
+			},
+			invoke: func(f *stepWriteFixture) (taskservice.StepsWriteResult, error) {
+				return f.Steps.Move(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", taskservice.MoveTaskStep{Version: f.Header.Version, After: pointer("abcdef01")})
+			},
+		},
+		{
+			name: "delete", header: stepMutationHeader(2), current: movedRows, expected: remaining,
+			mutation: "task.DeleteTaskStep", action: "deleted", stepID: "abcdef01",
+			configure: func(f *stepWriteFixture) {
+				f.Writer.DeleteTaskStepFn = func(ctx context.Context, id, stepID string, from, tail int64) error {
+					if ctx != f.Ctx || id != f.Header.ID || stepID != "abcdef01" || from != 0 || tail != 1 {
+						f.T.Fatal("historical delete changed interval")
+					}
+					return nil
+				}
+			},
+			invoke: func(f *stepWriteFixture) (taskservice.StepsWriteResult, error) {
+				return f.Steps.Delete(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "abcdef01", taskservice.DeleteTaskStep{Version: f.Header.Version})
+			},
+		},
+		{
+			name: "update", header: stepMutationHeader(3), current: remaining, expected: corrected,
+			mutation: "task.UpdateTaskStep", action: "updated", stepID: "00000000",
+			configure: func(f *stepWriteFixture) {
+				f.Writer.UpdateTaskStepFn = func(ctx context.Context, id string, step model.TaskStep) error {
+					if ctx != f.Ctx || id != f.Header.ID || step != corrected[0] {
+						f.T.Fatal("historical correction changed admitted fields")
+					}
+					return nil
+				}
+			},
+			invoke: func(f *stepWriteFixture) (taskservice.StepsWriteResult, error) {
+				return f.Steps.Update(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000", taskservice.UpdateTaskStep{Version: f.Header.Version, Title: pointer("corrected"), Description: pointer("")})
+			},
+		},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			before := slices.Clone(operation.current)
+			f := newStepWriteFixture(t, operation.header, operation.current, store.TransactionCommitted)
+			operation.configure(f)
+			f.Writer.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
+				if ctx != f.Ctx {
+					t.Fatal("historical mutation changed clock context")
+				}
+				return observed, nil
+			}
+			f.Writer.TouchTaskFn = func(ctx context.Context, id string, at time.Time) error {
+				if ctx != f.Ctx || id != operation.header.ID || at != observed {
+					t.Fatal("historical mutation changed parent touch identity or clock")
+				}
+				return nil
+			}
+			post := operation.header
+			post.Version++
+			f.ExpectCapture(post, func(fact protocol.Fact) {
+				if fact.ProjectID != operation.header.ProjectID || fact.TaskID != operation.header.ID || fact.TaskVersion != post.Version || fact.StepID != operation.stepID || fact.Action != operation.action || fact.OccurredAt != observed {
+					t.Fatal("historical mutation changed capture identity, version, action or clock")
+				}
+			})
+			result, err := operation.invoke(f)
+			requireChangeCommitted(t, result, err, true)
+			if actual := stepMutationCallTrace(f); !slices.Equal(actual, []string{"project.ProjectAccess", "task.TaskHeader", "task.TaskSteps", "task.ObservedAt", operation.mutation, "task.TouchTask", "task.TaskHeader", "capture.CaptureBatch"}) {
+				t.Fatalf("historical %s omitted a required mutation/parent touch or changed call order: %v", operation.name, actual)
+			}
+			expectedResource, _, err := taskcodec.EncodeCollection(post, operation.expected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(result.Resource, expectedResource) || !reflect.DeepEqual(operation.current, before) || f.Header != operation.header {
+				t.Fatalf("historical %s altered omitted fields, source rows or its independent parent header", operation.name)
+			}
+		})
 	}
 }

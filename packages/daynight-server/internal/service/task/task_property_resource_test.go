@@ -155,17 +155,20 @@ func propertyPropertiesEqual(t *testing.T, actual, want model.TaskProperties) bo
 		if !exists {
 			return false
 		}
-		decode := func(value json.RawMessage) any {
+		decode := func(side string, value json.RawMessage) any {
 			t.Helper()
+			if !json.Valid(value) {
+				t.Fatalf("%s property %q must contain one complete JSON value", side, name)
+			}
 			decoder := json.NewDecoder(bytes.NewReader(value))
 			decoder.UseNumber()
 			var result any
 			if err := decoder.Decode(&result); err != nil {
-				t.Fatalf("invalid property comparison fixture %s: %v", name, err)
+				t.Fatalf("decode %s property %q: %v", side, name, err)
 			}
 			return result
 		}
-		if !reflect.DeepEqual(decode(raw), decode(expected)) {
+		if !reflect.DeepEqual(decode("actual", raw), decode("expected", expected)) {
 			return false
 		}
 	}

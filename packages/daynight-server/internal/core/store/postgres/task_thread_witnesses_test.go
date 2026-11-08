@@ -143,7 +143,22 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer blocker.Rollback(context.Background())
+			var workerDone <-chan struct{}
+			defer func() {
+				cancel()
+				cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer stop()
+				if err := blocker.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+					t.Errorf("release thread head blocker: %v", err)
+				}
+				if workerDone != nil {
+					select {
+					case <-workerDone:
+					case <-cleanup.Done():
+						t.Errorf("thread writer did not drain after cancellation: %v", cleanup.Err())
+					}
+				}
+			}()
 			if _, err := blocker.Exec(ctx, `SELECT task_id FROM task_threads WHERE task_id=$1 FOR UPDATE`, task.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -153,7 +168,10 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 			}
 			started := make(chan uint32, 1)
 			completed := make(chan error, 1)
+			drained := make(chan struct{})
+			workerDone = drained
 			go func() {
+				defer close(drained)
 				_, err := database.WriteThread(ctx, func(scope store.ThreadScope) error {
 					started <- scope.(*ThreadTx).tx.Conn().PgConn().PID()
 					if _, err := scope.TaskDAO().LockTaskPresence(ctx, project.ID, task.ID); err != nil {
@@ -188,7 +206,15 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 				})
 				completed <- err
 			}()
-			waitThreadBackendLock(t, database, <-started)
+			var pid uint32
+			select {
+			case pid = <-started:
+			case err := <-completed:
+				t.Fatalf("thread write exited before entering its callback: %v", err)
+			case <-ctx.Done():
+				t.Fatalf("thread write did not enter its callback: %v", ctx.Err())
+			}
+			waitThreadBackendLock(t, database, pid)
 			for {
 				var expired bool
 				if err := database.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expiry).Scan(&expired); err != nil {

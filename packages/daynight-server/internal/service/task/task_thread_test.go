@@ -24,7 +24,7 @@ func requireThreadFault(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" {
-		t.Fatalf("expected %s fault, got %#v", code, err)
+		t.Fatalf("expected %s fault, got %#v (error: %#v)", code, fault, err)
 	}
 	return fault
 }
@@ -302,6 +302,17 @@ func TestThreadInputAndScopedAuthorization(t *testing.T) {
 			t.Run(operation+"/"+test.name, func(t *testing.T) {
 				f := newThreadFailureFixture(t)
 				p, projectID, taskID := f.principal, f.project.ID, f.task.ID
+				if test.name == "deleted_task" || test.name == "deleted_outsider" {
+					deleted := f.task.UpdatedAt
+					presence := func(ctx context.Context, actualProjectID, actualTaskID string) (store.TaskPresence, error) {
+						if actualProjectID != projectID || actualTaskID != taskID {
+							t.Fatalf("deleted Task scope: %s %s", actualProjectID, actualTaskID)
+						}
+						return store.TaskPresence{Found: true, DeletedAt: &deleted}, ctx.Err()
+					}
+					f.taskRead.TaskPresenceFn = presence
+					f.taskWrite.LockTaskPresenceFn = presence
+				}
 				switch test.name {
 				case "unauthenticated":
 					p = model.Principal{}
@@ -325,14 +336,6 @@ func TestThreadInputAndScopedAuthorization(t *testing.T) {
 					}
 					f.credential.CredentialFn = func(context.Context, model.Principal) (store.ThreadCredential, error) {
 						return store.ThreadCredential{}, model.ErrNotFound
-					}
-				case "deleted_task":
-					deleted := f.task.UpdatedAt
-					f.taskRead.TaskPresenceFn = func(context.Context, string, string) (store.TaskPresence, error) {
-						return store.TaskPresence{Found: true, DeletedAt: &deleted}, nil
-					}
-					f.taskWrite.LockTaskPresenceFn = func(context.Context, string, string) (store.TaskPresence, error) {
-						return store.TaskPresence{Found: true, DeletedAt: &deleted}, nil
 					}
 				}
 				var err error

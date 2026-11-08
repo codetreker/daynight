@@ -64,7 +64,7 @@ func taskWebhookStore(t *testing.T) taskWebhookFixture {
 		if err := dao.PutSubscription(t.Context(), f.subscription); err != nil {
 			return err
 		}
-		for _, kind := range []string{protocol.StatusChanged, protocol.Paused, protocol.StepUpdated, protocol.ThreadPosted, protocol.Deleted} {
+		for _, kind := range []string{protocol.Created, protocol.StatusChanged, protocol.Paused, protocol.StepUpdated, protocol.ThreadPosted, protocol.Deleted} {
 			binding := wm.Binding{ID: uuid.NewString(), SubscriptionID: f.subscription.ID, EventType: kind, CreatedAt: now}
 			if err := dao.PutBinding(t.Context(), binding); err != nil {
 				return err
@@ -77,6 +77,10 @@ func taskWebhookStore(t *testing.T) taskWebhookFixture {
 		t.Fatalf("capture fixture: %v %v", completion, err)
 	}
 	return f
+}
+
+func taskWebhookFixtureTuple(subscription wm.Subscription, binding wm.Binding) [5]string {
+	return [5]string{subscription.ID, binding.ID, subscription.ProjectID, binding.EventType, strconv.FormatInt(subscription.AuthorizationEpoch, 10)}
 }
 
 func taskWebhookPrepared(fact protocol.Fact, audience []store.WebhookAudience) (store.WebhookCapturedEvent, []store.WebhookCapturedDelivery, error) {

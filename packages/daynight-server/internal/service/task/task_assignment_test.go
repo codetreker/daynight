@@ -204,10 +204,19 @@ func assignmentName(v *string) string {
 	}
 	return *v
 }
+func assignmentAlias(t *testing.T, canonical string) string {
+	t.Helper()
+	alias := strings.ToUpper(canonical)
+	if alias == canonical || strings.ToLower(canonical) != canonical {
+		t.Fatal("assignment alias fixture must have distinct uppercase and canonical lowercase spellings")
+	}
+	return alias
+}
+
 func TestTaskAssignmentCreateAndTransitions(t *testing.T) {
 	_, base, actor := assignmentTaskModels()
-	alice, bob := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
-	for _, assigned := range []*string{nil, &alice, pointer(strings.ToUpper(alice))} {
+	alice, bob := "aaaaaa66-6666-4666-8666-666666666666", "bbbbbb77-7777-4777-8777-777777777777"
+	for _, assigned := range []*string{nil, &alice, pointer(assignmentAlias(t, alice))} {
 		t.Run("create_"+assignmentName(assigned), func(t *testing.T) {
 			current := base
 			current.AssignedTo = nil
@@ -280,7 +289,7 @@ func TestTaskAssignmentCreateAndTransitions(t *testing.T) {
 }
 func TestTaskAssignmentNoOpsAndExecutionLocks(t *testing.T) {
 	_, base, actor := assignmentTaskModels()
-	alice, bob := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	alice, bob := "aaaaaa66-6666-4666-8666-666666666666", "bbbbbb77-7777-4777-8777-777777777777"
 	for _, assigned := range []*string{nil, &alice} {
 		for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 			t.Run(assignmentName(assigned)+"_"+string(status), func(t *testing.T) {
@@ -291,7 +300,7 @@ func TestTaskAssignmentNoOpsAndExecutionLocks(t *testing.T) {
 				before.AllowAgents = true
 				equal := assigned
 				if equal != nil {
-					equal = pointer(strings.ToUpper(*equal))
+					equal = pointer(assignmentAlias(t, *equal))
 				}
 				f := newAssignmentFixture(t, before, nil)
 				got, err := f.tasks.Update(f.ctx, actor, f.project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AssignedTo: assignmentChange(equal)})
@@ -343,7 +352,7 @@ func TestTaskAssignmentPreservesCombinedChanges(t *testing.T) {
 	_, before, actor := assignmentTaskModels()
 	before.AssignedTo = nil
 	f := newAssignmentFixture(t, before, nil)
-	alice := "66666666-6666-4666-8666-666666666666"
+	alice := "aaaaaa66-6666-4666-8666-666666666666"
 	f.expectTarget(alice, nil)
 	v := taskcore.CurrentWrite(before)
 	v.AssignedTo = &alice
@@ -360,11 +369,11 @@ func TestTaskAssignmentPreservesCombinedChanges(t *testing.T) {
 }
 func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 	_, base, actor := assignmentTaskModels()
-	alice := "66666666-6666-4666-8666-666666666666"
+	alice := "aaaaaa66-6666-4666-8666-666666666666"
 	base.AssignedTo = &alice
 	base.AllowAgents = true
 	f := newAssignmentFixture(t, base, nil)
-	got, err := f.tasks.Update(f.ctx, actor, f.project.ID, base.ID, taskcore.UpdateTask{Version: base.Version, AssignedTo: assignmentChange(pointer(strings.ToUpper(alice)))})
+	got, err := f.tasks.Update(f.ctx, actor, f.project.ID, base.ID, taskcore.UpdateTask{Version: base.Version, AssignedTo: assignmentChange(pointer(assignmentAlias(t, alice)))})
 	if err != nil || !reflect.DeepEqual(got, base) || f.accessCalls != 1 {
 		t.Fatalf("historical same assignment: %#v %v", got, err)
 	}
@@ -432,7 +441,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 }
 func TestTaskAssignmentCompetesWithExecutionAndPermission(t *testing.T) {
 	_, before, actor := assignmentTaskModels()
-	alice, bob := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	alice, bob := "aaaaaa66-6666-4666-8666-666666666666", "bbbbbb77-7777-4777-8777-777777777777"
 	before.AssignedTo = &alice
 	for _, competitor := range []string{"start", "claim", "enable"} {
 		t.Run(competitor, func(t *testing.T) {
@@ -476,7 +485,7 @@ func TestTaskAssignmentNoOpAndClaimCanBothSucceed(t *testing.T) {
 func TestTaskAssignmentRechecksMemberRemoval(t *testing.T) {
 	_, before, actor := assignmentTaskModels()
 	before.AssignedTo = nil
-	target := "66666666-6666-4666-8666-666666666666"
+	target := "aaaaaa66-6666-4666-8666-666666666666"
 	for _, removeActor := range []bool{false, true} {
 		f := newAssignmentFixture(t, before, nil)
 		code := "invalid_input"
@@ -498,7 +507,7 @@ func TestTaskAssignmentRechecksMemberRemoval(t *testing.T) {
 func TestTaskAssignmentFailuresPreserveAtomicityAndCause(t *testing.T) {
 	_, before, actor := assignmentTaskModels()
 	before.AssignedTo = nil
-	target := "66666666-6666-4666-8666-666666666666"
+	target := "aaaaaa66-6666-4666-8666-666666666666"
 	t.Run("target lookup failure", func(t *testing.T) {
 		f := newAssignmentFixture(t, before, nil)
 		failure := errors.New("target lookup failed")
@@ -563,7 +572,7 @@ func TestTaskAssignmentFailuresPreserveAtomicityAndCause(t *testing.T) {
 
 func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	_, base, owner := assignmentTaskModels()
-	bob := "77777777-7777-4777-8777-777777777777"
+	bob := "bbbbbb77-7777-4777-8777-777777777777"
 	descriptor := workerDescriptor()
 	descriptor.AgentControlMode = model.AgentControlModeHerdr
 	active := base

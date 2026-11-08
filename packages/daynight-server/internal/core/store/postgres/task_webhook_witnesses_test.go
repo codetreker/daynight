@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -23,6 +25,15 @@ import (
 
 func TestWebhookFrozenThreadAudienceSurvivesDestinationChange(t *testing.T) {
 	f := taskWebhookStore(t)
+	var expected [5]string
+	for _, binding := range f.bindings {
+		if binding.EventType == protocol.ThreadPosted {
+			expected = taskWebhookFixtureTuple(f.subscription, binding)
+		}
+	}
+	if expected[1] == "" {
+		t.Fatal("thread binding absent from fixture")
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	prepared, release := make(chan struct{}), make(chan struct{})
@@ -67,7 +78,12 @@ func TestWebhookFrozenThreadAudienceSurvivesDestinationChange(t *testing.T) {
 	if len(deliveries) != 1 || len(deliveries[0].Matches) != 1 {
 		t.Fatalf("prepared audience: %+v", deliveries)
 	}
-	oldBinding := deliveries[0].Matches[0].BindingID
+	match := deliveries[0].Matches[0]
+	actual := [5]string{match.SubscriptionID, match.BindingID, match.ProjectID, match.EventType, strconv.FormatInt(match.AuthorizationEpoch, 10)}
+	if actual != expected {
+		t.Fatalf("prepared audience differs from fixture: got=%v want=%v", actual, expected)
+	}
+	oldBinding := expected[1]
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	changed := f.endpoint
 	changed.ConfigVersion, changed.DestinationRevision = 2, 2
@@ -139,9 +155,17 @@ func TestWebhookFrozenThreadAudienceSurvivesDestinationChange(t *testing.T) {
 	if err = f.db.Pool.QueryRow(ctx, `SELECT subscription_id::text,binding_id::text,project_id::text,event_type,authorization_epoch FROM webhook_delivery_matches WHERE delivery_id=$1`, deliveries[0].ID).Scan(&subscription, &binding, &project, &kind, &epoch); err != nil {
 		t.Fatal(err)
 	}
-	expected := deliveries[0].Matches[0]
-	if subscription != expected.SubscriptionID || binding != expected.BindingID || project != expected.ProjectID || kind != expected.EventType || epoch != expected.AuthorizationEpoch {
-		t.Fatal("frozen match tuple changed")
+	actual = [5]string{subscription, binding, project, kind, strconv.FormatInt(epoch, 10)}
+	if actual != expected {
+		t.Fatalf("frozen match differs from fixture: got=%v want=%v", actual, expected)
+	}
+	expectedProof, err := json.Marshal([][5]string{expected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedHash := sha256.Sum256(expectedProof)
+	if !bytes.Equal(proofHash, expectedHash[:]) {
+		t.Fatal("frozen proof hash differs from fixture tuple")
 	}
 	completion, err = f.db.WriteWebhookConfigGC(ctx, *candidate, func(sc store.WebhookConfigGCScope) error {
 		facts, err := sc.LockConfigCandidate(ctx, *candidate)
@@ -161,6 +185,13 @@ func TestWebhookFrozenThreadAudienceSurvivesDestinationChange(t *testing.T) {
 
 func TestWebhookStatusAndPauseShareFreeze(t *testing.T) {
 	f := taskWebhookStore(t)
+	expected := make(map[[2]string][][5]string)
+	for _, binding := range f.bindings {
+		if binding.EventType == protocol.StatusChanged || binding.EventType == protocol.Paused {
+			key := [2]string{f.endpoint.ID, binding.EventType}
+			expected[key] = append(expected[key], taskWebhookFixtureTuple(f.subscription, binding))
+		}
+	}
 	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	_, second, key, receipt := webhookStoredFixture(t)
@@ -180,9 +211,12 @@ func TestWebhookStatusAndPauseShareFreeze(t *testing.T) {
 				return err
 			}
 			for _, kind := range []string{protocol.StatusChanged, protocol.Paused} {
-				if err := dao.PutBinding(ctx, wm.Binding{ID: uuid.NewString(), SubscriptionID: sub.ID, EventType: kind, CreatedAt: now}); err != nil {
+				binding := wm.Binding{ID: uuid.NewString(), SubscriptionID: sub.ID, EventType: kind, CreatedAt: now}
+				if err := dao.PutBinding(ctx, binding); err != nil {
 					return err
 				}
+				key := [2]string{endpoint, kind}
+				expected[key] = append(expected[key], taskWebhookFixtureTuple(sub, binding))
 			}
 		}
 		return nil
@@ -224,19 +258,19 @@ func TestWebhookStatusAndPauseShareFreeze(t *testing.T) {
 	if version != 2 || events != 2 || deliveries != 4 || matches != 6 {
 		t.Fatalf("version=%d events=%d deliveries=%d matches=%d", version, events, deliveries, matches)
 	}
-	rows, err := f.db.Pool.Query(ctx, `SELECT d.id::text,d.original_match_count,d.original_match_sha256 FROM webhook_deliveries d WHERE event_id IN(SELECT id FROM webhook_events WHERE task_id=$1) ORDER BY id`, f.task)
+	rows, err := f.db.Pool.Query(ctx, `SELECT d.id::text,d.endpoint_id::text,d.event_type,d.original_match_count,d.original_match_sha256 FROM webhook_deliveries d WHERE event_id IN(SELECT id FROM webhook_events WHERE task_id=$1) ORDER BY id`, f.task)
 	if err != nil {
 		t.Fatal(err)
 	}
 	type proofRow struct {
-		id    string
-		count int64
-		hash  []byte
+		id, endpoint, kind string
+		count              int64
+		hash               []byte
 	}
 	var proofs []proofRow
 	for rows.Next() {
 		var p proofRow
-		if err = rows.Scan(&p.id, &p.count, &p.hash); err != nil {
+		if err = rows.Scan(&p.id, &p.endpoint, &p.kind, &p.count, &p.hash); err != nil {
 			rows.Close()
 			t.Fatal(err)
 		}
@@ -265,13 +299,23 @@ func TestWebhookStatusAndPauseShareFreeze(t *testing.T) {
 		if err = rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		proof, err := json.Marshal(tuples)
+		want := expected[[2]string{p.endpoint, p.kind}]
+		sort.Slice(want, func(i, j int) bool {
+			if want[i][0] != want[j][0] {
+				return want[i][0] < want[j][0]
+			}
+			return want[i][1] < want[j][1]
+		})
+		if !slices.Equal(tuples, want) {
+			t.Fatalf("delivery %s audience differs from fixture: got=%v want=%v", p.id, tuples, want)
+		}
+		proof, err := json.Marshal(want)
 		if err != nil {
 			t.Fatal(err)
 		}
 		hash := sha256.Sum256(proof)
-		if p.count != int64(len(tuples)) || !bytes.Equal(p.hash, hash[:]) {
-			t.Fatal("persisted delivery proof differs from its ordered matches")
+		if p.count != int64(len(want)) || !bytes.Equal(p.hash, hash[:]) {
+			t.Fatal("persisted delivery proof differs from fixture matches")
 		}
 	}
 }
@@ -654,27 +698,81 @@ func TestWebhookDeletionBeforeThreadRejectsWithoutCapture(t *testing.T) {
 
 func TestWebhookConfigGCRespectsReceiptAndReclaimsTombstone(t *testing.T) {
 	f := taskWebhookStore(t)
-	ctx := t.Context()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	completion, err := f.db.WriteWebhook(ctx, f.owner, uuid.NewString(), func(sc store.WebhookWriteScope) error {
+		dao := sc.WebhookWriter()
 		endpoint := f.endpoint
 		endpoint.DeletedAt = &now
 		endpoint.ConfigVersion++
 		endpoint.Enabled = false
-		if err := sc.WebhookWriter().PutEndpoint(ctx, endpoint); err != nil {
+		if err := dao.PutEndpoint(ctx, endpoint); err != nil {
+			return err
+		}
+		subscription := f.subscription
+		subscription.DeletedAt, subscription.UpdatedAt = &now, now
+		if err := dao.PutSubscription(ctx, subscription); err != nil {
+			return err
+		}
+		for _, binding := range f.bindings {
+			binding.DeletedAt = &now
+			if err := dao.PutBinding(ctx, binding); err != nil {
+				return err
+			}
+		}
+		if err := dao.DeleteSigningKeys(ctx, f.endpoint.ID); err != nil {
 			return err
 		}
 		receipt := f.receipt
 		receipt.ID, receipt.Kind, receipt.ConfigVersion = uuid.NewString(), "endpoint.delete", endpoint.ConfigVersion
-		return sc.WebhookWriter().PutOperation(ctx, receipt)
+		return dao.PutOperation(ctx, receipt)
 	})
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("endpoint tombstone: %v %v", completion, err)
 	}
-	mustQueryExec(t, f.db, `DELETE FROM webhook_bindings WHERE subscription_id=$1`, f.subscription.ID)
-	mustQueryExec(t, f.db, `DELETE FROM webhook_subscriptions WHERE id=$1`, f.subscription.ID)
-	mustQueryExec(t, f.db, `DELETE FROM webhook_signing_keys WHERE endpoint_id=$1`, f.endpoint.ID)
-	mustQueryExec(t, f.db, `DELETE FROM webhook_endpoint_waits WHERE endpoint_id=$1`, f.endpoint.ID)
+	remaining := make(map[store.WebhookConfigGCCandidate]struct{})
+	for _, binding := range f.bindings {
+		remaining[store.WebhookConfigGCCandidate{Order: 2, Kind: "binding", ID: binding.ID, EndpointID: f.endpoint.ID, ProjectID: f.project, Owner: f.owner}] = struct{}{}
+	}
+	remaining[store.WebhookConfigGCCandidate{Order: 3, Kind: "subscription", ID: f.subscription.ID, EndpointID: f.endpoint.ID, ProjectID: f.project, Owner: f.owner}] = struct{}{}
+	remaining[store.WebhookConfigGCCandidate{Order: 4, Kind: "wait", ID: f.endpoint.ID, EndpointID: f.endpoint.ID, Owner: f.owner, Revision: f.endpoint.DestinationRevision}] = struct{}{}
+	for len(remaining) > 0 {
+		scan, err := f.db.ScanWebhookConfigGC(ctx, nil, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(scan.Candidates) == 0 {
+			t.Fatalf("retired fixture records not discoverable: %v", remaining)
+		}
+		for _, candidate := range scan.Candidates {
+			if _, exists := remaining[candidate]; !exists {
+				t.Fatalf("unexpected collection candidate: %+v", candidate)
+			}
+			completion, err := f.db.WriteWebhookConfigGC(ctx, candidate, func(sc store.WebhookConfigGCScope) error {
+				facts, err := sc.LockConfigCandidate(ctx, candidate)
+				if err != nil {
+					return err
+				}
+				if !facts.Present || !facts.Retired || facts.Referenced {
+					return fmt.Errorf("retired fixture records changed: %+v %+v", candidate, facts)
+				}
+				removed, err := sc.DeleteConfigCandidate(ctx, candidate)
+				if err == nil && !removed {
+					return fmt.Errorf("retired fixture record not removed: %+v", candidate)
+				}
+				return err
+			})
+			if err != nil || completion.Outcome != store.TransactionCommitted {
+				t.Fatalf("retired record collection: %v %v", completion, err)
+			}
+			present, err := f.db.ObserveWebhookConfigGC(ctx, candidate)
+			if err != nil || present {
+				t.Fatalf("retired record survived collection: %+v present=%v error=%v", candidate, present, err)
+			}
+			delete(remaining, candidate)
+		}
+	}
 	candidate := store.WebhookConfigGCCandidate{Order: 5, Kind: "endpoint", ID: f.endpoint.ID, EndpointID: f.endpoint.ID, Owner: f.owner}
 	completion, err = f.db.WriteWebhookConfigGC(ctx, candidate, func(sc store.WebhookConfigGCScope) error {
 		facts, err := sc.LockConfigCandidate(ctx, candidate)
@@ -712,6 +810,10 @@ func TestWebhookConfigGCRespectsReceiptAndReclaimsTombstone(t *testing.T) {
 		if err != nil || completion.Outcome != store.TransactionCommitted {
 			t.Fatalf("receipt collection: %v %v", completion, err)
 		}
+	}
+	scan, err := f.db.ScanWebhookConfigGC(ctx, nil, 500)
+	if err != nil || len(scan.Candidates) != 1 || scan.Candidates[0] != candidate {
+		t.Fatalf("receipt release did not expose endpoint: %+v error=%v", scan.Candidates, err)
 	}
 	completion, err = f.db.WriteWebhookConfigGC(ctx, candidate, func(sc store.WebhookConfigGCScope) error {
 		facts, err := sc.LockConfigCandidate(ctx, candidate)
