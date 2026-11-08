@@ -40,12 +40,13 @@ type Retention struct {
 	receipts       core.ReceiptCollector
 	phase          int
 	historyPhase   int
+	wait           func(context.Context, time.Duration) bool
 }
 
 type retentionUnknown struct{ kind, id string }
 
 func NewRetention(db retentionStore) *Retention {
-	return &Retention{DB: db, failures: make(chan error, 1), events: make(chan RetentionEvent, 128)}
+	return &Retention{DB: db, failures: make(chan error, 1), events: make(chan RetentionEvent, 128), wait: waitPoll}
 }
 func (r *Retention) Failures() <-chan error { return r.failures }
 func (r *Retention) Start(parent context.Context) error {
@@ -104,12 +105,8 @@ func (r *Retention) run(ctx context.Context) error {
 		if more || n == retentionBatch {
 			delay = time.Second
 		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !r.wait(ctx, delay) {
 			return nil
-		case <-timer.C:
 		}
 	}
 	return nil
@@ -118,6 +115,10 @@ func (r *Retention) run(ctx context.Context) error {
 // Pass bounds actual affected rows and cancels database work after two seconds.
 // The result is only reported after each transaction is known committed.
 func (r *Retention) Pass(parent context.Context) (total int, continueSoon bool, resultErr error) {
+	return r.pass(parent, 2*time.Second)
+}
+
+func (r *Retention) pass(parent context.Context, timeout time.Duration) (total int, continueSoon bool, resultErr error) {
 	if !r.passMu.TryLock() {
 		return 0, true, nil
 	}
@@ -131,7 +132,7 @@ func (r *Retention) Pass(parent context.Context) (total int, continueSoon bool, 
 	if r.DB == nil {
 		return 0, false, fmt.Errorf("missing webhook retention store")
 	}
-	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	if err := r.receipts.Reconcile(ctx, r.DB); err != nil {
 		if ctx.Err() != nil && parent.Err() == nil {

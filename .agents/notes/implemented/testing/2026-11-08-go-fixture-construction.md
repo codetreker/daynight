@@ -41,13 +41,16 @@ creation times, the original telemetry, and the selected-worker ordering and
 101-candidate boundary. Full historical decoding must still fail, while bounded
 candidate reads return the intended fields.
 
-The Webhook eligibility rollback matrix initializes one schema per failure phase
-and runs source rows sequentially. Each row creates independent principals, teams,
-projects, invitations and subscriptions, and retains native SQL or row-scan errors,
-source rollback and unchanged authorization readback. The row-scan phase's nullable
-epoch alteration belongs to that phase's schema and cannot affect the other
-phases. The 26 source/failure combinations use four schemas without resetting or
-sharing mutable business owners.
+Before the
+[Webhook service test ownership decision](2026-11-08-webhook-service-dao-mocks.md),
+the eligibility rollback matrix initialized one schema per failure phase and ran
+source rows sequentially. Each row created independent principals, teams,
+projects, invitations and subscriptions, retaining native SQL or row-scan errors, source rollback and
+unchanged authorization readback. The nullable epoch alteration belonged to its
+phase's schema. The 26 source/failure combinations used four schemas without
+sharing mutable business owners. Current Webhook service cases use DAO mocks;
+source-producing services and PostgreSQL transaction tests own the corresponding
+producer and physical rollback proofs.
 
 ## Alternatives
 
@@ -71,8 +74,10 @@ data; they do not change the default schema isolation or migration mechanism.
 ## Consequences
 
 The targeted input-only selections execute without a database URL, and their
-storage sentinels still reject accidental dependency access. Real integration
-tests retain transactions, rollback, permissions and persistence observations.
+storage sentinels still reject accidental dependency access. Layer-owned
+integration tests retain transactions, rollback, permissions and persistence
+observations; the Webhook service decision records the later
+replacement of its database-backed rule matrix.
 The Graph and Sync SQL projection and Bot admission boundaries remain native
 PostgreSQL behavior.
 

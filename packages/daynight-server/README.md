@@ -623,9 +623,9 @@ the recovered value and stack are not printed by the HTTP server.
 ## Validate
 
 Install the root workspace dependencies with `pnpm install --frozen-lockfile`
-before validation. Tests require a real PostgreSQL database and fail when it is
-unavailable or
-`DAYNIGHT_TEST_DATABASE_URL` is missing. For a disposable local instance, use the
+before validation. The complete module check includes PostgreSQL integration
+tests and requires `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated database.
+Database-independent service and rule suites run separately without that URL. For a disposable local instance, use the
 same PostgreSQL **18.6-bookworm** image as CI:
 
 ```bash
@@ -645,7 +645,9 @@ docker rm --force --volumes daynight-server-tests
 ```
 
 The check builds and vets the Go module using its unit-test Web resource overlay,
-prepares the pinned UniAuth fixture, and runs module tests and coverage. The
+prepares the pinned UniAuth fixture, checks controlled Webhook Runner process
+recovery with its dedicated test transport build, and runs module tests and
+coverage. The
 optional `--coverage` argument selects the same check. A production build uses
 the real Web assets described under [Build and run](#build-and-run).
 
@@ -661,11 +663,35 @@ encoded-budget validation, Attachment input validation and invalid login scopes
 use these input-only fixtures; representative persisted refusals and accepted
 SDK paths retain real integration coverage.
 
-The Webhook source rollback matrix owns one isolated schema per injected failure
-phase and creates independent principals, teams, projects and subscriptions for
-each source operation. Database-state corruption stays inside its owning phase.
-The [fixture construction decision](../../.agents/notes/implemented/testing/2026-11-08-go-fixture-construction.md)
-records isolation and projection constraints.
+The complete `internal/service/webhook` suite uses narrow transaction and DAO
+mocks. The mocks return explicitly configured facts and projections, record
+requested writes, and fail on unexpected access. They do not simulate a database
+or interpret recorded writes as committed state. Time-dependent cases provide
+`ObservedAt` and `RecordedAt` values, and concurrent cases synchronize actual
+callback entry, cancellation and drain through channels. Call ordering is scoped
+to a logical operation or an explicit cross-operation barrier.
+
+From this module, run the database-independent suite with:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 ./internal/service/webhook
+```
+
+Capture source facts and producer invocation belong to their Task, Step, Thread
+and Worker owners. PostgreSQL tests retain the real operation fences, actor
+reads, multi-record rollback, source/capture atomicity, lease and retention locks,
+commit acknowledgement loss and fresh-process readback. The module check also
+runs `TestWebhookRunnerAbruptProcessRecovery` with `-tags=webhooktest`: committed
+claim/admission exit, real TLS response before finalization, and discarded
+finalize COMMIT acknowledgement followed by an enabled Runner restart. This
+focused process witness runs in ordinary validation; production-duration timeout
+and capacity stress cases remain separate. HTTP and protocol tests
+own response mappings, request digests, headers, projections and authentication.
+The [Webhook test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-service-dao-mocks.md)
+records the proof split; the earlier
+[fixture construction decision](../../.agents/notes/implemented/testing/2026-11-08-go-fixture-construction.md)
+preserves its original isolation rationale.
 
 PostgreSQL integration tests own real SQL, constraints, locking, commit and
 rollback, persisted readback and authority or version changes across operations.

@@ -12,7 +12,7 @@ import (
 )
 
 type completionScope struct {
-	store.WebhookDeliveryScope
+	deliveryUnexpectedScope
 	d           store.WebhookDelivery
 	ticket      int64
 	ticketError error
@@ -35,7 +35,7 @@ func planFixture() (store.WebhookDelivery, time.Time) {
 }
 func TestScheduleFailurePreservesBudgetAndNewTicket(t *testing.T) {
 	d, now := planFixture()
-	scope := &completionScope{ticket: 42}
+	scope := &completionScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, ticket: 42}
 	if err := scheduleFailure(context.Background(), scope, &d, now, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestScheduleFailurePreservesBudgetAndNewTicket(t *testing.T) {
 func TestRecoverySchedulesOneMissedOpportunity(t *testing.T) {
 	d, start := planFixture()
 	now := start.Add(5*time.Minute + time.Second)
-	scope := &completionScope{ticket: 77}
+	scope := &completionScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, ticket: 77}
 	if err := recoverSchedule(context.Background(), scope, &d, now, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -84,10 +84,11 @@ func TestDeliveryObservationDoesNotPersistRawResponse(t *testing.T) {
 }
 
 type lateScope struct {
-	store.WebhookDeliveryScope
+	deliveryUnexpectedScope
 	attempt   store.WebhookAttempt
 	now       time.Time
 	readError error
+	updates   []store.WebhookAttempt
 }
 
 func (s *lateScope) TryLockDelivery(context.Context, string) (store.WebhookDelivery, bool, error) {
@@ -98,7 +99,7 @@ func (s *lateScope) LockOwnAttempt(context.Context, string) (store.WebhookAttemp
 }
 func (s *lateScope) ObservedAt(context.Context) (time.Time, error) { return s.now, nil }
 func (s *lateScope) UpdateAttempt(_ context.Context, a store.WebhookAttempt) error {
-	s.attempt = a
+	s.updates = append(s.updates, a)
 	return nil
 }
 
@@ -114,21 +115,21 @@ func (db lateDB) WriteWebhookDelivery(_ context.Context, fn func(store.WebhookDe
 func TestFinalizeWaitsForRecoveryWithoutHoldingDelivery(t *testing.T) {
 	now := time.Now()
 	own := store.WebhookAttempt{ID: "a", DeliveryID: "d", LeaseToken: "token", Generation: 1}
-	s := &lateScope{attempt: own, now: now}
+	s := &lateScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, attempt: own, now: now}
 	r := NewRunner(lateDB{scope: s}, &Service{}, true)
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 	if err := r.finalize(ctx, own, now, time.Second, httpoutbound.Response{Status: 202}, nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("waiting finalization: %v", err)
 	}
-	if s.attempt.LateObservedAt != nil {
+	if len(s.updates) != 0 {
 		t.Fatal("fabricated late observation before recovery")
 	}
 	s.attempt.RecoveredUnknownAt = &now
 	if err := r.finalize(context.Background(), own, now, time.Second, httpoutbound.Response{Status: 202}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if s.attempt.LateOutcome == nil || *s.attempt.LateOutcome != "acknowledged" {
+	if len(s.updates) != 1 || s.updates[0].LateOutcome == nil || *s.updates[0].LateOutcome != "acknowledged" {
 		t.Fatal("late response not recorded")
 	}
 }
@@ -136,7 +137,7 @@ func TestFinalizeWaitsForRecoveryWithoutHoldingDelivery(t *testing.T) {
 func TestLateFinalizationRejectsDifferentAttemptAndReadFailure(t *testing.T) {
 	now := time.Now()
 	own := store.WebhookAttempt{ID: "a", DeliveryID: "d", LeaseToken: "token", Generation: 1}
-	s := &lateScope{attempt: own, now: now}
+	s := &lateScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, attempt: own, now: now}
 	r := NewRunner(lateDB{scope: s}, &Service{}, true)
 	s.attempt.LeaseToken = "other"
 	if done, err := r.finalizeOnce(context.Background(), own, now, time.Second, httpoutbound.Response{Status: 202}, nil); err == nil {
@@ -164,19 +165,21 @@ func TestRunnerStopHonorsDeadline(t *testing.T) {
 }
 
 type recoveryScope struct {
-	store.WebhookDeliveryScope
-	d            store.WebhookDelivery
-	now          time.Time
-	attempts     []store.WebhookAttempt
-	queryError   error
-	changed      bool
-	attemptError error
-	waitError    error
-	wait         store.WebhookEndpointWait
-	noExpired    bool
-	due          []store.WebhookDelivery
-	current      bool
-	currentError error
+	deliveryUnexpectedScope
+	d              store.WebhookDelivery
+	now            time.Time
+	attempts       []store.WebhookAttempt
+	attemptUpdates []store.WebhookAttempt
+	updated        store.WebhookDelivery
+	queryError     error
+	changed        bool
+	attemptError   error
+	waitError      error
+	wait           store.WebhookEndpointWait
+	noExpired      bool
+	due            []store.WebhookDelivery
+	current        bool
+	currentError   error
 }
 
 func (s *recoveryScope) ObservedAt(context.Context) (time.Time, error) { return s.now, nil }
@@ -202,11 +205,11 @@ func (s *recoveryScope) CurrentDestination(context.Context, string, int64) (bool
 	return s.current, s.currentError
 }
 func (s *recoveryScope) UpdateAttempt(_ context.Context, a store.WebhookAttempt) error {
-	s.attempts = []store.WebhookAttempt{a}
+	s.attemptUpdates = append(s.attemptUpdates, a)
 	return nil
 }
 func (s *recoveryScope) UpdateDelivery(_ context.Context, d store.WebhookDelivery) error {
-	s.d = d
+	s.updated = d
 	s.changed = true
 	return nil
 }
@@ -226,18 +229,18 @@ func TestRecoveryDoesNotInventAttemptForClaim(t *testing.T) {
 	d.LeaseUntil = &until
 	d.ExpiresAt = now.Add(time.Hour)
 	d.Generation = 1
-	s := &recoveryScope{d: d, now: now}
+	s := &recoveryScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, d: d, now: now}
 	r := NewRunner(recoveryDB{scope: s}, &Service{}, false)
 	if err := r.recoverExpired(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !s.changed || s.d.State != "pending" || s.d.Generation != 2 || len(s.attempts) != 0 || s.d.AutomaticAttemptCount != 1 {
+	if !s.changed || s.updated.State != "pending" || s.updated.Generation != 2 || len(s.attempts) != 0 || s.updated.AutomaticAttemptCount != 1 {
 		t.Fatalf("claim recovery: %+v", s.d)
 	}
 }
 func TestRecoveryLeavesStateOnStorageFailure(t *testing.T) {
 	d, now := planFixture()
-	s := &recoveryScope{d: d, now: now, queryError: errors.New("database failure")}
+	s := &recoveryScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, d: d, now: now, queryError: errors.New("database failure")}
 	r := NewRunner(recoveryDB{scope: s}, &Service{}, false)
 	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
 		t.Fatalf("storage failure hidden: %v", err)
@@ -248,7 +251,7 @@ func TestRecoveryRejectsBrokenAttemptAndWait(t *testing.T) {
 	d, now := planFixture()
 	until, id := now.Add(-time.Second), "attempt"
 	d.ID, d.LeaseUntil, d.ExpiresAt, d.CurrentAttemptID = "delivery", &until, now.Add(time.Hour), &id
-	s := &recoveryScope{d: d, now: now}
+	s := &recoveryScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, d: d, now: now}
 	r := NewRunner(recoveryDB{scope: s}, &Service{}, false)
 	s.attemptError = errors.New("attempt history read failed")
 	if err := r.recoverExpired(context.Background()); err == nil || s.changed {
@@ -282,9 +285,9 @@ func TestRecoveryRejectsBrokenAttemptAndWait(t *testing.T) {
 func TestRecoveryExpiresPendingWithoutClaim(t *testing.T) {
 	d, now := planFixture()
 	d.State = "pending"
-	s := &recoveryScope{now: now, noExpired: true, due: []store.WebhookDelivery{d}}
+	s := &recoveryScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, now: now, noExpired: true, due: []store.WebhookDelivery{d}}
 	r := NewRunner(recoveryDB{scope: s}, &Service{}, false)
-	if err := r.recoverExpired(context.Background()); err != nil || !s.changed || s.d.State != "failed" || s.d.AutomaticOpen {
+	if err := r.recoverExpired(context.Background()); err != nil || !s.changed || s.updated.State != "failed" || s.updated.AutomaticOpen {
 		t.Fatalf("expired pending: %+v %v", s.d, err)
 	}
 }
@@ -307,6 +310,7 @@ func (d *recoveryOutcomes) WriteWebhookDelivery(_ context.Context, _ func(store.
 func TestMaintenanceContinuesAfterUnknownRecovery(t *testing.T) {
 	db := &recoveryOutcomes{}
 	r := NewRunner(db, &Service{}, false)
+	r.maintenancePollInterval = time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := r.maintenance(ctx); err == nil || db.calls != 2 {

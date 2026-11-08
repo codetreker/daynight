@@ -11,11 +11,12 @@ import (
 )
 
 type claimStopStore struct {
+	t         testing.TB
 	entered   chan struct{}
 	cancelled *atomic.Int64
 }
 type claimStopScope struct {
-	store.WebhookDeliveryScope
+	deliveryUnexpectedScope
 	owner *claimStopStore
 }
 
@@ -29,6 +30,7 @@ func (s claimStopScope) LockDueExpiry(context.Context, int, time.Time) ([]store.
 func (s claimStopScope) Claim(ctx context.Context, _ int, _ time.Time, _ []string) ([]store.WebhookDelivery, error) {
 	if ctx.Err() != nil {
 		s.owner.cancelled.Add(1)
+		s.owner.t.Errorf("claim entered after root cancellation")
 		return nil, ctx.Err()
 	}
 	s.owner.entered <- struct{}{}
@@ -36,7 +38,7 @@ func (s claimStopScope) Claim(ctx context.Context, _ int, _ time.Time, _ []strin
 	return nil, ctx.Err()
 }
 func (s *claimStopStore) WriteWebhookDelivery(ctx context.Context, f func(store.WebhookDeliveryScope) error) (store.Completion, error) {
-	err := f(claimStopScope{owner: s})
+	err := f(claimStopScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: s.t}, owner: s})
 	if err != nil {
 		return store.Completion{}, err
 	}
@@ -45,7 +47,7 @@ func (s *claimStopStore) WriteWebhookDelivery(ctx context.Context, f func(store.
 
 func TestRootCancellationStopsClaimsBeforeWorkCancellation(t *testing.T) {
 	var cancelled atomic.Int64
-	db := &claimStopStore{entered: make(chan struct{}, deliveryWorkers*2), cancelled: &cancelled}
+	db := &claimStopStore{t: t, entered: make(chan struct{}, deliveryWorkers*2), cancelled: &cancelled}
 	runner := NewRunner(db, &Service{}, true)
 	work, stopWork := context.WithCancel(context.Background())
 	defer stopWork()

@@ -1,87 +1,119 @@
-package webhook_test
+package webhook
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"strings"
 	"testing"
 
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 	"github.com/google/uuid"
 )
 
-type loggingFailedEntropy struct{ err error }
-
-func (r loggingFailedEntropy) Read([]byte) (int, error) { return 0, r.err }
-
-func TestCaptureLogsActualEventAndScheduleEntropyFailure(t *testing.T) {
-	f := newCaptureFixture(t, 1)
-	var logs bytes.Buffer
-	f.capture.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
-	f.capture.RequestID = requestid.From
-	req := "capture-test-request"
-	ctx := requestid.With(f.ctx, req)
-	tasks := taskservice.NewTasks(f.db, f.capture)
-	task, err := tasks.Create(ctx, f.principal, f.project, taskcore.CreateTask{Title: "secret task title"})
-	if err != nil {
-		t.Fatal(err)
+func captureLog(t *testing.T, logs *bytes.Buffer) map[string]any {
+	t.Helper()
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+		t.Fatalf("capture log: %v: %s", err, logs.String())
 	}
-	var eventID, deliveryID, endpointID string
-	if err = f.db.Pool.QueryRow(ctx, `SELECT e.id::text,d.id::text,d.endpoint_id::text FROM webhook_events e JOIN webhook_deliveries d ON d.event_id=e.id WHERE e.task_id=$1`, task.ID).Scan(&eventID, &deliveryID, &endpointID); err != nil {
-		t.Fatal(err)
-	}
-	var success map[string]any
-	if err = json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &success); err != nil {
-		t.Fatalf("success log: %v: %s", err, logs.String())
-	}
-	for key, want := range map[string]string{"event_id": eventID, "delivery_id": deliveryID, "endpoint_id": endpointID, "project_id": f.project, "owner_id": f.principal.UserID, "origin_request_id": req, "phase": "persist"} {
-		if success[key] != want {
-			t.Fatalf("success %s=%v want %s", key, success[key], want)
+	for _, sensitive := range []string{"receiver.example", "/hook", "token=private", "secret task title", "specversion", "destination_configuration"} {
+		if strings.Contains(logs.String(), sensitive) {
+			t.Fatalf("capture log leaked %q: %s", sensitive, logs.String())
 		}
 	}
-	assertSafeCaptureLog(t, logs.String())
-	logs.Reset()
-	failure := errors.New("synthetic entropy failure")
-	// The event and Delivery UUID reads succeed; schedule jitter entropy fails.
-	f.capture.Random = io.MultiReader(bytes.NewReader(bytes.Repeat([]byte{1}, 32)), loggingFailedEntropy{failure})
-	_, err = tasks.Create(ctx, f.principal, f.project, taskcore.CreateTask{Title: "secret task title"})
-	if !errors.Is(err, failure) {
-		t.Fatalf("schedule entropy failure not preserved: %v", err)
-	}
-	var failed map[string]any
-	if err = json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &failed); err != nil {
-		t.Fatalf("failure log: %v: %s", err, logs.String())
-	}
-	candidate, ok := failed["event_id"].(string)
-	if !ok || uuid.Validate(candidate) != nil {
-		t.Fatalf("invalid event ID in failure log: %v", failed)
-	}
-	for key, want := range map[string]string{"endpoint_id": endpointID, "project_id": f.project, "owner_id": f.principal.UserID, "origin_request_id": req, "error_kind": "capture_failed"} {
-		if failed[key] != want {
-			t.Fatalf("failure %s=%v want %s", key, failed[key], want)
-		}
-	}
-	if failed["delivery_id"] == "" {
-		t.Fatalf("missing candidate delivery ID: %v", failed)
-	}
-	var committed int
-	if err = f.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM webhook_events WHERE id=$1`, candidate).Scan(&committed); err != nil || committed != 0 {
-		t.Fatalf("failed event committed=%d err=%v", committed, err)
-	}
-	assertSafeCaptureLog(t, logs.String())
+	return entry
 }
 
-func assertSafeCaptureLog(t *testing.T, log string) {
-	t.Helper()
-	for _, secret := range []string{"receiver.example", "/hook", "secret task title", "specversion", "destination_configuration"} {
-		if strings.Contains(log, secret) {
-			t.Fatalf("log contains %q: %s", secret, log)
+func TestCapturePreparedLogUsesRecordedIdentities(t *testing.T) {
+	dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.Created)}, 1)
+	var logs bytes.Buffer
+	request := strings.Repeat("r", 128)
+	ctx := requestid.With(t.Context(), request)
+	c := &Capturer{Random: &captureEntropy{}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), RequestID: requestid.From}
+	if err := c.CaptureBatch(ctx, dao, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
+		t.Fatal(err)
+	}
+	event, delivery := dao.writes[0].event, dao.writes[0].deliveries[0]
+	entry := captureLog(t, &logs)
+	for key, want := range map[string]string{"msg": "webhook responsibility prepared", "component": "webhook", "phase": "persist", "event_id": event.ID, "delivery_id": delivery.ID, "endpoint_id": captureEndpointID, "project_id": captureProjectID, "owner_kind": "personal", "owner_id": captureOwnerID, "origin_request_id": request} {
+		if entry[key] != want {
+			t.Fatalf("%s = %v, want %s", key, entry[key], want)
 		}
+	}
+	if event.OriginRequestID == nil || *event.OriginRequestID != request || requestid.From(dao.writes[0].context) != request || entry["schema_version"] != float64(1) || entry["adapter_version"] != float64(1) {
+		t.Fatal("request context or version correlation lost")
+	}
+}
+
+func TestCaptureLogsActualEventAndScheduleEntropyFailure(t *testing.T) {
+	dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.Created)}, 0)
+	var logs bytes.Buffer
+	cause := errors.New("entropy failed at https://receiver.example/hook?token=private")
+	c := &Capturer{Random: &captureFailedEntropy{cause: cause, jitterFailure: true}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), RequestID: requestid.From}
+	ctx := requestid.With(t.Context(), "capture-test-request")
+	if err := c.CaptureBatch(ctx, dao, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
+		t.Fatalf("lost entropy cause: %v", err)
+	}
+	entry := captureLog(t, &logs)
+	for key, want := range map[string]string{"msg": "webhook capture failed", "component": "webhook", "phase": "capture", "error_kind": "capture_failed", "endpoint_id": captureEndpointID, "project_id": captureProjectID, "owner_kind": "personal", "owner_id": captureOwnerID, "origin_request_id": "capture-test-request"} {
+		if entry[key] != want {
+			t.Fatalf("%s = %v, want %s", key, entry[key], want)
+		}
+	}
+	for _, key := range []string{"event_id", "delivery_id"} {
+		id, ok := entry[key].(string)
+		if !ok || uuid.Validate(id) != nil {
+			t.Fatalf("invalid %s: %v", key, entry[key])
+		}
+	}
+	if len(dao.writes) != 0 {
+		t.Fatal("entropy failure requested persistence")
+	}
+}
+
+func TestCaptureFailureLogsKeepSafePhaseAndRequest(t *testing.T) {
+	for _, phase := range []string{"freeze", "persist"} {
+		t.Run(phase, func(t *testing.T) {
+			dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.Created)}, 1)
+			cause := errors.New("https://receiver.example/hook?token=private secret task title")
+			if phase == "freeze" {
+				dao.want = []string{"freeze"}
+				dao.freeze = func(context.Context, string, []string) ([]store.WebhookAudience, error) { return nil, cause }
+			} else {
+				dao.save = func(context.Context, store.WebhookCapturedEvent, []store.WebhookCapturedDelivery) error { return cause }
+			}
+			var logs bytes.Buffer
+			c := &Capturer{Random: &captureEntropy{}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), RequestID: requestid.From}
+			if err := c.CaptureBatch(requestid.With(t.Context(), "capture-failure-request"), dao, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, cause) {
+				t.Fatalf("lost storage cause: %v", err)
+			}
+			entry := captureLog(t, &logs)
+			if entry["phase"] != phase || entry["origin_request_id"] != "capture-failure-request" || entry["error_kind"] != "capture_failed" || entry["project_id"] != captureProjectID {
+				t.Fatalf("failure correlation = %v", entry)
+			}
+		})
+	}
+}
+
+func TestCaptureCancelledContextKeepsRequestCorrelation(t *testing.T) {
+	ctx, cancel := context.WithCancel(requestid.With(t.Context(), "cancelled-capture-request"))
+	cancel()
+	dao := newCaptureDAOMock(t, "freeze")
+	dao.freeze = func(ctx context.Context, _ string, _ []string) ([]store.WebhookAudience, error) {
+		return nil, ctx.Err()
+	}
+	var logs bytes.Buffer
+	c := &Capturer{Logger: slog.New(slog.NewJSONHandler(&logs, nil)), RequestID: requestid.From}
+	if err := c.CaptureBatch(ctx, dao, []protocol.Fact{captureFact(protocol.Created)}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled cause = %v", err)
+	}
+	entry := captureLog(t, &logs)
+	if entry["origin_request_id"] != "cancelled-capture-request" || entry["project_id"] != captureProjectID || entry["phase"] != "freeze" {
+		t.Fatal(entry)
 	}
 }

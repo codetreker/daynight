@@ -41,6 +41,8 @@ DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 # Go's ./... discovery excludes testdata; verify this shared fixture explicitly.
 GOFLAGS="$unit_go_flags" go test -count=1 -timeout=30s ./testdata/testauth
+# Process recovery needs the loopback transport available only in this test build.
+GOFLAGS="$unit_go_flags" go test -count=1 -timeout=3m -tags=webhooktest -run '^TestWebhookRunnerAbruptProcessRecovery$' ./internal/server
 # Database state is outside Go's test-result cache key.
 # https://github.com/golang/go/blob/go1.27.2/src/cmd/go/internal/test/test.go#L1867-L1869
 go clean -testcache
