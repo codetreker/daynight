@@ -474,3 +474,69 @@ func TestRunnerInstancesStopAndContinueIndependently(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveryExpiredAdmittedDeliveryNeverSchedulesAgain(t *testing.T) {
+	for _, closeFailure := range []bool{false, true} {
+		t.Run(fmt.Sprint(closeFailure), func(t *testing.T) {
+			r, admission, started := admissionFixture(t)
+			prepared, err := r.admit(t.Context(), admission.d)
+			if err != nil || prepared == nil {
+				t.Fatalf("admitted fixture: %v", err)
+			}
+			expiredAt := prepared.delivery.ExpiresAt.Add(time.Second)
+			cause := errors.New("expired delivery closure failed")
+			var attemptWrites []store.WebhookAttempt
+			var deliveryWrites []store.WebhookDelivery
+			var order []string
+			scope := &deliveryScopeScript{deliveryUnexpectedScope: deliveryUnexpectedScope{t: t}, maxCalls: map[string]int{"ObservedAt": 2}}
+			scope.observedAt = func(context.Context) (time.Time, error) { return expiredAt, nil }
+			scope.lockExpired = func(_ context.Context, limit int, at time.Time) ([]store.WebhookDelivery, error) {
+				if limit != 1 || !at.Equal(expiredAt) {
+					t.Fatal("recovery candidate scope")
+				}
+				return []store.WebhookDelivery{prepared.delivery}, nil
+			}
+			scope.lockAttempts = func(_ context.Context, id string) ([]store.WebhookAttempt, error) {
+				if id != prepared.delivery.ID {
+					t.Fatal("recovery attempt identity")
+				}
+				return []store.WebhookAttempt{prepared.attempt}, nil
+			}
+			scope.updateAttempt = func(_ context.Context, a store.WebhookAttempt) error {
+				order = append(order, "attempt")
+				attemptWrites = append(attemptWrites, a)
+				return nil
+			}
+			scope.updateDelivery = func(_ context.Context, d store.WebhookDelivery) error {
+				order = append(order, "delivery")
+				deliveryWrites = append(deliveryWrites, d)
+				if closeFailure {
+					return cause
+				}
+				return nil
+			}
+			r.DB = deliveryCommitted(t, scope)
+			err = r.recoverExpired(t.Context())
+			if closeFailure {
+				if !errors.Is(err, cause) {
+					t.Fatalf("closure failure lost: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if len(attemptWrites) != 1 || len(deliveryWrites) != 1 || fmt.Sprint(order) != "[attempt delivery]" {
+				t.Fatalf("expired recovery writes: attempts=%d deliveries=%d order=%v", len(attemptWrites), len(deliveryWrites), order)
+			}
+			a, d := attemptWrites[0], deliveryWrites[0]
+			if a.ID != prepared.attempt.ID || a.Outcome == nil || *a.Outcome != "unknown" || a.FinishedAt == nil || !a.FinishedAt.Equal(expiredAt) || a.RecoveredUnknownAt == nil || !a.RecoveredUnknownAt.Equal(expiredAt) {
+				t.Fatalf("crashed attempt not closed unknown: %+v", a)
+			}
+			if d.State != "failed" || d.Generation != prepared.delivery.Generation+1 || d.AutomaticOpen || d.LeaseToken != nil || d.LeaseUntil != nil || d.CurrentAttemptID != nil || d.NextAttemptAt != nil || d.TerminalAt == nil || !d.TerminalAt.Equal(expiredAt) || d.PreparationErrorCode == nil || *d.PreparationErrorCode != "expired" {
+				t.Fatalf("expired delivery restarted: %+v", d)
+			}
+			if d.AutomaticAttemptCount != prepared.delivery.AutomaticAttemptCount || d.AttemptSequence != prepared.delivery.AttemptSequence || !d.ExpiresAt.Equal(started.Add(72*time.Hour)) {
+				t.Fatal("recovery changed consumed budget or original deadline")
+			}
+		})
+	}
+}
