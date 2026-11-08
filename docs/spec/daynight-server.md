@@ -53,7 +53,7 @@
 
 ## HTTP 输入边界
 
-HTTP/1 请求行与请求头初始读取合计不超过 64 KiB，原始 request-target 和 query 分别不超过 48 KiB 和 24 KiB。通用 encoded cursor 在解码前限制为 16 KiB；更小的专用限制保持有效。普通 REST JSON 最大 1 MiB，MCP body 最大 4 MiB。普通短 body 从读取开始限时 15 秒；实际 body 超限返回 413，目标或 query 超限返回 414，头超限返回 431 或安全关闭，读取超时在可写时返回 408 并关闭连接。认证后的 MCP 预读每实例最多 16 个，满额立即返回 429。成功读完 body 后可继续复用连接；拒绝未读 body 不等待客户端发送剩余内容。错误与日志不回显正文或秘密。
+HTTP/1 请求行与请求头初始读取合计不超过 64 KiB，原始 request-target 和 query 分别不超过 48 KiB 和 24 KiB。通用 encoded cursor 在解码前限制为 16 KiB；更小的专用限制保持有效。普通 REST JSON 最大 1 MiB，MCP body 最大 4 MiB。普通短 body 从读取开始限时 15 秒；实际 body 超限返回 `413 payload_too_large`，目标或 query 超限返回 414，头超限返回 431 或安全关闭，读取超时在可写时返回 `408 request_timeout` 并关闭连接。确定的正文超限或读取超时，即使关闭正文已取消请求 context，仍在连接可写时有界尝试发送对应拒绝；不得恢复业务处理或返回空 200。认证后的 MCP 预读每实例最多 16 个，满额立即返回 429。成功读完 body 后可继续复用连接；拒绝未读 body 不等待客户端发送剩余内容。错误与日志不回显正文或秘密。
 
 附件和归档的读取期限合同分别为 60 秒和 120 秒，由对应入口接入；Session 消息、SSE、WebSocket 和长轮询沿用专用协议及生命周期。[输入与资源额度](daynight-api-input-limits.md)列出领域额度的实施状态。
 
