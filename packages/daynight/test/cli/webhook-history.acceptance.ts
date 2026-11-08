@@ -159,6 +159,30 @@ it.skipIf(database === undefined)("preserves secret rotation receipts, Team rece
     const queries = wire.slice(beforeFilters).filter(record => record.path.includes("/deliveries?")); expect(queries).toHaveLength(1);
     const params = new URL(queries[0]!.path, "http://127.0.0.1").searchParams;
     expect(params.get("state")).toBe("pending"); expect(params.get("from")).toBe(since); expect(params.get("to")).toBe(until); expect(params.get("eventType")).toBe("task.step_updated"); expect(params.get("projectId")).toBe(info.projectId);
+    const longFrom = `${since.slice(0, -1)}000000001Z`, longTo = `${until.slice(0, -1)}000000009Z`;
+    const beforeLongFilters = wire.length;
+    const longFiltered = await call(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.step_updated", "--from", longFrom, "--to", longTo]);
+    expect(longFiltered.items.length).toBeGreaterThan(0);
+    const longRequests = wire.slice(beforeLongFilters).filter(record => record.path.includes("/deliveries?"));
+    expect(longRequests).toHaveLength(1); expect(longRequests[0]!.status).toBe(200);
+    const longParams = new URL(longRequests[0]!.path, "http://127.0.0.1").searchParams;
+    expect(longParams.get("from")).toBe(longFrom); expect(longParams.get("to")).toBe(longTo);
+    const equalFrom = "2026-01-01T00:00:00.1234567899Z", equalTo = "2026-01-01T00:00:00.1234567890Z";
+    const beforeEqualFilters = wire.length;
+    const equal = await call(["delivery", "list", id, "--team", info.teamId, "--from", equalFrom, "--to", equalTo]);
+    expect(equal.items).toEqual([]);
+    const equalRequests = wire.slice(beforeEqualFilters).filter(record => record.path.includes("/deliveries?"));
+    expect(equalRequests).toHaveLength(1); expect(equalRequests[0]!.status).toBe(200);
+    const equalParams = new URL(equalRequests[0]!.path, "http://127.0.0.1").searchParams;
+    expect(equalParams.get("from")).toBe(equalFrom); expect(equalParams.get("to")).toBe(equalTo);
+    for (const invalid of [
+      ["--from", "2026-01-01T00:00:00.123000002Z", "--to", "2026-01-01T00:00:00.123000001Z"],
+      ["--from", "2026-01-01T00:00:00+00:00"], ["--to", "2026-01-01T00:00:00+00:00"],
+    ]) {
+      const beforeInvalid = wire.length;
+      const result = await invoke(["delivery", "list", id, "--team", info.teamId, ...invalid, "--json"]);
+      expect(result.status).toBe(2); expect(result.stdout.length).toBe(0); expect(wire.slice(beforeInvalid)).toEqual([]);
+    }
     const delivered = await call(["delivery", "list", id, "--team", info.teamId, "--state", "delivered"]); expect(delivered.items).toEqual([]);
     const human = await invoke(["delivery", "list", id, "--team", info.teamId, "--event-type", "task.step_updated", "--limit", "1"]);
     expect(human.status).toBe(0); expect(human.stderr.length).toBe(0);

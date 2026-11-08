@@ -16,7 +16,9 @@ import { PayloadCleanupError, publishPayload, readPrepared, writePrepared } from
 import type { PreparedOperation } from "./files.js";
 
 const int64 = (value: string): boolean => /^[1-9][0-9]*$/.test(value) && BigInt(value) <= 9_223_372_036_854_775_807n;
-const utc = (value: string): boolean => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString().slice(0, 19) === value.slice(0, 19);
+const utc = (value: string): boolean => value.endsWith("Z") && isWebhookIssuedAt(value);
+// The service compares parsed nanoseconds, truncating any further digits.
+const filterTimeKey = (value: string): string => `${value.slice(0, 19)}${(value.match(/\.(\d+)Z$/)?.[1] ?? "").slice(0, 9).padEnd(9, "0")}`;
 const eventTypes = new Set(["task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"]);
 const states = new Set(["pending", "leased", "delivered", "failed", "suppressed"]);
 type Phase = "input" | "auth" | "confirm" | "prepare" | "read" | "submit" | "reconcile" | "output";
@@ -84,7 +86,7 @@ export const runWebhookCommand = async (args: readonly string[], context: CliCon
   if (str("--event-type") !== undefined && !eventTypes.has(str("--event-type")!)) usage("Unknown event type.");
   if (str("--state") !== undefined && !states.has(str("--state")!)) usage("Unknown delivery state.");
   for (const key of ["--from", "--to"]) { const v = str(key); if (v !== undefined && !utc(v)) usage(`${key} must be a UTC RFC3339 timestamp.`); }
-  if (str("--from") !== undefined && str("--to") !== undefined && Date.parse(str("--from")!) > Date.parse(str("--to")!)) usage("--from must not be later than --to.");
+  if (str("--from") !== undefined && str("--to") !== undefined && filterTimeKey(str("--from")!) > filterTimeKey(str("--to")!)) usage("--from must not be later than --to.");
   const projectOption = options.get("--project");
   const projects = Array.isArray(projectOption) ? [...projectOption] : typeof projectOption === "string" ? [projectOption] : [];
   for (const project of projects) uuid(project, "--project");

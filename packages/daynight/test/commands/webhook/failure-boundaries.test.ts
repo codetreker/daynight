@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { UsageError } from "../../../src/cli/context.js";
 import { runWebhookCommand } from "../../../src/commands/webhook/command.js";
 
 // Transport fault injection does not establish a production commit.
@@ -37,6 +38,26 @@ const makeFixture = async () => {
 };
 
 describe("Webhook transport fault boundaries", () => {
+  it("passes UTC history filters with long fractions unchanged, comparing only service nanoseconds", async () => {
+    const f = await makeFixture();
+    const from = "2026-11-07T08:00:00.1234567899Z", to = "2026-11-07T08:00:00.1234567890Z";
+    f.setResponse((url) => {
+      expect(url.searchParams.get("from")).toBe(from); expect(url.searchParams.get("to")).toBe(to);
+      return reply({ items: [], nextCursor: null, historyMayBeIncomplete: true, retention: { payloadRetentionSeconds: 1, metadataRetentionSeconds: 1 } });
+    });
+    await runWebhookCommand(["delivery", "list", endpoint, "--personal", "--from", from, "--to", to, "--json"], f.context);
+    expect(f.calls.map((c) => c.method)).toEqual(["GET", "GET"]);
+    expect(JSON.parse(Buffer.concat(f.chunks).toString()).items).toEqual([]);
+  });
+  it.each([
+    ["--from", "2026-11-07T08:00:00.123000002Z", "--to", "2026-11-07T08:00:00.123000001Z"],
+    ["--from", "2026-11-07T08:00:00+00:00"],
+    ["--to", "2026-11-07T08:00:00+00:00"],
+  ])("rejects invalid history filters before any request: %j", async (...filters) => {
+    const f = await makeFixture();
+    const error = await runWebhookCommand(["delivery", "list", endpoint, "--personal", ...filters, "--json"], f.context).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UsageError); expect(f.calls).toEqual([]); expect(f.chunks).toEqual([]);
+  });
   it.skipIf(process.platform === "win32").each(["offset", "long fraction"])("keeps the original %s issuedAt through prepared and receipt reconciliation", async (kind) => {
     const f = await makeFixture();
     const now = new Date().toISOString();
