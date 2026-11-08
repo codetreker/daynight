@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -57,6 +58,156 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 			if err != nil || got == nil || len(got) != test.count {
 				t.Fatalf("lower %s: %#v, %v", test.lower.Format(time.RFC3339Nano), got, err)
 			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustQueryExec(t, s, "UPDATE task_source SET version=version+1 WHERE id=$1", b.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &stamp, 160)
+		if err != nil || len(tasks) != 3 || tasks[1].Version != 9007199254740994 || tasks[1].UpdatedAt != stamp {
+			t.Fatalf("same-timestamp higher version disappeared: %#v, %v", tasks, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var future time.Time
+	if err := s.Pool.QueryRow(ctx, "SELECT clock_timestamp()+interval '1 hour'").Scan(&future); err != nil {
+		t.Fatal(err)
+	}
+	mustQueryExec(t, s, "UPDATE task_source SET updated_at=$2 WHERE id=$1", b.ID, future)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &future, 160)
+		if err != nil {
+			return err
+		}
+		observedAt, err := snapshot.ObservedAt(ctx)
+		if err != nil || len(tasks) != 1 || tasks[0].ID != b.ID || !tasks[0].UpdatedAt.After(observedAt) {
+			t.Fatalf("snapshot clock became a query upper bound: %#v, observed %v, %v", tasks, observedAt, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskSyncWholeProjectCountsRemainIndependentOfWindow(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := context.Background()
+	for index, test := range []struct{ nodes, edges int }{
+		{1000, 5000}, {1001, 0}, {101, 5001},
+	} {
+		t.Run(fmt.Sprintf("%d_nodes_%d_edges", test.nodes, test.edges), func(t *testing.T) {
+			project := queryProject(t, database, index+1)
+			seedTaskGraph(t, database, project.ID, test.nodes, test.edges)
+			if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+				size, err := snapshot.TaskDAO().TaskGraphSize(ctx, project.ID)
+				if err != nil || size != (TaskGraphSize{NodeCount: int64(test.nodes), EdgeCount: int64(test.edges)}) {
+					t.Fatalf("full-project capacity counts changed: %#v, %v", size, err)
+				}
+				observedAt, err := snapshot.ObservedAt(ctx)
+				if err != nil {
+					return err
+				}
+				future := observedAt.Add(time.Hour)
+				window, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &future, 160)
+				if err != nil || window == nil || len(window) != 0 {
+					t.Fatalf("empty future window changed: %#v, %v", window, err)
+				}
+				if test.nodes != 1000 || test.edges != 5000 {
+					return nil
+				}
+				all, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
+				if err != nil || len(all) != 1000 {
+					t.Fatalf("exact-capacity baseline truncated: %d, %v", len(all), err)
+				}
+				edges := 0
+				for _, task := range all {
+					edges += len(task.DependsOn)
+				}
+				if edges != 5000 {
+					t.Fatalf("exact-capacity baseline edges truncated: %d", edges)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
+	database, _, reader, project := membershipFixture(t)
+	ctx := context.Background()
+	a := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	b := queryTask(t, database, project.ID, 12, model.TaskTodo, a.ID)
+	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, reader.UserID)
+	var oldEpoch string
+	var beforeAccess model.ProjectAccess
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		var err error
+		beforeAccess, err = snapshot.ProjectDAO().ProjectAccess(ctx, reader, project.ID)
+		if err != nil {
+			return err
+		}
+		oldEpoch, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		beforeSize, err := snapshot.TaskDAO().TaskGraphSize(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+			_, err := tx.TaskDAO().UpdateTask(ctx, a.ID, TaskWrite{Title: "After", Status: model.TaskDone})
+			return err
+		}); err != nil {
+			return err
+		}
+		mustQueryExec(t, database, `UPDATE projects SET task_cache_epoch=gen_random_uuid(),execution_warning_minutes=31 WHERE id=$1`, project.ID)
+		mustQueryExec(t, database, `UPDATE project_grants SET role='admin',version=9007199254740993,updated_at=statement_timestamp() WHERE project_id=$1 AND user_id=$2`, project.ID, reader.UserID)
+		epoch, err := snapshot.TaskDAO().TaskCacheEpoch(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		storedProject, err := snapshot.ProjectDAO().Project(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		access, err := snapshot.ProjectDAO().ProjectAccess(ctx, reader, project.ID)
+		if err != nil {
+			return err
+		}
+		afterSize, err := snapshot.TaskDAO().TaskGraphSize(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
+		if err != nil || epoch != oldEpoch || storedProject != project || !reflect.DeepEqual(access, beforeAccess) || beforeSize != (TaskGraphSize{NodeCount: 2, EdgeCount: 1}) || afterSize != beforeSize || len(tasks) != 2 || tasks[0].TitlePreview != a.Title || tasks[0].Version != 1 || !slices.Equal(tasks[1].DependsOn, []string{a.ID}) {
+			t.Fatalf("mixed project/access/epoch/task snapshot: %#v %#v %#v %#v, %v", storedProject, access, epoch, tasks, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		epoch, err := snapshot.TaskDAO().TaskCacheEpoch(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		storedProject, err := snapshot.ProjectDAO().Project(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		access, err := snapshot.ProjectDAO().ProjectAccess(ctx, reader, project.ID)
+		if err != nil {
+			return err
+		}
+		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
+		if err != nil || epoch == oldEpoch || storedProject.Settings.ExecutionWarningMinutes != 31 || access.Role != model.ProjectAdmin || access.DirectGrant == nil || access.DirectGrant.Version != 9007199254740993 || len(tasks) != 2 || tasks[0].TitlePreview != "After" || tasks[0].Version != 2 || tasks[1].ID != b.ID {
+			t.Fatalf("fresh snapshot missed committed history: %#v %#v %#v %#v, %v", storedProject, access, epoch, tasks, err)
 		}
 		return nil
 	}); err != nil {

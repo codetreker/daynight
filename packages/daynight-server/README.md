@@ -763,8 +763,9 @@ records the input and error-chain guarantees.
 Task request tests separate service preflight from candidates that require a
 stored Task. Preflight rejects before storage; `PrepareUpdate` and `PrepareStatus`
 tests use `TaskWriteDAO` expectations for reads, version order, results and error
-chains. Real scope, refusal-without-mutation, graph, rollback, concurrency and
-all-status-pair/version observations remain PostgreSQL integration proofs. The
+chains. Service orchestration uses the same interface boundary for permission,
+state, proposed writes and transaction completion. Store tests retain real scope,
+query, locking, snapshot, commit and rollback observations. The
 [Task validation decision](../../.agents/notes/implemented/testing/2026-11-06-task-request-candidate-isolation.md)
 records the read-before-validation distinction.
 
@@ -775,16 +776,46 @@ queries and process crash recovery retain their PostgreSQL boundaries. The
 [record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
 records which storage facts are mocked and which durable operations remain real.
 
+### Task service and store tests
+
+The complete `internal/service/task` suite uses synthetic domain inputs and
+strict mocks of the existing DAO, snapshot and transaction scopes. Unconfigured
+calls fail explicitly. Callback execution and proposed writes remain separate
+from `committed`, `not_committed` and `unknown` results; tests retain their
+permission, version, error-chain, cancellation and source-fact assertions.
+
+Run this suite without a database from the module:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task
+```
+
+Existing PostgreSQL witnesses live in `internal/core/store/postgres` and use
+direct DAO and transaction scopes for physical query, locking, snapshot,
+partial-write rollback, Session and capture atomicity, and process-exit
+readback. Their test environment owns an isolated PostgreSQL instance and its
+cleanup. Store tests do not reproduce complete service flows. API integration
+and product E2E retain their normal-flow scope under the
+[test-writing rules](../../docs/writing_tests.md).
+
+Step service tests retain the real 64 MiB codec boundary: 170 escaped descriptions
+fit, 171 exceed the collection limit, and both Add and Update refuse before any
+write. Graph and Sync split physical dataset/query proof from service count
+admission. The [Task test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-task-service-test-ownership.md)
+records this correction of existing tests and the earlier fixture decisions.
+
 ### TaskSync lock and time windows
 
-TaskSync lock-wait regressions use a named 20-millisecond test overlap with real
-PostgreSQL transactions. After observing the blocked writer, they poll the
-database clock with a bounded deadline until that overlap has elapsed before
-releasing the Project lock. The old snapshot must retain committed versions
-while its observation time crosses the uncommitted write's window; subsequent
-delta reads must include both committed writes in timestamp order. Initial
-fixture rows share a database timestamp so setup latency cannot exclude either
-row from the short baseline window.
+TaskSync lock-wait regressions in store tests use a named 20-millisecond overlap
+with real PostgreSQL transactions. They observe the waiting transaction blocked
+by the held Project transaction's exact backend PID, then poll the database clock
+with a bounded deadline until the overlap has elapsed before releasing that
+lock. The old snapshot must retain committed versions while its observation
+time crosses the uncommitted write's window; subsequent delta reads must include
+both committed writes in timestamp order. Initial fixture rows share a database
+timestamp so setup latency cannot exclude either row from the short baseline
+window. Service tests separately control exact DAO windows and overlap admission.
 
 The production overlap and the independent 10-second, 30-second and nanosecond
 window cases remain separate. The [timing decision](../../.agents/notes/implemented/testing/2026-11-06-task-sync-lock-window.md)
@@ -857,13 +888,14 @@ records the equivalence and maintenance requirements.
 ### Task Graph boundary fixtures
 
 Graph boundary regressions retain the 1000-node backbone and 5000 dependency
-references, plus independent node and edge overflow cases. Connected service
+references, plus independent node and edge overflow cases. Connected store
 fixtures and the HTTP limit fixture run `ANALYZE tasks, task_dependencies` after
 all links are loaded and before graph queries. These private tables can be queried
 before autovacuum collects statistics; explicit collection gives the planner the
 loaded graph's cardinality without changing its rows or snapshot assertions.
-Preparation failures fail the test. Task service Graph and Sync seeds generate
-their ordered edge prefix directly while preserving its original topology. The
+Preparation failures fail the test. Graph and Sync store seeds generate their
+ordered edge prefix directly while preserving its original topology. Service
+DAO mocks retain independent node/edge limit admission before projection. The
 [fixture preparation decision](../../.agents/notes/implemented/testing/2026-11-06-task-graph-fixture-statistics.md)
 owns the rationale and proof boundary.
 
@@ -1733,14 +1765,21 @@ concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
-`TestStepsHTTPDelete*`. After preparing the normal auth fixture and an isolated PostgreSQL database, focused
-tests can be run from this module:
+`TestStepsHTTPDelete*`. Service Step cases run without a database:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task -run '^TestTaskSteps'
+```
+
+After preparing the normal auth fixture and an isolated PostgreSQL database,
+run the physical store and HTTP witnesses from this module:
 
 ```bash
 source scripts/env.sh
 export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-go test ./internal/core/store/postgres/... ./internal/service/task ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/... ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
 For the cross-process Step text admission check, build the CLI and set

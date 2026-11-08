@@ -30,10 +30,14 @@ upstream client; every input must still produce the expected domain fault withou
 opening a transaction. A real Identity integration test retains rejected-scope
 zero-row readback, accepted return paths and upstream callback configuration.
 
-Graph and Sync tests retain their failing description expressions, scoped data,
-Unicode previews, versions, dependency fields and snapshot/time boundaries, while
-omitting the inaccessible description blobs. An unintended description selection
-still raises a PostgreSQL exception.
+Graph and Sync store tests retain their failing description expressions, scoped
+data, Unicode previews, versions, dependency fields and snapshot/time boundaries
+while omitting inaccessible description blobs. An unintended description
+selection still raises a PostgreSQL exception. These physical projection
+witnesses originally shared service fixtures; the
+[Task service ownership decision](2026-11-08-task-service-test-ownership.md)
+places them with the DAO implementation and uses explicit query results for
+service coordination.
 
 Bot creation fixtures insert the same 130 expired malformed Workers and 105 active
 Workers with two set-based statements. The active set retains distinct ascending
@@ -76,10 +80,10 @@ data; they do not change the default schema isolation or migration mechanism.
 The targeted input-only selections execute without a database URL, and their
 storage sentinels still reject accidental dependency access. Layer-owned
 integration tests retain transactions, rollback, permissions and persistence
-observations; the Webhook service decision records the later
-replacement of its database-backed rule matrix.
-The Graph and Sync SQL projection and Bot admission boundaries remain native
-PostgreSQL behavior.
+observations. The Webhook and Task service ownership decisions record the later
+replacement of their database-backed rule and coordination matrices. Graph and
+Sync SQL projection witnesses live in store tests; Bot admission boundaries
+retain native PostgreSQL behavior.
 
 The change removes unused setup and preserves fixture row counts; its effect on
 package and complete CI elapsed time requires matching source, race, coverage,

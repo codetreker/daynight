@@ -1,18 +1,16 @@
 package task_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
 
-	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
+
+func pointer[T any](value T) *T { return &value }
 
 func requireFault(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
@@ -25,17 +23,14 @@ func requireFault(t *testing.T, err error, code string) *model.Fault {
 
 type entropyFailure struct{ err error }
 
+func (failure entropyFailure) Read([]byte) (int, error) { return 0, failure.err }
+
 func propertyPatch(items ...model.PullRequestProperty) model.TaskPropertiesPatch {
 	values := make([]map[string]string, len(items))
 	for index, item := range items {
 		values[index] = map[string]string{"url": item.URL, "title": item.Title}
 	}
 	return model.TaskPropertiesPatch{"pullRequests": propertyJSON(values)}
-}
-
-func writeProjectForTest(s *postgres.Store, ctx context.Context, id string, operation func(store.ProjectWriteScope) error) error {
-	_, err := s.WriteProject(ctx, id, operation)
-	return err
 }
 
 func propertyJSON(value any) json.RawMessage {
@@ -45,6 +40,7 @@ func propertyJSON(value any) json.RawMessage {
 	}
 	return data
 }
+
 func testWorker(t *testing.T, properties model.TaskProperties) *model.WorkerClaim {
 	t.Helper()
 	value, err := taskproperties.Worker(properties)
@@ -62,6 +58,7 @@ func testPRs(t *testing.T, properties model.TaskProperties) []model.PullRequestP
 	}
 	return value
 }
+
 func testWithWorker(t *testing.T, properties model.TaskProperties, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
 	values, err := taskprops.WithWorker(properties, worker)
@@ -70,5 +67,3 @@ func testWithWorker(t *testing.T, properties model.TaskProperties, worker *model
 	}
 	return values
 }
-
-func (failure entropyFailure) Read([]byte) (int, error) { return 0, failure.err }
