@@ -1,0 +1,22 @@
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../src/api/client';
+import { WebhookCatalogProvider, useWebhookCatalog } from '../src/app/WebhookCatalog';
+const fixture=vi.hoisted(()=>({blocked:false,invalidated:false,read:vi.fn(),mismatch:vi.fn(),lifetime:new AbortController()}));
+vi.mock('../src/api/webhooks',()=>({getWebhookCatalog:fixture.read}));
+vi.mock('../src/app/CurrentAccountContext',()=>({useCurrentAccount:()=>({admissionBlocked:fixture.blocked})}));
+const admission={get isInvalidated(){return fixture.invalidated},userId:'a0000000-0000-4000-8000-000000000001',signal:fixture.lifetime.signal,principalMismatch:fixture.mismatch};
+vi.mock('../src/features/task-cache/TaskCacheProvider',()=>({useTaskCacheScope:()=>admission}));
+const catalog={service:{configurationExpansionAvailable:true,dispatchEnabled:false}};
+const Probe=()=>{const state=useWebhookCatalog();return <div><input aria-label="Retained draft" defaultValue="draft"/><output aria-label="Catalog state">{state.catalog===null?'absent':'present'}:{state.admitted?'admitted':'paused'}:{state.error===null?'ok':'error'}</output></div>};
+const view=(active=true)=><WebhookCatalogProvider active={active}><Probe/></WebhookCatalogProvider>;
+beforeEach(()=>{fixture.blocked=false;fixture.invalidated=false;fixture.read.mockReset();fixture.read.mockResolvedValue(catalog)});
+afterEach(cleanup);
+describe('Webhook catalog admission',()=>{
+  it('avoids private standalone route catalog reads',()=>{render(view(false));expect(fixture.read).not.toHaveBeenCalled();expect(screen.getByLabelText('Catalog state')).toHaveTextContent('absent:paused:ok')});
+  it('admits a verified directory with dispatch disabled',async()=>{render(view());await waitFor(()=>expect(screen.getByLabelText('Catalog state')).toHaveTextContent('present:admitted:ok'));expect(fixture.read.mock.calls[0]![1]).toEqual({userId:admission.userId,onPrincipalMismatch:fixture.mismatch})});
+  it('retains errors rather than admitting an empty directory',async()=>{fixture.read.mockRejectedValue(new ApiError('protocol'));render(view());await waitFor(()=>expect(screen.getByLabelText('Catalog state')).toHaveTextContent('absent:paused:error'))});
+  it('retains node, draft, selection and focus through identity checks',async()=>{const c=render(view());await waitFor(()=>expect(screen.getByLabelText('Catalog state')).toHaveTextContent('admitted'));const input=screen.getByLabelText('Retained draft') as HTMLInputElement;input.value='unfinished';input.focus();input.setSelectionRange(2,5);fixture.blocked=true;c.rerender(view());expect(screen.getByLabelText('Catalog state')).toHaveTextContent('present:paused');expect(screen.getByLabelText('Retained draft')).toBe(input);expect(input.value).toBe('unfinished');expect(input.selectionStart).toBe(2);expect(document.activeElement).toBe(input);fixture.blocked=false;c.rerender(view());await waitFor(()=>expect(screen.getByLabelText('Catalog state')).toHaveTextContent('admitted'));expect(screen.getByLabelText('Retained draft')).toBe(input);expect(input.value).toBe('unfinished');expect(document.activeElement).toBe(input)});
+  it('rejects a late aborted generation after a newer error',async()=>{let finish!:(c:typeof catalog)=>void;fixture.read.mockImplementationOnce(()=>new Promise<typeof catalog>(r=>{finish=r})).mockRejectedValueOnce(new ApiError('network'));const c=render(view());fixture.blocked=true;c.rerender(view());fixture.blocked=false;c.rerender(view());await waitFor(()=>expect(screen.getByLabelText('Catalog state')).toHaveTextContent('absent:paused:error'));await act(async()=>finish(catalog));expect(screen.getByLabelText('Catalog state')).toHaveTextContent('absent:paused:error');expect(fixture.read.mock.calls[0]![0].aborted).toBe(true)});
+  it('retains a displayed catalog while suspending admission on errors',async()=>{const c=render(view());await waitFor(()=>expect(screen.getByLabelText('Catalog state')).toHaveTextContent('admitted'));fixture.read.mockRejectedValue(new ApiError('network'));fixture.blocked=true;c.rerender(view());fixture.blocked=false;c.rerender(view());await waitFor(()=>expect(screen.getByLabelText('Catalog state')).toHaveTextContent('present:paused:error'))});
+});
