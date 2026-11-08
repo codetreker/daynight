@@ -40,6 +40,16 @@ const mount = ({ initialId = null, items = [delivery()], interceptInitial = () =
 const open = async () => { const row = await screen.findByRole("button", { name: /task.created.*Failed/ }); fireEvent.click(row); return screen.findByRole("dialog", { name: "Delivery details" }); };
 
 describe("webhook delivery diagnostics", () => {
+  it.each(["delivered", "failed", "pending", "leased", "suppressed"] as const)("renders the %s delivery status widget consistently in rows and details", async state => {
+    const view = mount({ items: [{ ...delivery(), state }] });
+    const row = await waitFor(() => { const node = view.container.querySelector<HTMLButtonElement>(".delivery-row"); expect(node).not.toBeNull(); return node!; });
+    fireEvent.click(row); const dialog = await screen.findByRole("dialog"); await within(dialog).findByText("Original title");
+    for (const badge of [row.querySelector(".badge"), dialog.querySelector(".delivery-summary .badge")]) {
+      expect(badge).not.toBeNull(); const icons = badge!.querySelectorAll("svg");
+      expect(icons).toHaveLength(state === "suppressed" ? 0 : 1);
+      if (state !== "suppressed") { expect(icons[0]).toHaveAttribute("width", "11"); expect(icons[0]).toHaveAttribute("height", "11"); expect(icons[0]).toHaveAttribute("aria-hidden", "true"); }
+    }
+  });
   it("reads payload only explicitly and renders exact inert text, while separating historic acknowledgement from failure and late result", async () => {
     const view = mount(); const dialog = await open();
     expect(view.fetch.mock.calls.filter(([url]) => url.endsWith("/payload"))).toHaveLength(0);
