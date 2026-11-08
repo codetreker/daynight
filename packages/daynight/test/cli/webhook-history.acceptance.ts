@@ -72,7 +72,7 @@ it.skipIf(database === undefined)("preserves secret rotation receipts, Team rece
   };
   try {
     await Promise.all([home, config, tmp].map(dir => mkdir(dir, { recursive: true })));
-    await cp(serverSource, serverCopy, { recursive: true });
+    await cp(serverSource, serverCopy, { recursive: true, filter: (source) => source !== path.join(serverSource, ".tmp") });
     const filename = path.join(serverCopy, "testdata/webhook-host/main.go");
     const original = await readFile(filename, "utf8");
     const adapted = original.replace('authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"', '"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"\n\tauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"').replace("\t\tmux.ServeHTTP(w, r)", "\t\thttpx.RequestLogging(logger, mux).ServeHTTP(w, r)");
@@ -102,6 +102,7 @@ it.skipIf(database === undefined)("preserves secret rotation receipts, Team rece
     expect(rotation.signing.overlapUntil).not.toBeNull();
     expect(rotation.signing.activeKeyId).not.toBe(initial.keyId);
     expect(rotation.operation.keyId).toBe(rotation.signing.activeKeyId);
+    expect(rotation.operation.overlapUntil).toBe(rotation.signing.overlapUntil);
     expect(rotation.operation.destinationRevisionAfter).toBe(created.endpoint.destinationRevision);
     expect(wire.slice(beforeRotate).filter(record => record.method === "POST")).toHaveLength(1);
     expect(wire.slice(beforeRotate).some(record => record.path.endsWith("/signing-secret"))).toBe(false);
@@ -114,9 +115,11 @@ it.skipIf(database === undefined)("preserves secret rotation receipts, Team rece
     expect(current.keyId).toBe(immediate.signing.activeKeyId);
     const originalReceipt = await call(["operation", "show", rotation.operation.operationId, "--team", info.teamId]);
     expect(originalReceipt.keyId).toBe(rotation.signing.activeKeyId);
+    expect(originalReceipt.overlapUntil).toBe(rotation.signing.overlapUntil);
     const beforeRotationResume = wire.length;
     const rotationResume = await call(["secret", "rotate", id, "--team", info.teamId, "--mode", "overlap", "--if-version", created.endpoint.configVersion, "--confirm", "--resume-operation", rotationPath]);
     expect(rotationResume.operation.keyId).toBe(rotation.signing.activeKeyId);
+    expect(rotationResume.operation.overlapUntil).toBe(rotation.signing.overlapUntil);
     expect(wire.slice(beforeRotationResume).filter(record => record.method === "POST")).toHaveLength(0);
     const memberships = await control("GET", `/api/v1/teams/${info.teamId}/members`);
     const memberBefore = memberships.items.find((item: any) => item.userId === info!.memberId);

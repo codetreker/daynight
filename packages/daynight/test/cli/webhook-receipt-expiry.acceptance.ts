@@ -81,13 +81,13 @@ it.skipIf(database === undefined)("does not resend an original operation when it
   };
   try {
     await Promise.all([home, config, tmp].map(dir => mkdir(dir, { recursive: true })));
-    await cp(serverSource, serverCopy, { recursive: true });
+    await cp(serverSource, serverCopy, { recursive: true, filter: (source) => source !== path.join(serverSource, ".tmp") });
     const filename = path.join(serverCopy, "testdata/webhook-host/main.go");
     const original = await readFile(filename, "utf8"); let adapted = original;
     adapted = replaceOnce(adapted, 'q.Set("search_path", f.schema)', 'q.Set("search_path", f.schema+",pg_catalog")');
     adapted = replaceOnce(adapted, 'authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"', '"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"\n\tauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"');
     const marker = '\tmux.HandleFunc("POST /__fixture/runner/start", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {';
-    adapted = replaceOnce(adapted, "\tcapture := &webhook.Capturer{Keys: keys, Logger: logger}", `\tif _, e := f.db.Pool.Exec(ctx, "CREATE TABLE fixture_clock(delta interval NOT NULL); INSERT INTO fixture_clock VALUES (interval '0 seconds'); CREATE FUNCTION statement_timestamp() RETURNS timestamptz LANGUAGE SQL STABLE AS 'SELECT pg_catalog.statement_timestamp() + delta FROM fixture_clock LIMIT 1' "); e != nil { return nil, e }\n\tcapture := &webhook.Capturer{Keys: keys, Logger: logger}`);
+    adapted = replaceOnce(adapted, "\tcapture := &webhook.Capturer{Logger: logger}", `\tif _, e := f.db.Pool.Exec(ctx, "CREATE TABLE fixture_clock(delta interval NOT NULL); INSERT INTO fixture_clock VALUES (interval '0 seconds'); CREATE FUNCTION statement_timestamp() RETURNS timestamptz LANGUAGE SQL STABLE AS 'SELECT pg_catalog.statement_timestamp() + delta FROM fixture_clock LIMIT 1' "); e != nil { return nil, e }\n\tcapture := &webhook.Capturer{Logger: logger}`);
     const addition = `\tmux.HandleFunc("POST /__fixture/receipts/clock", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) { if p.UserID != user { http.Error(w,"forbidden",403); return }; var input struct { Delta string ` + '`json:"delta"`' + ` }; if json.NewDecoder(r.Body).Decode(&input)!=nil || (input.Delta != "-31 days" && input.Delta != "0 seconds") { http.Error(w,"invalid",400); return }; if _,e:=f.db.Pool.Exec(r.Context(),"UPDATE fixture_clock SET delta=$1::interval",input.Delta); e!=nil { http.Error(w,"clock unavailable",500); return }; w.WriteHeader(204) }))\n\tmux.HandleFunc("GET /__fixture/receipts/state/{id}", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) { if p.UserID != user { http.Error(w,"forbidden",403); return }; id:=r.PathValue("id"); var count int; var issued,hash string; var recorded,expires,actual time.Time; if e:=f.db.Pool.QueryRow(r.Context(),"SELECT count(*),coalesce(max(issued_at_lexeme),''),coalesce(max(encode(request_sha256,'hex')),''),max(recorded_at),max(expires_at),pg_catalog.statement_timestamp() FROM webhook_operations WHERE operation_id=$1",id).Scan(&count,&issued,&hash,&recorded,&expires,&actual); e!=nil { http.Error(w,"receipt read failed",500); return }; var postgresVersion string; if e:=f.db.Pool.QueryRow(r.Context(),"SHOW server_version").Scan(&postgresVersion); e!=nil { http.Error(w,"version read failed",500); return }; w.Header().Set("Content-Type","application/json"); json.NewEncoder(w).Encode(map[string]any{"postgresVersion":postgresVersion,"count":count,"issuedAt":issued,"requestSha256":hash,"recordedAt":recorded.UTC(),"expiresAt":expires.UTC(),"actualTime":actual.UTC()}) }))\n`;
     adapted = replaceOnce(adapted, marker, addition + marker);
     adapted = replaceOnce(adapted, "\t\tmux.ServeHTTP(w, r)", "\t\thttpx.RequestLogging(logger, mux).ServeHTTP(w, r)");
@@ -127,14 +127,15 @@ it.skipIf(database === undefined)("does not resend an original operation when it
     const beforeRead = wire.length;
     const observation = await invoke(["operation", "show", operationId, "--personal"]);
     const receiptReads = wire.slice(beforeRead).filter(item => item.method === "GET" && item.path.endsWith(`/operations/${operationId}`));
-    expect(receiptReads).toHaveLength(1); expect(receiptReads[0]!.status).toBe(200);
+    expect(receiptReads).toHaveLength(1); expect(receiptReads[0]!.status).toBe(404);
+    expect(observation.status).toBe(1); expect(observation.stdout.length).toBe(0);
     snapshots.push({ label: "actual-receipt-read", value: { status: observation.status, response: observation.stdout.toString("base64"), stderr: observation.stderr.toString("base64"), httpStatus: receiptReads[0]!.status } });
     const beforeResume = wire.length;
     const resumed = await invoke(["create", "--personal", "--stdin", "--confirm", "--resume-operation", prepared], input);
     const resumeTrace = wire.slice(beforeResume);
     const writes = resumeTrace.filter(item => item.method === "POST");
     const reads = resumeTrace.filter(item => item.method === "GET" && item.path.endsWith(`/operations/${operationId}`));
-    expect(writes).toHaveLength(0); expect(reads).toHaveLength(1);
+    expect(writes).toHaveLength(0); expect(reads).toHaveLength(1); expect(reads[0]!.status).toBe(404);
     snapshots.push({ label: "resume-with-expired-receipt", value: { status: resumed.status, stdout: resumed.stdout.toString("base64"), stderr: resumed.stderr.toString("base64"), httpStatus: reads[0]!.status } });
     expect(await observe("after-resume", operationId)).toEqual({ ...now, actualTime: expect.any(String) });
     expect(resumed.status).toBe(1); expect(resumed.stdout.length).toBe(0);

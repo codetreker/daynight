@@ -10,7 +10,7 @@ const deliveryId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const operationId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const owner = { kind: "personal" as const, id: userId };
 const time = "2026-11-07T12:00:00Z";
-const receipt = { operationId, kind: "endpoint.patch", issuedAt: time, requestSha256: "a".repeat(64), actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: "9007199254740993", destinationRevisionAfter: "1", deliveryId: null, generationAfter: null, keyId: null, recordedAt: time, expiresAt: time };
+const receipt = { operationId, kind: "endpoint.patch", issuedAt: time, requestSha256: "a".repeat(64), actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: "9007199254740993", destinationRevisionAfter: "1", deliveryId: null, generationAfter: null, keyId: null, overlapUntil: null, recordedAt: time, expiresAt: time };
 const payload = Buffer.from('{"x":1}');
 const envelope = { owner, endpointId, deliveryId, eventId: operationId, mediaType: "application/cloudevents+json", encoding: "base64", body: payload.toString("base64"), bytes: payload.length, sha256: createHash("sha256").update(payload).digest("hex") };
 const operations: ReturnType<typeof createOperation>[] = [];
@@ -19,7 +19,7 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 describe("webhook API boundaries", () => {
   it("retains exact wire versions and rejects malformed receipts", () => {
     expect(parseWebhookReceipt(receipt, owner, operationId).configVersionAfter).toBe("9007199254740993");
-    for (const patch of [{ configVersionAfter: "01" }, { configVersionAfter: "9223372036854775808" }, { kind: "endpoint.update" }, { requestSha256: "x" }, { effect: "other" }, { extra: 1 }]) expect(() => parseWebhookReceipt({ ...receipt, ...patch }, owner, operationId)).toThrow();
+    for (const patch of [{ configVersionAfter: "01" }, { configVersionAfter: "9223372036854775808" }, { kind: "endpoint.update" }, { requestSha256: "x" }, { effect: "other" }, { overlapUntil: time }, { overlapUntil: undefined }, { extra: 1 }]) expect(() => parseWebhookReceipt({ ...receipt, ...patch }, owner, operationId)).toThrow();
   });
   it("retains the original valid issuedAt lexeme without relaxing server timestamps", () => {
     for (const issuedAt of ["2026-11-07T12:00:00.123400+00:00", `2026-11-07T12:00:00.${"0".repeat(10_000)}Z`]) {
@@ -39,9 +39,11 @@ describe("webhook API boundaries", () => {
   it("binds a rotation result to its original key receipt", () => {
     const oldKey = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     const currentKey = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-    const response = { operation: { ...receipt, kind: "signing-secret.rotate", keyId: oldKey }, signing: { activeKeyId: oldKey, overlapUntil: null } };
+    const response = { operation: { ...receipt, kind: "signing-secret.rotate", keyId: oldKey, overlapUntil: time }, signing: { activeKeyId: oldKey, overlapUntil: time } };
     const result = parseWebhookMutation(response, owner, "signing", operationId, endpointId);
     expect(result.operation.keyId).toBe(oldKey);
+    expect(result.operation.overlapUntil).toBe(time);
+    for (const overlapUntil of [null, "2026-11-08T12:00:00Z"]) expect(() => parseWebhookMutation({ ...response, signing: { activeKeyId: oldKey, overlapUntil } }, owner, "signing", operationId, endpointId)).toThrow();
     expect(() => parseWebhookMutation({ ...response, signing: { activeKeyId: currentKey, overlapUntil: null } }, owner, "signing", operationId, endpointId)).toThrow();
   });
   it("rejects inconsistent full and metadata-only disclosure", () => {

@@ -127,6 +127,9 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	}
 	op, ep := body(t, result)
 	id := ep["id"].(string)
+	if op["overlapUntil"] != (*time.Time)(nil) {
+		t.Fatalf("create receipt has rotation deadline: %#v", op)
+	}
 	if result.Replay || ep["configVersion"] != "1" || ep["destinationRevision"] != "1" || op["requestSha256"] != m.RequestSHA256 {
 		t.Fatalf("creation: %#v", result)
 	}
@@ -211,7 +214,8 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	}
 	rb := rotation.Body.(map[string]any)
 	originalSigning := rb["signing"].(map[string]any)
-	if originalSigning["activeKeyId"] == nil || originalSigning["overlapUntil"] == nil {
+	originalOperation := rb["operation"].(map[string]any)
+	if originalSigning["activeKeyId"] == nil || originalSigning["overlapUntil"] == nil || !originalOperation["overlapUntil"].(*time.Time).Equal(*originalSigning["overlapUntil"].(*time.Time)) {
 		t.Fatalf("rotation: %#v", rotation)
 	}
 	second := mutation(p, "signing.rotate", id, 3)
@@ -222,8 +226,12 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	}
 	immediate := mutation(p, "signing.rotate", id, 3)
 	immediate.Mode = "immediate"
-	if _, err = f.svc.Mutate(f.ctx, p, owner, immediate); err != nil {
+	immediateResult, err := f.svc.Mutate(f.ctx, p, owner, immediate)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if immediateResult.Body.(map[string]any)["operation"].(map[string]any)["overlapUntil"] != (*time.Time)(nil) {
+		t.Fatal("immediate rotation receipt has overlap deadline")
 	}
 	var count int
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_signing_keys WHERE endpoint_id=$1`, id).Scan(&count); err != nil || count != 1 {
@@ -251,6 +259,14 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	}
 	if _, err := f.svc.Secret(f.ctx, p, owner, id); err == nil {
 		t.Fatal("deleted secret remained accessible")
+	}
+	originalReceipt, err := f.svc.Operation(f.ctx, p, owner, rot.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := originalReceipt.(map[string]any)
+	if restored["keyId"] != originalSigning["activeKeyId"] || !restored["overlapUntil"].(*time.Time).Equal(*originalSigning["overlapUntil"].(*time.Time)) {
+		t.Fatalf("GET lost original rotation result after key deletion: %#v", restored)
 	}
 }
 

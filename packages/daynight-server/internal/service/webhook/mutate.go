@@ -501,6 +501,9 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if conflict {
 			return fault("operation_conflict", "Operation ID was already used for a different intent.")
 		}
+		if e = requireLiveOperation(ctx, sc, cur, "operation_expired"); e != nil {
+			return e
+		}
 		if m.Kind == "signing.rotate" {
 			body = map[string]any{"operation": opView(cur), "signing": map[string]any{"activeKeyId": cur.ActiveKeyID, "overlapUntil": utcTime(cur.OverlapUntil)}}
 			return nil

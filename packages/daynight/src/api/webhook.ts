@@ -86,15 +86,15 @@ export const parseWebhookEndpointPage = (value: unknown, owner: WebhookOwner) =>
   return { items, nextCursor: nullable(d.nextCursor, nonempty) };
 };
 export const parseWebhookReceipt = (value: unknown, owner: WebhookOwner, expectedId?: string) => {
-  const d = fields(value, ["operationId", "kind", "issuedAt", "requestSha256", "actorUserId", "owner", "endpointId", "effect", "configVersionAfter", "destinationRevisionAfter", "deliveryId", "generationAfter", "keyId", "recordedAt", "expiresAt"]);
+  const d = fields(value, ["operationId", "kind", "issuedAt", "requestSha256", "actorUserId", "owner", "endpointId", "effect", "configVersionAfter", "destinationRevisionAfter", "deliveryId", "generationAfter", "keyId", "overlapUntil", "recordedAt", "expiresAt"]);
   const operationId = id(d.operationId); if (expectedId !== undefined && operationId !== expectedId) return malformed();
   const requestSha256 = text(d.requestSha256); if (!/^[a-f0-9]{64}$/.test(requestSha256)) return malformed();
   const kind = oneOf(d.kind, ["endpoint.create", "endpoint.patch", "endpoint.delete", "signing-secret.rotate", "delivery.redeliver"] as const);
-  const deliveryId = nullable(d.deliveryId, id), generationAfter = nullable(d.generationAfter, version), keyId = nullable(d.keyId, id);
+  const deliveryId = nullable(d.deliveryId, id), generationAfter = nullable(d.generationAfter, version), keyId = nullable(d.keyId, id), overlapUntil = nullableTimestamp(d.overlapUntil);
   if (kind === "delivery.redeliver" ? deliveryId === null || generationAfter === null : deliveryId !== null || generationAfter !== null) return malformed();
-  if ((kind === "signing-secret.rotate") !== (keyId !== null)) return malformed();
+  if ((kind === "signing-secret.rotate") !== (keyId !== null) || kind !== "signing-secret.rotate" && overlapUntil !== null) return malformed();
   const issuedAt = text(d.issuedAt); if (!isWebhookIssuedAt(issuedAt)) return malformed();
-  return { operationId, kind, issuedAt, requestSha256, actorUserId: id(d.actorUserId), owner: parseWebhookOwner(d.owner, owner), endpointId: id(d.endpointId), effect: oneOf(d.effect, ["applied", "unchanged"] as const), configVersionAfter: version(d.configVersionAfter), destinationRevisionAfter: version(d.destinationRevisionAfter), deliveryId, generationAfter, keyId, recordedAt: timestamp(d.recordedAt), expiresAt: timestamp(d.expiresAt) };
+  return { operationId, kind, issuedAt, requestSha256, actorUserId: id(d.actorUserId), owner: parseWebhookOwner(d.owner, owner), endpointId: id(d.endpointId), effect: oneOf(d.effect, ["applied", "unchanged"] as const), configVersionAfter: version(d.configVersionAfter), destinationRevisionAfter: version(d.destinationRevisionAfter), deliveryId, generationAfter, keyId, overlapUntil, recordedAt: timestamp(d.recordedAt), expiresAt: timestamp(d.expiresAt) };
 };
 export const parseWebhookSecret = (value: unknown, endpointId: string) => {
   const d = fields(value, ["endpointId", "configVersion", "keyId", "scheme", "secret"]);
@@ -142,6 +142,7 @@ export const parseWebhookMutation = (value: unknown, owner: WebhookOwner, kind: 
   if (kind === "endpoint") return { operation, endpoint: parseWebhookEndpoint(d.endpoint, owner, operation.endpointId) };
   if (kind === "delivery") return { operation, delivery: parseWebhookDelivery(d.delivery, owner, operation.endpointId, operation.deliveryId ?? undefined) };
   const s = fields(d.signing, ["activeKeyId", "overlapUntil"]);
-  const activeKeyId = id(s.activeKeyId); if (operation.keyId !== activeKeyId) return malformed();
-  return { operation, signing: { activeKeyId, overlapUntil: nullableTimestamp(s.overlapUntil) } };
+  const activeKeyId = id(s.activeKeyId), overlapUntil = nullableTimestamp(s.overlapUntil);
+  if (operation.keyId !== activeKeyId || operation.overlapUntil !== overlapUntil) return malformed();
+  return { operation, signing: { activeKeyId, overlapUntil } };
 };

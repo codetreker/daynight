@@ -10,7 +10,7 @@ Webhook owners need to change destinations and signing credentials without expos
 
 The management module uses an owner-scoped operation fence and stores a receipt in the same transaction as the configuration effect. A subsequent authorized snapshot supplies the current projection after the write connection is released. Receipts bind normalized intent separately from the received body digest. PostgreSQL stores canonical destination JSON and recoverable 32-byte signing secrets directly as plaintext bytes. The [plaintext storage decision](../simplification/2026-11-08-webhook-plaintext-storage.md) replaces the initial authenticated-envelope storage while preserving the management and receipt boundaries. The routes are independently mountable; application registration and event delivery remain separate responsibilities. Versioned typed policies set time and retention rules without maintaining storage quotas.
 
-[The management design](../../../../docs/design/webhook-management.md) describes the boundaries.
+[The management design](../../../../docs/design/webhook-management.md) describes the boundaries. The [receipt result and lifetime decision](../bug-fix/2026-11-08-webhook-receipt-results.md) preserves original rotation deadlines and makes validity independent of physical cleanup.
 
 ## Alternatives
 
