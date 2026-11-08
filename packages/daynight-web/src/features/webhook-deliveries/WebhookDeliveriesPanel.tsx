@@ -27,7 +27,7 @@ export const WebhookDeliveriesPanel = ({ owner, endpoint, admission, active, vis
 }) => {
   const formId = useId();
   const currentEndpoint = "lifecycle" in endpoint && endpoint.lifecycle === "active" ? endpoint : null;
-  const m = useWebhookDeliveryMessages(), scope = `${owner.kind}:${owner.id}:${endpoint.id}:${authorizationKey}`;
+  const m = useWebhookDeliveryMessages(), scope = `${window.location.origin}:${admission.userId}:${owner.kind}:${owner.id}:${endpoint.id}:${authorizationKey}`;
   const filterScope = `${owner.kind}:${owner.id}:${endpoint.id}`;
   const [draft, setDraft] = useScopedState(filterScope, initialFilters), [query, setQuery] = useScopedState<WebhookDeliveryQuery>(filterScope, { limit: 50 }), [filtersOpen, setFiltersOpen] = useScopedState(filterScope, false), [filterError, setFilterError] = useScopedState(filterScope, false);
   const [selection, setSelection] = useState<{ readonly scope: string; readonly id: string; readonly opener: HTMLElement | null } | null>(null), [detailState, setDetailState] = useState<{ readonly scope: string; readonly value: WebhookDelivery | null; readonly error: unknown; readonly refreshing: boolean }>({ scope, value: null, error: null, refreshing: false });

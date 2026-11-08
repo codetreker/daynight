@@ -24,10 +24,10 @@ const failure = () => response({ error: { code: "not_found", message: "History u
 const page = (items: readonly unknown[]) => ({ items, nextCursor: null, historyMayBeIncomplete: true, retention: { payloadRetentionSeconds: 604800, metadataRetentionSeconds: 2592000 } });
 const barrier = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 
-const mount = () => {
+const mount = ({ configuration = "normal", holdConfiguration = false }: { readonly configuration?: "normal" | "missing" | "failed"; readonly holdConfiguration?: boolean } = {}) => {
   mockSidebarMediaQuery();
   const lifetime = new AbortController(), admission = { userId, signal: lifetime.signal, ready: async (signal: AbortSignal) => signal.throwIfAborted(), isInvalidated: false, principalMismatch: vi.fn() } as unknown as TaskCacheScope;
-  const state = { limited: false, missing: false, holdContext: false, holdDigest: false }, context = barrier<Response>(), heldDetail = barrier<Response>(), heldDigest = barrier<ArrayBuffer>();
+  const state = { limited: false, missing: false, holdContext: false, holdDigest: false, configuration, holdConfiguration, ownerDenied: false }, configurationHold = barrier<Response>(), context = barrier<Response>(), heldDetail = barrier<Response>(), heldDigest = barrier<ArrayBuffer>();
   let digestBytes: Uint8Array<ArrayBuffer> | null = null;
   vi.stubGlobal("crypto", { randomUUID, subtle: { digest: (algorithm: string, bytes: Uint8Array<ArrayBuffer>): Promise<ArrayBuffer> => { if (state.holdDigest) { digestBytes = bytes.slice(); return heldDigest.promise; } return webcrypto.subtle.digest(algorithm, bytes); } } });
   const writes: { readonly path: string; readonly body: Record<string, unknown> }[] = [];
@@ -42,11 +42,13 @@ const mount = () => {
       currentDelivery = { ...delivery, generation: "2", manualOperationCount: 1, state: "pending", nextAttemptAt: new Date().toISOString() };
       return Promise.resolve(response({ operation, delivery: currentDelivery }, 202));
     }
+    if (state.ownerDenied) return Promise.resolve(response({ error: { code: "forbidden", message: "Owner access denied.", requestId: "owner-denial" } }, 403));
     if (state.holdContext && ["/api/v1/teams", base, `${base}/${endpointId}`].includes(path)) return context.promise;
-    if (path === "/api/v1/teams") return Promise.resolve(response({ items: [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: happened, updatedAt: happened, membership: { teamId, userId, role: "admin", version: 1, createdAt: happened, updatedAt: happened } }], nextCursor: null }));
+    if (state.holdConfiguration && path === `${base}/${endpointId}`) return configurationHold.promise;
+    if (path === "/api/v1/teams") return Promise.resolve(response({ items: [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: happened, updatedAt: happened, membership: { teamId, userId, role: state.limited ? "member" : "admin", version: state.limited ? 2 : 1, createdAt: happened, updatedAt: happened } }], nextCursor: null }));
     if (path === "/api/v1/projects") return Promise.resolve(response({ items: [], nextCursor: null }));
-    if (path === base) return Promise.resolve(response({ items: [{ id: endpointId, owner, name: endpoint.name, enabled: true, configVersion: "1", destination: endpoint.destination, projectCount: 0, eventTypeCount: 0, lastAttemptAt: happened, lastResult: null }], nextCursor: null }));
-    if (path === `${base}/${endpointId}`) return Promise.resolve(response(endpoint));
+    if (path === base) return Promise.resolve(response({ items: state.configuration === "missing" ? [] : [{ id: endpointId, owner, name: endpoint.name, enabled: true, configVersion: "1", destination: state.limited ? { ...endpoint.destination, url: null, displayUrl: "https://receiver.example/…" } : endpoint.destination, projectCount: 0, eventTypeCount: 0, lastAttemptAt: happened, lastResult: null }], nextCursor: null }));
+    if (path === `${base}/${endpointId}`) return Promise.resolve(state.configuration === "missing" ? failure() : state.configuration === "failed" ? response({ error: { code: "configuration_unavailable", message: "Configuration read failed.", requestId: "config-failure" } }, 500) : response(state.limited ? { ...endpoint, destination: { ...endpoint.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } } : endpoint));
     if (path.endsWith("/attempts")) return Promise.resolve(state.missing ? failure() : response(page([])));
     if (path.endsWith("/payload")) { const isNext = path.includes(nextDelivery.id); return Promise.resolve(response({ owner, endpointId, deliveryId: isNext ? nextDelivery.id : deliveryId, eventId: isNext ? nextDelivery.eventId : eventId, mediaType: "application/cloudevents+json", encoding: "base64", body: raw.toString("base64"), bytes: raw.length, sha256: createHash("sha256").update(raw).digest("hex") })); }
     if (path.endsWith("/deliveries")) return Promise.resolve(response(page(state.missing ? [] : [state.limited ? { ...currentDelivery, target: { ...currentDelivery.target, url: null, displayUrl: "https://receiver.example/…" } } : currentDelivery, nextDelivery])));
@@ -59,7 +61,7 @@ const mount = () => {
   act(() => navigate(webhookUrl(route)));
   const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), current = parseAuthRoute(location.pathname, location.search); return current.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active route={current} catalog={catalog}/> : null; };
   const rendered = renderWithLocale(<View/>, { locale: "en" });
-  return { ...rendered, state, writes, fetch, digestBytes: () => digestBytes, releaseDigest: async () => { state.holdDigest = false; heldDigest.resolve(await webcrypto.subtle.digest("SHA-256", digestBytes!)); } };
+  return { ...rendered, state, writes, fetch, digestBytes: () => digestBytes, releaseConfigurationFailure: () => { state.holdConfiguration = false; state.configuration = "failed"; configurationHold.resolve(response({ error: { code: "configuration_unavailable", message: "Configuration read failed.", requestId: "config-failure" } }, 500)); }, releaseDigest: async () => { state.holdDigest = false; heldDigest.resolve(await webcrypto.subtle.digest("SHA-256", digestBytes!)); } };
 };
 
 
@@ -70,6 +72,26 @@ describe("webhook delivery admission in the complete page", () => {
     view.state.limited = true; view.state.holdContext = true; fireEvent.focus(window);
     await waitFor(() => expect(document.body).not.toHaveTextContent("private=hidden"));
     expect(screen.getByText("Member · Read only")).toBeVisible(); expect(screen.getByRole("dialog")).toBe(dialog); expect(within(dialog).getByLabelText("Event payload")).toBe(code); expect(within(dialog).getByText("Retained history")).toBeVisible(); expect(view.writes).toHaveLength(0);
+  });
+  it.each(["missing", "checking"] as const)("keeps %s history, payload, focus and reads through a configuration500", async initial => {
+    const view = mount(initial === "missing" ? { configuration: "missing" } : { holdConfiguration: true });
+    const dialog = await screen.findByRole("dialog"); await within(dialog).findByText("Retained history"); fireEvent.click(within(dialog).getByRole("button", { name: "View payload" }));
+    const code = await within(dialog).findByLabelText("Event payload"); code.focus(); const range = document.createRange(); range.selectNodeContents(code); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+    if (initial === "checking") view.releaseConfigurationFailure(); else { view.state.configuration = "failed"; fireEvent.focus(window); }
+    await screen.findByText("configuration_unavailable", { exact: false });
+    expect(screen.getByRole("dialog")).toBe(dialog); expect(within(dialog).getByLabelText("Event payload")).toBe(code); expect(document.activeElement).toBe(code); expect(selection.toString()).toBe("retained payload"); expect(within(dialog).getByRole("button", { name: /^Redeliver$/ })).toBeDisabled();
+    if (initial === "missing") expect(screen.getByText("The endpoint configuration is unavailable. Retained history remains available under its current access policy.")).toBeVisible();
+    const reads = view.fetch.mock.calls.filter(([url]) => url.endsWith(`/deliveries/${deliveryId}`)).length; fireEvent.focus(window); await waitFor(() => expect(view.fetch.mock.calls.filter(([url]) => url.endsWith(`/deliveries/${deliveryId}`)).length).toBeGreaterThan(reads)); expect(within(dialog).getByLabelText("Event payload")).toBe(code); expect(view.writes).toHaveLength(0);
+    view.state.configuration = "normal"; fireEvent.focus(window); await screen.findByRole("heading", { name: "Shared endpoint" });
+    expect(screen.queryByText("The endpoint configuration is unavailable. Retained history remains available under its current access policy.")).toBeNull(); expect(within(dialog).getByLabelText("Event payload")).toBe(code); expect(within(dialog).getByRole("button", { name: /^Redeliver$/ })).toBeEnabled();
+    view.state.missing = true; fireEvent.focus(window); await within(dialog).findByText("This history has expired; its absence does not mean the event never occurred."); expect(within(dialog).queryByLabelText("Event payload")).toBeNull();
+  });
+  it("keeps the readable record after management withdrawal and configuration500, then clears it on an authoritative owner denial", async () => {
+    const view = mount(), dialog = await screen.findByRole("dialog"); await within(dialog).findByText("Retained history"); fireEvent.click(within(dialog).getByRole("button", { name: "View payload" })); const code = await within(dialog).findByLabelText("Event payload"); code.focus();
+    view.state.limited = true; view.state.holdContext = true; fireEvent.focus(window); await screen.findByText("Member · Read only"); expect(within(dialog).getByLabelText("Event payload")).toBe(code);
+    view.state.holdContext = false; view.state.configuration = "failed"; fireEvent.focus(window); await screen.findByText("configuration_unavailable", { exact: false });
+    expect(screen.getByRole("dialog")).toBe(dialog); expect(within(dialog).getByLabelText("Event payload")).toBe(code); expect(document.activeElement).toBe(code); expect(document.body).not.toHaveTextContent("private=hidden"); expect(view.writes).toHaveLength(0);
+    view.state.ownerDenied = true; fireEvent.focus(window); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); expect(document.body).not.toHaveTextContent("retained payload"); expect(document.body).not.toHaveTextContent("Retained history");
   });
   it("continues admission against the original Delivery instead of borrowing the newly selected generation", async () => {
     const view = mount(), initial = await screen.findByRole("dialog"); await within(initial).findByText("Retained history");

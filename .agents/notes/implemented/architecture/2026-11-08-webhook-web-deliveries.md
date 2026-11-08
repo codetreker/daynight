@@ -25,8 +25,15 @@ uses an explicit ID-only context after the configuration GET returns a validated
 without current configuration or redelivery admission. A separate ID-only
 checking-configuration context preserves authorized history while a withdrawn
 configuration projection is being checked; it does not claim the endpoint is
-missing or invent an Endpoint DTO. Native dialogs preserve
-the workspace shell, language, focus and scroll behavior.
+missing or invent an Endpoint DTO. History lifetime binds service, principal,
+owner, endpoint and readable membership identity independently of the current
+configuration branch. A later non-authoritative configuration error preserves
+the established ID-only context, pending Delivery and payload reads, and open
+interaction state, while displaying the configuration error separately. The
+last authoritative missing or configuration-checking fact remains until a new
+authoritative observation; a configuration 500 neither restores withdrawn
+manager state nor revokes readable history. Native dialogs preserve the workspace
+shell, language, focus and scroll behavior.
 
 A shared observation registry binds every list and detail read to its start
 observation. Each Delivery retains its latest generation and disclosure watermark.
@@ -112,7 +119,11 @@ outcomes while sharing identity and operation recovery. The observation registry
 adds scoped in-memory state and monotonic disclosure watermarks; it grants no
 server access and does not make pages a frozen cross-request snapshot. Local
 payload expiry and authoritative history withdrawal do not prove physical database GC.
-Receiver 2xx and a redelivery 202 establish different facts, neither of which proves
+Configuration failures remain distinct from history authorization or absence;
+actual owner loss, a validated history 404, known payload expiry and navigation
+still withdraw
+the corresponding state. Receiver 2xx and a redelivery 202 establish different
+facts, neither of which proves
 external business completion. Private resource projections, bodies, credentials and signing secrets
 remain outside operation persistence and URLs. Server retention and finite
 receipt availability still limit how much history can be inspected or confirmed.

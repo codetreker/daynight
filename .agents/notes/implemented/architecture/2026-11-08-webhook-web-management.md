@@ -43,6 +43,9 @@ identity are separate: a restrictive Delivery destination can withdraw old
 endpoint, secret and administrator projections while continuous Team membership
 retains its Project and history read access. ID-only configuration-checking and
 missing-configuration history contexts do not fabricate configuration DTOs.
+Their established history lifetime uses readable identity independently of
+configuration reads: a later configuration 500 displays separately while
+preserving authorized history and the last authoritative context.
 Original receipts remain independent. These reads preserve mounted
 nodes, drafts, focus, selected tabs and loaded pagination through unchanged
 background checks. Confirmed identity or disclosure changes

@@ -49,7 +49,10 @@ original delivery inspection. Explicit Delivery links retain their endpoint and
 owner. Deleted configurations expose retained history as a read-only view. If
 the endpoint configuration is missing but history remains readable, the explicit
 history route uses an ID-only context without invented configuration fields or
-redelivery admission.
+redelivery admission. Established history contexts retain their independently
+authorized reads and interaction through later configuration errors; those errors
+are shown separately and cannot restore withdrawn manager state or erase a
+previous authoritative missing-configuration observation.
 
 Delivery history supports server filtering and pagination, original targets,
 attempts, historical acknowledgements, current failures and late observations.
