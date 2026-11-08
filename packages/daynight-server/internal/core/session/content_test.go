@@ -20,15 +20,18 @@ func syncContent(t *testing.T, f fixture, v sp.Snapshot) {
 	t.Helper()
 	native := "native"
 	state := sp.State{NativeSessionID: &native, InitialInputState: "confirmed", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true, Respond: true}}
-	if _, err := f.s.Handle(context.Background(), sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+	if _, err := f.s.Handle(f.ControllerPhase(context.Background(), map[string]int{"UnreconciledSessionOperationCount": 1, "TouchSession": 1, "SaveSession": 1}), sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 		t.Fatal(err)
 	}
+	selectContentHandle(t, f)
 }
 func nextContent(t *testing.T, f fixture, v sp.Snapshot) map[string]any {
 	t.Helper()
 	until := time.Now().Add(3 * time.Second)
 	for time.Now().Before(until) {
-		offers, err := f.s.Poll(context.Background(), v.ControllerFence)
+		poll := f.ControllerPhase(context.Background(), map[string]int{"AcceptedSessionOperations": 1})
+		offers, err := f.s.Poll(poll, v.ControllerFence)
+		f.dao.FinishContext(poll)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -44,7 +47,7 @@ func nextContent(t *testing.T, f fixture, v sp.Snapshot) map[string]any {
 }
 func replyContent(t *testing.T, f fixture, v sp.Snapshot, request map[string]any, result *sp.ContentResult, errValue *sp.OperationError) {
 	t.Helper()
-	n, err := f.s.SourceSeq(context.Background(), v.ControllerFence)
+	n, err := f.s.SourceSeq(f.ControllerPhase(context.Background(), nil), v.ControllerFence)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,8 +56,11 @@ func replyContent(t *testing.T, f fixture, v sp.Snapshot, request map[string]any
 	if err != nil {
 		t.Fatal("wire response", err)
 	}
-	if _, err = f.s.Handle(context.Background(), decoded); err != nil {
+	if _, err = f.s.Handle(f.ControllerPhase(context.Background(), map[string]int{"TouchSession": 1, "SaveSession": 1}), decoded); err != nil {
 		t.Fatal(err)
+	}
+	if f.writes.Session == nil || f.writes.Touched == nil {
+		t.Fatal("content response did not propose its ledger and heartbeat writes")
 	}
 }
 func pageResult(epoch string, entries ...sp.TimelineEntry) *sp.ContentResult {
@@ -78,6 +84,7 @@ func readPage(ctx context.Context, f fixture, v sp.Snapshot, direction, cursor s
 	out := make(chan pageRead, 1)
 	go func() {
 		page, err := f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, direction, cursor, limit)
+		f.dao.FinishContext(ctx)
 		out <- pageRead{page, err}
 	}()
 	return out
@@ -87,7 +94,7 @@ func TestOnlineContentPageAndSourceBoundary(t *testing.T) {
 	syncContent(t, f, v)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	read := readPage(ctx, f, v, "tail", "", 2)
+	read := readPage(contentReadPhase(f, ctx, 2), f, v, "tail", "", 2)
 	request := nextContent(t, f, v)
 	if request["limit"] != 2 || request["cursor"] != nil || request["direction"] != "tail" {
 		t.Fatalf("request %#v", request)
@@ -102,13 +109,10 @@ func TestOnlineContentPageAndSourceBoundary(t *testing.T) {
 	if got.err != nil || len(got.page["items"].([]sp.TimelineEntry)) != 2 || got.page["lastEventSeq"] == nil || !got.page["hasMoreBefore"].(bool) {
 		t.Fatalf("page %#v %v", got.page, got.err)
 	}
-	for _, table := range []string{"session_timeline", "session_events", "session_resources"} {
-		var rows int
-		if err := f.db.Pool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE session_id=$1", v.SessionID).Scan(&rows); err != nil || rows != 0 {
-			t.Fatalf("new local session persisted content in %s: %d %v", table, rows, err)
-		}
+	if bytes.Contains(encode(f.data.Session.Snapshot), []byte("local-only body")) {
+		t.Fatal("online content entered the durable Session snapshot")
 	}
-	read = readPage(ctx, f, v, "before", before, 2)
+	read = readPage(contentReadPhase(f, ctx, 2), f, v, "before", before, 2)
 	request = nextContent(t, f, v)
 	if request["cursor"] != before {
 		t.Fatal("native cursor changed")
@@ -117,10 +121,12 @@ func TestOnlineContentPageAndSourceBoundary(t *testing.T) {
 	if got = <-read; got.err != nil {
 		t.Fatal(got.err)
 	}
-	if err := f.s.Disconnect(ctx, v.ControllerFence); err != nil {
+	if err := f.s.Disconnect(f.ControllerPhase(ctx, map[string]int{"DisconnectSession": 1, "SaveSession": 1}), v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, "tail", "", 2); err == nil {
+	f.SelectDisconnectWrite(t)
+	f.SelectSessionWrite(t)
+	if _, err := f.s.Timeline(contentReadPhase(f, ctx, 1), f.p, f.project, f.task, v.SessionID, "tail", "", 2); err == nil {
 		t.Fatal("offline history returned")
 	}
 }
@@ -166,7 +172,9 @@ func TestLocalResourceChunksVerifiedWithoutServerPersistence(t *testing.T) {
 	}
 	done := make(chan response, 1)
 	go func() {
-		data, _, err := f.s.Resource(ctx, f.p, f.project, f.task, v.SessionID, descriptor.ResourceID)
+		phase := contentReadPhase(f, ctx, 4)
+		data, _, err := f.s.Resource(phase, f.p, f.project, f.task, v.SessionID, descriptor.ResourceID)
+		f.dao.FinishContext(phase)
 		done <- response{data, err}
 	}()
 	for offset := 0; offset < len(body); {
@@ -185,12 +193,14 @@ func TestLocalResourceChunksVerifiedWithoutServerPersistence(t *testing.T) {
 	if _, err := f.s.PutResource(ctx, "any", v.ConnectionEpoch, descriptor.ResourceID, body); err == nil {
 		t.Fatal("former upload persisted bytes")
 	}
-	other := New(f.db)
-	if _, _, err := other.Resource(ctx, f.p, f.project, f.task, v.SessionID, descriptor.ResourceID); err == nil {
+	other := New(f.writer)
+	if _, _, err := other.Resource(contentReadPhase(f, ctx, 1), f.p, f.project, f.task, v.SessionID, descriptor.ResourceID); err == nil {
 		t.Fatal("new server instance exposed local bytes without controller")
 	}
 	go func() {
-		data, _, err := f.s.Resource(ctx, f.p, f.project, f.task, v.SessionID, descriptor.ResourceID)
+		phase := contentReadPhase(f, ctx, 2)
+		data, _, err := f.s.Resource(phase, f.p, f.project, f.task, v.SessionID, descriptor.ResourceID)
+		f.dao.FinishContext(phase)
 		done <- response{data, err}
 	}()
 	request := nextContent(t, f, v)
@@ -203,7 +213,7 @@ func TestContentCancellationLimitsAndErrors(t *testing.T) {
 	f, v := connectFixture(t)
 	syncContent(t, f, v)
 	ctx, cancel := context.WithCancel(context.Background())
-	done := readPage(ctx, f, v, "tail", "", 2)
+	done := readPage(contentReadPhase(f, ctx, 1), f, v, "tail", "", 2)
 	request := nextContent(t, f, v)
 	cancel()
 	if got := <-done; !errors.Is(got.err, context.Canceled) {
@@ -218,7 +228,7 @@ func TestContentCancellationLimitsAndErrors(t *testing.T) {
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	done = readPage(ctx, f, v, "tail", "", 2)
+	done = readPage(contentReadPhase(f, ctx, 2), f, v, "tail", "", 2)
 	request = nextContent(t, f, v)
 	replyContent(t, f, v, request, nil, &sp.OperationError{Code: "not_found", Message: "local history unavailable"})
 	if got := <-done; got.err == nil {
@@ -241,22 +251,20 @@ func TestContentMembershipIsRecheckedAfterResponse(t *testing.T) {
 	defer cancel()
 	// A second reader is independent from the controller's grant parent, so
 	// revoking the reader does not revoke the native connection itself.
-	viewer := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
-	hash := sha256.Sum256([]byte("reader"))
-	for _, q := range []struct {
-		sql  string
-		args []any
-	}{{`INSERT INTO users(id,uniauth_id,created_at,updated_at)VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{viewer.UserID}}, {`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at)VALUES($1,$2,$3,'reader',now(),now()+interval '1 day')`, []any{viewer.CredentialID, viewer.UserID, hash[:]}}, {`INSERT INTO project_grants(project_id,user_id,role)VALUES($1,$2,'admin')`, []any{f.project, viewer.UserID}}} {
-		if _, err := f.db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
-			t.Fatal(err)
-		}
-	}
+	viewer := addMember(t, f, "admin")
 	reader := f
 	reader.p = viewer
-	done := readPage(ctx, reader, v, "tail", "", 2)
+	done := readPage(f.BrowserPhase(ctx, map[string]int{"LockTask": 2, "LockCredential": 2, "ProjectAccess": 2, "SessionBotID": 1, "LockSession": 1}), reader, v, "tail", "", 2)
 	request := nextContent(t, f, v)
-	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, viewer.UserID); err != nil {
-		t.Fatal(err)
+	access := f.dao.ProjectAccessFn
+	f.dao.ProjectAccessFn = func(ctx context.Context, userID, projectID string) (model.ProjectAccess, error) {
+		if userID == viewer.UserID {
+			if projectID != f.project {
+				t.Fatalf("reader recheck targeted project %s", projectID)
+			}
+			return model.ProjectAccess{}, model.ErrNotFound
+		}
+		return access(ctx, userID, projectID)
 	}
 	replyContent(t, f, v, request, pageResult(request["historyEpoch"].(string), localEntry(t, "1")), nil)
 	if got := <-done; got.err == nil {
@@ -269,18 +277,19 @@ func TestContentOverloadIsARequestFailureWithoutAPageBoundary(t *testing.T) {
 	syncContent(t, f, v)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	read := readPage(ctx, f, v, "tail", "", 2)
+	read := readPage(contentReadPhase(f, ctx, 2), f, v, "tail", "", 2)
 	request := nextContent(t, f, v)
-	_, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "content_response", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, RequestID: request["requestId"].(string), SourceThrough: "999", ContentError: &sp.OperationError{Code: "rate_limited", Message: "Local content request capacity is unavailable."}})
+	_, err := f.s.Handle(f.ControllerPhase(ctx, map[string]int{"TouchSession": 1, "SaveSession": 1}), sp.ControllerMessage{Type: "content_response", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, RequestID: request["requestId"].(string), SourceThrough: "999", ContentError: &sp.OperationError{Code: "rate_limited", Message: "Local content request capacity is unavailable."}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := <-read
+	selectContentHandle(t, f)
 	var faultValue *model.Fault
 	if !errors.As(got.err, &faultValue) || faultValue.Code != "rate_limited" {
 		t.Fatalf("unexpected request result: %v", got.err)
 	}
-	if _, err := f.s.Poll(ctx, v.ControllerFence); err != nil {
+	if _, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1}), v.ControllerFence); err != nil {
 		t.Fatalf("request overload disconnected the controller: %v", err)
 	}
 }

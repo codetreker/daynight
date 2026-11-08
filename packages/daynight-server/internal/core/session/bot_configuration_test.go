@@ -8,13 +8,9 @@ import (
 	"reflect"
 	"testing"
 
-	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func botRegistrationValidationFixture() (*Execution, model.Principal, model.Bot, BotRegistration) {
@@ -77,64 +73,47 @@ func TestBotRegistrationRejectsMalformedConfigurationBeforeBinding(t *testing.T)
 
 func assertBotRegistrationUnbound(t *testing.T, f fixture, bot model.Bot) {
 	t.Helper()
-	ctx := t.Context()
-	var count int
-	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_sessions WHERE bot_id=$1`, bot.ID).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("invalid configuration created a Session: %d %v", count, err)
-	}
-	current, err := botservice.New(f.db).Get(ctx, f.p, bot.ID)
-	if err != nil || current.Version != 1 || current.RoleConfiguration != nil || current.SessionID != nil {
-		t.Fatalf("invalid configuration changed frozen binding: %+v %v", current, err)
+	d := botDAO(f)
+	if d.registration != nil || d.bindCalls != 0 || d.value.Version != bot.Version || d.value.RoleConfiguration != nil || d.value.SessionID != nil {
+		t.Fatal("refused registration proposed a binding")
 	}
 }
 
 func TestBotRegistrationPreservesValidModelAndArguments(t *testing.T) {
-	f, _, input := botFixture(t)
+	f, bot, input := botFixture(t)
 	ctx := context.Background()
 	model := "native-model"
 	input.Configuration.Model = &model
 	input.Configuration.Args = []string{"--permission-mode", "default", ""}
-	bot, err := botservice.New(f.db).Create(ctx, f.p, botcore.CreateBot{ID: uuid.NewString(), Name: "Configured assistant", ResolvedConfiguration: input.Configuration})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, input)
+	bot.ResolvedConfiguration = input.Configuration
+	botDAO(f).value = bot
+	result, err := f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 2, "InsertBotSession": 1, "Bot": 1, "BindBotSession": 1}), f.p, bot.WorkerID, bot.ID, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Bot.SessionID == nil || *result.Bot.SessionID != result.Session.SessionID || !reflect.DeepEqual(result.Bot.ResolvedConfiguration, input.Configuration) {
 		t.Fatalf("registration discarded frozen model or arguments: %+v", result)
 	}
-	retry, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, input)
+	selectBotBinding(t, f, result)
+	retry, err := f.s.RegisterBot(botPhase(t, f, ctx, map[string]int{"LockCredential": 3, "LockSession": 1, "Bot": 1}), f.p, bot.WorkerID, bot.ID, input)
 	if err != nil || retry.Session.SessionID != result.Session.SessionID {
 		t.Fatalf("configured registration did not reconcile: %+v %v", retry, err)
 	}
 }
 
-func TestBotRegistrationPreservesDatabaseFailureInsteadOfReportingMissingBot(t *testing.T) {
+func TestBotRegistrationPreservesDAOFailureInsteadOfReportingMissingBot(t *testing.T) {
 	f, bot, input := botFixture(t)
-	ctx := context.Background()
-	// The fixture owns its isolated schema. Temporarily remove the expected
-	// relation to exercise the lifecycle's storage-error path through PostgreSQL.
-	if _, err := f.db.Pool.Exec(ctx, `ALTER TABLE bots RENAME TO unavailable_bots`); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if _, err := f.db.Pool.Exec(context.Background(), `ALTER TABLE IF EXISTS unavailable_bots RENAME TO bots`); err != nil {
-			t.Error(err)
-		}
-	})
-	_, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, input)
-	var pgError *pgconn.PgError
+	failure := errors.New("Bot DAO unavailable")
+	botDAO(f).BotFn = func(context.Context, string) (model.Bot, error) { return model.Bot{}, failure }
+	_, err := f.s.RegisterBot(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 1, "Bot": 1}), f.p, bot.WorkerID, bot.ID, input)
 	var businessError *model.Fault
-	if !errors.As(err, &pgError) || pgError.Code != "42P01" || errors.As(err, &businessError) {
-		t.Fatalf("storage outage was converted to a business refusal: %v", err)
+	if !errors.Is(err, failure) || errors.As(err, &businessError) {
+		t.Fatalf("DAO failure became a business refusal: %v", err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `ALTER TABLE unavailable_bots RENAME TO bots`); err != nil {
-		t.Fatal(err)
-	}
-	result, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, input)
+	assertBotRegistrationUnbound(t, f, bot)
+	botDAO(f).BotFn = func(context.Context, string) (model.Bot, error) { return bot, nil }
+	result, err := f.s.RegisterBot(botPhase(t, f, t.Context(), map[string]int{"LockCredential": 2, "InsertBotSession": 1, "Bot": 1, "BindBotSession": 1}), f.p, bot.WorkerID, bot.ID, input)
 	if err != nil || result.Bot.Version != 2 || result.Bot.SessionID == nil {
-		t.Fatalf("storage failure left a partial registration: %+v %v", result, err)
+		t.Fatalf("failed registration prevented valid retry: %+v %v", result, err)
 	}
 }
