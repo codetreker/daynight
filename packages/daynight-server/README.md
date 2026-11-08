@@ -654,7 +654,16 @@ of the `core/store` DAO interfaces when a rule needs query results or storage
 errors. Check arguments, expected calls, results and error chains; unconfigured
 access must fail immediately. Pure functions need no storage mock. Keep these
 rule selections runnable without `DAYNIGHT_TEST_DATABASE_URL`, rather than
-preparing PostgreSQL merely to obtain fixed model data.
+preparing PostgreSQL merely to obtain fixed model data. Project settings and
+encoded-budget validation, Attachment input validation and invalid login scopes
+use these input-only fixtures; representative persisted refusals and accepted
+SDK paths retain real integration coverage.
+
+The Webhook source rollback matrix owns one isolated schema per injected failure
+phase and creates independent principals, teams, projects and subscriptions for
+each source operation. Database-state corruption stays inside its owning phase.
+The [fixture construction decision](../../.agents/notes/implemented/testing/2026-11-08-go-fixture-construction.md)
+records isolation and projection constraints.
 
 PostgreSQL integration tests own real SQL, constraints, locking, commit and
 rollback, persisted readback and authority or version changes across operations.

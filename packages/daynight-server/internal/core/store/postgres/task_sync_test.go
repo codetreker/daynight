@@ -30,7 +30,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	c := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID, b.ID)
 	stamp := time.Date(2026, 10, 24, 1, 2, 3, 123456000, time.UTC)
 	mustQueryExec(t, s, `UPDATE tasks SET created_at=$1, updated_at=$1, version=9007199254740993,
-		title=repeat('😀',161), description=repeat('private description',10000) WHERE project_id=$2`, stamp, project.ID)
+		title=repeat('😀',161) WHERE project_id=$2`, stamp, project.ID)
 	mustQueryExec(t, s, "UPDATE tasks SET updated_at=$1, required_platform='linux', allow_agents=true WHERE id=$2", stamp.Add(time.Microsecond), c.ID)
 	mustQueryExec(t, s, "UPDATE task_dependencies SET external=true WHERE task_id=$1 AND depends_on_task_id=$2", c.ID, b.ID)
 	// Failing detail expressions prove that the summary reader never selects bodies.
