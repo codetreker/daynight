@@ -35,8 +35,11 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
   let failure: unknown;
   const records: RequestRecord[] = [];
   const controls: { method: string; path: string; status: number; body: Buffer; response: Buffer }[] = [];
-  const calls: { args: string[]; alias: boolean; closeOutput: boolean; injectedFiles: boolean; status: number | null; stdout: Buffer; stderr: Buffer }[] = [];
+  const calls: { args: string[]; alias: boolean; cwd: string; closeOutput: boolean; injectedFiles: boolean; status: number | null; stdout: Buffer; stderr: Buffer }[] = [];
   const databaseChecks: { deliveryId: string; days: number; retainedBody: boolean; payloadExpired: boolean; metadataExpired: boolean }[] = [];
+  const createDatabaseChecks: unknown[] = [];
+  const boundaryInputs: unknown[] = [];
+  const directoryChecks: unknown[] = [];
   const sensitive = [admin, member, "canary-private"];
   const terminals: { answer: string; exitCode: number; prompt: string; output: string }[] = [];
   let loseNextWriteResponse: { method: string; path: string } | undefined;
@@ -156,10 +159,10 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
   });
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) if (/^(?:GIT_|GH_|GITHUB_|COPILOT_|NODE_OPTIONS$|DAYNIGHT_|DN_)/i.test(key)) delete env[key];
-  Object.assign(env, { HOME: home, USERPROFILE: home, DN_CONFIG_DIR: config, XDG_CONFIG_HOME: path.join(fixture, "xdg"), XDG_CACHE_HOME: path.join(fixture, "cache"), TMPDIR: temporary, TMP: temporary, TEMP: temporary, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(fixture, "gitconfig"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
-  const invoke = async (args: string[], alias = false, input?: string | Uint8Array, closeOutput = false, preload?: string) => {
+  Object.assign(env, { HOME: home, USERPROFILE: home, DN_CONFIG_DIR: config, XDG_CONFIG_HOME: path.join(fixture, "xdg"), XDG_CACHE_HOME: path.join(fixture, "cache"), TMPDIR: temporary, TMP: temporary, TEMP: temporary, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(fixture, "gitconfig"), GIT_CEILING_DIRECTORIES: path.dirname(receipt.root), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
+  const invoke = async (args: string[], alias = false, input?: string | Uint8Array, closeOutput = false, preload?: string, cwd = fixture) => {
     const launcher = alias ? path.join(path.dirname(receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn") : receipt.launcherPath;
-    const child = crossSpawn(launcher, args, { cwd: fixture, env: preload === undefined ? env : { ...env, NODE_OPTIONS: `--require=${JSON.stringify(preload)}` }, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
+    const child = crossSpawn(launcher, args, { cwd, env: preload === undefined ? env : { ...env, NODE_OPTIONS: `--require=${JSON.stringify(preload)}` }, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
     const out: Buffer[] = [], err: Buffer[] = [];
     child.stdout!.on("data", (b: Buffer) => out.push(b)); child.stderr!.on("data", (b: Buffer) => err.push(b));
     if (closeOutput) child.stdout!.destroy();
@@ -171,13 +174,13 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
       const result = await Promise.race([closed, new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), 30_000); })]);
       if (result === "timeout") { await terminateInstalledProcess(child, closed); throw new Error("Installed webhook command timed out."); }
       if (launchError !== undefined) throw launchError;
-      const observation = { args, alias, closeOutput, injectedFiles: preload !== undefined, status: result, stdout: Buffer.concat(out), stderr: Buffer.concat(err) };
+      const observation = { args, alias, cwd, closeOutput, injectedFiles: preload !== undefined, status: result, stdout: Buffer.concat(out), stderr: Buffer.concat(err) };
       calls.push(observation);
       return observation;
     } finally { if (timer !== undefined) clearTimeout(timer); }
   };
-  const call = async (args: string[], alias = false, input?: string): Promise<any> => {
-    const result = await invoke(["webhook", ...args, "--json"], alias, input);
+  const call = async (args: string[], alias = false, input?: string, cwd = fixture): Promise<any> => {
+    const result = await invoke(["webhook", ...args, "--json"], alias, input, false, undefined, cwd);
     expect(result.status, `webhook ${args.slice(0, 2).join(" ")} exited ${result.status}`).toBe(0);
     expect(result.stderr.toString()).toBe("");
     expect(result.stdout.at(-1)).toBe(10);
@@ -262,6 +265,26 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
       if (status !== 0) throw new Error("Version database probe failed.");
     } finally { if (timer !== undefined) clearTimeout(timer); }
   };
+  const checkCreateDatabase = async (endpointId: string, operationId: string, ownerKind: string, ownerId: string, subscriptionId: string, requestHash: string): Promise<void> => {
+    const sourcePath = path.join(fixture, "create-probe.go");
+    await writeFile(sourcePath, `package main
+import("context";"encoding/json";"os";"github.com/jackc/pgx/v5")
+func main(){ctx:=context.Background();cfg,e:=pgx.ParseConfig(os.Getenv("DAYNIGHT_TEST_DATABASE_URL"));if e!=nil{panic("config")};cfg.RuntimeParams["search_path"]=os.Getenv("WEBHOOK_FIXTURE_SCHEMA");db,e:=pgx.ConnectConfig(ctx,cfg);if e!=nil{panic("connect")};defer db.Close(ctx);var ownerKind,ownerID,version,effect,hash,project,subscription string;var endpoints,operations,subs,bindings,activeBindings int;e=db.QueryRow(ctx,"SELECT count(*),coalesce(max(owner_kind),''),coalesce(max(owner_id::text),''),coalesce(max(config_version)::text,'') FROM webhook_endpoints WHERE id=$1",os.Getenv("WEBHOOK_ENDPOINT_ID")).Scan(&endpoints,&ownerKind,&ownerID,&version);if e!=nil{panic("endpoint")};e=db.QueryRow(ctx,"SELECT count(*),coalesce(max(effect),''),coalesce(max(encode(request_sha256,'hex')),'') FROM webhook_operations WHERE endpoint_id=$1 AND operation_id=$2",os.Getenv("WEBHOOK_ENDPOINT_ID"),os.Getenv("WEBHOOK_OPERATION_ID")).Scan(&operations,&effect,&hash);if e!=nil{panic("operation")};e=db.QueryRow(ctx,"SELECT count(*),coalesce(max(id::text),''),coalesce(max(project_id::text),'') FROM webhook_subscriptions WHERE endpoint_id=$1 AND deleted_at IS NULL",os.Getenv("WEBHOOK_ENDPOINT_ID")).Scan(&subs,&subscription,&project);if e!=nil{panic("subscriptions")};e=db.QueryRow(ctx,"SELECT count(*) FILTER (WHERE event_type='task.created'),count(*) FROM webhook_bindings WHERE subscription_id=$1 AND deleted_at IS NULL",os.Getenv("WEBHOOK_SUBSCRIPTION_ID")).Scan(&bindings,&activeBindings);if e!=nil{panic("bindings")};json.NewEncoder(os.Stdout).Encode(map[string]any{"endpoints":endpoints,"ownerKind":ownerKind,"ownerId":ownerID,"version":version,"operations":operations,"effect":effect,"hash":hash,"subscriptions":subs,"subscriptionId":subscription,"projectId":project,"bindings":bindings,"activeBindings":activeBindings})}
+`, { mode: 0o600 });
+    const child = spawn("go", ["run", sourcePath], { cwd: originalServer, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, DAYNIGHT_TEST_DATABASE_URL: database!, WEBHOOK_FIXTURE_SCHEMA: hostInfo!.schema, WEBHOOK_ENDPOINT_ID: endpointId, WEBHOOK_OPERATION_ID: operationId, WEBHOOK_SUBSCRIPTION_ID: subscriptionId } });
+    const out: Buffer[] = []; child.stdout!.on("data", (part: Buffer) => out.push(part)); child.stderr!.resume();
+    let launchError: unknown; child.once("error", error => { launchError = error; });
+    const closed = new Promise<number | null>(resolve => child.once("close", code => { children.delete(child); resolve(code); })); children.set(child, closed);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const status = await Promise.race([closed, new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), 60_000); })]);
+      if (status === "timeout") { await terminateInstalledProcess(child, closed); throw new Error("Create database probe timed out."); }
+      if (launchError !== undefined || status !== 0) throw new Error("Create database probe failed.");
+      const result = JSON.parse(Buffer.concat(out).toString());
+      expect(result).toMatchObject({ endpoints: 1, ownerKind, ownerId, version: "1", operations: 1, effect: "applied", hash: requestHash, subscriptions: 1, subscriptionId, projectId: hostInfo!.projectId, bindings: 1, activeBindings: 1 });
+      createDatabaseChecks.push({ endpointId, operationId, ...result });
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+  };
   try {
     await Promise.all([home, config, temporary].map(dir => mkdir(dir, { recursive: true })));
     await cp(originalServer, copiedServer, { recursive: true });
@@ -323,7 +346,7 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
       expect(refused.stdout.length).toBe(0);
       expect(records.filter(record => record.path.includes("/webhook"))).toHaveLength(before);
     }
-    const opaqueEndpoint = randomUUID(), opaqueDelivery = randomUUID();
+    const opaqueEndpoint = randomUUID(), opaqueDelivery = randomUUID(), opaqueOperation = randomUUID();
     const ownerLeaves = [
       ["list"], ["show", opaqueEndpoint], ["create", "--stdin", "--confirm"],
       ["update", opaqueEndpoint, "--stdin", "--if-version", "1", "--confirm"],
@@ -333,13 +356,39 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
       ["secret", "show", opaqueEndpoint], ["secret", "rotate", opaqueEndpoint, "--mode", "immediate", "--if-version", "1", "--confirm"],
       ["delivery", "list", opaqueEndpoint], ["delivery", "show", opaqueEndpoint, opaqueDelivery], ["delivery", "payload", opaqueEndpoint, opaqueDelivery],
       ["delivery", "redeliver", opaqueEndpoint, opaqueDelivery, "--if-version", "1", "--if-generation", "1", "--confirm"],
-      ["attempt", "list", opaqueEndpoint, opaqueDelivery], ["operation", "show", randomUUID()],
+      ["attempt", "list", opaqueEndpoint, opaqueDelivery], ["operation", "show", opaqueOperation],
     ];
     for (const leaf of ownerLeaves) for (const selector of [[], ["--personal", "--team", hostInfo.teamId], ["--personal", "--personal"], ["--team", "personal"]]) {
       const before = records.length;
       const refused = await invoke(["webhook", ...leaf, ...selector], false, "[]");
       expect(refused.status, `${leaf.join(" ")} owner selector`).toBe(2);
       expect(refused.stdout.length).toBe(0);
+      expect(records.slice(before)).toHaveLength(0);
+    }
+    const invalidLeaves: string[][] = [["catalog", "--json", "--json"]];
+    for (const leaf of ownerLeaves) {
+      invalidLeaves.push([...leaf, "--personal", "--json", "--json"]);
+      invalidLeaves.push([...leaf, "--team", "bad-uuid"]);
+      if (leaf.includes("--confirm")) {
+        invalidLeaves.push([...leaf, "--personal", "--confirm"]);
+        invalidLeaves.push([...leaf, "--personal", "--operation-id", "bad-uuid", "--issued-at", new Date().toISOString()]);
+      }
+      for (const invalidId of [opaqueEndpoint, opaqueDelivery, opaqueOperation, hostInfo.projectId]) {
+        if (leaf.includes(invalidId)) invalidLeaves.push([...leaf.map(part => part === invalidId ? "bad-uuid" : part), "--personal"]);
+      }
+      for (const option of ["--if-version", "--if-generation"]) {
+        const index = leaf.indexOf(option);
+        if (index >= 0) {
+          const invalid = [...leaf]; invalid[index + 1] = "9223372036854775808";
+          invalidLeaves.push([...invalid, "--personal"]);
+          invalidLeaves.push([...leaf, "--personal", option, "1"]);
+        }
+      }
+    }
+    for (const invalid of invalidLeaves) {
+      const before = records.length;
+      const refused = await invoke(["webhook", ...invalid], false, "[]");
+      expect(refused.status, invalid.join(" ")).toBe(2); expect(refused.stdout.length).toBe(0);
       expect(records.slice(before)).toHaveLength(0);
     }
     if (process.platform !== "win32") {
@@ -379,9 +428,13 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
     const id = created.endpoint.id as string;
     expect(created.endpoint.configVersion).toBe("1");
     expect(created.endpoint.owner).toEqual({ kind: "personal", id: hostInfo.userId });
+    expect(created.operation.effect).toBe("applied"); expect(created.endpoint.subscriptions).toHaveLength(1);
+    expect(created.endpoint.subscriptions[0].projectId).toBe(hostInfo.projectId);
+    expect(created.endpoint.subscriptions[0].eventTypes).toEqual(["task.created"]);
     const write = records.slice(beforeCreate).find(r => r.method === "POST" && r.path === "/api/v1/me/webhooks")!;
     expect(write.status).toBe(201);
     expect(created.operation.requestSha256).toBe(write.sha256);
+    await checkCreateDatabase(id, created.operation.operationId, "personal", hostInfo.userId, created.endpoint.subscriptions[0].id, write.sha256);
     const preparedBytes = await readFile(prepared);
     expect(JSON.parse(preparedBytes.toString()).requestSha256).toBe(write.sha256);
     expect(preparedBytes.toString()).not.toContain(hostInfo.receiverUrl);
@@ -426,19 +479,68 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
     const deleteResume = await call(["delete", lostCreateReceipt.endpointId, "--personal", "--if-version", "2", "--confirm", "--resume-operation", lostDeletePrepared]);
     expect(deleteResume.operation.operationId).toBe(lostDeleteIdentity.operationId);
     expect(records.slice(beforeDeleteResume).filter(record => record.method === "DELETE")).toHaveLength(0);
-    const teamCreated = await call(["create", "--team", hostInfo.teamId, "--stdin", "--confirm"], true, JSON.stringify({ ...definition, subscriptions: [] }));
+    const beforeTeamCreate = records.length;
+    const teamCreated = await call(["create", "--team", hostInfo.teamId, "--stdin", "--confirm"], true, JSON.stringify(definition));
     expect(teamCreated.endpoint.owner).toEqual({ kind: "team", id: hostInfo.teamId });
+    expect(teamCreated.endpoint.configVersion).toBe("1"); expect(teamCreated.operation.effect).toBe("applied");
+    expect(teamCreated.endpoint.subscriptions).toHaveLength(1); expect(teamCreated.endpoint.subscriptions[0].projectId).toBe(hostInfo.projectId);
+    expect(teamCreated.endpoint.subscriptions[0].eventTypes).toEqual(["task.created"]);
+    const teamWrite = records.slice(beforeTeamCreate).filter(record => record.method === "POST" && record.path === `/api/v1/teams/${hostInfo!.teamId}/webhooks`);
+    expect(teamWrite).toHaveLength(1); expect(teamWrite[0]!.status).toBe(201); expect(teamCreated.operation.requestSha256).toBe(teamWrite[0]!.sha256);
+    await checkCreateDatabase(teamCreated.endpoint.id, teamCreated.operation.operationId, "team", hostInfo.teamId, teamCreated.endpoint.subscriptions[0].id, teamWrite[0]!.sha256);
+    const boundarySource = JSON.stringify({ name: definition.name });
+    const boundaryInput = boundarySource + " ".repeat(262144 - Buffer.byteLength(boundarySource));
+    expect(Buffer.byteLength(boundaryInput)).toBe(262144);
+    const boundaryFile = path.join(fixture, "input-boundary.json"); await writeFile(boundaryFile, boundaryInput);
+    for (const mode of ["file", "stdin"] as const) {
+      const before = records.length;
+      const args = ["update", teamCreated.endpoint.id, "--team", hostInfo.teamId, "--if-version", "1", "--confirm", ...(mode === "file" ? ["--file", boundaryFile] : ["--stdin"])];
+      const result = await call(args, false, mode === "stdin" ? boundaryInput : undefined);
+      expect(result.operation.effect).toBe("unchanged"); expect(result.endpoint.configVersion).toBe("1");
+      const writes = records.slice(before).filter(record => record.method === "PATCH");
+      expect(writes).toHaveLength(1); expect(writes[0]!.status).toBe(200); expect(writes[0]!.bytes).toBeLessThanOrEqual(262144);
+      boundaryInputs.push({ mode, inputBytes: Buffer.byteLength(boundaryInput), inputSha256: digest(Buffer.from(boundaryInput)), requestSha256: writes[0]!.sha256, requestBytes: writes[0]!.bytes, operationId: result.operation.operationId, effect: result.operation.effect });
+    }
     const personalList = await call(["list", "--personal"], true);
     const teamList = await call(["list", "--team", hostInfo.teamId]);
+    const unrelated = path.join(fixture, "unrelated-git"); await mkdir(unrelated);
+    execFileSync("git", ["init", "-q", unrelated], { env, timeout: 10_000 });
+    execFileSync("git", ["-C", unrelated, "remote", "add", "origin", "https://example.invalid/unrelated.git"], { env, timeout: 10_000 });
+    expect(() => execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: fixture, env, stdio: "ignore", timeout: 10_000 })).toThrow();
+    expect(execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: unrelated, env, timeout: 10_000 }).toString().trim()).toBe("true");
+    expect(execFileSync("git", ["remote", "get-url", "origin"], { cwd: unrelated, env, timeout: 10_000 }).toString().trim()).toBe("https://example.invalid/unrelated.git");
+    directoryChecks.push({ cwd: fixture, insideGit: false }, { cwd: unrelated, insideGit: true, origin: "https://example.invalid/unrelated.git" });
+    for (const scope of [
+      { owner: ["--personal"], endpoint: id, base: "/api/v1/me/webhooks" },
+      { owner: ["--team", hostInfo.teamId], endpoint: teamCreated.endpoint.id, base: `/api/v1/teams/${hostInfo.teamId}/webhooks` },
+    ]) for (const verb of ["list", "show"] as const) {
+      let reference: unknown;
+      for (const cwd of [fixture, unrelated]) for (const alias of [false, true]) {
+        const before = records.length;
+        const args = verb === "list" ? [verb, ...scope.owner] : [verb, scope.endpoint, ...scope.owner];
+        const actual = await call(args, alias, undefined, cwd);
+        if (reference === undefined) reference = actual; else expect(actual).toEqual(reference);
+        const business = records.slice(before).filter(record => record.path.startsWith(scope.base));
+        expect(business).toHaveLength(1); expect(business[0]!.method).toBe("GET");
+      }
+    }
     const adminConfig = await readFile(path.join(config, "config.yml"));
     await writeFile(path.join(config, "config.yml"), `serverUrl: ${origin}\nserverToken: ${member}\n`, { mode: 0o600 });
     const memberView = await call(["show", teamCreated.endpoint.id, "--team", hostInfo.teamId]);
     expect(memberView.destination.url).toBeNull();
+    for (const action of ["enable", "delete"]) {
+      const before = records.length;
+      const denied = await invoke(["webhook", action, teamCreated.endpoint.id, "--team", hostInfo.teamId, "--if-version", "1", "--confirm", "--json"]);
+      expect(denied.status).toBe(1); expect(denied.stdout.length).toBe(0);
+      const writes = records.slice(before).filter(record => record.method !== "GET");
+      expect(writes).toHaveLength(1); expect(writes[0]!.status).toBe(403);
+    }
     const deniedSecret = await invoke(["webhook", "secret", "show", teamCreated.endpoint.id, "--team", hostInfo.teamId, "--reveal", "--json"]);
     expect(deniedSecret.status).toBe(1); expect(deniedSecret.stdout.length).toBe(0);
     const deniedOperation = await invoke(["webhook", "operation", "show", teamCreated.operation.operationId, "--team", hostInfo.teamId, "--json"]);
     expect(deniedOperation.status).toBe(1); expect(deniedOperation.stdout.length).toBe(0);
     await writeFile(path.join(config, "config.yml"), adminConfig, { mode: 0o600 });
+    expect(await call(["show", teamCreated.endpoint.id, "--team", hostInfo.teamId])).toEqual(teamCreated.endpoint);
     expect(personalList.items.map((item: any) => item.id)).toContain(id);
     expect(teamList.items.map((item: any) => item.id)).toContain(teamCreated.endpoint.id);
     for (let i = 0; i < 50; i++) {
@@ -525,7 +627,7 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
         child.kill("SIGINT");
         const status = await Promise.race([closed, new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), 10_000); })]);
         if (status === "timeout") { await terminateInstalledProcess(child, closed); throw new Error("Cancelled webhook input did not exit."); }
-        calls.push({ args: ["webhook", "update", id, "--personal", "--stdin", "--if-version", "1", "--confirm", "--json", "[SIGINT while stdin open]"], alias: false, closeOutput: false, injectedFiles: false, status, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
+        calls.push({ args: ["webhook", "update", id, "--personal", "--stdin", "--if-version", "1", "--confirm", "--json", "[SIGINT while stdin open]"], alias: false, cwd: fixture, closeOutput: false, injectedFiles: false, status, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
         expect(status).toBe(1); expect(Buffer.concat(out).length).toBe(0);
         expect(records.slice(beforeCancellation).filter(record => record.method === "PATCH")).toHaveLength(0);
       } finally { if (timer !== undefined) clearTimeout(timer); }
@@ -833,6 +935,14 @@ m.syncBuiltinESMExports();
     const largeCalls = records.slice(beforeLarge).filter(record => record.path.startsWith(`/api/v1/me/webhooks/${id}`));
     expect(largeCalls).toHaveLength(1); expect(largeCalls[0]!.method).toBe("PATCH");
     expect(JSON.parse(largeCalls[0]!.body.toString()).ifVersion).toBe("9007199254740993");
+    const beforeLargeUnchanged = records.length;
+    const largeUnchanged = await call(["update", id, "--personal", "--stdin", "--if-version", largeUpdate.endpoint.configVersion, "--confirm"], false, JSON.stringify({ name: "Precise version" }));
+    expect(largeUnchanged.operation.effect).toBe("unchanged");
+    expect(largeUnchanged.endpoint.configVersion).toBe("9007199254740994");
+    expect(largeUnchanged.endpoint.updatedAt).toBe(largeUpdate.endpoint.updatedAt);
+    const unchangedWrites = records.slice(beforeLargeUnchanged).filter(record => record.path.startsWith(`/api/v1/me/webhooks/${id}`));
+    expect(unchangedWrites).toHaveLength(1); expect(unchangedWrites[0]!.method).toBe("PATCH");
+    expect(JSON.parse(unchangedWrites[0]!.body.toString()).ifVersion).toBe("9007199254740994");
     const beforeLargeStale = records.length;
     const largeStale = await invoke(["webhook", "update", id, "--personal", "--stdin", "--if-version", "9007199254740993", "--confirm", "--json"], false, JSON.stringify({ name: "Precise version" }));
     expect(largeStale.status).toBe(1); expect(largeStale.stdout.length).toBe(0);
@@ -841,6 +951,12 @@ m.syncBuiltinESMExports();
     const deleted = await call(["delete", id, "--personal", "--if-version", version, "--confirm"]);
     expect(deleted.endpoint.lifecycle).toBe("deleted");
     expect(Object.keys(deleted.endpoint).sort()).toEqual(["configVersion", "deletedAt", "id", "lifecycle", "owner"].sort());
+    const beforeRevive = records.length;
+    const revive = await invoke(["webhook", "enable", id, "--personal", "--if-version", deleted.endpoint.configVersion, "--confirm", "--json"]);
+    expect(revive.status).toBe(1); expect(revive.stdout.length).toBe(0);
+    const reviveWrites = records.slice(beforeRevive).filter(record => record.method === "PATCH");
+    expect(reviveWrites).toHaveLength(1); expect(reviveWrites[0]!.status).toBeGreaterThanOrEqual(400);
+    expect(await call(["show", id, "--personal"])).toEqual(deleted.endpoint);
   } catch (cause) { failure = cause; }
   const cleanup: unknown[] = [];
   for (const [child, closed] of children) try { await terminateInstalledProcess(child, closed); } catch (cause) { cleanup.push(cause); }
@@ -864,17 +980,17 @@ m.syncBuiltinESMExports();
     const material = {
       source: receipt.source, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256 },
       fixture: { ...hostInfo, originalHostSha256: originalHostHash, adaptedHostSha256: adaptedHostHash, adapter: "copy of T05 fixture with production httpx.RequestLogging around mux" }, passed: failure === undefined && cleanup.length === 0, cleanupErrors: cleanup.length,
-      faults: faults.map(fault => ({ ...fault, ...(fault.response === undefined ? {} : { response: safeBytes(fault.response) }) })), databaseChecks,
+      faults: faults.map(fault => ({ ...fault, ...(fault.response === undefined ? {} : { response: safeBytes(fault.response) }) })), databaseChecks, createDatabaseChecks, boundaryInputs, directoryChecks,
       terminals: terminals.map(terminal => ({ answer: terminal.answer, exitCode: terminal.exitCode, prompt: safeBytes(Buffer.from(terminal.prompt)), output: safeBytes(Buffer.from(terminal.output)) })),
       requests: records.map(record => ({ ...record, body: safeBytes(record.body), response: safeBytes(Buffer.concat(record.response), record.path.endsWith("/signing-secret")) })),
       controls: controls.map(record => ({ ...record, body: safeBytes(record.body, record.path.includes("invitations")), response: safeBytes(record.response, record.path.includes("invitations")) })),
-      calls: calls.map(call => ({ args: call.args, alias: call.alias, closeOutput: call.closeOutput, injectedFiles: call.injectedFiles, status: call.status, stdout: safeBytes(call.stdout, call.args.includes("--reveal")), stderr: safeBytes(call.stderr) })),
+      calls: calls.map(call => ({ args: call.args, alias: call.alias, cwd: call.cwd, closeOutput: call.closeOutput, injectedFiles: call.injectedFiles, status: call.status, stdout: safeBytes(call.stdout, call.args.includes("--reveal")), stderr: safeBytes(call.stderr) })),
     };
     await writeFile(evidence, `${JSON.stringify(material, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   } catch (cause) { cleanup.push(cause); }
   if (cleanup.length) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Webhook real acceptance or cleanup failed.");
   if (failure !== undefined) throw failure;
-}, 180_000);
+}, 300_000);
 
 it("exposes webhook help through both installed launchers without credentials", async () => {
   const installed = await createAcceptanceCli();
@@ -884,7 +1000,7 @@ it("exposes webhook help through both installed launchers without credentials", 
   for (const key of Object.keys(env)) if (/^(?:GIT_|GH_|GITHUB_|COPILOT_|NODE_OPTIONS$|DAYNIGHT_|DN_)/i.test(key)) delete env[key];
   Object.assign(env, { HOME: fixture, USERPROFILE: fixture, DN_CONFIG_DIR: path.join(fixture, "config"), NO_COLOR: "1" });
   const leaves = [
-    ["catalog"], ["list"], ["show"], ["create"], ["update"], ["enable"], ["disable"], ["delete"],
+    [], ["catalog"], ["list"], ["show"], ["create"], ["update"], ["enable"], ["disable"], ["delete"],
     ["subscription", "list"], ["subscription", "replace"], ["subscription", "reconfirm"],
     ["secret", "show"], ["secret", "rotate"], ["delivery", "list"], ["delivery", "show"],
     ["delivery", "payload"], ["delivery", "redeliver"], ["attempt", "list"], ["operation", "show"],
@@ -909,7 +1025,9 @@ it("exposes webhook help through both installed launchers without credentials", 
           observations.push({ launcher: name, leaf, status: code, stdout: Buffer.concat(out).toString("base64"), stderr: Buffer.concat(err).toString("base64") });
           expect(code, `${name} webhook ${leaf.join(" ")}`).toBe(0);
           expect(Buffer.concat(err).length).toBe(0);
-          expect(Buffer.concat(out).toString()).toContain("--json");
+          if (leaf.length === 0) {
+            expect(Buffer.concat(out).toString()).toContain("catalog"); expect(Buffer.concat(out).toString()).toContain("delivery");
+          } else expect(Buffer.concat(out).toString()).toContain("--json");
         } finally { if (timer !== undefined) clearTimeout(timer); }
       }
     }

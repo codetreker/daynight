@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -24,8 +24,9 @@ it.skipIf(database === undefined || process.platform === "win32")("uses the inst
   const config = path.join(fixture.root, "webhook-config");
   const serverCopy = path.join(fixture.root, "server");
   const requests: Request[] = [];
-  const results: { args: string[]; answer: string; promptAt: string; exitCode: number | null; transcript: string; stdoutSha256: string; stdoutBytes: number; stdoutBase64: string }[] = [];
+  const results: { args: string[]; answer: string; promptAt: string; exitCode: number | null; transcript: string; stdoutSha256: string; stdoutBytes: number; stdoutBase64: string; preparedBase64?: string; preparedMode?: number }[] = [];
   const pipeResults: { args: string[]; status: number | null; stdoutBase64: string; stderrBase64: string }[] = [];
+  const preparationCases: { leaf: string; scenario: string; status: number | null; businessWrites: number; marker?: unknown }[] = [];
   const pending = new Map<ChildProcess, Promise<unknown>>();
   let host: ChildProcess | undefined, hostClosed: Promise<unknown> | undefined, info: Host | undefined;
   let primary: unknown;
@@ -48,8 +49,10 @@ it.skipIf(database === undefined || process.platform === "win32")("uses the inst
   let sequence = 0;
   const terminal = async (args: string[], answer: "y" | "n" | "interrupt", alias = false) => {
     const id = sequence++, output = path.join(fixture.root, `tty-${id}.out`), result = path.join(fixture.root, `tty-${id}.json`);
+    const preparedPath = path.join(fixture.root, `tty-${id}-prepared.json`);
+    const actualArgs = answer === "y" ? [...args, "--operation-out", preparedPath] : args;
     const launcherPath = alias ? path.join(path.dirname(installed.receipt.launcherPath), "dn") : installed.receipt.launcherPath;
-    const p = pty.spawn(process.execPath, [path.join(import.meta.dirname, "../fixtures/skill-terminal-bridge.mjs"), JSON.stringify({ launcherPath, args, cwd: fixture.root, stdoutPath: output, resultPath: result })], { name: "xterm-256color", cols: 120, rows: 35, cwd: fixture.root, env: fixture.environment });
+    const p = pty.spawn(process.execPath, [path.join(import.meta.dirname, "../fixtures/skill-terminal-bridge.mjs"), JSON.stringify({ launcherPath, args: actualArgs, cwd: fixture.root, stdoutPath: output, resultPath: result })], { name: "xterm-256color", cols: 120, rows: 35, cwd: fixture.root, env: fixture.environment });
     let transcript = "", exited = false;
     const listener = p.onData(data => { transcript += data; });
     const closed = new Promise<void>(resolve => p.onExit(() => { exited = true; resolve(); }));
@@ -67,14 +70,19 @@ it.skipIf(database === undefined || process.platform === "win32")("uses the inst
       const bridge = JSON.parse(await readFile(result, "utf8")) as { code: number | null; signal: string | null; stdinTerminal: boolean; stderrTerminal: boolean; stdoutTerminal: boolean; failure?: string };
       expect(bridge.failure).toBeUndefined(); expect(bridge.stdinTerminal).toBe(true); expect(bridge.stderrTerminal).toBe(true); expect(bridge.stdoutTerminal).toBe(false);
       const stdout = await readFile(output);
+      let preparedBase64: string | undefined, preparedMode: number | undefined;
       if (answer !== "y") { expect(bridge.code).toBe(1); expect(stdout.length).toBe(0); expect(requests.filter(r => r.method !== "GET")).toHaveLength(before); }
       else {
         expect(bridge.code).toBe(0);
         const writes = requests.filter(r => r.method !== "GET").slice(before); expect(writes).toHaveLength(1);
         const body = JSON.parse(writes[0]!.body.toString()) as { operationId: string; issuedAt: string };
         expect(body.operationId).toMatch(/^[a-f0-9-]{36}$/); expect(Date.parse(body.issuedAt)).toBeGreaterThanOrEqual(Date.parse(promptAt));
+        const preparedBytes = await readFile(preparedPath), prepared = JSON.parse(preparedBytes.toString());
+        preparedMode = (await stat(preparedPath)).mode & 0o777; preparedBase64 = preparedBytes.toString("base64");
+        expect(preparedMode).toBe(0o600); expect(prepared.operationId).toBe(body.operationId); expect(prepared.issuedAt).toBe(body.issuedAt);
+        expect(prepared.requestSha256).toBe(sha(writes[0]!.body)); expect(preparedBytes.toString()).not.toContain(secretCanary); expect(preparedBytes.toString()).not.toContain(info!.receiverUrl);
       }
-      results.push({ args, answer, promptAt, exitCode: bridge.code, transcript, stdoutSha256: sha(stdout), stdoutBytes: stdout.length, stdoutBase64: stdout.toString("base64") });
+      results.push({ args: actualArgs, answer, promptAt, exitCode: bridge.code, transcript, stdoutSha256: sha(stdout), stdoutBytes: stdout.length, stdoutBase64: stdout.toString("base64"), ...(preparedBase64 === undefined || preparedMode === undefined ? {} : { preparedBase64, preparedMode }) });
       completed = true;
       return stdout.length ? JSON.parse(stdout.toString()) : undefined;
     } finally {
@@ -82,8 +90,9 @@ it.skipIf(database === undefined || process.platform === "win32")("uses the inst
       if (!completed && !exited) { try { process.kill(-p.pid, "SIGKILL"); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; } p.kill(); await Promise.race([closed, delay(5_000)]); }
     }
   };
-  const pipe = async (args: string[], input: Buffer | undefined, interrupt = false) => {
-    const child = spawn(installed.receipt.launcherPath, args, { cwd: fixture.root, env: fixture.environment, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+  const pipe = async (args: string[], input: Buffer | undefined, interrupt = false, preload?: string) => {
+    const env = preload === undefined ? fixture.environment : { ...fixture.environment, NODE_OPTIONS: `--require=${JSON.stringify(preload)}` };
+    const child = spawn(installed.receipt.launcherPath, args, { cwd: fixture.root, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
     let launchError: unknown; child.once("error", error => { launchError = error; });
     const stdout: Buffer[] = [], stderr: Buffer[] = [];
     child.stdout!.on("data", (part: Buffer) => stdout.push(part)); child.stderr!.on("data", (part: Buffer) => stderr.push(part));
@@ -142,6 +151,41 @@ it.skipIf(database === undefined || process.platform === "win32")("uses the inst
       ["secret", "rotate", dummyEndpoint, personal, "--if-version", "1", "--mode", "immediate"], ["delivery", "redeliver", dummyEndpoint, dummyDelivery, personal, "--if-version", "1", "--if-generation", "1"],
     ];
     for (const [index, args] of cancelled.entries()) await terminal(["webhook", ...args, "--json"], "n", index % 2 === 1);
+    const preload = path.join(fixture.root, "prepared-fault.cjs");
+    await writeFile(preload, `const fs=require('node:fs'), p=require('node:fs/promises'), m=require('node:module');
+const open=p.open;
+p.open=async function(path,...args){const file=await open.call(this,path,...args),name=String(path);if(name.includes('prepare-fault-write-')){const write=file.writeFile.bind(file);file.writeFile=async()=>{await write(Buffer.from('partial'));const s=await file.stat();fs.writeFileSync(name+'.marker',JSON.stringify({mode:s.mode&0o777,bytes:s.size}));throw new Error('injected prepared write failure')};}else if(name.includes('prepare-fault-close-')){const close=file.close.bind(file);file.close=async()=>{const s=await file.stat();await close();fs.writeFileSync(name+'.marker',JSON.stringify({mode:s.mode&0o777,bytes:s.size}));throw new Error('injected prepared close failure')};}return file};
+m.syncBuiltinESMExports();`, { mode: 0o600 });
+    const existing = path.join(fixture.root, "existing-prepared.json"), sentinel = "existing prepared sentinel";
+    await writeFile(existing, sentinel, { mode: 0o600 });
+    const now = new Date().toISOString(), selectedId = randomUUID(), missing = path.join(fixture.root, "missing-prepared.json");
+    for (const [index, args] of cancelled.entries()) {
+      const leaf = args.slice(0, args[0] === "subscription" || args[0] === "secret" || args[0] === "delivery" ? 2 : 1).join(" ");
+      const cases: { scenario: string; extra: string[]; expected: number; fault?: string }[] = [
+        { scenario: "non-tty-no-confirm", extra: [], expected: 2 },
+        { scenario: "operation-id-only", extra: ["--confirm", "--operation-id", selectedId], expected: 2 },
+        { scenario: "issued-at-only", extra: ["--confirm", "--issued-at", now], expected: 2 },
+        { scenario: "resume-and-identity", extra: ["--confirm", "--resume-operation", missing, "--operation-id", selectedId, "--issued-at", now], expected: 2 },
+        { scenario: "resume-and-output", extra: ["--confirm", "--resume-operation", missing, "--operation-out", existing], expected: 2 },
+        { scenario: "existing-output", extra: ["--confirm", "--operation-out", existing], expected: 1 },
+        ...["write", "close"].map(fault => ({ scenario: `prepared-${fault}-failure`, extra: ["--confirm", "--operation-out", path.join(fixture.root, `prepare-fault-${fault}-${index}`)], expected: 1, fault })),
+      ];
+      for (const item of cases) {
+        const before = requests.length;
+        const result = await pipe(["webhook", ...args, ...item.extra, "--json"], undefined, false, item.fault === undefined ? undefined : preload);
+        expect(result.status, `${leaf}/${item.scenario}`).toBe(item.expected); expect(result.stdout.length).toBe(0);
+        const writes = requests.slice(before).filter(r => r.method !== "GET"); expect(writes).toHaveLength(0);
+        let marker: unknown;
+        if (item.fault !== undefined) {
+          const target = item.extra[item.extra.length - 1]!;
+          marker = JSON.parse(await readFile(`${target}.marker`, "utf8"));
+          expect(marker).toMatchObject({ mode: 0o600 }); expect((marker as { bytes: number }).bytes).toBeGreaterThan(0);
+          await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+        preparationCases.push({ leaf, scenario: item.scenario, status: result.status, businessWrites: writes.length, ...(marker === undefined ? {} : { marker }) });
+      }
+      expect(await readFile(existing, "utf8")).toBe(sentinel);
+    }
     await terminal(["webhook", "create", personal, "--file", inputPath, "--json"], "interrupt");
     const beforePipe = requests.length;
     const denied = await pipe(["webhook", "create", personal, "--stdin", "--json"], Buffer.from(JSON.stringify(input)));
@@ -174,7 +218,7 @@ it.skipIf(database === undefined || process.platform === "win32")("uses the inst
     expect(redelivery.operation.deliveryId).toBe(delivery.id);
     const deleted = await terminal(["webhook", "delete", endpoint, personal, "--if-version", version, "--json"], "y", true);
     expect(deleted.endpoint.lifecycle).toBe("deleted");
-    if (process.env.DAYNIGHT_WEBHOOK_TTY_EVIDENCE) await writeFile(process.env.DAYNIGHT_WEBHOOK_TTY_EVIDENCE, JSON.stringify({ source: installed.receipt.source, packageSha256: installed.receipt.tarballSha256, entrySha256: installed.receipt.entrySha256, fixtureHostSha256: sha(Buffer.from(withMiddleware)), scenarios: results, pipeResults, requests: requests.map(r => ({ method: r.method, path: r.path, status: r.status, bodySha256: sha(r.body), bodyBytes: r.body.length, bodyBase64: r.body.toString("base64") })) }, null, 2), { mode: 0o600 });
+    if (process.env.DAYNIGHT_WEBHOOK_TTY_EVIDENCE) await writeFile(process.env.DAYNIGHT_WEBHOOK_TTY_EVIDENCE, JSON.stringify({ source: installed.receipt.source, packageSha256: installed.receipt.tarballSha256, entrySha256: installed.receipt.entrySha256, fixtureHostSha256: sha(Buffer.from(withMiddleware)), scenarios: results, pipeResults, preparationCases, requests: requests.map(r => ({ method: r.method, path: r.path, status: r.status, bodySha256: sha(r.body), bodyBytes: r.body.length, bodyBase64: r.body.toString("base64") })) }, null, 2), { mode: 0o600 });
   } catch (error) { primary = error; throw error; }
   finally {
     const failures: unknown[] = [];

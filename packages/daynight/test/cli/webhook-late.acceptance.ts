@@ -8,7 +8,7 @@ import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 type Info = { url: string; userId: string; projectId: string; receiverUrl: string; schema: string };
-type Observation = { args: string[]; status: number | null; stdout: Buffer; stderr: Buffer };
+type Observation = { args: string[]; human: boolean; status: number | null; stdout: Buffer; stderr: Buffer };
 type Wire = { method: string; path: string; status: number; body: Buffer; response: Buffer[] };
 const digest = (data: Uint8Array): string => createHash("sha256").update(data).digest("hex");
 const secret = (prefix: string): string => prefix + randomBytes(32).toString("base64url");
@@ -44,8 +44,8 @@ it.skipIf(database === undefined)("projects recovered unknown and late observati
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) if (/^(?:GIT_|GH_|GITHUB_|COPILOT_|NODE_OPTIONS$|DAYNIGHT_|DN_)/i.test(key)) delete env[key];
   Object.assign(env, { HOME: home, USERPROFILE: home, DN_CONFIG_DIR: config, XDG_CONFIG_HOME: path.join(root, "xdg"), XDG_CACHE_HOME: path.join(root, "cache"), TMPDIR: tmp, TMP: tmp, TEMP: tmp, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(root, "gitconfig"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
-  const invoke = async (args: string[], input?: string): Promise<any> => {
-    const child = spawn(receipt.launcherPath, ["webhook", ...args, "--json"], { cwd: root, env, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
+  const invoke = async (args: string[], input?: string, human = false): Promise<any> => {
+    const child = spawn(receipt.launcherPath, ["webhook", ...args, ...(human ? [] : ["--json"])], { cwd: root, env, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
     const out: Buffer[] = [], err: Buffer[] = [];
     child.stdout!.on("data", (part: Buffer) => out.push(part)); child.stderr!.on("data", (part: Buffer) => err.push(part));
     let launchError: unknown; child.once("error", cause => { launchError = cause; });
@@ -56,7 +56,7 @@ it.skipIf(database === undefined)("projects recovered unknown and late observati
       const status = await Promise.race([closed, new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), 30_000); })]);
       if (status === "timeout") { await terminateInstalledProcess(child, closed); throw new Error("Installed webhook command timed out."); }
       if (launchError !== undefined) throw launchError;
-      const observed = { args, status, stdout: Buffer.concat(out), stderr: Buffer.concat(err) }; calls.push(observed);
+      const observed = { args, human, status, stdout: Buffer.concat(out), stderr: Buffer.concat(err) }; calls.push(observed);
       expect(status, `webhook ${args.slice(0, 2).join(" ")} exited ${status}`).toBe(0);
       expect(observed.stderr.length).toBe(0); expect(observed.stdout.at(-1)).toBe(10);
       return JSON.parse(observed.stdout.toString());
@@ -142,11 +142,34 @@ it.skipIf(database === undefined)("projects recovered unknown and late observati
     }
     expect(attempts.items[0].outcome).toBe("unknown"); expect(attempts.items[0].recoveredUnknownAt).not.toBeNull();
     expect(attempts.items[0].lateResult.outcome).toBe("acknowledged"); expect(attempts.items[0].lateResult.httpStatus).toBe(202);
+    const beforeFirstPage = wire.length;
+    const firstPage = await invoke(["attempt", "list", endpoint, delivery, "--personal", "--limit", "1"]);
+    expect(firstPage.items).toHaveLength(1); expect(firstPage.items[0].id).toBe(attempts.items[0].id);
+    expect(firstPage.nextCursor).toBeTruthy(); expect(firstPage.historyMayBeIncomplete).toBe(true);
+    expect(wire.slice(beforeFirstPage).filter(record => record.path.includes("/attempts") && record.method === "GET")).toHaveLength(1);
+    const beforeSecondPage = wire.length;
+    const secondPage = await invoke(["attempt", "list", endpoint, delivery, "--personal", "--limit", "1", "--cursor", firstPage.nextCursor]);
+    expect(secondPage.items).toHaveLength(1); expect(secondPage.items[0].id).toBe(attempts.items[1].id);
+    expect(secondPage.nextCursor).toBeNull(); expect(secondPage.historyMayBeIncomplete).toBe(true);
+    const secondRequests = wire.slice(beforeSecondPage).filter(record => record.path.includes("/attempts") && record.method === "GET");
+    expect(secondRequests).toHaveLength(1);
+    expect(new URL(secondRequests[0]!.path, "http://127.0.0.1").searchParams.get("cursor")).toBe(firstPage.nextCursor);
+    const humanAttempts = await invoke(["attempt", "list", endpoint, delivery, "--personal"], undefined, true);
+    expect(humanAttempts.items).toHaveLength(2); expect(humanAttempts.items[0].outcome).toBe("unknown");
+    expect(humanAttempts.items[0].recoveredUnknownAt).toBe(attempts.items[0].recoveredUnknownAt);
+    expect(humanAttempts.items[0].lateResult.outcome).toBe("acknowledged"); expect(humanAttempts.items[0].lateResult.httpStatus).toBe(202);
+    expect(humanAttempts.items[1].outcome).toBe("http_error"); expect(humanAttempts.items[1].httpStatus).toBe(503);
     const shown = await invoke(["delivery", "show", endpoint, delivery, "--personal"]);
     expect(shown.lastAcknowledgedAt).toBe(attempts.items[0].lateResult.observedAt); expect(shown.lastResult.category).toBe("http_error"); expect(shown.lastResult.httpStatus).toBe(503);
     const summary = (await invoke(["list", "--personal"])).items.find((item: any) => item.id === endpoint);
     expect(summary.lastAttemptAt).toBe(attempts.items[1].admittedAt);
     expect(summary.lastResult.category).toBe("http_error"); expect(summary.lastResult.httpStatus).toBe(503);
+    const humanDelivery = await invoke(["delivery", "show", endpoint, delivery, "--personal"], undefined, true);
+    expect(humanDelivery.lastAcknowledgedAt).toBe(shown.lastAcknowledgedAt);
+    expect(humanDelivery.lastResult.category).toBe("http_error"); expect(humanDelivery.lastResult.httpStatus).toBe(503);
+    const humanSummary = (await invoke(["list", "--personal"], undefined, true)).items.find((item: any) => item.id === endpoint);
+    expect(humanSummary.lastAttemptAt).toBe(attempts.items[1].admittedAt);
+    expect(humanSummary.lastResult.category).toBe("http_error"); expect(humanSummary.lastResult.httpStatus).toBe(503);
     const databaseState = await control("GET", `/__fixture/late/state/${delivery}`);
     expect(databaseState.generation).toBe(shown.generation); expect(databaseState.manualOperationCount).toBe(1);
     expect(databaseState.attempts).toHaveLength(2); expect(databaseState.attempts[0].id).toBe(attempts.items[0].id);
@@ -166,8 +189,14 @@ it.skipIf(database === undefined)("projects recovered unknown and late observati
     expect(unfinished.items[2].finishedAt).toBeNull(); expect(unfinished.items[2].admittedAt).not.toBeNull();
     const pendingSummary = (await invoke(["list", "--personal"])).items.find((item: any) => item.id === endpoint);
     expect(pendingSummary.lastAttemptAt).toBe(unfinished.items[2].admittedAt); expect(pendingSummary.lastResult).toBeNull();
+    const humanUnfinished = await invoke(["attempt", "list", endpoint, delivery, "--personal"], undefined, true);
+    expect(humanUnfinished.items).toHaveLength(3); expect(humanUnfinished.items[2].outcome).toBeNull(); expect(humanUnfinished.items[2].finishedAt).toBeNull();
+    const humanPendingSummary = (await invoke(["list", "--personal"], undefined, true)).items.find((item: any) => item.id === endpoint);
+    expect(humanPendingSummary.lastAttemptAt).toBe(unfinished.items[2].admittedAt); expect(humanPendingSummary.lastResult).toBeNull();
     const pendingDelivery = await invoke(["delivery", "show", endpoint, delivery, "--personal"]);
     expect(pendingDelivery.lastAcknowledgedAt).toBe(shown.lastAcknowledgedAt);
+    const humanPendingDelivery = await invoke(["delivery", "show", endpoint, delivery, "--personal"], undefined, true);
+    expect(humanPendingDelivery.lastAcknowledgedAt).toBe(shown.lastAcknowledgedAt); expect(humanPendingDelivery.lastResult).toBeNull();
     const pendingDatabase = await control("GET", `/__fixture/late/state/${delivery}`);
     expect(pendingDatabase.manualOperationCount).toBe(2); expect(pendingDatabase.attempts).toHaveLength(3);
     expect(pendingDatabase.attempts[2].id).toBe(unfinished.items[2].id);
@@ -196,7 +225,7 @@ it.skipIf(database === undefined)("projects recovered unknown and late observati
     const evidence = process.env.DAYNIGHT_WEBHOOK_LATE_EVIDENCE;
     if (!path.isAbsolute(evidence)) throw new Error("Webhook late evidence path must be absolute.");
     const safe = (bytes: Buffer) => ({ length: bytes.length, sha256: digest(bytes), base64: bytes.includes(Buffer.from(token)) ? null : bytes.toString("base64") });
-    const material = { source: receipt.source, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256 }, fixture: { ...info, originalHostSha256: originalHash, adaptedHostSha256: adaptedHash, adapter: "copied T05 fixture with production request logging, held first receiver and recovery-only runner" }, passed: failure === undefined && cleanup.length === 0, cleanupErrors: cleanup.length, calls: calls.map(call => ({ args: call.args, status: call.status, stdout: safe(call.stdout), stderr: safe(call.stderr) })), requests: wire.map(record => ({ method: record.method, path: record.path, status: record.status, body: safe(record.body), response: safe(Buffer.concat(record.response)) })), controls: controls.map(record => ({ ...record, response: safe(record.response) })) };
+    const material = { source: receipt.source, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256 }, fixture: { ...info, originalHostSha256: originalHash, adaptedHostSha256: adaptedHash, adapter: "copied T05 fixture with production request logging, held first receiver and recovery-only runner" }, passed: failure === undefined && cleanup.length === 0, cleanupErrors: cleanup.length, calls: calls.map(call => ({ args: call.args, human: call.human, status: call.status, stdout: safe(call.stdout), stderr: safe(call.stderr) })), requests: wire.map(record => ({ method: record.method, path: record.path, status: record.status, body: safe(record.body), response: safe(Buffer.concat(record.response)) })), controls: controls.map(record => ({ ...record, response: safe(record.response) })) };
     await writeFile(evidence, `${JSON.stringify(material, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   } catch (cause) { cleanup.push(cause); }
   if (cleanup.length) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Webhook late acceptance or cleanup failed.");

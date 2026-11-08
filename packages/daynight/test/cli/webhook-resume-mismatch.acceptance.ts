@@ -23,6 +23,7 @@ it.skipIf(!enabled)("rejects mismatched prepared writes and altered receipts wit
   const originalServer = path.resolve(import.meta.dirname, "../../../daynight-server"), copiedServer = path.join(root, "server");
   const admin = token("dnpat_"), member = token("dnpat_");
   const records: Trace[] = [], observations: Observation[] = [];
+  const laterResumes: { leaf: string; originalRequest: Trace; originalOperation: unknown; changedEndpoint: unknown; preparedBase64: string; stdoutBase64: string; stderrBase64: string; trace: Trace[] }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
   let info: HostInfo | undefined, host: ChildProcess | undefined, hostClosed: Promise<unknown> | undefined;
   let failure: unknown, originalHostSha256 = "", adaptedHostSha256 = "", databaseChecks: unknown = null, baseline: unknown = null;
@@ -181,6 +182,37 @@ it.skipIf(!enabled)("rejects mismatched prepared writes and altered receipts wit
     expect(finalDelivery.manualOperationCount).toBe(1); expect(finalDelivery.generation).toBe(redeliveryOperation.generationAfter);
     baseline = { updateRequest, teamRequest, redeliveryRequest, originalUpdate, originalTeam, originalRedelivery, finalDelivery: { generation: finalDelivery.generation, manualOperationCount: finalDelivery.manualOperationCount, state: finalDelivery.state } };
     expect(await readFile(updatePath)).toEqual(originalPreparedBytes);
+    for (const leaf of ["update", "enable", "disable", "replace", "reconfirm"] as const) {
+      const fixtureEndpoint = await control("POST", "/api/v1/me/webhooks", { ...createInput, operationId: randomUUID(), issuedAt: new Date().toISOString(), name: `Later ${leaf}`, enabled: leaf !== "enable" });
+      const target = fixtureEndpoint.endpoint.id as string, recordPath = path.join(root, `later-${leaf}.json`);
+      const input = leaf === "update" ? JSON.stringify({ name: "Original update" }) : leaf === "replace" ? "[]" : undefined;
+      const args = leaf === "update" ? ["update", target, "--personal", "--if-version", "1", "--stdin"]
+        : leaf === "replace" ? ["subscription", "replace", target, "--personal", "--if-version", "1", "--stdin"]
+        : leaf === "reconfirm" ? ["subscription", "reconfirm", target, "--personal", "--if-version", "1", "--project", info.projectId]
+        : [leaf, target, "--personal", "--if-version", "1"];
+      const beforeOriginal = records.length;
+      const first = await invoke([...args, "--confirm", "--operation-out", recordPath], input);
+      expect(first.status, `${leaf} original`).toBe(0); expect(first.stderr.length).toBe(0);
+      const originalOperation = JSON.parse(first.stdout.toString()).operation;
+      const originalWrites = records.slice(beforeOriginal).filter(record => record.method === "PATCH");
+      expect(originalWrites).toHaveLength(1); expect(originalWrites[0]!.status).toBe(200);
+      const preparedBytes = await readFile(recordPath), binding = JSON.parse(preparedBytes.toString());
+      expect(binding.operationId).toBe(originalOperation.operationId);
+      expect(binding.requestSha256).toBe(sha(Buffer.from(originalWrites[0]!.bodyBase64, "base64")));
+      const changed = await control("PATCH", `/api/v1/me/webhooks/${target}`, { operationId: randomUUID(), issuedAt: new Date().toISOString(), expectedUserId: info.userId, ifVersion: originalOperation.configVersionAfter, name: `Later change ${leaf}` });
+      expect(BigInt(changed.endpoint.configVersion)).toBeGreaterThan(BigInt(originalOperation.configVersionAfter));
+      const beforeResume = records.length;
+      const resumed = await invoke([...args, "--confirm", "--resume-operation", recordPath], input);
+      expect(resumed.status, `${leaf} resume`).toBe(0); expect(resumed.stderr.length).toBe(0);
+      expect(JSON.parse(resumed.stdout.toString()).operation).toEqual(originalOperation);
+      const trace = records.slice(beforeResume);
+      expect(trace.filter(record => record.method !== "GET")).toHaveLength(0);
+      expect(trace.filter(record => record.path.includes(`/operations/${binding.operationId}`))).toHaveLength(1);
+      expect(await readFile(recordPath)).toEqual(preparedBytes);
+      const current = await control("GET", `/api/v1/me/webhooks/${target}`);
+      expect(current).toEqual(changed.endpoint);
+      laterResumes.push({ leaf, originalRequest: originalWrites[0]!, originalOperation, changedEndpoint: current, preparedBase64: preparedBytes.toString("base64"), stdoutBase64: resumed.stdout.toString("base64"), stderrBase64: resumed.stderr.toString("base64"), trace });
+    }
     const probe = path.join(root, "receipt-probe.go");
     await writeFile(probe, `package main
 import("context";"encoding/json";"fmt";"os";"github.com/jackc/pgx/v5")
@@ -215,7 +247,7 @@ func main(){ctx:=context.Background();cfg,e:=pgx.ParseConfig(os.Getenv("DAYNIGHT
   if (process.env.DAYNIGHT_WEBHOOK_RESUME_EVIDENCE !== undefined) try {
     const output = process.env.DAYNIGHT_WEBHOOK_RESUME_EVIDENCE;
     if (!path.isAbsolute(output)) throw new Error("Resume evidence path must be absolute.");
-    await writeFile(output, `${JSON.stringify({ source: artifact.source, artifact: { packageVersion: artifact.packageVersion, tarballSha256: artifact.tarballSha256, entrySha256: artifact.entrySha256 }, fixture: { ...info, originalHostSha256, adaptedHostSha256, adaptation: "T05 fixture plus production request logging middleware" }, passed: failure === undefined && cleanup.length === 0, cleanupErrors: cleanup.length, baseline, observations, databaseChecks }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    await writeFile(output, `${JSON.stringify({ source: artifact.source, artifact: { packageVersion: artifact.packageVersion, tarballSha256: artifact.tarballSha256, entrySha256: artifact.entrySha256 }, fixture: { ...info, originalHostSha256, adaptedHostSha256, adaptation: "T05 fixture plus production request logging middleware" }, passed: failure === undefined && cleanup.length === 0, cleanupErrors: cleanup.length, baseline, observations, laterResumes, databaseChecks }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   } catch (cause) { cleanup.push(cause); }
   if (cleanup.length) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Webhook resume mismatch acceptance or cleanup failed.");
   if (failure !== undefined) throw failure;
