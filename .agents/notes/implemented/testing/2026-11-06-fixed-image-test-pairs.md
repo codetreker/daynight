@@ -102,8 +102,12 @@ checkout index is refreshed after materialization even when the combined tree
 already matches HEAD: replacing a CRLF checkout with the reviewed LF bytes can
 otherwise leave Git reporting a modification with an empty diff. HEAD changes
 only when the combined tree differs. Local Git operations receive no API token
-and disable filters and hooks. Immutable Git
-fetches use a separate read-only credential environment without persistence.
+and disable filters and hooks. Before composition and before issuing evidence,
+checkout validation checks both the existing index and a fresh temporary index
+loaded from the expected commit. The first preserves staged-change rejection;
+the second rechecks working bytes without stat entries cached while filters were
+enabled. Safe built-in newline conversion remains available for CRLF checkouts.
+Immutable Git fetches use a separate read-only credential environment without persistence.
 Jobs expose the API token only to validation, not to later candidate execution.
 
 When additional tests are needed, a deterministic local commit records the
@@ -158,11 +162,21 @@ run incomplete tests without exposing the failure. A separately bootstrapped,
 verified empty registry makes ordinary operation distinguishable from missing
 input.
 
+**Reuse checkout stat entries after disabling filters.** A clean-filter result
+can remain cached even when later Git commands disable that filter. Whether Git
+rehashes then depends on file and index timestamps. Refreshing the same index
+does not guarantee a content check; a fresh index avoids relying on that cache
+and does not overwrite staged user changes.
+
 ## Consequences
 
 Independent implementation and test PRs share exact reviewed tests without moving
 product changes into the test PR or reducing validation. The main merge window
 uses the same input and rejects production drift.
+
+Fresh-index validation reads tracked working files before composition and before
+publishing evidence. This adds filesystem work but prevents cached filter output
+from substituting for the source that tests actually execute.
 
 Registration and active-candidate replacement require additional reviewed PRs.
 The immutable candidate sequence prevents the registry's own checks from losing
