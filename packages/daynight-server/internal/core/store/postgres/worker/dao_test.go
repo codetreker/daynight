@@ -15,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/worker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"math"
 	"reflect"
 	"strings"
@@ -298,15 +299,14 @@ func TestWorkerSummariesProjectOnlyVisibleTasksWithoutDecodingSnapshots(t *testi
 	execute(t, tx, `INSERT INTO project_grants(project_id,user_id,role) VALUES ($1,$2,'admin')`, project, user)
 	execute(t, tx, `INSERT INTO tasks(id,project_id,title,status) VALUES ($1,$3,'Visible','in_progress'),($2,$3,'Hidden','done')`, visible, hidden, project)
 	execute(t, tx, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, hidden)
-	// Large values in fields absent from the summary must never be decoded by the DAO.
-	// An unknown CPU field is ignored by the normal decoder.
 	execute(t, tx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
 		SELECT $1, gen_random_uuid(), statement_timestamp() + n * interval '1 millisecond', statement_timestamp(),
-		jsonb_build_object('machine',jsonb_build_object('id',$2::text,'name','Summary'),'platform','linux','cpu', jsonb_build_object('unused', repeat('x', 4194304))),
+		jsonb_build_object('machine',jsonb_build_object('id',$2::text,'name','Summary'),'platform','linux','cpu', jsonb_build_object('unused','Unprojected probe')),
 		jsonb_build_object('state','observed','observedAt','2026-01-01T00:00:00Z','items',jsonb_build_array(
-		jsonb_build_object('taskId',$3::text,'projectId',$4::text,'title',repeat('x',1024)),
+		jsonb_build_object('taskId',$3::text,'projectId',$4::text,'title','Unprojected title'),
 		jsonb_build_object('taskId',$5::text,'projectId',$4::text))) FROM generate_series(1,100) n`, user, uuid.NewString(), visible, project, hidden)
-	reader := worker.NewReader(tx)
+	projection := &summaryProjectionTransaction{Tx: tx, t: t}
+	reader := worker.NewReader(projection)
 	var got []store.WorkerSummary
 	err := reader.WorkerSummaries(ctx, user, time.Now(), store.Page{Limit: 100}, func(item store.WorkerSummary) (bool, error) {
 		got = append(got, item)
@@ -332,6 +332,39 @@ func TestWorkerSummariesProjectOnlyVisibleTasksWithoutDecodingSnapshots(t *testi
 	if err != nil || count != 1 {
 		t.Fatalf("early stop: %d %v", count, err)
 	}
+	if projection.queries != 2 {
+		t.Fatalf("summary streams used %d queries instead of one each", projection.queries)
+	}
+}
+
+type summaryProjectionTransaction struct {
+	pgx.Tx
+	t       *testing.T
+	queries int
+}
+
+func (tx *summaryProjectionTransaction) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	tx.t.Helper()
+	rows, err := tx.Tx.Query(ctx, sql, args...)
+	if err != nil {
+		return rows, err
+	}
+	tx.queries++
+	// PostgreSQL result types expose full JSON payload reads without requiring
+	// large stored bodies or assumptions about the query's spelling.
+	for _, field := range rows.FieldDescriptions() {
+		if field.DataTypeOID == pgtype.JSONOID || field.DataTypeOID == pgtype.JSONBOID {
+			rows.Close()
+			tx.t.Fatalf("summary query returned JSON payload column %q", field.Name)
+		}
+	}
+	return rows, nil
+}
+
+func (tx *summaryProjectionTransaction) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	tx.t.Helper()
+	tx.t.Fatal("summary stream fetched an individual record")
+	return tx.Tx.QueryRow(ctx, sql, args...)
 }
 
 func TestWorkerSummaryRejectsMalformedProjectedFields(t *testing.T) {
