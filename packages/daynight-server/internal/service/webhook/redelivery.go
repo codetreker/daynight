@@ -291,6 +291,9 @@ func (s *Service) Redeliver(ctx context.Context, p model.Principal, o Owner, end
 		if conflict {
 			return fault("operation_conflict", "Operation ID was already used for a different intent.")
 		}
+		if e = requireLiveOperation(ctx, sc, cur, "operation_expired"); e != nil {
+			return e
+		}
 		view, e := s.deliveryViewInSnapshot(ctx, sc, p, o, endpointID, deliveryID)
 		if e != nil {
 			return e

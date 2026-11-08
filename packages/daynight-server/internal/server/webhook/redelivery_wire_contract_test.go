@@ -59,6 +59,9 @@ func TestRedeliveryWireFaultsPreserveRequestAndCorrelation(t *testing.T) {
 		{"generation_conflict", http.StatusConflict},
 		{"target_changed", http.StatusConflict},
 		{"payload_expired", http.StatusGone},
+		{"operation_expired", http.StatusGone},
+		{"operation_conflict", http.StatusConflict},
+		{"not_found", http.StatusNotFound},
 	} {
 		t.Run(scenario.code, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -86,6 +89,17 @@ func TestRedeliveryWireFaultsPreserveRequestAndCorrelation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExpiredOperationWireReadIsNotFound(t *testing.T) {
+	s := &fakeService{err: &model.Fault{Code: "not_found"}}
+	w := request(fixture(s, io.Discard), http.MethodGet, "/api/v1/me/webhooks/operations/"+operationID, "")
+	if w.Code != http.StatusNotFound || code(t, w) != "not_found" || s.calls != 1 || s.read != "operation" || s.id != operationID || s.owner.Kind != "personal" || s.owner.ID != userID {
+		t.Fatalf("expired operation response: status=%d body=%s service=%+v", w.Code, w.Body, s)
+	}
+	if w.Header().Get("Daynight-User-ID") != userID || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expired operation response identity: %v", w.Header())
 	}
 }
 

@@ -47,6 +47,10 @@ func TestManagementCreatesCompleteEndpointAndReceipt(t *testing.T) {
 	mgmtWantEqual(t, f.effects.keys, []wm.SigningKey{key})
 	mgmtWantEqual(t, f.effects.deletedKeys, []string{expected.ID})
 	mgmtWantEqual(t, f.effects.operations, []wm.Operation{op})
+	receipt := result.Body.(map[string]any)["operation"].(map[string]any)
+	if value, present := receipt["overlapUntil"]; !present || value != (*time.Time)(nil) {
+		t.Fatalf("create receipt has rotation deadline: %#v", receipt)
+	}
 	view := result.Body.(map[string]any)["endpoint"].(map[string]any)
 	if view["id"] != expected.ID || view["configVersion"] != "1" || view["destination"].(map[string]any)["url"] != m.Destination.URL {
 		t.Fatalf("view=%#v", view)
@@ -162,6 +166,16 @@ func TestManagementRotationPreservesOverlapAndReplayProjection(t *testing.T) {
 			mgmtWantEqual(t, f.effects.operations, []wm.Operation{op})
 			if result.Body.(map[string]any)["signing"].(map[string]any)["activeKeyId"] != key.ID {
 				t.Fatalf("signing=%#v", result)
+			}
+			receipt := result.Body.(map[string]any)["operation"].(map[string]any)
+			signing := result.Body.(map[string]any)["signing"].(map[string]any)
+			if mode == "overlap" {
+				until, present := receipt["overlapUntil"].(*time.Time)
+				if !present || until == nil || !until.Equal(*signing["overlapUntil"].(*time.Time)) {
+					t.Fatalf("rotation receipt lost original overlap: %#v", result)
+				}
+			} else if value, present := receipt["overlapUntil"]; !present || value != (*time.Time)(nil) {
+				t.Fatalf("immediate rotation receipt has overlap: %#v", receipt)
 			}
 		})
 	}

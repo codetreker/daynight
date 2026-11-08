@@ -40,10 +40,11 @@ Scripts must provide an owner and preserve the original input to resume a write.
 The prepared record does not retain sensitive input or reconstruct it. Receipt
 retention and admission windows limit later reconciliation and resubmission; a
 missing receipt alone does not establish that the write was rolled back. The CLI
-also checks a receipt's expiry against its local clock before confirmation, since
-the management API can still return a retained row after its expiry. Clock skew
-can prevent confirmation or allow a locally unexpired receipt that has expired
-on the service clock. Normal human output omits sensitive destination paths, and raw payload output preserves
+also checks a receipt's expiry against its local clock before confirmation. The
+service independently enforces logical expiry with its database clock, as
+described by the [receipt lifetime decision](../bug-fix/2026-11-08-webhook-receipt-results.md).
+Clock skew or a deadline crossed during transport can still prevent local
+confirmation of a response that was valid when projected. Normal human output omits sensitive destination paths, and raw payload output preserves
 its exact bytes. File export fails on platforms without the required inode-bound
 publication. Temporary-name cleanup checks the inode before removal; that check
 and removal are separate operations, so a process with equivalent directory
