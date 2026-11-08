@@ -49,8 +49,8 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if actual := expectID(t, items, second.ID, func(task api.TaskSearchItem) string { return task.ID }); actual.Match.DescriptionSnippet == nil || *actual.Match.DescriptionSnippet != second.Description {
 			t.Fatal("search lost description content")
 		}
-		graph := requestJSON[api.TaskGraph](t, f, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph", nil, http.StatusOK)
-		if graph.Project.ID != project.ID || graph.Summary.Total != 3 {
+		graph := requestJSON[api.TaskGraph](t, f, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph?taskId="+first.ID, nil, http.StatusOK)
+		if graph.Project.ID != project.ID || graph.Summary.Total != 2 || len(graph.Tasks) != 2 {
 			t.Fatalf("graph identity/count differs: %+v", graph)
 		}
 		dependent := expectID(t, graph.Tasks, first.ID, func(task api.GraphTask) string { return task.ID })
