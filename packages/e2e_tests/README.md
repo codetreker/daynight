@@ -88,7 +88,29 @@ pnpm e2e:test:harness
 Harness tests verify process failures, deadlines, cancellation, descendant
 termination, partial setup cleanup and the local provider protocol. They do not
 start the complete product system. Product E2E is an explicit local entry and is
-not implicitly called by CLI, Web or Go module tests or the current CI jobs.
+not implicitly called by CLI, Web or Go module test jobs. Its independent CI
+job runs the same explicit entry.
+
+## CI
+
+The `verify-e2e` Linux job is selected when framework or production build inputs
+change, and on every main push. It prepares the locked toolchain and browser,
+checks the framework, runs harness tests and calls `pnpm e2e:test`. The final
+`checks` gate requires a selected product E2E job to succeed.
+
+CI writes the exact run pointer and preparation phase through
+`DAYNIGHT_E2E_RUN_POINTER`. Every step has a deadline: the declared maxima total
+38 minutes inside a 40-minute job, including a 15-minute journey, a 3-minute
+recovery step and evidence upload. It always invokes `pnpm e2e:cleanup` when the
+journey started. Recovery uses the persisted run identity and owner
+labels to reconcile only its resources. It can reclaim files after the original
+runner process is dead, and it does not replace the original test failure with
+success. Only results and logs are uploaded; private files and build artifacts
+stay excluded.
+
+Dependency caches can accelerate preparation, but every invocation still builds
+and runs the current checkout. The [test-writing rules](../../docs/writing_tests.md)
+define the distinction between module, API integration and product E2E tests.
 
 ## Results and cleanup
 

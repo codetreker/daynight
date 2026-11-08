@@ -37,6 +37,15 @@ connected ingress and database routes remain available, while external runtime
 connections cannot be routed. App registration goes through
 the real Console after normal authentication, rather than writing auth data.
 
+An independent Linux CI job selects the framework and actual production build
+inputs and runs the same explicit command. Selected E2E must succeed at the
+final gate. CI reserves a separate always-run recovery step: resource ownership
+is persisted before creation, and normal/recovery cleanup use the same mechanism.
+Preparation and execution steps are individually bounded; their declared
+maxima include cleanup and upload and remain below the job limit. Recovery
+preserves the original scenario and cleanup receipt instead of turning an
+interrupted run green. Artifact uploads include only results and logs.
+
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
 remain with their established owners. Preparation may retrieve pinned build
@@ -69,5 +78,5 @@ not claim an offline build. The upstream source pin and local provider must be
 reviewed when UniAuth's protocol changes.
 
 Per-run cleanup remains part of success, and source/artifact identities bound
-the retained result. This explicit local framework does not itself add a hosted
-CI job or replace module, installed CLI or deployment checks.
+the retained result. The independent hosted job does not replace module, installed CLI or deployment
+checks; module-only fixture changes do not schedule a complete product journey.

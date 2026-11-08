@@ -378,39 +378,41 @@ release validation, existing-version skips and artifact verification.
 
 ## CI selection
 
-The [`checks` workflow](.github/workflows/checks.yml) selects PR jobs by module
-directory from all changed paths, including deletions and both sides of renames.
-Mixed changes select the union of their modules. The
-[selector](.github/scripts/ci-modules.mts) owns the precise path rules;
-[the development guide](docs/development.md#ci-selection) explains the jobs and
-version-only exception. Main pushes select every module.
+The [`checks` workflow](.github/workflows/checks.yml) selects PR jobs from all
+changed paths, including deletions and both sides of renames. Module jobs follow
+module ownership. The independent product E2E job follows the framework and its
+actual production build inputs. Mixed changes select the union of their jobs.
+The [selector](.github/scripts/ci-modules.mts) owns exact path rules; the
+[development guide](docs/development.md#ci-selection) owns execution details.
+Main pushes select every module and product E2E.
 
 | Changed paths | PR application jobs |
 |---|---|
-| `packages/daynight/` and installer tooling in `scripts/` | CLI |
-| `packages/daynight-server/` | Go |
-| `packages/daynight-web/` and `deployment/` | Web |
-| Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, and `patches/` | CLI and Web |
+| CLI production source, manifest, build configuration and resources | CLI and product E2E |
+| CLI tests and other CLI/installer test tooling | CLI |
+| Go production source, embedded data and module dependencies | Go and product E2E |
+| Go tests, fixtures and validation tooling | Go |
+| Web production source, resources and build inputs | Web and product E2E |
+| Web tests, other Web validation tooling and `deployment/` | Web |
+| `packages/e2e_tests/` code, fixtures, scenarios and configuration | Product E2E |
+| Root `package.json`, lockfile, workspace configuration, `.npmrc`, and `patches/` | CLI, Web and product E2E |
 | Root `.gitignore`, documentation, repository instructions and manual publication workflow | None |
-| CI workflow, routing and unclassified paths | All modules |
+| CI workflow, routing and unclassified paths | Every module and product E2E |
 
-Module ownership applies equally to implementations, fixtures and test tooling.
-CLI source paths take precedence over documentation exclusions because bundled
-Markdown is a release input; other documentation exclusions still apply within
-module directories. A PR containing only a CLI manifest version change may skip
-application jobs as described in the
-[development guide](docs/development.md#ci-selection). The
-[module routing decision](.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
-records the directory policy and its validation boundary.
+Documentation exclusions apply inside module and framework directories. Bundled
+CLI source Markdown retains validation because it is a production resource. The
+strict CLI manifest version-only exception still selects no application jobs.
+The [module routing decision](.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
+records module ownership; the [product E2E decision](.agents/notes/implemented/testing/2026-11-08-self-contained-product-e2e.md)
+records the independent integration boundary.
 
-CLI validation includes ordinary and installed phases on Linux, Windows and
-macOS ARM64, a Node runtime matrix, and real-shell completion checks. Go has its
-own module job. Web selection starts independent quality and browser jobs; the
-quality job runs full Web typechecking, the harness, the production Docker
-Web build and coverage gate, while the browser job runs its Playwright
-regressions. The final gate rejects failed or cancelled jobs and
-requires both selected Web jobs to succeed. A newer PR run cancels its older run;
-main runs queue without cancelling an active run.
+CLI has ordinary and installed phases on Linux, Windows and macOS ARM64, a Node
+runtime matrix and shell-completion checks. Go owns its module job. Web owns
+independent quality and frontend browser jobs. Product E2E owns an independent
+Linux job that builds and runs the complete system with its own database and
+auth. Final `checks` reject failures and cancellations and explicitly require
+selected Web and product E2E jobs to succeed. A newer PR run cancels its older
+run; main runs queue without cancelling an active run.
 
 ## Validation
 
@@ -466,6 +468,7 @@ and prose, and [Agent Notes](.agents/notes/README.md) for decision history.
 | Package READMEs and `docs/development.md` | Component usage, development, release procedures and validation methods |
 | [`docs/ui-design.md`](docs/ui-design.md) | Shared UI design principles, examples and information boundaries |
 | [`docs/daynight-server.md`](docs/daynight-server.md) | Stable server code organization rules |
+| [`docs/writing_tests.md`](docs/writing_tests.md) | Test ownership, real dependencies, normal integration flows and CI responsibilities |
 | `docs/spec/` | Required product behavior and observable guarantees |
 | `docs/design/` | Current structure, mechanisms, rationale and implementation boundaries |
 | `docs/research/` | Investigations, evidence, sources and observation conditions |

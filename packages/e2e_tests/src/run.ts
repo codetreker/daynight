@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -7,7 +7,7 @@ import { buildArtifacts } from "./build.ts";
 import { runCommand } from "./command.ts";
 import { startEnvironment, type CleanupReceipt, type Environment } from "./environment.ts";
 
-const repository = fileURLToPath(new URL("../../..", import.meta.url));
+const repository = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const args = process.argv.slice(2);
 const parsed = parseArgs({ args: args[0] === "--" ? args.slice(1) : args, options: { "auth-source": { type: "string" } } });
 if (process.platform !== "linux") throw new Error("Product E2E is supported on Linux.");
@@ -16,6 +16,16 @@ await mkdir(runDirectory, { recursive: true, mode: 0o700 });
 await mkdir(path.join(runDirectory, "results"));
 await mkdir(path.join(runDirectory, "private"), { mode: 0o700 });
 console.log(`Product E2E results: ${runDirectory}`);
+const pointer = process.env.DAYNIGHT_E2E_RUN_POINTER;
+const writeRunPointer = async (phase: "build" | "environment"): Promise<void> => {
+  if (pointer === undefined) return;
+  const filename = path.resolve(pointer);
+  if (!filename.startsWith(`${repository}${path.sep}`)) throw new Error("The E2E run pointer must stay inside the checkout.");
+  await mkdir(path.dirname(filename), { recursive: true });
+  await writeFile(`${filename}.tmp`, `${JSON.stringify({ schemaVersion: 1, runDirectory, phase })}\n`, { mode: 0o600 });
+  await rename(`${filename}.tmp`, filename);
+};
+await writeRunPointer("build");
 process.env.PLAYWRIGHT_BROWSERS_PATH ??= path.join(repository, ".tmp", "playwright-browsers");
 process.env.TMPDIR = path.join(runDirectory, "private");
 const cancellation = new AbortController();
@@ -61,17 +71,20 @@ const registerAuth = async (environment: Environment): Promise<{ appId: string; 
 let environment: Environment | undefined;
 const failures: unknown[] = [];
 const manifest: Record<string, unknown> = { startedAt: new Date().toISOString(), status: "running", cleanup: { completed: false } };
-const lockDirectory = path.join(repository, ".tmp", "product-e2e-build-lock");
+const lockFile = path.join(repository, ".tmp", "product-e2e-build-lock");
 let ownsLock = false;
 let preparingEnvironment = false;
 try {
-  await mkdir(lockDirectory);
+  const ownerRecord = path.join(runDirectory, "private", "build-lock-owner.json");
+  await writeFile(ownerRecord, `${JSON.stringify({ schemaVersion: 1, runDirectory })}\n`);
+  await link(ownerRecord, lockFile);
   ownsLock = true;
   const artifacts = await buildArtifacts({ repository, runDirectory, authSource: parsed.values["auth-source"], signal: cancellation.signal });
-  await rm(lockDirectory, { recursive: true });
+  await rm(lockFile);
   ownsLock = false;
   manifest.artifacts = artifacts;
   preparingEnvironment = true;
+  await writeRunPointer("environment");
   environment = await startEnvironment({ repository, runDirectory, artifactsDirectory: artifacts.directory, signal: cancellation.signal });
   manifest.resources = environment.resourceIdentity;
   const credentials = await registerAuth(environment);
@@ -98,7 +111,7 @@ try {
   manifest.status = "failed";
 } finally {
   if (ownsLock) {
-    try { await rm(lockDirectory, { recursive: true }); }
+    try { await rm(lockFile); }
     catch (error) { failures.push(error); }
   }
   const cleanupFailures: unknown[] = [];

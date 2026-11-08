@@ -25,6 +25,7 @@
     "server:test:stress": "bash packages/daynight-server/scripts/stress.sh",
     "e2e:test": "pnpm --filter @codetreker/daynight-e2e test",
     "e2e:test:harness": "pnpm --filter @codetreker/daynight-e2e test:harness",
+    "e2e:cleanup": "pnpm --filter @codetreker/daynight-e2e cleanup",
     "web:test:stress": "pnpm --filter @codetreker/daynight-web test:stress",
     "web:acceptance": "bash packages/daynight-web/scripts/acceptance/task-search.sh"
   }

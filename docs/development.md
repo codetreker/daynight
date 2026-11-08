@@ -631,14 +631,17 @@ pnpm e2e:test
 ```
 
 The product entry performs normal browser/CLI login and same-data task workflows.
-Module tests and the current CI jobs do not implicitly execute it. Installed CLI
-checks retain packaging and platform responsibilities. Framework self-tests own
+Module test jobs do not execute it. The independent `verify-e2e` Linux CI job
+runs the same explicit product entry after framework types and harness checks.
+Installed CLI checks retain packaging and platform responsibilities. Framework self-tests own
 setup, timeout, cancellation and cleanup failures; business fault and concurrency
 matrices remain in their modules.
 
 The [Product E2E guide](../packages/e2e_tests/README.md) owns exact prerequisites,
 optional pinned-source reuse, local OAuth provider behavior, source/artifact
-receipts and resource cleanup. Preparation can fetch dependencies; the running
+receipts and resource cleanup. CI reserves a separate always-run recovery step
+before uploading only result and log directories; it does not upload private
+credentials, database data or copied artifacts. Preparation can fetch dependencies; the running
 system does not require an external database, auth deployment or GitHub account.
 
 ## Local stress validation
@@ -773,50 +776,53 @@ records the new-artifact identity, OIDC and public-verification choices. The
 ## CI selection
 
 The [`checks` workflow](../.github/workflows/checks.yml) compares the explicit PR
-head with its merge base using the complete Git history and NUL-delimited paths.
+head with its merge base using complete Git history and NUL-delimited paths.
 Deletions and both sides of renames count. The
-[selector](../.github/scripts/ci-modules.mts) assigns each application directory
-to its module; the [root routing table](../README.md#ci-selection) owns that map.
-Mixed changes select their union, and unclassified paths select all modules.
+[selector](../.github/scripts/ci-modules.mts) assigns module tests by directory
+and product E2E by its framework and production build inputs; the
+[root routing table](../README.md#ci-selection) owns the summary map. Mixed
+changes select their union, and unknown paths select all jobs.
 
-Implementations, fixtures and test tooling follow their containing module,
-including CLI source imported by Web and Session fixtures read by Go tests.
-Root Node workspace manifests, npm configuration and the entire `patches/`
-directory select CLI and Web. These Node inputs do not select Go. A simultaneous
-Go-directory change still selects Go regardless of path order. Documentation
-and repository-instruction exclusions remain effective inside module directories,
-except that bundled CLI source Markdown retains CLI validation. The
-[module routing decision](../.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
-records this policy and the role of complete main-push validation.
+Implementations, fixtures and test tooling select their containing module.
+Production CLI, Web and Go inputs additionally select product E2E; module-only
+tests and fixtures do not. Root Node inputs and dependency patches select CLI,
+Web and product E2E, without inventing a Go-module dependency. Documentation and
+instruction exclusions remain effective inside directories, except for bundled
+CLI source resources. Deployment changes select Web and do not become product
+E2E inputs merely because both environments use Docker.
 
-For a CLI `package.json` modification, a PR containing only a regular-file
-version change and no other semantic change selects no application jobs. The
-routing tests and final gate still run; publication validates the artifact at its
-release commit. Other changes retain normal selection, and malformed manifests
-or Git read failures fail detection. Documentation exclusions do not suppress
-jobs selected by other paths.
+A PR changing only the CLI manifest's regular-file version, with no other
+semantic or mode change, selects no application jobs. Routing tests and the
+final gate still run; publication validates its frozen artifact separately.
+Malformed manifests or Git failures fail detection.
 
-CLI selection runs ordinary and installed phases on Linux, Windows and macOS
-ARM64, a Node compatibility matrix, and the Linux shell-completion job. The
-ordinary Ubuntu job supplies the runtime package. Both native phase matrices
-include macOS, with independent preparation, builds, outcomes and artifacts.
-Their matrix results contribute to the final gate. Go has its own PostgreSQL
-service and uploads the raw coverage profile. Web selection starts two jobs that
-depend only on module detection. `verify-web-quality` runs
-full Web typechecking, the harness, the actual localhost Dockerfile's `web`
-target, Vitest coverage and the source-inventory checker with bounded stages,
-then uploads coverage evidence. The build target verifies production compilation
-and asset publication in the filtered Docker context without running Go tests
-or starting application services. `verify-web-browser` prepares its own locked
-dependencies and Chromium, runs the configured assistant Playwright suite, and
-uploads JUnit results and browser captures. Quality has a 30-minute limit and
-browser validation has a 20-minute limit; neither waits for the other. The final
-gate accepts only successful or skipped preceding jobs and requires both Web jobs to succeed when selected. Stress
-workloads remain local-only.
+CLI selection runs ordinary and installed phases independently on Linux,
+Windows and macOS ARM64, plus Node compatibility and shell checks. Go has its
+own PostgreSQL-backed module gate and coverage artifact. Web quality owns full
+typechecking, harness, production Docker Web build and coverage; its separate
+browser job owns frontend fixtures. Product E2E waits only for detection and
+prepares its own Node.js, pnpm, Go, Chromium, database and complete auth system.
+It rebuilds every runtime product from the checked-out source, even on a
+build-dependency cache hit.
+
+The E2E job has a 40-minute outer limit. Every preparation step is bounded; all
+step maxima total 38 minutes, leaving 2 minutes of job margin. The journey is
+bounded to 15 minutes, followed by an always-run recovery step bounded to
+3 minutes and a bounded evidence upload. Recovery uses the
+saved exact run identity to remove its Docker resources and private files after
+normal completion, failure or runner termination. Original scenario and cleanup
+failures stay observable. Uploads include only `.tmp/product-e2e/*/results/**`
+and `*/logs/**`, with 30-day retention.
+
+Final `checks` wait for every independent job. Failure and cancellation are
+rejected; selected Web and product E2E jobs must equal `success`, so an unexpected
+skip cannot pass their gate. Routine CI excludes stress workloads. The
+[test-writing rules](writing_tests.md) own test boundaries, while the
+[product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
 Workflow concurrency cancels an older PR run for the same ref; main pushes queue
 without cancelling an active run. Documentation-only PRs run routing tests and
-the gate. Every main push selects all modules. npm publication performs its own
+the gate. Every main push selects all modules and product E2E. npm publication performs its own
 CLI validation at the frozen release commit.
 
 To validate routing rules locally without application dependencies, run:
