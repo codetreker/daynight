@@ -520,14 +520,16 @@ bash scripts/check.sh
 ```
 
 The check builds and vets the Go module using a unit-test Web resource overlay,
-prepares the pinned UniAuth fixture, clears cached Go test results and runs
-module tests and coverage. Production builds use real Web assets. The configured
+prepares the pinned UniAuth fixture, checks the focused Webhook Runner process
+recovery witness with its dedicated test build, clears cached Go test results and
+runs module tests and coverage. Production builds use real Web assets. The configured
 package and function thresholds are 85% and 80%, with no production exclusions;
 the raw statement coverage must be strictly greater than 90%. Critical-block
-failure is disabled; the check enables race locally but not in CI. The
+failure is disabled; race is enabled locally and for main pushes, while PR CI
+disables it explicitly. The
 [server guide](../packages/daynight-server/README.md#race-instrumentation)
-describes the actual check. Tests require the isolated PostgreSQL instance and
-fail if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
+describes the actual check. The complete module check requires an isolated
+PostgreSQL instance and fails if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
 Business-rule unit tests use domain facts and DAO-interface mocks without a
@@ -535,7 +537,10 @@ PostgreSQL fixture; SQL, transaction, persistence and cross-operation authority
 proofs remain integration tests. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns their scope and failure expectations. A selected pure-rule test must run
-without a database URL; the full module check still includes real PostgreSQL.
+without a database URL; the complete `internal/service/webhook` suite also has
+this property. Its source producers, HTTP/protocol adapters and PostgreSQL
+contracts retain their own proofs. The server guide owns the standalone command;
+the full module check still includes real PostgreSQL.
 
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;

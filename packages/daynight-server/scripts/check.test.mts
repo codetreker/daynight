@@ -23,6 +23,7 @@ set -eu
 printf 'go %s GOFLAGS=%s\\n' "$*" "\${GOFLAGS-}" >> "$TRACE"
 case "$1" in
   list) if [[ -z "\${EMPTY_PACKAGES-}" ]]; then printf '%s\\n' example/api example/server; fi ;;
+  test) if [[ "$*" == *TestWebhookRunnerAbruptProcessRecovery* ]]; then exit "\${PROCESS_EXIT:-0}"; fi ;;
   install)
     cat > "$GOBIN/go-cov" <<'COV'
 #!/usr/bin/env bash
@@ -55,6 +56,8 @@ test('module check selects production packages and local race instrumentation', 
   assert.equal(result.status, 0, result.stderr);
   assert.match(trace, /go-cov --race=true GOFLAGS=.*-race=true -coverpkg=example\/api,example\/server/);
   assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth GOFLAGS=.*-race=true/);
+  assert.match(trace, /go test -count=1 -timeout=3m -tags=webhooktest -run \^TestWebhookRunnerAbruptProcessRecovery\$ .\/internal\/server GOFLAGS=.*-race=true/);
+  assert.doesNotMatch(trace, /-tags=stress/);
   assert.match(trace, /node --test scripts\/coverage.test.mts/);
   assert.match(trace, /node scripts\/coverage.mts coverage.out/);
 });
@@ -65,7 +68,16 @@ test('PR CI disables inherited race and propagates coverage failure', async (t) 
   assert.match(trace, /go build .* GOFLAGS=-race .* -race=false/);
   assert.match(trace, /go vet .* GOFLAGS=-race .* -race=false/);
   assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth GOFLAGS=-race .* -race=false/);
+  assert.match(trace, /TestWebhookRunnerAbruptProcessRecovery.* GOFLAGS=-race .* -race=false/);
   assert.match(trace, /go-cov --race=false GOFLAGS=.*-race -p=2 -overlay=scripts\/unit-overlay.json -race=false -coverpkg=example\/api,example\/server/);
+  assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
+});
+
+test('module check propagates process recovery failure before coverage', async (t) => {
+  const { result, trace } = await runCheck(t, undefined, { PROCESS_EXIT: '23' });
+  assert.equal(result.status, 23);
+  assert.match(trace, /TestWebhookRunnerAbruptProcessRecovery/);
+  assert.doesNotMatch(trace, /go-cov/);
   assert.doesNotMatch(trace, /node scripts\/coverage.mts/);
 });
 

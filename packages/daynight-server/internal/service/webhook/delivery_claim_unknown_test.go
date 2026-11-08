@@ -12,12 +12,13 @@ import (
 )
 
 type unknownClaimThenFailure struct {
+	t                         testing.TB
 	calls, claims, admissions int
 	failure                   error
 }
 
 type unknownClaimScope struct {
-	store.WebhookDeliveryScope
+	deliveryUnexpectedScope
 	db *unknownClaimThenFailure
 }
 
@@ -44,7 +45,7 @@ func (s unknownClaimScope) AdmissionSources(context.Context, string, time.Time) 
 
 func (d *unknownClaimThenFailure) WriteWebhookDelivery(_ context.Context, fn func(store.WebhookDeliveryScope) error) (store.Completion, error) {
 	d.calls++
-	err := fn(unknownClaimScope{db: d})
+	err := fn(unknownClaimScope{deliveryUnexpectedScope: deliveryUnexpectedScope{t: d.t}, db: d})
 	if d.calls == 1 {
 		if err != nil {
 			return store.Completion{Outcome: store.TransactionNotCommitted}, err
@@ -65,9 +66,10 @@ func (c *countUnexpectedDelivery) Do(context.Context, string, []byte, http.Heade
 // the worker polls again and exposes a subsequent definite storage failure.
 func TestWorkerUnknownClaimNeverSendsAndRetries(t *testing.T) {
 	failure := errors.New("claim store unavailable")
-	db := &unknownClaimThenFailure{failure: failure}
+	db := &unknownClaimThenFailure{t: t, failure: failure}
 	sender := &countUnexpectedDelivery{}
 	r := NewRunner(db, &Service{}, true)
+	r.claimPollInterval = time.Millisecond
 	r.client = sender
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
