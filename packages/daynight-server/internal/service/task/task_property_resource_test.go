@@ -157,10 +157,11 @@ func propertyPropertiesEqual(t *testing.T, actual, want model.TaskProperties) bo
 		}
 		decode := func(side string, value json.RawMessage) any {
 			t.Helper()
-			if !json.Valid(value) {
-				t.Fatalf("%s property %q must contain one complete JSON value", side, name)
+			normalized, err := taskproperties.NormalizeValue(name, value)
+			if err != nil {
+				t.Fatalf("invalid %s property %q: %v", side, name, err)
 			}
-			decoder := json.NewDecoder(bytes.NewReader(value))
+			decoder := json.NewDecoder(bytes.NewReader(normalized))
 			decoder.UseNumber()
 			var result any
 			if err := decoder.Decode(&result); err != nil {
