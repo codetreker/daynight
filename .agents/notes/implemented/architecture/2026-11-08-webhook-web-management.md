@@ -37,8 +37,12 @@ administrator projections, including summaries and cached views on return. An
 unchanged older directory cannot restore permission; a new membership identity or
 version provides fresh authority. Only media/principal-validated server error semantics revoke an owner or
 withdraw a missing resource; protocol failures carrying those statuses retain
-verified state and recovery. Owner-forbidden revokes the whole owner, while
-resource absence remains local. Original receipts remain independent. These reads preserve mounted
+verified state and recovery. Forbidden configuration or receipt reads revoke the whole owner; forbidden
+management or secret requests withdraw administrator projections while preserving
+member read admission. Request-owner and authorization-key fencing prevent old
+denials from revoking new authority. The
+[management-denial decision](../bug-fix/2026-11-08-webhook-management-denial.md)
+owns that distinction. Resource absence remains local. Original receipts remain independent. These reads preserve mounted
 nodes, drafts, focus, selected tabs and loaded pagination through unchanged
 background checks. Confirmed identity or disclosure changes
 withdraw private values. Explicit or responsive departure from the secret
