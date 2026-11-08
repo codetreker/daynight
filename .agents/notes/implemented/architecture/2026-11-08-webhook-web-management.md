@@ -21,7 +21,8 @@ presentation depends on the validated endpoint collection independently of the
 project directory. Scoped state-icon track alignment excludes unrelated generic
 page styles. Its scope placeholder, numeric badge text and fixed heading
 styles retain the prototype geometry without weakening long resource-name
-wrapping. The heading's unstyled action wrapper keeps the native button in an
+wrapping. Tab labels keep the trailing separator in one text node so glyph
+shaping does not depend on an extra inline text fragment. The heading's unstyled action wrapper keeps the native button in an
 inline formatting context. Creation forms alone retain the prototype fieldset
 intrinsic minimum; editing and subscription forms keep their existing sizing.
 
