@@ -2,11 +2,14 @@ package project
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -27,14 +30,34 @@ func projectRoutesHarness(t *testing.T) *membershipHarness {
 
 func TestProjectRoutesCreateListAccessAndSettings(t *testing.T) {
 	h := projectRoutesHarness(t)
+	empty := h.call(http.MethodGet, "/api/v1/projects", "", h.outsider)
+	emptyPage := decodeResponse[api.ProjectPage](t, empty, http.StatusOK)
+	if emptyPage.Items == nil || len(emptyPage.Items) != 0 || emptyPage.NextCursor != nil || !strings.Contains(empty.Body.String(), `"items":[]`) || !strings.Contains(empty.Body.String(), `"nextCursor":null`) {
+		t.Fatalf("empty list shape: %s", empty.Body)
+	}
 	body := fmt.Sprintf(`{"name":"Project API","repoUrl":"https://example.com/api","expectedUserId":%q}`, h.adminID)
 	response := h.call(http.MethodPost, "/api/v1/projects", body, h.admin)
 	created := decodeResponse[api.ProjectDocument](t, response, http.StatusCreated)
 	if created.Name != "Project API" || created.Access.ProjectID != created.ID || created.Access.DirectGrant == nil || created.Access.EffectiveRole != "admin" || response.Header().Get("Location") != "/api/v1/projects/"+created.ID || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("creation document: %+v headers=%v", created, response.Header())
 	}
+	if created.RepoURL != "https://example.com/api" || created.ID == "" || created.CreatedAt.IsZero() || created.CreatedAt.Location() != time.UTC || created.UpdatedAt != created.CreatedAt {
+		t.Fatalf("created project: %+v", created)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 8 {
+		t.Fatalf("unexpected project DTO: %s %v", response.Body, err)
+	}
+	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings", "ownership", "access"} {
+		if _, exists := fields[key]; !exists {
+			t.Fatalf("missing DTO field %s: %s", key, response.Body)
+		}
+	}
+	if !strings.Contains(h.Logs.String(), `"project_id":"`+created.ID+`"`) || !strings.Contains(h.Logs.String(), `"route":"POST /api/v1/projects"`) || strings.Contains(h.Logs.String(), created.RepoURL) {
+		t.Fatalf("missing resource correlation or unsafe logs: %s", &h.Logs)
+	}
 	path := "/api/v1/projects/" + created.ID
-	read := decodeResponse[api.ProjectDocument](t, h.call(http.MethodGet, path, "", h.admin), http.StatusOK)
+	read := decodeResponse[api.ProjectDocument](t, h.call(http.MethodGet, "/api/v1/projects/"+strings.ToUpper(created.ID), "", h.admin), http.StatusOK)
 	access := decodeResponse[api.ProjectAccess](t, h.call(http.MethodGet, path+"/access", "", h.admin), http.StatusOK)
 	if read.Project != created.Project || access.Ownership != created.Ownership || access.ProjectID != created.ID || access.DirectGrant == nil {
 		t.Fatalf("inconsistent project/access projections: %+v %+v", read, access)
@@ -64,6 +87,7 @@ func TestProjectRoutesCreateListAccessAndSettings(t *testing.T) {
 
 func TestProjectRoutesRejectInvalidInputs(t *testing.T) {
 	h := projectRoutesHarness(t)
+	assertProjectCreateBodyAdmission(t, h)
 	path := "/api/v1/projects/" + h.project.ID
 	validName := `"name":"x"`
 	validRepo := `"repoUrl":"host:repo"`
@@ -159,4 +183,53 @@ func TestProjectHTTPPageEncodedBudgetAndCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?limit=100&cursor="+*page.NextCursor, "", h.admin), http.StatusConflict, "resource_limit_exceeded")
+}
+
+func assertProjectCreateBodyAdmission(t *testing.T, h *membershipHarness) {
+	t.Helper()
+	h.Logs.Reset()
+	for _, body := range []string{
+		"", "null", "[]", `"value"`, `true`, `{`, `{"name":`, `{"name"}`, `{"name":"ok"`, `{"name":"ok"]`,
+		`{"name":"ok","repoUrl":"https://github.com/example/repo"} {}`,
+		`{"name":"ok","repoUrl":"https://github.com/example/repo"} trailing`,
+		`{"Name":"ok","repoUrl":"https://github.com/example/repo"}`,
+		`{"name":"one","name":"two","repoUrl":"https://github.com/example/repo"}`,
+		`{"name":"ok","repoUrl":"https://github.com/example/repo","id":"read-only"}`,
+		`{"name":"ok","repoUrl":"https://github.com/example/repo","unknown":"secret-body"}`,
+		`{"name":null,"repoUrl":"https://github.com/example/repo"}`,
+		`{"name":42,"repoUrl":"https://github.com/example/repo"}`,
+		`{"name":true,"repoUrl":"https://github.com/example/repo"}`,
+		`{"name":[],"repoUrl":"https://github.com/example/repo"}`,
+		`{"name":{},"repoUrl":"https://github.com/example/repo"}`,
+		`{"repoUrl":"https://github.com/example/repo"}`,
+		`{"name":"ok"}`, `{"name":"ok","repoUrl":null}`, `{"name":"ok","repoUrl":1}`,
+		`{"name":" ","repoUrl":"https://github.com/example/repo","expectedUserId":"` + h.adminID + `"}`,
+		`{"name":"\u0000","repoUrl":"https://github.com/example/repo","expectedUserId":"` + h.adminID + `"}`,
+		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo","expectedUserId":"` + h.adminID + `"}`,
+		`{"name":"ok","repoUrl":"not-a-repository","expectedUserId":"` + h.adminID + `"}`,
+		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\",\"expectedUserId\":\"" + h.adminID + "\"}",
+	} {
+		t.Run(string(body[:min(len(body), 80)]), func(t *testing.T) {
+			assertProjectError(t, h.call(http.MethodPost, "/api/v1/projects", body, h.admin), http.StatusBadRequest, "invalid_input")
+		})
+	}
+	oversized := `{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + h.adminID + `"}`
+	assertProjectError(t, h.call(http.MethodPost, "/api/v1/projects", oversized, h.admin), http.StatusRequestEntityTooLarge, "payload_too_large")
+	for _, contentType := range []string{"", "text/plain", "application/json; charset=iso-8859-1", "application/json; charset=", "application/json; charset=utf-8; charset=us-ascii"} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(jsonBody(t, api.CreateProjectRequest{Name: "ok", RepoURL: "https://github.com/example/repo", ExpectedUserID: h.adminID})))
+		request.AddCookie(h.admin)
+		request.Header.Set("Origin", h.Origin)
+		request.Header.Set("Content-Type", contentType)
+		request.Header.Set("X-Request-ID", "project-test")
+		response := httptest.NewRecorder()
+		h.Handler.ServeHTTP(response, request)
+		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+	}
+	if strings.Contains(h.Logs.String(), "secret") || strings.Contains(h.Logs.String(), "github.com") {
+		t.Fatalf("request content leaked: %s", &h.Logs)
+	}
+	page := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects", "", h.admin), http.StatusOK)
+	if len(page.Items) != 1 || page.Items[0].ID != h.project.ID {
+		t.Fatal("invalid request created a project")
+	}
 }

@@ -649,6 +649,13 @@ the real Web assets described under [Build and run](#build-and-run).
 
 ### Business rules and DAO mocks
 
+Session and Terminal HTTP fixtures reuse their authenticated production App for
+ordinary requests and WebSocket traffic. HTTPS Cookie/Origin checks and focused
+Ping timing retain dedicated adapters and retire the preparation App; foreign
+relay tests intentionally use a distinct App with the same origin and
+configuration. The [HTTP proof ownership decision](../../.agents/notes/implemented/testing/2026-11-08-http-proof-owners.md)
+records the protocol and lifecycle proofs retained by these fixtures.
+
 Business-rule unit tests construct domain facts directly and use narrow mocks
 of the `core/store` DAO interfaces when a rule needs query results or storage
 errors. Check arguments, expected calls, results and error chains; unconfigured

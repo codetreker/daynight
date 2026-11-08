@@ -10,9 +10,7 @@ import (
 	"time"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
@@ -25,15 +23,30 @@ type sessionApplication interface {
 	Shutdown(context.Context) error
 }
 
-type sessionApplicationFactory func(*testing.T, *postgres.Store, filestorage.Storage) sessionApplication
+type sessionApplicationFactory func(*testing.T, *sessionHTTPFixture) sessionApplication
 
-func newSessionHTTPApplication(t *testing.T, database *postgres.Store, files filestorage.Storage) sessionApplication {
+func preparedSessionHTTPApplication(t *testing.T, fixture *sessionHTTPFixture) sessionApplication {
 	t.Helper()
-	handler, err := appsupport.NewHandler(configuredTestConfig(), database, database.Ready, files, testLogger())
+	return fixture.handler.application
+}
+
+func newSessionSecureApplication(t *testing.T, fixture *sessionHTTPFixture) sessionApplication {
+	t.Helper()
+	handler, err := appsupport.NewHandler(configuredTestConfig(), fixture.db, fixture.db.Ready, attachmentTestFiles(t), testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
+	stopSessionPreparation(t, fixture)
 	return handler.(sessionApplication)
+}
+
+func stopSessionPreparation(t *testing.T, fixture *sessionHTTPFixture) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := fixture.handler.application.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type sessionPingApplication struct {
@@ -47,14 +60,14 @@ func (a *sessionPingApplication) Shutdown(ctx context.Context) error {
 	return errors.Join(routeErr, a.engine.Stop(ctx))
 }
 
-func newSessionPingApplication(t *testing.T, database *postgres.Store, files filestorage.Storage) sessionApplication {
+func newSessionPingApplication(t *testing.T, fixture *sessionHTTPFixture) sessionApplication {
 	t.Helper()
-	config := configuredTestConfig()
+	config := fixture.handler.configuration
 	client, err := service.NewIdentityClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := application.New(database, files, client, config.UniAuthCallbackURL, config.TaskSyncOverlap)
+	app := application.New(fixture.db, attachmentTestFiles(t), client, config.UniAuthCallbackURL, config.TaskSyncOverlap)
 	auth, err := authhttp.NewAuthentication(app.Identity, configpkg.AuthSettings{PublicOrigin: config.PublicOrigin, AllowHTTPTestOrigin: config.AllowHTTPTestOrigin}, testLogger())
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +75,7 @@ func newSessionPingApplication(t *testing.T, database *postgres.Store, files fil
 	routes := sessionhttp.NewRoutesWithPingIntervalForTest(app.Sessions, auth, testLogger(), 100*time.Millisecond)
 	mux := http.NewServeMux()
 	routes.RegisterRoutes(mux)
+	stopSessionPreparation(t, fixture)
 	return &sessionPingApplication{Handler: mux, routes: routes, engine: app.Engine}
 }
 

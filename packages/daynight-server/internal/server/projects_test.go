@@ -55,91 +55,13 @@ func assertProjectError(t *testing.T, response *httptest.ResponseRecorder, statu
 	testsupport.AssertProjectError(t, response, status, code)
 }
 
-func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	empty := projectRequest(handler, http.MethodGet, "/api/v1/projects", "")
-	page := decodeResponse[api.ProjectPage](t, empty, http.StatusOK)
-	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil || !strings.Contains(empty.Body.String(), `"items":[]`) || !strings.Contains(empty.Body.String(), `"nextCursor":null`) {
-		t.Fatalf("empty list shape: %s", empty.Body)
-	}
+func TestProjectHTTPProductionMux(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
 	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "API work", RepoURL: "git@github.com:example/repository.git", ExpectedUserID: handler.principal.UserID}))
 	project := decodeResponse[api.Project](t, response, http.StatusCreated)
-	if project.Name != "API work" || project.RepoURL != "git@github.com:example/repository.git" || project.ID == "" || project.CreatedAt.IsZero() || project.CreatedAt.Location() != time.UTC || project.UpdatedAt != project.CreatedAt {
-		t.Fatalf("created project: %+v", project)
-	}
-	if response.Header().Get("Location") != "/api/v1/projects/"+project.ID {
-		t.Fatalf("invalid resource location: %s", response.Header().Get("Location"))
-	}
-	var fields map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 8 {
-		t.Fatalf("unexpected project DTO: %s %v", response.Body, err)
-	}
-	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings", "ownership", "access"} {
-		if _, exists := fields[key]; !exists {
-			t.Fatalf("missing DTO field %s: %s", key, response.Body)
-		}
-	}
-	read := decodeResponse[api.Project](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+strings.ToUpper(project.ID), ""), http.StatusOK)
-	if read != project {
-		t.Fatalf("read differs from create: %+v %+v", read, project)
-	}
-	page = decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0] != project || page.NextCursor != nil {
-		t.Fatalf("persisted list: %+v", page)
-	}
-	if !strings.Contains(logs.String(), `"project_id":"`+project.ID+`"`) || !strings.Contains(logs.String(), `"route":"POST /api/v1/projects"`) || strings.Contains(logs.String(), project.RepoURL) {
-		t.Fatalf("missing resource correlation or unsafe logs: %s", &logs)
-	}
-}
-
-func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	for _, body := range []string{
-		"", "null", "[]", `"value"`, `true`, `{`, `{"name":`, `{"name"}`, `{"name":"ok"`, `{"name":"ok"]`,
-		`{"name":"ok","repoUrl":"https://github.com/example/repo"} {}`,
-		`{"name":"ok","repoUrl":"https://github.com/example/repo"} trailing`,
-		`{"Name":"ok","repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"one","name":"two","repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"ok","repoUrl":"https://github.com/example/repo","id":"read-only"}`,
-		`{"name":"ok","repoUrl":"https://github.com/example/repo","unknown":"secret-body"}`,
-		`{"name":null,"repoUrl":"https://github.com/example/repo"}`,
-		`{"name":42,"repoUrl":"https://github.com/example/repo"}`,
-		`{"name":true,"repoUrl":"https://github.com/example/repo"}`,
-		`{"name":[],"repoUrl":"https://github.com/example/repo"}`,
-		`{"name":{},"repoUrl":"https://github.com/example/repo"}`,
-		`{"repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"ok"}`, `{"name":"ok","repoUrl":null}`, `{"name":"ok","repoUrl":1}`,
-		`{"name":" ","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
-		`{"name":"\u0000","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
-		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
-		`{"name":"ok","repoUrl":"not-a-repository","expectedUserId":"` + handler.principal.UserID + `"}`,
-		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\",\"expectedUserId\":\"" + handler.principal.UserID + "\"}",
-	} {
-		t.Run(string(body[:min(len(body), 80)]), func(t *testing.T) {
-			assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
-		})
-	}
-	oversized := `{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`
-	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", oversized), http.StatusRequestEntityTooLarge, "payload_too_large")
-	for _, contentType := range []string{"", "text/plain", "application/json; charset=iso-8859-1", "application/json; charset=", "application/json; charset=utf-8; charset=us-ascii"} {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(jsonBody(t, api.CreateProjectRequest{Name: "ok", RepoURL: "https://github.com/example/repo", ExpectedUserID: handler.principal.UserID})))
-		authorizeResourceRequest(handler, request)
-		request.Header.Set("Content-Type", contentType)
-		request.Header.Set("X-Request-ID", "project-test")
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
-	}
-	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "github.com") {
-		t.Fatalf("request content leaked: %s", &logs)
-	}
-	page := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
-	if len(page.Items) != 0 {
-		t.Fatal("invalid request created a project")
+	if project.Name != "API work" || project.RepoURL != "git@github.com:example/repository.git" || project.ID == "" || response.Header().Get("Location") != "/api/v1/projects/"+project.ID {
+		t.Fatalf("production project route: %+v headers=%v", project, response.Header())
 	}
 }
 

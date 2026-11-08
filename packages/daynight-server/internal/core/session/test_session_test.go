@@ -19,18 +19,6 @@ func testSession(t *testing.T, initial string) (fixture, sp.Snapshot, string) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	again, e := f.s.RegisterTest(ctx, f.p, input)
-	if e != nil || again.SessionID != v.SessionID {
-		t.Fatal("registration retry", e)
-	}
-	if _, e = sp.DecodeSnapshot(encode(v)); e != nil {
-		t.Fatal("test snapshot codec", string(encode(v)), e)
-	}
-	changed := input
-	changed.Provider = "codex"
-	if _, e = f.s.RegisterTest(ctx, f.p, changed); e == nil {
-		t.Fatal("registration collision")
-	}
 	grant, e := f.s.Grant(ctx, f.p, "", "", v.SessionID, sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: input.ControllerID, ControllerInstanceID: input.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})
 	if e != nil {
 		t.Fatal(e)
@@ -216,6 +204,22 @@ func TestDrainingPreservesCleanupEventsWithoutBrowserControl(t *testing.T) {
 	}
 }
 
+func assertTestRegistrationReplay(t *testing.T, f fixture, input sp.TestRegistration, snapshot sp.Snapshot) {
+	t.Helper()
+	again, err := f.s.RegisterTest(context.Background(), f.p, input)
+	if err != nil || again.SessionID != snapshot.SessionID {
+		t.Fatal("registration retry", err)
+	}
+	if _, err := sp.DecodeSnapshot(encode(snapshot)); err != nil {
+		t.Fatal("test snapshot codec", string(encode(snapshot)), err)
+	}
+	changed := input
+	changed.Provider = "codex"
+	if _, err := f.s.RegisterTest(context.Background(), f.p, changed); err == nil {
+		t.Fatal("registration collision")
+	}
+}
+
 func TestTestSessionNeverStartedStopRequiresUntouchedExecution(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
@@ -223,6 +227,16 @@ func TestTestSessionNeverStartedStopRequiresUntouchedExecution(t *testing.T) {
 	v, e := f.s.RegisterTest(ctx, f.p, registration)
 	if e != nil {
 		t.Fatal(e)
+	}
+	for _, initial := range []string{"none", "prompt"} {
+		t.Run("registration_"+initial, func(t *testing.T) {
+			input := sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "claude", InitialInput: initial}
+			snapshot, err := f.s.RegisterTest(ctx, f.p, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertTestRegistrationReplay(t, f, input, snapshot)
+		})
 	}
 	stop := sp.TestStop{Fence: v.Fence, Protocol: sp.Protocol, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, StopProof: sp.StopProof{Kind: "never_started", RecordID: uuid.NewString(), PreviousControllerInstanceID: v.Identity.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
 	if _, e = sp.DecodeTestStop(encode(stop)); e != nil {

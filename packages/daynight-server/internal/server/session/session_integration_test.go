@@ -97,7 +97,7 @@ func shutdownDatabaseFailureMatches(err error) bool {
 }
 
 func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
-	return sessionHTTPSetupWithApplication(t, newSessionHTTPApplication)
+	return sessionHTTPSetupWithApplication(t, preparedSessionHTTPApplication)
 }
 
 func sessionHTTPSetupWithApplication(t *testing.T, application sessionApplicationFactory) *sessionHTTPFixture {
@@ -118,7 +118,7 @@ func sessionHTTPSetupWithApplication(t *testing.T, application sessionApplicatio
 	}](t, projectRequest(f.handler, http.MethodPost, f.base, jsonBody(t, f.registration)), http.StatusOK)
 	f.snapshot = result.Session
 	f.grant = f.mint(t, "bootstrap")
-	f.application = application(t, f.db, attachmentTestFiles(t))
+	f.application = application(t, f)
 	// Live relay state is process-local: HTTP control and WebSocket traffic share the same application.
 	f.handler.Handler = httpx.RequestLogging(testLogger(), f.application)
 	extendedWorkerTestHandler(f.handler)
@@ -531,7 +531,7 @@ func TestSessionRoutesBrowserHistoryResetClosesOldCursorAndRecovers(t *testing.T
 }
 
 func TestSessionRoutesCookieOriginResetAndShutdown(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := sessionHTTPSetupWithApplication(t, newSessionSecureApplication)
 	path := f.base + "/" + f.snapshot.SessionID + "/channel"
 	secret := "dnst_" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))
 	hash := sha256.Sum256([]byte(secret))

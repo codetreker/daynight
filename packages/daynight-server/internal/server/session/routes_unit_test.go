@@ -46,7 +46,6 @@ func TestArchiveBodyRejectsInvalidInputs(t *testing.T) {
 		{"media", "text/plain", "", "{}", true},
 		{"wrong charset", "application/json; charset=utf-16", "", "{}", true},
 		{"query", "application/json", "?bad=1", "{}", true},
-		{"oversize", "application/json", "", strings.Repeat("a", sp.MaxArchiveBytes+1), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPut, "/archive"+test.query, strings.NewReader(test.body))
@@ -57,6 +56,14 @@ func TestArchiveBodyRejectsInvalidInputs(t *testing.T) {
 			}
 		})
 	}
+	t.Run("oversize", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPut, "/archive", nil)
+		req.Header.Set("Content-Type", "application/json")
+		req.Body = io.NopCloser(io.LimitReader(archiveRepeatingReader{}, sp.MaxArchiveBytes+1))
+		if _, err := archiveBody(httptest.NewRecorder(), req); err == nil {
+			t.Fatal("oversized archive accepted")
+		}
+	})
 	req := httptest.NewRequest(http.MethodPut, "/archive", nil)
 	req.Header.Set("Content-Type", "application/json")
 	req.Body = io.NopCloser(archiveBrokenReader{})
@@ -68,6 +75,15 @@ func TestArchiveBodyRejectsInvalidInputs(t *testing.T) {
 type archiveBrokenReader struct{}
 
 func (archiveBrokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+type archiveRepeatingReader struct{}
+
+func (archiveRepeatingReader) Read(buffer []byte) (int, error) {
+	for index := range buffer {
+		buffer[index] = 'a'
+	}
+	return len(buffer), nil
+}
 func TestTerminalProtocolSelection(t *testing.T) {
 	for _, tc := range []struct {
 		header    []string

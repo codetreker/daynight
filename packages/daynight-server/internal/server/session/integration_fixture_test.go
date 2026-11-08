@@ -28,8 +28,10 @@ import (
 
 type resourceTestHandler struct {
 	http.Handler
-	token     string
-	principal model.Principal
+	token         string
+	principal     model.Principal
+	application   sessionApplication
+	configuration configpkg.Config
 }
 
 func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
@@ -59,7 +61,7 @@ func resourceTestServer(t *testing.T, database *postgres.Store, files filestorag
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &resourceTestHandler{Handler: instance.Config.Handler, token: token, principal: principal}
+	return &resourceTestHandler{Handler: instance.Config.Handler, token: token, principal: principal, application: handler.(sessionApplication), configuration: config}
 }
 func projectRequest(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))

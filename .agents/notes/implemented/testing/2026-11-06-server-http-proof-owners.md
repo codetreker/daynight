@@ -31,6 +31,10 @@ regression and MCP shutdown tests. The domain suite retains the real ping/pong
 and subsequent-event regression and its additional automation-recovery refusal
 cases.
 
+The [fixture reuse decision](2026-11-08-http-proof-owners.md) records Project
+input/document consolidation and reuse of the authenticated application for
+ordinary Session and terminal fixtures.
+
 Shared scenario bodies have one owner. Root composition and domain protocol
 tests remain separate when they exercise different state preparation,
 observations or dependencies. The [server validation guide](../../../../packages/daynight-server/README.md#http-scenario-ownership)
