@@ -71,6 +71,24 @@ const mount = ({ configuration = "normal", holdConfiguration = false }: { readon
 
 
 describe("webhook delivery admission in the complete page", () => {
+  it("shows a selected collection failure independently of retained configuration absence", async () => {
+    const view = mount({ configuration: "missing" }), dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Retained history");
+    await screen.findByText("The endpoint configuration is unavailable. Retained history remains available under its current access policy.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "View payload" })); const payload = await within(dialog).findByLabelText("Event payload"); payload.focus();
+    const originalFetch = view.fetch.getMockImplementation()!; let listReads = 0;
+    view.fetch.mockImplementation((input, init = {}) => {
+      if (new URL(input, location.origin).pathname === `/api/v1/teams/${teamId}/webhooks`) {
+        listReads++;
+        return Promise.resolve(response({ error: { code: "list_unavailable", message: "List read failed.", requestId: "list-failure" } }, 503));
+      }
+      return originalFetch(input, init);
+    });
+    fireEvent.focus(window); await waitFor(() => expect(listReads).toBeGreaterThan(0));
+    const detail = document.querySelector<HTMLElement>(".detail-panel")!;
+    await within(detail).findByText("list_unavailable", { exact: false }); expect(within(detail).getByRole("button", { name: "Retry", hidden: true })).toBeEnabled();
+    expect(screen.getByRole("dialog")).toBe(dialog); expect(within(dialog).getByLabelText("Event payload")).toBe(payload); expect(payload).toHaveFocus(); expect(view.writes).toHaveLength(0);
+  });
   it("withdraws owner management without withdrawing readable resource payload when a Delivery target is restricted", async () => {
     const view = mount(), dialog = await screen.findByRole("dialog"); await within(dialog).findByText("Retained history");
     fireEvent.click(within(dialog).getByRole("button", { name: "View payload" })); const code = await within(dialog).findByLabelText("Event payload");
