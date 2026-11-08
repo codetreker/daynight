@@ -14,11 +14,11 @@ const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/R
 const operations: Operation[] = [];
 const task = (id = taskId, assignedTo: string | null = null): Task => ({
   id, projectId, assignedTo, title: "Task", description: "", properties: {}, status: "todo", allowAgents: false, requiredPlatform: null,
-  version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
+  version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
 });
 const graph = (assignedTo: string | null): TaskGraph => {
   const { projectId: _project, title, description: _description, version: _version, properties: _properties, ...node } = task(taskId, assignedTo);
-  return { project, observedAt: time, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ ...node, titlePreview: title, titleTruncated: false }] };
+  return { project, observedAt: time, summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ ...node, titlePreview: title, titleTruncated: false }] };
 };
 const response = (value: unknown, principal?: string | string[], status = 200): Response => {
   const headers = new Headers({ "Content-Type": "application/json" });

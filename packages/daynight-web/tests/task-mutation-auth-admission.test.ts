@@ -7,7 +7,7 @@ import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), deleteTask: vi.fn(), getTask: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, deleteTask: vi.fn(), getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }) }; });
 const project = '10000000-0000-4000-8000-000000000001'; const task = '20000000-0000-4000-8000-000000000001'; const sibling = '20000000-0000-4000-8000-000000000002';
 const initial = detailFixture(project, task, { title: 'Reviewed task', version: 9n }); const restored = { ...initial, title: 'Restored task', version: 3n };
 const reads = vi.mocked(getTask); const writes = vi.mocked(deleteTask);
@@ -77,12 +77,13 @@ describe('task mutation admission across authentication pauses', () => {
     resume(); await flush(); expect(sessions.snapshot(project, task).mutation).toMatchObject({ operation: { action: 'delete', version: 3n, removeDepends: true }, phase: 'pending' }); expect(reads).toHaveBeenCalledTimes(2); expect(writes).toHaveBeenCalledTimes(2);
     newResult.resolve(); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted'));
   });
-  it('clears project access and task content for a trusted submitted404 before authentication resumes', async () => {
+  it('withdraws task content immediately and requests project access revalidation after authentication resumes', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const response = deferred<Response>(); const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client');
+    sessions.subscribe(project, task, () => {}); const notices: string[] = []; world.scope.subscribe((event) => { if (event.taskNotFound) notices.push(event.projectId); });
     const fetcher = vi.fn().mockReturnValue(response.promise); vi.stubGlobal('fetch', fetcher); writes.mockImplementationOnce(actual.deleteTask); sessions.deleteTask(project, task, initial.version, true);
     await waitFor(() => expect(fetcher).toHaveBeenCalledOnce()); const revoke = vi.spyOn(world.scope, 'revokeProject'); const resume = pause();
     response.resolve(new Response(JSON.stringify({ error: { code: 'not_found', message: 'No project access', requestId: 'paused-denied' } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) }));
-    await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull()); expect(sessions.snapshot(project, task).status).toBe('error'); expect(sessions.snapshot(project, task).error).toMatchObject({ status: 404, code: 'not_found', requestId: 'paused-denied' }); expect(revoke).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
-    resume(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(writes).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
+    await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull()); expect(sessions.snapshot(project, task).status).toBe('error'); expect(sessions.snapshot(project, task).error).toMatchObject({ status: 404, code: 'not_found', requestId: 'paused-denied' }); expect(revoke).not.toHaveBeenCalled(); expect(reads).toHaveBeenCalledOnce();
+    expect(notices).toEqual([]); resume(); await waitFor(() => expect(notices).toEqual([project])); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
   });
 });

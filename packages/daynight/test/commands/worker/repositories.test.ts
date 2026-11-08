@@ -6,7 +6,6 @@ import type { Project } from "../../../src/api/types.js";
 import { parseConfigurationDocument } from "../../../src/config/document.js";
 import { readWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
-import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { changeWorkerRepositories, configuredWorkerProjectIds, readWorkerProjects, readWorkerRepositorySnapshot } from "../../../src/commands/worker/repositories.js";
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
@@ -186,38 +185,6 @@ describe("worker Project registration", () => {
     expect(registered).toHaveLength(1);
     expect(registered[0]).toMatchObject({ projectId: uuid(1), remote: "git@github.com:owner/repository.git", path: path.join(f.homeDirectory, "original"), agent: "codex", model: "original-model" });
     expect(await readFile(f.paths.configFile, "utf8")).toContain("path: ../original");
-  });
-
-  it.each([true, false])("retains the original transport and active native session across restart with explicitProject=%s", async (explicitProject) => {
-    const remote = "git@github.com:owner/repository.git";
-    const source = `${connection}worker:\n  repositories:\n    - remote: ${remote} # Keep SSH transport\n      path: ../original\n      agent: codex\n      model: original-model\n${explicitProject ? `      projectId: ${uuid(1)}\n` : ""}`;
-    const f = await fixture(source);
-    const binding = { projectId: uuid(1), repoUrl: remote, localPath: f.snapshot.configuration.repositories[0]!.path };
-    const claim = { projectId: binding.projectId, taskId: uuid(2), claimId: uuid(3) };
-    const sessionId = uuid(7);
-    await mkdir(f.paths.workerDirectory);
-    const original = openWorkerStore(f.paths.databaseFile);
-    let originalTask: ReturnType<typeof original.getTask>;
-    try {
-      original.registerProject(binding);
-      original.registerPending({ ...claim, agent: "codex" });
-      original.activateTask(claim);
-      original.setSessionId(claim, sessionId);
-      originalTask = original.getTask(claim);
-    } finally { original.close(); }
-    await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
-    const savedSource = await readFile(f.paths.configFile, "utf8");
-    if (explicitProject) expect(savedSource).toBe(source);
-    else expect(savedSource).toContain(`projectId: ${uuid(1)}`);
-    expect(savedSource).toContain(`remote: ${remote} # Keep SSH transport`);
-    const saved = (await readWorkerConfiguration(f.paths)).repositories[0]!;
-    const reopened = openWorkerStore(f.paths.databaseFile);
-    try {
-      expect(reopened.registerProject({ projectId: saved.projectId!, repoUrl: saved.remote, localPath: saved.path })).toEqual(binding);
-      expect(reopened.getTask(claim)).toEqual(originalTask);
-      expect(reopened.getTask(claim)).toMatchObject({ status: "active", agent: "codex", sessionId });
-      expect(saved).toMatchObject({ remote, path: binding.localPath, agent: "codex", model: "original-model" });
-    } finally { reopened.close(); }
   });
 
   it.each(["add", "remove"] as const)("refuses %s for a Project absent from the accessible remote inventory", async (kind) => {

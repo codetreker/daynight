@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"math"
 	"reflect"
 	"strconv"
@@ -11,24 +13,25 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func cloudWorkerConfiguration(projectID string) core.WorkerConfiguration {
-	projects := []core.WorkerProjectConfiguration{}
+func cloudWorkerConfiguration(projectID string) model.WorkerConfiguration {
+	projects := []model.WorkerProjectConfiguration{}
 	if projectID != "" {
-		projects = append(projects, core.WorkerProjectConfiguration{ProjectID: projectID, NativeOverrides: map[string]json.RawMessage{}})
+		projects = append(projects, model.WorkerProjectConfiguration{ProjectID: projectID, NativeOverrides: map[string]json.RawMessage{}})
 	}
-	return core.WorkerConfiguration{MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: core.WorkerNativeConfiguration{Agent: core.AgentCodex, Args: []string{}}, Projects: projects}
+	return model.WorkerConfiguration{MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: projects}
 }
 
-func importWorkerConfiguration(t *testing.T, workers *Workers, principal core.Principal, workerID string, value core.WorkerConfiguration) WorkerReportResult {
+func importWorkerConfiguration(t *testing.T, workers *workerservice.Workers, principal model.Principal, workerID string, value model.WorkerConfiguration) workerservice.WorkerReportResult {
 	t.Helper()
 	report := serviceWorkerReport()
-	report.Configuration = &core.WorkerConfigurationExchange{Bootstrap: &value}
+	report.Configuration = &model.WorkerConfigurationExchange{Bootstrap: &value}
 	result, err := workers.Report(context.Background(), principal, workerID, report)
 	if err != nil {
 		t.Fatal(err)
@@ -39,9 +42,9 @@ func importWorkerConfiguration(t *testing.T, workers *Workers, principal core.Pr
 func TestWorkerConfigurationBootstrapCloudAuthorityAndPersistence(t *testing.T) {
 	projects, database, _, principal := projectService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	id := uuid.NewString()
-	project, err := projects.Create(ctx, principal, CreateProject{Name: "Configuration project", RepoURL: "https://example.com/configuration.git", ExpectedUserID: principal.UserID})
+	project, err := projects.Create(ctx, principal, coreproject.CreateProject{Name: "Configuration project", RepoURL: "https://example.com/configuration.git", ExpectedUserID: principal.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +93,7 @@ func TestWorkerConfigurationBootstrapCloudAuthorityAndPersistence(t *testing.T) 
 	}
 	_, err = workers.Get(ctx, principal, id)
 	requireFault(t, err, "not_found")
-	page, err := workers.List(ctx, principal, PageRequest{Limit: 10})
+	page, err := workers.List(ctx, principal, model.PageRequest{Limit: 10})
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("recent list changed: %+v %v", page, err)
 	}
@@ -104,10 +107,10 @@ func TestWorkerConfigurationBootstrapCloudAuthorityAndPersistence(t *testing.T) 
 func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 	_, database, _, principal := projectService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	id := uuid.NewString()
 	barrier := make(chan struct{})
-	results := make(chan WorkerReportResult, 2)
+	results := make(chan workerservice.WorkerReportResult, 2)
 	failures := make(chan error, 2)
 	for index := range 2 {
 		go func(index int) {
@@ -115,7 +118,7 @@ func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 			value := cloudWorkerConfiguration("")
 			value.MaxConcurrent = int64(index + 2)
 			report := serviceWorkerReport()
-			report.Configuration = &core.WorkerConfigurationExchange{Bootstrap: &value}
+			report.Configuration = &model.WorkerConfigurationExchange{Bootstrap: &value}
 			result, err := workers.Report(ctx, principal, id, report)
 			results <- result
 			failures <- err
@@ -164,7 +167,7 @@ func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 		t.Fatalf("CAS winners: %d", winners)
 	}
 	report := serviceWorkerReport()
-	report.Configuration = &core.WorkerConfigurationExchange{Observation: &core.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []core.WorkerConfigurationItem{}}}
+	report.Configuration = &model.WorkerConfigurationExchange{Observation: &model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []model.WorkerConfigurationItem{}}}
 	observation, err := workers.Report(ctx, principal, id, report)
 	if err != nil || !observation.Configuration.ObservationAccepted || observation.Configuration.Desired.Revision != "2" {
 		t.Fatalf("old desired observation versus PUT: %+v %v", observation, err)
@@ -197,7 +200,7 @@ func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 func TestWorkerConfigurationRetainsLostProjectsButRejectsChangesAndNewSelections(t *testing.T) {
 	_, database, project, _, _ := taskService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	member := workerMember(t, database, project.ID)
 	id := uuid.NewString()
 	value := cloudWorkerConfiguration(project.ID)
@@ -212,13 +215,15 @@ func TestWorkerConfigurationRetainsLostProjectsButRejectsChangesAndNewSelections
 	}
 	value.Projects[0].NativeOverrides = map[string]json.RawMessage{"model": json.RawMessage(`null`)}
 	_, err = workers.PutConfiguration(ctx, member, id, "2", value)
-	requireFault(t, err, "not_found")
-	value.Projects = []core.WorkerProjectConfiguration{}
+	if fault := requireFault(t, err, "not_found"); fault.Message != "A selected project was not found or is inaccessible." {
+		t.Fatalf("wrong inaccessible project message: %s", fault.Message)
+	}
+	value.Projects = []model.WorkerProjectConfiguration{}
 	result, err = workers.PutConfiguration(ctx, member, id, "2", value)
 	if err != nil || result.Desired.Revision != "3" {
 		t.Fatalf("lost project removal failed: %+v %v", result, err)
 	}
-	value.Projects = []core.WorkerProjectConfiguration{{ProjectID: project.ID, NativeOverrides: map[string]json.RawMessage{}}}
+	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: project.ID, NativeOverrides: map[string]json.RawMessage{}}}
 	_, err = workers.PutConfiguration(ctx, member, id, "3", value)
 	requireFault(t, err, "not_found")
 }
@@ -226,7 +231,7 @@ func TestWorkerConfigurationRetainsLostProjectsButRejectsChangesAndNewSelections
 func TestWorkerConfigurationRevisionExhaustionAndRollback(t *testing.T) {
 	_, database, _, principal := projectService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	id := uuid.NewString()
 	value := cloudWorkerConfiguration("")
 	importWorkerConfiguration(t, workers, principal, id, value)
@@ -242,7 +247,7 @@ func TestWorkerConfigurationRevisionExhaustionAndRollback(t *testing.T) {
 	_, err = workers.PutConfiguration(ctx, principal, id, high, value)
 	requireFault(t, err, "version_exhausted")
 	report := serviceWorkerReport()
-	report.Configuration = &core.WorkerConfigurationExchange{Observation: &core.WorkerConfigurationObservation{BaseRevision: high, DesiredRevision: high, Items: []core.WorkerConfigurationItem{}}}
+	report.Configuration = &model.WorkerConfigurationExchange{Observation: &model.WorkerConfigurationObservation{BaseRevision: high, DesiredRevision: high, Items: []model.WorkerConfigurationItem{}}}
 	_, err = workers.Report(ctx, principal, id, report)
 	requireFault(t, err, "version_exhausted")
 	before, err := workers.Get(ctx, principal, id)
@@ -255,7 +260,7 @@ func TestWorkerConfigurationRevisionExhaustionAndRollback(t *testing.T) {
 	report.Telemetry.Machine.Name = "Must roll back"
 	report.Configuration.Observation.BaseRevision = "0"
 	_, err = workers.Report(ctx, principal, id, report)
-	var fault *Fault
+	var fault *model.Fault
 	var pgError *pgconn.PgError
 	if err == nil || errors.As(err, &fault) || !errors.As(err, &pgError) || !strings.Contains(pgError.Message, "injected configuration observation failure") {
 		t.Fatalf("database failure hidden: %v", err)
@@ -268,18 +273,18 @@ func TestWorkerConfigurationRevisionExhaustionAndRollback(t *testing.T) {
 
 func TestWorkerConfigurationValidationAndTransactionFailures(t *testing.T) {
 	_, database, _, principal := projectService(t)
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	ctx := context.Background()
 	id := uuid.NewString()
 	value := cloudWorkerConfiguration("")
-	for _, operation := range []func(core.Principal, string) error{
-		func(p core.Principal, id string) error { _, err := workers.Configuration(ctx, p, id); return err },
-		func(p core.Principal, id string) error {
+	for _, operation := range []func(model.Principal, string) error{
+		func(p model.Principal, id string) error { _, err := workers.Configuration(ctx, p, id); return err },
+		func(p model.Principal, id string) error {
 			_, err := workers.PutConfiguration(ctx, p, id, "1", value)
 			return err
 		},
 	} {
-		requireFault(t, operation(core.Principal{}, id), "unauthenticated")
+		requireFault(t, operation(model.Principal{}, id), "unauthenticated")
 		requireFault(t, operation(principal, "invalid"), "invalid_input")
 	}
 	value.Native.Args = nil
@@ -310,19 +315,19 @@ func TestWorkerConfigurationValidationAndTransactionFailures(t *testing.T) {
 
 func TestWorkerConfigurationConcurrentObservationSingleWinner(t *testing.T) {
 	_, database, _, principal := projectService(t)
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	id := uuid.NewString()
 	importWorkerConfiguration(t, workers, principal, id, cloudWorkerConfiguration(""))
 	ctx := context.Background()
 	var wg sync.WaitGroup
-	results := make(chan WorkerReportResult, 2)
+	results := make(chan workerservice.WorkerReportResult, 2)
 	failures := make(chan error, 2)
 	barrier := make(chan struct{})
 	for range 2 {
 		wg.Go(func() {
 			<-barrier
 			report := serviceWorkerReport()
-			report.Configuration = &core.WorkerConfigurationExchange{Observation: &core.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []core.WorkerConfigurationItem{}}}
+			report.Configuration = &model.WorkerConfigurationExchange{Observation: &model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []model.WorkerConfigurationItem{}}}
 			result, err := workers.Report(ctx, principal, id, report)
 			results <- result
 			failures <- err
@@ -348,25 +353,6 @@ func TestWorkerConfigurationConcurrentObservationSingleWinner(t *testing.T) {
 	}
 }
 
-func TestWorkerConfigurationRefusalDoesNotHideTransactionFailure(t *testing.T) {
-	refusal := &Fault{Code: "version_conflict", Message: "Configuration changed."}
-	cleanup := errors.New("rollback failed")
-	for _, failure := range []*store.TransactionError{
-		{Phase: "cleanup", Cause: errors.Join(refusal, cleanup), Outcome: store.TransactionUnknown, CleanupFailed: true},
-		{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true},
-		{Phase: "operation", Cause: refusal, Outcome: store.TransactionUnknown},
-	} {
-		err := workerConfigurationError("save worker configuration", failure)
-		if err == refusal || !errors.Is(err, failure) {
-			t.Fatalf("operational failure replaced with refusal: %v", err)
-		}
-	}
-	failure := &store.TransactionError{Phase: "operation", Cause: refusal, Outcome: store.TransactionNotCommitted}
-	if err := workerConfigurationError("save worker configuration", failure); err != refusal {
-		t.Fatalf("rolled back refusal not returned: %v", err)
-	}
-}
-
 func TestWorkerConfigurationJSONBRoundtripPreservesSemanticEquality(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -376,7 +362,7 @@ func TestWorkerConfigurationJSONBRoundtripPreservesSemanticEquality(t *testing.T
 			_, database, project, _, _ := taskService(t)
 			principal := workerMember(t, database, project.ID)
 			ctx := context.Background()
-			workers := NewWorkers(database)
+			workers := workerservice.NewWorkers(database)
 			id := uuid.NewString()
 			value := cloudWorkerConfiguration(project.ID)
 			value.Projects[0].NativeOverrides = map[string]json.RawMessage{
@@ -411,7 +397,7 @@ func TestWorkerConfigurationJSONBRoundtripPreservesSemanticEquality(t *testing.T
 
 func TestWorkerConfigurationRejectsUnencodableOverrides(t *testing.T) {
 	value := cloudWorkerConfiguration("")
-	value.Projects = []core.WorkerProjectConfiguration{{ProjectID: uuid.NewString(), NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)}}}
-	_, err := normalizeWorkerConfiguration(value)
+	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: uuid.NewString(), NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)}}}
+	_, err := workercore.NormalizeConfiguration(value)
 	requireFault(t, err, "invalid_input")
 }

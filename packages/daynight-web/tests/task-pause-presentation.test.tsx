@@ -17,7 +17,7 @@ const time = '2026-11-04T00:00:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const summary = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({
   id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true,
-  version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null,
+  version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   createdAt: time, updatedAt: time, ...changes,
 });
 const seeds = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { dependsOn: [id(1)], properties: { paused: true } }),
@@ -28,14 +28,14 @@ const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState =
 
 const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace projectId={project.id} snapshot={value} activeView={activeView}
   unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
-  chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop, showAll: true, onShowAllChange: noop }}
-  standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop, showAll: true, onShowAllChange: noop }} />;
+  chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
+  standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop }} />;
 
 describe('paused task discovery', () => {
   it('derives only true pause flags without changing status statistics or graph node shape', () => {
     const value = snapshot();
     expect(value.pausedTaskIds).toEqual(new Set([id(1), id(2), id(3)]));
-    expect(value.graph.summary).toEqual({ total: 5, todo: 3, inProgress: 1, done: 1, ready: 3, blocked: 0 });
+    expect(value.graph.summary).toEqual({ total: 5, todo: 3, inProgress: 1, done: 1, cancelled: 0, ready: 3, blocked: 0 });
     expect(value.graph.tasks[0]).not.toHaveProperty('properties');
     expect(value.index.nodes.get(id(1))).not.toHaveProperty('paused');
     expect(snapshot(seeds.map((task) => ({ ...task, properties: { paused: false } }))).pausedTaskIds.size).toBe(0);

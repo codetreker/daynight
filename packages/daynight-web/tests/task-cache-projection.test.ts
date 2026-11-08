@@ -6,7 +6,7 @@ import { GraphDataError, projectChain } from "../src/features/task-graph/model";
 const id = (value: number) => `00000000-0000-0000-0000-${value.toString(16).padStart(12, "0")}`;
 const time = "2026-10-20T12:00:00Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: id(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: id(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 
 it("orders UTC seconds and padded nanoseconds without rounding or lexical fraction errors", () => {
   expect(compareTimestamps(`${time.slice(0, -1)}.1Z`, `${time.slice(0, -1)}.100000000Z`)).toBe(0);
@@ -25,7 +25,7 @@ it("derives complete dependency blocking, ordinary chains, all counts and precis
   const projection = projectSummaries(project, tasks, time);
   expect(projection.graph.tasks.map((row) => row.id)).toEqual([id(3), id(4), id(1), id(2)]);
   expect(projection.graph.tasks.find((row) => row.id === id(3))).toMatchObject({ blockedBy: [id(2)], ready: false });
-  expect(projection.graph.summary).toEqual({ total: 4, todo: 3, inProgress: 0, done: 1, ready: 2, blocked: 1 });
+  expect(projection.graph.summary).toEqual({ total: 4, todo: 3, inProgress: 0, done: 1, cancelled: 0, ready: 2, blocked: 1 });
   expect(projection.versions.get(id(1))).toBe(1n);
   expect(projection.graph.tasks[0]).not.toHaveProperty("version");
   expect(projection.index.componentByTask.get(id(3))).toBe(id(1));
@@ -70,4 +70,15 @@ it("compares complete property values while keeping properties out of graph node
   expect(projection.graph.tasks[0]).not.toHaveProperty("properties");
   expect(projection.index.nodes.get(left.id)).not.toHaveProperty("properties");
   expect(left.properties).toHaveProperty("future", { version: 42, first: 1, second: ["a", "b"] });
+});
+
+it("satisfies both edge kinds from cancelled predecessors without requiring the cancelled task's own inputs", () => {
+  const cancelled = task(2, { status: "cancelled", cancelledAt: time, dependsOn: [id(1)] });
+  const projection = projectSummaries(project, [task(1), cancelled, task(3, { dependsOn: [id(2)] }), task(4, { dependsOn: [id(2)], externalDependsOn: [id(2)] })], time);
+  expect(projection.graph.tasks.find((row) => row.id === id(2))).toMatchObject({ blockedBy: [id(1)], ready: false });
+  for (const n of [3, 4]) expect(projection.graph.tasks.find((row) => row.id === id(n))).toMatchObject({ blockedBy: [], ready: true });
+  expect(projection.graph.summary).toEqual({ total: 4, todo: 3, inProgress: 0, done: 0, cancelled: 1, ready: 3, blocked: 0 });
+  expect(projection.index.components.get(id(1))!.progress).toEqual({ total: 3, done: 0, cancelled: 1, ended: 1, status: "in_progress" });
+  expect(projection.index.components.get(id(4))!.progress.total).toBe(1);
+  expect(sameSummary(cancelled, { ...cancelled, cancelledAt: "2026-10-20T12:00:00.000000001Z" })).toBe(false);
 });

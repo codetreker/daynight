@@ -1,4 +1,5 @@
 import { sessionControlKeys, parseSessionControlFields } from "./protocol.js";
+import { parseSessionStartupReport, type SessionStartupReport } from "./startup.js";
 import { assertSessionFence, sessionBinding, sessionBindingKeys, sessionFence, SESSION_PROTOCOL, parseSessionSnapshot, parseSessionCommand, parseSessionEvent, parseSessionOperation, parseSessionResource, parseTimelineEntry,
   type SessionBinding, type SessionFence, type ControllerFence, type DecimalSequence, type SessionCapabilities, type SessionCommand, type SessionEvent, type SessionOperation, type SessionProvider, type SessionResource, type SessionSnapshot, type TimelineEntry } from "./protocol.js";
 
@@ -8,7 +9,7 @@ export type RegistrationRequest = Wire & { readonly registrationId: string; read
 export type RegistrationResponse = { readonly session: SessionSnapshot };
 export type ControllerGrantRequest = Wire & SessionBinding & { readonly controllerId: string; readonly controllerInstanceId: string; readonly executionGeneration: DecimalSequence; readonly kind: "bootstrap" | "reconnect"; readonly previousGeneration: DecimalSequence | null; readonly stopProof: { readonly recordId: string; readonly previousControllerInstanceId: string; readonly stoppedAt: string } | null };
 export type ControllerGrantResponse = SessionFence & { readonly token: string; readonly expiresAt: string; readonly controllerId: string; readonly controllerInstanceId: string };
-export type CurrentSessionResponse = { readonly status: "not_applicable"; readonly claimId: string | null; readonly agentControlMode: "herdr" | null } | { readonly status: "not_registered"; readonly claimId: string; readonly agentControlMode: "web" } | { readonly status: "registered"; readonly session: SessionSnapshot };
+export type CurrentSessionResponse = { readonly status: "not_applicable"; readonly claimId: string | null; readonly agentControlMode: "herdr" | null } | { readonly status: "not_registered"; readonly claimId: string; readonly agentControlMode: "web" } | { readonly status: "registered"; readonly session: SessionSnapshot; readonly startupReport?: SessionStartupReport | null };
 export type TimelinePage = { readonly sessionId: string; readonly historyEpoch: string; readonly items: readonly TimelineEntry[]; readonly resources: readonly SessionResource[]; readonly beforeCursor: string | null; readonly afterCursor: string | null; readonly hasMoreBefore: boolean; readonly hasMoreAfter: boolean; readonly lastEventSeq: DecimalSequence };
 export type OperationResponse = { readonly operation: SessionOperation };
 export type CommandResponse = OperationResponse & { readonly operationUrl: string };
@@ -89,7 +90,16 @@ export const parseControllerGrantResponse = (x: unknown): ControllerGrantRespons
 };
 export const parseCurrentSessionResponse = (x: unknown): CurrentSessionResponse => {
   if (!x || typeof x !== "object" || !("status" in x)) return fail();
-  if (x.status === "registered") { const session = parseSessionSnapshot(obj(x, ["status", "session"]).session); if (session.claimId === undefined) return fail(); return { status: "registered", session }; }
+  if (x.status === "registered") {
+    const o = obj(x, ["status", "session", ...(Object.hasOwn(x, "startupReport") ? ["startupReport"] : [])]);
+    const session = parseSessionSnapshot(o.session);
+    if (session.claimId === undefined) return fail();
+    if (!Object.hasOwn(o, "startupReport")) return { status: "registered", session };
+    const startupReport = o.startupReport === null ? null : parseSessionStartupReport(o.startupReport);
+    if (startupReport !== null && (startupReport.sessionId !== session.sessionId || startupReport.claimId !== session.claimId
+      || startupReport.executionGeneration !== session.executionGeneration || startupReport.controllerInstanceId !== session.identity.controllerInstanceId)) return fail();
+    return { status: "registered", session, startupReport };
+  }
   const o = obj(x, ["status", "claimId", "agentControlMode"]);
   if (o.status === "not_registered" && o.agentControlMode === "web") return { status: "not_registered", claimId: id(o.claimId), agentControlMode: "web" };
   if (o.status !== "not_applicable" || !(o.agentControlMode === null || o.agentControlMode === "herdr")) return fail();

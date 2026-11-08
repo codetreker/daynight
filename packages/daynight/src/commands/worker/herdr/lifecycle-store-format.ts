@@ -12,10 +12,16 @@ const definition = (sql: string): string => {
   if (meaningful.at(-1) === ";") meaningful.pop();
   return meaningful.map(token => token.startsWith("'") ? token : token.toLowerCase()).join("\0");
 };
-export const herdrLifecycleStoreFormat: SqliteFormat = {
+export const createHerdrLifecycleStoreFormat = (migrateNativeLaunch?: (db: Database.Database) => void): SqliteFormat => ({
   name: "Herdr lifecycle state",
   baseline: { version: baseline.version, create: db => { db.exec(baseline.sql); } },
-  migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => { db.exec(step.sql); } })),
+  migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => {
+    if (step.version === 3) {
+      if (!migrateNativeLaunch) throw new Error("Native launch provenance requires the lifecycle owner migration.");
+      migrateNativeLaunch(db);
+    }
+    db.exec(step.sql);
+  } })),
   validateVersioned: (db, version) => {
     const expected = schemas.get(version);
     if (expected === undefined) throw new Error("Unsupported Herdr lifecycle SQLite version.");
@@ -25,4 +31,5 @@ export const herdrLifecycleStoreFormat: SqliteFormat = {
       return object.type !== known.type || object.name !== known.name || object.sql === null || known.sql === null || definition(object.sql) !== definition(known.sql);
     })) throw new Error("The Herdr lifecycle SQLite schema does not match its stored version.");
   },
-};
+});
+export const herdrLifecycleStoreFormat = createHerdrLifecycleStoreFormat();

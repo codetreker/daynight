@@ -1,0 +1,112 @@
+package task
+
+import (
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"regexp"
+	"time"
+
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+)
+
+var taskSyncTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$`)
+
+func TaskSyncRoutes(mux *http.ServeMux, sync *service.TaskSync, auth *authhttp.Authentication, logger *slog.Logger, window time.Duration) {
+	handler := &taskHandler{sync: sync, logger: logger, window: window}
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-sync", auth.Require(handler.taskSync))
+	mux.HandleFunc("/api/v1/projects/{projectId}/task-sync", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+}
+
+func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
+	values, err := httpx.QueryValues(request, "epoch", "since")
+	if err != nil {
+		return service.TaskSyncRequest{}, err
+	}
+	result := service.TaskSyncRequest{}
+	if epoch, exists := values["epoch"]; exists {
+		canonical, err := model.CanonicalID(epoch[0])
+		if err != nil || canonical != epoch[0] {
+			return service.TaskSyncRequest{}, httpx.InvalidInput("epoch must be a canonical UUID")
+		}
+		result.Epoch = canonical
+	}
+	if since, exists := values["since"]; exists {
+		if result.Epoch == "" {
+			return service.TaskSyncRequest{}, httpx.InvalidInput("since requires an epoch")
+		}
+		if !taskSyncTimestamp.MatchString(since[0]) {
+			return service.TaskSyncRequest{}, httpx.InvalidInput("since must be a UTC timestamp with at most nine fractional digits")
+		}
+		stamp, err := time.Parse(time.RFC3339Nano, since[0])
+		if err != nil {
+			return service.TaskSyncRequest{}, httpx.InvalidInput("since must be a valid UTC timestamp")
+		}
+		result.Since = &stamp
+	}
+	return result, nil
+}
+
+func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
+	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	for _, person := range sync.AssigneeVersions {
+		result.AssigneeVersions = append(result.AssigneeVersions, api.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
+	}
+	for _, task := range sync.Tasks {
+		result.Tasks = append(result.Tasks, taskprotocol.RESTSyncRecord(task))
+	}
+	return result
+}
+
+func admitSyncResponse(response api.TaskSync, max int64) error {
+	_, err := measure.JSON(io.Discard, "task sync", max, response, true)
+	var violation *limit.Violation
+	if errors.As(err, &violation) {
+		return &model.Fault{Code: "resource_limit_exceeded", Message: "Task sync exceeds the encoded resource limit.", Cause: err}
+	}
+	return err
+}
+
+func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+	w.Header().Set("Cache-Control", "no-store")
+	start := time.Now()
+	projectID, _, logger, err := h.resource(request, principal)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "task_sync", "get", err)
+		return
+	}
+	input, err := taskSyncRequest(request)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "task_sync", "get", err)
+		return
+	}
+	logger = logger.With("since", input.Since, "window", h.window)
+	result, err := h.sync.Get(request.Context(), principal, projectID, input)
+	if err != nil {
+		if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
+			logger = logger.With("node_count", fault.GraphLimit.NodeCount, "edge_count", fault.GraphLimit.EdgeCount)
+		}
+		httpx.WriteError(w, request, logger, "task_sync", "get", err)
+		return
+	}
+	response := TaskSyncResponse(result)
+	if err := admitSyncResponse(response, taskcore.MaxSyncResponseJSONBytes); err != nil {
+		httpx.WriteError(w, request, logger, "task_sync", "response", err)
+		return
+	}
+	logger.InfoContext(request.Context(), "task sync read", "type", "resource", "component", "task_sync", "phase", "get",
+		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "mode", result.Mode, "returned_tasks", len(result.Tasks))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
+}

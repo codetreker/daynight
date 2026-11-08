@@ -15,6 +15,7 @@ export type ExecutionConfiguration = {
   model: string | null;
   args: readonly string[];
   recoveryLimit: number;
+  validateNativeSelection?: true;
 };
 export type ResourceOwner = ClaimIdentity & { worktreeId: string };
 export type CleanupSchedule = {

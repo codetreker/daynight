@@ -9,9 +9,7 @@ COPY packages/daynight/package.json ./packages/daynight/package.json
 COPY packages/daynight-web/package.json ./packages/daynight-web/package.json
 RUN pnpm install --registry="$DAYNIGHT_NPM_REGISTRY" --frozen-lockfile --filter @codetreker/daynight-web...
 COPY packages/daynight-web ./packages/daynight-web
-COPY packages/daynight/src/api ./packages/daynight/src/api
-COPY packages/daynight/src/platform/text.ts ./packages/daynight/src/platform/text.ts
-COPY packages/daynight/src/session ./packages/daynight/src/session
+COPY packages/daynight/src ./packages/daynight/src
 RUN pnpm web:build
 
 FROM golang:1.27.2-bookworm AS build
@@ -22,7 +20,7 @@ RUN go mod download
 COPY packages/daynight-server/api ./api
 COPY packages/daynight-server/cmd ./cmd
 COPY packages/daynight-server/internal ./internal
-COPY --from=web /src/packages/daynight-server/internal/webui/dist ./internal/webui/dist
+COPY --from=web /src/packages/daynight-server/internal/service/webui/dist ./internal/service/webui/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/daynight-server ./cmd/daynight-server
 
 FROM alpine:3.24

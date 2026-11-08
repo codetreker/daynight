@@ -65,7 +65,7 @@ export const parseHerdrSessionState = (value: unknown, expected: HerdrSessionSta
 };
 
 /** A lost response remains unknown; the caller reconciles its persisted request before another decision. */
-export const createHerdrSessionApi = (serverOrigin: string, serverToken: string, options: { fetch?: typeof fetch; timeoutMs?: number; maxResponseBytes?: number } = {}) => {
+export const createHerdrSessionApi = (serverOrigin: string, serverToken: string, options: { fetch?: typeof fetch; timeoutMs?: number; maxResponseBytes?: number; archiveState?: boolean } = {}) => {
   const targetOrigin = origin(serverOrigin);
   if (!serverToken || /[\r\n]/.test(serverToken)) return reject("A valid Worker credential is required for Herdr Session registration.");
   const timeoutMs = integer(options.timeoutMs ?? 30_000, 1, 300_000), maxResponseBytes = integer(options.maxResponseBytes ?? 4 * 1024 * 1024, 1, 8 * 1024 * 1024);
@@ -154,7 +154,6 @@ export const createHerdrSessionApi = (serverOrigin: string, serverToken: string,
     },
     register: async (input: Message<"registration">, signal?: AbortSignal): Promise<Message<"registration_ack">> => {
       const message = parseSessionV2Message(input); if (message.type !== "registration") return reject("Expected a persisted Herdr registration request.");
-      if (Object.values(message.payload.capabilities).some(Boolean)) return reject("Lifecycle registration cannot advertise combined preview, control or recording support.");
       const result = parseSessionV2Message(await request(prefix(message.payload.owner), message, signal));
       if (result.type !== "registration_ack" || !sameFence(message, result) || result.payload.registrationId !== message.payload.registrationId) return reject("The registration acknowledgement does not match the original execution.");
       const expectedEpoch = message.payload.connectionEpoch === null ? "1" : String(BigInt(message.payload.connectionEpoch) + 1n);
@@ -167,7 +166,7 @@ export const createHerdrSessionApi = (serverOrigin: string, serverToken: string,
       if (result.type !== "generation_ledger" || !same(message, result)) return reject("The generation acknowledgement differs from the original ledger decision.");
       return result;
     },
-    state: async (expected: HerdrSessionStateIdentity, signal?: AbortSignal): Promise<HerdrSessionState> => parseHerdrSessionState(await request(`${prefix(expected.owner)}/${uuid(expected.sessionId)}/state`, undefined, signal), expected),
+    state: async (expected: HerdrSessionStateIdentity, signal?: AbortSignal): Promise<HerdrSessionState> => parseHerdrSessionState(await request(`${prefix(expected.owner)}/${uuid(expected.sessionId)}/${options.archiveState ? "archive/state" : "state"}`, undefined, signal), expected),
     current: async (expected: Omit<HerdrSessionStateIdentity, "sessionId">, signal?: AbortSignal): Promise<HerdrCurrentSessionState> => {
       const value = await request(`${prefix(expected.owner)}/current`, undefined, signal);
       if (!value || typeof value !== "object" || Array.isArray(value)) return reject("The current Session response is invalid.");

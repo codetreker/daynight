@@ -30,7 +30,8 @@
 .assignee-menu-state { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; min-height: 160px; margin: 0; padding: 20px 17px; font-size: 11px; color: #7d8799; }
 .assignee-menu-state p { margin: 0; }
 .assignee-menu-state .button { margin-top: 5px; font-size: 10px; }
-.task-assignee-filter { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 12px; color: #637087; font-size: 11px; }
+.task-assignee-filter { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; color: #637087; font-size: 11px; }
+.task-assignee-filter-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-assignee-filter .assignee-trigger { height: 31px; max-width: 240px; padding: 7px 9px; font-size: 11px; }
 .task-detail-status-assignee { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; flex: 0 1 auto; }
 .task-detail-status-assignee > .task-status-picker { flex: none; }
@@ -41,9 +42,18 @@
 .task-assignment-uncertain { display: inline-flex; align-items: center; height: 24px; color: #8a6c38; font-size: 10px; white-space: nowrap; }
 .task-assignee-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; margin-top: 3px; }
 @media (max-width: 600px) {
-  .task-detail-status-assignee { gap: 4px; flex-basis: 100%; }
+  .task-detail-status-assignee { gap: 4px; flex: 0 1 auto; }
   .task-detail-status-assignee .assignee-name { max-width: 120px; }
   .task-assignee-identity { max-width: 100%; }
   .task-assignee-identity .assignee-name { max-width: 140px; }
 }
 @media (max-height: 500px) { .assignee-menu-state { min-height: 60px; padding: 12px; } }
+
+.task-list-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; margin-bottom: 12px; }
+.task-status-filter { display: flex; align-items: center; gap: 8px; color: #637087; font-size: 11px; }
+.task-status-select { position: relative; display: inline-flex; max-width: 100%; }
+.task-status-select select { appearance: none; height: 31px; max-width: 100%; padding: 0 29px 0 9px; border: 1px solid #e1e5ed; border-radius: 4px; background: white; color: #4e5b72; font: inherit; cursor: pointer; }
+.task-status-select svg { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: #8a92a4; pointer-events: none; }
+.task-status-filter select:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
+
+.assignee-option[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }

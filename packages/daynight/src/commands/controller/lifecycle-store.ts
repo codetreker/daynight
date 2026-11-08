@@ -1,8 +1,9 @@
+import { parseStartupObservation, type StartupObservation } from "../../session/startup.js";
 import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
 import { openPendingContent, reconcilePendingContent } from "./pending-content.js";
-import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journal-format.js";
@@ -19,7 +20,7 @@ export type ControllerSnapshot = SessionBinding & {
   activity: "initializing" | "idle" | "working" | "waiting_input" | "stopped" | "unknown";
   currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; controlsRevisionFloor?: string; turnStartedAt?: string | null;
   controllerProcess: ProcessProof | null; nativeProcesses: readonly ProcessProof[];
-  nativeStopped: boolean; stoppedAt: string | null; error: string | null;
+  nativeStopped: boolean; stoppedAt: string | null; error: string | null; startup?: StartupObservation;
 };
 export type ControllerOperation = {
   executionGeneration?: string;
@@ -32,6 +33,10 @@ const json = <T>(value: unknown): T => {
   try { return JSON.parse(String(value)) as T; }
   catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, phase: "decode" }, { cause }); }
 };
+const checkedSnapshot = (value: ControllerSnapshot): ControllerSnapshot => {
+  if (value.startup !== undefined) parseStartupObservation(value.startup);
+  return value;
+};
 const closeJournal = (db: Database.Database, file: string, operation: () => void): void => {
   let failed = false, failure: unknown;
   try { operation(); } catch (cause) { failed = true; failure = cause; }
@@ -40,17 +45,18 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
   if (failed) throw failure;
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
-export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter } = {}) => {
+/** The store owns a supplied connection; file identifies its separate pending-content archive. */
+export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database } = {}) => {
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
-  const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null };
+  const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
   let pendingContent!: ReturnType<typeof openPendingContent>;
-  const db = openSqliteDatabase({ file, format: controllerJournalFormat, allowCreate: true,
+  const db = openSqliteDatabase({ file: options.database ?? file, format: controllerJournalFormat, allowCreate: true,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
     assertMigrationAllowed: assertJournalMigrationAllowed,
     onReady: (db) => {
-      chmodSync(file, 0o600);
+      if (!db.memory) chmodSync(file, 0o600);
     const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
     if (existing === undefined) db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(ticket), process.pid, JSON.stringify(initial));
     else {
@@ -95,14 +101,14 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   };
   const atomic = <T>(action: () => T): T => transaction(action, "immediate");
   const read = <T>(action: () => T): T => transaction(action, "deferred");
-  const getSnapshot = (): ControllerSnapshot => read(() => json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot));
+  const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
   const writeOperation = (operation: ControllerOperation): ControllerOperation => { db.prepare("INSERT INTO operations(id,value) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value,acknowledged=0").run(operation.operationId, JSON.stringify(operation)); return operation; };
   const patchSnapshot = (patch: Partial<Omit<ControllerSnapshot, "executionId" | "claimId" | "testExecutionId" | "sessionId" | "executionGeneration" | "controllerInstanceId">>): ControllerSnapshot => atomic(() => {
     const current = getSnapshot();
     if (Object.keys(patch).some((key) => ["executionId", "claimId", "testExecutionId", "sessionId", "executionGeneration", "controllerInstanceId"].includes(key))) throw new Error("Controller identity cannot change within a generation.");
     if (current.nativeSessionId !== null && patch.nativeSessionId !== undefined && patch.nativeSessionId !== current.nativeSessionId) throw new Error("The original native session cannot be replaced.");
-    const value = { ...current, ...patch }; db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
+    const value = checkedSnapshot({ ...current, ...patch }); db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
   });
   const outboxBytes = (): number => read(() => (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes);
   const assertInputCapacity = (): void => { if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
@@ -159,6 +165,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     }),
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
+    hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.entries.has(entryId)),
     projectTimeline: (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
       const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
       void ignored; void ignoredSequence;
@@ -208,7 +215,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     }),
     close: (): void => {
       if (closed) return;
-      try { closeJournal(db, file, () => { runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid); }); }); }
+      try { closeJournal(db, db.name, () => { runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid); }); }); }
       finally { closed = !db.open; }
     },
   };
@@ -216,11 +223,11 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
 export type ControllerLifecycleStore = ReturnType<typeof openControllerLifecycleStore>;
 
 /** Recovery reads may upgrade the format without acquiring a native writer. */
-export const readControllerSnapshot = (file: string): ControllerSnapshot | null => readSqliteDatabase({
+export const readControllerSnapshot = (file: SqliteDatabaseSource): ControllerSnapshot | null => readSqliteDatabase({
   file, format: controllerJournalFormat, onMissing: () => null, assertMigrationAllowed: assertJournalMigrationAllowed,
 }, db => {
   const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
-  return row === undefined ? null : json<ControllerSnapshot>(row.snapshot);
+  return row === undefined ? null : checkedSnapshot(json<ControllerSnapshot>(row.snapshot));
 });
 
 /** Only an independent worker may commit complete process-tree stop after the writer exits. */
@@ -242,7 +249,7 @@ export const recordStoppedControllerGeneration = async (file: string, ticket: Co
   });
   return stopped!;
 };
-export const readControllerOperation = (file: string, operationId: string): ControllerOperation | null => readSqliteDatabase({
+export const readControllerOperation = (file: SqliteDatabaseSource, operationId: string): ControllerOperation | null => readSqliteDatabase({
   file, format: controllerJournalFormat,
   onMissing: (): ControllerOperation | null => { throw new Error("The controller journal does not exist."); },
   assertMigrationAllowed: assertJournalMigrationAllowed,

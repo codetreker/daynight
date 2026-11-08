@@ -1,23 +1,27 @@
+import { operationErrorMessage } from './operation-error';
+import type { SessionState } from './state';
 import { useState, type FormEvent } from 'react';
 import type { InteractionResponse, SessionInteraction } from '../../api/types';
 import { useSessionMessages } from './messages';
 
 // Native interaction cards follow the typed controls in ARC's FormCard and QuestionCard:
 // https://github.com/xuangong/agent-remote-control/tree/f166d2f570bbcf8f6c68bd009c701e85b8457943/packages/agent-remote-web/src/react/interactions
-export function SessionInteractionCard({ interaction, enabled, onRespond }: {
+export function SessionInteractionCard({ interaction, enabled, onRespond, operations = new Map() }: {
+  readonly operations?: SessionState['operations'];
   readonly interaction: SessionInteraction; readonly enabled: boolean; readonly onRespond: (response: InteractionResponse) => Promise<void>;
 }) {
   const m = useSessionMessages();
   const [values, setValues] = useState<Record<string, string | readonly string[]>>({});
   const [resolved, setResolved] = useState(false);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorCause, setError] = useState<string | Error | null>(null);
+  const error = operationErrorMessage(errorCause, operations, m.operationFailed);
   const disabled = !enabled || resolved || pending || interaction.state !== 'pending';
   const change = (key: string, value: string | readonly string[]) => { setValues((current) => ({ ...current, [key]: value })); setError(null); };
   async function respond(response: InteractionResponse) {
     if (disabled) return;
     setPending(true); setError(null);
-    try { await onRespond(response); setResolved(true); } catch (cause) { setError(cause instanceof Error ? cause.message : m.failure); }
+    try { await onRespond(response); setResolved(true); } catch (cause) { setError(cause instanceof Error ? cause : m.failure); }
     finally { setPending(false); }
   }
   function submit(event: FormEvent) {
@@ -42,9 +46,22 @@ export function SessionInteractionCard({ interaction, enabled, onRespond }: {
     }
     void respond({ kind: 'form', values: result });
   }
-  return <section className="session-interaction" aria-label={interaction.title} aria-busy={pending}>
+  return <section className="session-interaction" tabIndex={-1} aria-label={interaction.title} aria-busy={pending}>
     <h4>{interaction.title}</h4>
-    {interaction.state !== 'pending' || resolved ? <p>{resolved ? m.resolved : m[interaction.state]}</p> : <form onSubmit={submit}>
+    {interaction.state !== 'pending' || resolved ? <>
+      <p className="session-interaction-status">{resolved ? m.resolved : m[interaction.state]}</p>
+      <details className="session-interaction-request">
+        <summary>{m.showRequest}</summary>
+        <div className="session-request-content" role="region" aria-label={m.requestContent} tabIndex={0}>
+          {interaction.kind === 'approval' ? <p className="session-prewrap">{interaction.detail}</p> : null}
+          {interaction.kind === 'question' ? interaction.questions.map(question => <div key={question.questionId}>
+            <p>{question.label}</p>
+            {question.options.length > 0 ? <ul>{question.options.map(option => <li key={option.id}>{option.label}</li>)}</ul> : null}
+          </div>) : null}
+          {interaction.kind === 'form' ? <ul>{interaction.fields.map(field => <li key={field.fieldId}>{field.label}</li>)}</ul> : null}
+        </div>
+      </details>
+    </> : <form onSubmit={submit}>
       <fieldset disabled={disabled}>
         {interaction.kind === 'approval' ? <><p className="session-prewrap">{interaction.detail}</p><div className="session-actions">{interaction.actions.map((action) => <button className="button" type="button" key={action} onClick={() => void respond({ kind: 'approval', action })}>{m[action]}</button>)}</div></> : null}
         {interaction.kind === 'question' ? interaction.questions.map((q) => <fieldset key={q.questionId}><legend>{q.label}{q.required ? ' *' : ''}</legend>
@@ -58,7 +75,6 @@ export function SessionInteractionCard({ interaction, enabled, onRespond }: {
         </label>) : null}
         {interaction.kind !== 'approval' ? <div className="session-actions"><button className="button button-primary" type="submit">{m.submit}</button>{interaction.canDismiss ? <button className="button" type="button" onClick={() => void respond({ kind: 'dismiss' })}>{m.dismiss}</button> : null}</div> : null}
       </fieldset>
-      {pending ? <p role="status">{m.pending}</p> : null}
       {error ? <p className="session-error" role="alert">{error}</p> : null}
     </form>}
   </section>;

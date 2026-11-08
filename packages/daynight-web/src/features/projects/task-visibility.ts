@@ -1,3 +1,4 @@
+import { taskEndedAt } from "../../api/task-status.ts";
 import type { GraphIndex } from "../task-graph/model";
 
 export type RecentTaskWindow = {
@@ -24,7 +25,7 @@ export const isRecentCompletion = (completedAt: bigint | null, window: RecentTas
 export const latestKnownGoalCompletion = (index: GraphIndex, taskId: string): bigint | null => {
   let latest: bigint | null = null;
   for (const id of index.components.get(taskId)!.memberIds) {
-    const completedAt = index.nodes.get(id)!.completedAt;
+    const completedAt = taskEndedAt(index.nodes.get(id)!);
     if (completedAt === null) continue;
     const completed = timestampNanoseconds(completedAt);
     if (latest === null || completed > latest) latest = completed;

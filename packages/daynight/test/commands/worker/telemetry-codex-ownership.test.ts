@@ -1,12 +1,15 @@
 import path from "node:path";
+import { ChildProcess } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
+import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import { createAssistantHostCollector } from "../../../src/commands/worker/bots/host-capabilities.js";
 import type * as CodexProbeModule from "../../../src/commands/worker/codex-probe-owner.js";
 import { createCodexProbeOwner } from "../../../src/commands/worker/codex-probe-owner.js";
 import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import type * as HerdrCommandModule from "../../../src/commands/worker/herdr/command.js";
 import type { HerdrCommand, HerdrCommandResult } from "../../../src/commands/worker/herdr/command.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import { createWorkerTelemetryCollector } from "../../../src/commands/worker/telemetry.js";
@@ -19,7 +22,16 @@ vi.mock("node:fs/promises", () => ({ realpath: async (value: string) => value, s
 vi.mock("../../../src/commands/worker/herdr/instance.js", () => ({ createHerdrNativeEnvironment: mocks.nativeEnvironment }));
 vi.mock("../../../src/commands/worker/herdr/runtime-version.js", () => ({ createHerdrRuntimeVersionObserver: () => ({ observe: async () => "1.0.0" }), HerdrVersionUnavailableError: class extends Error {} }));
 vi.mock("../../../src/commands/controller/providers/copilot-runtime.js", () => ({ copilotExecutable: () => "/fixture/bundled/copilot" }));
-vi.mock("../../../src/commands/worker/herdr/command.js", async original => ({ ...await original<object>(), runHerdrCommand: mocks.ordinary, spawnHerdrProcess: () => { throw new Error("Native spawning is forbidden in this fixture."); } }));
+vi.mock("../../../src/commands/worker/herdr/command.js", async original => ({ ...await original<object>(), runHerdrCommand: (command: HerdrCommand, operation: Operation) => command.environment.DN_CONFIG_DIR === undefined ? mocks.ordinary(command, operation) : mocks.assistant(command, operation), spawnHerdrProcess: () => { throw new Error("Native spawning is forbidden in this fixture."); } }));
+
+vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ workerSqliteMigrationEvent: () => undefined }));
+vi.mock("../../../src/commands/worker/bots/store.js", () => ({ openBotStore: () => ({ close: () => {} }) }));
+vi.mock("../../../src/commands/worker/bots/execution-store.js", () => ({ openBotExecutionStore: () => ({ close: () => {} }) }));
+vi.mock("../../../src/commands/worker/bots/process.js", () => ({ createBotProcess: () => ({}) }));
+vi.mock("../../../src/commands/worker/bots/delete.js", () => ({ createBotDeletion: () => ({}) }));
+vi.mock("../../../src/commands/worker/bots/remote.js", () => ({ createBotRemote: () => ({}) }));
+vi.mock("../../../src/commands/worker/bots/session-api.js", () => ({ createBotSessionApi: () => ({}) }));
+vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: () => ({ run: async () => {}, shutdown: async () => {} }) }));
 
 // Only environment capture uses synthetic Windows semantics; all command and OS effects remain mocked.
 vi.mock("../../../src/commands/worker/codex-probe-owner.js", async original => {
@@ -28,6 +40,7 @@ vi.mock("../../../src/commands/worker/codex-probe-owner.js", async original => {
 });
 
 const operations: Operation[] = [];
+const hosts: ReturnType<typeof createWorkerBotHost>[] = [];
 const operation = () => { const result = createOperation({ limits: { totalMs: 15_000 } }); operations.push(result); return result; };
 const cwd = path.resolve("fixture-startup");
 const output = async (command: HerdrCommand): Promise<HerdrCommandResult> => ({ stderr: "", stdout: command.args.includes("--version")
@@ -47,7 +60,7 @@ beforeEach(() => {
   mocks.ordinary.mockImplementation(output); mocks.assistant.mockImplementation(output);
   mocks.nativeEnvironment.mockReturnValue(environment);
 });
-afterEach(() => { operations.splice(0).forEach(value => value.dispose()); vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(() => { operations.splice(0).forEach(value => value.dispose()); hosts.splice(0).forEach(host => host.close()); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("composed Codex probe ownership", () => {
   it("blocks assistant version/help after ordinary cleanup uncertainty and preserves the original error", async () => {
@@ -142,5 +155,86 @@ describe("composed Codex probe ownership", () => {
     await vi.advanceTimersByTimeAsync(0); expect(next).not.toHaveBeenCalled(); cancellation.abort(); rejectFirst(firstError);
     expect(await first).toBe(firstError); expect(await second).toBe(cancelled.signal.reason); expect(next).not.toHaveBeenCalled();
     expect(await owner.observe(invocation, operation(), async () => "retry")).toBe("retry");
+  });
+});
+
+
+// Keep the production host and both collectors in the closure; only stores, remotes and command effects are replaced.
+describe("production Bot host Codex ownership", () => {
+  const instance = () => {
+    vi.stubEnv("PATH", environment.PATH);
+    const paths = resolveWorkerPaths(path.resolve("fixture-home"));
+    const host = createWorkerBotHost({ homeDirectory: path.resolve("fixture-home"), packageDirectory: path.resolve("fixture-package"), workingDirectory: cwd, paths,
+      owner: { serverOrigin: "https://daynight.example", ownerUserId: "fixture-owner", workerId: "fixture-worker" }, serverToken: "fixture-placeholder", emit: () => {},
+      configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }), pollIntervalMs: () => 1000, recoveryLimit: () => 3 });
+    hosts.push(host);
+    return createWorkerTelemetryCollector({ paths, homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd,
+      machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: host });
+  };
+  const originalCleanup = async (terminationFailure = false) => {
+    const actual = await vi.importActual<typeof HerdrCommandModule>("../../../src/commands/worker/herdr/command.js");
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const child = new ChildProcess();
+    if (terminationFailure) Object.defineProperty(child, "pid", { get: () => { throw new Error("Fixture termination failed"); } });
+    const op = createOperation({ limits: { totalMs: 100, requestMs: 20 } });
+    try {
+      const pending = actual.runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, op, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(110);
+      const failure = await pending;
+      expect(failure).toBeInstanceOf(HerdrCommandCleanupError);
+      expect(actual.hasUnconfirmedHerdrCommandCleanup(failure)).toBe(true);
+      return { child, failure, unconfirmed: actual.hasUnconfirmedHerdrCommandCleanup };
+    } finally { op.dispose(); }
+  };
+
+  it.each(["ordinary", "assistant version", "assistant help"])("blocks matching chains after %s uncertainty and releases only after original close", async origin => {
+    const original = await originalCleanup();
+    const runner = origin === "ordinary" ? mocks.ordinary : mocks.assistant;
+    let failed = false;
+    runner.mockImplementation(async (command: HerdrCommand) => {
+      if (command.file === "codex" && !failed && (origin !== "assistant help" || command.args.includes("--help"))) { failed = true; throw original.failure; }
+      return output(command);
+    });
+    const telemetry = instance();
+    await finish(telemetry.collect(operation()));
+    const blocked = await finish(telemetry.collect(operation()));
+    expect(blocked.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
+    expect(blocked.telemetry.assistantHost?.providers[0]).toMatchObject({ available: false, reason: "unavailable" });
+    expect(blocked.issues.filter(issue => issue.component.includes("codex")).every(issue => issue.error === original.failure)).toBe(true);
+    const ordinaryCalls = calls(mocks.ordinary, "codex"), assistantCalls = calls(mocks.assistant, "codex");
+    original.child.emit("exit", 0, null);
+    await finish(telemetry.collect(operation()));
+    expect(calls(mocks.ordinary, "codex")).toBe(ordinaryCalls); expect(calls(mocks.assistant, "codex")).toBe(assistantCalls);
+    original.child.emit("close", 0, null);
+    expect(original.unconfirmed(original.failure)).toBe(false);
+    const recovered = await finish(telemetry.collect(operation()));
+    expect(recovered.telemetry.versions.codex).toMatchObject({ state: "ok", value: "0.1.0" });
+    expect(recovered.telemetry.assistantHost?.providers[0]!.available).toBe(true);
+    expect(calls(mocks.ordinary, "codex")).toBe(ordinaryCalls + 1); expect(calls(mocks.assistant, "codex")).toBe(assistantCalls + 2);
+  });
+
+  it("invalidates ordinary success when assistant cleanup confirms before the next collection", async () => {
+    const original = await originalCleanup(); let failed = false;
+    mocks.assistant.mockImplementation(async (command: HerdrCommand) => {
+      if (command.file === "codex" && !failed) { failed = true; throw original.failure; }
+      return output(command);
+    });
+    const telemetry = instance(); const first = await finish(telemetry.collect(operation()));
+    expect(first.telemetry.versions.codex.state).toBe("ok");
+    original.child.emit("close", 0, null);
+    const recovered = await finish(telemetry.collect(operation()));
+    expect(calls(mocks.ordinary, "codex")).toBe(2);
+    expect(recovered.telemetry.versions.codex.checkedAt).not.toBe(first.telemetry.versions.codex.checkedAt);
+    expect(recovered.telemetry.assistantHost?.providers[0]!.available).toBe(true);
+  });
+
+  it("retains matching termination failure after close while unrelated providers continue", async () => {
+    const original = await originalCleanup(true);
+    mocks.ordinary.mockImplementation(async (command: HerdrCommand) => { if (command.file === "codex") throw original.failure; return output(command); });
+    const telemetry = instance(); await finish(telemetry.collect(operation())); original.child.emit("close", 0, null);
+    const blocked = await finish(telemetry.collect(operation()));
+    expect(original.unconfirmed(original.failure)).toBe(true);
+    expect(calls(mocks.ordinary, "codex")).toBe(1); expect(calls(mocks.assistant, "codex")).toBe(0);
+    expect(blocked.telemetry.assistantHost?.providers.slice(1).every(provider => provider.available)).toBe(true);
   });
 });

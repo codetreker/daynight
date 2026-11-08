@@ -18,10 +18,10 @@ const controls: SessionControls = { revision: '3', settings: [{ id: 'permissions
 const composer = (s = snapshot({ controls })) => ({ state: state(s), connected: true, onSend: vi.fn(async () => {}), onCancel: vi.fn(async () => {}), onExecuteCommand: vi.fn(async () => {}), onUpdateSetting: vi.fn(async () => {}), onRefreshControls: vi.fn(async () => {}) });
 const operation = (s: SessionSnapshot): SessionOperation => ({ protocol: s.protocol, sessionId: s.sessionId, claimId: 'claim', executionGeneration: s.executionGeneration, operationId: 'unknown', kind: 'send_message', state: 'unknown', providerResult: null, error: null });
 function viewClient(s: SessionSnapshot, connected = true, operations = new Map<string, SessionOperation>()) {
-  const view: SessionViewState = { historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...state(s), operations }, archiveState: 'ready', settingIntents: new Map(), draft: { text: '', revision: '1', submission: null }, status: 'ready', connected, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
-  return { snapshot: () => view, subscribe: () => () => {}, refresh: vi.fn(), checkOperation: vi.fn(), respond: vi.fn(), loadOlder: vi.fn(), resource: vi.fn(), setDraft: vi.fn(), send: vi.fn(), cancel: vi.fn(), updateSetting: vi.fn(), executeCommand: vi.fn(), refreshControls: vi.fn() } as unknown as TaskSessionClient;
+  const view: SessionViewState = { operationProgress: new Map(), startupReport: null, errorCode: null, environmentConnected: true, historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...state(s), operations }, archiveState: 'ready', settingIntents: new Map(), draft: { text: '', revision: '1', submission: null }, status: 'ready', connected, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
+  return { snapshot: () => view, canInteract: () => true, subscribe: () => () => {}, refresh: vi.fn(), checkOperation: vi.fn(), respond: vi.fn(), loadOlder: vi.fn(), resource: vi.fn(), setDraft: vi.fn(), send: vi.fn(), cancel: vi.fn(), updateSetting: vi.fn(), executeCommand: vi.fn(), refreshControls: vi.fn() } as unknown as TaskSessionClient;
 }
-const activities = [ ['initializing', 'Starting task'], ['idle', 'Ready'], ['working', 'Working'], ['waiting_input', 'Waiting for an answer'], ['stopped', 'Stopped'], ['unknown', 'Outcome unknown'] ] as const;
+const activities = [ ['idle', 'Ready'], ['working', 'Working'], ['waiting_input', 'Waiting for an answer'], ['stopped', 'Stopped'], ['unknown', 'Outcome unknown'] ] as const;
 it.each(activities)('keeps header and visible footer %s labels English through locale changes', (activity, label) => {
   const s = snapshot({ activity });
   const view = render(<><SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s)} active current /><SessionActivity snapshot={s} connected active commandPending={false} interruptRequested={false} interruptPending interruptAllowed={false} onInterrupt={vi.fn()} /></>);
@@ -34,32 +34,35 @@ it.each(activities)('keeps header and visible footer %s labels English through l
   }
 });
 it.each([
-  [{ connectionState: 'disconnected' }, true, 'Disconnected'], [{ connectionState: 'synchronizing' }, true, 'Restoring session'], [{ synchronized: false }, true, 'Restoring session'], [{}, false, 'Disconnected'],
-] as const)('keeps connection labels English in header and footer (%j, connected=%s)', (patch, connected, label) => {
+  [{ connectionState: 'disconnected' }, true, '执行环境连接中断', 'Execution environment disconnected'],
+  [{ connectionState: 'synchronizing' }, true, '正在同步会话', 'Synchronizing session'],
+  [{ synchronized: false }, true, '正在同步会话', 'Synchronizing session'],
+  [{}, false, '正在同步会话', 'Synchronizing session'],
+] as const)('localizes a single connection status in the header (%j, connected=%s)', (patch, connected, zh, en) => {
   const s = snapshot({ activity: 'working', ...patch });
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s, connected)} active current />);
   for (const locale of ['zh-CN', 'en'] as const) {
     view.setLocale(locale);
-    expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent(label);
-    expect(view.container.querySelector('.session-composer-activity [aria-live]')).toHaveTextContent(label);
+    expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent(locale === 'en' ? en : zh);
+    expect(view.container.querySelector('.session-composer-activity [aria-live]')).toBeNull();
   }
 });
-it('keeps the archived header English while its body follows the locale', () => {
+it('keeps the ready archive status only in the English header across locales', () => {
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(snapshot({ lifecycle: 'archived' }))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Completed · Read-only history');
-  expect(screen.getByText('已结束 · 只读历史')).toBeVisible();
+  expect(screen.queryByText('已结束 · 只读历史')).toBeNull();
   view.setLocale('en');
-  expect(screen.getAllByText('Completed · Read-only history')).toHaveLength(2);
+  expect(screen.getAllByText('Completed · Read-only history')).toHaveLength(1);
   expect(screen.queryByRole('textbox')).toBeNull();
 });
 it('keeps unknown operation receipts localized independently of the activity label', () => {
   const s = snapshot({ activity: 'unknown' }), op = operation(s);
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s, true, new Map([[op.operationId, op]]))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Outcome unknown');
-  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('结果未知')).toBeVisible();
+  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('无法确认此操作是否完成，请核对原操作。')).toBeVisible();
   expect(screen.getByRole('button', { name: '核对原操作' })).toBeVisible();
   view.setLocale('en');
-  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('Outcome unknown')).toBeVisible();
+  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('Unable to confirm whether this operation completed. Check the original operation.')).toBeVisible();
 });
 it('keeps Permissions trigger English while the panel, errors, and draft remain localized', async () => {
   const props = composer(); props.onUpdateSetting.mockRejectedValue(null);
@@ -117,7 +120,7 @@ it('keeps command execution and all interrupt stages English through locale chan
   for (const locale of ['zh-CN', 'en'] as const) { view.setLocale(locale); expect(screen.getByRole('button', { name: 'Interrupt requested' })).toBeDisabled(); }
   expect(props.onCancel).toHaveBeenCalledOnce();
 });
-it('keeps tool types English but localizes result statuses and pending interactions', async () => {
+it('keeps tool types English and result statuses localized while answering silently', async () => {
   const entries: TimelineEntry[] = [
     ...(['commandExecution', 'fileChange', '原生工具名'] as const).map((name, index): TimelineEntry => ({ kind: 'tool_call', entryId: String(index), entrySeq: String(index), revision: '1', callId: String(index), name, input: '原始用户内容', output: [], status: (['completed', 'failed', 'running'] as const)[index]!, truncated: false })),
     { kind: 'interaction', entryId: '3', entrySeq: '3', revision: '1', interaction: { kind: 'approval', interactionId: 'approval', revision: '1', state: 'pending', title: '原始审批标题', detail: '原始审批内容', actions: ['allow_once'] } },
@@ -130,7 +133,10 @@ it('keeps tool types English but localizes result statuses and pending interacti
     for (const label of ['Command', 'File changes']) expect(screen.getByText(label)).toHaveAttribute('lang', 'en');
     for (const status of locale === 'en' ? ['Completed', 'Failed', 'Running'] : ['已完成', '失败', '运行中']) expect(screen.getByText(status)).toBeVisible();
     expect(screen.getByText('原生工具名')).not.toHaveAttribute('lang');
-    expect(screen.getByText(locale === 'en' ? 'Awaiting provider confirmation' : '等待 Provider 确认')).toBeVisible();
+    expect(screen.queryByText(locale === 'en' ? 'Awaiting provider confirmation' : '等待 Provider 确认')).toBeNull();
+    expect(screen.getByText('原始审批标题')).toBeVisible();
+    expect(screen.getByText('原始审批内容')).toBeVisible();
+    expect(screen.getByRole('button', { name: locale === 'en' ? 'Allow once' : '允许一次' })).toBeDisabled();
     for (const input of screen.getAllByText('原始用户内容')) expect(input).not.toHaveAttribute('lang');
   }
   expect(respond).toHaveBeenCalledOnce();

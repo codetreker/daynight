@@ -1,6 +1,10 @@
 package api
 
-import "time"
+import (
+	"time"
+
+	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
+)
 
 type ProjectGrant struct {
 	ProjectID string    `json:"projectId"`
@@ -11,11 +15,7 @@ type ProjectGrant struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-type TeamRef struct {
-	ID   string  `json:"id"`
-	Kind string  `json:"kind"`
-	Name *string `json:"name"`
-}
+type TeamRef = profileprotocol.TeamRef
 
 type ProjectInheritance struct {
 	Team TeamRef `json:"team"`

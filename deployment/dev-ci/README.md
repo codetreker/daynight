@@ -17,7 +17,7 @@ a different task-sync lookback window. Invalid, zero and negative values fail
 server startup. The window is server configuration; clients cannot override it.
 
 The runner requires Bash, standard shell utilities, Node.js 24, Docker Engine 28
-or newer, Linux containers and Docker Compose 2.20 or newer. Linux Docker engines
+or newer, Linux containers and Docker Compose 2.20.2 or newer. Linux Docker engines
 on `amd64` and `arm64`, including Docker Desktop Linux containers on macOS, are
 supported. By default, Git and host Go 1.27.2 prepare a fixture from the pinned
 UniAuth revision
@@ -54,9 +54,14 @@ The runner records the fixture's generated application credentials in a private
 environment file, starts the authenticated server and waits for `/readyz`.
 
 `/healthz` and `/readyz` are public database probes and do not call UniAuth. The
-server and gateway Compose health checks use `/readyz`. Business endpoints still
-require a browser session or personal access token; the public readiness example
-does not perform a login. Acceptance clients use the shared
+server and gateway Compose health checks use `/readyz`. PostgreSQL, gateway and
+server use `start_interval: 250ms` during their existing startup grace periods;
+normal checks remain every two seconds. Probe commands, retries, deadlines,
+`service_healthy` dependencies and Compose readiness waits still determine actual
+readiness. PostgreSQL uses TCP so its temporary initialization socket cannot
+admit the application early. The [startup probe decision](../../.agents/notes/archived/testing/2026-11-04-dev-ci-startup-probes.md) records the rationale for the timing choice. Business endpoints still require a browser session or
+personal access token; the public readiness example does not perform a login.
+Acceptance clients use the shared
 [authentication fixture helper](../../packages/daynight-server/scripts/auth-fixture.mts)
 and the private fixture descriptor to complete real login handoffs.
 

@@ -9,8 +9,8 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | 数据库 | 路径 | 当前版本与受支持非零来源 |
 |---|---|---|
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
-| Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 7，版本 5 保留原行升级，6→7 移除清理通知步骤字段，旧详细库 1–4 明确拒绝 |
-| Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 2，1→2 移除 cleanup 的重复操作回执与资源完成字段 |
+| Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 12，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，旧详细库 1–4 明确拒绝 |
+| Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
 | Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 6，保留已有 1→5 转换，5→6 先可靠导出正文再转换索引 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
@@ -28,7 +28,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 
 一次打开所需的重置、基线建库和连续迁移在同一 `BEGIN IMMEDIATE` 事务中完成，SQL 结构、数据和 `user_version` 一起提交或回滚。重置不得删除或替换数据库文件。迁移失败或进程中断后，重新打开只接受完整旧格式或完整目标格式；修复实际原因后可再次打开。各数据库分别保证原子性，不承诺跨文件事务；Worker 所需任一库打开失败时不启动协调业务。
 
-Review v2 不为接入公共机制额外提高版本或改写记录；journal v6 的版本变化来自会话正文转文件归档，原非零历史必须先可靠导出再删除正文表。Web v2 的清理记录只保留 kind、startedAt、deadline；原生操作身份仍由执行记录持有，回执从 Controller journal 读取。1→2 迁移移除旧重复字段，保留其余业务记录，不在当前代码兼容旧清理步骤表示。版本 0 重置不成为非零版本的历史数据清洗路径。
+Review v2 不为接入公共机制额外提高版本或改写记录；journal v6 的版本变化来自会话正文转文件归档，原非零历史必须先可靠导出再删除正文表。Web 的清理记录自 v2 起只保留 kind、startedAt、deadline；原生操作身份仍由执行记录持有，回执从 Controller journal 读取。1→2 迁移移除旧重复字段，保留其余业务记录，不在当前代码兼容旧清理步骤表示。Web 2→3 新增编排阻塞表并保留原执行记录，已升级的库拒绝旧二进制访问。版本 0 重置不成为非零版本的历史数据清洗路径。
 
 ## 查询与并发
 

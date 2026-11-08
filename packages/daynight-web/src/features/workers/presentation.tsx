@@ -4,6 +4,7 @@ import { navigate } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { Locale } from '../../i18n/locale';
 import type { WorkerSummary } from '../../api/workers';
+import { TaskCacheError } from '../task-cache/database';
 import { isWorkerOnline } from './observation';
 
 export const followWorkerLink = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -42,7 +43,7 @@ export const WorkerRefresh = ({ refresh, refreshing, readEnabled }: { readonly r
 
 const WorkerErrorDetail = ({ error }: { readonly error: unknown }) => {
   const { messages: { workers: m, common } } = useI18n();
-  return <><p>{error instanceof ApiError ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError : m.readError : m.readError}</p>
+  return <><p>{error instanceof TaskCacheError ? m.cacheStorageError : error instanceof ApiError ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError : m.readError : m.readError}</p>
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
 

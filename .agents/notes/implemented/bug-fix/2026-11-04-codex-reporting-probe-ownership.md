@@ -4,22 +4,25 @@ Status: implemented
 
 ## Problem
 
-The optional assistant-host collector and ordinary telemetry collector can both
+The assistant-host collector and ordinary telemetry collector can both
 probe Codex through the same native PATH. Independent cleanup-failure state lets
 one collector start replacement probes after the other loses confirmation of
 process cleanup. A cached ordinary success can also hide that uncertainty.
 
-The [assistant observation decision](../architecture/2026-11-04-worker-assistant-host-observations.md)
-keeps assistant reporting optional and preserves per-collector failures. Those
+The [archived assistant observation decision](../../archived/architecture/2026-11-04-worker-assistant-host-observations.md)
+records the original optional composition and per-collector failures. Those
 local refusals alone do not protect a composed observer of the same invocation.
 
 ## Decision
 
-A telemetry-owned Codex probe owner is passed to the optional assistant
-collector. It serializes matching ordinary version observations and whole
-assistant version/help chains, retaining the first typed cleanup failure as its
-original private error object. The ordinary version cache is read inside that
-owner. Waiting calls join the preceding chain and check cancellation before
+A telemetry-owned Codex probe owner is passed through the Bot host wrapper to
+the assistant collector. It serializes matching ordinary version observations and whole
+assistant version/help chains, retaining a typed cleanup failure as its original private error object while
+its original cleanup remains unconfirmed. Every matching cleanup failure
+invalidates the ordinary Codex cache, including a prior success; the cache is
+read inside the owner. Reliable original late-close restores eligibility,
+following the [native probe recovery decision](2026-11-06-native-probe-cleanup-recovery.md),
+without treating confirmation as a successful observation. Waiting calls join the preceding chain and check cancellation before
 starting a command. A standalone assistant collector keeps its own owner.
 
 Matching uses the existing Codex PATH invocation: executable name `codex`, the
@@ -39,8 +42,9 @@ bundled assistant executable are deliberately outside this owner.
 
 The [reporting requirements](../../../../docs/spec/daynight-worker-reporting.md)
 and [collection design](../../../../docs/design/daynight-worker-reporting.md)
-own acceptance and lifecycle details. Runtime activation, report schema,
-dependencies and CLI version retain their existing owners.
+own acceptance and lifecycle details. Report schema, dependencies and CLI version retain their existing owners.
+The Bot host continues to omit collection before configuration is applied or
+after closure, and to discard observations spanning configuration transitions.
 
 ## Alternatives
 
@@ -75,5 +79,5 @@ without starting another command. Ordinary command failures remain retryable.
 
 The owner lives only in this telemetry composition. It does not coordinate
 independent reporters, task execution, arbitrary executable aliases, or
-unrelated native providers. Assistant reporting remains disconnected in the
-default runtime until hosting is integrated.
+unrelated native providers. Assistant reporting is composed by the Worker runtime through the Bot host.
+Its configuration checks and result freshness remain independent of probe ownership.

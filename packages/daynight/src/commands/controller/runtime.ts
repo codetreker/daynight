@@ -1,3 +1,4 @@
+import { startupFailure } from "./startup.js";
 import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
@@ -47,7 +48,15 @@ export const runController = async (options: { homeDirectory: string; provider: 
     const s = journal.getSnapshot();
     return { nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
-  const fail = (error: unknown) => { const message = error instanceof Error ? error.message : String(error); diagnostic(message); try { journal.patchSnapshot({ lifecycle: "paused", error: message }); } catch { /* The private log retains a journal failure when disk writes fail. */ } };
+  const fail = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error); diagnostic(message);
+    try {
+      const startup = journal.getSnapshot().startup;
+      // Shutdown may fail after initialization already supplied the decisive observation.
+      const retain = startup !== undefined && startup.state !== "starting" && startup.reasonCode !== "evidence_missing";
+      journal.patchSnapshot({ lifecycle: "paused", error: message, ...(retain ? {} : { startup: startupFailure(error) }) });
+    } catch { /* The private log retains a journal failure when disk writes fail. */ }
+  };
   const dispatch = (operation: ControllerOperation, invoke: () => Promise<unknown>): Promise<ControllerOperation> => {
     const running = active.get(operation.operationId); if (running) return running;
     if (operation.state !== "accepted") return Promise.resolve(operation);
@@ -230,6 +239,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const signal = () => { void shutdown(); };
   process.once("SIGINT", signal); process.once("SIGTERM", signal);
   startup = (async () => {
+    journal.patchSnapshot({ startup: { state: "starting", reasonCode: "initializing" } });
     journal.patchSnapshot({ controllerProcess: await captureControllerProcessProof(ticket.launchId) });
     if (stopping) return;
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(ticket.ipcEndpoint, () => { server.off("error", reject); resolve(); }); });
@@ -249,6 +259,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
       ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
+      ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true as const } : {}),
       onDiagnostic: diagnostic,
       onFatalError: error => {
         if (providerFailure) return;
@@ -269,6 +280,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
         const receipt = journal.recordOperation(operationId, "confirmed", { disposition: "handled" });
         publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
       }),
+      hasTimelineEntry: entryId => journal.hasTimelineEntry(entryId),
       onTimeline: entry => nativeEvent(() => {
         journal.projectTimeline(providerDisplayEntry(entry));
         if (entry.kind === "interaction") {
@@ -294,7 +306,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     if (projectionFailure) throw new Error(projectionFailure);
     if (providerFailure) throw new Error(providerFailure);
     if (stopping) return;
-    journal.patchSnapshot({ lifecycle: "ready" }); publishState();
+    journal.patchSnapshot({ lifecycle: "ready", startup: { state: "ready", reasonCode: "ready" } }); publishState();
   })();
   try {
     await startup;

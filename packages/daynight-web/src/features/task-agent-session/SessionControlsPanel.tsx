@@ -1,18 +1,24 @@
+import { operationErrorMessage, operationErrorText } from './operation-error';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { SessionControls, SessionSetting } from '../../../../daynight/src/session/controls';
 import type { SessionState } from './state';
 import type { SessionSettingIntent } from './client';
 import { useSessionMessages } from './messages';
+import { operationPresentation, type SessionOperationProgress } from './operation-presentation';
+import { useSessionControlMessages } from './controls-messages';
 
 export type ControlsView = 'model' | 'permissions' | 'commands' | null;
-export function SessionControlsPanel({ controls, state, intents, view, disabled, onClose, onSelect, onRefresh }: {
+export function SessionControlsPanel({ controls, state, intents, operationProgress = new Map(), view, disabled, onClose, onSelect, onRefresh }: {
   readonly controls: SessionControls | undefined; readonly state: SessionState;
+  readonly operationProgress?: SessionOperationProgress;
   readonly intents: ReadonlyMap<string, SessionSettingIntent>; readonly view: ControlsView; readonly disabled: boolean;
   readonly onClose: () => void; readonly onSelect: ((id: string, value: string, revision: string) => Promise<void>) | undefined;
   readonly onRefresh: (() => Promise<void>) | undefined;
 }) {
+  const controlMessages = useSessionControlMessages(state.snapshot?.identity.provider);
   const m = useSessionMessages(), id = useId(), panel = useRef<HTMLDivElement>(null);
-  const [failure, setFailure] = useState<string | null>(null), [busy, setBusy] = useState(false);
+  const [failureCause, setFailure] = useState<string | Error | null>(null), [busy, setBusy] = useState(false);
+  const failure = operationErrorMessage(failureCause, state.operations, m.operationFailed);
   const inFlight = useRef(false);
   useEffect(() => {
     if (view !== 'model' && view !== 'permissions') return;
@@ -26,13 +32,13 @@ export function SessionControlsPanel({ controls, state, intents, view, disabled,
     if (disabled || inFlight.current || !controls || !setting.mutable || value === setting.value || !setting.options.some(option => option.value === value) || !onSelect) return;
     inFlight.current = true; setBusy(true); setFailure(null);
     try { await onSelect(setting.id, value, controls.revision); }
-    catch (error) { setFailure(error instanceof Error ? error.message : m.failure); }
+    catch (error) { setFailure(error instanceof Error ? error : m.failure); }
     finally { inFlight.current = false; setBusy(false); }
   }
   async function refresh() {
     if (disabled || inFlight.current || !onRefresh) return;
     inFlight.current = true; setBusy(true); setFailure(null);
-    try { await onRefresh(); } catch (error) { setFailure(error instanceof Error ? error.message : m.failure); }
+    try { await onRefresh(); } catch (error) { setFailure(error instanceof Error ? error : m.failure); }
     finally { inFlight.current = false; setBusy(false); }
   }
   return <div ref={panel} className="session-controls-panel" aria-label={view === 'model' ? m.modelSettings : m.permissionSettings}>
@@ -42,18 +48,21 @@ export function SessionControlsPanel({ controls, state, intents, view, disabled,
     {settings.map(setting => {
       const intent = intents.get(setting.id), operation = intent && state.operations.get(intent.operationId);
       const pending = operation && !['confirmed', 'failed', 'rejected', 'expired'].includes(operation.state);
-      const actual = setting.options.find(option => option.value === setting.value)?.label ?? setting.value ?? m.unavailableValue;
-      const value = pending && intent ? intent.value : setting.value ?? '';
+      const receipt = operation && operationPresentation(operation, operationProgress);
+      const actualOption = setting.options.find(option => option.value === setting.value);
+      const actual = actualOption ? controlMessages.optionLabel(setting, actualOption) : setting.value ?? m.unavailableValue;
+      const description = controlMessages.settingDescription(setting);
+      const value = setting.value ?? '';
       const failed = operation && ['failed', 'rejected', 'expired'].includes(operation.state);
       return <div className="session-control-setting" key={setting.id} data-setting-state={pending ? 'pending' : undefined}>
-        <label htmlFor={`${id}-${setting.id}`}>{setting.label}</label>
+        <label htmlFor={`${id}-${setting.id}`}>{controlMessages.settingLabel(setting)}</label>
         <select id={`${id}-${setting.id}`} value={value} disabled={disabled || busy || !setting.mutable || !onSelect} onChange={event => void select(setting, event.target.value)}>
           {!setting.options.some(option => option.value === value) ? <option value={value}>{value || m.unavailableValue}</option> : null}
-          {setting.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          {setting.options.map(option => <option key={option.value} value={option.value}>{controlMessages.optionLabel(setting, option)}</option>)}
         </select>
-        {pending ? <p className="session-control-note" role="status">{operation.state === 'unknown' ? m.settingUnknown : m.settingPending} {m.currentValue}: {actual}</p> : null}
-        {failed ? <p className="session-error" role="alert">{operation.error?.message ?? m.failure}</p> : null}
-        {setting.description ? <p className="session-control-note">{setting.description}</p> : null}
+        {pending && receipt === 'unknown' ? <p className="session-control-note" role="status">{m.settingUnknown} {m.currentValue}: {actual}</p> : null}
+        {failed ? <p className="session-error" role="alert">{operationErrorText(operation.error?.message ?? '', m.operationFailed)}</p> : null}
+        {description ? <p className="session-control-note">{description}</p> : null}
         {setting.scope === 'next_turn' ? <p className="session-control-note">{m.nextTurnSetting}</p> : null}
       </div>;
     })}

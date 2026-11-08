@@ -4,7 +4,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { captureCodexProbeEnvironment, createCodexProbeOwner } from "../../../src/commands/worker/codex-probe-owner.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
 
 // Exercise the locked launcher sources while replacing every filesystem and process effect.
 const require = createRequire(import.meta.url);
@@ -48,7 +48,7 @@ const launcher = (kind: "native" | "shebang") => {
 const ownerSource = readFileSync(new URL("../../../src/commands/worker/codex-probe-owner.ts", import.meta.url), "utf8")
   .split("\n").filter(line => !line.startsWith("import ")).join("\n").replaceAll("export ", "");
 const windows = vm.runInNewContext(`${stripTypeScriptTypes(ownerSource)}\n({ createCodexProbeOwner, captureCodexProbeEnvironment });`, {
-  process: { platform: "win32" }, hasHerdrCommandCleanupFailure,
+  process: { platform: "win32" }, hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup,
 }) as { createCodexProbeOwner: typeof createCodexProbeOwner; captureCodexProbeEnvironment: typeof captureCodexProbeEnvironment };
 
 const scenarios = [

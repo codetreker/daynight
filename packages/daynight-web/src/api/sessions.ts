@@ -1,4 +1,5 @@
 import { parseSessionArchive, parseSessionArchiveStatus, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, type SessionArchive, type SessionArchiveStatus } from '../../../daynight/src/session/archive';
+import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 export { listTestSessions, parseTestSessionList, type TestSessionSummary, type TestSessionList } from './test-sessions';
 import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, parseCurrentSessionResponse, parseOperationResponse, parseTimelinePage, RELAY_LIMITS,
@@ -6,6 +7,16 @@ import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, p
 import { assertSessionFence, parseSessionCommand, type SessionCommand, type SessionOperation } from '../../../daynight/src/session/protocol';
 
 export type SessionChannel = { close(): void };
+/** An authenticated independent-current read rejected continued access, not an operation fence. */
+export class IndependentSessionReadDenied extends ApiError {
+  constructor(error: ApiError) { super('server', error.status, error.code, error.requestId, undefined, error); this.name = 'IndependentSessionReadDenied'; }
+}
+export type BotSessionBinding = {
+  readonly ownerUserId: string;
+  readonly botId: string;
+  readonly sessionId: string;
+  readonly testExecutionId: string;
+};
 export type SessionApi = {
   archive(sessionId: string, signal: AbortSignal): Promise<SessionArchiveStatus>;
   archiveContent(sessionId: string, signal: AbortSignal): Promise<SessionArchive>;
@@ -19,20 +30,37 @@ export type SessionApi = {
 };
 export function createSessionApi(projectId: string, taskId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
   const root = `/api/v1/projects/${requestId(projectId)}/tasks/${requestId(taskId)}/sessions`;
-  return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse);
+  return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse, { [STARTUP_REPORT_HEADER]: '1' });
 }
 export function createTestSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
+  return createIndependentSessionApi(sessionId, userId, onPrincipalMismatch);
+}
+/** Bind Bot management's confirmed identity to the existing independent Session transport. */
+export function createBotSessionApi(binding: BotSessionBinding, onPrincipalMismatch: () => void): SessionApi {
+  requestId(binding.botId);
+  return createIndependentSessionApi(requestId(binding.sessionId), requestId(binding.ownerUserId), onPrincipalMismatch, requestId(binding.testExecutionId));
+}
+function createIndependentSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void, testExecutionId?: string): SessionApi {
   const root = `/api/v1/test-sessions/${requestId(sessionId)}`;
-  return createBoundSessionApi(root, (id) => {
+  const api = createBoundSessionApi(root, (id) => {
     if (id !== sessionId) throw new ApiError('protocol');
     return root;
   }, userId, onPrincipalMismatch, (value) => {
     const { session } = parseRegistrationResponse(value);
-    if (session.sessionId !== sessionId || !session.testExecutionId || session.identity.ownerUserId !== userId) throw new ApiError('protocol');
+    if (session.sessionId !== sessionId || !session.testExecutionId || session.identity.ownerUserId !== userId || testExecutionId !== undefined && session.testExecutionId !== testExecutionId) throw new ApiError('protocol');
     return { status: 'registered', session };
   });
+  return { ...api, current: async signal => {
+    try { return await api.current(signal); }
+    catch (error) {
+      // This read carries no mutable version/fence. A Bot deletion barrier uses
+      // resource_conflict here, including access through a retained Test URL.
+      if (error instanceof ApiError && error.kind === 'server' && error.status === 409 && error.code === 'resource_conflict') throw new IndependentSessionReadDenied(error);
+      throw error;
+    }
+  } };
 }
-function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse): SessionApi {
+function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse, currentHeaders: Readonly<Record<string, string>> = {}): SessionApi {
   async function get<T>(url: string, signal: AbortSignal, parse: (value: unknown) => T, init: RequestInit = {}, expectedStatus = 200): Promise<T> {
     const response = await request(url, signal, { ...init, headers: { Accept: 'application/json', ...init.headers } });
     assertResponsePrincipal(response, userId, onPrincipalMismatch);
@@ -53,7 +81,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
       signal.throwIfAborted();
       return archive;
     },
-    current: (signal) => get(currentUrl, signal, parseCurrent),
+    current: (signal) => get(currentUrl, signal, parseCurrent, { headers: currentHeaders }),
     timeline: (id, direction, cursor, signal) => {
       const params = new URLSearchParams({ direction, limit: '100' });
       if (cursor !== null) params.set('cursor', cursor);

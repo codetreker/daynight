@@ -1,4 +1,4 @@
-import { directAccessFixture } from "./helpers/taskSync";
+import { directAccessFixture, viewerHeaders } from "./helpers/taskSync";
 import * as fake from "fake-indexeddb";
 import { openDB, type IDBPDatabase } from "idb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -6,6 +6,9 @@ import { pauseAuthRequests } from "../src/api/client";
 import type { Project, TaskSummary, TaskSync } from "../src/api/types";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema, type TaskIntrinsicDetail } from "../src/features/task-cache/database";
+import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
+import { detailFixture } from "./helpers/taskDetail";
+import { wireResponse } from "./helpers/wireJson";
 
 const userId = "10000000-0000-0000-0000-000000000001";
 const otherUser = "10000000-0000-0000-0000-000000000002";
@@ -17,7 +20,7 @@ const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(1
 const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, ...changes });
 const signal = () => new AbortController().signal;
 const scopes: TaskCacheScope[] = [];
@@ -65,7 +68,7 @@ afterEach(() => {
 it("atomically saves task data and reopens the exact maximum without granting local access", async () => {
   const first = scope(); const result = await seed(first, [task(1), task(2, { updatedAt: later, version: 9_007_199_254_740_993n })]);
   const database = await inspect();
-  expect([...database.objectStoreNames]).toEqual(["details", "profiles", "projects", "summaries", "userScopes"]);
+  expect([...database.objectStoreNames]).toEqual(["details", "profiles", "projects", "sessionHistory", "summaries", "userScopes"]);
   const manifest = await database.get("projects", [userId, projectId]);
   expect(manifest).toMatchObject({ state: "active", epoch, maxUpdatedAt: later, taskCount: 2, edgeCount: 0 });
   expect(result.project.versions.get(taskId(2))).toBe(9_007_199_254_740_993n); first.dispose();
@@ -73,6 +76,193 @@ it("atomically saves task data and reopens the exact maximum without granting lo
   expect(await reopened.beginSync(projectId, signal())).toMatchObject({ epoch, maxUpdatedAt: later, cacheGeneration: manifest!.cacheGeneration });
   expect((await reopened.readProject(projectId, signal()))!.graph.tasks).toHaveLength(2);
   expect(reopened.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it("does not retire a live direct epoch when a cold peer commits its older graph", async () => {
+  const peer = scope(); const delayed = await peer.beginSync(projectId, signal());
+  const direct = scope(); const current = await direct.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  expect(await direct.observeHistory(current, nextEpoch, signal())).toBe("current");
+  const events: { historyChanged?: true }[] = []; direct.subscribe(event => events.push(event));
+  expect(await peer.observeHistory(delayed, epoch, signal())).toBe("current");
+  await peer.applySync(delayed, response([task(1)], { mode: "snapshot", epoch }), signal());
+  await vi.waitFor(() => expect(events.some(event => event.historyChanged)).toBe(true));
+  expect(direct.isTaskReadCurrent(current, true)).toBe(false);
+  const retry = await direct.beginTaskRead(projectId, taskId(1), 1, 2, signal());
+  expect(await direct.observeHistory(retry, nextEpoch, signal())).toBe("current");
+  const graph = await direct.beginSync(projectId, signal());
+  expect(graph.epoch).toBe(epoch);
+  expect(await direct.observeHistory(graph, nextEpoch, signal())).toBe("current");
+  expect((await direct.applySync(graph, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal())).project.manifest.epoch).toBe(nextEpoch);
+});
+
+it("retires an old direct epoch only after a live observation confirms a peer replacement", async () => {
+  const direct = scope(); const original = await direct.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  expect(await direct.observeHistory(original, epoch, signal())).toBe("current");
+  const peer = scope(); const ticket = await peer.beginSync(projectId, signal());
+  expect(await peer.observeHistory(ticket, nextEpoch, signal())).toBe("current");
+  const events: { historyChanged?: true }[] = []; direct.subscribe(event => events.push(event));
+  await peer.applySync(ticket, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
+  await vi.waitFor(() => expect(events.some(event => event.historyChanged)).toBe(true));
+  const confirmed = await direct.beginTaskRead(projectId, taskId(1), 1, 2, signal());
+  expect(await direct.observeHistory(confirmed, nextEpoch, signal())).toBe("retired");
+  const retry = await direct.beginTaskRead(projectId, taskId(1), 1, 3, signal());
+  expect(await direct.observeHistory(retry, nextEpoch, signal())).toBe("current");
+  const stale = await direct.beginTaskRead(projectId, taskId(1), 1, 4, signal());
+  await expect(direct.observeHistory(stale, epoch, signal())).rejects.toMatchObject({ name: "AbortError" });
+});
+
+it("keeps a direct owner's recovery GET through duplicate stale manifest hints and detects a new manifest", async () => {
+  const peer = scope(); const delayed = await peer.beginSync(projectId, signal());
+  const direct = scope(); const sessions = new TaskDetailSessions(direct);
+  const unsubscribe = sessions.subscribe(projectId, taskId(1), () => {});
+  const live = () => wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(userId, { "Daynight-Task-Epoch": nextEpoch }) });
+  let release!: (value: Response) => void; const held = new Promise<Response>(resolve => { release = resolve; });
+  const signals: AbortSignal[] = []; let reads = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => { reads++; signals.push(init.signal!); return reads === 2 ? held : Promise.resolve(live()); }));
+  const events: { historyChanged?: true; historyHint?: true }[] = []; direct.subscribe(event => events.push(event));
+  try {
+    sessions.openDirect(projectId, taskId(1));
+    await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1)).status).toBe("ready"));
+    expect(await peer.observeHistory(delayed, epoch, signal())).toBe("current");
+    await peer.applySync(delayed, response([task(1)], { mode: "snapshot", epoch }), signal());
+    await vi.waitFor(() => expect(reads).toBe(2));
+    const injector = new Channel("daynight-task-cache"); const before = events.length;
+    injector.postMessage({ userId, projectId });
+    await vi.waitFor(() => expect(events.length).toBeGreaterThan(before));
+    expect(events.filter(event => event.historyChanged)).toHaveLength(1);
+    expect(signals[1]!.aborted).toBe(false);
+    release(live());
+    await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1))).toMatchObject({ status: "ready", error: null, requiresFreshRead: false }));
+    const database = await inspect(); const previous = await database.get("projects", [userId, projectId]);
+    await database.put("projects", { ...previous!, epoch: "30000000-0000-0000-0000-000000000003", cacheGeneration: crypto.randomUUID() });
+    injector.postMessage({ userId, projectId });
+    await vi.waitFor(() => expect(events.filter(event => event.historyHint)).toHaveLength(2));
+    injector.close();
+  } finally { unsubscribe(); sessions.dispose(); }
+});
+
+it("honors a current history's access denial after repeated stale manifest hints", async () => {
+  const peer = scope(); const delayed = await peer.beginSync(projectId, signal());
+  const direct = scope(); const current = await direct.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  expect(await direct.observeHistory(current, nextEpoch, signal())).toBe("current");
+  const events: { historyChanged?: true; accessRevoked?: true }[] = []; direct.subscribe(event => events.push(event));
+  expect(await peer.observeHistory(delayed, epoch, signal())).toBe("current");
+  await peer.applySync(delayed, response([task(1)], { mode: "snapshot", epoch }), signal());
+  await vi.waitFor(() => expect(events.filter(event => event.historyChanged)).toHaveLength(1));
+  const injector = new Channel("daynight-task-cache"); const before = events.length; injector.postMessage({ userId, projectId });
+  await vi.waitFor(() => expect(events.length).toBeGreaterThan(before));
+  const recovery = await direct.beginTaskRead(projectId, taskId(1), 1, 2, signal());
+  expect(await direct.observeHistory(recovery, nextEpoch, signal())).toBe("current");
+  const suppress = vi.spyOn(Channel.prototype, "postMessage").mockImplementation(() => {});
+  const newer = scope(); const old = await newer.beginSync(projectId, signal());
+  expect(await newer.observeHistory(old, nextEpoch, signal())).toBe("confirm");
+  const confirmation = await newer.beginSync(projectId, signal());
+  expect(await newer.observeHistory(confirmation, nextEpoch, signal())).toBe("retired");
+  const fresh = await newer.beginSync(projectId, signal());
+  await newer.applySync(fresh, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
+  const denied = await newer.beginSync(projectId, signal()); suppress.mockRestore();
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse({ error: { code: 'not_found', message: 'not found', requestId: 'missing' } }, { status: 404, headers: viewerHeaders(userId) })));
+  expect(await newer.revokeProject(denied, signal())).toBe(true);
+  await vi.waitFor(() => expect(events.some(event => event.accessRevoked)).toBe(true));
+  expect(direct.isTaskReadCurrent(recovery, true)).toBe(false); injector.close();
+});
+
+it.each([true, false])("confirms overlapping graph and direct reads without retiring their newer live epoch (graph starts first: %s)", async (graphFirst) => {
+  const cache = scope(); const sessions = new TaskDetailSessions(cache);
+  const unsubscribe = sessions.subscribe(projectId, taskId(1), () => {});
+  const live = (value: string) => wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(userId, { "Daynight-Task-Epoch": value }) });
+  let release!: (value: Response) => void; const held = new Promise<Response>(resolve => { release = resolve; }); let reads = 0;
+  let releaseConfirmation!: (value: Response) => void; const confirming = new Promise<Response>(resolve => { releaseConfirmation = resolve; });
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(() => ++reads === 1 ? held : confirming));
+  const events: { historyHint?: true }[] = []; cache.subscribe(event => events.push(event));
+  try {
+    let graph = graphFirst ? await cache.beginSync(projectId, signal()) : null;
+    sessions.openDirect(projectId, taskId(1)); await vi.waitFor(() => expect(reads).toBe(1));
+    graph ??= await cache.beginSync(projectId, signal());
+    expect(await cache.observeHistory(graph, nextEpoch, signal())).toBe("current");
+    await cache.applySync(graph, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
+    release(live(epoch));
+    await vi.waitFor(() => expect(events.some(event => event.historyHint)).toBe(true));
+    await vi.waitFor(() => expect(reads).toBe(2));
+    expect(cache.canPreviewProject(projectId)).toBe(false);
+    expect(await cache.readProject(projectId, signal())).toBeNull();
+    const unconfirmed = await cache.beginSync(projectId, signal());
+    await expect(cache.applySync(unconfirmed, response([task(1)], { epoch: nextEpoch }), signal())).rejects.toMatchObject({ name: "AbortError" });
+    releaseConfirmation(live(nextEpoch));
+    await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1))).toMatchObject({ status: "ready", error: null, requiresFreshRead: false }));
+    expect(reads).toBe(2);
+    const retry = await cache.beginTaskRead(projectId, taskId(1), 2, 1, signal());
+    expect(await cache.observeHistory(retry, nextEpoch, signal())).toBe("current");
+  } finally { unsubscribe(); sessions.dispose(); }
+});
+
+it("confirms a delayed old graph after a direct owner has already admitted the newer epoch", async () => {
+  const cache = scope(); const graph = await cache.beginSync(projectId, signal());
+  const sessions = new TaskDetailSessions(cache); const unsubscribe = sessions.subscribe(projectId, taskId(1), () => {});
+  let release!: (value: Response) => void; const held = new Promise<Response>(resolve => { release = resolve; }); let reads = 0;
+  const live = () => wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(userId, { "Daynight-Task-Epoch": nextEpoch }) });
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(() => ++reads === 1 ? Promise.resolve(live()) : held));
+  try {
+    sessions.openDirect(projectId, taskId(1)); await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1)).status).toBe("ready"));
+    expect(await cache.observeHistory(graph, epoch, signal())).toBe("confirm");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    expect(cache.canPreviewProject(projectId)).toBe(false);
+    const confirmed = await cache.beginSync(projectId, signal());
+    expect(await cache.observeHistory(confirmed, nextEpoch, signal())).toBe("current");
+    await cache.applySync(confirmed, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
+    release(live());
+    await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1))).toMatchObject({ status: "ready", error: null, requiresFreshRead: false }));
+    const later = await cache.beginTaskRead(projectId, taskId(1), 2, 1, signal());
+    expect(await cache.observeHistory(later, nextEpoch, signal())).toBe("current");
+  } finally { unsubscribe(); sessions.dispose(); }
+});
+
+it.each(["replacement", "revocation"] as const)("preserves uncertain write ownership through %s according to its history", async (ending) => {
+  const cache = scope();
+  const delayed = await cache.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  const owner = await cache.beginTaskRead(projectId, taskId(1), 1, 2, signal());
+  expect(await cache.observeHistory(owner, nextEpoch, signal())).toBe("current");
+  expect(await cache.observeHistory(delayed, epoch, signal())).toBe("confirm");
+  expect(cache.isTaskReadCurrent(owner, true)).toBe(false);
+  expect(cache.isTaskHistoryPossiblyCurrent(owner)).toBe(true);
+  expect(cache.isTaskHistoryConfirmedCurrent(owner)).toBe(false);
+  const confirmation = await cache.beginTaskRead(projectId, taskId(1), 2, 1, signal());
+  expect(await cache.observeHistory(confirmation, nextEpoch, signal())).toBe("current");
+  expect(cache.isTaskHistoryConfirmedCurrent(owner)).toBe(true);
+  if (ending === "replacement") {
+    const later = await cache.beginTaskRead(projectId, taskId(1), 3, 1, signal());
+    expect(await cache.observeHistory(later, "30000000-0000-0000-0000-000000000003", signal())).toBe("retired");
+  } else {
+    const denied = await cache.beginSync(projectId, signal());
+    expect(await cache.revokeProject(denied, signal())).toBe(true);
+  }
+  expect(cache.isTaskHistoryPossiblyCurrent(owner)).toBe(ending === 'revocation');
+  if (ending === 'revocation') expect(cache.isTaskHistoryConfirmedCurrent(owner)).toBe(false);
+});
+
+it("automatically rereads after a peer hint is confirmed as a real history replacement", async () => {
+  const direct = scope(); const sessions = new TaskDetailSessions(direct);
+  const unsubscribe = sessions.subscribe(projectId, taskId(1), () => {});
+  const live = (value: string) => wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(userId, { "Daynight-Task-Epoch": value }) });
+  let release!: (value: Response) => void; const held = new Promise<Response>(resolve => { release = resolve; });
+  let reads = 0; const signals: AbortSignal[] = [];
+  const events: { historyChanged?: true; historyHint?: true }[] = []; direct.subscribe(event => events.push(event));
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => { reads++; signals.push(init.signal!); return reads === 1 ? Promise.resolve(live(epoch)) : reads === 2 ? held : Promise.resolve(live(nextEpoch)); }));
+  try {
+    sessions.openDirect(projectId, taskId(1));
+    await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1)).status).toBe("ready"));
+    const peer = scope(); const ticket = await peer.beginSync(projectId, signal());
+    expect(await peer.observeHistory(ticket, nextEpoch, signal())).toBe("current");
+    await peer.applySync(ticket, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
+    await vi.waitFor(() => expect(reads).toBe(2));
+    const injector = new Channel("daynight-task-cache"); const before = events.length; injector.postMessage({ userId, projectId });
+    await vi.waitFor(() => expect(events.length).toBeGreaterThan(before));
+    expect(events.filter(event => event.historyHint)).toHaveLength(1);
+    expect(signals[1]!.aborted).toBe(false);
+    release(live(nextEpoch));
+    await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1))).toMatchObject({ status: "ready", error: null, requiresFreshRead: false }));
+    expect(reads).toBe(3); injector.close();
+  } finally { unsubscribe(); sessions.dispose(); }
 });
 
 it("keeps known empty epochs and repeated rows free of writes, hint broadcasts and index changes", async () => {
@@ -195,7 +385,7 @@ it("re-reads hints for authorized projects and never relays hints or repeated co
 
 it("exposes fenced detail transactions whose detail timestamps cannot advance the project maximum", async () => {
   const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal());
-  const detail: TaskIntrinsicDetail = { assignedTo: null, id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: later };
+  const detail: TaskIntrinsicDetail = { assignedTo: null, id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: later };
   await cache.detailTransaction(ticket, signal(), async (details, manifest, summaries) => {
     expect(summaries.get(taskId(1))!.version).toBe(1n);
     await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
@@ -470,4 +660,26 @@ it("merges ownership within one epoch and replaces restored history without pers
   expect((await database.get("projects", [userId, projectId]))!.project).not.toHaveProperty("access");
   expect((await database.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownerTeam");
   expect(next.project.graph.project.settings).toEqual(project.settings);
+});
+
+it('publishes claim changes and removal only within the authorized user and project generation', async () => {
+  const worker = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: taskId(101), state, userId, workerId: taskId(102), machine: { id: taskId(103), name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: taskId(104), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
+  const cache = scope();
+  const initial = await seed(cache, [task(1, { status: 'in_progress', startedAt: time, properties: { worker: worker('first', 'active') } })]);
+  expect(initial.project.workerMachines.get(taskId(1))?.machine.name).toBe('first');
+  const stale = await cache.beginSync(projectId, signal());
+  const changed = await delta(cache, [task(1, { version: 2n, allowAgents: false, properties: { worker: worker('finished', 'completed') } })]);
+  expect(changed.project.workerMachines.get(taskId(1))).toMatchObject({ state: 'completed', machine: { name: 'finished' } });
+  const late = await cache.applySync(stale, response([task(1, { status: 'in_progress', startedAt: time, properties: { worker: worker('first', 'active') } })]), signal());
+  expect(late.project.workerMachines.get(taskId(1))?.machine.name).toBe('finished');
+  const removed = await delta(cache, [task(1, { version: 3n, properties: {} })]);
+  expect(removed.project.workerMachines.has(taskId(1))).toBe(false);
+  const other = scope(otherUser);
+  expect(other.getAuthorizedProject(projectId)).toBeNull();
+  expect(cache.getAuthorizedProject(otherProject)).toBeNull();
+  const ticket = await cache.beginSync(projectId, signal());
+  expect(await cache.revokeProject(ticket, signal())).toBe(true);
+  expect(cache.getAuthorizedProject(projectId)).toBeNull();
+  await expect(cache.applySync(ticket, response([task(1, { version: 4n, properties: { worker: worker('late', 'active') } })]), signal())).rejects.toMatchObject({ name: 'AbortError' });
+  expect(cache.getAuthorizedProject(projectId)).toBeNull();
 });

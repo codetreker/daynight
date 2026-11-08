@@ -1,8 +1,9 @@
 # Project 与 Task 客户端需求
 
 状态：共享配置、HTTP、仓库关联基础及 `project create/list/show` 已实现；
-Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已完成，并通过三原生
-平台及 Go 托管验证；集成状态见[PR #55](https://github.com/codetreker/daynight/pull/55)。本文保留完整交付要求，当前可用命令见
+Task 命令与安装产物已实现。[PR #55](https://github.com/codetreker/daynight/pull/55)
+记录其历史真实服务和平台验证；当前验证入口与该历史结果的范围不同。本文保留
+完整交付要求，当前可用命令见
 [仓库 README](../../README.md)。
 
 `daynight project` 和 `daynight task` 是 `daynight-server` 的客户端入口，供开发者
@@ -31,7 +32,7 @@ JSON 保留真实时间或明确的 `null`；Project JSON 同步保留项目阈�
 --depends-on 与 --external-depends-on 分别声明普通、外部前置，任一出现就完整替换关系及分类。
 
 [鉴权需求](daynight-auth.md)定义完整的个人访问令牌、项目成员授权和私有项目发现。
-CLI 的令牌配置与 HTTP 传输已实现；[凭据决策](../../.agents/notes/implemented/architecture/2026-10-22-cli-server-credentials.md)
+CLI 的令牌配置与 HTTP 传输已实现；[凭据决策](../../.agents/notes/archived/architecture/2026-10-22-cli-server-credentials.md)
 记录其机制。[架构](../design/daynight-auth.md)拥有服务组合；生产服务对全部项目、任务、图和附件请求强制鉴权。
 使用 `daynight login` 通过浏览器设备授权后即可访问默认生产服务；自动化仍可显式配置 PAT。
 仓库关联只选择项目，不授予访问权限，也不保存认证凭据。
@@ -149,33 +150,41 @@ projectId: 8cb7af59-133e-4dc4-a9e6-c8a4b2429762
 
 ```bash
 daynight project create "Day Night"
-daynight project create "Day Night" --repo https://github.com/codetreker/day-night.git
+daynight project create "Day Night" --repo https://github.com/codetreker/day-night.git --team personal --confirm
 daynight project list
 daynight project list --json
 daynight project show <project-id>
 daynight project show <project-id> --json
 ```
 
-创建必须提供一个位置参数 `<name>`；`--repo` 可选。省略时按 PT3 读取当前 worktree
+创建必须提供一个位置参数 `<name>`；`--repo`、`--team <uuid|personal>` 和
+无值布尔开关 `--confirm` 可选。省略 `--repo` 时按 PT3 读取当前 worktree
 的有效 `origin`；显式提供时原样使用该地址，不读取工作目录或 Git，因此可在 Git
 仓库之外执行。含空格的名称须作为同一个 shell 参数传入；前导 `-` 的名称可使用
 `daynight project create -- -name`，或在终止符前指定 `--repo`；`--` 后的词均为位置参数。
 `--name` 不再是有效选项，名称缺失或多余位置参数均为参数错误。名称必须为
 不含 NUL 的合法 Unicode 文本，且不能全部由 Unicode `White_Space` 组成；保留原始
 字符及空白，不以 JavaScript `trim()` 改写。U+FEFF 单独作为名称有效，U+0085 单独
-作为名称无效。名称和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝。
+作为名称无效。服务端创建准入还要求名称同时不超过 256 个 Unicode code points 和
+1024 个 UTF-8 bytes，`repoUrl` 不超过 4096 个 UTF-8 bytes；超限写入返回 `400 invalid_input`，
+CLI 报告服务错误，不截断或重试。名称、Team 选择和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝；
+重复 `--confirm` 或 `--confirm=false` 也是参数错误。
 
-创建在写入前必须读取配置 server 的全部 project 分页，将选定 repo 地址与每个
-`repoUrl` 按 PT3 的同一规则比较。零匹配时读取当前用户并提交其真实 `expectedUserId`、
-原始名称与所选原始地址，未指定 Team 时在 Personal 创建；核对响应主体且不自动重放未知写入。唯一匹配
-时成功输出 `Project already exists.` 和既有 project，不发送创建或修改请求，保留
-其名称与地址。多个匹配时报告歧义及全部匹配 ID，不创建。任一分页、响应验证、
+创建在写入前必须读取配置 server 的全部可访问 project 分页，将选定 repo 地址与
+每个 `repoUrl` 按 PT3 的同一规则比较。唯一匹配时成功输出 `Project already exists.`
+和既有 project，不解析 Team、不要求确认、不发送创建或修改请求，保留其名称与地址。
+多个匹配时报告歧义及全部匹配 ID，不创建。零匹配时才选择新项目的 Team：显式
+`--team` 优先，否则使用规范 origin 和当前用户的配置默认；没有默认时使用该用户的
+Personal Team。配置目标失效或无权时明确失败，不切换其他 Team。确认目标及当前用户
+资格后，交互调用须确认；`--confirm` 跳过提示，非交互调用缺少该开关时拒绝写入。
+提交真实 `expectedUserId`、目标 Team ID、原始名称与所选原始地址，核对响应主体；
+创建者获得独立 admin 授权，未知写入不自动重放。任一分页、响应验证、
 Git、取消或期限错误均按实际原因失败，不得把查询失败视为零匹配；完整预检成功
 并确认剩余预算后才能发送创建请求。该客户端预检不承诺并发创建的原子唯一性，
 服务继续允许同一仓库有多个 project。
 
-所有 project 操作均不读取或改写当前仓库关联、不写 ignore 规则、不 clone 仓库、
-不启动 review。列表查询配置 server 中主体可访问的全部 project，不按当前仓库或 Team 筛选。详情使用
+创建、列表和详情不读取或改写当前仓库关联；转移可读取关联或通过仓库发现项目，
+但不改写关联或 ignore 规则。Project 操作不 clone 仓库，也不启动 review。列表查询配置 server 中主体可访问的全部 project，不按当前仓库或 Team 筛选。详情使用
 显式的连字符 UUID，接受大小写输入并使用规范 ID 查询。列表及详情可在 Git 仓库之外
 执行，不查询当前工作目录；命令组及操作帮助遵守 PT1 的依赖隔离。
 
@@ -186,13 +195,51 @@ Project 创建、详情、分页条目及图中的 Project 必须包含 `ownersh
 缺失或不合法字段是协议错误，不能由 CLI 补默认值；JSON 必须无损保留超过 `2^53` 的嵌套版本。
 可读 Project 输出保留既有字段，当前没有新增设置修改命令，设置通过 Web 或既有服务 API 修改。
 
+## 项目转移
+
+`daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]`
+使用显式 Project 或现有仓库发现规则确定项目，不修改仓库绑定或默认 Team。目标必须是
+规范 Team UUID，或当前服务 origin 下路径恰为 `/teams/<uuid>` 的链接；userinfo、query、
+fragment、其他路径和其他服务均被拒绝。只有当前 owner Team admin 能转出，目标无需
+操作者的成员资格；单独 Project admin 不足以转出。
+
+命令预览项目、来源和目标及转移后操作者的预期角色，确认后提交该预览的精确 ownership
+与目标版本和当前用户身份。`--if-version` 指定的正 int64 必须与预览归属版本相等，
+不符时本地拒绝。无 `--confirm` 时须交互确认，非 TTY、取消和拒绝不提交。
+冲突须重新预览和决定；提交结果未知不得自动重放，后续 GET 返回 404 也不能证明成功。
+成功直接使用回执，actorAccess 为 null 仍是成功。转移保留项目身份、单独授权与邀请。
+
+## 项目删除
+
+`daynight project delete [--project <uuid>] [--confirm] [--json]` 使用显式
+Project 或仓库发现选择目标，完整读取预览后至多提交一次删除。只有当前 owner Team
+admin 可以删除；active Worker claim 阻塞删除。项目退出访问且没有产品内恢复入口，
+服务端保留历史和文件。预览数量是观察值，不约束提交时的项目状态。
+
+交互式调用始终要求输入展示的完整 JSON 字符串字面量，解码后与项目名称精确比较，
+即使提供 `--confirm` 也不跳过；非交互调用必须提供 `--confirm`。取消、预览失败或
+缺少确认不提交删除。JSON 模式将预览写入 stderr，stdout 只输出确认的删除回执。
+请求结果未知时不自动重放，后续 404 不能证明原请求成功；确认后的本地输出或清理
+失败仍保留已删除的事实和 Project ID。
+
 ## Team 读取与上下文
 
 ```bash
 daynight team list [--json]
 daynight team show [--team <uuid|personal>] [--json]
+daynight team create <name> [--confirm] [--json]
+daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team invitation create [--team <uuid|personal>] [--confirm] [--json]
+daynight team invitation list [--team <uuid|personal>] [--json]
+daynight team invitation revoke <invite-id> [--team <uuid|personal>] [--confirm] [--json]
+daynight team member list [--team <uuid|personal>] [--json]
+daynight team member set-role <user-id> <member|admin> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team member remove <user-id> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team leave [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
+daynight team default set <uuid|personal> [--confirm] [--json]
 ```
 
 `team list` 读取当前用户加入的全部 Team；`show` 读取目标 Team 与本人角色，
@@ -200,7 +247,7 @@ daynight team default show [--json]
 和当前 `/me` 用户 ID 读取配置 `teamDefaults`，当前 pair 缺失时使用 `/me` 的真实
 Personal Team ID。配置值无效、目标不存在或无权时明确失败，不静默切换 Personal。
 `default show` 验证配置目标，失效时失败；`team list` 和显式目标不依赖旧默认，
-因此仍可用于检查和修复失效配置。读取不写配置或远程资源。默认只影响 Team 上下文，
+因此仍可用于检查失效配置。读取不写配置或远程资源。默认只影响 Team 上下文，
 不改变显式 Project、Task 或现有仓库发现，`project list` 仍读取全部可访问项目。
 
 Team 与项目列表完整读取并验证全部页面后才输出；重复 ID、游标循环、预算或任何一页
@@ -209,12 +256,89 @@ Team 与项目列表完整读取并验证全部页面后才输出；重复 ID、
 （配置 ID 或 `null`）和已验证的 `team`。可读文本遵守终端转义规则。
 帮助及参数校验先于配置与网络读取。
 
+`team default set` 验证目标及当前用户的成员资格，再将目标保存到当前服务和账号的
+配置项；它不依赖旧默认，因此可以修复无效或失权的配置。`personal` 保存当前用户真实的
+Personal Team UUID。未提供无值布尔 `--confirm` 时须交互确认，非交互调用在写入前
+失败；重复开关或 `--confirm=false` 是参数错误。取消或响应主体不匹配不写入。
+`--json` 返回保存的 `configured` 和已验证的 `team`。
+同账号轮换 token 后保留选择，不同账号或服务独立。写入保留注释、未知字段和其他
+配置项；并发修改当前凭据或当前默认时拒绝覆盖，共享 YAML alias 会连带改变其他设置时
+拒绝写入。本地替换结果不确定时读取当前配置项，不自动重放。该命令不修改 Web 偏好
+或仓库绑定。
+
+## Team 生命周期
+
+`team create` 创建普通 Team，创建者成为 admin；`rename` 修改普通 Team 原始名称，
+`delete` 删除没有项目的普通 Team。名称保留原始文字与空白，允许重复，必须是合法
+Unicode、不能包含 NUL 或全为 Unicode `White_Space`，且同时不超过 256 个 Unicode code points
+和 1024 个 UTF-8 bytes。服务端对超限创建或真实改名返回 `400 invalid_input`，CLI 报告该错误，
+不截断或重试。Personal Team 不可改名或删除，
+非 admin、非空 Team 和版本冲突由服务明确拒绝。改名和删除使用显式 Team 或上述默认
+上下文，读取当前目标；`--if-version` 接受完整正 int64，与读取版本不符时在本地
+拒绝提交，不自动替换指定版本。
+
+三个写命令的 `--confirm` 是无值布尔开关；重复或 `--confirm=false` 是参数错误。
+没有该开关时，非交互终端在写入前拒绝；交互时显示操作对象，创建和改名接受 `y`
+或 `yes` 确认（不区分大小写），删除要求输入展示的 JSON string literal，解码后
+与原名称逐字匹配，不 trim。取消、
+否定或名称不符不提交。`--confirm` 跳过人工确认，删除仍提交读取到的真实名称与
+精确版本；确认不代替服务端的身份、权限、名称和版本检查。提示与网络等待期间不持
+配置锁，旧 Task 命令的确认行为不变。
+
+写入携带当前真实用户 ID，并验证响应主体、目标和回执；成功直接使用已确认回执。
+冲突须重新读取并重新确认，未知结果不得自动重放。读取当前事实不能证明丢失的
+回执，未知结果须以非零退出报告，并在可用时提供安全请求标识。公开诊断不输出原始
+响应片段或底层错误的内容，内部仍保留错误原因。`--json` 输出已确认的
+资源或删除回执。回执已确认后，即使本地输出或清理失败也保留该确认事实。
+
+## Team 邀请管理
+
+`team invitation create` 为普通 Team 创建单次邀请，链接仅在成功时通过 stdout
+披露一次；`list` 只返回元数据，不能恢复链接。`revoke` 撤销指定邀请，已撤销时
+返回明确的未变更回执；已消费或不存在的邀请也可能得到未变更回执，不能据此推断原因。
+命令使用显式或默认 Team 上下文；Personal Team 不允许邀请。
+创建和撤销须交互确认或提供 `--confirm`，非交互且未确认时不提交。写入绑定当前
+用户，验证响应主体和目标；未知结果不能自动重放或创建替代邀请。秘密不写入配置、
+日志或错误诊断，损坏或恶意响应也不能使秘密进入诊断。`--json` 输出对应的确认结果。
+## Team 成员管理
+
+`team member list` 读取所选 Team 的完整成员目录，包含用户 ID、角色、真实成员关系版本、
+时间和可为 null 的资料。目录仅向当前 Team 成员开放，不提供跨 Team 搜索或任意用户加入。
+`team member set-role` 更改已有成员角色，`team member remove` 移除已有成员，`team leave`
+退出当前用户的成员关系。管理员可管理成员及自己的角色，普通成员可自行退出；普通 Team
+必须保留至少一名管理员，Personal Team 的成员关系不可更改。这些操作不修改独立 Project
+grant，也不修改配置的默认 Team。
+
+成员写入使用目标成员的真实正 int64 关系版本，不使用 Team 元数据或 Project grant 版本。
+`--if-version` 保留先前决策观察到的精确版本，与当前读取不符时在提交前拒绝；省略时使用
+当前读取版本。写操作复用交互确认或布尔 `--confirm`，取消或非交互且未确认时不提交。
+冲突需要重新观察和决策，不自动重放。写入携带当前用户身份并验证响应主体、目标和回执；
+成功回执包含操作者剩余 Team role，自行退出为 null。自行退出成功直接使用回执，不再
+读取失权后的敏感 Team 数据。未知结果以错误报告，不自动重放；后来读取只能说明当前事实，
+不能证明原写入成功。`--json` 保留完整目录或已确认回执及精确版本，可读文本安全转义。
+
+## 邀请接收
+
+`daynight invitation inspect [--stdin] [--json]` 预览同服务 Project 或 Team
+邀请，不消费邀请；`daynight invitation accept [--stdin] [--confirm] [--json]`
+由当前登录账号明确接受。两者不读取默认 Team，不支持代接受。链接和 token 不作为
+位置参数或 flag 值；交互输入隐藏，`--stdin` 读取至 EOF，最多 4096 字节，允许末尾
+一个 LF 或 CRLF。秘密不进入配置、日志、
+命令行或递归错误 cause。只接受同服务的规定路径和 fragment。
+
+accept 显示目标与当前账号并要求确认，非 TTY 且无 `--confirm` 时不得写入。
+布尔 `--confirm` 无值，重复或 `--confirm=false` 是参数错误。已有 direct Project
+grant 或 Team membership 保持角色且不消费；只有继承权限的 Project 接收者获得 direct
+member grant。失效、到期、撤销、已消费或目标删除的邀请不可用。客户端校验响应主体，
+错主体和未知提交不重放；无法从后续读取恢复丢失的回执，未知结果以非零退出报告。
+
 ## PT7. Task 命令与更新语义
 
 ```bash
 daynight task create --title "实现登录" --description "支持 OAuth 登录"
 daynight task create --title "实现登录页面" --depends-on <task-id>
 daynight task list
+daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--json] [--project <project-id>]
 daynight task ready
 daynight task ready --limit 5 --json
 daynight task ready --allow-agents true --json
@@ -256,13 +380,13 @@ daynight task graph <task-id> [--depends-only]
 `--path=value` 继续拒绝。附件上传的 `--path` 是 text 选项，接受内联赋值。
 `project create`、属性 set/remove 和附件 `put/read/remove` 接受独立 `--` 结束选项解析；该终止符用于保留前导连字符的位置参数，选项必须放在终止符之前。其他操作继续使用其声明的语法。
 
-创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；CLI 省略 --assigned-to 时，先通过现有 GET /me 读取当前认证账号，再将其 UUID 作为 assignedTo 提交；显式 UUID 不额外查询身份。身份查询失败或取消时不得创建任务或退回未分配。未显式设置的属性缺失。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`，列表默认选择
-所有未完成任务；`--all` 选择所有未删除任务的业务状态，
-单个 `--status` 选择指定状态，包括 `done`。`--all` 与 `--status` 互斥，组合使用
-属于参数错误；列表状态值为 `todo`、`in_progress`、`done`，共享语法负责校验和静态候选，
+创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；CLI 省略 --assigned-to 时，先通过现有 GET /me 读取当前认证账号，再将其 UUID 作为 assignedTo 提交；显式 UUID 不额外查询身份。身份查询失败或取消时不得创建任务或退回未分配。未显式设置的属性缺失。服务端对标题、描述、完整依赖及属性值执行[写入额度](daynight-api-input-limits.md)；CLI 保留服务端拒绝。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`、`cancelled`，列表默认选择
+所有未结束任务（排除done/cancelled）；`--all` 选择所有未删除任务的业务状态，
+单个 `--status` 选择指定状态，包括 `done` 和 `cancelled`。`--all` 与 `--status` 互斥，组合使用
+属于参数错误；列表状态值为 `todo`、`in_progress`、`done`、`cancelled`，共享语法负责校验和静态候选，
 帮助显示选项说明。`--ready` 表示 `ready=true`，与所选状态按 AND 组合，支持
 `--all --ready`。`list` 与 `ready` 接受 --allow-agents true|false 与 --compatible-platform windows|linux|macos。严格拒绝其他值，省略不筛选；兼容包含null和同值要求，全部过滤先于服务排序、分页和ready上限，不在本地丢项。列表读完全部匹配分页后，按 `in_progress`、ready、其余 `todo`、
-`done` 分组排序；组内保留跨页的服务顺序，文本和 JSON 使用同一顺序。list 另支持 --assigned-to UUID|me|unassigned，省略无负责人限制；与状态/ready/许可/平台组合并保留到每页。me 以成功响应 Daynight-User-ID 绑定本次完整遍历，空页也校验，后页不得切换身份；不另发 /me 请求。按 UUID 或未分配查询验证返回项匹配，不能静默丢弃。详情按选定
+done/cancelled终态分组排序；组内保留跨页的服务顺序，文本和 JSON 使用同一顺序。list 另支持 --assigned-to UUID|me|unassigned，省略无负责人限制；与状态/ready/许可/平台组合并保留到每页。me 以成功响应 Daynight-User-ID 绑定本次完整遍历，空页也校验，后页不得切换身份；不另发 /me 请求。按 UUID 或未分配查询验证返回项匹配，不能静默丢弃。详情按选定
 project 和 task ID 查询。[软删除需求](daynight-task-deletion.md)定义 `task delete` 的精确版本、一次预读、不重试及数据保留规则。`--remove-depends` 是可选开关：省略时无未删除引用者即可删除，有引用者则 409 拒绝；传入才明确解除全部传入引用并原子软删除，不要求无引用任务也传开关。显式 project ID、show/update/set-status/delete 的 task ID、标题、描述、状态、
 版本及修改字段组合的参数错误必须先于配置读取、Git 和网络访问拒绝；两类依赖 ID 在本地正规化并排序，
 非法 UUID、列表内及跨列表重复（包括大小写等价）先拒绝，服务继续验证引用、项目、环及状态条件。
@@ -273,23 +397,23 @@ project 和 task ID 查询。[软删除需求](daynight-task-deletion.md)定义 
 必须在配置读取、Git 和网络访问之前拒绝。该操作只发送一次 task GET，查询固定
 `ready=true`、所选 `limit` 及可选的 `allowAgents`、`compatiblePlatform`；响应中的合法 `nextCursor` 不触发续页，不提供 `--status` 或 `--cursor`。`task list --ready` 保持遍历全部匹配页的行为。
 
-ready 沿用服务定义：task 为 `todo`，且每个直接依赖均为 `done`。服务按
+ready 沿用服务定义：task 为 `todo`，且每个直接依赖均为 `done` 或 `cancelled`。服务按
 `createdAt ASC, id ASC` 排序；CLI 保留该顺序，不重新排序。返回项数不得超过所选
 limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条件时作为协议错误
 拒绝，stdout 保持为空。正常的候选选择使用此有界操作，完整依赖关系可按需使用
 `graph` 查看。
 
-`set-status <task-id> <status>` 接受三状态目标、可选 project、精确 `--if-version` 和 done 专用 `--claim-id <claim-id>`。显式 claim UUID 在配置/网络前规范化，其他状态目标拒绝；携带时调用已有 claim-bound 完成接口，省略仍为普通 setter，不推断 claim。通过专用 PUT status 提交版本、目标及明确提供的 claimId。九种状态对均支持；当前版本同状态 +0，实际改变 +1，
+`set-status <task-id> <status>` 接受四状态目标、可选 project、精确 `--if-version` 和 done 专用 `--claim-id <claim-id>`。显式 claim UUID 在配置/网络前规范化，其他状态目标拒绝；携带时调用已有 claim-bound 完成接口，省略仍为普通 setter，不推断 claim。通过专用 PUT status 提交版本、目标及明确提供的 claimId。原三态转换保持；cancelled可由非active任务进入且不可恢复；当前版本同状态 +0，实际改变 +1，
 过期同状态先冲突。实际进入 in_progress/done 检查全部直接前置；done 退回要求没有进行中或已完成直接后继。
 拒绝返回原错误及稳定排序的阻塞 ID，不级联。成员与管理员均可设置，状态不授予执行或交付权限。
 显式版本不预读；省略时提交前只读一次。基于已审阅资料的决策必须带其版本，不能用临时 GET 替代。
 不自动重试写入；不确定结果先 GET 核对，不将取消解释为回滚。输出完整 Task 并保留所有非状态资料。
-[三状态要求](daynight-task-status.md)拥有时间、迁移、依赖和版本细节。旧四动作删除且无别名。
+[状态要求](daynight-task-status.md)拥有时间、迁移、依赖和版本细节。旧四动作删除且无别名。
 
 元数据 update 至少提供标题、描述、普通/外部依赖、自动执行许可、平台要求或负责人中的一个字段；属性由专用通用命令维护。`update --allow-agents true|false` 显式设置许可，省略保留，false 关闭；服务在 in_progress 拒绝实际切换，同值精确版本不改版本或时间。该选项不改变 ready；明确指定执行不要求开启许可。--required-platform windows|linux|macos 设置，--clear-required-platform 发送null，二者互斥；省略均保留。
 精确版本同值不写，旧版本冲突，in_progress实际变化整体拒绝；普通人工setter不按平台筛选。
 
---assigned-to 在创建/更新中只接受用户 UUID，规范化后提交顶层 assignedTo；update 用互斥的 --clear-assigned-to 明确发送 null，更新时省略保留；创建时省略按当前认证账号赋值。服务端仍允许其他调用者省略或明确提供 null 创建未分配任务，不强制本人分配。查询专用 me/unassigned 不能作为写入值。实际负责人变化同一事务关闭 allowAgents；等值不重置，in_progress 拒绝实际变化。分配不授予项目访问权或既有执行控制权。自动领取还要求负责人等于 worker 认证账号；运行时规则由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有，许可开启本身不足以领取他人任务。设置/清空冲突、错误UUID和非法查询token在配置/Git/网络前拒绝，新参数仍允许自由UUID值而非封闭 choices。
+--assigned-to 在创建/更新中只接受用户 UUID，规范化后提交顶层 assignedTo；update 用互斥的 --clear-assigned-to 明确发送 null，更新时省略保留；创建时省略按当前认证账号赋值。服务端仍允许其他调用者省略或明确提供 null 创建未分配任务，不强制本人分配。查询专用 me/unassigned 不能作为写入值。实际负责人变化同一事务关闭 allowAgents；等值不重置，in_progress 拒绝实际变化。分配不授予项目访问权或既有执行控制权。自动领取还要求负责人等于 worker 认证账号；运行时规则的历史取舍见[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)，许可开启本身不足以领取他人任务。设置/清空冲突、错误UUID和非法查询token在配置/Git/网络前拒绝，新参数仍允许自由UUID值而非封闭 choices。
 `task update --status`
 作为不支持的选项拒绝，帮助引导使用 set-status。省略字段表示保持，空描述表示
 清空描述。两类依赖选项分别形成普通 N 和外部 E，任一出现就提交完整 D=N∪E 及精确 E。
@@ -318,15 +442,32 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 查询范围、返回集合的节点及依赖引用上限由
 [服务端需求](daynight-server.md#任务链图查询)拥有。
 
-普通 graph 输出呈现所选节点的三种状态、依赖、阻塞和汇总。summary 统计本链与补充的
-外部节点；文本汇总只包含三状态，JSON summary 为 total、todo、inProgress、done、ready、blocked，满足
-`total = todo + inProgress + done` 与 `todo = ready + blocked`。ready 只来自全部前置完成的 todo；
+普通 graph 输出呈现所选节点的四种状态、依赖、阻塞和汇总。summary 统计本链与补充的
+外部节点；文本汇总包含四态，JSON summary 为 total、todo、inProgress、done、cancelled、ready、blocked，满足
+`total = todo + inProgress + done + cancelled` 与 `todo = ready + blocked`。ready只来自全部前置为done或cancelled的todo；
 列表、show、graph 均拒绝旧状态，状态写入只通过 set-status。标题预览、快照边界、
-节点和边上限均继承服务要求。完整任务和图节点严格读取必填布尔 allowAgents、必填nullable requiredPlatform 与必填nullable assignedTo；后者只接受null或规范用户UUID。缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any；负责人显示 Assigned to: UUID 或 unassigned，不查询姓名。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。超限时报告数量及上限，不返回部分图。
+节点和边上限均继承服务要求。完整任务和图节点严格读取必填布尔 allowAgents、必填nullable requiredPlatform 与必填nullable assignedTo；后者只接受null或规范用户UUID。缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any；负责人显示 Assigned to: UUID 或 unassigned，不查询姓名。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`、`cancelledAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。超限时报告数量及上限，不返回部分图。
 
 附件 `put/list/read/remove` 继承相同的 project 选择，逐文件处理完整相对路径。
 目标 basename、MIME 推导、目录拒绝与原始内容输出的完整要求由
 [附件需求](daynight-task-attachments.md#cli)拥有。
+
+### 项目任务搜索
+
+`task search <expression>` 在选定项目中搜索完整标题和 Markdown 描述，默认包含
+`done`；表达式、筛选、排序及服务错误由[搜索接口需求](daynight-task-search.md)拥有。
+表达式作为一个原样位置参数传递，支持 `--`，空白表达式在读取前拒绝。可组合
+`--status`、`--assigned-to`、`--ready`、`--allow-agents` 和 `--compatible-platform`，
+不提供 `--all`。显式 `--project` 直接搜索，省略时解析当前仓库项目。
+
+CLI 自动读取并校验全部分页，保留服务顺序，所有页成功前不输出 stdout。文本显示
+完整 ID、标题、状态、真实链代表及正向命中字段；纯否定显示 `negative condition`，
+仅在正向描述命中时显示摘要，终端控制字符可见转义。JSON 为以换行结束的完整有序
+数组，每项仅包含 `id`、`projectId`、`title`、`status`、`cancelledAt`、`context`和`match`；
+两种格式均不显示负责人和更新时间。无命中文本显示 `No matching tasks.`，JSON 为
+`[]`，退出 0。参数和表达式语法错误退出 2；`search_changed`、读取、权限、协议、
+取消及预算失败退出 1。失败写 stderr，JSON 模式也不向 stdout 写错误或部分结果。
+完整详情通过 `task show` 读取。
 
 ## PT8. 输出、分页与错误
 
@@ -360,7 +501,7 @@ externalDependsOn，不输出项目、统计、标题、状态或阻塞字段。
 `description` 的数组、ready 输出为所选完整 task 的数组、属性读取输出完整 PropertyResource、schema 输出完整定义目录、普通图输出为服务的任务链图响应对象，
 并以换行结束。Task list 的默认、`--all`、`--status`、`--ready` 及其合法组合
 均使用同一 JSON 字段规则；其余 API 字段全部保留，包括原始 PR 字符串、完整 int64
-版本、创建/更新时间、明确可空的 assignedTo 和 `startedAt`、`completedAt`；图 JSON 另外保留顶层 `observedAt`。
+版本、创建/更新时间、明确可空的 assignedTo 和 `startedAt`、`completedAt`、`cancelledAt`；图JSON 另外保留顶层 `observedAt`。
 这些计时字段不增加命令参数或改变可读输出的字段选择；外部依赖数组作为已知字段保留。
 ready 不添加分页 envelope，空列表为 `[]`。
 
@@ -407,38 +548,40 @@ JSON 保留所输出 API 字段的名称、类型和原始字符串，不应用�
 | V5 | 首次唯一发现创建正确元数据和有效 ignore；并发写入不损坏记录，本地失败发生于 task mutation 之前 |
 | V6 | 缓存每次通过远端详情验证，后增重复 project 不改变有效绑定；server 或 origin 任一变化均重新发现；404 或 repo 不符仅重新发现一次，网络及结构错误保持原因 |
 | V7 | 显式 `--project` 在 Git 外可执行且不改自动绑定；显式 ID 缺失、无权限或读取失败不进入自动发现 |
-| V8 | project 创建、列表、详情与 task 创建、筛选、详情、更新、图查询通过真实 Go server 联调；创建覆盖省略 repo 的 Git 发现，以及省略与显式 repo 再次创建均复用原资源且不改名称、不写本地绑定；所有写入遵循现有服务规则 |
+| V8 | CLI 模块验证 project 创建、列表、详情与 task 创建、筛选、详情、更新和图查询的请求与输出；创建覆盖省略 repo 的 Git 发现，以及省略与显式 repo 再次创建均复用原资源且不改名称、不写本地绑定；Go 模块验证写入服务规则；独立产品 E2E 验证正常项目和任务创建、两端读取与状态修改 |
 | V9 | 更新覆盖读取版本、显式期望版本、并发冲突、空描述、依赖替换及清空；服务拒绝保留 task ID 且没有隐式重试 |
-| V10 | 多页查询与 `--json` 仅完整成功后输出；task list 默认排除 done，支持 `--all` 和显式状态、互斥参数在 I/O 前拒绝、ready 交集及跨页稳定分组；文本列表省略描述、版本和时间，所有筛选形式的 JSON 列表仅省略 description 且保留其余全部字段、原始 PR 字符串、精确版本和时间戳，其他 task 资源输出保持完整；图保持完整响应字段并正确报告超限，stdout 可直接由 JSON parser 读取 |
+| V10 | 多页查询与 `--json` 仅完整成功后输出；task list默认排除done/cancelled，支持 `--all` 和显式状态、互斥参数在 I/O 前拒绝、ready 交集及跨页稳定分组；文本列表省略描述、版本和时间，所有筛选形式的 JSON 列表仅省略 description 且保留其余全部字段、原始 PR 字符串、精确版本和时间戳，其他 task 资源输出保持完整；图保持完整响应字段并正确报告超限，stdout 可直接由 JSON parser 读取 |
 | V11 | 单次期限、持续推进 cursor 耗尽总期限、单响应和累计字节超限、锁竞争、用户取消、错误响应、无效 JSON、损坏缓存及磁盘失败分别给出正确 stderr 和退出码；超限无部分输出或后续副作用，写响应未确认不产生虚假失败确定性 |
 | V12 | CLI 既有 `pnpm typecheck`、`pnpm test`、`pnpm build` 及相关安装验收通过；Linux、macOS ARM64、Windows 的 Git、锁及文件替换有原生证据 |
-| V13 | `task ready` 的默认和显式 limit、参数在 I/O 前拒绝、单次 `ready=true` 查询、合法 cursor 不续页、稳定服务顺序、完整 int64 JSON、空结果及超量/非 ready/重复 ID 响应拒绝均可观察；`task list --ready` 仍完整翻页，真实服务证明选择前 N 项及依赖完成后的 ready 变化 |
-| V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出通过适用安装入口验证 |
-| V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出通过适用安装入口和真实服务验证 |
-| V16 | CLI 创建省略负责人先查询当前身份并分配本人、身份失败或取消不创建、显式 UUID 不查身份；负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段通过安装CLI和真实服务验证 |
-| V17 | 安装后 Step list/show 与真实持久服务完整互读；空集合、单项完整说明、保存顺序、规范短 ID/作用域、精确大版本、安全转义及 JSON 单值成立；显式 project 在 Git 外可读且无隐藏项目 GET，帮助无配置/Git/网络依赖，损坏字段/scope/重复 ID/不可用服务及未支持命令明确失败，帮助/补全/独立手册宣告实际 list/show/add 能力 |
-| V18 | 安装 Add 的选项、ID/请求 UUID、显式一次 POST/默认 GET+POST、严格完整确认、容量 details 与安全未知结果成立；真实提交后丢响应仅核对当前事实，无自动重放/换 ID/脱离读取，确认后本地失败保持已确认，帮助/补全/手册与实际能力一致 |
+| V13 | `task ready` 的默认和显式 limit、参数在 I/O 前拒绝、单次 `ready=true` 查询、合法 cursor 不续页、稳定服务顺序、完整 int64 JSON、空结果及超量/非 ready/重复 ID 响应拒绝均可观察；`task list --ready` 仍完整翻页，Go 模块以真实数据库证明选择前 N 项及依赖完成后的 ready 变化 |
+| V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出由 CLI 模块验证，服务规则由 Go 模块验证 |
+| V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出由 CLI 模块验证，服务规则由 Go 模块验证 |
+| V16 | CLI 创建省略负责人先查询当前身份并分配本人、身份失败或取消不创建、显式 UUID 不查身份；负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段由 CLI 模块验证，服务规则由 Go 模块验证 |
+| V17 | CLI 模块验证 Step list/show 的请求与完整输出，Go 模块验证持久读取；独立产品 E2E 验证一条普通 Step 双端读写；空集合、单项完整说明、保存顺序、规范短 ID/作用域、精确大版本、安全转义及 JSON 单值成立；显式 project 在 Git 外可读且无隐藏项目 GET，帮助无配置/Git/网络依赖，损坏字段/scope/重复 ID/不可用服务及未支持命令明确失败，帮助/补全/独立手册宣告实际 list/show/add 能力 |
+| V18 | CLI 模块验证 Add 的选项、ID/请求 UUID、显式一次 POST/默认 GET+POST、严格完整确认、容量 details 与安全未知结果；受控丢响应后仅核对当前事实，无自动重放/换 ID/脱离读取，确认后本地失败保持已确认；Go 模块验证真实提交与响应丢失的持久结果；帮助/补全/手册与实际能力一致 |
 
-配置、HTTP、仓库关联基础及 Project 命令已提供对应模块验证；Project 的实际编译
-入口已在受控 HTTP 条件下验证创建、完整分页、详情、参数错误、服务拒绝、
-取消、原始 JSON 与依赖隔离。Task 已通过参数、操作、渲染、仓库选择及实际编译
-入口的受控 HTTP 验证；共享补全保留既有场景，并在真实 Bash/zsh 验证 Task 语法。
-V1–V16 继续约束完整 CLI 交付。CLI 必须通过三原生平台的安装 CLI 受控 HTTP/Git
-验收，以及实际安装 CLI 与真实 Go 1.27.2/PostgreSQL 18.6 的完整流程、重启和版本
-竞争。生产默认值必须保持单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和
-累计响应 256 MiB，并由测试单独断言。期限行为通过公开安装命令与流式 HTTP
-验证；测试应仅对期限注入合理的较小值，覆盖响应开始后停顿，以及每页均在单次
-期限内且 cursor 持续推进仍耗尽总期限。回执必须标明实际期限与 mock 状态。
-响应和累计解码字节的完整规模验证使用显式本地 `pnpm test:stress:budgets`，保留真实
-生产上限、精确边界成功及增加 1 字节拒绝的配对证据，使用合法 gzip JSON 和空白
-补齐以保留小型结果输出。常规 CI 排除这些压力探针，继续验证两个有界期限场景、
-正常错误处理与生产默认值。既有 review/update 安装验收和 Go 覆盖率门槛全部保留；
-Go 工作负载与所选预算套件分别运行，后者不占用 Go 默认 10 分钟计时器。
+配置、HTTP、仓库关联与 Project/Task 行为由 CLI 模块测试承担；现有测试
+尚未逐项证明所有要求。安装入口验证
+打包、资源和 launcher；真实 shell 入口验证实际补全接入。当前入口不执行完整
+安装版行为矩阵或真实 Go 服务联调，历史结果不能代替当前源码的验收。
+V1–V18 继续约束完整 CLI 交付。CLI 模块测试使用受控 HTTP、真实 Git、文件锁和
+必要本地进程；Git、锁与文件替换须有 Linux、macOS ARM64、Windows 原生证据。
+Go 模块以隔离 PostgreSQL 验证持久化、重启、版本竞争和服务规则。产品 E2E
+使用同一源码版本的安装 CLI、生产 Web、真实 Go 服务及隔离 PostgreSQL，仅验证
+正常登录、顺序创建与双端读写，并各选择一条 Step、讨论和附件普通成功链路。
 
-原生安装结果写入仓库根 `.tmp/project-task-evidence.json`，服务及常规期限结果写入
-`.tmp/project-task-service-evidence.json`，本地完整字节预算结果写入
-`.tmp/project-task-stress-evidence.json`；每份证据标识源码、pack/安装身份、所选套件、
-精确场景和清理。本地压力入口必须在 CI 环境中拒绝。Go 原有 receipt 及 raw coverage 保留其归属，CLI 要求编号使用 `PT.V*` 命名
-空间。[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；期限 mock 及验证成本的取舍记录在
+生产默认值必须保持单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和累计响应
+256 MiB，并由 CLI 模块测试单独断言。期限行为使用受控流式 HTTP，测试仅对期限
+注入合理的较小值，覆盖响应开始后停顿，以及每页均在单次期限内且 cursor 持续推进
+仍耗尽总期限；证据标明实际期限与 mock 状态。响应和累计解码字节的完整规模验证
+须保留真实生产上限、精确边界成功及增加 1 字节拒绝的配对证据，使用合法 gzip
+JSON 和空白补齐以保留小型结果输出。常规 CI 排除压力探针，须验证两个有界期限
+场景、正常错误处理与生产默认值；本地压力入口必须在 CI 环境中拒绝。发行物入口
+保留安装、资源、双 launcher、运行时和 shell completion 接入检查，Go 覆盖率门槛
+保持；真实进程、子进程和数据库机制各由所属模块独立验证。
+
+各验证结果必须标识源码、环境、所选场景和清理。当前没有完整字节压力入口、
+完整模块行为补齐或独立产品 E2E，历史回执不证明当前源码满足这些条件。
+[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；期限 mock 及验证成本的取舍记录在
 [CI 验证效率决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)，
 逐次结果随对应 PR 与 CI 保存。受控 HTTP、真实服务与原生平台证据分别证明其对应要求，不能互相替代。

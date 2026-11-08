@@ -36,7 +36,7 @@ const fixture = (limits?: Partial<OperationLimits>) => {
   const dependencies = {
     resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue({ id: projectId } as Project),
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
-      const output = await command({ api, operation, serverUrl: "http://localhost:8787" });
+      const output = await command({ api, operation, serverUrl: "http://localhost:8787", serverConfiguration: { serverUrl: "http://localhost:8787" } });
       if (typeof output === "string") current.stdout(output);
       else if (output !== undefined) await current.stdoutBytes(Buffer.from(output.output), operation.signal);
     }),
@@ -55,6 +55,7 @@ describe("Step Delete command preparation and output", () => {
   it.each([
     ["step", "delete"], ["step", "delete", taskId], ["step", "delete", "bad", stepId], ["step", "delete", taskId, "prefix"],
     ["step", "delete", taskId, "000000000"], ["step", "delete", taskId, stepId, "--project=bad"],
+    ["step", "delete", taskId, stepId, "--title=unsupported"],
     ...["0", "-1", "1e2", "1.5", "9223372036854775808"].map((version) => ["step", "delete", taskId, stepId, `--if-version=${version}`]),
   ].map((args) => ({ args })))("rejects invalid input without configuration, discovery or network %#", async ({ args }) => {
     const f = fixture(); const registry = [{ ...taskDefinition, load: async () => ({ run: (values: readonly string[], current: CliContext) => runTaskCommand(values, current, f.dependencies) }) }];
@@ -73,6 +74,7 @@ describe("Step Delete command preparation and output", () => {
   it("pre-reads exactly once by default and renders the complete confirmed collection", async () => {
     const f = fixture(); await runTaskCommand(f.args(), f.context, f.dependencies);
     expect(f.fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["GET", "DELETE"]);
+    expect(f.fetch.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([`/api/v1/projects/${projectId}/tasks/${taskId}/steps`, `/api/v1/projects/${projectId}/tasks/${taskId}/steps/${stepId}`]);
     expect(parseApiJson(String(f.fetch.mock.calls[1]![1]!.body))).toEqual({ version: previous.version });
     const output = f.context.stdout.mock.calls[0]![0]; expect(output).toContain(`Step deleted. ID: ${stepId}`); expect(output).toContain("00000000"); expect(output).not.toContain("private-target");
   });
@@ -90,6 +92,22 @@ describe("Step Delete command preparation and output", () => {
 });
 
 describe("Step Delete shared unknown and confirmed result handling", () => {
+  it.each([[401, "unauthenticated"], [404, "not_found"], [409, "version_exhausted"], [410, "task_deleted"]] as const)("reports HTTP %i refusal without observation or replay", async (status, code) => {
+    const f = fixture(); f.fetch.mockResolvedValue(json({ error: { code, message: "Public refusal", requestId: "refused" } }, status));
+    const text = formatError(await failure(f, f.args(["--if-version=9007199254740993", "--json"])));
+    expect(text).toContain(code); expect(text).toContain("outcome=refused"); expect(text).not.toContain("outcome is unknown");
+    if (status === 401) expect(text).toContain("daynight login");
+    expect(f.fetch).toHaveBeenCalledOnce(); expect(f.fetch.mock.calls[0]![1]!.method).toBe("DELETE"); expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+  it("observes a malformed successful DELETE once without claiming it succeeded", async () => {
+    const f = fixture(); f.fetch.mockResolvedValueOnce(json({})).mockResolvedValueOnce(json(previous));
+    const text = formatError(await failure(f, f.args(["--if-version=9007199254740993", "--json"])));
+    expect(f.fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["DELETE", "GET"]);
+    const requestId = new Headers(f.fetch.mock.calls[0]![1]!.headers).get("X-Request-ID");
+    expect(new Headers(f.fetch.mock.calls[1]![1]!.headers).get("X-Request-ID")).toBe(`${requestId}.r1`);
+    expect(text).toContain("outcome=unknown"); expect(text).toContain("target=found"); expect(text).toContain("remains unknown");
+    expect(text).not.toContain("Step deleted."); expect(text).not.toContain("private-target"); expect(f.context.stdout).not.toHaveBeenCalled();
+  });
   it.each(["found", "absent"] as const)("reports current %s facts from one same-operation observation without attributing the deletion", async (state) => {
     const f = fixture(); let original = "";
     f.fetch.mockImplementation(async (_url, options) => {

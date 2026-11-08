@@ -104,10 +104,32 @@ it('keeps loading and errors visible when Conversation filters every entry', asy
 });
 
 it('localizes the Conversation empty state independently of the Standard empty state', () => {
-  const view = createLocaleRender('zh-CN')(<SessionTimeline state={emptySessionState()} {...props} displayMode="conversation" />);
+  const view = createLocaleRender('zh-CN')(<SessionTimeline state={{ ...emptySessionState(), entries: [tool('1')] }} {...props} displayMode="conversation" />);
   expect(screen.getByText('当前对话模式下暂无内容')).toBeVisible();
   view.rerender(<SessionTimeline state={emptySessionState()} {...props} displayMode="standard" />);
   expect(screen.getByText('尚无对话。')).toBeVisible();
+});
+
+it.each(['en', 'zh-CN'] as const)('shows genuinely empty history in both modes in %s', locale => {
+  const view = createLocaleRender(locale)(<SessionTimeline state={emptySessionState()} {...props} displayMode="conversation" />);
+  const empty = locale === 'en' ? 'No conversation yet.' : '尚无对话。';
+  expect(screen.getByText(empty)).toBeVisible();
+  view.rerender(<SessionTimeline state={emptySessionState()} {...props} displayMode="standard" />);
+  expect(screen.getByText(empty)).toBeVisible();
+});
+
+it('keeps the filtered message until empty history is known to be complete', () => {
+  const view = render(<SessionTimeline state={emptySessionState()} {...props} displayMode="conversation" hasOlder />);
+  expect(screen.getByText('No content in conversation mode.')).toBeVisible();
+  view.rerender(<SessionTimeline state={emptySessionState()} {...props} displayMode="conversation" hasOlder historyComplete />);
+  expect(screen.getByText('No conversation yet.')).toBeVisible();
+  view.rerender(<SessionTimeline state={{ ...emptySessionState(), entries: [tool('1')] }} {...props} displayMode="conversation" historyComplete />);
+  expect(screen.getByText('No content in conversation mode.')).toBeVisible();
+});
+
+it.each([{ entries: [] }, { entries: [tool('1')] }])('honors suppressed empty content with $entries.length entries', ({ entries }) => {
+  const view = render(<SessionTimeline state={{ ...emptySessionState(), entries }} {...props} displayMode="conversation" suppressEmpty />);
+  expect(view.container.querySelector('.session-empty')).toBeNull();
 });
 
 it('preserves interaction state, response gating and pending operations across mode changes', async () => {

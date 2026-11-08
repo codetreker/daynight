@@ -22,7 +22,7 @@ const response = (items: readonly Project[], nextCursor: string | null = null) =
 const failure = () => new Response(JSON.stringify({ error: { code: "internal_error", message: "private server detail", requestId: "rq-projects" } }), { status: 500, headers: { "Content-Type": "application/json" } });
 const Harness = ({ activeProjectId = null, collapsed = false, onNavigate = () => {}, children }: { readonly activeProjectId?: string | null; readonly collapsed?: boolean; readonly onNavigate?: () => void; readonly children?: ReactNode }) => {
   const workspace = useRef<HTMLDivElement>(null);
-  return <ProjectsProvider><WorkspaceSidebar collapsed={collapsed} onToggle={() => {}} routeKey={activeProjectId ?? "projects"} projectsActive={activeProjectId === null} sharedActive={false} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" activeProjectId={activeProjectId} accountActive={false} identityChecking={false} workspaceRef={workspace} onNavigate={onNavigate} /><div ref={workspace}>{children}</div></ProjectsProvider>;
+  return <ProjectsProvider><WorkspaceSidebar collapsed={collapsed} onToggle={() => {}} routeKey={activeProjectId ?? "projects"} projectsActive={activeProjectId === null} sharedActive={false} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" activeProjectId={activeProjectId} blocked={false} workspaceRef={workspace} onNavigate={onNavigate} /><div ref={workspace}>{children}</div></ProjectsProvider>;
 };
 const navigation = () => within(screen.getByRole("complementary", { name: "Workspace navigation" }));
 

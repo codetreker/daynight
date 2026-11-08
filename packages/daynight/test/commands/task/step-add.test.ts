@@ -44,7 +44,7 @@ const fixture = (limits?: Partial<OperationLimits>) => {
   const dependencies = {
     resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue({ id: projectId } as Project),
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
-      const output = await command({ api, operation, serverUrl: "http://localhost:8787" });
+      const output = await command({ api, operation, serverUrl: "http://localhost:8787", serverConfiguration: { serverUrl: "http://localhost:8787" } });
       if (typeof output === "string") current.stdout(output);
       else if (output !== undefined) await current.stdoutBytes(Buffer.from(output.output), operation.signal);
     }),
@@ -59,6 +59,13 @@ describe("Step Add input and exact request budgets", () => {
     const f = fixture(); await runTaskCommand(["step", "add", "--help"], f.context, f.dependencies);
     expect(f.context.stdout.mock.calls[0]![0]).toContain("--if-version"); expect(f.context.stdout.mock.calls[0]![0]).toContain("skipped");
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled(); expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
+  });
+  it("rejects a missing title at the application boundary before configuration or requests", async () => {
+    const f = fixture(); const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+    expect(await runCli(["task", "step", "add", taskId], f.context, registry)).toBe(2);
+    expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
+    expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
   });
   it.each([
     ["--title="], ["--title= \u0085"], ["--title=\0"], ["--title=\ud800"], ["--description=\0"], ["--description=\ud800"],
@@ -75,14 +82,35 @@ describe("Step Add input and exact request budgets", () => {
     const f = fixture(); const description = "  # body-secret\n\r\n\\  ";
     await runTaskCommand(f.args(["--if-version=9007199254740993", "--before=00000000", "--status=skipped", `--description=${description}`, "--json"]), f.context, f.dependencies);
     expect(f.calls).toHaveLength(1); expect(f.calls[0]!.method).toBe("POST");
+    expect(new URL(String(f.fetch.mock.calls[0]![0])).pathname).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}/steps`);
     expect(f.calls[0]!.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(f.calls[0]!.body).toMatchObject({ version: 9_007_199_254_740_993n, id: "00abcdef", title: "  title-secret\n\uFEFF  ", description, status: "skipped", before: "00000000" });
     const output = f.context.stdout.mock.calls[0]![0]; expect(parseApiJson(output)).toEqual(resource(f.calls[0]!.body!)); expect(output).not.toContain("Step added.");
     expect(f.context.workingDirectory).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
   });
+  it("passes separately supplied Unicode and markup arguments through to the complete receipt", async () => {
+    const f = fixture(); const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+    const title = "  <packed&> 中文😀  ", description = "# Packed [Plan](plan.md) <&> 😀";
+    expect(await runCli(["task", "step", "add", taskId.toUpperCase(), "--id=00ABCDEF", "--title", title, "--description", description, "--status=skipped", "--json", "--project", projectId.toUpperCase(), "--if-version", "9007199254740993"], f.context, registry)).toBe(0);
+    expect(f.calls).toHaveLength(1); expect(f.calls[0]!.method).toBe("POST");
+    expect(f.calls[0]!.body).toEqual({ version: previous.version, id: "00abcdef", title, description, status: "skipped" });
+    const output = f.context.stdout.mock.calls[0]![0];
+    expect(parseApiJson(output)).toEqual(resource(f.calls[0]!.body!)); expect(output).toContain('"version":9007199254740994');
+    expect(f.context.stderr).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+  });
+  it("renders the confirmed Add identity, exact version and escaped title safely", async () => {
+    const f = fixture();
+    await runTaskCommand(["step", "add", taskId, "--id", "00abcdef", "--title", "Control\u001b[31m\nFull title", "--if-version", "9007199254740993", "--project", projectId], f.context, f.dependencies);
+    const output = f.context.stdout.mock.calls[0]![0];
+    expect(output).toContain("9007199254740994"); expect(output).toContain("00abcdef");
+    expect(output).toContain("Control\\u001b[31m\\nFull title"); expect(output).not.toContain("\u001b");
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
   it("uses exactly GET Steps then POST by default, generates one stable short ID, and retains server defaults", async () => {
     const f = fixture(); await runTaskCommand(f.args(["--after=00000000"]).filter((arg) => !arg.startsWith("--id=")), f.context, f.dependencies);
     expect(f.calls.map(({ method }) => method)).toEqual(["GET", "POST"]);
+    expect(f.fetch.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([`/api/v1/projects/${projectId}/tasks/${taskId}/steps`, `/api/v1/projects/${projectId}/tasks/${taskId}/steps`]);
     const sent = f.calls[1]!; expect(sent.body!.id).toMatch(/^[0-9a-f]{8}$/); expect(sent.body!.version).toBe(previous.version);
     expect(sent.body!.description).toBeUndefined(); expect(sent.body!.status).toBeUndefined();
     expect(f.context.stdout.mock.calls[0]![0]).toContain(`Step added. ID: ${sent.body!.id}`);
@@ -93,6 +121,19 @@ describe("Step Add input and exact request budgets", () => {
     const error = await failure(f, f.args()); expect(error).toMatchObject({ exitCode: 1 });
     expect(f.fetch).toHaveBeenCalledOnce(); expect(f.context.stdout).not.toHaveBeenCalled(); expect(formatError(error)).toContain("outcome=failed"); expect(formatError(error)).not.toContain("outcome is unknown");
   });
+  it("reports a missing baseline at the CLI boundary without an Add", async () => {
+    const f = fixture();
+    f.fetch.mockResolvedValue(json({ error: { code: "not_found", message: "Task not found.", requestId: "missing-baseline" } }, 404));
+    const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+    expect(await runCli(["task", ...f.args(["--json"])], f.context, registry)).toBe(1);
+    expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
+    const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
+    expect(diagnostic).toContain("code=not_found"); expect(diagnostic.toLowerCase()).not.toContain("outcome is unknown");
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.fetch.mock.calls[0]![1]!.method).toBe("GET");
+    expect(new URL(String(f.fetch.mock.calls[0]![0])).pathname).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}/steps`);
+  });
   it("keeps existing trusted project discovery recovery for Add without selecting a candidate", async () => {
     const f = fixture(); const { ProjectDiscoveryError } = await import("../../../src/repository/discovery-error.js");
     f.dependencies.resolveProject.mockRejectedValue(new ProjectDiscoveryError([projectId, taskId]));
@@ -102,6 +143,31 @@ describe("Step Add input and exact request budgets", () => {
 });
 
 describe("Step Add refusal, unknown and factual observation", () => {
+  it.each([["title", "é".repeat(512) + "x", 1025, 1024], ["description", "界".repeat(21845) + "ab", 65537, 65536]] as const)("forwards excess %s and reports the server field refusal", async (field, value, actual, max) => {
+    const f = fixture();
+    f.fetch.mockImplementation(async (_url, options) => {
+      const body = parseApiJson(String(options!.body)) as AddTaskStepInput;
+      expect(body[field]).toBe(value);
+      return json({ error: { code: "invalid_input", message: `${field}: ${actual} bytes exceeds maximum ${max}`, requestId: "field-refusal" } }, 400);
+    });
+    const args = f.args(["--if-version=1"]).filter((arg) => field !== "title" || !arg.startsWith("--title="));
+    const error = await failure(f, [...args, `--${field}=${value}`]);
+    const diagnostic = formatError(error);
+    expect(diagnostic).toContain("code=invalid_input"); expect(diagnostic).toContain("outcome=refused");
+    expect(f.fetch).toHaveBeenCalledOnce(); expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+  it.each([[409, "step_id_conflict"], [409, "version_conflict"], [404, "not_found"]] as const)("reports confirmed Add refusal %s/%s without retry", async (status, code) => {
+    const f = fixture();
+    f.fetch.mockResolvedValue(json({ error: { code, message: "Add refused.", requestId: "add-refusal" } }, status));
+    const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+    expect(await runCli(["task", ...f.args(["--if-version=1", "--json"])], f.context, registry)).toBe(1);
+    expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
+    const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
+    expect(diagnostic).toContain(`code=${code}`); expect(diagnostic).toContain("outcome=refused");
+    expect(diagnostic.toLowerCase()).not.toContain("outcome is unknown");
+    expect(f.fetch).toHaveBeenCalledOnce(); expect(f.fetch.mock.calls[0]![1]!.method).toBe("POST");
+  });
   it("keeps known capacity refusal/details and original UUID distinct from observed IDs, with no recovery/replay", async () => {
     const f = fixture(); let original = "";
     f.fetch.mockImplementation(async (_url, options) => { original = new Headers(options?.headers).get("X-Request-ID")!; return json({ error: { code: "steps_limit_exceeded", message: "Step collection is full.", requestId: "server-body-id", details: { encodedBytes: 67_108_865, maxEncodedBytes: 67_108_864 } } }, 409, { "X-Request-ID": "server-header-id" }); });

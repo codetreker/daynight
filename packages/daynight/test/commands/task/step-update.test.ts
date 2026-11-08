@@ -50,7 +50,7 @@ const fixture = (limits?: Partial<OperationLimits>) => {
   const dependencies = {
     resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue({ id: projectId } as Project),
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
-      const output = await command({ api, operation, serverUrl: "http://localhost:8787" });
+      const output = await command({ api, operation, serverUrl: "http://localhost:8787", serverConfiguration: { serverUrl: "http://localhost:8787" } });
       if (typeof output === "string") current.stdout(output);
       else if (output !== undefined) await current.stdoutBytes(Buffer.from(output.output), operation.signal);
     }),
@@ -114,6 +114,19 @@ describe("Step update and status input", () => {
 });
 
 describe("Step update and status write outcomes", () => {
+  it.each([["title", "é".repeat(512) + "x", 1025, 1024], ["description", "界".repeat(21845) + "ab", 65537, 65536]] as const)("forwards excess %s and reports the server field refusal", async (field, value, actual, max) => {
+    const f = fixture();
+    f.fetch.mockImplementation(async (_url, options) => {
+      const body = parseApiJson(String(options!.body)) as UpdateTaskStepInput;
+      expect(body[field]).toBe(value);
+      return json({ error: { code: "invalid_input", message: `${field}: ${actual} bytes exceeds maximum ${max}`, requestId: "field-refusal" } }, 400);
+    });
+    const args = f.args("update", ["--if-version=1"]).filter((arg) => field !== "title" || !arg.startsWith("--title="));
+    const error = await failure(f, [...args, `--${field}=${value}`]);
+    const diagnostic = formatError(error);
+    expect(diagnostic).toContain("code=invalid_input"); expect(diagnostic).toContain("outcome=refused");
+    expect(f.fetch).toHaveBeenCalledOnce(); expect(f.context.stdout).not.toHaveBeenCalled();
+  });
   it.each(["update", "set-status"] as const)("keeps %s refusal metadata without recovery or replay", async (name) => {
     const f = fixture(); let original = "";
     f.fetch.mockImplementation(async (_url, options) => { original = new Headers(options?.headers).get("X-Request-ID")!; return json({ error: { code: "steps_limit_exceeded", message: "Collection is full.", requestId: "server-body-id", details: { encodedBytes: 67_108_865, maxEncodedBytes: 67_108_864 } } }, 409, { "X-Request-ID": "server-header-id" }); });
@@ -124,6 +137,25 @@ describe("Step update and status write outcomes", () => {
   it.each(["update", "set-status"] as const)("reports %s stale-version refusal without retry", async (name) => {
     const f = fixture(); f.fetch.mockResolvedValue(json({ error: { code: "version_conflict", message: "Stale version.", requestId: "conflict" } }, 409));
     const error = await failure(f, f.args(name, ["--if-version=1"])); expect(f.fetch).toHaveBeenCalledOnce(); expect(formatError(error)).toContain("outcome=refused"); expect(formatError(error)).toContain("version_conflict");
+  });
+  it.each(["update", "set-status"] as const)("reports %s missing, stale or exhausted refusal near maximum version without retry", async (name) => {
+    const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    for (const [status, code, version] of [[404, "not_found", "9223372036854775807"], [409, "version_exhausted", "9223372036854775807"], [409, "version_conflict", "9223372036854775806"]] as const) {
+      const f = fixture();
+      f.fetch.mockResolvedValue(json({ error: { code, message: "Write refused.", requestId: "maximum-refusal" } }, status));
+      const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+      const exit = await runCli(["task", ...f.args(name, [`--if-version=${version}`, "--json"])], f.context, registry);
+      expect(exit).toBe(1);
+      expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
+      const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
+      expect(diagnostic).toContain(`code=${code}`); expect(diagnostic).toContain("outcome=refused");
+      expect(diagnostic.toLowerCase()).not.toContain("outcome is unknown");
+      expect(f.fetch).toHaveBeenCalledOnce();
+      const [url, options] = f.fetch.mock.calls[0]!;
+      expect(options!.method).toBe(method(name));
+      expect(new URL(String(url)).pathname).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}/steps/${target.id}${name === "set-status" ? "/status" : ""}`);
+      expect(parseApiJson(String(options!.body))).toMatchObject({ version: BigInt(version) });
+    }
   });
   it.each(["update", "set-status"] as const)("keeps %s authentication guidance", async (name) => {
     const f = fixture(); f.fetch.mockResolvedValue(json({ error: { code: "unauthenticated", message: "Sign in.", requestId: "auth" } }, 401));

@@ -155,6 +155,21 @@ describe('window navigation admission', () => {
     expect(owner.decision()).toBeNull();
   });
 
+  it('retires only the addressed Worker configuration in the same authenticated identity', () => {
+    const identity = {};
+    const first = draft({ scope: { kind: 'worker-configuration', identity, workerId: 'first' } });
+    const second = draft({ scope: { kind: 'worker-configuration', identity, workerId: 'second' } });
+    const task = draft({ scope: { identity, projectId: 'first', taskId: 'first' } });
+    owner.register(first); owner.register(second); owner.register(task);
+    owner.retireScope({ kind: 'worker-configuration', identity: {}, workerId: 'first' });
+    expect(first.discard).not.toHaveBeenCalled();
+    owner.retireScope(first.scope);
+    expect(first.discard).toHaveBeenCalledOnce(); expect(second.discard).not.toHaveBeenCalled(); expect(task.discard).not.toHaveBeenCalled();
+    owner.retireScope(task.scope);
+    expect(task.discard).toHaveBeenCalledOnce(); expect(second.discard).not.toHaveBeenCalled();
+    owner.navigate('/account'); owner.confirm(); expect(second.discard).toHaveBeenCalledOnce();
+  });
+
   it('retires synchronously on abort and refuses already retired registrations', () => {
     const controller = new AbortController();
     const registration = draft({ signal: controller.signal });

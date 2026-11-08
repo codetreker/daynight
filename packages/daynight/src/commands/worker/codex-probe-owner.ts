@@ -1,5 +1,5 @@
 import type { Operation } from "../../api/operation.js";
-import { hasHerdrCommandCleanupFailure } from "./herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup } from "./herdr/command.js";
 
 type CodexInvocation = { file: string; environment: NodeJS.ProcessEnv; workingDirectory: string };
 export type CodexProbeOwner = { observe<T>(invocation: CodexInvocation, operation: Operation, probe: () => Promise<T>): Promise<T> };
@@ -26,7 +26,7 @@ const searchValue = (environment: NodeJS.ProcessEnv, name: string): string | und
 };
 
 /** Own matching Codex PATH observations; compare the captured search environment used by their commands. */
-export const createCodexProbeOwner = (environment: NodeJS.ProcessEnv, workingDirectory: string): CodexProbeOwner => {
+export const createCodexProbeOwner = (environment: NodeJS.ProcessEnv, workingDirectory: string, onCleanupFailure?: () => void): CodexProbeOwner => {
   const search = searchValue(environment, "PATH");
   const extensions = searchValue(environment, "PATHEXT");
   let pending: Promise<void> = Promise.resolve();
@@ -41,10 +41,20 @@ export const createCodexProbeOwner = (environment: NodeJS.ProcessEnv, workingDir
       pending = new Promise<void>(resolve => { release = resolve; });
       try {
         await previous;
-        if (cleanupFailure !== undefined) throw cleanupFailure.error;
         operation.check();
+        if (cleanupFailure !== undefined) {
+          if (hasUnconfirmedHerdrCommandCleanup(cleanupFailure.error)) throw cleanupFailure.error;
+          cleanupFailure = undefined;
+        }
         try { return await probe(); }
-        catch (error) { if (hasHerdrCommandCleanupFailure(error)) cleanupFailure = { error }; throw error; }
+        catch (error) {
+          if (hasHerdrCommandCleanupFailure(error)) {
+            cleanupFailure = { error };
+            // A matching assistant failure invalidates ordinary success even if cleanup confirms before its next observation.
+            onCleanupFailure?.();
+          }
+          throw error;
+        }
       } finally { release(); }
     },
   };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, checkAttachmentPreview, isAbortError, listAttachments, putAttachment, readAttachmentText, removeAttachment } from "../../../api/client";
 import type { Attachment } from "../../../api/types";
 import { attachmentKind, attachmentTree } from "./model";
@@ -31,10 +31,11 @@ type WriteState = { readonly scope: string; readonly status: "idle" | "saving" |
 const initialList = (scope: string): ListState => ({ scope, items: [], loading: true, complete: false, error: null });
 const initialPreview = (scope: string, path: string | null): PreviewState => ({ scope, path, status: path === null ? "idle" : "loading", text: null, error: null });
 
-type AttachmentOptions = { readonly requireCompleteInventory?: boolean };
+type AttachmentOptions = { readonly requireCompleteInventory?: boolean; readonly enabled?: boolean };
 
 export const useAttachments = (projectId: string, taskId: string, api: AttachmentApi = attachmentApi, options: AttachmentOptions = {}) => {
-  const scope = `${projectId}/${taskId}`;
+  const enabled = options.enabled !== false;
+  const scope = enabled ? `${projectId}/${taskId}` : "";
   const currentScope = useRef(scope);
   currentScope.current = scope;
   const [list, setList] = useState(() => initialList(scope));
@@ -48,6 +49,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   const writeGeneration = useRef(0);
 
   const reload = useCallback(() => {
+    if (!enabled) return;
     listRequest.current?.abort();
     const controller = new AbortController();
     listRequest.current = controller;
@@ -76,10 +78,17 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
         if (generation === listGeneration.current) listRequest.current = null;
       }
     })();
-  }, [api, projectId, taskId, scope]);
+  }, [api, projectId, taskId, scope, enabled]);
+
+  useLayoutEffect(() => {
+    if (!enabled) {
+      setList(initialList(scope)); setSelection({ scope, path: null }); setPreview(initialPreview(scope, null));
+      setWrite({ scope, status: "idle", error: null });
+    }
+  }, [enabled, scope]);
 
   useEffect(() => {
-    reload();
+    if (enabled) reload();
     return () => {
       ++listGeneration.current;
       ++writeGeneration.current;
@@ -88,7 +97,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       listRequest.current = null;
       writeRequest.current = null;
     };
-  }, [reload]);
+  }, [reload, enabled]);
 
   const selectedPath = selection.scope === scope ? selection.path : null;
   const visibleList = list.scope === scope ? list : initialList(scope);
@@ -105,7 +114,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     const controller = new AbortController();
     const path = selectedPath;
     setPreview(initialPreview(scope, path));
-    if (path === null || selectedKind === undefined) return () => controller.abort();
+    if (!enabled || path === null || selectedKind === undefined) return () => controller.abort();
     const usesText = selectedKind === "text" || selectedKind === "markdown";
     if (!usesText && selectedKind !== "html" && selectedKind !== "pdf") {
       setPreview({ scope, path, status: "ready", text: null, error: null });
@@ -121,12 +130,12 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
       }
     })();
     return () => controller.abort();
-  }, [api, projectId, taskId, scope, selectedPath, selectedKind, selectedUpdatedAt, previewRevision]);
+  }, [api, projectId, taskId, scope, selectedPath, selectedKind, selectedUpdatedAt, previewRevision, enabled]);
 
   const select = useCallback((path: string | null) => setSelection({ scope, path }), [scope]);
   const retryPreview = useCallback(() => setPreviewRevision((value) => value + 1), []);
   const mutate = useCallback(async (path: string, file: File | null): Promise<boolean> => {
-    if (writeRequest.current !== null) return false;
+    if (!enabled || writeRequest.current !== null) return false;
     const controller = new AbortController();
     writeRequest.current = controller;
     const generation = ++writeGeneration.current;
@@ -150,7 +159,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     } finally {
       if (generation === writeGeneration.current) writeRequest.current = null;
     }
-  }, [api, projectId, taskId, scope, reload]);
+  }, [api, projectId, taskId, scope, reload, enabled]);
   const put = useCallback((path: string, file: File) => mutate(path, file), [mutate]);
   const remove = useCallback((path: string) => mutate(path, null), [mutate]);
   const visiblePreview = preview.scope === scope && preview.path === selectedPath ? preview : initialPreview(scope, selectedPath);

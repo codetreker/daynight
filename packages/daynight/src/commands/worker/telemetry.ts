@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerCPU, WorkerDisk, WorkerExecutableProbe, WorkerMachine, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "./herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "./herdr/command.js";
 import { createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrRuntimeVersionObserver, HerdrVersionUnavailableError } from "./herdr/runtime-version.js";
 import { NativeVersionOutputError, probeNativeAgentVersion } from "./herdr/version-probe.js";
@@ -43,8 +43,8 @@ const integer = (value: number | bigint): number => {
   if (!Number.isSafeInteger(result) || result < 0 || (typeof value === "bigint" && BigInt(result) !== value)) throw new SampleError("out_of_range", "A resource byte or counter value is outside the safe integer range.");
   return result;
 };
-const text = (value: string): string => {
-  if (value.trim().length === 0 || value.includes("\0") || !value.isWellFormed()) throw new SampleError("invalid_sample", "Resource metadata must contain valid nonempty text without NUL.");
+const text = (value: string, maximum: number): string => {
+  if (value.trim().length === 0 || value.includes("\0") || !value.isWellFormed() || Buffer.byteLength(value) > maximum) throw new SampleError("invalid_sample", "Resource metadata must contain valid nonempty text within its byte limit.");
   return value;
 };
 const observe = <T>(pending: Promise<T>, operation: Operation): Promise<T> => new Promise((resolve, reject) => {
@@ -67,7 +67,7 @@ const observe = <T>(pending: Promise<T>, operation: Operation): Promise<T> => ne
 const cpuSnapshot = (): { model: string; times: readonly { idle: number; total: number }[] } => {
   const processors = os.cpus();
   if (processors.length === 0 || !Number.isSafeInteger(processors.length)) throw new SampleError("invalid_sample", "No logical CPU counters are available.");
-  return { model: text(processors[0]!.model), times: processors.map(({ times }) => ({ idle: integer(times.idle), total: integer(Object.values(times).reduce((sum, value) => sum + integer(value), 0)) })) };
+  return { model: text(processors[0]!.model, 512), times: processors.map(({ times }) => ({ idle: integer(times.idle), total: integer(Object.values(times).reduce((sum, value) => sum + integer(value), 0)) })) };
 };
 const cpuInterval = (operation: Operation): Promise<void> => new Promise((resolve, reject) => {
   operation.check();
@@ -119,14 +119,15 @@ const executableMissing = async (agent: string, environment: NodeJS.ProcessEnv, 
 
 export const createWorkerTelemetryCollector = (options: {
   paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform; workerId: string; serverOrigin: string;
-  assistantHost?: { collect: (operation: Operation, codexProbes?: CodexProbeOwner) => Promise<AssistantHostSample> };
+  assistantHost?: { collect: (operation: Operation, codexProbes?: CodexProbeOwner) => Promise<AssistantHostSample | undefined> };
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
+  if (Buffer.byteLength(options.workingDirectory) > 4096 || Buffer.byteLength(options.machine.name) > 256 || Buffer.byteLength(options.version) > 256) throw new RangeError("Worker identity, directory or version exceeds its UTF-8 byte limit.");
   const environment = createHerdrNativeEnvironment(options.paths, process.env);
   const herdr = createHerdrRuntimeVersionObserver(options);
   const codexEnvironment = captureCodexProbeEnvironment(environment);
-  const codexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory);
   const cache = new Map<"codex" | "copilot", { started: number; probe: WorkerExecutableProbe; issue?: WorkerTelemetryIssue; cleanupUncertain: boolean }>();
+  const codexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory, () => { cache.delete("codex"); });
   let pendingDisk: Promise<WorkerDisk> | null = null;
   const disk = async (operation: Operation): Promise<WorkerDisk> => {
     // A timed-out OS request cannot be cancelled; avoid adding I/O or observers while it remains pending.
@@ -153,18 +154,24 @@ export const createWorkerTelemetryCollector = (options: {
       };
       const version = async (agent: "codex" | "copilot"): Promise<WorkerExecutableProbe> => {
         const probeEnvironment = agent === "codex" ? codexEnvironment : environment;
-        const previous = cache.get(agent);
-        // A missing close acknowledgement leaves ownership uncertain; starting a replacement could leak another process tree.
-        if (previous?.cleanupUncertain === true) {
-          const error = previous.issue!.error;
-          issues.push({ component: agent, code: "unavailable", error });
-          return { state: "error", checkedAt: new Date().toISOString(), code: "unavailable" };
-        }
         const started = performance.now(); const checkedAt = new Date().toISOString();
         let result: WorkerExecutableProbe; let issue: WorkerTelemetryIssue | undefined;
         let cleanupUncertain = false; let cached = false;
         try {
           const observeVersion = async (): Promise<WorkerExecutableProbe> => {
+            let previous = cache.get(agent);
+            // A missing close acknowledgement leaves ownership uncertain; starting a replacement could leak another process tree.
+            if (previous?.cleanupUncertain === true) {
+              const error = previous.issue!.error;
+              if (hasUnconfirmedHerdrCommandCleanup(error)) {
+                issues.push({ component: agent, code: "unavailable", error });
+                cached = true;
+                return { state: "error", checkedAt: new Date().toISOString(), code: "unavailable" };
+              }
+              // Confirmation restores probe eligibility, not the cached failure or a successful version.
+              cache.delete(agent);
+              previous = undefined;
+            }
             if (previous !== undefined && performance.now() - previous.started < 60_000) {
               cached = true;
               if (previous.issue !== undefined) issues.push(previous.issue);
@@ -177,7 +184,7 @@ export const createWorkerTelemetryCollector = (options: {
           cleanupUncertain = hasHerdrCommandCleanupFailure(error);
           try {
             if (!cleanupUncertain && hasCode(error, "ENOENT") && await executableMissing(agent, probeEnvironment, options.workingDirectory, collection)) result = { state: "not_installed", checkedAt };
-            else { const code = codeOf(error); issue = { component: agent, code, error }; result = { state: "error", checkedAt, code }; }
+            else { const code = cleanupUncertain ? "unavailable" : codeOf(error); issue = { component: agent, code, error }; result = { state: "error", checkedAt, code }; }
           } catch (lookupError) { const code = codeOf(lookupError); issue = { component: agent, code, error: new Error("Native executable absence could not be established.", { cause: lookupError }) }; result = { state: "error", checkedAt, code }; }
         }
         if (cached) return result;
@@ -190,11 +197,11 @@ export const createWorkerTelemetryCollector = (options: {
         // The assistant collector owns its five-second budget. Capture rejection so ordinary probes still finish their process cleanup.
         const assistantPending = Promise.resolve().then(() => options.assistantHost?.collect(operation, codexProbes)).then(value => ({ value }), (error: unknown) => ({ error }));
         const [system, cpu, memory, filesystem, daemon, codex, copilot, assistantOutcome] = await Promise.all([
-          probe("os", () => ({ type: text(os.type()), release: text(os.release()), version: text(os.version()), arch: text(os.arch()) })),
+          probe("os", () => ({ type: text(os.type(), 64), release: text(os.release(), 256), version: text(os.version(), 1024), arch: text(os.arch(), 64) })),
           probe("cpu", () => sampleCPU(collection)),
           probe("memory", () => { const totalBytes = integer(os.totalmem()); const free = integer(os.freemem()); if (totalBytes <= 0 || free > totalBytes) throw new SampleError("invalid_sample", "Available memory must fit its positive total capacity."); return { totalBytes, usedBytes: totalBytes - free }; }),
           probe("disk", () => disk(collection)),
-          probe("herdr", () => observe(herdr.observe(collection), collection)), version("codex"), version("copilot"),
+          probe("herdr", async () => { const result = await observe(herdr.observe(collection), collection); return result === null ? null : text(result, 256); }), version("codex"), version("copilot"),
           assistantPending,
         ]);
         const assistant = "value" in assistantOutcome ? assistantOutcome.value : undefined;

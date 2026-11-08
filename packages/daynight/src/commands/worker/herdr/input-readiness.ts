@@ -1,10 +1,11 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { Operation } from "../../../api/operation.js";
 import { SessionV2Error } from "../../../session/v2/values.js";
+import { HerdrInputBlockedError } from "./agents.js";
 import type { HerdrAgentObservation, HerdrTaskBinding } from "./agents.js";
-import { codexInputSurface } from "./codex-input.js";
-import { claudeInputSurface } from "./claude-input.js";
+import { nativeInputBlocker } from "./input-blockers.js";
+import type { NativeInputBlocker } from "./input-blockers.js";
+import { hasEmptyResumeComposer } from "./resume-composer.js";
+import { readMacProcessTty, readMacTtySize } from "./native-tty.js";
 import type { createHerdrRpcClient } from "./rpc.js";
 
 export type HerdrInputPurpose = "automatic" | "manual" | "resume" | "cleanup";
@@ -18,22 +19,8 @@ const list = (value: unknown): Record<string, unknown>[] => {
   return value.map(object);
 };
 
-export const readHerdrProcessTty = async (pid: number, signal: AbortSignal): Promise<string> => {
-  if (process.platform !== "darwin" || !Number.isSafeInteger(pid) || pid < 1 || pid > 2147483647) throw new SessionV2Error("unsupported_protocol");
-  const { stdout } = await promisify(execFile)("/bin/ps", ["-p", String(pid), "-o", "tty="], { signal, timeout: 2000, maxBuffer: 128, encoding: "utf8" });
-  const tty = stdout.trim();
-  if (!/^ttys[0-9]+$/.test(tty)) throw new SessionV2Error("target_changed");
-  return `/dev/${tty}`;
-};
-
-/** Query only the original macOS PTY; no resize or terminal-mode mutation is requested. */
-export const readHerdrTtySize = async (tty: string, signal: AbortSignal): Promise<{ width: number; height: number }> => {
-  if (process.platform !== "darwin" || !/^\/dev\/ttys[0-9]+$/.test(tty)) throw new SessionV2Error("unsupported_protocol");
-  const { stdout } = await promisify(execFile)("/bin/stty", ["-f", tty, "size"], { signal, timeout: 2000, maxBuffer: 128, encoding: "utf8" });
-  const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(stdout);
-  if (!match) throw new SessionV2Error("target_changed");
-  return { width: Number(match[2]), height: Number(match[1]) };
-};
+export const readHerdrProcessTty = readMacProcessTty;
+export const readHerdrTtySize = readMacTtySize;
 
 /** Read-only checks never attach or infer a provider acknowledgement from a screen. */
 export const inspectHerdrInput = async (options: {
@@ -75,18 +62,25 @@ export const inspectHerdrInput = async (options: {
   if (version.type !== "pong" || version.version !== "0.9.5") throw new SessionV2Error("unsupported_protocol");
   const before = await topology();
   let composer: HerdrInputReadiness["composer"] = "unavailable";
+  let blocker: NativeInputBlocker | null = null;
+  let resumeEmpty = false;
   if (options.purpose !== "manual" && options.provider !== "copilot") {
-    const result = await rpc.request("pane.read", { pane_id: binding.paneId, source: "visible", format: "text", strip_ansi: true }, operation);
+    const format = options.purpose === "resume" ? "ansi" : "text";
+    const result = await rpc.request("pane.read", { pane_id: binding.paneId, source: "visible", format, strip_ansi: format === "text" }, operation);
     const read = object(result.read);
-    if (result.type !== "pane_read" || read.pane_id !== binding.paneId || read.workspace_id !== binding.workspaceId || read.tab_id !== before.tabId || read.source !== "visible" || read.format !== "text" || read.truncated !== false || typeof read.text !== "string") throw new SessionV2Error("target_changed");
-    const surface = options.provider === "codex" ? codexInputSurface(read.text) : claudeInputSurface(read.text);
-    if (surface !== "composer") throw new SessionV2Error("automation_suspended");
-    composer = "empty";
+    if (result.type !== "pane_read" || read.pane_id !== binding.paneId || read.workspace_id !== binding.workspaceId || read.tab_id !== before.tabId || read.source !== "visible" || read.format !== format || read.truncated !== false || typeof read.text !== "string") throw new SessionV2Error("target_changed");
+    if (options.purpose === "resume") resumeEmpty = hasEmptyResumeComposer(options.provider, read.text);
+    else blocker = nativeInputBlocker(options.provider, read.text);
   }
   // Copilot exposes no cross-version empty-composer proof. Explicit handback
   // remains a human decision; native idle alone never leaves manual/suspended.
   const after = await topology();
   if (JSON.stringify(before) !== JSON.stringify(after)) throw new SessionV2Error("target_changed");
   await verify(); operation.check();
+  if (options.purpose === "resume" && options.provider !== "copilot") {
+    if (!resumeEmpty) throw new SessionV2Error("automation_suspended");
+    composer = "empty";
+  }
+  if (blocker !== null) throw new HerdrInputBlockedError(blocker);
   return { width: after.width, height: after.height, herdrVersion: version.version, composer };
 };
