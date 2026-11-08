@@ -64,6 +64,9 @@
 .webhook-dialog .heading-text { min-width:0 }
 .webhooks h1,
 .webhook-dialog h1 { font-size:28px;line-height:1.3;letter-spacing:-.7px;font-weight:650;margin-bottom:8px }
+.webhooks .heading-text h1,
+.webhooks .panel-heading h2,
+.webhooks .count { overflow-wrap:normal }
 .webhooks .subtitle,
 .webhook-dialog .subtitle { font-size:13px;color:var(--muted) }
 .webhooks .button,
@@ -593,6 +596,7 @@
 .webhook-dialog { max-height: calc(var(--webhook-viewport-height, 100dvh) - 40px); }
 .webhook-dialog .modal-layout { max-height: calc(var(--webhook-viewport-height, 100dvh) - 42px); }
 .webhook-dialog fieldset.form-field { border: 0; padding: 0; min-width: 0; }
+.webhook-dialog .webhook-create-form fieldset.form-field { min-width: min-content; }
 .webhooks .webhook-operation { margin-bottom: 18px; display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
 .webhooks .webhook-operation > div { display: grid; gap: 4px; min-width: 0; }
 .webhooks .webhook-operation code, .webhooks .webhook-operation span { overflow-wrap: anywhere; }

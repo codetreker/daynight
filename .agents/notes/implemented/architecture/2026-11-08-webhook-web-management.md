@@ -16,7 +16,13 @@ The authenticated workspace keeps its shared shell and mounts `/webhooks` with
 explicit owner, endpoint and tab navigation. A service/principal-bound catalog
 gates reads and writes independently of sidebar Team preferences. The page uses
 strict browser DTO decoding and fresh authorization; private configuration stays
-in scoped memory, separate from task IndexedDB.
+in scoped memory, separate from task IndexedDB. Empty subscription
+presentation depends on the validated endpoint collection independently of the
+project directory. Its scope placeholder, numeric badge text and fixed heading
+styles retain the prototype geometry without weakening long resource-name
+wrapping. The heading's unstyled action wrapper keeps the native button in an
+inline formatting context. Creation forms alone retain the prototype fieldset
+intrinsic minimum; editing and subscription forms keep their existing sizing.
 
 One controller per owner fixes the exact request bytes, operation identity,
 issued time, actor, versions and SHA-256 at submission. Unknown results reconcile
@@ -75,6 +81,14 @@ reconciliation without granting replay from a missing body.
 and sidebar interactions already have production behavior. Preserving the shell
 keeps those controls intact while product content and dialogs follow the approved
 component styles and local geometry.
+
+**Force display on a direct flex item.** Flex-item blockification changes the
+resolved display despite an inline-flex declaration. An unstyled wrapper restores
+the intended formatting context while retaining the same native button.
+
+**Apply intrinsic fieldset sizing to every form.** Creation has the matched
+prototype layout, while editing and subscription forms have separate established
+layouts. A creation-only marker avoids changing those unrelated forms.
 
 ## Consequences
 

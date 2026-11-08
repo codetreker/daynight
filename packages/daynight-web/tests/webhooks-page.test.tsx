@@ -107,6 +107,48 @@ const selectTeamEndpoint = async (view: Awaited<ReturnType<typeof mount>>, value
 };
 
 describe("Webhook configuration page", () => {
+  it.each(["en", "zh-CN"] as const)("distinguishes an empty subscription scope from available projects in %s", async locale => {
+    const empty = { ...endpoint(), subscriptions: [] };
+    const view = await mount({ initial: [empty] }); view.setLocale(locale);
+    const labels = locale === "en" ? { scope: "Subscription scope", tab: /^Subscriptions/, empty: "No subscriptions yet", copy: "Select projects and events to receive.", noProjects: "No accessible projects", add: "Add subscription", project: "Project one" } : { scope: "订阅范围", tab: /^订阅/, empty: "还没有订阅", copy: "选择需要接收的项目与事件。", noProjects: "没有可访问项目", add: "添加订阅", project: "Project one" };
+    const scope = screen.getByText(labels.scope).closest(".field-view")!;
+    expect(within(scope as HTMLElement).getByText("—")).toBeVisible();
+    const tab = screen.getByRole("tab", { name: labels.tab });
+    expect(tab.querySelector(".count")).toHaveTextContent(/^0$/);
+    expect(tab.querySelector(".count")!.textContent).toBe("0");
+    fireEvent.click(tab);
+    expect(screen.getByRole("heading", { name: labels.empty })).toBeVisible();
+    expect(screen.getByText(labels.copy)).toBeVisible(); expect(screen.queryByText(labels.noProjects)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: labels.add }));
+    await within(screen.getByRole("dialog")).findByRole("option", { name: new RegExp(labels.project) });
+    expect(view.writes).toHaveLength(0);
+  });
+
+  it("publishes subscription counts and summaries only after the current background read finishes", async () => {
+    const original = { ...endpoint(), subscriptions: [] };
+    const view = await mount({ initial: [original] });
+    const scope = () => screen.getByText("Subscription scope").closest(".field-view")! as HTMLElement;
+    const current = barrier<Response>(); let observed = false;
+    view.resources.set(original.id, { ...endpoint(), configVersion: "2" });
+    view.intercept(url => url === `/api/v1/me/webhooks/${original.id}` ? (observed = true, current.promise) : null);
+    fireEvent.focus(window); await waitForState(() => expect(observed).toBe(true));
+    expect(within(scope()).getByText("—")).toBeVisible();
+    expect(screen.getByRole("tab", { name: /^Subscriptions/ }).querySelector(".count")).toHaveTextContent(/^0$/);
+    await act(async () => { current.resolve(response({ ...endpoint(), configVersion: "2" })); });
+    await within(scope()).findByText("Project one");
+    expect(within(scope()).queryByText("—")).toBeNull();
+    expect(screen.getByRole("tab", { name: /^Subscriptions/ }).querySelector(".count")).toHaveTextContent(/^1$/);
+    expect(view.writes).toHaveLength(0);
+  });
+
+  it("keeps a failed initial read distinct from empty subscriptions and empty scope", async () => {
+    const view = await mount({ initial: [{ ...endpoint(), subscriptions: [] }], firstReadFailure: "503" });
+    expect(screen.getByRole("alert")).toBeVisible(); expect(screen.queryByRole("heading", { name: "No subscriptions yet" })).toBeNull(); expect(document.querySelector(".field-view")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    expect(screen.getByText("Subscription scope").closest(".field-view")).toHaveTextContent("—");
+    expect(view.writes).toHaveLength(0);
+  });
   it.each(["network", "media", "503"] as const)("publishes an initial %s list failure with its owner binding and recovers through read-only retry", async firstReadFailure => {
     const view = await mount({ firstReadFailure }); await screen.findByRole("alert");
     expect(screen.queryByLabelText("Loading…")).toBeNull(); expect(screen.queryByText("No webhooks yet")).toBeNull(); expect(document.querySelectorAll(".endpoint-row")).toHaveLength(0); expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
