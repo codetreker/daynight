@@ -81,8 +81,17 @@ describe("public and authenticated entry ownership", () => {
 
   it('retains the initial invitation in memory when session storage cannot be used', async () => {
     history.replaceState(null, '', '/invitations#memory-only-invitation');
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    const originalGetItem = Storage.prototype.getItem;
+    const originalSetItem = Storage.prototype.setItem;
+    // Team preferences still need localStorage when invitation sessionStorage is blocked.
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key: string) {
+      if (this === window.sessionStorage) throw new Error("blocked");
+      return originalGetItem.call(this, key);
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+      if (this === window.sessionStorage) throw new Error("blocked");
+      return originalSetItem.call(this, key, value);
+    });
     const fetcher = vi.fn((url: string) => Promise.resolve(url === '/api/v1/invitations/inspect'
       ? json({ projectId: '00000000-0000-4000-8000-000000000010', projectName: 'Invited project', directGrant: null, access: null }) : defaultResponse(url)));
     vi.stubGlobal('fetch', fetcher);
@@ -93,7 +102,7 @@ describe("public and authenticated entry ownership", () => {
     expect(JSON.stringify(history.state)).not.toContain('memory-only-invitation');
     expect(browserNavigation().snapshot().hash).toBe('');
     fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
-    await screen.findByRole('heading', { name: 'Projects' });
+    expect(await screen.findByRole('heading', { level: 2, name: 'No projects yet' })).toBeVisible();
     await historyMove('back');
     await screen.findByRole('heading', { name: 'Invitation unavailable' });
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/inspect'))).toHaveLength(1);
@@ -107,7 +116,7 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", fetcher);
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
-    await screen.findByRole("heading", { name: "Projects" });
+    expect(await screen.findByRole("heading", { level: 2, name: "No projects yet" })).toBeVisible();
     expect(sessionStorage.getItem(invitationStorageKey)).toBeNull();
     await historyMove("back");
     await screen.findByRole("heading", { name: "Invitation unavailable" });
@@ -185,8 +194,17 @@ describe("public and authenticated entry ownership", () => {
 
   it("keeps a Team invitation in memory with blocked storage and retires it before Back", async () => {
     history.replaceState(null, "", "/team-invitations#memory-only-team");
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
+    const originalGetItem = Storage.prototype.getItem;
+    const originalSetItem = Storage.prototype.setItem;
+    // Team preferences still need localStorage when invitation sessionStorage is blocked.
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key: string) {
+      if (this === window.sessionStorage) throw new Error("blocked");
+      return originalGetItem.call(this, key);
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+      if (this === window.sessionStorage) throw new Error("blocked");
+      return originalSetItem.call(this, key, value);
+    });
     const team = { id: "00000000-0000-4000-8000-000000000010", kind: "ordinary", name: "Invited Team" };
     const fetcher = vi.fn((url: string) => {
       expect(location.hash).toBe("");
@@ -199,7 +217,7 @@ describe("public and authenticated entry ownership", () => {
     await screen.findByRole("button", { name: "Accept invitation and join" });
     expect(fetcher).toHaveBeenCalledWith("/api/v1/team-invitations/inspect", expect.objectContaining({ body: JSON.stringify({ token: "memory-only-team" }) }));
     fireEvent.click(screen.getByRole("button", { name: "Not now" }));
-    await screen.findByRole("heading", { name: "Projects" });
+    expect(await screen.findByRole("heading", { level: 2, name: "No projects yet" })).toBeVisible();
     await historyMove("back");
     await screen.findByRole("heading", { name: "Invitation unavailable" });
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/inspect"))).toHaveLength(1);
