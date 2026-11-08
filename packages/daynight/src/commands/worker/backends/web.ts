@@ -56,6 +56,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     let startup: StartupObservation = saved !== null && matchesGeneration(task, saved) && saved.startup !== undefined
       ? parseStartupObservation(saved.startup)
       : execution.startupReport?.startup ?? { state: "unknown", reasonCode: "evidence_missing" };
+    // An unfinished journal cannot invalidate the Worker's later pre-hello launch outcome.
+    if (startup.state === "starting" && execution.startupReport?.startup.reasonCode === "controller_start_unknown") {
+      startup = execution.startupReport.startup;
+    }
     if (startup.state === "starting" && saved !== null && matchesGeneration(task, saved) && ["stopped", "stopping", "failed", "paused"].includes(saved.lifecycle)) {
       startup = { state: "unknown", reasonCode: "controller_start_unknown" };
     }

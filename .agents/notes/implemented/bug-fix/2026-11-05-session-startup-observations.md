@@ -19,6 +19,15 @@ through the existing claim update. Reporting remains independent of execution
 recovery and does not send native input. The [protocol design](../../../../docs/design/task-session-protocol.md#启动观察的独立上报)
 owns fields, ordering, permissions and compatibility.
 
+A matching journal's unfinished `starting/initializing` observation does not
+replace a persisted Worker `unknown/controller_start_unknown` launch outcome.
+An abrupt pre-hello exit can leave a nonterminal journal, so its lifecycle alone
+cannot show progress after that outcome. The observer accepts subsequent typed
+ready, rejection and specific unknown initialization results from the same
+generation. It uses the existing semantic-change revision rule, preserving the
+observation time when neither startup nor recovery changes. This is a specific
+producer precedence rule, not a ranking of all startup states or wall clocks.
+
 Provider adapters normalize proven SDK initialization rejections before cleanup.
 Copilot remote RPC errors and Claude structured control-response errors do not
 share the native RPC error class; SDK transport errors must retain uncertainty.
@@ -46,6 +55,12 @@ and stop proof. Its original implementation deliberately reported only phase and
 identity; the independent report adds visibility without changing those gates.
 
 ## Alternatives
+
+**Always prefer a matching journal.** The journal owns native initialization
+facts, but an abrupt Controller exit can prevent it from recording any outcome.
+Reading its unfinished record after the Worker observes launch uncertainty would
+publish apparent initialization with a higher revision. The launcher outcome
+must survive that read until the journal supplies an actual result.
 
 **Put diagnostics directly in every Session snapshot.** This would reach live
 consumers but would require compatibility projection across HTTP, welcome frames,
