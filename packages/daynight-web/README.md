@@ -2094,8 +2094,12 @@ records these boundaries and their limits.
 Project-settings route-retention and management tests use the same state waiter
 for request dispatch, mocked callbacks and abort signals. Responses, cache
 admission and presentation retain independent checks; a dispatch count does not
-prove that a result was admitted. Settings actions, token creation fields and
-member role controls use their current panel, form or roster. Readiness helpers
+prove that a result was admitted. OAuth revocation tests hold the write and
+current-state read separately, retain the busy dialog and active row while the
+read is pending, and assert no premature success. The read resolves within React
+`act` so the revoked state, dialog teardown and passive heading-focus restoration
+settle before their completion assertions. Settings actions, token creation fields
+and member role controls use their current panel, form or roster. Readiness helpers
 click the same enabled button returned by their semantic query. Global privacy,
 absence and duplicate-control assertions retain document-wide scope. The
 [settings and management observation decision](../../.agents/notes/implemented/testing/2026-11-07-settings-management-test-observations.md)

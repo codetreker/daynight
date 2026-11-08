@@ -10,7 +10,9 @@ The default 50ms sampling interval adds idle time without identifying response
 admission. Semantic button and field discovery also repeats work across the full
 authenticated page or a management page containing an unrelated panel and dialog.
 A helper that discovers an enabled button and then discovers it again spends
-additional work within the same stable interaction phase.
+additional work within the same stable interaction phase. OAuth revocation can
+render its confirmation notice before the passive effect restores heading focus;
+finding the notice alone does not establish completion of that effect.
 
 ## Decision
 
@@ -20,7 +22,13 @@ mixed request-or-visible-retry predicate retain React Testing Library's default
 waiter. The original immediate check, deadline, errors and explicit options
 remain in force. Dispatch observations identify that a request started; held
 responses, real IndexedDB admission, access recovery and rendered receipts
-continue to establish their separate lifecycle boundaries.
+continue to establish their separate lifecycle boundaries. OAuth revocation tests
+hold the write response and subsequent grant-list response independently. They
+check that the write starts exactly once, that the current-state read starts only
+after the write succeeds, and that the original active row and busy dialog remain
+without a success notice while the read is pending. Resolving the read within
+React `act` settles the rendered revoked state, dialog teardown and passive
+heading-focus restoration before their assertions.
 
 Settings Save and Cancel controls are queried by role and accessible name within
 the current settings panel. Transfer Cancel belongs to its current dialog.
@@ -62,6 +70,11 @@ presence does not establish a database operation or a material saving. No
 measured fixture reduction is adopted, and the existing Alice and boundary data
 remain intact.
 
+**Wait only for the revocation success notice or heading focus.** A DOM observer
+can report a notice before passive focus restoration. Waiting for focus alone
+avoids that observation race, but does not prove that confirmation waits for the
+current-state read. Held write and read responses establish both stages.
+
 ## Consequences
 
 Non-DOM observations can complete sooner while response and presentation
@@ -70,4 +83,6 @@ work while preserving the tested accessible names and owner. More frequent
 state sampling can cost more CPU when real I/O is slow, so file, command and
 resource measurements remain necessary. Local improvements do not establish
 whole-Job savings. Cache construction and real admission remain part of the
-existing fixture cost.
+existing fixture cost. OAuth completion assertions detect omitted focus
+restoration and premature success publication without depending on scheduler
+speed or increasing a timeout.
