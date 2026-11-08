@@ -533,15 +533,15 @@ describes the actual check. The complete module check requires an isolated
 PostgreSQL instance and fails if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
-Business-rule unit tests use domain facts and DAO-interface mocks without a
-PostgreSQL fixture; SQL, transaction, persistence and cross-operation authority
-proofs remain integration tests. The
-[server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
-owns their scope and failure expectations. A selected pure-rule test must run
-without a database URL; the complete `internal/service/webhook` suite also has
-this property. Its source producers, HTTP/protocol adapters and PostgreSQL
-contracts retain their own proofs. The server guide owns the standalone command;
-the full module check still includes real PostgreSQL.
+Non-Store unit tests must use domain facts and DAO, scope and transaction mocks
+without PostgreSQL. Store tests own SQL, locking, persistence, transaction and
+database recheck mechanisms; API integration tests cover normal assembled
+Server flows. The [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
+owns the scope and failure expectations. The complete `internal/core/session`
+and `internal/service/webhook` suites execute without a database URL. Their
+producer, service, HTTP/protocol and PostgreSQL owners retain distinct proofs.
+The server guide owns the standalone commands; the full module check still
+includes isolated real PostgreSQL.
 
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;

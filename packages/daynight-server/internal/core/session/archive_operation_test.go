@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,10 +15,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func archiveAdmissionFixture(t *testing.T, root string) *Execution {
@@ -166,12 +167,17 @@ func TestArchiveUploadRetainsCommitWhenPermitCloseFails(t *testing.T) {
 	archiveTerminal(t, f)
 	closeFailure := errors.New("permit close failed")
 	f.s.files = archivePermitFailureStorage{Storage: f.s.files, failure: closeFailure}
-	out, err := f.s.PutArchive(context.Background(), f.p, f.project, f.task, v.SessionID, data)
+	phase := f.ArchivePhase(context.Background(), map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2, "SessionArchive": 1, "SetSessionArchiveReady": 1})
+	out, err := f.s.PutArchive(phase, f.p, f.project, f.task, v.SessionID, data)
+	f.dao.FinishContext(phase)
 	var tx *store.TransactionError
 	if out.State != "ready" || !errors.Is(err, closeFailure) || !errors.As(err, &tx) || tx.Outcome != store.TransactionCommitted || !tx.CleanupFailed || !tx.CommitAttempted {
 		t.Fatalf("lost committed outcome: %+v %v", out, err)
 	}
-	status, err := f.s.ArchiveStatus(context.Background(), f.p, f.project, f.task, v.SessionID)
+	acceptArchiveWrites(t, f, v.SessionID, data)
+	phase = f.ArchivePhase(context.Background(), map[string]int{"SessionArchive": 1})
+	status, err := f.s.ArchiveStatus(phase, f.p, f.project, f.task, v.SessionID)
+	f.dao.FinishContext(phase)
 	if err != nil || status.State != "ready" {
 		t.Fatalf("archive did not commit: %+v %v", status, err)
 	}
@@ -204,17 +210,42 @@ func TestTerminalArchiveReadPreservesValidationAndCloseFailure(t *testing.T) {
 	finalizeFixture(t, f, m, doc)
 	ctx := context.Background()
 	data := encode(doc)
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, data); err != nil {
+	receipt, err := fixtureTerminalArchiveUpload(f, ctx, m.SessionID, data)
+	if err != nil {
 		t.Fatal(err)
 	}
+	selectTerminalArchiveReadback(t, f, m.SessionID, data, receipt.Payload.(v2.Receipt))
 	failure := errors.New("object close failed")
 	f.s.files = failedArchiveObjectStorage{Storage: f.s.files, failure: failure}
-	_, err := f.s.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID)
+	scopes := 0
+	f.writer.WriteFn = func(ctx context.Context, work func(store.SessionScope) error) (store.Completion, error) {
+		scopes++
+		callbackError := work(f.writer)
+		switch scopes {
+		case 1:
+			if callbackError != nil {
+				t.Fatalf("archive preflight failed: %v", callbackError)
+			}
+			return store.Completion{Outcome: store.TransactionCommitted}, nil
+		case 2:
+			if callbackError == nil {
+				t.Fatal("archive read omitted validation and close failure")
+			}
+			return store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Outcome: store.TransactionNotCommitted, Cause: callbackError}
+		default:
+			t.Fatalf("unexpected archive scope %d", scopes)
+			return store.Completion{}, nil
+		}
+	}
+	_, err = fixtureTerminalArchiveRead(f, ctx, m.SessionID)
 	var fault *model.Fault
 	var original *model.Fault
 	var tx *store.TransactionError
 	if !errors.As(err, &fault) || fault.Code != "cleanup_unknown" || !errors.As(fault.Cause, &original) || original.Code != "source_corrupt" || !errors.Is(err, failure) || !errors.As(err, &tx) || tx.Outcome != store.TransactionNotCommitted {
 		t.Fatalf("lost validation, close error or transaction outcome: %v", err)
+	}
+	if scopes != 2 {
+		t.Fatalf("archive scopes = %d, want preflight and read", scopes)
 	}
 }
 
@@ -237,25 +268,49 @@ func TestArchiveGateBusyCleanupFailureRemainsObservable(t *testing.T) {
 	}
 }
 
-func TestTerminalArchiveReadbackWithSingleDatabaseConnection(t *testing.T) {
+type scopedArchiveObjectStorage struct {
+	filestorage.Storage
+	t      *testing.T
+	active *atomic.Int32
+	reads  atomic.Int32
+}
+
+func (s *scopedArchiveObjectStorage) Open(ctx context.Context, bucket, path string) (filestorage.Object, error) {
+	if s.active.Load() != 1 {
+		s.t.Error("archive object read escaped its admitted terminal scope")
+		return filestorage.Object{}, errors.New("archive object read outside terminal scope")
+	}
+	s.reads.Add(1)
+	return s.Storage.Open(ctx, bucket, path)
+}
+
+func TestTerminalArchiveReadbackStaysInsideItsAdmittedScope(t *testing.T) {
 	f, m, doc := terminalArchiveFixture(t)
 	finalizeFixture(t, f, m, doc)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cfg := f.db.Pool.Config().Copy()
-	cfg.MaxConns = 1
-	cfg.MinConns = 0
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
+	var active atomic.Int32
+	run := f.s.terminalRun
+	f.s.terminalRun = func(ctx context.Context, p model.Principal, project, task, id string, archive bool, work func(*TerminalAccess) error) error {
+		if !active.CompareAndSwap(0, 1) {
+			t.Error("archive readback attempted a nested terminal scope")
+			return errors.New("nested terminal scope")
+		}
+		defer active.Store(0)
+		return run(ctx, p, project, task, id, archive, work)
 	}
-	defer pool.Close()
-	single := New(&postgres.Store{Pool: pool}, f.s.files)
+	files := &scopedArchiveObjectStorage{Storage: f.s.files, t: t, active: &active}
+	f.s.files = files
 	data := encode(doc)
-	if _, err = single.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, data); err != nil {
-		t.Fatalf("single-connection upload and readback: %v", err)
+	receipt, err := fixtureTerminalArchiveUpload(f, ctx, m.SessionID, data)
+	if err != nil {
+		t.Fatalf("scoped upload and readback: %v", err)
 	}
-	retained, err := single.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID)
+	if files.reads.Load() != 1 {
+		t.Fatal("upload did not validate the stored object in its terminal scope")
+	}
+	selectTerminalArchiveReadback(t, f, m.SessionID, data, receipt.Payload.(v2.Receipt))
+	retained, err := fixtureTerminalArchiveRead(f, ctx, m.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +319,9 @@ func TestTerminalArchiveReadbackWithSingleDatabaseConnection(t *testing.T) {
 	}
 	if err = retained.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if files.reads.Load() != 2 || active.Load() != 0 {
+		t.Fatal("archive readback omitted object validation or retained its terminal scope")
 	}
 }
 
@@ -552,18 +610,83 @@ func TestArchivePreflightRejectsUntrustedOrRevokedAuthority(t *testing.T) {
 	}
 }
 
+type changedArchiveCompletenessDAO struct {
+	store.SessionDAO
+	t         *testing.T
+	id, value string
+	calls     int
+}
+
+func selectTerminalArchiveReadback(t *testing.T, f fixture, id string, data []byte, receipt v2.Receipt) {
+	t.Helper()
+	doc, err := v2.DecodeArchive(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, size := v2.HashBytes(data), strconv.Itoa(len(data))
+	path, err := archiveObjectPath(f.project, f.p.UserID, id, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Disposition != "ready" || receipt.FinalizationID != doc.FinalizationID || receipt.SHA256 == nil || *receipt.SHA256 != digest || receipt.ByteLength == nil || *receipt.ByteLength != size || receipt.Completeness == nil || *receipt.Completeness != doc.Completeness {
+		t.Fatalf("archive receipt does not identify the supplied document: %+v", receipt)
+	}
+	if f.terminal.ProposedReceipt == nil || !reflect.DeepEqual(*f.terminal.ProposedReceipt, receipt) || f.terminal.ProposedPath == nil || *f.terminal.ProposedPath != path {
+		t.Fatal("archive write did not propose the returned receipt and expected object path")
+	}
+	f.terminal.Receipt = new(fixtureCopy(receipt))
+	f.terminal.Path = path
+	f.terminal.Status = v2.ArchiveStatus{State: "ready", FinalizationID: &doc.FinalizationID, SHA256: &digest, ByteLength: &size, Completeness: &doc.Completeness}
+}
+
+func fixtureTerminalArchiveUpload(f fixture, ctx context.Context, id string, data []byte) (v2.Message, error) {
+	phase := f.dao.ContextPhase(ctx, map[string]int{
+		"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2,
+		"LockArchiveTask": 1, "LockCredential": 1, "LockTerminal": 1,
+		"TerminalArchive": 1, "SaveTerminalReceipt": 1,
+	})
+	defer f.dao.FinishContext(phase)
+	return f.s.PutTerminalArchive(phase, f.p, f.project, f.task, id, data)
+}
+
+func fixtureTerminalArchiveRead(f fixture, ctx context.Context, id string) (*RetainedArchive, error) {
+	phase := f.dao.ContextPhase(ctx, map[string]int{
+		"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2,
+		"LockTask": 1, "LockCredential": 1, "LockTerminal": 1,
+		"TerminalArchive": 1,
+	})
+	defer f.dao.FinishContext(phase)
+	return f.s.TerminalArchiveContent(phase, f.p, f.project, f.task, id)
+}
+
+func (d *changedArchiveCompletenessDAO) TerminalArchive(ctx context.Context, id string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
+	if id != d.id {
+		d.t.Fatalf("unexpected archive identifier %s", id)
+	}
+	d.calls++
+	status, receipt, path, err := d.SessionDAO.TerminalArchive(ctx, id)
+	status.Completeness = &d.value
+	return status, receipt, path, err
+}
+
 func TestTerminalArchiveRejectsChangedOwnerAndCompleteness(t *testing.T) {
 	f, m, doc := terminalArchiveFixture(t)
 	finalizeFixture(t, f, m, doc)
 	ctx := context.Background()
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, encode(doc)); err != nil {
+	data := encode(doc)
+	receipt, err := fixtureTerminalArchiveUpload(f, ctx, m.SessionID, data)
+	if err != nil {
 		t.Fatal(err)
 	}
+	selectTerminalArchiveReadback(t, f, m.SessionID, data, receipt.Payload.(v2.Receipt))
 	preflight := f.s.archivePreflightRun
 	f.s.SetArchivePreflight(func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error) {
 		return uuid.NewString(), nil
 	})
-	if _, err := f.s.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID); err == nil {
+	phase := f.dao.ContextPhase(ctx, map[string]int{"LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "LockTerminal": 1})
+	_, ownerError := f.s.TerminalArchiveContent(phase, f.p, f.project, f.task, m.SessionID)
+	f.dao.FinishContext(phase)
+	if ownerError == nil {
 		t.Fatal("archive read under changed owner")
 	}
 	f.s.SetArchivePreflight(preflight)
@@ -571,11 +694,20 @@ func TestTerminalArchiveRejectsChangedOwnerAndCompleteness(t *testing.T) {
 	if doc.Completeness == other {
 		other = "complete"
 	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE session_archives SET completeness=$2 WHERE session_id=$1`, m.SessionID, other); err != nil {
-		t.Fatal(err)
+	run := f.s.terminalRun
+	var altered *changedArchiveCompletenessDAO
+	f.s.terminalRun = func(ctx context.Context, p model.Principal, project, task, id string, archive bool, work func(*TerminalAccess) error) error {
+		return run(ctx, p, project, task, id, archive, func(access *TerminalAccess) error {
+			altered = &changedArchiveCompletenessDAO{SessionDAO: access.tx.dao, t: t, id: m.SessionID, value: other}
+			access.tx.dao = altered
+			return work(access)
+		})
 	}
-	if _, err := f.s.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID); err == nil {
+	if _, err := fixtureTerminalArchiveRead(f, ctx, m.SessionID); err == nil {
 		t.Fatal("archive completeness mismatch accepted")
+	}
+	if altered == nil || altered.calls != 1 {
+		t.Fatal("archive completeness rule did not consume the configured DAO result")
 	}
 }
 
