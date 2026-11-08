@@ -38,7 +38,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser"]) {
+for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -289,3 +289,95 @@ for (const quality of ["success", "skipped", "failure", "cancelled"]) {
     });
   }
 }
+
+const productE2E = jobs.get("verify-e2e")!;
+const selectedE2EStep = gate.match(/      - name: Require selected product E2E to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
+const selectedE2ECommand = selectedE2EStep.match(/^        run: (.+)$/m)![1]!;
+
+test("product E2E has an independent Linux runner selected by its own inputs", () => {
+  assert.match(workflow, /^      e2e: \$\{\{ steps.modules.outputs.e2e \}\}$/m);
+  assert.match(productE2E, /^    needs: detect-changes$/m);
+  assert.match(productE2E, /^    if: \$\{\{ needs.detect-changes.outputs.e2e == 'true' \}\}$/m);
+  assert.match(productE2E, /^    runs-on: ubuntu-latest$/m);
+  assert.match(productE2E, /^    timeout-minutes: 40$/m);
+  assert.match(productE2E, /^          fetch-depth: 0$/m);
+  assert.match(productE2E, /^          persist-credentials: false$/m);
+  assert.match(productE2E, /^          node-version: 24$/m);
+  assert.match(productE2E, /^          version: 11.28.6$/m);
+  assert.match(productE2E, /^          go-version: 1.27.2$/m);
+  assert.match(productE2E, /^          cache: true$/m);
+  assert.match(productE2E, /^      DAYNIGHT_E2E_RUN_POINTER: \$\{\{ github.workspace \}\}\/\.tmp\/product-e2e-run\.json$/m);
+  for (const [name, directory] of [["COREPACK_HOME", ".tmp/corepack"], ["XDG_CACHE_HOME", ".tmp/cache"], ["PLAYWRIGHT_BROWSERS_PATH", ".tmp/playwright-browsers"], ["GOCACHE", ".tmp/product-e2e-cache/go-build"], ["GOMODCACHE", ".tmp/product-e2e-cache/go-mod"], ["GOPATH", ".tmp/product-e2e-cache/go"]]) {
+    assert.ok(productE2E.includes(`${name}: \${{ github.workspace }}/${directory}`));
+  }
+  assert.doesNotMatch(productE2E, /services:|DAYNIGHT_TEST_DATABASE_URL|DAYNIGHT_UNIAUTH_APP_SECRET|download-artifact|continue-on-error/);
+});
+
+test("product E2E budgets every step and reserves cleanup time within the job", () => {
+  const jobMinutes = Number(productE2E.match(/^    timeout-minutes: (\d+)$/m)![1]);
+  const stepMinutes = stepsOf(productE2E).map((step) => {
+    const match = step.match(/^        timeout-minutes: ([1-9]\d*)$/m);
+    assert.ok(match, `Product E2E step lacks a positive timeout: ${step.split("\n")[0]}`);
+    return Number(match[1]);
+  });
+  assert.deepEqual(stepMinutes, [2, 2, 2, 1, 3, 3, 4, 1, 1, 15, 3, 1]);
+  assert.ok(stepMinutes.reduce((total, minutes) => total + minutes, 0) <= jobMinutes - 2);
+});
+
+test("product E2E runs its own harness and builds the complete journey every time", () => {
+  const steps = stepsOf(productE2E);
+  const install = steps.find((step) => step.includes("run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"))!;
+  const browser = steps.find((step) => step.includes("run: pnpm --filter @codetreker/daynight-e2e exec playwright install --with-deps chromium"))!;
+  const types = steps.find((step) => step.includes("run: pnpm --filter @codetreker/daynight-e2e typecheck"))!;
+  const harness = steps.find((step) => step.includes("run: pnpm e2e:test:harness"))!;
+  const journey = steps.find((step) => step.includes("id: product-e2e"))!;
+  for (const step of [install, browser, types, harness, journey]) {
+    assert.ok(step);
+    assert.doesNotMatch(step, /if:|continue-on-error|--grep|--shard|--update-snapshots|passWithNoTests/);
+  }
+  assert.match(journey, /^        timeout-minutes: 15$/m);
+  assert.match(journey, /^        run: pnpm e2e:test$/m);
+  assert.ok(steps.indexOf(install) < steps.indexOf(browser));
+  assert.ok(steps.indexOf(browser) < steps.indexOf(types));
+  assert.ok(steps.indexOf(types) < steps.indexOf(harness));
+  assert.ok(steps.indexOf(harness) < steps.indexOf(journey));
+});
+
+test("product E2E reconciles after failure and uploads only results and logs", () => {
+  const steps = stepsOf(productE2E);
+  const journey = steps.find((step) => step.includes("id: product-e2e"))!;
+  const cleanup = steps.find((step) => step.includes("run: pnpm e2e:cleanup"))!;
+  const uploads = uploadSteps(productE2E);
+  assert.equal(uploads.length, 1);
+  const upload = uploads[0]!;
+  assert.match(cleanup, /^        if: \$\{\{ always\(\) && steps.product-e2e.outcome != 'skipped' \}\}$/m);
+  assert.match(cleanup, /^        timeout-minutes: 3$/m);
+  assert.match(upload, /^        if: \$\{\{ always\(\) && steps.product-e2e.outcome != 'skipped' \}\}$/m);
+  assert.equal(artifactName(upload), "daynight-product-e2e");
+  assert.deepEqual(artifactPaths(upload), [".tmp/product-e2e/*/results/**", ".tmp/product-e2e/*/logs/**"]);
+  assert.match(upload, /^          include-hidden-files: true$/m);
+  assert.match(upload, /^          if-no-files-found: error$/m);
+  assert.match(upload, /^          retention-days: 30$/m);
+  assert.ok(productE2E.indexOf(journey) < productE2E.indexOf(cleanup));
+  assert.ok(productE2E.indexOf(cleanup) < productE2E.indexOf(upload));
+});
+
+test("selected product E2E requires actual success", () => {
+  assert.match(selectedE2EStep, /^        if: \$\{\{ needs.detect-changes.outputs.e2e == 'true' \}\}$/m);
+  assert.match(selectedE2EStep, /E2E_RESULT: \$\{\{ needs.verify-e2e.result \}\}/);
+});
+
+for (const result of ["success", "skipped", "failure", "cancelled"]) {
+  test(`selected product E2E ${result} executes the workflow guard`, () => {
+    const outcome = spawnSync("bash", ["-e", "-c", selectedE2ECommand], {
+      env: { ...process.env, E2E_RESULT: result }, encoding: "utf8", timeout: 5_000,
+    });
+    if (outcome.error) throw outcome.error;
+    assert.equal(outcome.signal, null);
+    assert.equal(outcome.status === 0, result === "success");
+  });
+}
+
+test("unselected product E2E may skip while selected modules succeed", () => {
+  assert.equal(runGate({ ...success, "verify-e2e": "skipped" }), 0);
+});

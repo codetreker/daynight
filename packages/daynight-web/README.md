@@ -2245,7 +2245,11 @@ worktree's `.tmp/playwright-browsers`; set `PLAYWRIGHT_BROWSERS_PATH` to use an
 existing installation. The result under `.tmp/task-search-acceptance/` records
 the source fingerprint, server binary and browser asset hashes and observed
 checks. The runner removes its own server, fixture and database resources.
-This focused result does not replace complete cross-product acceptance.
+This focused result does not replace complete cross-product acceptance. The
+independent [Product E2E framework](../e2e_tests/README.md) builds the complete
+CLI/Web/Server and full UniAuth, starts its own isolated PostgreSQL and tests
+normal cross-client workflows through `pnpm e2e:test`. It is separate from Web
+module quality and browser fixture commands.
 
 ## Dependency declarations
 
