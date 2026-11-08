@@ -8,7 +8,9 @@ The two-instance takeover stress fixture backdates its task sources by 58 second
 
 ## Decision
 
-The [takeover fixture](../../../../packages/daynight-server/internal/service/webhook/delivery_two_instance_takeover_stress_test.go) gives its existing capturer a private deterministic random stream. The production capture code still creates and persists all ten jittered opportunities; both second opportunities fall near 63 seconds after their source. The concurrent-claim barrier checks that each remains future and within the existing receive deadline. After the initial TLS requests, persisted cursor and attempt counts must both equal one before lease expiry and recovery.
+The [takeover fixture](../../../../packages/daynight-server/internal/service/webhook/delivery_two_instance_takeover_stress_test.go) gives its existing capturer a private deterministic random stream with seed 313. The production capture code still creates and persists all ten jittered opportunities; both second opportunities fall near 63 seconds after their source. The concurrent-claim barrier checks that each remains future and within the existing receive deadline. After the initial TLS requests, persisted cursor and attempt counts must both equal one before lease expiry and recovery.
+
+The seed follows the capturer's current entropy consumption: event and delivery IDs precede the complete schedule for each source. The original seed 25 suited the encrypted-destination path, whose rewrap consumed additional random bytes. Removing rewrap changed the next schedule's draws, so retaining that seed could start with an elapsed second opportunity. Seed 313 keeps both second opportunities near 63 seconds with the current capture path.
 
 The actual PostgreSQL claims, independent runners, lease recovery, new generation and token, and late-result fencing assertions remain in the test. Runtime randomness and the retry policy are unchanged.
 

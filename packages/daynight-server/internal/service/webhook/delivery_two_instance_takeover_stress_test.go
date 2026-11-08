@@ -124,7 +124,7 @@ func testTwoInstanceTakeover(t *testing.T, stopBeforeTakeover bool) {
 	// source starts at slot 1 and recovery reaches slot 2 within the deadline.
 	// Only this fixture uses the deterministic stream; the production policy
 	// and capturer still generate and persist the complete jittered schedule.
-	f.capture.Random = rand.New(rand.NewSource(25))
+	f.capture.Random = rand.New(rand.NewSource(313))
 	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	var endpoint string
 	var version int64
