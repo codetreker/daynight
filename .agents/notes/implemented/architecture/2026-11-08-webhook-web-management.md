@@ -18,7 +18,8 @@ gates reads and writes independently of sidebar Team preferences. The page uses
 strict browser DTO decoding and fresh authorization; private configuration stays
 in scoped memory, separate from task IndexedDB. Empty subscription
 presentation depends on the validated endpoint collection independently of the
-project directory. Its scope placeholder, numeric badge text and fixed heading
+project directory. Scoped state-icon track alignment excludes unrelated generic
+page styles. Its scope placeholder, numeric badge text and fixed heading
 styles retain the prototype geometry without weakening long resource-name
 wrapping. The heading's unstyled action wrapper keeps the native button in an
 inline formatting context. Creation forms alone retain the prototype fieldset
