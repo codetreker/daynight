@@ -354,8 +354,9 @@ SQLite SQL directories with the compiled dist tree; the
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
-`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. The Webhook service
-suite runs independently with DAO mocks; its focused command belongs to the
+`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. The complete
+Session core and Webhook service suites run independently with DAO mocks;
+their focused commands belong to the
 [server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks). See the
 [development guide](docs/development.md) for prerequisites, native diagnostics,
 module validation commands. `pnpm e2e:test` separately builds and runs the complete

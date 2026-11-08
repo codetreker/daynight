@@ -13,7 +13,11 @@ also need to preserve unfinished forms without granting unverified admission.
 ## Decision
 
 The authenticated workspace keeps its shared shell and mounts `/webhooks` with
-explicit owner, endpoint and tab navigation. A service/principal-bound catalog
+explicit owner, endpoint and tab navigation. A selected detail frame survives
+withdrawal of its configuration projection: it presents owner access loss, read
+failure or loading and retains an explicit return to the same owner’s list. Read
+errors belong to the panel selected by navigation, so a narrow hidden list cannot
+be their only presentation. A service/principal-bound catalog
 gates reads and writes independently of sidebar Team preferences. The page uses
 strict browser DTO decoding and fresh authorization; private configuration stays
 in scoped memory, separate from task IndexedDB.
@@ -85,6 +89,11 @@ reconciliation without granting replay from a missing body.
 and sidebar interactions already have production behavior. Preserving the shell
 keeps those controls intact while product content and dialogs follow the approved
 component styles and local geometry.
+
+**Return to the list when private detail data disappears.** This changes the
+visible selection while the address still names an endpoint and hides the
+requested detail’s failure. Keeping a stateful detail frame preserves explicit
+navigation without retaining withdrawn private values.
 
 ## Consequences
 

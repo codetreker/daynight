@@ -5,12 +5,12 @@ import (
 	"context"
 	"os"
 	"reflect"
-	"sync"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -39,6 +39,7 @@ func terminalArchiveFixtureWithNative(t *testing.T, nativeSession *string) (fixt
 	reg := m.Payload.(v2.Registration)
 	reg.Binding = doc.Runs[0].Binding
 	m.Payload = reg
+	configureTerminalFixture(t, &f, m)
 	doc.SessionID = m.SessionID
 	doc.ClaimID = m.ClaimID
 	doc.Owner = reg.Owner
@@ -47,7 +48,11 @@ func terminalArchiveFixtureWithNative(t *testing.T, nativeSession *string) (fixt
 		doc.Runs[i].Owner = reg.Owner
 	}
 	ctx := context.Background()
-	if _, err = f.s.RegisterTerminal(ctx, f.p, f.project, f.task, m); err != nil {
+	if _, err = terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
+		phase := f.TerminalRegistrationPhase(ctx, map[string]int{"InsertTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.RegisterTerminal(phase, f.p, f.project, f.task, m)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	active := doc.Runs[0]
@@ -56,17 +61,29 @@ func terminalArchiveFixtureWithNative(t *testing.T, nativeSession *string) (fixt
 	ledger := m
 	ledger.Type = "generation_ledger"
 	ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{active}}
-	if _, err = f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, m.SessionID, "1", ledger); err != nil {
+	if _, err = terminalRecordStep(t, f, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{"SaveTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalLedger(phase, f.p, f.project, f.task, m.SessionID, "1", ledger)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	responsibility := m
 	responsibility.Type = "recording_responsibility"
 	responsibility.Payload = v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}
-	if _, err = f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", responsibility); err != nil {
+	if _, err = terminalRecordingStep(t, f, responsibility, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{"SaveTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", responsibility)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	ledger.Payload = v2.GenerationLedger{Runs: doc.Runs}
-	if _, err = f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, m.SessionID, "1", ledger); err != nil {
+	if _, err = terminalRecordStep(t, f, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{"SaveTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalLedger(phase, f.p, f.project, f.task, m.SessionID, "1", ledger)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	digest, err := v2.SourceDigest(doc, "1")
@@ -76,7 +93,11 @@ func terminalArchiveFixtureWithNative(t *testing.T, nativeSession *string) (fixt
 	evidence := m
 	evidence.Type = "recording_evidence"
 	evidence.Payload = v2.RecordingEvidence{ResponsibilityID: responsibility.Payload.(v2.RecordingResponsibility).ResponsibilityID, EvidenceID: uuid.NewString(), Revision: "1", SelectedFrameCount: "1", RegisteredFrameCount: "1", Closed: true, JournalSHA256: v2.HashBytes([]byte("durable journal")), SourceSHA256: digest}
-	if _, err = f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", evidence); err != nil {
+	if _, err = terminalRecordingStep(t, f, evidence, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{"TerminalRecordingEvidence": 1, "InsertRecordingEvidence": 1, "SaveTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", evidence)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	files, err := local.New(t.TempDir())
@@ -89,6 +110,8 @@ func terminalArchiveFixtureWithNative(t *testing.T, nativeSession *string) (fixt
 		}
 	})
 	f.s.files = files
+	state := "pending"
+	f.terminal.History = []store.TerminalHistoryRow{{ID: m.SessionID, Claim: m.ClaimID, Backend: "herdr", Created: f.terminal.Registration.LastSeen, Terminal: append([]byte(nil), f.terminal.Raw...), State: &state}}
 	return f, m, doc
 }
 func finalizeFixture(t *testing.T, f fixture, m v2.Message, doc v2.Archive) v2.Message {
@@ -97,7 +120,11 @@ func finalizeFixture(t *testing.T, f fixture, m v2.Message, doc v2.Archive) v2.M
 	final := m
 	final.Type = "finalization"
 	final.Payload = v2.Finalization{FinalizationID: doc.FinalizationID, ClaimTerminal: true, Runs: doc.Runs}
-	if _, err := f.s.FinalizeTerminal(context.Background(), f.p, f.project, f.task, m.SessionID, "1", final); err != nil {
+	if _, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+		phase := f.TerminalPhase(context.Background(), true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 1})
+		defer f.dao.FinishContext(phase)
+		return f.s.FinalizeTerminal(phase, f.p, f.project, f.task, m.SessionID, "1", final)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return final
@@ -105,113 +132,133 @@ func finalizeFixture(t *testing.T, f fixture, m v2.Message, doc v2.Archive) v2.M
 func TestTerminalArchiveReadyReadsActualBytesAndSurvivesNewClaim(t *testing.T) {
 	f, m, doc := terminalArchiveFixture(t)
 	ctx := context.Background()
+	f.dao.Expect("SaveTerminalReceipt", 1)
 	data := encode(doc)
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, data); err == nil {
+	if _, err := fixtureTerminalUpload(f, ctx, f.p, f.project, f.task, m.SessionID, data, map[string]int{"TerminalArchive": 0, "SaveTerminalReceipt": 0}); err == nil {
 		t.Fatal("unfrozen archive accepted")
 	}
 	final := finalizeFixture(t, f, m, doc)
-	receipt, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, data)
+	receipt, err := fixtureTerminalUpload(f, ctx, f.p, f.project, f.task, m.SessionID, data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if receipt.Payload.(v2.Receipt).Disposition != "ready" {
 		t.Fatal(receipt)
 	}
+	selectTerminalArchiveReadback(t, f, m.SessionID, data, receipt.Payload.(v2.Receipt))
+	ready, hash, size, completeness := "ready", v2.HashBytes(data), decimal(int64(len(data))), doc.Completeness
+	f.terminal.History[0].State, f.terminal.History[0].Hash, f.terminal.History[0].Size, f.terminal.History[0].Completeness = &ready, &hash, &size, &completeness
 	if _, err = v2.DecodeMessage(encode(receipt)); err != nil {
 		t.Fatal("invalid generated receipt", err)
 	}
-	if retry, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, data); err != nil || !reflect.DeepEqual(receipt, retry) {
+	if retry, err := fixtureTerminalUpload(f, ctx, f.p, f.project, f.task, m.SessionID, data, map[string]int{"SaveTerminalReceipt": 0}); err != nil || !reflect.DeepEqual(receipt, retry) {
 		t.Fatal(retry, err)
 	}
-	if _, err = f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, append(data, ' ')); err == nil {
+	if _, err = fixtureTerminalUpload(f, ctx, f.p, f.project, f.task, m.SessionID, append(data, ' '), map[string]int{"SaveTerminalReceipt": 0}); err == nil {
 		t.Fatal("immutable bytes replaced")
 	}
-	if _, err = f.s.FinalizeTerminal(ctx, f.p, f.project, f.task, m.SessionID, "1", final); err != nil {
+	if _, err = terminalRecordStep(t, f, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{})
+		defer f.dao.FinishContext(phase)
+		return f.s.FinalizeTerminal(phase, f.p, f.project, f.task, m.SessionID, "1", final)
+	}); err != nil {
 		t.Fatal("finalization retry", err)
 	}
 	final.Payload = v2.Finalization{FinalizationID: uuid.NewString(), ClaimTerminal: true, Runs: doc.Runs}
-	if _, err = f.s.FinalizeTerminal(ctx, f.p, f.project, f.task, m.SessionID, "1", final); err == nil {
+	if _, err = terminalRecordStep(t, f, func() (v2.Message, error) {
+		phase := f.TerminalPhase(ctx, true, map[string]int{})
+		defer f.dao.FinishContext(phase)
+		return f.s.FinalizeTerminal(phase, f.p, f.project, f.task, m.SessionID, "1", final)
+	}); err == nil {
 		t.Fatal("second seal allowed")
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{claimId}',to_jsonb($2::text))::text WHERE task_id=$1 AND name='worker'`, f.task, uuid.NewString()); err != nil {
-		t.Fatal(err)
-	}
-	restarted := New(f.db, f.s.files)
+	f.data.Task.Worker.ClaimID = uuid.NewString()
+	restarted := New(f.writer, f.s.files)
 	restarted.Origin = f.s.Origin
-	got, err := restarted.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID)
+	got, err := fixtureTerminalContent(f, restarted, ctx, f.p, f.project, f.task, m.SessionID, nil)
 	if err != nil || !bytes.Equal(got.Data, data) {
 		t.Fatal("history content", err)
 	}
 	if err := got.Close(); err != nil {
 		t.Fatal(err)
 	}
-	page, err := restarted.TerminalHistory(ctx, f.p, f.project, f.task, "", 1)
+	page, err := fixtureTerminalHistory(f, restarted, ctx, f.p, f.project, f.task, "", 1, nil)
 	if err != nil || len(page["items"].([]map[string]any)) != 1 {
 		t.Fatal(page, err)
 	}
-	status, err := restarted.TerminalArchiveStatus(ctx, f.p, f.project, f.task, m.SessionID)
+	entry := page["items"].([]map[string]any)[0]
+	if entry["sessionId"] != m.SessionID || entry["claimId"] != m.ClaimID || entry["archive"].(map[string]any)["state"] != "ready" {
+		t.Fatal("fixed archive history changed identity or disposition", entry)
+	}
+	status, err := fixtureTerminalStatus(f, restarted, ctx, f.p, f.project, f.task, m.SessionID, nil)
 	if err != nil || status.Payload.(v2.ArchiveStatus).State != "ready" {
 		t.Fatal(status, err)
 	}
-	stored, err := restarted.TerminalReceipt(ctx, f.p, f.project, f.task, m.SessionID)
+	stored, err := fixtureTerminalReceipt(f, restarted, ctx, f.p, f.project, f.task, m.SessionID, nil)
 	if err != nil || !reflect.DeepEqual(stored, receipt) {
 		t.Fatal(stored, err)
 	}
-	if _, err = restarted.TerminalArchiveContent(ctx, f.p, uuid.NewString(), f.task, m.SessionID); err == nil {
+	if _, err = fixtureTerminalContent(f, restarted, ctx, f.p, uuid.NewString(), f.task, m.SessionID, map[string]int{"ProjectAccess": 1, "ArchiveMetadata": 0, "LockTask": 0, "LockCredential": 0, "LockTerminal": 0, "TerminalArchive": 0}); err == nil {
 		t.Fatal("cross-project read")
 	}
 	path := "projects/" + f.project + "/" + m.SessionID[:2] + "/" + m.SessionID + "/" + v2.HashBytes(data) + ".json"
 	if _, err = f.s.files.Put(ctx, archiveBucket, path, bytes.NewBufferString("corrupt")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = restarted.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID); err == nil {
+	if _, err = fixtureTerminalContent(f, restarted, ctx, f.p, f.project, f.task, m.SessionID, nil); err == nil {
 		t.Fatal("corrupt stored object read")
 	}
 }
 func TestTerminalFinalizationAndGenerationGrantCannotBothSucceed(t *testing.T) {
-	f, m, doc := terminalArchiveFixture(t)
-	ctx := context.Background()
-	archiveTerminal(t, f)
-	final := m
-	final.Type = "finalization"
-	final.Payload = v2.Finalization{FinalizationID: doc.FinalizationID, ClaimTerminal: true, Runs: doc.Runs}
-	next := doc.Runs[0]
-	next.ExecutionGeneration = "2"
-	next.Binding.TerminalID = "term_next"
-	next.SegmentIDs = []string{}
-	next.StopProof = nil
-	next.StoppedAt = nil
-	ledger := m
-	ledger.Type = "generation_ledger"
-	ledger.ExecutionGeneration = "2"
-	ledger.Payload = v2.GenerationLedger{Runs: append(append([]v2.Run{}, doc.Runs...), next)}
-	results := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, err := f.s.FinalizeTerminal(ctx, f.p, f.project, f.task, m.SessionID, "1", final)
-		results <- err
-	}()
-	go func() {
-		defer wg.Done()
-		_, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, m.SessionID, "1", ledger)
-		results <- err
-	}()
-	wg.Wait()
-	close(results)
-	successes := 0
-	for err := range results {
-		if err == nil {
-			successes++
-		}
-	}
-	if successes != 1 {
-		t.Fatalf("successes=%d", successes)
-	}
-	got, err := f.s.TerminalState(ctx, f.p, f.project, f.task, m.SessionID)
-	if err != nil || got["executionGeneration"] != "1" {
-		t.Fatal(got, err)
+	for _, order := range []string{"finalization first", "generation first"} {
+		t.Run(order, func(t *testing.T) {
+			f, m, doc := terminalArchiveFixture(t)
+			ctx := context.Background()
+			archiveTerminal(t, f)
+			final := m
+			final.Type = "finalization"
+			final.Payload = v2.Finalization{FinalizationID: doc.FinalizationID, ClaimTerminal: true, Runs: doc.Runs}
+			next := doc.Runs[0]
+			next.ExecutionGeneration = "2"
+			next.Binding.TerminalID = "term_next"
+			next.SegmentIDs = []string{}
+			next.StopProof = nil
+			next.StoppedAt = nil
+			ledger := m
+			ledger.Type = "generation_ledger"
+			ledger.ExecutionGeneration = "2"
+			ledger.Payload = v2.GenerationLedger{Runs: append(append([]v2.Run{}, doc.Runs...), next)}
+			finalize := func() error {
+				_, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+					phase := f.TerminalPhase(ctx, true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 1})
+					defer f.dao.FinishContext(phase)
+					return f.s.FinalizeTerminal(phase, f.p, f.project, f.task, m.SessionID, "1", final)
+				})
+				return err
+			}
+			grant := func() error {
+				_, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+					phase := f.TerminalPhase(ctx, true, map[string]int{})
+					defer f.dao.FinishContext(phase)
+					return f.s.UpdateTerminalLedger(phase, f.p, f.project, f.task, m.SessionID, "1", ledger)
+				})
+				return err
+			}
+			f.dao.Expect("SaveTerminal", 1)
+			var finalErr, grantErr error
+			if order == "finalization first" {
+				finalErr, grantErr = finalize(), grant()
+			} else {
+				grantErr, finalErr = grant(), finalize()
+			}
+			if finalErr != nil || grantErr == nil {
+				t.Fatalf("stopped claim decisions: finalize=%v grant=%v", finalErr, grantErr)
+			}
+			got := f.terminal.Record(t)
+			if got.Envelope.ExecutionGeneration != "1" || got.FinalizationID == nil || *got.FinalizationID != doc.FinalizationID {
+				t.Fatal("stopped claim changed generation or finalization identity")
+			}
+		})
 	}
 }
 func TestTerminalArchiveRejectsEvidenceMismatchAndRevokedAuthority(t *testing.T) {
@@ -220,21 +267,21 @@ func TestTerminalArchiveRejectsEvidenceMismatchAndRevokedAuthority(t *testing.T)
 	finalizeFixture(t, f, m, doc)
 	altered := doc
 	altered.Owner.WorkerID = uuid.NewString()
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, encode(altered)); err == nil {
+	if _, err := fixtureTerminalUpload(f, ctx, f.p, f.project, f.task, m.SessionID, encode(altered), map[string]int{"ProjectAccess": 1, "LockArchiveTask": 0, "LockCredential": 0, "LockTerminal": 0, "TerminalArchive": 0, "SaveTerminalReceipt": 0}); err == nil {
 		t.Fatal("foreign archive accepted")
 	}
 	other := f.p
 	other.Kind = model.SessionCredential
-	if _, err := f.s.PutTerminalArchive(ctx, other, f.project, f.task, m.SessionID, encode(doc)); err == nil {
+	if _, err := fixtureTerminalUpload(f, ctx, other, f.project, f.task, m.SessionID, encode(doc), map[string]int{"ArchiveMetadata": 0, "ProjectAccess": 0, "LockArchiveTask": 0, "LockCredential": 0, "LockTerminal": 0, "TerminalArchive": 0, "SaveTerminalReceipt": 0}); err == nil {
 		t.Fatal("browser finalized archive")
 	}
-	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
-		t.Fatal(err)
+	f.dao.ProjectAccessFn = func(context.Context, string, string) (model.ProjectAccess, error) {
+		return model.ProjectAccess{}, model.ErrNotFound
 	}
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, encode(doc)); err == nil {
+	if _, err := fixtureTerminalUpload(f, ctx, f.p, f.project, f.task, m.SessionID, encode(doc), map[string]int{"ArchiveMetadata": 0, "ProjectAccess": 1, "LockArchiveTask": 0, "LockCredential": 0, "LockTerminal": 0, "TerminalArchive": 0, "SaveTerminalReceipt": 0}); err == nil {
 		t.Fatal("revoked owner uploaded")
 	}
-	if _, err := f.s.TerminalHistory(ctx, f.p, f.project, f.task, "", 20); err == nil {
+	if _, err := fixtureTerminalHistory(f, f.s, ctx, f.p, f.project, f.task, "", 20, map[string]int{"TerminalHistory": 0}); err == nil {
 		t.Fatal("revoked viewer history")
 	}
 }
@@ -251,14 +298,22 @@ func TestTerminalFailedArchiveAndCaptureErrorsNeverBecomeUnavailable(t *testing.
 				e.CaptureError = &cause
 			}
 			evidence.Payload = e
-			if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", evidence); err != nil {
+			if _, err := terminalRecordingStep(t, f, evidence, func() (v2.Message, error) {
+				phase := f.TerminalPhase(ctx, true, map[string]int{"TerminalRecordingEvidence": 1, "InsertRecordingEvidence": 1, "SaveTerminal": 1})
+				defer f.dao.FinishContext(phase)
+				return f.s.UpdateTerminalRecording(phase, f.p, f.project, f.task, m.SessionID, "1", evidence)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			archiveTerminal(t, f)
 			final := m
 			final.Type = "finalization"
 			final.Payload = v2.Finalization{FinalizationID: uuid.NewString(), ClaimTerminal: true, Runs: []v2.Run{run}}
-			got, err := f.s.FinalizeTerminal(ctx, f.p, f.project, f.task, m.SessionID, "1", final)
+			got, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+				phase := f.TerminalPhase(ctx, true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 1})
+				defer f.dao.FinishContext(phase)
+				return f.s.FinalizeTerminal(phase, f.p, f.project, f.task, m.SessionID, "1", final)
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -268,9 +323,16 @@ func TestTerminalFailedArchiveAndCaptureErrorsNeverBecomeUnavailable(t *testing.
 				status.Type = "archive_status"
 				code := "source_corrupt"
 				status.Payload = v2.ArchiveStatus{State: "failed", ErrorCode: &code, FinalizationID: fid}
-				if _, err = f.s.UpdateTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, status); err != nil {
+				phaseCtx := f.TerminalPhase(ctx, true, map[string]int{"TerminalArchive": 1, "SaveTerminalArchiveStatus": 1})
+				_, err = f.s.UpdateTerminalArchive(phaseCtx, f.p, f.project, f.task, m.SessionID, status)
+				f.dao.FinishContext(phaseCtx)
+				if err != nil {
 					t.Fatal(err)
 				}
+				if f.terminal.ProposedStatus == nil || !reflect.DeepEqual(*f.terminal.ProposedStatus, status.Payload.(v2.ArchiveStatus)) {
+					t.Fatal("failed status write changed its selected error")
+				}
+				f.terminal.Status = status.Payload.(v2.ArchiveStatus)
 			}
 			r := &terminalRecord{Envelope: m.Envelope}
 			reason := "ended_before_first_sample"
@@ -278,7 +340,10 @@ func TestTerminalFailedArchiveAndCaptureErrorsNeverBecomeUnavailable(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = f.s.UpdateTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, receipt); err == nil {
+			phaseCtx := f.TerminalPhase(ctx, true, map[string]int{"TerminalArchive": 1})
+			_, err = f.s.UpdateTerminalArchive(phaseCtx, f.p, f.project, f.task, m.SessionID, receipt)
+			f.dao.FinishContext(phaseCtx)
+			if err == nil {
 				t.Fatal("failed zero source became unavailable")
 			}
 		})
@@ -286,12 +351,8 @@ func TestTerminalFailedArchiveAndCaptureErrorsNeverBecomeUnavailable(t *testing.
 }
 func TestTerminalArchiveValidatesClosedCountsDigestsAndPerRunGaps(t *testing.T) {
 	f, m, doc := terminalArchiveFixture(t)
-	ctx := context.Background()
 	finalizeFixture(t, f, m, doc)
-	var r *terminalRecord
-	if err := testTransact(f.s, f.db, ctx, func(tx *operationTx) error { var err error; r, err = loadTerminal(ctx, tx, m.SessionID); return err }); err != nil {
-		t.Fatal(err)
-	}
+	r := f.terminal.Record(t)
 	base := r.Recording["1"]
 	for _, change := range []struct {
 		name string
