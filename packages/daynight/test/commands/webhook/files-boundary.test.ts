@@ -169,7 +169,7 @@ describe("webhook input and private files", () => {
   it("rejects malformed or oversized prepared records", async () => {
     const path = join(await dir(), "prepared.json");
     const valid = JSON.stringify(prepared);
-    for (const raw of [valid.replace('"formatVersion":1', '"formatVersion":1,"formatVersion":1'), valid.replace('"ifVersion":"9007199254740993"', '"ifVersion":"01"'), valid.replace('"serverOrigin":"https://daynight.example"', '"serverOrigin":"https://daynight.example/private"'), `${valid}${" ".repeat(8193)}`]) {
+    for (const raw of [valid.replace('"formatVersion":1', '"formatVersion":1,"formatVersion":1'), valid.replace('"ifVersion":"9007199254740993"', '"ifVersion":"01"'), valid.replace('"serverOrigin":"https://daynight.example"', '"serverOrigin":"https://daynight.example/private"'), `${valid}${" ".repeat(2 * 256 * 1024 + 8193)}`]) {
       await fs.writeFile(path, raw);
       await expect(readPrepared(path, signal())).rejects.toThrow();
     }

@@ -284,7 +284,28 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
             scenarios = [
                 ("root", command + " comp\t", ["completion"]),
                 ("webhook", command + " webh\t sec\t rot\t endpoint --mode o\t", ["webhook", "secret", "rotate", "endpoint", "--mode", "overlap"]),
+                ("webhook rotate immediate", command + " webhook secret rotate endpoint --mode i\t", ["webhook", "secret", "rotate", "endpoint", "--mode", "immediate"]),
+                ("webhook enabled true", command + " webhook list --enabled t\t", ["webhook", "list", "--enabled", "true"]),
+                ("webhook enabled false", command + " webhook list --enabled f\t", ["webhook", "list", "--enabled", "false"]),
             ]
+            leaves = [
+                ([], "cat", "catalog"), ([], "l", "list"), ([], "sh", "show"),
+                ([], "cre", "create"), ([], "u", "update"), ([], "en", "enable"),
+                ([], "di", "disable"), ([], "dele", "delete"),
+                (["subscription"], "lis", "list"), (["subscription"], "rep", "replace"),
+                (["subscription"], "rec", "reconfirm"), (["secret"], "sh", "show"),
+                (["secret"], "rot", "rotate"), (["delivery"], "lis", "list"),
+                (["delivery"], "sh", "show"), (["delivery"], "p", "payload"),
+                (["delivery"], "r", "redeliver"), (["attempt"], "lis", "list"),
+                (["operation"], "sh", "show"),
+            ]
+            for parents, prefix, leaf in leaves:
+                context = ["webhook", *parents]
+                scenarios.append((
+                    " ".join([*context, leaf]),
+                    command + " " + " ".join(context) + " " + prefix + "\t --js\t",
+                    [*context, leaf, "--json"],
+                ))
             for name, keys, expected in scenarios:
                 line, cursor, output = shell.complete(keys)
                 actual = shell.execute()

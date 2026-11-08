@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import path from "node:path";
@@ -185,6 +185,37 @@ it.skipIf(database === undefined)("enforces Project and Team webhook permissions
     expect(stillHidden.disclosure).toBe("metadata_only");
     const removed = await success("user", ["delete", personal.endpoint.id, "--personal", "--if-version", shrunk.endpoint.configVersion, "--confirm"]);
     expect(removed.endpoint.lifecycle).toBe("deleted");
+
+    if (process.platform !== "win32") {
+      // Keep an existing original identity distinct from a later, refused invocation.
+      const members = await control("user", "GET", `/api/v1/teams/${info.teamId}/members`);
+      const userMember = members.items.find((item: any) => item.userId === info!.userId);
+      const otherMember = members.items.find((item: any) => item.userId === info!.memberId);
+      await control("user", "PATCH", `/api/v1/teams/${info.teamId}/members/${info.memberId}`, { version: otherMember.version, role: "admin", expectedUserId: info.userId });
+      const originalId = randomUUID(), now = new Date().toISOString();
+      const originalAt = `${now.slice(0, -1)}${"0".repeat(10_000)}+00:00`;
+      const preparedPath = path.join(root, "original-team-operation.json");
+      const originalArgs = ["disable", teamEndpoint.endpoint.id, "--team", info.teamId, "--if-version", teamEndpoint.endpoint.configVersion, "--confirm", "--operation-id", originalId, "--issued-at", originalAt];
+      const originalResult = await success("user", [...originalArgs, "--operation-out", preparedPath]);
+      expect(originalResult.operation.issuedAt).toBe(originalAt);
+      const prepared = JSON.parse((await readFile(preparedPath)).toString());
+      expect(prepared.issuedAt).toBe(originalAt); expect(prepared.requestSha256).toBe(originalResult.operation.requestSha256);
+      const adminView = await success("member", ["operation", "show", originalId, "--team", info.teamId]);
+      expect(adminView.actorUserId).toBe(info.userId); expect(adminView.issuedAt).toBe(originalAt);
+      const resume = await success("user", ["disable", teamEndpoint.endpoint.id, "--team", info.teamId, "--if-version", teamEndpoint.endpoint.configVersion, "--confirm", "--resume-operation", preparedPath]);
+      expect(resume.operation).toEqual(originalResult.operation);
+      await control("member", "DELETE", `/api/v1/teams/${info.teamId}/members/${info.userId}`, { version: userMember.version, expectedUserId: info.memberId });
+      const refusalStart = observations.length;
+      const retry = await denied("user", originalArgs);
+      expect(retry).toMatchObject({ invocationOutcome: "rejected", operationOutcome: "unknown" });
+      const retryWrites = observations.slice(refusalStart).filter(item => item.method === "PATCH" && item.path.includes("/webhooks/"));
+      expect(retryWrites).toHaveLength(1); expect(retryWrites[0]!.status).toBe(403);
+      expect(retryWrites[0]!.requestSha256).toBe(originalResult.operation.requestSha256);
+      const retained = await success("member", ["operation", "show", originalId, "--team", info.teamId]);
+      expect(retained).toEqual(originalResult.operation);
+      const current = await success("member", ["show", teamEndpoint.endpoint.id, "--team", info.teamId]);
+      expect(current.enabled).toBe(false); expect(current.configVersion).toBe(originalResult.operation.configVersionAfter);
+    }
     if (process.env.DAYNIGHT_WEBHOOK_ACL_EVIDENCE !== undefined) {
       const evidence = JSON.stringify({ source: installed.receipt.source, packageSha256: installed.receipt.tarballSha256, entrySha256: installed.receipt.entrySha256, originalHostSha, fixtureHostSha, schema: info.schema, team: info.teamId, project: info.projectId, secondTeam: secondTeam.id, secondProject: secondProject.id, personalEndpoint: personal.endpoint.id, teamEndpoint: teamEndpoint.endpoint.id, foreignEndpoint: foreignEndpoint.endpoint.id, delivery: delivery.id, calls, observations }, null, 2);
       for (const secret of secrets) expect(evidence).not.toContain(secret);

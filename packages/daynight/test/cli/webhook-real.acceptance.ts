@@ -101,7 +101,8 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
               case "oversize": { const decoded = Buffer.alloc(65537, 7); value.body = decoded.toString("base64"); value.bytes = decoded.length; value.sha256 = digest(decoded); break; }
               case "boundary": { const decoded = Buffer.alloc(65536, 7); value.body = decoded.toString("base64"); value.bytes = decoded.length; value.sha256 = digest(decoded); break; }
             }
-            const changed = Buffer.from(JSON.stringify(value));
+            const original = Buffer.from(JSON.stringify(value));
+            const changed = fault === "over-1m" ? Buffer.concat([original, Buffer.alloc(1_048_577 - original.length, 32)]) : original;
             faults.push({ kind: `payload-${fault}`, path: incoming.url!, status: 200, response: changed });
             outgoing.writeHead(200, { ...response.headers, "content-length": changed.length });
             outgoing.end(changed);
@@ -289,8 +290,14 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
     const address = proxy.address(); if (address === null || typeof address === "string") throw new Error("Missing proxy address.");
     const origin = `http://127.0.0.1:${address.port}`;
     await writeFile(path.join(config, "config.yml"), `serverUrl: ${origin}\nserverToken: ${admin}\nteamDefaults:\n  ${JSON.stringify(origin)}:\n    ${hostInfo.userId}: 00000000-0000-4000-8000-000000000001\n`, { mode: 0o600 });
+    const beforeCatalog = records.length;
     const catalog = await call(["catalog"]);
-    expect(catalog.items).toHaveLength(6);
+    const aliasCatalog = await call(["catalog"], true);
+    const catalogRequests = records.slice(beforeCatalog).filter(record => record.path === "/api/v1/webhook-event-types");
+    expect(catalog.items).toHaveLength(6); expect(aliasCatalog).toEqual(catalog);
+    expect(catalogRequests).toHaveLength(2);
+    for (const record of catalogRequests) expect(JSON.parse(Buffer.concat(record.response).toString())).toEqual(catalog);
+    expect(catalog.limits).toEqual({ policyVersion: "1", requestBytes: 262144, payloadBytes: 65536, maxAutomaticAttempts: 10, automaticWindowSeconds: 259200, maxManualOperations: 3, payloadRetentionSeconds: 604800, operationMaxAgeSeconds: 300, operationFutureSkewSeconds: 60 });
     const beforeOversized = records.length;
     oversizedCatalog = true;
     const tooLarge = await invoke(["webhook", "catalog", "--json"]);
@@ -630,7 +637,7 @@ it.skipIf(database === undefined)("runs installed webhook commands against produ
     const both = await invoke(["webhook", "delivery", "payload", id, deliveryId, "--personal", "--json", "--output", path.join(fixture, "impossible.bin")]);
     expect(both.status).toBe(2); expect(both.stdout.length).toBe(0);
     expect(records.slice(beforeExclusive).filter(record => record.path.endsWith("/payload"))).toHaveLength(0);
-    for (const fault of ["base64", "bytes", "hash", "media", "encoding", "owner", "endpoint", "delivery", "event", "oversize"]) {
+    for (const fault of ["base64", "bytes", "hash", "media", "encoding", "owner", "endpoint", "delivery", "event", "oversize", "over-1m"]) {
       for (const outputMode of ["raw", "json", "file"] as const) {
         const target = path.join(fixture, `invalid-${fault}.bin`);
         payloadFault = fault;

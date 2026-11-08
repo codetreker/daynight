@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import { array, bool, count, fields, id, malformed, nullableTimestamp, text, timestamp } from "./validation.js";
 
 export type WebhookOwner = { readonly kind: "personal" | "team"; readonly id: string };
+
+// The service preserves the original UTC timestamp lexeme, including all
+// fractional digits. Check the calendar without normalizing the returned text.
+export const isWebhookIssuedAt = (value: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/.test(value)) return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 19) === value.slice(0, 19);
+};
 const oneOf = <T extends string>(value: unknown, choices: readonly T[]): T => {
   const s = text(value);
   return choices.includes(s as T) ? s as T : malformed();
@@ -85,7 +93,8 @@ export const parseWebhookReceipt = (value: unknown, owner: WebhookOwner, expecte
   const deliveryId = nullable(d.deliveryId, id), generationAfter = nullable(d.generationAfter, version), keyId = nullable(d.keyId, id);
   if (kind === "delivery.redeliver" ? deliveryId === null || generationAfter === null : deliveryId !== null || generationAfter !== null) return malformed();
   if ((kind === "signing-secret.rotate") !== (keyId !== null)) return malformed();
-  return { operationId, kind, issuedAt: timestamp(d.issuedAt), requestSha256, actorUserId: id(d.actorUserId), owner: parseWebhookOwner(d.owner, owner), endpointId: id(d.endpointId), effect: oneOf(d.effect, ["applied", "unchanged"] as const), configVersionAfter: version(d.configVersionAfter), destinationRevisionAfter: version(d.destinationRevisionAfter), deliveryId, generationAfter, keyId, recordedAt: timestamp(d.recordedAt), expiresAt: timestamp(d.expiresAt) };
+  const issuedAt = text(d.issuedAt); if (!isWebhookIssuedAt(issuedAt)) return malformed();
+  return { operationId, kind, issuedAt, requestSha256, actorUserId: id(d.actorUserId), owner: parseWebhookOwner(d.owner, owner), endpointId: id(d.endpointId), effect: oneOf(d.effect, ["applied", "unchanged"] as const), configVersionAfter: version(d.configVersionAfter), destinationRevisionAfter: version(d.destinationRevisionAfter), deliveryId, generationAfter, keyId, recordedAt: timestamp(d.recordedAt), expiresAt: timestamp(d.expiresAt) };
 };
 export const parseWebhookSecret = (value: unknown, endpointId: string) => {
   const d = fields(value, ["endpointId", "configVersion", "keyId", "scheme", "secret"]);

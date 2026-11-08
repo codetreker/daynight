@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { jsonObjectSources } from "../../api/json-source.js";
 import { canonicalId } from "../../api/parse.js";
+import { isWebhookIssuedAt } from "../../api/webhook.js";
 
 export class PayloadCleanupError extends Error {
   constructor(readonly path: string) { super("Could not remove temporary payload file."); }
@@ -58,8 +59,9 @@ export const readPrepared = async (path: string, signal: AbortSignal): Promise<P
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.size > 8192) throw new Error("Invalid prepared operation file.");
-    const buffer = Buffer.allocUnsafe(8193);
+    const limit = 2 * 256 * 1024 + 8192;
+    if (!stat.isFile() || stat.size > limit) throw new Error("Invalid prepared operation file.");
+    const buffer = Buffer.allocUnsafe(limit + 1);
     let size = 0;
     while (size < buffer.length) {
       signal.throwIfAborted();
@@ -68,7 +70,7 @@ export const readPrepared = async (path: string, signal: AbortSignal): Promise<P
       size += bytesRead;
     }
     signal.throwIfAborted();
-    if (size > 8192) throw new Error("Invalid prepared operation file.");
+    if (size > limit) throw new Error("Invalid prepared operation file.");
     const source = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size));
     jsonObjectSources(source);
     const record = JSON.parse(source) as unknown;
@@ -81,7 +83,7 @@ export const readPrepared = async (path: string, signal: AbortSignal): Promise<P
     const owner = r.owner as Record<string, unknown>;
     let validOrigin = false;
     try { const url = new URL(r.serverOrigin); validOrigin = ["http:", "https:"].includes(url.protocol) && url.origin === r.serverOrigin; } catch { /* Invalid origin. */ }
-    if (!validOrigin || Object.keys(owner).length !== 2 || !["personal", "team"].includes(String(owner.kind)) || !validId(owner.id) || !validId(r.actorUserId) || !validId(r.operationId) || !["endpoint.create", "endpoint.patch", "endpoint.delete", "signing-secret.rotate", "delivery.redeliver"].includes(String(r.kind)) || typeof r.issuedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/.test(r.issuedAt) || !Number.isFinite(Date.parse(r.issuedAt)) || (r.endpointId !== null && !validId(r.endpointId)) || (r.deliveryId !== null && !validId(r.deliveryId)) || !validVersion(r.ifVersion) || !validVersion(r.ifGeneration) || typeof r.requestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.requestSha256)) throw new Error("Invalid prepared operation file.");
+    if (!validOrigin || Object.keys(owner).length !== 2 || !["personal", "team"].includes(String(owner.kind)) || !validId(owner.id) || !validId(r.actorUserId) || !validId(r.operationId) || !["endpoint.create", "endpoint.patch", "endpoint.delete", "signing-secret.rotate", "delivery.redeliver"].includes(String(r.kind)) || typeof r.issuedAt !== "string" || !isWebhookIssuedAt(r.issuedAt) || (r.endpointId !== null && !validId(r.endpointId)) || (r.deliveryId !== null && !validId(r.deliveryId)) || !validVersion(r.ifVersion) || !validVersion(r.ifGeneration) || typeof r.requestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.requestSha256)) throw new Error("Invalid prepared operation file.");
     return record as PreparedOperation;
   } finally { await file.close(); }
 };

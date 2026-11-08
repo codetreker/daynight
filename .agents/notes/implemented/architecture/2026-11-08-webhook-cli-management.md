@@ -15,7 +15,10 @@ The CLI uses the authenticated management API with one verified actor and an
 explicit Personal or Team owner. Each write fixes an operation identity, time and
 hash of its actual request before dispatch. An optional private prepared record
 contains only the binding needed to reconcile or explicitly resume that request;
-matching the original receipt is required to confirm its effect. Endpoint lists
+matching the original receipt is required to confirm its effect. The original
+UTC timestamp text is preserved through request serialization and receipt checks.
+A refusal of a caller-supplied identity does not establish the outcome of an
+earlier request using that identity. Endpoint lists
 are bounded complete reads, while history reads expose one page. Payload exports
 validate the original bytes before writing or publishing them. On Linux, an
 inode handle and the destination directory are retained across the closed-writer
@@ -40,8 +43,7 @@ missing receipt alone does not establish that the write was rolled back. The CLI
 also checks a receipt's expiry against its local clock before confirmation, since
 the management API can still return a retained row after its expiry. Clock skew
 can prevent confirmation or allow a locally unexpired receipt that has expired
-on the service clock. Normal
-human output omits sensitive destination paths, and raw payload output preserves
+on the service clock. Normal human output omits sensitive destination paths, and raw payload output preserves
 its exact bytes. File export fails on platforms without the required inode-bound
 publication. Temporary-name cleanup checks the inode before removal; that check
 and removal are separate operations, so a process with equivalent directory

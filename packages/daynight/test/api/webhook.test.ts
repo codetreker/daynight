@@ -21,6 +21,15 @@ describe("webhook API boundaries", () => {
     expect(parseWebhookReceipt(receipt, owner, operationId).configVersionAfter).toBe("9007199254740993");
     for (const patch of [{ configVersionAfter: "01" }, { configVersionAfter: "9223372036854775808" }, { kind: "endpoint.update" }, { requestSha256: "x" }, { effect: "other" }, { extra: 1 }]) expect(() => parseWebhookReceipt({ ...receipt, ...patch }, owner, operationId)).toThrow();
   });
+  it("retains the original valid issuedAt lexeme without relaxing server timestamps", () => {
+    for (const issuedAt of ["2026-11-07T12:00:00.123400+00:00", `2026-11-07T12:00:00.${"0".repeat(10_000)}Z`]) {
+      expect(parseWebhookReceipt({ ...receipt, issuedAt }, owner, operationId).issuedAt).toBe(issuedAt);
+    }
+    for (const issuedAt of ["2026-02-30T12:00:00Z", "2026-11-07T24:00:00Z", "2026-11-07T12:00:00-00:00", "2026-11-07T12:00:00+01:00", "2026-11-07T12:00:00,1Z"]) {
+      expect(() => parseWebhookReceipt({ ...receipt, issuedAt }, owner, operationId)).toThrow();
+    }
+    expect(() => parseWebhookReceipt({ ...receipt, recordedAt: "2026-11-07T12:00:00+00:00" }, owner, operationId)).toThrow();
+  });
   it("rejects malformed or noncanonical signing secrets", () => {
     const valid = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
     const input = { endpointId, configVersion: "1", keyId: operationId, scheme: "standard-webhooks-v1", secret: valid };

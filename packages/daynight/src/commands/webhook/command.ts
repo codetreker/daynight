@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
 import { stringifyApiJson } from "../../api/json.js";
 import { canonicalId } from "../../api/parse.js";
-import { parseWebhookCatalog, parseWebhookDelivery, parseWebhookEndpoint, parseWebhookEndpointPage, parseWebhookAttempt, parseWebhookHistoryPage, parseWebhookMutation, parseWebhookPayload, parseWebhookReceipt, parseWebhookSecret } from "../../api/webhook.js";
+import { isWebhookIssuedAt, parseWebhookCatalog, parseWebhookDelivery, parseWebhookEndpoint, parseWebhookEndpointPage, parseWebhookAttempt, parseWebhookHistoryPage, parseWebhookMutation, parseWebhookPayload, parseWebhookReceipt, parseWebhookSecret } from "../../api/webhook.js";
 import type { WebhookOwner } from "../../api/webhook.js";
 import { UsageError } from "../../cli/context.js";
 import type { CliContext } from "../../cli/context.js";
@@ -77,7 +77,7 @@ export const runWebhookCommand = async (args: readonly string[], context: CliCon
   if ((operationIdOption === undefined) !== (issuedOption === undefined)) usage("--operation-id and --issued-at must be supplied together.");
   if (resume !== undefined && (operationIdOption !== undefined || str("--operation-out") !== undefined)) usage("--resume-operation cannot be combined with a new operation identity or --operation-out.");
   if (operationIdOption !== undefined) uuid(operationIdOption, "--operation-id");
-  if (issuedOption !== undefined && !utc(issuedOption)) usage("--issued-at must be a UTC RFC3339 timestamp.");
+  if (issuedOption !== undefined && !isWebhookIssuedAt(issuedOption)) usage("--issued-at must be a UTC RFC3339 timestamp.");
   for (const key of ["--if-version", "--if-generation", "--generation"]) { const value = str(key); if (value !== undefined && !int64(value)) usage(`${key} must be a canonical positive int64.`); }
   const limit = str("--limit"); if (limit !== undefined && (!/^[1-9][0-9]*$/.test(limit) || Number(limit) > 100)) usage("--limit must be between 1 and 100.");
   if (str("--cursor") === "") usage("--cursor must not be empty.");
@@ -94,7 +94,7 @@ export const runWebhookCommand = async (args: readonly string[], context: CliCon
   const delivery = ["delivery show", "delivery payload", "delivery redeliver", "attempt list"].includes(action) ? uuid(cmd.values[1], "delivery-id") : undefined;
   const lookup = action === "operation show" ? uuid(cmd.values[0], "operation-id") : undefined;
 
-  let phase: Phase = "auth", invocation: Outcome = write ? "not_submitted" : "read_failed", operationOutcome: "unknown" | "confirmed" | "rejected" | null = resume === undefined ? null : "unknown";
+  let phase: Phase = "auth", invocation: Outcome = write ? "not_submitted" : "read_failed", operationOutcome: "unknown" | "confirmed" | "rejected" | null = resume === undefined && operationIdOption === undefined ? null : "unknown";
   let prepared: PreparedOperation | null = null;
   let requestId: string | null = null;
   let reconcileCommand: string | null = null;
@@ -170,11 +170,11 @@ export const runWebhookCommand = async (args: readonly string[], context: CliCon
         reconcileCommand = `daynight webhook operation show ${prior.operationId} ${prior.owner.kind === "personal" ? "--personal" : `--team ${prior.owner.id}`}`;
       }
       const operationId = prior?.operationId ?? operationIdOption ?? randomUUID(), issuedAt = prior?.issuedAt ?? issuedOption ?? new Date().toISOString();
-      if (canonicalId(operationId) !== operationId || !utc(issuedAt)) throw new Error("Invalid prepared operation identity.");
+      if (canonicalId(operationId) !== operationId || !isWebhookIssuedAt(issuedAt)) throw new Error("Invalid prepared operation identity.");
       const body = { operationId, issuedAt, expectedUserId: actor, ...(str("--if-version") === undefined ? {} : { ifVersion: str("--if-version") }), ...(str("--if-generation") === undefined ? {} : { ifGeneration: str("--if-generation") }), ...editable };
       const serialized = stringifyApiJson(body); if (Buffer.byteLength(serialized) > 262_144) throw new Error("Webhook request exceeds 256 KiB.");
       const current: PreparedOperation = { formatVersion: 1, serverOrigin: serverUrl, actorUserId: actor, owner, kind, operationId, issuedAt, endpointId: endpoint ?? null, deliveryId: delivery ?? null, ifVersion: str("--if-version") ?? null, ifGeneration: str("--if-generation") ?? null, requestSha256: createHash("sha256").update(serialized).digest("hex") };
-      operationOutcome = prior === undefined ? null : "unknown";
+      operationOutcome = prior === undefined && operationIdOption === undefined ? null : "unknown";
       if (prior !== undefined) {
         const expected = current;
         const actual = prior as unknown as Record<string, unknown>;
@@ -217,8 +217,8 @@ ${rendered}` : rendered;
       } catch (error) {
         if ((operationOutcome as string | null) === "confirmed") { phase = "output"; throw error; }
         if (error instanceof ApiError && error.confirmedMutationId === operationId) { invocation = "confirmed"; operationOutcome = "confirmed"; phase = "output"; throw error; }
-        if (error instanceof ApiError && !error.outcomeUnconfirmed && !error.confirmedRefusal && (error.phase === "prepare" || error.phase === "request")) { invocation = "not_submitted"; operationOutcome = prior === undefined ? null : "unknown"; throw error; }
-        if (error instanceof ApiError && error.status !== undefined && error.status >= 400 && error.status < 500 && error.status !== 408 && error.code !== "write_outcome_unknown" && error.phase === "response") { invocation = "rejected"; operationOutcome = error.code === "operation_conflict" || prior !== undefined ? "unknown" : "rejected"; throw error; }
+        if (error instanceof ApiError && !error.outcomeUnconfirmed && !error.confirmedRefusal && (error.phase === "prepare" || error.phase === "request")) { invocation = "not_submitted"; operationOutcome = prior === undefined && operationIdOption === undefined ? null : "unknown"; throw error; }
+        if (error instanceof ApiError && error.status !== undefined && error.status >= 400 && error.status < 500 && error.status !== 408 && error.code !== "write_outcome_unknown" && error.phase === "response") { invocation = "rejected"; operationOutcome = error.code === "operation_conflict" || prior !== undefined || operationIdOption !== undefined ? "unknown" : "rejected"; throw error; }
         invocation = "unknown"; operationOutcome = "unknown"; phase = "reconcile";
         try { return confirmedOutput({ operation: await receipt() }); }
         catch (reconcileError) { if (reconcileError instanceof ExpiredReceiptError || reconcileError instanceof Error && reconcileError.message === "operation_receipt_mismatch") throw reconcileError; throw error; }
@@ -230,7 +230,7 @@ ${rendered}` : rendered;
     if (error instanceof ExpiredReceiptError) code = "operation_expired";
     if (error instanceof Error && error.message === "operation_receipt_mismatch") code = "operation_receipt_mismatch";
     if ((phase as Phase) === "output" && (operationOutcome as string | null) === "confirmed") { invocation = "confirmed"; code = "output_failed"; }
-    const message = error instanceof PayloadCleanupError ? `Could not remove temporary payload file ${JSON.stringify(error.path)}.` : (operationOutcome as string | null) === "confirmed" ? "The operation was confirmed, but local output failed." : (invocation as Outcome) === "unknown" || resume !== undefined ? "The original operation outcome remains unknown." : "Webhook command failed.";
+    const message = error instanceof PayloadCleanupError ? `Could not remove temporary payload file ${JSON.stringify(error.path)}.` : (operationOutcome as string | null) === "confirmed" ? "The operation was confirmed, but local output failed." : (operationOutcome as string | null) === "unknown" ? "The original operation outcome remains unknown." : "Webhook command failed.";
     throw new PublicDiagnosticError(diagnostic(message), 1, {});
   }
 };

@@ -37,6 +37,48 @@ const makeFixture = async () => {
 };
 
 describe("Webhook transport fault boundaries", () => {
+  it.skipIf(process.platform === "win32").each(["offset", "long fraction"])("keeps the original %s issuedAt through prepared and receipt reconciliation", async (kind) => {
+    const f = await makeFixture();
+    const now = new Date().toISOString();
+    const at = kind === "offset" ? now.replace("Z", "+00:00") : `${now.slice(0, -1)}${"0".repeat(10_000)}Z`;
+    const file = path.join(f.dir, "prepared.json");
+    f.setResponse((_url, init) => {
+      if (init?.method === "PATCH") throw new Error("lost response");
+      return reply(receipt(at, hash(body(at)), { recordedAt: now }));
+    });
+    await runWebhookCommand([...freshArgs(at), "--operation-out", file], f.context);
+    expect(f.calls.map((c) => c.method)).toEqual(["GET", "PATCH", "GET"]);
+    expect(f.calls[1]!.body).toBe(body(at));
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual(prepared(at));
+    expect(JSON.parse(Buffer.concat(f.chunks).toString()).operation.issuedAt).toBe(at);
+    f.chunks.length = 0;
+    const before = f.calls.length;
+    await runWebhookCommand(resumeArgs(file), f.context);
+    expect(f.calls.slice(before).map((c) => c.method)).toEqual(["GET", "GET"]);
+    expect(JSON.parse(Buffer.concat(f.chunks).toString()).operation.issuedAt).toBe(at);
+  });
+  it("keeps a caller-supplied original operation unknown when this invocation is refused", async () => {
+    const f = await makeFixture(); const at = new Date().toISOString();
+    f.setResponse(() => refusal("forbidden", 403));
+    const error = await runWebhookCommand(freshArgs(at), f.context).catch((e: unknown) => e);
+    expect(diagnostic(error)).toMatchObject({ code: "forbidden", invocationOutcome: "rejected", operationOutcome: "unknown" });
+    expect(f.calls.map((c) => c.method)).toEqual(["GET", "PATCH"]);
+  });
+  it("keeps a caller-supplied original operation unknown when preparation fails before dispatch", async () => {
+    const f = await makeFixture(); const at = new Date().toISOString(), file = path.join(f.dir, "already-exists.json");
+    await writeFile(file, "unchanged");
+    const error = await runWebhookCommand([...freshArgs(at), "--operation-out", file], f.context).catch((e: unknown) => e);
+    expect(diagnostic(error)).toMatchObject({ invocationOutcome: "not_submitted", operationOutcome: "unknown" });
+    expect(f.calls.map((c) => c.method)).toEqual(["GET"]);
+    expect(await readFile(file, "utf8")).toBe("unchanged");
+  });
+  it("reports a definite refusal for a newly generated operation", async () => {
+    const f = await makeFixture();
+    f.setResponse(() => refusal("forbidden", 403));
+    const error = await runWebhookCommand(["enable", endpoint, "--personal", "--if-version", "1", "--confirm", "--json"], f.context).catch((e: unknown) => e);
+    expect(diagnostic(error)).toMatchObject({ code: "forbidden", invocationOutcome: "rejected", operationOutcome: "rejected" });
+    expect(f.calls.map((c) => c.method)).toEqual(["GET", "PATCH"]);
+  });
   it("confirms a lost response only after a receipt matches the sent bytes", async () => {
     const f = await makeFixture(); const at = new Date().toISOString(); let original = "";
     f.setResponse((_url, init) => { if (init?.method === "PATCH") { original = String(init.body); throw new Error("connection lost after dispatch"); } return reply(receipt(at, hash(original))); });
