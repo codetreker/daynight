@@ -2156,10 +2156,14 @@ Webhook page tests independently observe request preparation, dispatch and the
 resulting UI. Native SHA-256 preparation is held by explicit promise gates in the
 restrictive cleanup case; each release retains the real digest computation.
 Exact write counts and distinct operation IDs identify sequential mutations.
-Controlled API responses settle within React `act` before stale-response and
-privacy checks, while rendered errors, secrets, dialogs and focus use DOM
-readiness predicates. Cached owner-role labels, fresh detail controls and list
-error removal remain separate observations. The [Webhook observation decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-observation-boundaries.md)
+Team selection waits for its current named option. Controlled management and
+receipt responses settle within React `act` before authorization, draft, secret,
+original-operation and no-replay assertions. Late-denial tests complete the newer
+Team membership refresh or owner selection before releasing the old response.
+Rotation confirmation waits for dialog removal and an enabled Check operation
+action. Rendered errors, secrets, dialogs and focus use DOM readiness predicates;
+cached owner-role labels, fresh detail controls and list error removal remain
+separate observations. The [Webhook observation decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-observation-boundaries.md)
 records the retained fixtures and the limits of these frontend checks.
 
 Step panel DOM tests retain the full pagination fixtures and resolve visible

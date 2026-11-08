@@ -117,7 +117,7 @@ describe("Webhook configuration page", () => {
 
   it.each(["secret", "patch"] as const)("withdraws administrator URL, secret and editor after validated %s management denial before directory recovery", async request => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
-    const view = await mount({ initial: [admin] }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    const view = await mount({ initial: [admin] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
     const denied = barrier<Response>(), directory = barrier<Response>(); let admitted = false, directoryReads = 0;
     view.intercept((url, init) => {
@@ -128,13 +128,13 @@ describe("Webhook configuration page", () => {
     if (request === "secret") { fireEvent.click(screen.getByRole("button", { name: "Hide secret" })); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); }
     openEdit(); setName("Administrator draft");
     if (request === "patch") submitForm();
-    await waitFor(() => expect(admitted).toBe(true));
+    await waitForState(() => expect(admitted).toBe(true));
     view.resources.set(admin.id, { ...admin, destination: { ...admin.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
-    denied.resolve(failure(403, "forbidden"));
-    await screen.findByText("Member · Read only"); await waitFor(() => expect(directoryReads).toBeGreaterThan(0));
+    await act(async () => { denied.resolve(failure(403, "forbidden")); });
+    await screen.findByText("Member · Read only"); await waitForState(() => expect(directoryReads).toBeGreaterThan(0));
     expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled();
     await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Show secret" })).toBeDisabled();
-    directory.resolve(response({ items: [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: now, updatedAt: now, membership: { teamId, userId, role: "member", version: 2, createdAt: now, updatedAt: now } }], nextCursor: null })); await flush();
+    await act(async () => { directory.resolve(response({ items: [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: now, updatedAt: now, membership: { teamId, userId, role: "member", version: 2, createdAt: now, updatedAt: now } }], nextCursor: null })); });
     expect(screen.getByRole("heading", { name: "Endpoint 5", level: 2 })).toBeVisible(); expect(document.body.textContent).toContain("https://receiver.example/…");
     view.intercept(null); view.resources.set(admin.id, admin); view.setTeamAuthorization("admin", 3); fireEvent.focus(window); await screen.findByRole("button", { name: "Edit Endpoint 5" }); await waitFor(() => expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled());
     expect(document.body.textContent).toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
@@ -142,12 +142,15 @@ describe("Webhook configuration page", () => {
 
   it.each([["secret", "media"], ["secret", "body"], ["patch", "media"], ["patch", "body"]] as const)("keeps valid administrator data and drafts when a %s 403 has malformed error %s", async (request, damage) => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
-    const view = await mount({ initial: [admin] }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    const view = await mount({ initial: [admin] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
-    view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? Promise.resolve(new Response(JSON.stringify({ error: damage === "media" ? { code: "forbidden", message: "Denied", requestId: "malformed-media" } : { code: "forbidden" } }), { status: 403, headers: { "Content-Type": damage === "media" ? "text/html" : "application/json", "Daynight-User-ID": userId } })) : null);
+    const held = barrier<Response>(); let admitted = false;
+    view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? (admitted = true, held.promise) : null);
     if (request === "secret") { fireEvent.click(screen.getByRole("button", { name: "Hide secret" })); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); }
     openEdit(); const draft = setName("Retained administrator draft"), dialog = screen.getByRole("dialog"); if (request === "patch") submitForm();
-    await screen.findAllByRole("alert"); await flush();
+    await waitForState(() => expect(admitted).toBe(true));
+    await act(async () => { held.resolve(new Response(JSON.stringify({ error: damage === "media" ? { code: "forbidden", message: "Denied", requestId: "malformed-media" } : { code: "forbidden" } }), { status: 403, headers: { "Content-Type": damage === "media" ? "text/html" : "application/json", "Daynight-User-ID": userId } })); });
+    await screen.findAllByRole("alert");
     expect(screen.getByRole("dialog")).toBe(dialog); expect(draft).toHaveValue("Retained administrator draft"); expect(document.body.textContent).toContain("private=hidden"); expect(screen.queryByText("Member · Read only")).toBeNull();
     if (request === "patch") {
       expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible();
@@ -157,37 +160,40 @@ describe("Webhook configuration page", () => {
 
   it.each(["secret", "patch"] as const)("ignores a late %s denial from an older Team authorization key", async request => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
-    const view = await mount({ initial: [admin] }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    const view = await mount({ initial: [admin] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     const held = barrier<Response>(); let admitted = false;
     view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? (admitted = true, held.promise) : null);
     if (request === "secret") fireEvent.click(screen.getByRole("button", { name: "Show secret" })); else { openEdit(); setName("Original administrator draft"); submitForm(); }
-    await waitFor(() => expect(admitted).toBe(true)); view.setTeamAuthorization("admin", 2); fireEvent.focus(window); await flush();
-    held.resolve(failure(403, "forbidden")); await flush();
+    await waitForState(() => expect(admitted).toBe(true)); view.setTeamAuthorization("admin", 2); await act(async () => { fireEvent.focus(window); });
+    await act(async () => { held.resolve(failure(403, "forbidden")); });
     expect(document.body.textContent).toContain("private=hidden"); expect(screen.queryByText("Member · Read only")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled(); expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled();
   });
 
   it.each(["secret", "patch"] as const)("ignores a late %s denial after selecting a different owner", async request => {
     const admin = { ...endpoint(8), owner: { kind: "team" as const, id: teamId } };
-    const view = await mount({ initial: [endpoint(), admin] }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 8", level: 2 });
+    const view = await mount({ initial: [endpoint(), admin] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 8", level: 2 });
     const held = barrier<Response>(); let admitted = false;
     view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? (admitted = true, held.promise) : null);
     if (request === "secret") fireEvent.click(screen.getByRole("button", { name: "Show secret" })); else fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" }));
-    await waitFor(() => expect(admitted).toBe(true)); fireEvent.click(screen.getByRole("button", { name: "Personal" })); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
-    held.resolve(failure(403, "forbidden")); await flush();
+    await waitForState(() => expect(admitted).toBe(true)); fireEvent.click(screen.getByRole("button", { name: "Personal" })); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    await act(async () => { held.resolve(failure(403, "forbidden")); });
     expect(screen.getByRole("heading", { name: "Endpoint 5", level: 2 })).toBeVisible(); expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled(); expect(screen.queryByRole("alert")).toBeNull(); expect(document.body.textContent).toContain("private=hidden");
   });
 
   it.each(["confirmed", "unknown"] as const)("withdraws owner data after receipt denial without changing the %s original operation or replaying it", async phase => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
-    const view = await mount({ initial: [admin] }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    const view = await mount({ initial: [admin] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     if (phase === "confirmed") {
-      fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await flush();
+      fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Administrator draft");
     }
-    view.intercept(url => url.includes("/operations/") ? Promise.resolve(failure(403, "forbidden")) : null);
+    const denied = barrier<Response>(); let admitted = false;
+    view.intercept(url => url.includes("/operations/") ? (admitted = true, denied.promise) : null);
     if (phase === "confirmed") { fireEvent.click(screen.getByRole("button", { name: "Cancel" })); fireEvent.click(screen.getByRole("button", { name: "Check operation" })); }
     else { view.loseNextWrite(); fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); }
-    await screen.findByText("Team access is unavailable."); await flush();
+    await waitForState(() => expect(admitted).toBe(true));
+    await act(async () => { denied.resolve(failure(403, "forbidden")); });
+    await screen.findByText("Team access is unavailable.");
     expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull(); expect(view.writes).toHaveLength(1);
     const receipt = [...view.receipts.values()][0]!;
     if (phase === "confirmed") {
