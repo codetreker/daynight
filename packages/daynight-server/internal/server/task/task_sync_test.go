@@ -96,7 +96,7 @@ func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
 	handler := projectTestHandler(t, database, &logs)
 	project := taskProject(t, handler)
 	base := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
-	if base.Tasks == nil || len(base.Tasks) != 0 {
+	if base.Tasks == nil || len(base.Tasks) != 0 || base.Sessions == nil || len(base.Sessions) != 0 {
 		t.Fatalf("empty tasks: %#v", base)
 	}
 	for _, query := range []string{

@@ -1,6 +1,7 @@
 package server
 
 import (
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"net/http"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
 	logger := testLogger()
-	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, 10*time.Second), h.Auth, logger, 10*time.Second)
+	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, sessioncore.NewEngine(nil), 10*time.Second), h.Auth, logger, 10*time.Second)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	path := syncPath(h.project.ID)
 	assertProjectError(t, h.call(http.MethodGet, path, "", nil), http.StatusUnauthorized, "unauthenticated")

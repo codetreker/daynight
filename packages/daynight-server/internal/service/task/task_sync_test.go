@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
@@ -22,7 +23,7 @@ import (
 func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	ctx := context.Background()
-	sync := taskservice.NewTaskSync(database, 10*time.Second)
+	sync := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second)
 	empty, err := sync.Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
 	if err != nil || empty.Mode != "snapshot" || empty.Epoch == "" || empty.Tasks == nil || len(empty.Tasks) != 0 || empty.Project != project {
 		t.Fatalf("empty snapshot: %#v %v", empty, err)
@@ -54,7 +55,7 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 	if err != nil || len(sameStamp.Tasks) != 1 || sameStamp.Tasks[0].Version != b.Version+1 || sameStamp.Tasks[0].UpdatedAt != stamp {
 		t.Fatalf("same-timestamp higher version was skipped: %#v %v", sameStamp, err)
 	}
-	wider, err := taskservice.NewTaskSync(database, 30*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: empty.Epoch, Since: &since})
+	wider, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 30*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: empty.Epoch, Since: &since})
 	if err != nil || len(wider.Tasks) != 2 {
 		t.Fatalf("new overlap must apply to the unchanged since: %#v %v", wider, err)
 	}
@@ -66,7 +67,7 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 	}
 	for _, overlap := range []time.Duration{time.Nanosecond, 500 * time.Nanosecond, time.Microsecond} {
 		lower := stamp.Add(overlap).Add(time.Nanosecond)
-		result, err := taskservice.NewTaskSync(database, overlap).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: empty.Epoch, Since: &lower})
+		result, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), overlap).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: empty.Epoch, Since: &lower})
 		if err != nil || len(result.Tasks) != 0 {
 			t.Fatalf("submicrosecond overlap %v: %#v %v", overlap, result, err)
 		}
@@ -125,7 +126,7 @@ func TestTaskSyncFullCapacityBeforeWindowProjection(t *testing.T) {
 		t.Run(fmt.Sprintf("%d_%d", test.nodes, test.edges), func(t *testing.T) {
 			_, database, project, url, principal := taskService(t)
 			seedGraph(t, database, project.ID, test.nodes, test.edges)
-			baseline, err := taskservice.NewTaskSync(database, 10*time.Second).Get(context.Background(), principal, project.ID, taskservice.TaskSyncRequest{})
+			baseline, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second).Get(context.Background(), principal, project.ID, taskservice.TaskSyncRequest{})
 			if test.refused {
 				requireFault(t, err, "graph_limit_exceeded")
 			} else if err != nil || len(baseline.Tasks) != 1000 {
@@ -138,7 +139,7 @@ func TestTaskSyncFullCapacityBeforeWindowProjection(t *testing.T) {
 			read := false
 			traced := tracedTasks(t, url, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "left(t.title, $2)") }, start: func() { read = true }})
 			since := time.Now().Add(time.Hour)
-			result, err := taskservice.NewTaskSync(traced.store, 10*time.Second).Get(context.Background(), principal, project.ID, taskservice.TaskSyncRequest{Epoch: epoch, Since: &since})
+			result, err := taskservice.NewTaskSync(traced.store, sessioncore.NewEngine(nil), 10*time.Second).Get(context.Background(), principal, project.ID, taskservice.TaskSyncRequest{Epoch: epoch, Since: &since})
 			if test.refused {
 				fault := requireFault(t, err, "graph_limit_exceeded")
 				if read || fault.GraphLimit.NodeCount != int64(test.nodes) || fault.GraphLimit.EdgeCount != int64(test.edges) || !reflect.DeepEqual(result, model.TaskSync{}) {
@@ -179,11 +180,11 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}})
-	old, err := taskservice.NewTaskSync(traced.store, 10*time.Second).Get(ctx, reader, project.ID, taskservice.TaskSyncRequest{Epoch: oldEpoch})
+	old, err := taskservice.NewTaskSync(traced.store, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, reader, project.ID, taskservice.TaskSyncRequest{Epoch: oldEpoch})
 	if err != nil || old.Epoch != oldEpoch || old.Project != project || !reflect.DeepEqual(old.ActorAccess, beforeAccess) || len(old.Tasks) != 2 || old.Tasks[0].TitlePreview != "Before" || old.Tasks[0].Version != 1 || !slices.Equal(old.Tasks[1].DependsOn, []string{a.ID}) {
 		t.Fatalf("mixed snapshot: %#v %v", old, err)
 	}
-	fresh, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, reader, project.ID, taskservice.TaskSyncRequest{Epoch: oldEpoch})
+	fresh, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, reader, project.ID, taskservice.TaskSyncRequest{Epoch: oldEpoch})
 	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 || fresh.ActorAccess.Role != model.ProjectAdmin || fresh.ActorAccess.DirectGrant == nil || fresh.ActorAccess.DirectGrant.Version != 9007199254740993 {
 		t.Fatalf("fresh history: %#v %v", fresh, err)
 	}
@@ -265,11 +266,11 @@ func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 	if !later.UpdatedAt.After(first.UpdatedAt) {
 		t.Fatalf("waiter used an earlier transaction timestamp: first %v later %v", first.UpdatedAt, later.UpdatedAt)
 	}
-	baseline, err := taskservice.NewTaskSync(database, taskSyncLockTestOverlap).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
+	baseline, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), taskSyncLockTestOverlap).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	delta, err := taskservice.NewTaskSync(database, taskSyncLockTestOverlap).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &first.UpdatedAt})
+	delta, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), taskSyncLockTestOverlap).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &first.UpdatedAt})
 	if err != nil || len(delta.Tasks) != 2 || delta.Tasks[0].ID != a.ID || delta.Tasks[0].Version != first.Version || delta.Tasks[1].ID != b.ID || delta.Tasks[1].Version != later.Version {
 		t.Fatalf("long waiter skipped by window: %#v %v", delta, err)
 	}
@@ -294,7 +295,7 @@ func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	sync := taskservice.NewTaskSync(database, taskSyncLockTestOverlap)
+	sync := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), taskSyncLockTestOverlap)
 	baseline, err := sync.Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
 	if err != nil {
 		t.Fatal(err)
