@@ -406,8 +406,9 @@ export const validatePairs = async (options: Options): Promise<Evidence> => {
       writeFileSync(temporary, git(cwd, ["cat-file", "blob", item.oid]), { mode: 0o644 });
       renameSync(temporary, path);
     }
+    // Raw blobs can replace CRLF checkout bytes even when T already has the combined tree.
+    if (materialize.length > 0) git(cwd, ["read-tree", evidence.combinedTree]);
     if (evidence.combinedCommit !== checkoutCommit) {
-      git(cwd, ["read-tree", evidence.combinedTree]);
       git(cwd, ["update-ref", "--no-deref", "HEAD", evidence.combinedCommit, checkoutCommit], { env: { GIT_COMMITTER_NAME: "Daynight CI", GIT_COMMITTER_EMAIL: "ci@daynight.invalid" } });
     }
     for (const item of materialize) {

@@ -608,6 +608,27 @@ test("preserves checkout newline normalization while excluding validation creden
   }
 });
 
+test("an already-checked-out T retains its identity after raw test bytes replace CRLF checkout bytes", async (t) => {
+  const f = fixture(t);
+  f.git("config", "core.autocrlf", "true");
+  f.git("checkout", "--force", "--detach", f.base);
+  f.git("checkout", "--force", "--detach", f.tests);
+  assert.match(readFileSync(join(f.cwd, testPath), "utf8"), /\r\n/);
+  assert.equal(f.git("status", "--porcelain"), "");
+  const originalTree = f.git("rev-parse", "HEAD^{tree}");
+
+  const result = await f.run({ head: f.tests, pr: 12 });
+
+  assert.equal(result.mode, "paired-pr");
+  assert.equal(result.checkoutCommit, f.tests);
+  assert.equal(result.combinedCommit, f.tests);
+  assert.equal(result.combinedTree, originalTree);
+  assert.equal(result.productionTree, f.pair.productionTree);
+  assert.equal(f.git("rev-parse", "HEAD"), f.tests);
+  assert.deepEqual(readFileSync(join(f.cwd, testPath)), Buffer.from(content));
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
 test("an unchanged cancelled I record does not block registration of a new valid pair", async (t) => {
   const f = fixture(t); f.prs[11].state = "closed"; f.prs[12].state = "closed";
   const trusted = f.git("rev-parse", "main");
