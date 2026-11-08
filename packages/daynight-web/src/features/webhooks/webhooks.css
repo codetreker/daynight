@@ -1,0 +1,622 @@
+.webhooks, .webhook-dialog {
+  --bg: #f7f8fa;
+  --ink: #172132;
+  --muted: #737d8e;
+  --line: #e5e8ee;
+  --indigo: #5c5ce0;
+  --shadow: 0 8px 28px #1c285808;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+.webhooks { min-width: 0; }
+.webhooks *,
+.webhook-dialog * { box-sizing:border-box }
+.webhooks button,
+.webhook-dialog button,
+.webhooks input,
+.webhook-dialog input,
+.webhooks select,
+.webhook-dialog select,
+.webhooks textarea,
+.webhook-dialog textarea { font:inherit;color:inherit }
+.webhooks button,
+.webhook-dialog button { cursor:pointer }
+.webhooks button:disabled,
+.webhook-dialog button:disabled { cursor:default }
+.webhooks button:focus-visible,
+.webhook-dialog button:focus-visible,
+.webhooks input:focus-visible,
+.webhook-dialog input:focus-visible,
+.webhooks select:focus-visible,
+.webhook-dialog select:focus-visible,
+.webhooks textarea:focus-visible,
+.webhook-dialog textarea:focus-visible,
+.webhooks summary:focus-visible,
+.webhook-dialog summary:focus-visible,
+.webhooks a:focus-visible,
+.webhook-dialog a:focus-visible,
+.webhooks [tabindex="0"]:focus-visible,
+.webhook-dialog [tabindex="0"]:focus-visible { outline:3px solid #8c8cf0;outline-offset:3px }
+.webhooks button,
+.webhook-dialog button { touch-action:manipulation }
+.webhooks svg,
+.webhook-dialog svg { flex:none }
+.webhooks h1,
+.webhook-dialog h1,
+.webhooks h2,
+.webhook-dialog h2,
+.webhooks h3,
+.webhook-dialog h3,
+.webhooks p,
+.webhook-dialog p { margin:0 }
+.webhooks a,
+.webhook-dialog a { color:inherit;text-decoration:none }
+.webhooks [hidden],
+.webhook-dialog [hidden] { display:none!important }
+.webhooks .heading,
+.webhook-dialog .heading { display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:25px }
+.webhooks .heading-text,
+.webhook-dialog .heading-text { min-width:0 }
+.webhooks h1,
+.webhook-dialog h1 { font-size:28px;line-height:1.3;letter-spacing:-.7px;font-weight:650;margin-bottom:8px }
+.webhooks .subtitle,
+.webhook-dialog .subtitle { font-size:13px;color:var(--muted) }
+.webhooks .button,
+.webhook-dialog .button { border:1px solid #dce0e8;border-radius:7px;background:#fff;padding:8px 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-size:12px;line-height:1.45;box-shadow:0 1px 2px #1c285803;white-space:nowrap }
+.webhooks .button:hover,
+.webhook-dialog .button:hover { background:#f5f5fd;border-color:#c9c9ec }
+.webhooks .button.primary,
+.webhook-dialog .button.primary { background:var(--indigo);border-color:var(--indigo);color:#fff }
+.webhooks .button.primary:hover,
+.webhook-dialog .button.primary:hover { background:#5151cb }
+.webhooks .button:disabled,
+.webhook-dialog .button:disabled { color:#8a93a3;background:#f2f3f7;border-color:#e1e4eb }
+.webhooks .button.danger,
+.webhook-dialog .button.danger { background:#bd4d5a;border-color:#bd4d5a;color:#fff }
+.webhooks .button.small,
+.webhook-dialog .button.small { font-size:11px;padding:6px 10px }
+.webhooks .button.ghost,
+.webhook-dialog .button.ghost { box-shadow:none;background:transparent;border-color:transparent }
+.webhooks .button.ghost:hover,
+.webhook-dialog .button.ghost:hover { background:#f3f4f8 }
+.webhooks .button.icon-only,
+.webhook-dialog .button.icon-only { width:29px;height:29px;padding:0 }
+.webhooks .button.ghost.danger-text,
+.webhook-dialog .button.ghost.danger-text { color:#ad4b57 }
+.webhooks .text-button,
+.webhook-dialog .text-button { border:0;background:none;color:var(--indigo);font-size:12px;padding:3px 0;display:inline-flex;align-items:center;gap:5px }
+.webhooks .text-button:disabled,
+.webhook-dialog .text-button:disabled { color:#98a0af }
+.webhooks .scope-bar,
+.webhook-dialog .scope-bar { display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap }
+.webhooks .scope-group,
+.webhook-dialog .scope-group { display:flex;padding:3px;gap:3px;background:#eceef3;border:1px solid #e6e8ef;border-radius:8px }
+.webhooks .scope-button,
+.webhook-dialog .scope-button { display:flex;align-items:center;gap:7px;border:0;background:transparent;border-radius:5px;padding:8px 13px;color:#69758b;font-size:12px }
+.webhooks .scope-button.selected,
+.webhook-dialog .scope-button.selected { background:#fff;color:#343e55;box-shadow:0 1px 5px #24304a10 }
+.webhooks .scope-button.selected svg,
+.webhook-dialog .scope-button.selected svg { color:var(--indigo) }
+.webhooks .scope-context,
+.webhook-dialog .scope-context { display:flex;align-items:center;gap:8px;color:#7a8495;font-size:11px }
+.webhooks .scope-context strong,
+.webhook-dialog .scope-context strong { color:#526079;font-weight:500 }
+.webhooks .context-divider,
+.webhook-dialog .context-divider { height:13px;width:1px;background:#dce1ea }
+.webhooks .role-label,
+.webhook-dialog .role-label { font-size:10px;padding:2px 6px;border-radius:4px;background:#eff0fa;color:#7474a9 }
+.webhooks .management-grid,
+.webhook-dialog .management-grid { display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:22px;align-items:start }
+.webhooks .panel,
+.webhook-dialog .panel { background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);min-width:0;overflow:visible;margin-bottom:0 }
+.webhooks .panel-heading,
+.webhook-dialog .panel-heading { padding:20px 23px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:0 }
+.webhooks .panel-heading h2,
+.webhook-dialog .panel-heading h2 { font-size:15px;font-weight:650 }
+.webhooks .count,
+.webhook-dialog .count { margin-left:7px;color:#99a1b0;font-size:12px;font-weight:400 }
+.webhooks .panel-tools,
+.webhook-dialog .panel-tools { padding:0 23px 17px;display:flex;gap:9px }
+.webhooks .search-wrap,
+.webhook-dialog .search-wrap { position:relative;flex:1;min-width:0 }
+.webhooks .search-wrap svg,
+.webhook-dialog .search-wrap svg { position:absolute;left:11px;top:11px;color:#939cac }
+.webhooks .search-wrap input,
+.webhook-dialog .search-wrap input { width:100%;border:1px solid #dce0e8;border-radius:7px;background:#fff;padding:9px 10px 9px 34px;font-size:11px;min-width:0 }
+.webhooks .filter,
+.webhook-dialog .filter { border:1px solid #dce0e8;border-radius:7px;padding:8px 9px;background:#fff;font-size:11px;max-width:122px }
+.webhooks .endpoint-list,
+.webhook-dialog .endpoint-list { border-top:1px solid var(--line) }
+.webhooks .endpoint-row,
+.webhook-dialog .endpoint-row { position:relative;border-bottom:1px solid #edf0f4;padding:19px 23px;cursor:pointer;min-width:0;transition:background .12s }
+.webhooks .endpoint-row:last-child,
+.webhook-dialog .endpoint-row:last-child { border-bottom:0;border-radius:0 0 10px 10px }
+.webhooks .endpoint-row:hover,
+.webhook-dialog .endpoint-row:hover { background:#fafbfe }
+.webhooks .endpoint-row.selected,
+.webhook-dialog .endpoint-row.selected { background:#f7f7ff;box-shadow:inset 3px 0 0 #7373e6 }
+.webhooks .row-top,
+.webhook-dialog .row-top { display:flex;align-items:flex-start;justify-content:space-between;gap:12px }
+.webhooks .row-name-block,
+.webhook-dialog .row-name-block { display:flex;align-items:flex-start;gap:11px;min-width:0 }
+.webhooks .endpoint-icon,
+.webhook-dialog .endpoint-icon { width:33px;height:33px;display:grid;place-items:center;flex:none;border:1px solid #ececfa;background:#f3f3ff;color:#7b7bd2;border-radius:8px }
+.webhooks .row-words,
+.webhook-dialog .row-words { min-width:0 }
+.webhooks .row-name,
+.webhook-dialog .row-name { font-size:12px;font-weight:600;line-height:1.5;overflow-wrap:anywhere;display:flex;align-items:center;gap:7px;flex-wrap:wrap }
+.webhooks .row-url,
+.webhook-dialog .row-url { font-size:10px;color:#8490a2;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:310px }
+.webhooks .row-subscriptions,
+.webhook-dialog .row-subscriptions { display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:11px 0 10px 44px;color:#8490a2;font-size:10px }
+.webhooks .quiet-chip,
+.webhook-dialog .quiet-chip { display:inline-flex;align-items:center;gap:4px;border:1px solid #e8ebf2;background:#fff;border-radius:4px;padding:2px 6px;color:#6b7890;font-size:10px;max-width:100%;overflow-wrap:anywhere }
+.webhooks .row-bottom,
+.webhook-dialog .row-bottom { display:flex;align-items:center;justify-content:space-between;gap:9px;margin-left:44px;font-size:10px;color:#8a94a5 }
+.webhooks .result-inline,
+.webhook-dialog .result-inline { display:flex;align-items:center;gap:5px;min-width:0 }
+.webhooks .result-inline span,
+.webhook-dialog .result-inline span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap }
+.webhooks .result-inline.success,
+.webhook-dialog .result-inline.success { color:#548f76 }
+.webhooks .result-inline.retrying,
+.webhook-dialog .result-inline.retrying { color:#a0793c }
+.webhooks .result-inline.failed,
+.webhook-dialog .result-inline.failed { color:#b36973 }
+.webhooks .row-bottom time,
+.webhook-dialog .row-bottom time { white-space:nowrap }
+.webhooks .status-dot,
+.webhook-dialog .status-dot { width:5px;height:5px;border-radius:50%;background:#5eaa86;flex:none }
+.webhooks .status-dot.paused,
+.webhook-dialog .status-dot.paused { background:#a7afbd }
+.webhooks .badge,
+.webhook-dialog .badge { display:inline-flex;align-items:center;gap:5px;padding:3px 7px;border-radius:5px;font-size:10px;font-weight:500;line-height:1.45;white-space:nowrap }
+.webhooks .badge.success,
+.webhook-dialog .badge.success { background:#eaf5ef;color:#398567 }
+.webhooks .badge.retrying,
+.webhook-dialog .badge.retrying,
+.webhooks .badge.warning,
+.webhook-dialog .badge.warning { background:#fff5e5;color:#916a2e }
+.webhooks .badge.failed,
+.webhook-dialog .badge.failed { background:#fceff0;color:#ad4b57 }
+.webhooks .badge.paused,
+.webhook-dialog .badge.paused,
+.webhooks .badge.suppressed,
+.webhook-dialog .badge.suppressed { background:#f0f2f6;color:#7a8494 }
+.webhooks .row-actions,
+.webhook-dialog .row-actions { position:relative;flex:none }
+.webhooks .row-menu,
+.webhook-dialog .row-menu { position:absolute;right:0;top:32px;min-width:134px;z-index:10;border:1px solid #e2e5ed;background:#fff;box-shadow:0 7px 25px #1b29451a;border-radius:7px;padding:4px }
+.webhooks .row-menu button,
+.webhook-dialog .row-menu button { display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;border-radius:4px;padding:8px 10px;text-align:left;font-size:11px;white-space:nowrap }
+.webhooks .row-menu button:hover,
+.webhook-dialog .row-menu button:hover { background:#f4f4fd }
+.webhooks .row-menu button.danger-text,
+.webhook-dialog .row-menu button.danger-text { color:#ad4b57 }
+.webhooks .list-note,
+.webhook-dialog .list-note { padding:15px 23px;display:flex;align-items:center;gap:6px;border-top:1px solid var(--line);font-size:10px;color:#9aa2b0 }
+.webhooks .detail-panel,
+.webhook-dialog .detail-panel { overflow:hidden;position:sticky;top:20px }
+.webhooks .detail-heading,
+.webhook-dialog .detail-heading { padding:22px 23px 18px }
+.webhooks .detail-heading-top,
+.webhook-dialog .detail-heading-top { display:flex;align-items:flex-start;justify-content:space-between;gap:12px }
+.webhooks .detail-name,
+.webhook-dialog .detail-name { min-width:0 }
+.webhooks .detail-name h2,
+.webhook-dialog .detail-name h2 { font-size:15px;font-weight:650;overflow-wrap:anywhere;line-height:1.5 }
+.webhooks .detail-id,
+.webhook-dialog .detail-id { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;color:#a0a8b7;margin-top:6px;overflow-wrap:anywhere }
+.webhooks .detail-status,
+.webhook-dialog .detail-status { display:flex;align-items:center;gap:7px;margin-top:10px }
+.webhooks .detail-status .quiet,
+.webhook-dialog .detail-status .quiet { color:#8a93a4;font-size:10px }
+.webhooks .tabs,
+.webhook-dialog .tabs { display:flex;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0 18px;gap:20px }
+.webhooks .tab,
+.webhook-dialog .tab { background:none;border:0;border-bottom:2px solid transparent;padding:12px 4px 11px;color:#7e899b;font-size:11px;white-space:nowrap }
+.webhooks .tab[aria-selected="true"],
+.webhook-dialog .tab[aria-selected="true"] { border-bottom-color:var(--indigo);color:var(--indigo);font-weight:600 }
+.webhooks .tab-panel,
+.webhook-dialog .tab-panel { padding:22px 23px 23px;min-width:0 }
+.webhooks .field-view,
+.webhook-dialog .field-view { margin-bottom:20px;min-width:0 }
+.webhooks .field-view:last-child,
+.webhook-dialog .field-view:last-child { margin-bottom:0 }
+.webhooks .field-label,
+.webhook-dialog .field-label { font-size:11px;color:#8490a1;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:9px }
+.webhooks .field-value,
+.webhook-dialog .field-value { font-size:12px;color:#46536b;overflow-wrap:anywhere }
+.webhooks .type-value,
+.webhook-dialog .type-value { display:flex;align-items:center;gap:7px }
+.webhooks .value-box,
+.webhook-dialog .value-box { display:flex;align-items:flex-start;gap:8px;border:1px solid #e6e9f0;background:#fafbfc;border-radius:6px;padding:10px 11px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;color:#728097;overflow-wrap:anywhere }
+.webhooks .value-box>span,
+.webhook-dialog .value-box>span { min-width:0;flex:1 }
+.webhooks .protocol-line,
+.webhook-dialog .protocol-line { display:flex;gap:6px;flex-wrap:wrap;margin-top:9px }
+.webhooks .muted,
+.webhook-dialog .muted { color:var(--muted) }
+.webhooks .hint,
+.webhook-dialog .hint { font-size:10px;color:#8b96a7;line-height:1.7;margin-top:7px }
+.webhooks .settings-top,
+.webhook-dialog .settings-top { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid #edf0f4 }
+.webhooks .settings-top strong,
+.webhook-dialog .settings-top strong { display:block;font-size:12px;font-weight:500;color:#526078 }
+.webhooks .settings-top small,
+.webhook-dialog .settings-top small { font-size:10px;color:#8d97a7 }
+.webhooks .switch,
+.webhook-dialog .switch { display:inline-flex;align-items:center;width:32px;height:19px;flex:none;border:0;border-radius:20px;background:#bec5d0;padding:2px;box-shadow:inset 0 0 0 1px #00000002 }
+.webhooks .switch[aria-checked="true"],
+.webhook-dialog .switch[aria-checked="true"] { background:#6b6bdf }
+.webhooks .switch span,
+.webhook-dialog .switch span { display:block;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0002;transition:transform .15s }
+.webhooks .switch[aria-checked="true"] span,
+.webhook-dialog .switch[aria-checked="true"] span { transform:translateX(13px) }
+.webhooks .switch:disabled,
+.webhook-dialog .switch:disabled { opacity:.55 }
+.webhooks .secret-row,
+.webhook-dialog .secret-row { display:flex;align-items:center;gap:6px }
+.webhooks .secret-value,
+.webhook-dialog .secret-value { min-width:0;flex:1;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.8;overflow-wrap:anywhere;user-select:all;letter-spacing:.5px }
+.webhooks .secret-actions,
+.webhook-dialog .secret-actions { display:flex;gap:2px;flex:none }
+.webhooks .section-divider,
+.webhook-dialog .section-divider { height:1px;background:#edf0f4;margin:22px 0 }
+.webhooks .detail-footer,
+.webhook-dialog .detail-footer { display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:22px;padding-top:18px;border-top:1px solid #edf0f4 }
+.webhooks .tiny,
+.webhook-dialog .tiny { font-size:10px;color:#98a2b3 }
+.webhooks .subscription-heading,
+.webhook-dialog .subscription-heading { display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px }
+.webhooks .subscription-heading h3,
+.webhook-dialog .subscription-heading h3 { font-size:12px;font-weight:600;color:#55637b }
+.webhooks .subscription-card,
+.webhook-dialog .subscription-card { border:1px solid #e5e8f0;border-radius:7px;margin-bottom:10px;padding:13px;min-width:0 }
+.webhooks .subscription-top,
+.webhook-dialog .subscription-top { display:flex;align-items:flex-start;gap:9px;justify-content:space-between }
+.webhooks .project-name,
+.webhook-dialog .project-name { font-size:12px;font-weight:600;color:#516079;overflow-wrap:anywhere }
+.webhooks .project-owner,
+.webhook-dialog .project-owner { font-size:10px;color:#9aa3b1;margin-top:2px }
+.webhooks .subscription-events,
+.webhook-dialog .subscription-events { display:flex;gap:5px;flex-wrap:wrap;margin-top:10px }
+.webhooks .event-chip,
+.webhook-dialog .event-chip { font-size:9px;border-radius:4px;padding:3px 5px;color:#7777ab;background:#f3f3fc;overflow-wrap:anywhere }
+.webhooks .subscription-controls,
+.webhook-dialog .subscription-controls { display:flex;gap:2px }
+.webhooks .revoked-card,
+.webhook-dialog .revoked-card { border-color:#efd9dc;background:#fffafb }
+.webhooks .revoked-card .event-chip,
+.webhook-dialog .revoked-card .event-chip { color:#ae8990;background:#f9eef0 }
+.webhooks .inline-error,
+.webhook-dialog .inline-error { padding:11px 12px;border:1px solid #efd9dd;background:#fff8f9;border-radius:6px;color:#a65b67;font-size:11px;overflow-wrap:anywhere;margin-bottom:14px;display:flex;gap:8px;align-items:flex-start }
+.webhooks .detail-back,
+.webhook-dialog .detail-back { display:none }
+.webhooks .empty-detail,
+.webhook-dialog .empty-detail { min-height:380px;display:grid;place-items:center;color:#97a0b0;font-size:12px;text-align:center;padding:30px }
+.webhooks .empty-detail svg,
+.webhook-dialog .empty-detail svg { color:#c5cada;margin-bottom:12px }
+.webhooks .state-box,
+.webhook-dialog .state-box { min-height:328px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:35px 22px;gap:12px;color:#7a879c;border:0;border-radius:0;background:transparent;overflow-wrap:normal }
+.webhooks .state-icon,
+.webhook-dialog .state-icon { width:48px;height:48px;background:#f2f2fb;color:#8383c5;border-radius:12px;display:grid;place-items:center;margin-bottom:4px }
+.webhooks .state-box h3,
+.webhook-dialog .state-box h3 { font-size:14px;font-weight:600;color:#53617b }
+.webhooks .state-box p,
+.webhook-dialog .state-box p { font-size:11px;max-width:270px;line-height:1.8 }
+.webhooks .state-box .button,
+.webhook-dialog .state-box .button { margin-top:4px }
+.webhooks .spinner,
+.webhook-dialog .spinner { width:23px;height:23px;border:2px solid #e8e8f7;border-top-color:#7777d3;border-radius:50%;animation:webhook-spin .8s linear infinite }
+@keyframes webhook-spin {to{transform:rotate(360deg)}}
+.webhooks .skeleton-row,
+.webhook-dialog .skeleton-row { padding:23px;border-bottom:1px solid #edf0f4;display:flex;align-items:flex-start;gap:12px }
+.webhooks .skeleton-icon,
+.webhook-dialog .skeleton-icon { width:33px;height:33px;border-radius:8px;background:#f0f1f5 }
+.webhooks .skeleton-lines,
+.webhook-dialog .skeleton-lines { flex:1 }
+.webhooks .skeleton-line,
+.webhook-dialog .skeleton-line { height:9px;background:#f0f1f5;border-radius:3px;margin:5px 0 11px }
+.webhooks .skeleton-line.short,
+.webhook-dialog .skeleton-line.short { width:45% }
+.webhooks .skeleton-line.medium,
+.webhook-dialog .skeleton-line.medium { width:75% }
+.webhook-dialog { border:1px solid #e2e6ef;background:#fff;color:var(--ink);border-radius:12px;padding:0;width:min(560px,calc(100vw - 40px));max-width:calc(100vw - 40px);max-height:calc(100dvh - 40px);overflow:hidden;box-shadow:0 20px 80px #19233525 }
+.webhook-dialog::backdrop { background:#19233560;backdrop-filter:blur(2px) }
+.webhooks .modal-layout,
+.webhook-dialog .modal-layout { display:flex;flex-direction:column;max-height:calc(100dvh - 42px) }
+.webhooks .dialog-header,
+.webhook-dialog .dialog-header { padding:22px 25px 17px;display:flex;justify-content:space-between;gap:15px;align-items:flex-start;border-bottom:1px solid #edf0f4;flex:none }
+.webhooks .dialog-header h2,
+.webhook-dialog .dialog-header h2 { font-size:18px;font-weight:650;line-height:1.4;overflow-wrap:anywhere }
+.webhooks .close-button,
+.webhook-dialog .close-button { width:28px;height:28px;flex:none;background:none;border:0;border-radius:5px;color:#8d97a8;display:grid;place-items:center;font-size:23px;line-height:1 }
+.webhooks .close-button:hover,
+.webhook-dialog .close-button:hover { background:#f1f3f8;color:#53627c }
+.webhooks .dialog-body,
+.webhook-dialog .dialog-body { padding:23px 25px;overflow-y:auto;min-height:0;overscroll-behavior:contain }
+.webhooks .dialog-footer,
+.webhook-dialog .dialog-footer { display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:17px 25px;border-top:1px solid #e5e8ef;background:#fff;flex:none;flex-wrap:wrap }
+.webhooks .form-field,
+.webhook-dialog .form-field { margin:0 0 20px }
+.webhooks .form-field:last-child,
+.webhook-dialog .form-field:last-child { margin-bottom:0 }
+.webhooks .form-field>label,
+.webhook-dialog .form-field>label,
+.webhooks .field-title,
+.webhook-dialog .field-title { display:block;font-size:12px;font-weight:600;color:#4c5870;margin-bottom:8px }
+.webhooks .required,
+.webhook-dialog .required { color:#a6aebc;font-weight:400;font-size:10px;margin-left:5px }
+.webhooks .input,
+.webhook-dialog .input { display:block;width:100%;min-width:0;border:1px solid #dce0e8;border-radius:7px;padding:10px 12px;background:#fff;font-size:12px;line-height:1.5 }
+.webhooks .input::placeholder,
+.webhook-dialog .input::placeholder { color:#a6afbd }
+.webhooks .input:disabled,
+.webhook-dialog .input:disabled { background:#f7f8fb;color:#929bab }
+.webhooks .field-helper,
+.webhook-dialog .field-helper { font-size:10px;color:#8b96a7;line-height:1.8;margin-top:6px }
+.webhooks .form-divider,
+.webhook-dialog .form-divider { height:1px;background:#edf0f4;margin:23px 0 }
+.webhooks .checkbox-list,
+.webhook-dialog .checkbox-list { display:grid;gap:7px }
+.webhooks .check-row,
+.webhook-dialog .check-row { display:flex;gap:9px;align-items:flex-start;border:1px solid #e5e8f0;border-radius:6px;padding:9px 11px;cursor:pointer;min-width:0 }
+.webhooks .check-row:has(input:checked),
+.webhook-dialog .check-row:has(input:checked) { background:#f8f8ff;border-color:#cfcff2 }
+.webhooks .check-row input,
+.webhook-dialog .check-row input { accent-color:var(--indigo);margin:3px 0 0;flex:none }
+.webhooks .check-main,
+.webhook-dialog .check-main { min-width:0 }
+.webhooks .check-main strong,
+.webhook-dialog .check-main strong { font-size:11px;font-weight:500;color:#526079;overflow-wrap:anywhere;display:block }
+.webhooks .check-main small,
+.webhook-dialog .check-main small { display:block;color:#9aa3b1;font-size:10px;margin-top:2px }
+.webhooks .event-checks,
+.webhook-dialog .event-checks { display:grid;grid-template-columns:1fr 1fr;gap:7px }
+.webhooks .event-checks .check-row,
+.webhook-dialog .event-checks .check-row { padding:8px 9px }
+.webhooks .event-checks .check-main strong,
+.webhook-dialog .event-checks .check-main strong { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px }
+.webhooks .selected-type,
+.webhook-dialog .selected-type { display:flex;align-items:center;gap:10px;border:1px solid #dadaf2;border-radius:7px;background:#fafaff;padding:11px 12px;color:#6969bd }
+.webhooks .selected-type strong,
+.webhook-dialog .selected-type strong { display:block;color:#4e5b74;font-size:11px;font-weight:500 }
+.webhooks .selected-type small,
+.webhook-dialog .selected-type small { font-size:10px;color:#9a9fb2 }
+.webhooks .dialog-copy,
+.webhook-dialog .dialog-copy { font-size:12px;color:#768298;line-height:1.8;overflow-wrap:anywhere }
+.webhooks .dialog-copy strong,
+.webhook-dialog .dialog-copy strong { color:#45516a;font-weight:600 }
+.webhooks .warning-box,
+.webhook-dialog .warning-box { padding:12px 13px;margin-top:16px;border:1px solid #f0dfc2;background:#fffbf3;border-radius:6px;font-size:11px;color:#947541;line-height:1.8 }
+.webhooks .radio-options,
+.webhook-dialog .radio-options { display:grid;gap:8px;margin-top:18px }
+.webhooks .radio-options label,
+.webhook-dialog .radio-options label { display:flex;align-items:flex-start;gap:9px;border:1px solid #e4e8f0;border-radius:7px;padding:11px;font-size:11px;color:#67758c }
+.webhooks .radio-options input,
+.webhook-dialog .radio-options input { accent-color:var(--indigo);margin-top:2px }
+.webhooks .mobile-list-back,
+.webhook-dialog .mobile-list-back { display:none }
+@media(min-width:1650px) {
+.webhooks .management-grid,
+.webhook-dialog .management-grid { grid-template-columns:minmax(0,1fr) 455px }
+.webhooks .row-url,
+.webhook-dialog .row-url { max-width:460px }
+}
+@media(max-width:1250px) {
+.webhooks .management-grid,
+.webhook-dialog .management-grid { grid-template-columns:minmax(0,1fr) 370px;gap:16px }
+.webhooks .panel-heading,
+.webhook-dialog .panel-heading,
+.webhooks .panel-tools,
+.webhook-dialog .panel-tools { padding-left:18px;padding-right:18px }
+.webhooks .endpoint-row,
+.webhook-dialog .endpoint-row { padding-left:18px;padding-right:18px }
+.webhooks .detail-heading,
+.webhook-dialog .detail-heading,
+.webhooks .tab-panel,
+.webhook-dialog .tab-panel { padding-left:19px;padding-right:19px }
+.webhooks .row-url,
+.webhook-dialog .row-url { max-width:240px }
+}
+@media(max-width:1080px) {
+.webhooks .management-grid,
+.webhook-dialog .management-grid { grid-template-columns:minmax(0,1fr) }
+.webhooks .detail-panel,
+.webhook-dialog .detail-panel { position:static }
+.webhooks .detail-panel:not(.mobile-open),
+.webhook-dialog .detail-panel:not(.mobile-open) { display:none }
+.webhooks .management-grid.has-mobile-detail .list-panel,
+.webhook-dialog .management-grid.has-mobile-detail .list-panel { display:none }
+.webhooks .detail-back,
+.webhook-dialog .detail-back { display:inline-flex;margin-bottom:15px }
+.webhooks .heading,
+.webhook-dialog .heading { align-items:flex-start }
+.webhooks .scope-bar,
+.webhook-dialog .scope-bar { gap:12px }
+.webhooks .row-url,
+.webhook-dialog .row-url { max-width:100% }
+.webhooks .row-bottom,
+.webhook-dialog .row-bottom { justify-content:flex-start;gap:15px }
+.webhooks .detail-heading h2,
+.webhook-dialog .detail-heading h2 { font-size:17px }
+.webhooks .detail-panel,
+.webhook-dialog .detail-panel { max-width:100% }
+.webhooks .tab-panel,
+.webhook-dialog .tab-panel { padding:22px 23px 23px }
+.webhooks .secret-value,
+.webhook-dialog .secret-value { max-width:100% }
+.webhooks .detail-footer,
+.webhook-dialog .detail-footer { margin-top:26px }
+}
+@media(max-width:740px) {
+.webhooks .heading,
+.webhook-dialog .heading { gap:12px;flex-wrap:wrap;margin-bottom:22px }
+.webhooks .heading-text,
+.webhook-dialog .heading-text { flex:1 1 190px }
+.webhooks .heading .button,
+.webhook-dialog .heading .button { margin-left:auto }
+.webhooks h1,
+.webhook-dialog h1 { font-size:25px }
+.webhooks .subtitle,
+.webhook-dialog .subtitle { font-size:11px;max-width:300px;line-height:1.8 }
+.webhooks .scope-bar,
+.webhook-dialog .scope-bar { margin-bottom:20px }
+.webhooks .scope-group,
+.webhook-dialog .scope-group { width:100% }
+.webhooks .scope-button,
+.webhook-dialog .scope-button { flex:1;justify-content:center;padding:8px 7px;font-size:11px }
+.webhooks .scope-context,
+.webhook-dialog .scope-context { font-size:10px;flex-wrap:wrap }
+}
+@media(max-width:450px) {
+.webhooks .heading,
+.webhook-dialog .heading { gap:13px }
+.webhooks .heading-text,
+.webhook-dialog .heading-text { flex-basis:100% }
+.webhooks .heading .button,
+.webhook-dialog .heading .button { margin-left:0 }
+.webhooks .scope-button,
+.webhook-dialog .scope-button { gap:5px;font-size:10px;padding:8px 5px }
+.webhooks .scope-button svg,
+.webhook-dialog .scope-button svg { width:14px;height:14px }
+.webhooks .scope-context,
+.webhook-dialog .scope-context { gap:6px }
+.webhooks .panel-heading,
+.webhook-dialog .panel-heading { padding:17px 14px 13px }
+.webhooks .panel-tools,
+.webhook-dialog .panel-tools { padding:0 14px 14px;gap:6px }
+.webhooks .filter,
+.webhook-dialog .filter { padding:7px 5px;max-width:96px;font-size:10px }
+.webhooks .search-wrap input,
+.webhook-dialog .search-wrap input { font-size:10px;padding:9px 7px 9px 29px }
+.webhooks .search-wrap svg,
+.webhook-dialog .search-wrap svg { left:9px;width:13px }
+.webhooks .endpoint-row,
+.webhook-dialog .endpoint-row { padding:17px 14px }
+.webhooks .row-name-block,
+.webhook-dialog .row-name-block { gap:9px }
+.webhooks .endpoint-icon,
+.webhook-dialog .endpoint-icon { width:29px;height:29px }
+.webhooks .row-name,
+.webhook-dialog .row-name { font-size:11px;gap:6px }
+.webhooks .row-url,
+.webhook-dialog .row-url { font-size:9px }
+.webhooks .row-subscriptions,
+.webhook-dialog .row-subscriptions,
+.webhooks .row-bottom,
+.webhook-dialog .row-bottom { margin-left:38px }
+.webhooks .row-bottom,
+.webhook-dialog .row-bottom { flex-wrap:wrap;gap:5px }
+.webhooks .row-subscriptions,
+.webhook-dialog .row-subscriptions { margin-top:10px;gap:4px }
+.webhooks .quiet-chip,
+.webhook-dialog .quiet-chip { font-size:9px;padding:2px 4px }
+.webhooks .badge,
+.webhook-dialog .badge { font-size:9px;padding:3px 5px }
+.webhooks .row-actions .button,
+.webhook-dialog .row-actions .button { width:24px;height:24px }
+.webhooks .list-note,
+.webhook-dialog .list-note { padding:12px 14px;font-size:9px }
+.webhooks .detail-heading,
+.webhook-dialog .detail-heading { padding:18px 16px 15px }
+.webhooks .tabs,
+.webhook-dialog .tabs { padding:0 8px;gap:4px;justify-content:space-between }
+.webhooks .tab,
+.webhook-dialog .tab { flex:1;min-width:0;white-space:normal;font-size:9px;padding:12px 2px 10px }
+.webhooks .tab-panel,
+.webhook-dialog .tab-panel { padding:18px 16px }
+.webhooks .detail-status,
+.webhook-dialog .detail-status { flex-wrap:wrap }
+.webhooks .detail-footer,
+.webhook-dialog .detail-footer { flex-wrap:wrap }
+.webhooks .secret-row,
+.webhook-dialog .secret-row { align-items:flex-start }
+.webhooks .secret-actions,
+.webhook-dialog .secret-actions { gap:0 }
+.webhooks .secret-actions .button,
+.webhook-dialog .secret-actions .button { width:25px;height:25px }
+.webhooks .protocol-line .quiet-chip,
+.webhook-dialog .protocol-line .quiet-chip { font-size:8px }
+.webhooks .detail-back,
+.webhook-dialog .detail-back { font-size:10px;margin-bottom:12px }
+.webhooks .field-label,
+.webhook-dialog .field-label { font-size:10px }
+.webhooks .field-value,
+.webhook-dialog .field-value { font-size:11px }
+.webhooks .subscription-card,
+.webhook-dialog .subscription-card { padding:11px }
+.webhooks .event-chip,
+.webhook-dialog .event-chip { font-size:8px }
+.webhooks .state-box,
+.webhook-dialog .state-box { padding:28px 17px }
+.webhooks .state-box p,
+.webhook-dialog .state-box p { font-size:10px }
+.webhooks .state-box h3,
+.webhook-dialog .state-box h3 { font-size:13px }
+.webhook-dialog { width:calc(100vw - 22px);max-width:calc(100vw - 22px);max-height:calc(100dvh - 22px) }
+.webhooks .modal-layout,
+.webhook-dialog .modal-layout { max-height:calc(100dvh - 24px) }
+.webhooks .dialog-header,
+.webhook-dialog .dialog-header { padding:18px 17px 14px }
+.webhooks .dialog-header h2,
+.webhook-dialog .dialog-header h2 { font-size:16px }
+.webhooks .dialog-body,
+.webhook-dialog .dialog-body { padding:19px 17px }
+.webhooks .dialog-footer,
+.webhook-dialog .dialog-footer { padding:14px 17px }
+.webhooks .event-checks,
+.webhook-dialog .event-checks { grid-template-columns:1fr }
+.webhooks .dialog-copy,
+.webhook-dialog .dialog-copy { font-size:11px }
+.webhooks .input,
+.webhook-dialog .input { padding:9px 10px;font-size:11px }
+.webhooks .form-field>label,
+.webhook-dialog .form-field>label,
+.webhooks .field-title,
+.webhook-dialog .field-title { font-size:11px }
+.webhooks .dialog-footer .button,
+.webhook-dialog .dialog-footer .button { font-size:11px }
+.webhooks .field-helper,
+.webhook-dialog .field-helper { font-size:9px }
+}
+@media(prefers-reduced-motion:reduce) {
+.webhooks *,
+.webhook-dialog * { animation:none!important;transition:none!important }
+}
+.webhook-dialog { max-height: calc(var(--webhook-viewport-height, 100dvh) - 40px); }
+.webhook-dialog .modal-layout { max-height: calc(var(--webhook-viewport-height, 100dvh) - 42px); }
+.webhook-dialog fieldset.form-field { border: 0; padding: 0; min-width: 0; }
+.webhooks .webhook-operation { margin-bottom: 18px; display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
+.webhooks .webhook-operation > div { display: grid; gap: 4px; min-width: 0; }
+.webhooks .webhook-operation code, .webhooks .webhook-operation span { overflow-wrap: anywhere; }
+.webhooks .webhook-operation .button { align-self: flex-start; }
+.webhooks .webhook-directory-error { margin-bottom: 14px; }
+.webhooks .webhook-directory-error .inline-error { margin-bottom: 3px; }
+.webhooks .webhook-maintenance { margin-bottom: 14px; }
+.webhooks .webhook-team-select { max-width: 220px; }
+.webhooks .webhook-list-retry { margin: 0 23px 14px; }
+.webhooks .webhook-error-id, .webhook-dialog .webhook-error-id { display: block; overflow-wrap: anywhere; }
+.webhooks .button .spinner, .webhook-dialog .button .spinner { width: 14px; height: 14px; }
+.webhooks .list-note .text-button { margin-left: auto; }
+.webhook-dialog .webhook-confirm-copy { margin-top: 10px; }
+@media (max-width: 450px) {
+  .webhook-dialog { max-height: calc(var(--webhook-viewport-height, 100dvh) - 22px); }
+  .webhook-dialog .modal-layout { max-height: calc(var(--webhook-viewport-height, 100dvh) - 24px); }
+  .webhooks .webhook-team-select { max-width: 100%; }
+}
+
+.webhook-dialog .webhook-pending-notice { margin-top: 0; margin-bottom: 14px; display: grid; gap: 6px; overflow-wrap: anywhere; }
+.webhook-dialog .webhook-pending-notice .button { justify-self: start; }
+
+.webhooks .webhook-icon, .webhook-dialog .webhook-icon { width: var(--webhook-icon-size); height: var(--webhook-icon-size); }
+@media (max-width: 450px) { .webhooks .scope-button .webhook-icon { width: 14px; height: 14px; } .webhooks .search-wrap .webhook-icon { width: 13px; } }
+
+.webhook-dialog .webhook-field-conflict { display: grid; gap: 8px; }
+.webhook-dialog .webhook-field-conflict-actions { display: flex; flex-wrap: wrap; gap: 8px; }

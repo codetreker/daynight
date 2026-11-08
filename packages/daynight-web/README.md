@@ -38,6 +38,22 @@ and keyboard behavior remain unchanged.
 The [Web workspace decision](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md) records the rationale for the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for production composition and credential-private acceptance.
 
+## Webhook configuration
+
+Open Webhooks in the authenticated sidebar to visit `/webhooks`. Its catalog is
+validated for the current service and account before private requests are admitted.
+Choose Personal or an explicit Team in the page; this selection is independent
+of the sidebar Team. Configuration and subscriptions share one list/detail page,
+with native dialogs for changes and signing-key maintenance.
+
+Changes use the observed configuration version and one fixed operation identity,
+request body and digest. Unknown results reconcile the original receipt using GET;
+reloading keeps minimal operation metadata and never resends a missing body.
+Private URLs and secrets stay in scoped memory, and background checks preserve
+drafts, focus and loaded pages. Storage cleanup failures remain visible without
+blocking logout or identity invalidation. The [Web requirements](../../docs/spec/webhook-web.md)
+and [design](../../docs/design/webhook-web.md) own this behavior.
+
 ## Assistants
 
 Open Assistants in the authenticated sidebar to visit `/bots`; selecting an
