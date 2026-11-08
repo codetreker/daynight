@@ -91,146 +91,149 @@ func (s faultSourceStore) WriteTeam(ctx context.Context, id string, work func(st
 
 func TestWebhookEligibilityFailuresRollBackSources(t *testing.T) {
 	for _, phase := range []string{"query", "scan", "row_scan", "write"} {
-		for _, kind := range []string{"grant", "member", "project_invitation", "team_invitation", "transfer", "deletion", "team_delete"} {
-			if phase == "write" && (kind == "project_invitation" || kind == "team_invitation") {
-				continue
-			}
-			t.Run(phase+"/"+kind, func(t *testing.T) {
-				f := newMembershipFixture(t)
-				owner, target := f.user(t), f.user(t)
-				ctx := context.Background()
-				teams := teamservice.NewTeams(f.database)
-				team := newTestTeam(t, teams, owner, "Source")
-				p, err := f.projects.Create(ctx, owner, coreproject.CreateProject{ExpectedUserID: owner.UserID, Name: "Project", RepoURL: "https://example.test/a", TeamID: &team.ID})
-				if err != nil {
+		t.Run(phase, func(t *testing.T) {
+			f := newMembershipFixture(t)
+			if phase == "row_scan" {
+				if _, err := f.database.Pool.Exec(t.Context(), `ALTER TABLE webhook_subscriptions ALTER COLUMN authorization_epoch DROP NOT NULL`); err != nil {
 					t.Fatal(err)
 				}
-				var operation func() error
-				var check string
-				var args []any
-				subscriptionOwnerKind, subscriptionOwnerID := "personal", target.UserID
-				switch kind {
-				case "grant":
-					grant := f.join(t, owner, target, p.ID).Grant
-					operation = func() error {
-						_, e := NewMemberships(faultSourceStore{f.database, phase}).RemoveGrant(ctx, owner, p.ID, target.UserID, coreproject.RemoveProjectMember{Version: grant.Version, ExpectedUserID: owner.UserID})
-						return e
-					}
-					check = `SELECT count(*)=1 FROM project_grants WHERE project_id=$1 AND user_id=$2`
-					args = []any{p.ID, target.UserID}
-				case "member":
-					inv, e := teams.CreateInvitation(ctx, owner, team.ID, owner.UserID)
-					if e != nil {
-						t.Fatal(e)
-					}
-					if _, e = teams.AcceptInvitation(ctx, target, inv.Secret, target.UserID); e != nil {
-						t.Fatal(e)
-					}
-					member, e := teams.Member(ctx, owner, team.ID, target.UserID)
-					if e != nil {
-						t.Fatal(e)
-					}
-					operation = func() error {
-						_, e := teamservice.NewTeams(faultSourceStore{f.database, phase}).RemoveMember(ctx, owner, team.ID, target.UserID, coreteam.ChangeTeamMember{Version: member.Version, ExpectedUserID: owner.UserID})
-						return e
-					}
-					check = `SELECT count(*)=1 FROM team_members WHERE team_id=$1 AND user_id=$2`
-					args = []any{team.ID, target.UserID}
-				case "project_invitation":
-					inv := f.invite(t, owner, p.ID)
-					operation = func() error {
-						_, e := NewMemberships(faultSourceStore{f.database, phase}).AcceptInvitation(ctx, target, inv.Secret, target.UserID)
-						return e
-					}
-					check = `SELECT consumed_at IS NULL AND NOT EXISTS(SELECT 1 FROM project_grants WHERE project_id=$2 AND user_id=$3) FROM project_invitations WHERE id=$1`
-					args = []any{inv.Invitation.ID, p.ID, target.UserID}
-				case "team_invitation":
-					inv, e := teams.CreateInvitation(ctx, owner, team.ID, owner.UserID)
-					if e != nil {
-						t.Fatal(e)
-					}
-					operation = func() error {
-						_, e := teamservice.NewTeams(faultSourceStore{f.database, phase}).AcceptInvitation(ctx, target, inv.Secret, target.UserID)
-						return e
-					}
-					check = `SELECT consumed_at IS NULL AND NOT EXISTS(SELECT 1 FROM team_members WHERE team_id=$2 AND user_id=$3) FROM team_invitations WHERE id=$1`
-					args = []any{inv.Invitation.ID, team.ID, target.UserID}
-				case "transfer":
-					destination := newTestTeam(t, teams, owner, "Destination")
-					preview, e := f.projects.TransferPreview(ctx, owner, p.ID, destination.ID)
-					if e != nil {
-						t.Fatal(e)
-					}
-					operation = func() error {
-						_, e := NewProjects(faultSourceStore{f.database, phase}).Transfer(ctx, owner, p.ID, transferInput(preview, owner))
-						return e
-					}
-					check = `SELECT team_id=$2 FROM project_ownership WHERE project_id=$1`
-					args = []any{p.ID, team.ID}
-					subscriptionOwnerKind, subscriptionOwnerID = "team", team.ID
-				case "deletion":
-					operation = func() error {
-						_, e := NewProjects(faultSourceStore{f.database, phase}).Delete(ctx, owner, p.ID)
-						return e
-					}
-					check = `SELECT deleted_at IS NULL FROM projects WHERE id=$1`
-					args = []any{p.ID}
-					subscriptionOwnerID = owner.UserID
-				case "team_delete":
-					destination := newTestTeam(t, teams, owner, "Destination")
-					preview, e := f.projects.TransferPreview(ctx, owner, p.ID, destination.ID)
-					if e != nil {
-						t.Fatal(e)
-					}
-					if _, e = f.projects.Transfer(ctx, owner, p.ID, transferInput(preview, owner)); e != nil {
-						t.Fatal(e)
-					}
-					operation = func() error {
-						return teamservice.NewTeams(faultSourceStore{f.database, phase}).Delete(ctx, owner, team.ID, coreteam.ChangeTeam{Name: *team.Name, Version: team.Version, ExpectedUserID: owner.UserID})
-					}
-					check = `SELECT EXISTS(SELECT 1 FROM teams WHERE id=$1)`
-					args = []any{team.ID}
-					subscriptionOwnerKind, subscriptionOwnerID = "team", team.ID
+			}
+			for _, kind := range []string{"grant", "member", "project_invitation", "team_invitation", "transfer", "deletion", "team_delete"} {
+				if phase == "write" && (kind == "project_invitation" || kind == "team_invitation") {
+					continue
 				}
-				id := uuid.NewString()
-				expectedState := "confirmation_required"
-				if phase == "write" {
-					expectedState = "active"
-				}
-				var expectedEpoch *int64
-				if phase == "row_scan" {
-					if _, err = f.database.Pool.Exec(ctx, `ALTER TABLE webhook_subscriptions ALTER COLUMN authorization_epoch DROP NOT NULL`); err != nil {
+				t.Run(kind, func(t *testing.T) {
+					owner, target := f.user(t), f.user(t)
+					ctx := context.Background()
+					teams := teamservice.NewTeams(f.database)
+					team := newTestTeam(t, teams, owner, "Source")
+					p, err := f.projects.Create(ctx, owner, coreproject.CreateProject{ExpectedUserID: owner.UserID, Name: "Project", RepoURL: "https://example.test/a", TeamID: &team.ID})
+					if err != nil {
 						t.Fatal(err)
 					}
-				} else {
-					value := int64(2)
-					expectedEpoch = &value
-				}
-				if _, err = f.database.Pool.Exec(ctx, `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,now(),now())`, id, uuid.NewString(), p.ID, subscriptionOwnerKind, subscriptionOwnerID, expectedState, expectedEpoch); err != nil {
-					t.Fatal(err)
-				}
-				err = operation()
-				var pgErr *pgconn.PgError
-				if phase == "row_scan" {
-					var scanErr pgx.ScanArgError
-					if !errors.As(err, &scanErr) || scanErr.ColumnIndex != 5 {
-						t.Fatalf("expected PostgreSQL row scan error, got %v", err)
+					var operation func() error
+					var check string
+					var args []any
+					subscriptionOwnerKind, subscriptionOwnerID := "personal", target.UserID
+					switch kind {
+					case "grant":
+						grant := f.join(t, owner, target, p.ID).Grant
+						operation = func() error {
+							_, e := NewMemberships(faultSourceStore{f.database, phase}).RemoveGrant(ctx, owner, p.ID, target.UserID, coreproject.RemoveProjectMember{Version: grant.Version, ExpectedUserID: owner.UserID})
+							return e
+						}
+						check = `SELECT count(*)=1 FROM project_grants WHERE project_id=$1 AND user_id=$2`
+						args = []any{p.ID, target.UserID}
+					case "member":
+						inv, e := teams.CreateInvitation(ctx, owner, team.ID, owner.UserID)
+						if e != nil {
+							t.Fatal(e)
+						}
+						if _, e = teams.AcceptInvitation(ctx, target, inv.Secret, target.UserID); e != nil {
+							t.Fatal(e)
+						}
+						member, e := teams.Member(ctx, owner, team.ID, target.UserID)
+						if e != nil {
+							t.Fatal(e)
+						}
+						operation = func() error {
+							_, e := teamservice.NewTeams(faultSourceStore{f.database, phase}).RemoveMember(ctx, owner, team.ID, target.UserID, coreteam.ChangeTeamMember{Version: member.Version, ExpectedUserID: owner.UserID})
+							return e
+						}
+						check = `SELECT count(*)=1 FROM team_members WHERE team_id=$1 AND user_id=$2`
+						args = []any{team.ID, target.UserID}
+					case "project_invitation":
+						inv := f.invite(t, owner, p.ID)
+						operation = func() error {
+							_, e := NewMemberships(faultSourceStore{f.database, phase}).AcceptInvitation(ctx, target, inv.Secret, target.UserID)
+							return e
+						}
+						check = `SELECT consumed_at IS NULL AND NOT EXISTS(SELECT 1 FROM project_grants WHERE project_id=$2 AND user_id=$3) FROM project_invitations WHERE id=$1`
+						args = []any{inv.Invitation.ID, p.ID, target.UserID}
+					case "team_invitation":
+						inv, e := teams.CreateInvitation(ctx, owner, team.ID, owner.UserID)
+						if e != nil {
+							t.Fatal(e)
+						}
+						operation = func() error {
+							_, e := teamservice.NewTeams(faultSourceStore{f.database, phase}).AcceptInvitation(ctx, target, inv.Secret, target.UserID)
+							return e
+						}
+						check = `SELECT consumed_at IS NULL AND NOT EXISTS(SELECT 1 FROM team_members WHERE team_id=$2 AND user_id=$3) FROM team_invitations WHERE id=$1`
+						args = []any{inv.Invitation.ID, team.ID, target.UserID}
+					case "transfer":
+						destination := newTestTeam(t, teams, owner, "Destination")
+						preview, e := f.projects.TransferPreview(ctx, owner, p.ID, destination.ID)
+						if e != nil {
+							t.Fatal(e)
+						}
+						operation = func() error {
+							_, e := NewProjects(faultSourceStore{f.database, phase}).Transfer(ctx, owner, p.ID, transferInput(preview, owner))
+							return e
+						}
+						check = `SELECT team_id=$2 FROM project_ownership WHERE project_id=$1`
+						args = []any{p.ID, team.ID}
+						subscriptionOwnerKind, subscriptionOwnerID = "team", team.ID
+					case "deletion":
+						operation = func() error {
+							_, e := NewProjects(faultSourceStore{f.database, phase}).Delete(ctx, owner, p.ID)
+							return e
+						}
+						check = `SELECT deleted_at IS NULL FROM projects WHERE id=$1`
+						args = []any{p.ID}
+						subscriptionOwnerID = owner.UserID
+					case "team_delete":
+						destination := newTestTeam(t, teams, owner, "Destination")
+						preview, e := f.projects.TransferPreview(ctx, owner, p.ID, destination.ID)
+						if e != nil {
+							t.Fatal(e)
+						}
+						if _, e = f.projects.Transfer(ctx, owner, p.ID, transferInput(preview, owner)); e != nil {
+							t.Fatal(e)
+						}
+						operation = func() error {
+							return teamservice.NewTeams(faultSourceStore{f.database, phase}).Delete(ctx, owner, team.ID, coreteam.ChangeTeam{Name: *team.Name, Version: team.Version, ExpectedUserID: owner.UserID})
+						}
+						check = `SELECT EXISTS(SELECT 1 FROM teams WHERE id=$1)`
+						args = []any{team.ID}
+						subscriptionOwnerKind, subscriptionOwnerID = "team", team.ID
 					}
-				} else if !errors.As(err, &pgErr) || pgErr.Code != "22P02" {
-					t.Fatalf("expected original PostgreSQL eligibility query failure, got %v", err)
-				}
-				var unchanged bool
-				if err = f.database.Pool.QueryRow(ctx, check, args...).Scan(&unchanged); err != nil || !unchanged {
-					t.Fatalf("%s source did not roll back: %t %v", kind, unchanged, err)
-				}
-				var state string
-				var epoch *int64
-				if err = f.database.Pool.QueryRow(ctx, `SELECT authorization_state,authorization_epoch FROM webhook_subscriptions WHERE id=$1`, id).Scan(&state, &epoch); err != nil || state != expectedState || (expectedEpoch == nil && epoch != nil) || (expectedEpoch != nil && (epoch == nil || *epoch != *expectedEpoch)) {
-					t.Fatalf("subscription changed: %s %v %v", state, epoch, err)
-				}
-				t.Logf("%s/%s original error preserved, source and authorization unchanged", phase, kind)
-			})
-		}
+					id := uuid.NewString()
+					expectedState := "confirmation_required"
+					if phase == "write" {
+						expectedState = "active"
+					}
+					var expectedEpoch *int64
+					if phase != "row_scan" {
+						value := int64(2)
+						expectedEpoch = &value
+					}
+					if _, err = f.database.Pool.Exec(ctx, `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,now(),now())`, id, uuid.NewString(), p.ID, subscriptionOwnerKind, subscriptionOwnerID, expectedState, expectedEpoch); err != nil {
+						t.Fatal(err)
+					}
+					err = operation()
+					var pgErr *pgconn.PgError
+					if phase == "row_scan" {
+						var scanErr pgx.ScanArgError
+						if !errors.As(err, &scanErr) || scanErr.ColumnIndex != 5 {
+							t.Fatalf("expected PostgreSQL row scan error, got %v", err)
+						}
+					} else if !errors.As(err, &pgErr) || pgErr.Code != "22P02" {
+						t.Fatalf("expected original PostgreSQL eligibility query failure, got %v", err)
+					}
+					var unchanged bool
+					if err = f.database.Pool.QueryRow(ctx, check, args...).Scan(&unchanged); err != nil || !unchanged {
+						t.Fatalf("%s source did not roll back: %t %v", kind, unchanged, err)
+					}
+					var state string
+					var epoch *int64
+					if err = f.database.Pool.QueryRow(ctx, `SELECT authorization_state,authorization_epoch FROM webhook_subscriptions WHERE id=$1`, id).Scan(&state, &epoch); err != nil || state != expectedState || (expectedEpoch == nil && epoch != nil) || (expectedEpoch != nil && (epoch == nil || *epoch != *expectedEpoch)) {
+						t.Fatalf("subscription changed: %s %v %v", state, epoch, err)
+					}
+					t.Logf("%s/%s original error preserved, source and authorization unchanged", phase, kind)
+				})
+			}
+		})
 	}
 }
 

@@ -147,7 +147,8 @@ func TestAttachmentScopeAndPathConflicts(t *testing.T) {
 }
 
 func TestAttachmentValidation(t *testing.T) {
-	_, _, _, principal := projectService(t)
+	principal := model.Principal{Kind: model.SessionCredential,
+		UserID: "00000000-0000-4000-8000-000000000001", CredentialID: "00000000-0000-4000-8000-000000000002"}
 	attachments := NewAttachments(nil, nil, nil)
 	id := "00000000-0000-0000-0000-000000000001"
 	for _, address := range [][3]string{{"invalid", id, "file"}, {id, "invalid", "file"}, {id, id, ""}, {id, id, "/file"},

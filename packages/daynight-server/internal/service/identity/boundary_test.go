@@ -9,6 +9,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
 type unavailableWriter struct{ calls int }
@@ -40,6 +41,25 @@ func TestValidationDoesNotAccessUnavailableStore(t *testing.T) {
 	}
 	if w.calls != 0 {
 		t.Fatalf("validation opened %d transactions", w.calls)
+	}
+}
+
+func TestStartLoginValidationDoesNotAccessUnavailableStore(t *testing.T) {
+	w := &unavailableWriter{}
+	s := New(w, nil, "https://example.test/callback")
+	ctx := context.Background()
+	_, err := s.StartLogin(ctx, "microsoft", "/", "invalid")
+	requireFault(t, err, "invalid_input")
+	for _, provider := range []string{"", "Microsoft", "oidc", "github\x00"} {
+		_, err := s.StartLogin(ctx, provider, "/", secret.Random(""))
+		requireFault(t, err, "invalid_input")
+	}
+	for _, path := range []string{"https://evil.example/path", "//evil.example", "relative", "/\\evil", "/line\rbreak", "/line\nbreak", "/bad\x00", "/bad\xff", "/%5Cevil", "/%0Dheader", "/%00bad", "/%2fexample.com", "/api/v1/auth/login", "/api/v1/%61uth/callback", "/login", "/login?returnPath=/projects", "/login/child", "/other/../login", "/%6cogin", "/%zz"} {
+		_, err := s.StartLogin(ctx, "microsoft", path, secret.Random(""))
+		requireFault(t, err, "invalid_input")
+	}
+	if w.calls != 0 {
+		t.Fatalf("login validation opened %d transactions", w.calls)
 	}
 }
 

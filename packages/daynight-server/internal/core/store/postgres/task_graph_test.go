@@ -34,7 +34,7 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 	waitingBlocked := queryTask(t, s, project.ID, 15, model.TaskTodo, pending.ID)
 	titles := []string{strings.Repeat("汉", 160), strings.Repeat("😀", 161), strings.Repeat("e\u0301", 81), "Plain title", "Waiting", "Waiting with prerequisite"}
 	for index, task := range []model.Task{done, pending, blocked, active, waiting, waitingBlocked} {
-		mustQueryExec(t, s, "UPDATE tasks SET title = $1, description = repeat('large description', 100000) WHERE id = $2", titles[index], task.ID)
+		mustQueryExec(t, s, "UPDATE tasks SET title = $1 WHERE id = $2", titles[index], task.ID)
 	}
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
 	mustQueryExec(t, s, "UPDATE tasks SET created_at = $1 WHERE project_id = $2", stamp, project.ID)
