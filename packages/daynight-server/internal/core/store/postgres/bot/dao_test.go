@@ -377,10 +377,26 @@ func TestPreferenceWriteFailuresRemainErrors(t *testing.T) {
 	}
 }
 
+func oversizedBotProjectionField(t *testing.T, tx pgx.Tx) string {
+	t.Helper()
+	const projectionBytes = 16*1024*1024 + 4096
+	value := strings.Repeat("\x01", projectionBytes/6+1)
+	var encodedBytes int
+	if err := tx.QueryRow(t.Context(), `SELECT octet_length(to_jsonb($1::text)::text)`, value).Scan(&encodedBytes); err != nil {
+		t.Fatal(err)
+	}
+	if encodedBytes != len(value)*6+2 || encodedBytes <= projectionBytes {
+		t.Fatalf("fixture does not cross the projection byte guard: raw=%d encoded=%d limit=%d", len(value), encodedBytes, projectionBytes)
+	}
+	t.Logf("projection fixture: raw=%d bytes, PostgreSQL JSON=%d bytes, guard=%d bytes", len(value), encodedBytes, projectionBytes)
+	return value
+}
+
 func TestBoundedBotProjectionExcludesUnreturnedFields(t *testing.T) {
 	f := newFixture(t)
 	original := f.ready(t, f.candidate)
-	exec(t, f.tx, `UPDATE bots SET requested_overrides=requested_overrides || jsonb_build_object('unused',repeat('x',18000000)), request_fingerprint=repeat('a',64) WHERE id=$1`, original.ID)
+	oversized := oversizedBotProjectionField(t, f.tx)
+	exec(t, f.tx, `UPDATE bots SET requested_overrides=requested_overrides || jsonb_build_object('unused',$2::text), request_fingerprint=repeat('a',64) WHERE id=$1`, original.ID, oversized)
 	page, err := f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 10})
 	if err != nil || len(page.Items) != 1 || page.OversizedBotID != "" {
 		t.Fatalf("bounded projection: %+v %v", page, err)
@@ -389,7 +405,7 @@ func TestBoundedBotProjectionExcludesUnreturnedFields(t *testing.T) {
 	if got.ID != original.ID || !reflect.DeepEqual(got.ResolvedConfiguration, original.ResolvedConfiguration) || !reflect.DeepEqual(got.RoleConfiguration, original.RoleConfiguration) || got.RequestFingerprint != "" {
 		t.Fatalf("projection mismatch: %+v", got)
 	}
-	exec(t, f.tx, `UPDATE bots SET role_configuration=jsonb_set(role_configuration,'{instructions}',to_jsonb(repeat('x',18000000))) WHERE id=$1`, original.ID)
+	exec(t, f.tx, `UPDATE bots SET requested_overrides=requested_overrides-'unused', role_configuration=jsonb_set(role_configuration,'{instructions}',to_jsonb($2::text)) WHERE id=$1`, original.ID, oversized)
 	page, err = f.reader.BotsBounded(t.Context(), f.principal.UserID, nil, store.Page{Limit: 10})
 	if err != nil || page.OversizedBotID != original.ID || len(page.Items) != 0 {
 		t.Fatalf("oversized: %+v %v", page, err)
@@ -434,11 +450,12 @@ func TestBoundedBotProjectionRejectsMalformedKnownFields(t *testing.T) {
 func TestBoundedBotProjectionMatchesGoJSONAliases(t *testing.T) {
 	f := newFixture(t)
 	original := f.ready(t, f.candidate)
+	oversized := oversizedBotProjectionField(t, f.tx)
 	exec(t, f.tx, `UPDATE bots SET
         requested_overrides=jsonb_build_object('worKerId',$2::text,'Model','initial','model','final'),
-        role_configuration=jsonb_build_object('Instructions',repeat('x',18000000),'instructions','small','revision','r','digest','d'),
+        role_configuration=jsonb_build_object('Instructions',$3::text,'instructions','small','revision','r','digest','d'),
         resolved_configuration=(resolved_configuration-'selection') || jsonb_build_object('Selection',jsonb_build_object('schemaVersion',1,'modelSource','first'),'selection',jsonb_build_object('reasoningEffortSource','second'))
-        WHERE id=$1`, original.ID, original.WorkerID)
+        WHERE id=$1`, original.ID, original.WorkerID, oversized)
 	full, err := f.reader.Bot(t.Context(), original.ID)
 	if err != nil {
 		t.Fatal(err)
