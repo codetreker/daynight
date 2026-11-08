@@ -324,6 +324,7 @@ func TestBodyFailureDoesNotHideTransactionOutcome(t *testing.T) {
 		{body, 413},
 		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: body}, 413},
 		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: body}, 500},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CommitAttempted: true, Cause: body}, 500},
 		{&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: body}, 500},
 		{errors.Join(body, errors.New("cleanup failed")), 500},
 		{errors.Join(errors.Join(timeout, context.Canceled)), 408},

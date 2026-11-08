@@ -390,6 +390,8 @@ T = /api/v1/projects/{projectId}/tasks/{taskId}
 缺失 Content-Type 时使用 application/octet-stream。服务不使用 JSON 解码器接收文件，
 也不将完整文件载入内存。从首次读取开始设置 60 秒实际 socket 读取期限；完整读取后清除 deadline，超时或未读完的请求关闭连接。超限返回 `413 payload_too_large`，读取超时在可写时返回 `408 request_timeout`，资源名额满立即返回 `429 resource_busy`。
 
+共享 `BoundedContent` 以 `ContentOverflowError` 标识实际读到第 5242881 字节，保留 `payload_too_large` 领域 Fault 的 unwrap 语义；一般容量 Fault 不代表这个流式终止事实。HTTP 的既有正文错误分类器只在错误树中的文件发布为 `not_published`、事务为未尝试提交的 operation 拒绝且回滚和清理无失败时，将该类型映射为终止 413。关闭原生 chunked body 对剩余 framing 或 trailer 的读取可能因立即读取期限取消原请求 context；拒绝复用[服务端传输响应机制](daynight-server.md#http-传输准入)的一秒 socket 写入期限、独立有界响应 context、flush 与错误日志，业务继续使用原 context。未知或已发布的文件结果、事务完成失败、附带取消及清理失败保留普通错误分类。
+
 附件 I/O 在相应授权后依次获取实例、用户和 Task 名额；失败时释放已取得的名额。实例容量是 `min(4,max(1,floor(P/2)))`，P 是连接池最大连接数；用户两个槽、Task 一个槽通过共享存储的 ResidencyGate 跨实例协调。REST 持有至结果发送及清理完成。MCP 的 inline、chunk、commit 每次实际 I/O 与结果发送持有名额，begin 和空闲 ticket 不占用；私有传输账本仍管理空闲 ticket 与暂存容量。
 
 ```http
