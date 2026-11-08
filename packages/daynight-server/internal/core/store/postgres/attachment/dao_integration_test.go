@@ -37,9 +37,23 @@ func attachmentFixture(t *testing.T) (*postgres.Store, string, string, model.Pri
 	return db, projectID, taskID, model.Principal{UserID: userID}
 }
 
+func attachmentRows(t *testing.T, db *postgres.Store, projectID, taskID string) (string, string) {
+	t.Helper()
+	var task, attachments string
+	err := db.Pool.QueryRow(t.Context(), `SELECT to_jsonb(t)::text,
+        COALESCE((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.path) FROM task_attachments a
+          WHERE a.project_id=t.project_id AND a.task_id=t.id),'[]'::jsonb)::text
+        FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, projectID, taskID).Scan(&task, &attachments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task, attachments
+}
+
 func TestMutationDAOLifecycleAndRollback(t *testing.T) {
 	db, projectID, taskID, principal := attachmentFixture(t)
 	ctx := t.Context()
+	taskBefore, _ := attachmentRows(t, db, projectID, taskID)
 	writer := db
 	result, err := writer.WriteAttachmentMutation(ctx, func(tx store.AttachmentMutationScope) error {
 		presence, err := tx.LockTaskPresence(ctx, projectID, taskID)
@@ -107,6 +121,10 @@ func TestMutationDAOLifecycleAndRollback(t *testing.T) {
 	if err != nil || result.Outcome != store.TransactionCommitted {
 		t.Fatalf("commit: %+v %v", result, err)
 	}
+	committedTask, committedAttachments := attachmentRows(t, db, projectID, taskID)
+	if committedTask != taskBefore {
+		t.Fatalf("attachment commit changed task: before=%s after=%s", taskBefore, committedTask)
+	}
 	cause := errors.New("reject mutation")
 	result, err = writer.WriteAttachmentMutation(ctx, func(tx store.AttachmentMutationScope) error {
 		if err := tx.AttachmentDAO().DeleteAttachment(ctx, projectID, taskID, "a"); err != nil {
@@ -121,11 +139,17 @@ func TestMutationDAOLifecycleAndRollback(t *testing.T) {
 	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_attachments WHERE task_id=$1`, taskID).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("committed metadata changed: %d %v", count, err)
 	}
+	if task, attachments := attachmentRows(t, db, projectID, taskID); task != taskBefore || attachments != committedAttachments {
+		t.Fatalf("rollback changed task or attachment rows: task=%s attachments=%s", task, attachments)
+	}
 }
 
 func TestMutationTaskLockAndFreshAuthorization(t *testing.T) {
 	db, projectID, taskID, principal := attachmentFixture(t)
 	ctx := t.Context()
+	if _, _, err := db.PutAttachment(ctx, model.Attachment{ProjectID: projectID, TaskID: taskID, Path: "a", ContentType: "text/plain", SizeBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
 	other := uuid.NewString()
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'other')`, other, projectID); err != nil {
 		t.Fatal(err)
@@ -159,6 +183,7 @@ func TestMutationTaskLockAndFreshAuthorization(t *testing.T) {
 	if _, err := db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, taskID); err != nil {
 		t.Fatal(err)
 	}
+	deletedTask, attachmentsBefore := attachmentRows(t, db, projectID, taskID)
 	completion, err = writer.WriteAttachmentMutation(ctx, func(tx store.AttachmentMutationScope) error {
 		deleted, err := tx.LockTaskPresence(ctx, projectID, taskID)
 		if err != nil || !deleted.Found || deleted.DeletedAt == nil {
@@ -180,17 +205,27 @@ func TestMutationTaskLockAndFreshAuthorization(t *testing.T) {
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("presence/authorization: %+v %v", completion, err)
 	}
+	if task, attachments := attachmentRows(t, db, projectID, taskID); task != deletedTask || attachments != attachmentsBefore {
+		t.Fatalf("presence or authorization reads changed persisted rows: task=%s attachments=%s", task, attachments)
+	}
 }
 
 func TestMutationDatabaseFailures(t *testing.T) {
 	db, projectID, taskID, _ := attachmentFixture(t)
 	ctx := t.Context()
 	writer := db
+	if _, _, err := db.PutAttachment(ctx, model.Attachment{ProjectID: projectID, TaskID: taskID, Path: "a", ContentType: "text/plain", SizeBytes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	taskBefore, attachmentsBefore := attachmentRows(t, db, projectID, taskID)
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	completion, err := writer.WriteAttachmentMutation(canceled, func(store.AttachmentMutationScope) error { t.Fatal("canceled begin reached callback"); return nil })
 	if completion.Outcome != store.TransactionNotCommitted || !errors.Is(err, context.Canceled) {
 		t.Fatalf("begin: %+v %v", completion, err)
+	}
+	if task, attachments := attachmentRows(t, db, projectID, taskID); task != taskBefore || attachments != attachmentsBefore {
+		t.Fatalf("canceled begin changed persisted rows: task=%s attachments=%s", task, attachments)
 	}
 	for _, operation := range []struct {
 		name string
@@ -228,6 +263,10 @@ func TestMutationDatabaseFailures(t *testing.T) {
 				defer func() {
 					if _, err := db.Pool.Exec(ctx, `ALTER TABLE inaccessible_attachments RENAME TO task_attachments`); err != nil {
 						t.Error(err)
+						return
+					}
+					if task, attachments := attachmentRows(t, db, projectID, taskID); task != taskBefore || attachments != attachmentsBefore {
+						t.Errorf("failed mutation changed persisted rows: task=%s attachments=%s", task, attachments)
 					}
 				}()
 			}
@@ -237,6 +276,11 @@ func TestMutationDatabaseFailures(t *testing.T) {
 			failed, _ := store.DatabaseErrorFacts(err)
 			if completion.Outcome != store.TransactionNotCommitted || !failed || !errors.As(err, &dbErr) || !errors.As(err, &pgErr) {
 				t.Fatalf("failure chain: %+v %v", completion, err)
+			}
+			if operation.name == "task" {
+				if task, attachments := attachmentRows(t, db, projectID, taskID); task != taskBefore || attachments != attachmentsBefore {
+					t.Fatalf("failed presence read changed persisted rows: task=%s attachments=%s", task, attachments)
+				}
 			}
 		})
 	}
