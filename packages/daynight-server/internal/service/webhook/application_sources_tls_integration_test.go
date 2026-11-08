@@ -26,7 +26,6 @@ import (
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/httpoutbound"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -50,7 +49,7 @@ func TestApplicationSourcesToTwoOwnersTLS(t *testing.T) {
 	}))
 	defer receiver.Close()
 	f := newCaptureFixture(t, 1)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	var personal, team string
 	var version int64
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&personal, &version); err != nil {
@@ -69,20 +68,17 @@ func TestApplicationSourcesToTwoOwnersTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys := map[string][]byte{}
-	rows, err := f.db.Pool.Query(f.ctx, `SELECT e.owner_kind,e.owner_id::text,e.id::text,k.id::text,k.envelope_version,k.master_key_id,k.nonce,k.ciphertext FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id`)
+	rows, err := f.db.Pool.Query(f.ctx, `SELECT e.owner_kind,e.owner_id::text,e.id::text,k.id::text,k.secret FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rows.Next() {
 		var kind, owner, endpoint, keyID string
-		var envelope secretbox.Envelope
-		if err = rows.Scan(&kind, &owner, &endpoint, &keyID, &envelope.Version, &envelope.MasterKeyID, &envelope.Nonce, &envelope.Ciphertext); err != nil {
+		var key []byte
+		if err = rows.Scan(&kind, &owner, &endpoint, &keyID, &key); err != nil {
 			t.Fatal(err)
 		}
-		key, e := f.capture.Keys.Open(envelope, []string{kind, owner, endpoint, "signing-key", keyID})
-		if e != nil {
-			t.Fatal(e)
-		}
+
 		keys["/"+kind] = key
 	}
 	rows.Close()

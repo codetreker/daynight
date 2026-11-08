@@ -19,7 +19,6 @@ import (
 func TestWebhookProcessReadinessTracksWorkerFailure(t *testing.T) {
 	values := processAPIEnvironment(t)
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
-	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = ""
 	parsed, err := url.Parse(values["DAYNIGHT_DATABASE_URL"])
 	if err != nil {
 		t.Fatal(err)

@@ -11,11 +11,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	webhookmodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/jackc/pgx/v5"
 )
 
-const deliveryColumns = `id::text,event_id::text,endpoint_id::text,event_type,project_id::text,owner_kind,owner_id::text,occurred_at,original_match_count,original_match_sha256,policy_version,destination_revision,adapter_version,destination_kind,destination_origin,render_version,configuration_schema_version,destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,request_method,request_media_type,deterministic_headers_json,body,body_sha256,original_body_bytes,payload_removed_at,payload_removed_reason,automatic_schedule_at,automatic_expires_at,payload_expires_at,automatic_plan_cursor,automatic_attempt_count,manual_operation_count,attempt_sequence,automatic_open,generation,state,trigger,expires_at,next_attempt_at,manual_operation_id::text,lease_token::text,lease_claimed_at,lease_until,lease_generation,lease_plan_slot,current_attempt_id::text,terminal_at,last_activity_at,metadata_expires_at,preparation_error_code,queue_order,purging_at`
+const deliveryColumns = `id::text,event_id::text,endpoint_id::text,event_type,project_id::text,owner_kind,owner_id::text,occurred_at,original_match_count,original_match_sha256,policy_version,destination_revision,adapter_version,destination_kind,destination_origin,render_version,configuration_schema_version,destination_configuration,request_method,request_media_type,deterministic_headers_json,body,body_sha256,original_body_bytes,payload_removed_at,payload_removed_reason,automatic_schedule_at,automatic_expires_at,payload_expires_at,automatic_plan_cursor,automatic_attempt_count,manual_operation_count,attempt_sequence,automatic_open,generation,state,trigger,expires_at,next_attempt_at,manual_operation_id::text,lease_token::text,lease_claimed_at,lease_until,lease_generation,lease_plan_slot,current_attempt_id::text,terminal_at,last_activity_at,metadata_expires_at,preparation_error_code,queue_order,purging_at`
 
 func (d *DAO) ObservedAt(ctx context.Context) (time.Time, error) {
 	var now time.Time
@@ -27,13 +26,11 @@ func (d *DAO) ObservedAt(ctx context.Context) (time.Time, error) {
 
 func scanDelivery(row pgx.Row) (store.WebhookDelivery, error) {
 	var d store.WebhookDelivery
-	var env secretbox.Envelope
-	err := row.Scan(&d.ID, &d.EventID, &d.EndpointID, &d.EventType, &d.ProjectID, &d.Owner.Kind, &d.Owner.ID, &d.OccurredAt, &d.OriginalMatchCount, &d.OriginalMatchSHA256, &d.PolicyVersion, &d.DestinationRevision, &d.AdapterVersion, &d.DestinationKind, &d.DestinationOrigin, &d.RenderVersion, &d.ConfigurationSchemaVersion, &env.Version, &env.MasterKeyID, &env.Nonce, &env.Ciphertext, &d.RequestMethod, &d.RequestMediaType, &d.DeterministicHeadersJSON, &d.Body, &d.BodySHA256, &d.OriginalBodyBytes, &d.PayloadRemovedAt, &d.PayloadRemovedReason, &d.AutomaticScheduleAt, &d.AutomaticExpiresAt, &d.PayloadExpiresAt, &d.AutomaticPlanCursor, &d.AutomaticAttemptCount, &d.ManualOperationCount, &d.AttemptSequence, &d.AutomaticOpen, &d.Generation, &d.State, &d.Trigger, &d.ExpiresAt, &d.NextAttemptAt, &d.ManualOperationID, &d.LeaseToken, &d.LeaseClaimedAt, &d.LeaseUntil, &d.LeaseGeneration, &d.LeasePlanSlot, &d.CurrentAttemptID, &d.TerminalAt, &d.LastActivityAt, &d.MetadataExpiresAt, &d.PreparationErrorCode, &d.QueueOrder, &d.PurgingAt)
+	err := row.Scan(&d.ID, &d.EventID, &d.EndpointID, &d.EventType, &d.ProjectID, &d.Owner.Kind, &d.Owner.ID, &d.OccurredAt, &d.OriginalMatchCount, &d.OriginalMatchSHA256, &d.PolicyVersion, &d.DestinationRevision, &d.AdapterVersion, &d.DestinationKind, &d.DestinationOrigin, &d.RenderVersion, &d.ConfigurationSchemaVersion, &d.DestinationConfiguration, &d.RequestMethod, &d.RequestMediaType, &d.DeterministicHeadersJSON, &d.Body, &d.BodySHA256, &d.OriginalBodyBytes, &d.PayloadRemovedAt, &d.PayloadRemovedReason, &d.AutomaticScheduleAt, &d.AutomaticExpiresAt, &d.PayloadExpiresAt, &d.AutomaticPlanCursor, &d.AutomaticAttemptCount, &d.ManualOperationCount, &d.AttemptSequence, &d.AutomaticOpen, &d.Generation, &d.State, &d.Trigger, &d.ExpiresAt, &d.NextAttemptAt, &d.ManualOperationID, &d.LeaseToken, &d.LeaseClaimedAt, &d.LeaseUntil, &d.LeaseGeneration, &d.LeasePlanSlot, &d.CurrentAttemptID, &d.TerminalAt, &d.LastActivityAt, &d.MetadataExpiresAt, &d.PreparationErrorCode, &d.QueueOrder, &d.PurgingAt)
 	if err != nil {
 		return d, pg.QueryError("read webhook delivery", err)
 	}
-	d.DestinationCiphertext, err = env.MarshalBinary()
-	return d, err
+	return d, nil
 }
 
 func (d *DAO) LockDelivery(ctx context.Context, id string) (store.WebhookDelivery, error) {

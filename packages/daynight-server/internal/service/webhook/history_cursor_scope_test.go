@@ -24,7 +24,7 @@ func TestHistoryCursorUsesRetainedSourcesWithoutSubscription(t *testing.T) {
 	if err = f.db.Pool.QueryRow(f.ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1`, f.project).Scan(&team); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	owner := webhook.Owner{Kind: "team", ID: team}
 	name, enabled := "team receiver", true
 	_, err = svc.Mutate(f.ctx, f.principal, owner, webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/hook"}, HasSubscriptions: true, Subscriptions: []corewebhook.SubscriptionInput{{ProjectID: f.project, EventTypes: []string{"task.created"}}}})
@@ -125,7 +125,7 @@ func TestHistoryCursorSurvivesExpiryPurgeAndPhysicalDeletion(t *testing.T) {
 	if err = tx.Commit(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+	svc := &webhook.Service{DB: f.db}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
 	page, err := svc.ListDeliveries(f.ctx, f.principal, owner, records[0].endpoint, webhook.DeliveryQuery{Limit: 1})
 	if err != nil {

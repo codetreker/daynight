@@ -89,7 +89,7 @@ func newRetentionHTTP(t *testing.T, expired bool) *retentionHTTP {
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE sessions SET token_hash=$1 WHERE id=$2`, secret.Hash(token), f.principal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	auth, err := authhttp.NewAuthentication(identityservice.New(f.db, nil, "https://daynight.example/auth/callback"), config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {

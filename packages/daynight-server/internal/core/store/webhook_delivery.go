@@ -66,7 +66,7 @@ type WebhookDelivery struct {
 	PolicyVersion, DestinationRevision, AdapterVersion                                int64
 	DestinationKind, DestinationOrigin                                                string
 	RenderVersion, ConfigurationSchemaVersion                                         int16
-	DestinationCiphertext                                                             []byte
+	DestinationConfiguration                                                          []byte
 	RequestMethod, RequestMediaType                                                   string
 	DeterministicHeadersJSON, Body, BodySHA256                                        []byte
 	OriginalBodyBytes                                                                 int

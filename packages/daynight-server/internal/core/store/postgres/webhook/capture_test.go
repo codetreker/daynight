@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -11,7 +12,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	model "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -54,11 +54,8 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 	defer tx.Rollback(ctx)
 	d := New(tx)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	env, err := (secretbox.Envelope{Version: 1, MasterKeyID: "primary", Nonce: make([]byte, 12), Ciphertext: make([]byte, 32)}).MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ep := model.Endpoint{ID: uuid.NewString(), Owner: model.Owner{Kind: "personal", ID: userID}, Name: "endpoint", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.org", DestinationCiphertext: env, ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
+	configuration := sampleDestination()
+	ep := model.Endpoint{ID: uuid.NewString(), Owner: model.Owner{Kind: "personal", ID: userID}, Name: "endpoint", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.org", DestinationConfiguration: configuration, ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
 	if err = d.PutEndpoint(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +103,7 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 		t.Fatalf("got %d matches", len(audience))
 	}
 	for _, a := range audience {
-		if a.EventType != "task.created" || a.Endpoint.ID != ep.ID || a.ProjectID != projectID || a.AuthorizationEpoch != 1 {
+		if a.EventType != "task.created" || a.Endpoint.ID != ep.ID || a.ProjectID != projectID || a.AuthorizationEpoch != 1 || !bytes.Equal(a.Endpoint.DestinationConfiguration, configuration) {
 			t.Fatalf("unexpected audience: %+v", a)
 		}
 	}
@@ -115,14 +112,14 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer other.Close(ctx)
-	if _, err = other.Exec(ctx, `UPDATE webhook_endpoints SET enabled=false,destination_revision=2 WHERE id=$1`, ep.ID); err != nil {
+	if _, err = other.Exec(ctx, `UPDATE webhook_endpoints SET enabled=false,destination_revision=2,destination_configuration=$2 WHERE id=$1`, ep.ID, []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://example.org/changed"}}`)); err != nil {
 		t.Fatal(err)
 	}
 	later, err := d.FreezeAudience(ctx, projectID, []string{"task.created"})
 	if err != nil || len(later) != 0 {
 		t.Fatalf("new snapshot audience=%+v err=%v", later, err)
 	}
-	if audience[0].Endpoint.DestinationRevision != 1 {
+	if audience[0].Endpoint.DestinationRevision != 1 || !bytes.Equal(audience[0].Endpoint.DestinationConfiguration, configuration) {
 		t.Fatalf("frozen destination changed: %+v", audience[0].Endpoint)
 	}
 	policy, err := d.Policy(ctx, 1)
@@ -147,7 +144,7 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 		matches = append(matches, store.WebhookCapturedMatch{SubscriptionID: a.SubscriptionID, BindingID: a.BindingID, ProjectID: a.ProjectID, EventType: a.EventType, AuthorizationEpoch: a.AuthorizationEpoch})
 	}
 	proof := sha256.Sum256([]byte("proof"))
-	delivery := store.WebhookCapturedDelivery{ID: uuid.NewString(), EndpointID: ep.ID, Owner: ep.Owner, OriginalMatchSHA256: proof[:], PolicyVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: 1, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationOrigin: ep.Origin, DestinationCiphertext: env, RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte("[]"), Body: body, BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: now.Add(72 * time.Hour), PayloadExpiresAt: now.Add(7 * 24 * time.Hour), LastActivityAt: recorded, MetadataExpiresAt: recorded.Add(30 * 24 * time.Hour), Matches: matches}
+	delivery := store.WebhookCapturedDelivery{ID: uuid.NewString(), EndpointID: ep.ID, Owner: ep.Owner, OriginalMatchSHA256: proof[:], PolicyVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: 1, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationOrigin: ep.Origin, DestinationConfiguration: configuration, RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte("[]"), Body: body, BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: now.Add(72 * time.Hour), PayloadExpiresAt: now.Add(7 * 24 * time.Hour), LastActivityAt: recorded, MetadataExpiresAt: recorded.Add(30 * 24 * time.Hour), Matches: matches}
 	wrongProject := event
 	wrongProject.ProjectID = uuid.NewString()
 	if err = NewProjectCapture(tx, projectID).SaveCapture(ctx, wrongProject, []store.WebhookCapturedDelivery{delivery}); err == nil {
@@ -179,7 +176,7 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockedDelivery, err := New(admissionTx).LockDelivery(ctx, delivery.ID)
-	if err != nil || lockedDelivery.ID != delivery.ID || !sources.ProjectEligible || !sources.TaskPresent || !sources.EndpointPresent || sources.Endpoint.DestinationRevision != 2 || len(sources.Matches) != 51 {
+	if err != nil || lockedDelivery.ID != delivery.ID || !bytes.Equal(lockedDelivery.DestinationConfiguration, configuration) || bytes.Equal(sources.Endpoint.DestinationConfiguration, configuration) || !sources.ProjectEligible || !sources.TaskPresent || !sources.EndpointPresent || sources.Endpoint.DestinationRevision != 2 || len(sources.Matches) != 51 {
 		t.Fatalf("admission sources=%+v delivery=%+v err=%v", sources, lockedDelivery, err)
 	}
 	for _, match := range sources.Matches {

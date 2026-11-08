@@ -30,9 +30,9 @@ func drainRetentionEvents(r *webhook.Retention, output *bytes.Buffer) {
 
 func TestRetentionObservationAndSafeLog(t *testing.T) {
 	f, id := retentionCapture(t)
-	var body, ciphertext []byte
+	var body, configuration []byte
 	var event, endpoint, owner, project string
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT body,destination_ciphertext,event_id::text,endpoint_id::text,owner_id::text,project_id::text FROM webhook_deliveries WHERE id=$1`, id).Scan(&body, &ciphertext, &event, &endpoint, &owner, &project); err != nil {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT body,destination_configuration,event_id::text,endpoint_id::text,owner_id::text,project_id::text FROM webhook_deliveries WHERE id=$1`, id).Scan(&body, &configuration, &event, &endpoint, &owner, &project); err != nil {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
@@ -64,9 +64,9 @@ func TestRetentionObservationAndSafeLog(t *testing.T) {
 			t.Fatalf("missing %q in %s", expected, log)
 		}
 	}
-	for _, secret := range []string{string(body), hex.EncodeToString(ciphertext), base64.StdEncoding.EncodeToString(ciphertext), "receiver.example"} {
+	for _, secret := range []string{string(body), string(configuration), hex.EncodeToString(configuration), base64.StdEncoding.EncodeToString(configuration), "receiver.example"} {
 		if secret != "" && strings.Contains(log, secret) {
-			t.Fatalf("retention log disclosed payload or ciphertext")
+			t.Fatalf("retention log disclosed payload or configuration")
 		}
 	}
 }

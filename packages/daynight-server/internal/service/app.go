@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"os"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -19,7 +18,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/codetreker/uniauth/sdk/go"
 )
 
@@ -126,31 +124,14 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	if err != nil {
 		return nil, errors.Join(err, files.Close())
 	}
-	var keys *secretbox.Keyring
-	if c.WebhookKeyringFile != "" {
-		data, readErr := os.ReadFile(c.WebhookKeyringFile)
-		if readErr != nil {
-			database.Close()
-			return nil, errors.Join(&config.ConfigurationError{Field: "DAYNIGHT_WEBHOOK_KEYRING_FILE", Rule: "must be readable", Cause: readErr}, files.Close())
-		}
-		keys, readErr = secretbox.Parse(data)
-		if readErr != nil {
-			database.Close()
-			return nil, errors.Join(&config.ConfigurationError{Field: "DAYNIGHT_WEBHOOK_KEYRING_FILE", Rule: "must contain a valid keyring", Cause: readErr}, files.Close())
-		}
-	}
-	if c.WebhookEnabled && keys == nil {
-		database.Close()
-		return nil, errors.Join(secretbox.ErrMissingKey, files.Close())
-	}
-	if err := validateWebhookStartup(startup, database.Transactions, keys); err != nil {
+	if err := validateWebhookStartup(startup, database.Transactions); err != nil {
 		database.Close()
 		return nil, errors.Join(err, files.Close())
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	capture := &webhook.Capturer{Keys: keys, Logger: logger, RequestID: requestid.From}
+	capture := &webhook.Capturer{Logger: logger, RequestID: requestid.From}
 	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
 	app.files, app.persistence = files, database
 	failOpen := func(cause error) (*App, error) {
@@ -158,7 +139,7 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 		defer done()
 		return nil, errors.Join(cause, app.Close(cleanup))
 	}
-	if err := app.assembleWebhooks(database.Transactions, keys, c.WebhookEnabled, logger); err != nil {
+	if err := app.assembleWebhooks(database.Transactions, c.WebhookEnabled, logger); err != nil {
 		return failOpen(err)
 	}
 	if app.PrivateContent == nil {

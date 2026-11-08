@@ -5,7 +5,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"io"
 )
 
@@ -34,7 +33,6 @@ type Result struct {
 }
 type Service struct {
 	DB                              store.WebhookTransactions
-	Keys                            *secretbox.Keyring
 	Random                          io.Reader
 	ConfigurationExpansionAvailable bool
 	DispatchEnabled                 bool

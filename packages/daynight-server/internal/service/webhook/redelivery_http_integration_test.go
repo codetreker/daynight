@@ -3,7 +3,10 @@ package webhook_test
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -43,7 +46,7 @@ func TestRedeliveryHTTPRealCaptureAndTLS(t *testing.T) {
 	}))
 	defer receiver.Close()
 	f := newCaptureFixture(t, 1)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	var endpoint string
 	var version int64
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
@@ -57,8 +60,8 @@ func TestRedeliveryHTTPRealCaptureAndTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	var delivery, event string
-	var original []byte
-	if err = f.db.Pool.QueryRow(f.ctx, `SELECT d.id::text,d.event_id::text,d.body,e.config_version FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint_id`).Scan(&delivery, &event, &original, &version); err != nil {
+	var original, signingSecret []byte
+	if err = f.db.Pool.QueryRow(f.ctx, `SELECT d.id::text,d.event_id::text,d.body,e.config_version,k.secret FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint_id JOIN webhook_signing_keys k ON k.id=e.active_key_id`).Scan(&delivery, &event, &original, &version, &signingSecret); err != nil {
 		t.Fatal(err)
 	}
 	roots := x509.NewCertPool()
@@ -79,6 +82,12 @@ func TestRedeliveryHTTPRealCaptureAndTLS(t *testing.T) {
 		t.Helper()
 		select {
 		case r := <-requests:
+			mac := hmac.New(sha256.New, signingSecret)
+			fmt.Fprintf(mac, "%s.%s.", r.id, r.timestamp)
+			mac.Write(r.body)
+			if r.id != event || !bytes.Equal(r.body, original) || r.signature != "v1,"+base64.StdEncoding.EncodeToString(mac.Sum(nil)) {
+				t.Fatal("redelivery identity, bytes or HMAC signature did not verify")
+			}
 			return r
 		case e := <-runner.Failures():
 			t.Fatalf("runner: %v", e)

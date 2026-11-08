@@ -11,7 +11,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	model "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -64,7 +63,7 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 	d := New(tx)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	owner := model.Owner{Kind: "personal", ID: uuid.NewString()}
-	ep := model.Endpoint{ID: uuid.NewString(), Owner: owner, Name: "example", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationCiphertext: sampleEnvelope(t), ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
+	ep := model.Endpoint{ID: uuid.NewString(), Owner: owner, Name: "example", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationConfiguration: sampleDestination(), ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
 	if err = d.PutEndpoint(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
@@ -80,15 +79,15 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 		t.Fatalf("new destination inherited wait: %v, %v", wait, err)
 	}
 	got, err := d.Endpoint(ctx, owner, ep.ID)
-	if err != nil || got.Name != ep.Name || !bytes.Equal(got.DestinationCiphertext, ep.DestinationCiphertext) {
+	if err != nil || got.Name != ep.Name || !bytes.Equal(got.DestinationConfiguration, ep.DestinationConfiguration) {
 		t.Fatalf("endpoint=%+v err=%v", got, err)
 	}
-	key := model.SigningKey{EndpointID: ep.ID, ID: ep.ActiveKeyID, Slot: "current", Ciphertext: sampleEnvelope(t), CreatedAt: now}
+	key := model.SigningKey{EndpointID: ep.ID, ID: ep.ActiveKeyID, Slot: "current", Secret: sampleSecret(), CreatedAt: now}
 	if err = d.PutSigningKey(ctx, key); err != nil {
 		t.Fatal(err)
 	}
 	keys, err := d.SigningKeys(ctx, ep.ID)
-	if err != nil || len(keys) != 1 || keys[0].Slot != "current" || !bytes.Equal(keys[0].Ciphertext, key.Ciphertext) {
+	if err != nil || len(keys) != 1 || keys[0].Slot != "current" || !bytes.Equal(keys[0].Secret, key.Secret) {
 		t.Fatalf("keys=%+v err=%v", keys, err)
 	}
 	op := model.Operation{Owner: owner, ID: uuid.NewString(), ActorID: uuid.NewString(), Kind: "signing.rotate", TargetID: ep.ID, IssuedAt: "2026-11-07T10:01:02.000Z", RequestSHA256: strings.Repeat("a1", 32), Fingerprint: strings.Repeat("bc", 32), Effect: "applied", ConfigVersion: 2, DestinationRevisionAfter: 1, ActiveKeyID: key.ID, SigningMode: "immediate", RecordedAt: now, ExpiresAt: now.Add(time.Hour)}
@@ -104,9 +103,9 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 		t.Fatalf("policy=%+v err=%v", policy, err)
 	}
 	invalid := ep
-	invalid.DestinationCiphertext = []byte{1}
-	if err := d.PutEndpoint(ctx, invalid); !errors.Is(err, secretbox.ErrInvalidEnvelope) {
-		t.Fatalf("invalid envelope cause: %v", err)
+	invalid.DestinationConfiguration = nil
+	if err := d.PutEndpoint(ctx, invalid); err == nil {
+		t.Fatal("empty destination configuration accepted")
 	}
 	invalid = ep
 	invalid.AdapterVersion = "invalid"
@@ -120,7 +119,7 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 		t.Fatal("endpoint owner changed")
 	}
 	unchanged, err := d.Endpoint(ctx, owner, ep.ID)
-	if err != nil || unchanged.Name != ep.Name || !bytes.Equal(unchanged.DestinationCiphertext, ep.DestinationCiphertext) {
+	if err != nil || unchanged.Name != ep.Name || !bytes.Equal(unchanged.DestinationConfiguration, ep.DestinationConfiguration) {
 		t.Fatalf("rejected writes changed endpoint: %+v, %v", unchanged, err)
 	}
 	// PostgreSQL rejects a bad row; the original SQLSTATE remains observable.
@@ -145,7 +144,7 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	tomb, err := d.Endpoint(ctx, owner, ep.ID)
-	if err != nil || tomb.DeletedAt == nil || tomb.Name != "" || len(tomb.DestinationCiphertext) != 0 {
+	if err != nil || tomb.DeletedAt == nil || tomb.Name != "" || len(tomb.DestinationConfiguration) != 0 {
 		t.Fatalf("tombstone=%+v err=%v", tomb, err)
 	}
 }
@@ -157,23 +156,18 @@ func (t *captureTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Com
 func (t *captureTx) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
 	return rowFunc(func(v ...any) error { *v[0].(*int64) = 2; return nil })
 }
-func sampleEnvelope(t *testing.T) []byte {
-	t.Helper()
-	e := secretbox.Envelope{Version: 1, MasterKeyID: "key", Nonce: bytes.Repeat([]byte{1}, 12), Ciphertext: bytes.Repeat([]byte{2}, 48)}
-	b, err := e.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
+func sampleDestination() []byte {
+	return []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://example.test/hook?token=private"}}`)
 }
+func sampleSecret() []byte { return bytes.Repeat([]byte{2}, 32) }
 func TestEndpointMapping(t *testing.T) {
 	now := time.Now()
 	row := rowFunc(func(v ...any) error {
 		*v[0].(*string) = "id"
 		*v[1].(*string) = "personal"
 		*v[2].(*string) = "owner"
-		name, kind, origin, master, active := "name", "http", "https://example.test", "key", "active"
-		adapter, ver := int64(1), int16(1)
+		name, kind, origin, active := "name", "http", "https://example.test", "active"
+		adapter := int64(1)
 		*v[3].(**string) = &name
 		*v[4].(*bool) = true
 		*v[6].(*int64) = 1
@@ -181,24 +175,21 @@ func TestEndpointMapping(t *testing.T) {
 		*v[8].(**string) = &kind
 		*v[9].(**int64) = &adapter
 		*v[10].(**string) = &origin
-		*v[11].(**int16) = &ver
-		*v[12].(**string) = &master
-		*v[13].(*[]byte) = bytes.Repeat([]byte{1}, 12)
-		*v[14].(*[]byte) = bytes.Repeat([]byte{2}, 48)
-		*v[15].(**string) = &active
-		*v[16].(*time.Time) = now
-		*v[17].(*time.Time) = now
+		*v[11].(*[]byte) = sampleDestination()
+		*v[12].(**string) = &active
+		*v[13].(*time.Time) = now
+		*v[14].(*time.Time) = now
 		return nil
 	})
 	e, err := scanEndpoint(row)
-	if err != nil || e.Name != "name" || e.AdapterVersion != "1" || !bytes.Equal(e.DestinationCiphertext, sampleEnvelope(t)) {
+	if err != nil || e.Name != "name" || e.AdapterVersion != "1" || !bytes.Equal(e.DestinationConfiguration, sampleDestination()) {
 		t.Fatalf("endpoint=%+v err=%v", e, err)
 	}
 	tx := &captureTx{}
 	if err = New(tx).PutEndpoint(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	if tx.args[10] != int16(1) || tx.args[12] != int16(1) || tx.args[13] != "key" || !bytes.Equal(tx.args[14].([]byte), bytes.Repeat([]byte{1}, 12)) || !bytes.Equal(tx.args[15].([]byte), bytes.Repeat([]byte{2}, 48)) {
+	if tx.args[10] != int16(1) || !bytes.Equal(tx.args[12].([]byte), sampleDestination()) {
 		t.Fatalf("column arguments: %#v", tx.args)
 	}
 	e.DeletedAt = &now
@@ -206,13 +197,13 @@ func TestEndpointMapping(t *testing.T) {
 	if err = New(tx).PutEndpoint(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	for _, i := range []int{3, 8, 9, 10, 11, 12, 13, 14, 15, 16} {
+	for _, i := range []int{3, 8, 9, 10, 11, 12, 13} {
 		if tx.args[i] != nil {
 			t.Fatalf("tombstone column %d = %#v", i, tx.args[i])
 		}
 	}
 	tomb, err := scanEndpoint(rowFunc(func(v ...any) error { *v[5].(**time.Time) = &now; return nil }))
-	if err != nil || tomb.DeletedAt == nil || tomb.DestinationCiphertext != nil || tomb.Name != "" {
+	if err != nil || tomb.DeletedAt == nil || tomb.DestinationConfiguration != nil || tomb.Name != "" {
 		t.Fatalf("tombstone=%+v err=%v", tomb, err)
 	}
 	cause := errors.New("scan failure")
@@ -256,15 +247,15 @@ func TestSigningKeyMapping(t *testing.T) {
 	d := New(tx)
 	now := time.Now()
 	end := now.Add(time.Hour)
-	k := model.SigningKey{EndpointID: "endpoint", ID: "key", Slot: "overlap", Ciphertext: sampleEnvelope(t), OverlapStartedAt: &now, OverlapUntil: &end}
+	k := model.SigningKey{EndpointID: "endpoint", ID: "key", Slot: "overlap", Secret: sampleSecret(), OverlapStartedAt: &now, OverlapUntil: &end}
 	if err := d.PutSigningKey(context.Background(), k); err != nil {
 		t.Fatal(err)
 	}
-	if tx.args[2] != "overlap" || tx.args[4] != "key" || !bytes.Equal(tx.args[6].([]byte), bytes.Repeat([]byte{2}, 48)) || tx.args[8] != &now {
+	if tx.args[2] != "overlap" || !bytes.Equal(tx.args[3].([]byte), sampleSecret()) || tx.args[5] != &now {
 		t.Fatalf("signing columns %#v", tx.args)
 	}
-	k.Ciphertext = []byte{1}
-	if err := d.PutSigningKey(context.Background(), k); !errors.Is(err, secretbox.ErrInvalidEnvelope) {
-		t.Fatalf("invalid envelope %v", err)
+	k.Secret = []byte{1}
+	if err := d.PutSigningKey(context.Background(), k); err == nil {
+		t.Fatal("invalid signing secret length accepted")
 	}
 }

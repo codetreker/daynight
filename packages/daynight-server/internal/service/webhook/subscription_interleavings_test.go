@@ -131,7 +131,7 @@ func TestSubscriptionEnrollmentBeforeGrantRevocation(t *testing.T) {
 	}
 	held, release := make(chan struct{}), make(chan struct{})
 	defer unblock(t, release)
-	svc := &Service{DB: heldConfigurationStore{f.db, held, release}, Keys: f.svc.Keys, ConfigurationExpansionAvailable: true}
+	svc := &Service{DB: heldConfigurationStore{f.db, held, release}, ConfigurationExpansionAvailable: true}
 	owner := Owner{Kind: "personal", ID: target.UserID}
 	result := make(chan mutationOutcome, 1)
 	go func() {
@@ -181,7 +181,7 @@ func TestSubscriptionGrantRevocationBeforeEnrollment(t *testing.T) {
 		removal <- err
 	}()
 	waitHeld(t, f.ctx, held)
-	svc := &Service{DB: &postgres.Store{Pool: aux}, Keys: f.svc.Keys, ConfigurationExpansionAvailable: true}
+	svc := &Service{DB: &postgres.Store{Pool: aux}, ConfigurationExpansionAvailable: true}
 	owner := Owner{Kind: "personal", ID: target.UserID}
 	result := make(chan mutationOutcome, 1)
 	go func() {
@@ -265,7 +265,7 @@ func TestSubscriptionPlanningVersionCannotPredictConcurrentEdit(t *testing.T) {
 	}
 	held, release := make(chan struct{}), make(chan struct{})
 	defer unblock(t, release)
-	planned := &Service{DB: heldPlanningStore{f.db, held, release}, Keys: f.svc.Keys, ConfigurationExpansionAvailable: true}
+	planned := &Service{DB: heldPlanningStore{f.db, held, release}, ConfigurationExpansionAvailable: true}
 	guessed := mutation(target, "endpoint.update", endpoint, 4)
 	guessed.HasSubscriptions = true
 	guessed.Subscriptions = []corewebhook.SubscriptionInput{{ID: &subID, ProjectID: project, EventTypes: []string{"task.created", "task.deleted"}}}
@@ -273,7 +273,7 @@ func TestSubscriptionPlanningVersionCannotPredictConcurrentEdit(t *testing.T) {
 	go func() { r, err := planned.Mutate(f.ctx, target, owner, guessed); outcome <- mutationOutcome{r, err} }()
 	waitHeld(t, f.ctx, held)
 	aux := f.auxiliaryPool(t)
-	live := &Service{DB: &postgres.Store{Pool: aux}, Keys: f.svc.Keys, ConfigurationExpansionAvailable: true}
+	live := &Service{DB: &postgres.Store{Pool: aux}, ConfigurationExpansionAvailable: true}
 	change := mutation(target, "endpoint.update", endpoint, 3)
 	change.HasSubscriptions = true
 	change.Subscriptions = []corewebhook.SubscriptionInput{{ID: &subID, ProjectID: project, EventTypes: []string{"task.created"}}}

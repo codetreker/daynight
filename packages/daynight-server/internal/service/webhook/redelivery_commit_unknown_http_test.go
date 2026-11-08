@@ -108,7 +108,7 @@ func TestRedeliveryHTTPCommitReplyLostAfterCommandComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	webhookhttp.NewRoutes(&webhook.Service{DB: &postgres.Store{Pool: pool}, Keys: r.f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}, auth, logger).RegisterRoutes(mux)
+	webhookhttp.NewRoutes(&webhook.Service{DB: &postgres.Store{Pool: pool}, ConfigurationExpansionAvailable: true, DispatchEnabled: true}, auth, logger).RegisterRoutes(mux)
 	faultHost := httptest.NewServer(mux)
 	defer faultHost.Close()
 	operation := uuid.NewString()

@@ -54,7 +54,7 @@ func TestDeliveryTwoRunnersDrainAndContinue(t *testing.T) {
 	defer receiver.Close()
 	defer once.Do(func() { close(release) })
 	f := newCaptureFixture(t, 1)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	var endpoint string
 	var version int64
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {

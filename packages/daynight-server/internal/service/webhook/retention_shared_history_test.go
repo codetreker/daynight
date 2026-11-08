@@ -42,7 +42,7 @@ func TestRetentionSharedEventConsistentHistoryAndRestart(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1`, f.project).Scan(&team); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	name, enabled := "team receiver", true
 	m := webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, RequestSHA256: strings.Repeat("d", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://team.example/hook"}, HasSubscriptions: true, Subscriptions: []core.SubscriptionInput{{ProjectID: f.project, EventTypes: []string{"task.created"}}}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "team", ID: team}, m); err != nil {
@@ -56,7 +56,7 @@ func TestRetentionSharedEventConsistentHistoryAndRestart(t *testing.T) {
 	var eventAt, eventRecorded, firstAt, secondAt time.Time
 	var fact, eventHash, firstBody, secondBody, target, proofHash []byte
 	var originalFact, proofCount int64
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT e.id::text,e.occurred_at,e.recorded_at,e.fact_bytes,e.fact_sha256,e.original_fact_bytes,a.id::text,a.occurred_at,a.body,b.id::text,b.occurred_at,b.body,b.destination_ciphertext,b.original_match_count,b.original_match_sha256,m.subscription_id::text,m.binding_id::text FROM webhook_events e JOIN webhook_deliveries a ON a.event_id=e.id AND a.owner_kind='personal' JOIN webhook_deliveries b ON b.event_id=e.id AND b.owner_kind='team' JOIN webhook_delivery_matches m ON m.delivery_id=b.id`).Scan(&eventID, &eventAt, &eventRecorded, &fact, &eventHash, &originalFact, &first, &firstAt, &firstBody, &second, &secondAt, &secondBody, &target, &proofCount, &proofHash, &sub, &binding); err != nil {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT e.id::text,e.occurred_at,e.recorded_at,e.fact_bytes,e.fact_sha256,e.original_fact_bytes,a.id::text,a.occurred_at,a.body,b.id::text,b.occurred_at,b.body,b.destination_configuration,b.original_match_count,b.original_match_sha256,m.subscription_id::text,m.binding_id::text FROM webhook_events e JOIN webhook_deliveries a ON a.event_id=e.id AND a.owner_kind='personal' JOIN webhook_deliveries b ON b.event_id=e.id AND b.owner_kind='team' JOIN webhook_delivery_matches m ON m.delivery_id=b.id`).Scan(&eventID, &eventAt, &eventRecorded, &fact, &eventHash, &originalFact, &first, &firstAt, &firstBody, &second, &secondAt, &secondBody, &target, &proofCount, &proofHash, &sub, &binding); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(fact)
@@ -80,7 +80,7 @@ func TestRetentionSharedEventConsistentHistoryAndRestart(t *testing.T) {
 	var keptTarget, keptProof, keptHash, keptFact []byte
 	var removed *time.Time
 	var keptFactBytes int64
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_deliveries WHERE id=$1),(SELECT count(*) FROM webhook_deliveries WHERE id=$2),d.destination_ciphertext,d.original_match_sha256,(SELECT count(*) FROM webhook_delivery_matches WHERE delivery_id=$2 AND subscription_id=$3 AND binding_id=$4),e.fact_sha256,e.fact_bytes,e.fact_removed_at,e.original_fact_bytes FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id WHERE d.id=$2 AND e.id=$5`, first, second, sub, binding, eventID).Scan(&firstCount, &secondCount, &keptTarget, &keptProof, &matches, &keptHash, &keptFact, &removed, &keptFactBytes); err != nil || firstCount != 0 || secondCount != 1 || matches != 1 || !bytes.Equal(keptTarget, target) || !bytes.Equal(keptProof, proofHash) || !bytes.Equal(keptHash, eventHash) || keptFact != nil || removed == nil || keptFactBytes != originalFact {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM webhook_deliveries WHERE id=$1),(SELECT count(*) FROM webhook_deliveries WHERE id=$2),d.destination_configuration,d.original_match_sha256,(SELECT count(*) FROM webhook_delivery_matches WHERE delivery_id=$2 AND subscription_id=$3 AND binding_id=$4),e.fact_sha256,e.fact_bytes,e.fact_removed_at,e.original_fact_bytes FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id WHERE d.id=$2 AND e.id=$5`, first, second, sub, binding, eventID).Scan(&firstCount, &secondCount, &keptTarget, &keptProof, &matches, &keptHash, &keptFact, &removed, &keptFactBytes); err != nil || firstCount != 0 || secondCount != 1 || matches != 1 || !bytes.Equal(keptTarget, target) || !bytes.Equal(keptProof, proofHash) || !bytes.Equal(keptHash, eventHash) || keptFact != nil || removed == nil || keptFactBytes != originalFact {
 		t.Fatalf("first owner cleanup: first=%d second=%d proof=%d factRemoved=%v err=%v", firstCount, secondCount, matches, removed, err)
 	}
 	// Restart the component without advancing time: the remaining owner still
@@ -91,7 +91,7 @@ func TestRetentionSharedEventConsistentHistoryAndRestart(t *testing.T) {
 	}
 	var remaining int
 	var currentActivity time.Time
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*),max(d.last_activity_at) FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id JOIN webhook_delivery_matches m ON m.delivery_id=d.id WHERE d.id=$1 AND e.id=$2 AND m.subscription_id=$3 AND m.binding_id=$4 AND d.destination_ciphertext=$5 AND d.original_match_sha256=$6 AND e.fact_sha256=$7`, second, eventID, sub, binding, target, proofHash, eventHash).Scan(&remaining, &currentActivity); err != nil || remaining != 1 || !currentActivity.Equal(secondActivity) {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*),max(d.last_activity_at) FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id JOIN webhook_delivery_matches m ON m.delivery_id=d.id WHERE d.id=$1 AND e.id=$2 AND m.subscription_id=$3 AND m.binding_id=$4 AND d.destination_configuration=$5 AND d.original_match_sha256=$6 AND e.fact_sha256=$7`, second, eventID, sub, binding, target, proofHash, eventHash).Scan(&remaining, &currentActivity); err != nil || remaining != 1 || !currentActivity.Equal(secondActivity) {
 		t.Fatalf("restart lost retained material: %d %v", remaining, err)
 	}
 	// A fresh maintenance component sees eleven days of controlled clock

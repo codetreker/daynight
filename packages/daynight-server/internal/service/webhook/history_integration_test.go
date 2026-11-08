@@ -11,7 +11,6 @@ import (
 	corewebhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -28,7 +27,7 @@ func TestHistorySnapshotCapturePayloadAndPagination(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT endpoint_id::text,id::text,body FROM webhook_deliveries ORDER BY occurred_at,id LIMIT 1`).Scan(&endpoint, &id, &body); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+	svc := &webhook.Service{DB: f.db}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
 	value, err := svc.GetDelivery(f.ctx, f.principal, owner, endpoint, id)
 	if err != nil {
@@ -97,7 +96,7 @@ func TestHistoryCursorSurvivesNewDeliveryAndKeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
-	first := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+	first := &webhook.Service{DB: f.db}
 	page, err := first.ListDeliveries(f.ctx, f.principal, owner, endpoint, webhook.DeliveryQuery{Limit: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -107,8 +106,8 @@ func TestHistoryCursorSurvivesNewDeliveryAndKeyRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(decoded), f.project) || strings.Contains(string(decoded), firstTask.ID) || strings.Contains(string(decoded), "true:") {
-		t.Fatal("cursor exposed disclosure state")
+	if strings.Contains(string(decoded), f.project) || strings.Contains(string(decoded), firstTask.ID) {
+		t.Fatal("cursor exposed task or project identity")
 	}
 	if _, err = tasks.Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "new after first page"}); err != nil {
 		t.Fatal(err)
@@ -127,16 +126,10 @@ func TestHistoryCursorSurvivesNewDeliveryAndKeyRotation(t *testing.T) {
 	if _, err = f.db.Pool.Exec(f.ctx, `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'active',1,clock_timestamp(),clock_timestamp())`, newSubscription, endpoint, newProject, f.principal.UserID); err != nil {
 		t.Fatal(err)
 	}
-	primary := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-	next := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"next","keys":{"primary":"` + primary + `","next":"` + next + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	rotated := &webhook.Service{DB: f.db, Keys: keys}
+	rotated := &webhook.Service{DB: f.db}
 	page, err = rotated.ListDeliveries(f.ctx, f.principal, owner, endpoint, webhook.DeliveryQuery{Limit: 1, Cursor: &cursor})
 	if err != nil || len(page.(map[string]any)["items"].([]any)) != 1 || page.(map[string]any)["nextCursor"] == nil {
-		t.Fatalf("new record or rotation invalidated cursor: %#v %v", page, err)
+		t.Fatalf("new record or service restart invalidated cursor: %#v %v", page, err)
 	}
 	if err = tasks.Delete(f.ctx, f.principal, f.project, firstTask.ID, taskcore.DeleteTask{Version: firstTask.Version}); err != nil {
 		t.Fatal(err)
@@ -158,7 +151,7 @@ func TestHistoryRevocationAndRetention(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT d.endpoint_id::text,d.id::text,o.team_id::text FROM webhook_deliveries d JOIN project_ownership o ON o.project_id=d.project_id ORDER BY d.occurred_at,d.id LIMIT 1`).Scan(&endpoint, &id, &team); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+	svc := &webhook.Service{DB: f.db}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
 	value, err := svc.ListDeliveries(f.ctx, f.principal, owner, endpoint, webhook.DeliveryQuery{Limit: 1})
 	if err != nil {
@@ -209,7 +202,7 @@ func TestHistoryProjectReadIndependentOfSendEligibility(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1`, f.project).Scan(&team); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	owner := webhook.Owner{Kind: "team", ID: team}
 	name, enabled := "team receiver", true
 	_, err := svc.Mutate(f.ctx, f.principal, owner, webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/hook"}, HasSubscriptions: true, Subscriptions: []corewebhook.SubscriptionInput{{ProjectID: f.project, EventTypes: []string{"task.created"}}}})

@@ -1,18 +1,15 @@
 package webhook_test
 
 import (
-	"bytes"
 	"encoding/base64"
-	"fmt"
 	"testing"
 
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 )
 
-func TestHistoryCursorsAuthenticateScopeFiltersPositionsAndDisclosure(t *testing.T) {
+func TestHistoryCursorsValidateScopeFiltersPositionsAndDisclosure(t *testing.T) {
 	f := newCaptureFixture(t, 1)
 	tasks := taskservice.NewTasks(f.db, f.capture)
 	for _, title := range []string{"first", "second"} {
@@ -36,7 +33,7 @@ func TestHistoryCursorsAuthenticateScopeFiltersPositionsAndDisclosure(t *testing
 		t.Fatal(err)
 	}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+	svc := &webhook.Service{DB: f.db}
 	page, err := svc.ListDeliveries(f.ctx, f.principal, owner, endpoint, webhook.DeliveryQuery{Limit: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -72,15 +69,9 @@ func TestHistoryCursorsAuthenticateScopeFiltersPositionsAndDisclosure(t *testing
 	if _, err = svc.ListAttempts(f.ctx, f.principal, owner, endpoint, other, webhook.AttemptQuery{Limit: 1, Cursor: &attemptCursor}); err == nil {
 		t.Fatal("different delivery scope accepted")
 	}
-	primary := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-	next := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
-	keys, err := secretbox.Parse([]byte(fmt.Sprintf(`{"activeKeyId":"next","keys":{"primary":%q,"next":%q}}`, primary, next)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	rotated := &webhook.Service{DB: f.db, Keys: keys}
+	rotated := &webhook.Service{DB: f.db}
 	if _, err = rotated.ListAttempts(f.ctx, f.principal, owner, endpoint, id, webhook.AttemptQuery{Limit: 1, Cursor: &attemptCursor}); err != nil {
-		t.Fatalf("old key attempt cursor: %v", err)
+		t.Fatalf("restarted service attempt cursor: %v", err)
 	}
 	if _, err = f.db.Pool.Exec(f.ctx, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, team, f.principal.UserID); err != nil {
 		t.Fatal(err)

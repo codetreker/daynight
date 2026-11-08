@@ -41,12 +41,12 @@ func TestWebhookCaptureMigrationAndConstraints(t *testing.T) {
 	insertDelivery := `INSERT INTO webhook_deliveries
 		(id,event_id,endpoint_id,owner_kind,owner_id,event_type,project_id,occurred_at,original_match_count,original_match_sha256,
 		 policy_version,destination_revision,destination_kind,adapter_version,render_version,configuration_schema_version,destination_origin,
-		 destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,request_method,request_media_type,
+		 destination_configuration,request_method,request_media_type,
 		 deterministic_headers_json,body,original_body_bytes,body_sha256,automatic_schedule_at,automatic_expires_at,payload_expires_at,
 		 automatic_plan_cursor,automatic_open,automatic_attempt_count,manual_operation_count,attempt_sequence,generation,state,trigger,
 		 expires_at,next_attempt_at,last_activity_at,metadata_expires_at)
 		VALUES ($1,$2,$3,'personal',$4,'task.created',$5,now(),1,decode(repeat('00',32),'hex'),
-		 1,1,'http',1,1,1,'https://example.test',1,'primary',decode(repeat('00',12),'hex'),decode(repeat('00',16),'hex'),
+		 1,1,'http',1,1,1,'https://example.test',convert_to('{"kind":"http","adapterVersion":"1","configuration":{"url":"https://example.test/hook"}}','UTF8'),
 		 'POST','application/cloudevents+json',convert_to('[]','UTF8'),convert_to('{}','UTF8'),2,sha256(convert_to('{}','UTF8')),
 		 ARRAY(SELECT now() + i * interval '1 minute' FROM generate_series(0,9) i ORDER BY i),now()+interval '72 hours',now()+interval '168 hours',
 		 0,true,0,0,0,1,'pending','automatic',now()+interval '72 hours',now(),now(),now()+interval '30 days') RETURNING queue_order`
@@ -68,7 +68,9 @@ func TestWebhookCaptureMigrationAndConstraints(t *testing.T) {
 		{"wrong event anchor", `UPDATE webhook_events SET step_id=1`},
 		{"missing payload marker", `UPDATE webhook_deliveries SET body=NULL`},
 		{"wrong payload hash", `UPDATE webhook_deliveries SET body=convert_to('xx','UTF8')`},
-		{"partial target", `UPDATE webhook_deliveries SET destination_nonce=NULL`},
+		{"partial target", `UPDATE webhook_deliveries SET destination_configuration=NULL`},
+		{"empty target", `UPDATE webhook_deliveries SET destination_configuration=decode('','hex')`},
+		{"oversized target", `UPDATE webhook_deliveries SET destination_configuration=convert_to(repeat('x',262145),'UTF8')`},
 		{"partial lease", `UPDATE webhook_deliveries SET state='leased'`},
 		{"invalid schedule", `UPDATE webhook_deliveries SET automatic_schedule_at[2]=automatic_schedule_at[1]`},
 		{"empty proof", `UPDATE webhook_deliveries SET original_match_count=0`},

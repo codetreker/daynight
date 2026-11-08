@@ -68,7 +68,7 @@ func newHistoryAuthFixture(t *testing.T) *historyAuthFixture {
 	if _, err := f.db.Pool.Exec(f.ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, f.project, direct.id); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	auth, err := authhttp.NewAuthentication(identityservice.New(f.db, nil, "https://daynight.example/auth/callback"), config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
 	if err != nil {
@@ -306,7 +306,7 @@ func TestHistoryHTTPConfigurationReplayAfterDemotion(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	webhookhttp.NewRoutes(&webhook.Service{DB: gate, Keys: f.f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}, auth, logger).RegisterRoutes(mux)
+	webhookhttp.NewRoutes(&webhook.Service{DB: gate, ConfigurationExpansionAvailable: true, DispatchEnabled: true}, auth, logger).RegisterRoutes(mux)
 	gatedHost := httptest.NewServer(mux)
 	defer gatedHost.Close()
 	type reply struct {

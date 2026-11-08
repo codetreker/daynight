@@ -8,7 +8,7 @@ A Task mutation and the notifications it creates must remain consistent even whe
 
 ## Decision
 
-Source transactions freeze the complete eligible audience in one statement, prepare immutable event bytes, destination envelopes and original match proofs, and save all responsibilities before committing. Thread uses its own existing transaction and lock direction. The [capture design](../../../../docs/design/webhook-capture.md) defines the byte, proof and scheduling formats.
+Source transactions freeze the complete eligible audience in one statement, prepare immutable event bytes, plaintext destination snapshots and original match proofs, and save all responsibilities before committing. Thread uses its own existing transaction and lock direction. The [capture design](../../../../docs/design/webhook-capture.md) defines the byte, proof and scheduling formats. The [plaintext storage decision](../simplification/2026-11-08-webhook-plaintext-storage.md) replaces the initially encrypted target snapshot without changing its independent lifetime or identity.
 
 ## Alternatives
 

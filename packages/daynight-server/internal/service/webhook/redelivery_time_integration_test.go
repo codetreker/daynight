@@ -89,7 +89,7 @@ func TestRedeliveryRechecksDeadlinesAfterReadWait(t *testing.T) {
 				}
 			}
 			gate := &redeliveryClockGate{WebhookTransactions: f.db, entered: make(chan struct{}), release: make(chan struct{})}
-			svc := &webhook.Service{DB: gate, Keys: f.capture.Keys, DispatchEnabled: true}
+			svc := &webhook.Service{DB: gate, DispatchEnabled: true}
 			var originalTicket int64
 			if err := f.db.Pool.QueryRow(f.ctx, `SELECT queue_order FROM webhook_deliveries WHERE id=$1`, r.delivery).Scan(&originalTicket); err != nil {
 				t.Fatal(err)

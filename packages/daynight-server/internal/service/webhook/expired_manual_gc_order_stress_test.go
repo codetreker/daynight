@@ -152,7 +152,7 @@ func TestExpiredManualLocksBeforeRealGCStress(t *testing.T) {
 	manual := &expiredManualLockGate{WebhookTransactions: manualDB, locked: make(chan struct{}), release: make(chan struct{})}
 	var manualRelease sync.Once
 	t.Cleanup(func() { manualRelease.Do(func() { close(manual.release) }) })
-	svc := &webhook.Service{DB: manual, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: manual, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	r := jointRetentionHost(t, f, svc, token, endpoint, delivery)
 	t.Cleanup(func() { manualRelease.Do(func() { close(manual.release) }) })
 	result := r.call("POST", "/redeliveries", r.intent())
@@ -214,7 +214,7 @@ func TestExpiredManualLocksBeforeRealGCStress(t *testing.T) {
 	}
 	// The second request uses an ungated service; the committed close must be
 	// visible to new HTTP snapshots while physical deletion is still paused.
-	plain := jointRetentionHost(t, f, &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}, token, endpoint, delivery)
+	plain := jointRetentionHost(t, f, &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}, token, endpoint, delivery)
 	t.Cleanup(func() { gcRelease.Do(func() { close(gc.resume) }) })
 	retentionReceive(t, plain, plain.call("GET", "", ""), http.StatusNotFound)
 	retentionReceive(t, plain, plain.call("POST", "/redeliveries", plain.intent()), http.StatusNotFound)

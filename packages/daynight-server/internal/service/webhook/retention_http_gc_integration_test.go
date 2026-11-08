@@ -65,7 +65,7 @@ func newJointRetentionHTTPTo(t *testing.T, age time.Duration, destination string
 		if err := f.db.Pool.QueryRow(f.ctx, `SELECT config_version FROM webhook_endpoints WHERE id=$1`, endpoint).Scan(&version); err != nil {
 			t.Fatal(err)
 		}
-		svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+		svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 		m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: destination}}
 		if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 			t.Fatal(err)
@@ -107,7 +107,7 @@ func newJointRetentionHTTPTo(t *testing.T, age time.Duration, destination string
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE sessions SET token_hash=$1 WHERE id=$2`, secret.Hash(token), f.principal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	return jointRetentionHost(t, f, svc, token, endpoint, delivery)
 }
 
@@ -215,7 +215,7 @@ func TestJointHTTPAndRetentionManual(t *testing.T) {
 func TestJointHistorySnapshotAndRealPurge(t *testing.T) {
 	r := newJointRetentionHTTP(t, 30*24*time.Hour-3*time.Second)
 	gate := &gatedHistoryStore{WebhookTransactions: r.svc.DB, entered: make(chan struct{}), resume: make(chan struct{})}
-	gatedSvc := &webhook.Service{DB: gate, Keys: r.f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	gatedSvc := &webhook.Service{DB: gate, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	gatedHost := jointRetentionHost(t, r.f, gatedSvc, r.token, r.endpoint, r.delivery)
 	var release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(gate.resume) }) })
@@ -330,7 +330,7 @@ func testJointHTTPLateAndRetentionLockBarriers(t *testing.T, lateFirst bool) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
@@ -357,7 +357,7 @@ func testJointHTTPLateAndRetentionLockBarriers(t *testing.T, lateFirst bool) {
 	gcDB, gcPID := singleBarrierStore(t, f, "t06_gc_lock")
 	observer := &observeLateTransactions{base: runnerDB, committed: make(chan struct{}, 1)}
 	controlledAt := created.CreatedAt.Add(40 * 24 * time.Hour)
-	clockService := &webhook.Service{DB: jointHistoryClock{f.db, controlledAt}, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	clockService := &webhook.Service{DB: jointHistoryClock{f.db, controlledAt}, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	clockAPI := jointRetentionHost(t, f, clockService, token, endpoint, delivery)
 	late := &lateAttemptBarrier{base: observer, locked: make(chan struct{}), release: make(chan struct{}), at: controlledAt}
 	runner := webhook.NewRunner(late, svc, true)

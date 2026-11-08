@@ -188,7 +188,7 @@ func TestRedeliveryDependencyFailuresDoNotPartiallyCommit(t *testing.T) {
 			r := newRetentionHTTP(t, false)
 			before := redeliveryState(t, r)
 			db := &redeliveryFaultDB{WebhookTransactions: r.f.db, phase: phase}
-			svc := &webhook.Service{DB: db, Keys: r.f.capture.Keys, DispatchEnabled: true}
+			svc := &webhook.Service{DB: db, DispatchEnabled: true}
 			intent := webhook.Redelivery{OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: r.f.principal.UserID, IfVersion: 1, IfGeneration: 1, RequestSHA256: strings.Repeat("a", 64)}
 			_, err := svc.Redeliver(r.f.ctx, r.f.principal, webhook.Owner{Kind: "personal", ID: r.f.principal.UserID}, r.endpoint, r.delivery, intent)
 			if phase == "history_required" {
@@ -210,7 +210,7 @@ func TestRedeliveryUnknownOutcomeAndCommittedResponseFailure(t *testing.T) {
 			r := newRetentionHTTP(t, false)
 			before := redeliveryState(t, r)
 			db := &redeliveryFaultDB{WebhookTransactions: r.f.db, phase: phase}
-			svc := &webhook.Service{DB: db, Keys: r.f.capture.Keys, DispatchEnabled: true}
+			svc := &webhook.Service{DB: db, DispatchEnabled: true}
 			intent := webhook.Redelivery{OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: r.f.principal.UserID, IfVersion: 1, IfGeneration: 1, RequestSHA256: strings.Repeat("a", 64)}
 			_, err := svc.Redeliver(r.f.ctx, r.f.principal, webhook.Owner{Kind: "personal", ID: r.f.principal.UserID}, r.endpoint, r.delivery, intent)
 			var failure *model.Fault

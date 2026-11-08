@@ -14,10 +14,11 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/google/uuid"
 )
 
-// destinationDocument is the canonical v1 plaintext stored under encryption.
+// destinationDocument is the canonical v1 destination configuration.
 type destinationDocument struct {
 	Kind           string `json:"kind"`
 	AdapterVersion string `json:"adapterVersion"`
@@ -39,17 +40,51 @@ func encodeDestination(d Destination) ([]byte, error) {
 	return b, nil
 }
 func decodeDestination(b []byte) (Destination, error) {
-	var v destinationDocument
-	if err := json.Unmarshal(b, &v); err != nil {
+	if len(b) == 0 || len(b) > 256*1024 {
+		return Destination{}, fmt.Errorf("invalid stored destination size")
+	}
+	fields, err := jsonobject.Decode(b, "stored destination", "kind", "adapterVersion", "configuration")
+	if err != nil {
 		return Destination{}, fmt.Errorf("decode stored destination: %w", err)
 	}
-	if v.Kind != "http" || v.AdapterVersion != "1" {
+	_, err = jsonobject.Decode(fields["configuration"], "stored destination configuration", "url")
+	if err != nil {
+		return Destination{}, fmt.Errorf("decode stored destination: %w", err)
+	}
+	var document destinationDocument
+	if err := json.Unmarshal(b, &document); err != nil {
+		return Destination{}, fmt.Errorf("decode stored destination: %w", err)
+	}
+	d := Destination{Kind: document.Kind, AdapterVersion: document.AdapterVersion, URL: document.Configuration.URL}
+	if d.Kind != "http" || d.AdapterVersion != "1" {
 		return Destination{}, fmt.Errorf("invalid stored destination")
 	}
-	if _, err := core.ValidateURL(v.Configuration.URL); err != nil {
+	if _, err := core.ValidateURL(d.URL); err != nil {
 		return Destination{}, fmt.Errorf("invalid stored destination: %w", err)
 	}
-	return Destination{Kind: v.Kind, AdapterVersion: v.AdapterVersion, URL: v.Configuration.URL}, nil
+	return d, nil
+}
+
+func decodeEndpointDestination(e wm.Endpoint) (Destination, error) {
+	d, err := decodeDestination(e.DestinationConfiguration)
+	if err != nil {
+		return Destination{}, err
+	}
+	if d.Kind != e.DestinationKind || d.AdapterVersion != e.AdapterVersion || destinationOrigin(d.URL) != e.Origin {
+		return Destination{}, fmt.Errorf("stored endpoint destination metadata mismatch")
+	}
+	return d, nil
+}
+
+func decodeDeliveryDestination(e store.WebhookDelivery) (Destination, error) {
+	d, err := decodeDestination(e.DestinationConfiguration)
+	if err != nil {
+		return Destination{}, err
+	}
+	if d.Kind != e.DestinationKind || e.AdapterVersion != 1 || destinationOrigin(d.URL) != e.DestinationOrigin {
+		return Destination{}, fmt.Errorf("stored delivery destination metadata mismatch")
+	}
+	return d, nil
 }
 
 func (s *Service) random() io.Reader {
@@ -279,15 +314,8 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			if e != nil {
 				return e
 			}
-			ep.DestinationCiphertext, e = s.encrypt(document, binding(ep, "endpoint-current", "1"))
-			if e != nil {
-				return e
-			}
-			cipher, e := s.encrypt(secret, binding(ep, "signing-key", keyID))
-			if e != nil {
-				return e
-			}
-			keys = []wm.SigningKey{{EndpointID: id, ID: keyID, Ciphertext: cipher, CreatedAt: now, Slot: "current"}}
+			ep.DestinationConfiguration = document
+			keys = []wm.SigningKey{{EndpointID: id, ID: keyID, Secret: secret, CreatedAt: now, Slot: "current"}}
 			changed = true
 		case "endpoint.update":
 			if m.Name != nil && *m.Name != ep.Name {
@@ -301,43 +329,34 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 				ep.Enabled = *m.Enabled
 				changed = true
 			}
-			original, e := s.decrypt(ep.DestinationCiphertext, binding(ep, "endpoint-current", version(ep.DestinationRevision)))
-			if e != nil {
-				return e
-			}
-			originalDestination, e := decodeDestination(original)
-			if e != nil {
-				return e
-			}
-			newURL := originalDestination.URL
-			if m.Destination != nil && (m.Destination.URL != newURL || m.Destination.Kind != ep.DestinationKind || m.Destination.AdapterVersion != ep.AdapterVersion) {
-				if !s.ConfigurationExpansionAvailable {
-					return fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
-				}
-				if ep.DestinationRevision == math.MaxInt64 {
-					return fault("version_exhausted", "Destination version exhausted.")
-				}
-				ep.DestinationRevision++
-				ep.DestinationKind = m.Destination.Kind
-				ep.AdapterVersion = m.Destination.AdapterVersion
-				ep.Origin = destinationOrigin(m.Destination.URL)
-				newURL = m.Destination.URL
-				changed = true
-			}
-			if changed {
-				document, e := encodeDestination(Destination{Kind: ep.DestinationKind, AdapterVersion: ep.AdapterVersion, URL: newURL})
+			if m.Destination != nil {
+				originalDestination, e := decodeEndpointDestination(ep)
 				if e != nil {
 					return e
 				}
-				ep.DestinationCiphertext, e = s.encrypt(document, binding(ep, "endpoint-current", version(ep.DestinationRevision)))
-				if e != nil {
-					return e
+				if *m.Destination != originalDestination {
+					if !s.ConfigurationExpansionAvailable {
+						return fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
+					}
+					if ep.DestinationRevision == math.MaxInt64 {
+						return fault("version_exhausted", "Destination version exhausted.")
+					}
+					document, e := encodeDestination(*m.Destination)
+					if e != nil {
+						return e
+					}
+					ep.DestinationRevision++
+					ep.DestinationKind = m.Destination.Kind
+					ep.AdapterVersion = m.Destination.AdapterVersion
+					ep.Origin = destinationOrigin(m.Destination.URL)
+					ep.DestinationConfiguration = document
+					changed = true
 				}
 			}
 		case "endpoint.delete":
 			ep.DeletedAt = &now
 			ep.Enabled = false
-			ep.DestinationCiphertext = nil
+			ep.DestinationConfiguration = nil
 			ep.Name, ep.DestinationKind, ep.AdapterVersion, ep.Origin = "", "", "", ""
 			ep.ActiveKeyID = ""
 			keys = nil
@@ -371,11 +390,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			if _, e = io.ReadFull(s.random(), secret); e != nil {
 				return e
 			}
-			cipher, e := s.encrypt(secret, binding(ep, "signing-key", keyID))
-			if e != nil {
-				return e
-			}
-			keys = append(keep, wm.SigningKey{EndpointID: ep.ID, ID: keyID, Ciphertext: cipher, CreatedAt: now, Slot: "current"})
+			keys = append(keep, wm.SigningKey{EndpointID: ep.ID, ID: keyID, Secret: secret, CreatedAt: now, Slot: "current"})
 			ep.ActiveKeyID = keyID
 			changed = true
 		default:
@@ -395,31 +410,6 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			}
 			ep.ConfigVersion++
 			ep.UpdatedAt = now
-			if !deleted {
-				if m.Kind != "endpoint.update" {
-					plain, e := s.decrypt(oldEP.DestinationCiphertext, binding(oldEP, "endpoint-current", version(oldEP.DestinationRevision)))
-					if e != nil {
-						return e
-					}
-					ep.DestinationCiphertext, e = s.encrypt(plain, binding(ep, "endpoint-current", version(ep.DestinationRevision)))
-					if e != nil {
-						return e
-					}
-				}
-				for i, k := range keys {
-					if k.ID == ep.ActiveKeyID && m.Kind == "signing.rotate" {
-						continue
-					}
-					plain, e := s.decrypt(k.Ciphertext, binding(oldEP, "signing-key", k.ID))
-					if e != nil {
-						return e
-					}
-					keys[i].Ciphertext, e = s.encrypt(plain, binding(ep, "signing-key", k.ID))
-					if e != nil {
-						return e
-					}
-				}
-			}
 		}
 		credential, e := sc.LockCredential(ctx, p)
 		if e != nil {

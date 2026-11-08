@@ -12,10 +12,7 @@ CREATE TABLE webhook_endpoints (
     adapter_version bigint,
     configuration_schema_version smallint,
     destination_origin text,
-    destination_envelope_version smallint,
-    destination_master_key_id text,
-    destination_nonce bytea,
-    destination_ciphertext bytea,
+    destination_configuration bytea,
     active_key_id uuid,
     created_at timestamptz NOT NULL CHECK (isfinite(created_at)),
     updated_at timestamptz NOT NULL CHECK (isfinite(updated_at)),
@@ -23,33 +20,25 @@ CREATE TABLE webhook_endpoints (
     CHECK (
         (deleted_at IS NULL AND name IS NOT NULL AND char_length(name) BETWEEN 1 AND 120
             AND destination_kind = 'http' AND adapter_version = 1 AND configuration_schema_version = 1
-            AND destination_origin IS NOT NULL AND destination_envelope_version = 1
-            AND destination_master_key_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
-            AND octet_length(destination_nonce) = 12 AND octet_length(destination_ciphertext) >= 16
+            AND destination_origin IS NOT NULL AND destination_configuration IS NOT NULL
+            AND octet_length(destination_configuration) BETWEEN 1 AND 262144
             AND active_key_id IS NOT NULL
             AND destination_kind IS NOT NULL AND adapter_version IS NOT NULL
-            AND configuration_schema_version IS NOT NULL AND destination_envelope_version IS NOT NULL
-            AND destination_master_key_id IS NOT NULL AND destination_nonce IS NOT NULL
-            AND destination_ciphertext IS NOT NULL)
+            AND configuration_schema_version IS NOT NULL)
         OR
         (deleted_at IS NOT NULL AND NOT enabled AND name IS NULL AND destination_kind IS NULL
             AND adapter_version IS NULL AND configuration_schema_version IS NULL AND destination_origin IS NULL
-            AND destination_envelope_version IS NULL AND destination_master_key_id IS NULL
-            AND destination_nonce IS NULL AND destination_ciphertext IS NULL AND active_key_id IS NULL)
+            AND destination_configuration IS NULL AND active_key_id IS NULL)
     )
 );
 CREATE INDEX webhook_endpoints_owner ON webhook_endpoints (owner_kind, owner_id, created_at, id) WHERE deleted_at IS NULL;
 CREATE INDEX webhook_endpoints_deleted ON webhook_endpoints (deleted_at, id) WHERE deleted_at IS NOT NULL;
-CREATE INDEX webhook_endpoints_master_key ON webhook_endpoints (destination_master_key_id, id) WHERE destination_master_key_id IS NOT NULL;
 
 CREATE TABLE webhook_signing_keys (
     id uuid PRIMARY KEY,
     endpoint_id uuid NOT NULL,
     slot text NOT NULL CHECK (slot IN ('current', 'overlap')),
-    envelope_version smallint NOT NULL CHECK (envelope_version = 1),
-    master_key_id text NOT NULL CHECK (master_key_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
-    nonce bytea NOT NULL CHECK (octet_length(nonce) = 12),
-    ciphertext bytea NOT NULL CHECK (octet_length(ciphertext) = 48),
+    secret bytea NOT NULL CHECK (octet_length(secret) = 32),
     created_at timestamptz NOT NULL CHECK (isfinite(created_at)),
     overlap_started_at timestamptz CHECK (isfinite(overlap_started_at)),
     overlap_until timestamptz CHECK (isfinite(overlap_until)),
@@ -58,7 +47,6 @@ CREATE TABLE webhook_signing_keys (
         OR (slot = 'overlap' AND overlap_started_at IS NOT NULL AND overlap_until IS NOT NULL
             AND overlap_until > overlap_started_at AND overlap_until <= overlap_started_at + interval '7 days'))
 );
-CREATE INDEX webhook_signing_keys_master_key ON webhook_signing_keys (master_key_id, endpoint_id, id);
 
 CREATE TABLE webhook_operations (
     owner_kind text NOT NULL CHECK (owner_kind IN ('personal', 'team')),

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"io"
 	"log/slog"
@@ -20,7 +19,6 @@ import (
 	httpwebhook "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
 	identity "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -70,11 +68,6 @@ func TestHTTPCommittedWriteWhenResponseAuthorizationChanges(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			master := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
-			keys, err := secretbox.Parse([]byte(`{"activeKeyId":"main","keys":{"main":"` + master + `"}}`))
-			if err != nil {
-				t.Fatal(err)
-			}
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
 			identityService := identity.New(f.db, nil, testOrigin+"/auth/callback")
@@ -84,7 +77,7 @@ func TestHTTPCommittedWriteWhenResponseAuthorizationChanges(t *testing.T) {
 			}
 			gate := &postCommitGate{WebhookTransactions: f.db, completed: make(chan completedWrite, 1), resume: make(chan struct{})}
 			mux := http.NewServeMux()
-			httpwebhook.NewRoutes(&service.Service{DB: gate, Keys: keys, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
+			httpwebhook.NewRoutes(&service.Service{DB: gate, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
 			server := httptest.NewServer(mux)
 			defer server.Close()
 			defer func() {

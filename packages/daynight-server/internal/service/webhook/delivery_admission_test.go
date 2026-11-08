@@ -72,21 +72,14 @@ func admissionFixture(t *testing.T) (*Runner, *admissionScope, time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := &Service{Keys: keyring(t, "old")}
+	service := &Service{}
 	owner := wm.Owner{Kind: "personal", ID: "11111111-1111-4111-8111-111111111111"}
 	ep := wm.Endpoint{ID: "22222222-2222-4222-8222-222222222222", Owner: owner, Enabled: true, DestinationRevision: 1, ActiveKeyID: "33333333-3333-4333-8333-333333333333"}
 	destination, err := encodeDestination(Destination{Kind: "http", AdapterVersion: "1", URL: "https://example.com/hook"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := service.encrypt(destination, binding(ep, "delivery-destination", "44444444-4444-4444-8444-444444444444"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := service.encrypt(make([]byte, 32), binding(ep, "signing-key", ep.ActiveKeyID))
-	if err != nil {
-		t.Fatal(err)
-	}
+	target, key := destination, make([]byte, 32)
 	match := store.WebhookCapturedMatch{SubscriptionID: "55555555-5555-4555-8555-555555555555", BindingID: "66666666-6666-4666-8666-666666666666", ProjectID: "77777777-7777-4777-8777-777777777777", EventType: "task.paused", AuthorizationEpoch: 1}
 	digest, err := MatchDigest([]store.WebhookCapturedMatch{match})
 	if err != nil {
@@ -100,8 +93,8 @@ func admissionFixture(t *testing.T) (*Runner, *admissionScope, time.Time) {
 	for i := range schedule {
 		schedule[i] = now.Add(time.Duration(i) * time.Minute)
 	}
-	d := store.WebhookDelivery{ID: "44444444-4444-4444-8444-444444444444", EventID: "a0be4d96-fb33-41ba-a7bd-7885c1e94247", EndpointID: ep.ID, Owner: owner, EventType: match.EventType, ProjectID: match.ProjectID, OccurredAt: now, OriginalMatchCount: 1, OriginalMatchSHA256: digest, PolicyVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: 1, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationCiphertext: target, RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte("[]"), Body: body, OriginalBodyBytes: len(body), BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: now.Add(72 * time.Hour), PayloadExpiresAt: now.Add(168 * time.Hour), AutomaticOpen: true, Generation: generation, State: "leased", Trigger: "automatic", ExpiresAt: now.Add(72 * time.Hour), LeaseToken: &token, LeaseClaimedAt: &now, LeaseUntil: &until, LeaseGeneration: &generation}
-	scope := &admissionScope{d: d, now: now, s: store.WebhookAdmissionSources{Event: store.WebhookCapturedEvent{ID: d.EventID, ProjectID: d.ProjectID, EventType: d.EventType, OccurredAt: now}, Endpoint: ep, SigningKeys: []wm.SigningKey{{ID: ep.ActiveKeyID, EndpointID: ep.ID, Slot: "current", Ciphertext: key}}, Matches: []store.WebhookAdmissionMatch{{WebhookCapturedMatch: match, Continuous: true}}, TaskPresent: true, ProjectEligible: true, EndpointPresent: true}}
+	d := store.WebhookDelivery{ID: "44444444-4444-4444-8444-444444444444", EventID: "a0be4d96-fb33-41ba-a7bd-7885c1e94247", EndpointID: ep.ID, Owner: owner, EventType: match.EventType, ProjectID: match.ProjectID, OccurredAt: now, OriginalMatchCount: 1, OriginalMatchSHA256: digest, PolicyVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: 1, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationConfiguration: target, DestinationOrigin: "https://example.com", RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte("[]"), Body: body, OriginalBodyBytes: len(body), BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: now.Add(72 * time.Hour), PayloadExpiresAt: now.Add(168 * time.Hour), AutomaticOpen: true, Generation: generation, State: "leased", Trigger: "automatic", ExpiresAt: now.Add(72 * time.Hour), LeaseToken: &token, LeaseClaimedAt: &now, LeaseUntil: &until, LeaseGeneration: &generation}
+	scope := &admissionScope{d: d, now: now, s: store.WebhookAdmissionSources{Event: store.WebhookCapturedEvent{ID: d.EventID, ProjectID: d.ProjectID, EventType: d.EventType, OccurredAt: now}, Endpoint: ep, SigningKeys: []wm.SigningKey{{ID: ep.ActiveKeyID, EndpointID: ep.ID, Slot: "current", Secret: key}}, Matches: []store.WebhookAdmissionMatch{{WebhookCapturedMatch: match, Continuous: true}}, TaskPresent: true, ProjectEligible: true, EndpointPresent: true}}
 	r := NewRunner(admissionDB{scope: scope, outcome: store.TransactionCommitted}, service, true)
 	return r, scope, now
 }
@@ -160,7 +153,7 @@ func TestAdmissionDoesNotConfuseInternalFailureWithRevocation(t *testing.T) {
 		t.Fatalf("permission failure: %v %v %s", a, err, s.d.State)
 	}
 	r, s, _ = admissionFixture(t)
-	r.service.Keys = nil
+	s.s.SigningKeys[0].Secret = nil
 	if a, err := r.admit(context.Background(), s.d); err == nil || a != nil || s.d.State != "leased" || len(s.a) != 0 {
 		t.Fatalf("missing key: %v %v %s", a, err, s.d.State)
 	}
@@ -238,7 +231,7 @@ func TestAdmissionRejectsUnsupportedAndDamagedPayloads(t *testing.T) {
 	for _, damage := range []func(*admissionScope){
 		func(s *admissionScope) { s.d.RenderVersion = 2 },
 		func(s *admissionScope) { s.d.Body = append([]byte(nil), s.d.Body...); s.d.Body[0] ^= 1 },
-		func(s *admissionScope) { s.d.DestinationCiphertext = []byte("invalid envelope") },
+		func(s *admissionScope) { s.d.DestinationConfiguration = []byte("invalid destination configuration") },
 		func(s *admissionScope) { s.s.SigningKeys = nil },
 	} {
 		r, s, _ := admissionFixture(t)

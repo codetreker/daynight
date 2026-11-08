@@ -63,7 +63,7 @@ func TestPostgresOtherActorConflictAfterDemotion(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := &afterWriteGate{WebhookTransactions: f.db, completed: make(chan struct{}), resume: make(chan struct{})}
-	svc := &Service{DB: gate, Keys: f.svc.Keys}
+	svc := &Service{DB: gate}
 	out := make(chan mutationOutcome, 1)
 	go func() { r, e := svc.Mutate(f.ctx, probe, owner, contender); out <- mutationOutcome{r, e} }()
 	waitBlocked(t, f.ctx, aux, pid)

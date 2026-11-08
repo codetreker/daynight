@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -24,7 +23,6 @@ import (
 	httpwebhook "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
 	identity "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -79,11 +77,6 @@ func (c *lostWebhookCommit) Read(out []byte) (int, error) {
 func TestWebhookHTTPCommitReplyLostAfterCommandComplete(t *testing.T) {
 	f := newHTTPFixture(t)
 	actor := f.actor(t)
-	master := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"main","keys":{"main":"` + master + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var lost atomic.Bool
 	cfg := f.db.Pool.Config().Copy()
 	cfg.ConnConfig.TLSConfig = nil
@@ -107,7 +100,7 @@ func TestWebhookHTTPCommitReplyLostAfterCommandComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	httpwebhook.NewRoutes(&service.Service{DB: &postgres.Store{Pool: pool}, Keys: keys, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
+	httpwebhook.NewRoutes(&service.Service{DB: &postgres.Store{Pool: pool}, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
 	faultServer := httptest.NewServer(mux)
 	defer faultServer.Close()
 	normalServer := f.server

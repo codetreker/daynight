@@ -37,7 +37,7 @@ func ageRetention(t *testing.T, f *captureFixture, id string, age time.Duration)
 func TestRetentionPayloadAndHistory(t *testing.T) {
 	f, id := retentionCapture(t)
 	var body, hash, target []byte
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT body,body_sha256,destination_ciphertext FROM webhook_deliveries WHERE id=$1`, id).Scan(&body, &hash, &target); err != nil {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT body,body_sha256,destination_configuration FROM webhook_deliveries WHERE id=$1`, id).Scan(&body, &hash, &target); err != nil {
 		t.Fatal(err)
 	}
 	r := webhook.NewRetention(f.db)
@@ -53,7 +53,7 @@ func TestRetentionPayloadAndHistory(t *testing.T) {
 	var removed *time.Time
 	var reason *string
 	var afterBody, afterHash, afterTarget []byte
-	if err = f.db.Pool.QueryRow(f.ctx, `SELECT body,body_sha256,destination_ciphertext,payload_removed_at,payload_removed_reason FROM webhook_deliveries WHERE id=$1`, id).Scan(&afterBody, &afterHash, &afterTarget, &removed, &reason); err != nil {
+	if err = f.db.Pool.QueryRow(f.ctx, `SELECT body,body_sha256,destination_configuration,payload_removed_at,payload_removed_reason FROM webhook_deliveries WHERE id=$1`, id).Scan(&afterBody, &afterHash, &afterTarget, &removed, &reason); err != nil {
 		t.Fatal(err)
 	}
 	if len(body) == 0 || afterBody != nil || removed == nil || reason == nil || *reason != "expired" || !bytes.Equal(hash, afterHash) || !bytes.Equal(target, afterTarget) {
@@ -100,7 +100,7 @@ func TestRetentionSharedEventProtectsActiveOwner(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1`, f.project).Scan(&team); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	name, enabled := "team receiver", true
 	m := webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/hook"}, HasSubscriptions: true, Subscriptions: []corewebhook.SubscriptionInput{{ProjectID: f.project, EventTypes: []string{"task.created"}}}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "team", ID: team}, m); err != nil {
@@ -196,7 +196,7 @@ func TestRetentionOriginalDeadlinesWithDeliveryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+	svc := &webhook.Service{DB: f.db}
 	runner := webhook.NewRunner(f.db, svc, false)
 	if err = runner.Start(context.Background()); err != nil {
 		t.Fatal(err)

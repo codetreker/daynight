@@ -77,7 +77,7 @@ func TestRetentionConsistentOriginalDeadlineBoundaries(t *testing.T) {
 			}
 			gc := webhook.NewRetention(f.db)
 			if tc.mode == "automatic" || tc.mode == "payload" {
-				svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+				svc := &webhook.Service{DB: f.db}
 				runner := webhook.NewRunner(f.db, svc, false)
 				if err = runner.Start(context.Background()); err != nil {
 					t.Fatal(err)
@@ -134,7 +134,7 @@ func TestRetentionConsistentOriginalDeadlineBoundaries(t *testing.T) {
 			var removed *time.Time
 			var reason *string
 			var afterAutomatic, afterPayload time.Time
-			if err = f.db.Pool.QueryRow(f.ctx, `SELECT body,body_sha256,destination_ciphertext,payload_removed_at,payload_removed_reason,automatic_expires_at,payload_expires_at FROM webhook_deliveries WHERE id=$1`, id).Scan(&afterBody, &afterHash, &target, &removed, &reason, &afterAutomatic, &afterPayload); err != nil {
+			if err = f.db.Pool.QueryRow(f.ctx, `SELECT body,body_sha256,destination_configuration,payload_removed_at,payload_removed_reason,automatic_expires_at,payload_expires_at FROM webhook_deliveries WHERE id=$1`, id).Scan(&afterBody, &afterHash, &target, &removed, &reason, &afterAutomatic, &afterPayload); err != nil {
 				t.Fatal(err)
 			}
 			shouldRemove := tc.mode == "metadata" || tc.mode == "payload" && tc.expired

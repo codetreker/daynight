@@ -6,13 +6,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,11 +88,6 @@ func TestWebhookProductionMaintenancePauseAndACL(t *testing.T) {
 	c.StorageRoot = filepath.Join(testStorageRoot(t), "storage")
 	c.ShutdownTimeout = 5 * time.Second
 	c.WebhookEnabled = true
-	c.WebhookKeyringFile = filepath.Join(filepath.Dir(c.StorageRoot), "keys.json")
-	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	if err := os.WriteFile(c.WebhookKeyringFile, []byte(`{"activeKeyId":"primary","keys":{"primary":"`+key+`"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	db, err := postgres.Open(ctx, c.DatabaseURL)
 	if err != nil {
 		t.Fatal(err)

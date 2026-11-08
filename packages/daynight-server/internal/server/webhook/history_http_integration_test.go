@@ -19,14 +19,13 @@ func insertSummaryDelivery(t *testing.T, f *httpFixture, endpoint, delivery, eve
 INSERT INTO webhook_deliveries
 (id,event_id,endpoint_id,owner_kind,owner_id,event_type,project_id,occurred_at,
  original_match_count,original_match_sha256,policy_version,destination_revision,destination_kind,
- adapter_version,render_version,configuration_schema_version,destination_origin,destination_envelope_version,
- destination_master_key_id,destination_nonce,destination_ciphertext,request_method,request_media_type,
+ adapter_version,render_version,configuration_schema_version,destination_origin,destination_configuration,request_method,request_media_type,
  deterministic_headers_json,body,original_body_bytes,body_sha256,automatic_schedule_at,automatic_expires_at,
  payload_expires_at,automatic_plan_cursor,automatic_open,automatic_attempt_count,manual_operation_count,
  attempt_sequence,generation,state,trigger,expires_at,last_activity_at,metadata_expires_at,purging_at)
 SELECT $1,$2,e.id,e.owner_kind,e.owner_id,'task.created',$3,now(),1,sha256('proof'::bytea),1,
  e.destination_revision,e.destination_kind,e.adapter_version,1,e.configuration_schema_version,e.destination_origin,
- e.destination_envelope_version,e.destination_master_key_id,e.destination_nonce,e.destination_ciphertext,
+ e.destination_configuration,
  'POST','application/cloudevents+json',convert_to('[]','UTF8'),convert_to('x','UTF8'),1,sha256(convert_to('x','UTF8')),
  ARRAY(SELECT now()+n*interval '1 minute' FROM generate_series(0,9) n),now()+interval '72 hours',
  now()+interval '168 hours',1,false,1,0,1,1,'failed','automatic',now()+interval '72 hours',now(),

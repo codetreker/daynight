@@ -3,7 +3,6 @@ package project
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"testing"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	corewebhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -44,12 +42,7 @@ func TestWebhookSourceMatrixAndSharedCreatorIndependence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"test","keys":{"test":"` + key + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc := &webhookservice.Service{DB: f.database, Keys: keys, ConfigurationExpansionAvailable: true}
+	svc := &webhookservice.Service{DB: f.database, ConfigurationExpansionAvailable: true}
 	create := func(o webhookservice.Owner, enabled bool) (string, string) {
 		t.Helper()
 		name := "matrix"

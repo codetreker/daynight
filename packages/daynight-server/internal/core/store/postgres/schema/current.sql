@@ -708,10 +708,7 @@ CREATE TABLE "webhook_deliveries" (
     "render_version" smallint NOT NULL,
     "configuration_schema_version" smallint NOT NULL,
     "destination_origin" "text" NOT NULL,
-    "destination_envelope_version" smallint NOT NULL,
-    "destination_master_key_id" "text" NOT NULL,
-    "destination_nonce" "bytea" NOT NULL,
-    "destination_ciphertext" "bytea" NOT NULL,
+    "destination_configuration" "bytea" NOT NULL,
     "request_method" "text" NOT NULL,
     "request_media_type" "text" NOT NULL,
     "deterministic_headers_json" "bytea" NOT NULL,
@@ -757,11 +754,8 @@ CREATE TABLE "webhook_deliveries" (
     CONSTRAINT "webhook_deliveries_check1" CHECK ((("policy_version" <> 1) OR (("automatic_schedule_at"[1] = "occurred_at") AND ("automatic_schedule_at"[10] < "automatic_expires_at") AND ("automatic_expires_at" = ("occurred_at" + '72:00:00'::interval)) AND ("payload_expires_at" = ("occurred_at" + '168:00:00'::interval))))),
     CONSTRAINT "webhook_deliveries_check2" CHECK (((("lease_token" IS NULL) AND ("lease_claimed_at" IS NULL) AND ("lease_until" IS NULL) AND ("lease_generation" IS NULL) AND ("lease_plan_slot" IS NULL) AND ("current_attempt_id" IS NULL) AND ("state" <> 'leased'::"text")) OR (("lease_token" IS NOT NULL) AND ("lease_claimed_at" IS NOT NULL) AND ("lease_until" IS NOT NULL) AND ("lease_until" > "lease_claimed_at") AND ("lease_generation" IS NOT NULL) AND ("lease_generation" = "generation") AND ("state" = 'leased'::"text")))),
     CONSTRAINT "webhook_deliveries_configuration_schema_version_check" CHECK (("configuration_schema_version" = 1)),
-    CONSTRAINT "webhook_deliveries_destination_ciphertext_check" CHECK (("octet_length"("destination_ciphertext") >= 16)),
-    CONSTRAINT "webhook_deliveries_destination_envelope_version_check" CHECK (("destination_envelope_version" = 1)),
+    CONSTRAINT "webhook_deliveries_destination_configuration_check" CHECK ((("octet_length"("destination_configuration") >= 1) AND ("octet_length"("destination_configuration") <= 262144))),
     CONSTRAINT "webhook_deliveries_destination_kind_check" CHECK (("destination_kind" = 'http'::"text")),
-    CONSTRAINT "webhook_deliveries_destination_master_key_id_check" CHECK (("destination_master_key_id" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'::"text")),
-    CONSTRAINT "webhook_deliveries_destination_nonce_check" CHECK (("octet_length"("destination_nonce") = 12)),
     CONSTRAINT "webhook_deliveries_destination_origin_check" CHECK (("octet_length"("destination_origin") > 0)),
     CONSTRAINT "webhook_deliveries_destination_revision_check" CHECK (("destination_revision" > 0)),
     CONSTRAINT "webhook_deliveries_deterministic_headers_json_check" CHECK (("deterministic_headers_json" = "convert_to"('[]'::"text", 'UTF8'::"name"))),
@@ -829,15 +823,12 @@ CREATE TABLE "webhook_endpoints" (
     "adapter_version" bigint,
     "configuration_schema_version" smallint,
     "destination_origin" "text",
-    "destination_envelope_version" smallint,
-    "destination_master_key_id" "text",
-    "destination_nonce" "bytea",
-    "destination_ciphertext" "bytea",
+    "destination_configuration" "bytea",
     "active_key_id" "uuid",
     "created_at" timestamp with time zone NOT NULL,
     "updated_at" timestamp with time zone NOT NULL,
     "deleted_at" timestamp with time zone,
-    CONSTRAINT "webhook_endpoints_check" CHECK (((("deleted_at" IS NULL) AND ("name" IS NOT NULL) AND (("char_length"("name") >= 1) AND ("char_length"("name") <= 120)) AND ("destination_kind" = 'http'::"text") AND ("adapter_version" = 1) AND ("configuration_schema_version" = 1) AND ("destination_origin" IS NOT NULL) AND ("destination_envelope_version" = 1) AND ("destination_master_key_id" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'::"text") AND ("octet_length"("destination_nonce") = 12) AND ("octet_length"("destination_ciphertext") >= 16) AND ("active_key_id" IS NOT NULL) AND ("destination_kind" IS NOT NULL) AND ("adapter_version" IS NOT NULL) AND ("configuration_schema_version" IS NOT NULL) AND ("destination_envelope_version" IS NOT NULL) AND ("destination_master_key_id" IS NOT NULL) AND ("destination_nonce" IS NOT NULL) AND ("destination_ciphertext" IS NOT NULL)) OR (("deleted_at" IS NOT NULL) AND (NOT "enabled") AND ("name" IS NULL) AND ("destination_kind" IS NULL) AND ("adapter_version" IS NULL) AND ("configuration_schema_version" IS NULL) AND ("destination_origin" IS NULL) AND ("destination_envelope_version" IS NULL) AND ("destination_master_key_id" IS NULL) AND ("destination_nonce" IS NULL) AND ("destination_ciphertext" IS NULL) AND ("active_key_id" IS NULL)))),
+    CONSTRAINT "webhook_endpoints_check" CHECK (((("deleted_at" IS NULL) AND ("name" IS NOT NULL) AND (("char_length"("name") >= 1) AND ("char_length"("name") <= 120)) AND ("destination_kind" = 'http'::"text") AND ("adapter_version" = 1) AND ("configuration_schema_version" = 1) AND ("destination_origin" IS NOT NULL) AND ("destination_configuration" IS NOT NULL) AND (("octet_length"("destination_configuration") >= 1) AND ("octet_length"("destination_configuration") <= 262144)) AND ("active_key_id" IS NOT NULL) AND ("destination_kind" IS NOT NULL) AND ("adapter_version" IS NOT NULL) AND ("configuration_schema_version" IS NOT NULL)) OR (("deleted_at" IS NOT NULL) AND (NOT "enabled") AND ("name" IS NULL) AND ("destination_kind" IS NULL) AND ("adapter_version" IS NULL) AND ("configuration_schema_version" IS NULL) AND ("destination_origin" IS NULL) AND ("destination_configuration" IS NULL) AND ("active_key_id" IS NULL)))),
     CONSTRAINT "webhook_endpoints_config_version_check" CHECK (("config_version" > 0)),
     CONSTRAINT "webhook_endpoints_created_at_check" CHECK ("isfinite"("created_at")),
     CONSTRAINT "webhook_endpoints_deleted_at_check" CHECK ("isfinite"("deleted_at")),
@@ -960,21 +951,15 @@ CREATE TABLE "webhook_signing_keys" (
     "id" "uuid" NOT NULL,
     "endpoint_id" "uuid" NOT NULL,
     "slot" "text" NOT NULL,
-    "envelope_version" smallint NOT NULL,
-    "master_key_id" "text" NOT NULL,
-    "nonce" "bytea" NOT NULL,
-    "ciphertext" "bytea" NOT NULL,
+    "secret" "bytea" NOT NULL,
     "created_at" timestamp with time zone NOT NULL,
     "overlap_started_at" timestamp with time zone,
     "overlap_until" timestamp with time zone,
     CONSTRAINT "webhook_signing_keys_check" CHECK (((("slot" = 'current'::"text") AND ("overlap_started_at" IS NULL) AND ("overlap_until" IS NULL)) OR (("slot" = 'overlap'::"text") AND ("overlap_started_at" IS NOT NULL) AND ("overlap_until" IS NOT NULL) AND ("overlap_until" > "overlap_started_at") AND ("overlap_until" <= ("overlap_started_at" + '7 days'::interval))))),
-    CONSTRAINT "webhook_signing_keys_ciphertext_check" CHECK (("octet_length"("ciphertext") = 48)),
     CONSTRAINT "webhook_signing_keys_created_at_check" CHECK ("isfinite"("created_at")),
-    CONSTRAINT "webhook_signing_keys_envelope_version_check" CHECK (("envelope_version" = 1)),
-    CONSTRAINT "webhook_signing_keys_master_key_id_check" CHECK (("master_key_id" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'::"text")),
-    CONSTRAINT "webhook_signing_keys_nonce_check" CHECK (("octet_length"("nonce") = 12)),
     CONSTRAINT "webhook_signing_keys_overlap_started_at_check" CHECK ("isfinite"("overlap_started_at")),
     CONSTRAINT "webhook_signing_keys_overlap_until_check" CHECK ("isfinite"("overlap_until")),
+    CONSTRAINT "webhook_signing_keys_secret_check" CHECK (("octet_length"("secret") = 32)),
     CONSTRAINT "webhook_signing_keys_slot_check" CHECK (("slot" = ANY (ARRAY['current'::"text", 'overlap'::"text"])))
 );
 
@@ -1377,8 +1362,6 @@ CREATE INDEX "webhook_deliveries_history" ON "webhook_deliveries" USING "btree" 
 
 CREATE INDEX "webhook_deliveries_lease" ON "webhook_deliveries" USING "btree" ("lease_until", "id") WHERE ("lease_token" IS NOT NULL);
 
-CREATE INDEX "webhook_deliveries_master_key" ON "webhook_deliveries" USING "btree" ("destination_master_key_id", "id");
-
 CREATE INDEX "webhook_deliveries_metadata_expiry" ON "webhook_deliveries" USING "btree" ("metadata_expires_at", "id");
 
 CREATE INDEX "webhook_deliveries_purging" ON "webhook_deliveries" USING "btree" ("purging_at", "id") WHERE ("purging_at" IS NOT NULL);
@@ -1391,8 +1374,6 @@ CREATE INDEX "webhook_endpoint_waits_owner" ON "webhook_endpoint_waits" USING "b
 
 CREATE INDEX "webhook_endpoints_deleted" ON "webhook_endpoints" USING "btree" ("deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
 
-CREATE INDEX "webhook_endpoints_master_key" ON "webhook_endpoints" USING "btree" ("destination_master_key_id", "id") WHERE ("destination_master_key_id" IS NOT NULL);
-
 CREATE INDEX "webhook_endpoints_owner" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
 
 CREATE INDEX "webhook_events_occurred" ON "webhook_events" USING "btree" ("occurred_at", "id");
@@ -1402,8 +1383,6 @@ CREATE INDEX "webhook_operations_delivery" ON "webhook_operations" USING "btree"
 CREATE INDEX "webhook_operations_endpoint" ON "webhook_operations" USING "btree" ("endpoint_id", "expires_at", "operation_id");
 
 CREATE INDEX "webhook_operations_expiry" ON "webhook_operations" USING "btree" ("expires_at", "owner_kind", "owner_id", "operation_id");
-
-CREATE INDEX "webhook_signing_keys_master_key" ON "webhook_signing_keys" USING "btree" ("master_key_id", "endpoint_id", "id");
 
 CREATE INDEX "webhook_subscriptions_acl" ON "webhook_subscriptions" USING "btree" ("project_id", "owner_kind", "owner_id", "id") WHERE ("deleted_at" IS NULL);
 
