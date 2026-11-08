@@ -200,19 +200,18 @@ func TestGrantLifecycleWaitRechecksExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	var expiry time.Time
-	if err = tx.QueryRow(ctx, `UPDATE oauth_grants SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1 RETURNING expires_at`, grant.ID).Scan(&expiry); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT 1 FROM oauth_grants WHERE id=$1 FOR UPDATE`, grant.ID); err != nil {
 		t.Fatal(err)
 	}
 	lifecycle := core.NewGrantLifecycle(db)
 	done := make(chan error, 1)
 	go func() { _, err := lifecycle.Rotate(ctx, refresh, "client", grant.Resource, admit); done <- err }()
-	select {
-	case err := <-done:
-		t.Fatalf("rotation did not wait for grant lock: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	waitTransferTeamLock(t, ctx, db, "SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at FROM oauth_grants", tx.Conn().PgConn().PID())
+	var expiry time.Time
+	if err = tx.QueryRow(ctx, `UPDATE oauth_grants SET expires_at=clock_timestamp()+interval '20 milliseconds' WHERE id=$1 RETURNING expires_at`, grant.ID).Scan(&expiry); err != nil {
+		t.Fatal(err)
 	}
-	if _, err = tx.Exec(ctx, `SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))+0.05))`, expiry); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.005)`, expiry); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(ctx); err != nil {

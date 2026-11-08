@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -238,9 +239,9 @@ func TestMembershipStorageConstraintsRollbackAndBoundedCleanup(t *testing.T) {
 }
 
 func TestMembershipStorageOperationalFailures(t *testing.T) {
+	s, admin, member, project := membershipFixture(t)
 	for _, phase := range []string{"private-project", "project-member", "project-access", "write-access", "accessible", "members", "target-member", "set-role", "remove", "add", "inspect", "lock", "create", "list-invites", "revoke", "consume"} {
-		t.Run(phase, func(t *testing.T) {
-			s, admin, member, project := membershipFixture(t)
+		if !t.Run(phase, func(t *testing.T) {
 			ctx := context.Background()
 			invite := newStoredInvitation(project, admin, "fault")
 			table := "project_grants"
@@ -250,9 +251,25 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 			if phase == "inspect" || phase == "lock" || phase == "create" || phase == "list-invites" || phase == "revoke" || phase == "consume" {
 				table = "project_invitations"
 			}
-			if _, err := s.Pool.Exec(ctx, "DROP TABLE "+table); err != nil {
+			var tableOID uint32
+			if err := s.Pool.QueryRow(ctx, "SELECT $1::regclass::oid", table).Scan(&tableOID); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := s.Pool.Exec(ctx, "ALTER TABLE "+pgx.Identifier{table}.Sanitize()+" RENAME TO membership_failure_source"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if _, err := s.Pool.Exec(ctx, "ALTER TABLE membership_failure_source RENAME TO "+pgx.Identifier{table}.Sanitize()); err != nil {
+					t.Errorf("restore membership table: %v", err)
+					return
+				}
+				var restored bool
+				if err := s.Pool.QueryRow(ctx, "SELECT to_regclass($1)::oid=$2 AND to_regclass('membership_failure_source') IS NULL", table, tableOID).Scan(&restored); err != nil || !restored {
+					t.Errorf("membership table was not restored: %t %v", restored, err)
+				}
+			})
 			var err error
 			switch phase {
 			case "private-project":
@@ -303,12 +320,14 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 				})
 			}
 			var databaseError *Error
-			if !errors.As(err, &databaseError) || strings.Contains(err.Error(), "SELECT") {
+			var queryError *pgconn.PgError
+			if !errors.As(err, &databaseError) || !errors.As(err, &queryError) || queryError.Code != "42P01" || strings.Contains(err.Error(), "SELECT") {
 				t.Fatalf("missing chain or leaked SQL: %v", err)
 			}
-		})
+		}) {
+			return
+		}
 	}
-	s, admin, _, _ := membershipFixture(t)
 	s.Close()
 	if _, err := s.CreatePrivateProject(context.Background(), admin, uuid.NewString(), "Closed", "https://example.com/closed"); err == nil {
 		t.Fatal("closed pool accepted")
