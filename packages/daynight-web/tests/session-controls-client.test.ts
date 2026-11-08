@@ -15,7 +15,8 @@ function fixture(storage: Storage | null = null, ownerUserId = userId) {
   let receive!: (message: BrowserMessage) => void, paused = false;
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(async (_id, command) => ({ protocol: command.protocol, ...sessionBinding(command), sessionId: command.sessionId, executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'handled', error: null } as SessionOperation)), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _after, next) => { receive = next; return { close: vi.fn() }; }) };
-  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId, isCurrent: () => true, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage }); clients.push(client);
+  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId, isCurrent: () => true, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage });
+  client.setCurrentReadVisible(true); clients.push(client);
   return { api, s, client, pause: () => { paused = true; }, ready: async () => { await client.start(); receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot: s, cursor: 'zero' }); await vi.waitFor(() => expect(client.snapshot().connected).toBe(true)); } };
 }
 it('rejects stale catalogs, unknown settings/commands, and auth pause before any control dispatch', async () => {
