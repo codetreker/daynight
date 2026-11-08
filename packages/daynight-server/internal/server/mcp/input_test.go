@@ -123,6 +123,64 @@ func TestInputAdmissionRejectsBeforeReadingAndReleases(t *testing.T) {
 	}
 }
 
+func TestInputOversizeSkipsDispatchAndReleases(t *testing.T) {
+	e := inputEntry(t)
+	var calls atomic.Int32
+	schema := map[string]any{"type": "object"}
+	if err := e.RegisterTool(&sdk.Tool{Name: "input_probe", InputSchema: schema, OutputSchema: schema}, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		calls.Add(1)
+		return ToolResult{Data: map[string]any{"ok": true}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		e.ServeHTTP(w, r)
+		finished <- struct{}{}
+	}))
+	t.Cleanup(server.Close)
+	client := server.Client()
+	client.Timeout = 5 * time.Second
+	base := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"input_probe","arguments":{}}}`
+	body := base + strings.Repeat(" ", transport.MaxMCPJSONBodyBytes+1-len(base))
+	for _, chunked := range []bool{false, true} {
+		request, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer alice")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		if chunked {
+			request.ContentLength = -1
+			request.TransferEncoding = []string{"chunked"}
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if err != nil || closeErr != nil || response.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(string(data), `"code":"payload_too_large"`) {
+			t.Fatalf("chunked=%v status=%d body=%q errors=%v %v", chunked, response.StatusCode, data, err, closeErr)
+		}
+		receiveInput(t, finished, "over-limit HTTP completion")
+		if calls.Load() != 0 || len(e.input) != 0 || len(e.budget.control) != 0 {
+			t.Fatalf("chunked=%v calls=%d input=%d control=%d", chunked, calls.Load(), len(e.input), len(e.budget.control))
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	result, err := materializationCall(ctx, server.URL, "input-reacquire", "input_probe")
+	if err != nil || result.Result.IsError {
+		t.Fatalf("valid tool after rejection: %+v %v", result, err)
+	}
+	receiveInput(t, finished, "valid tool HTTP completion")
+	if calls.Load() != 1 || len(e.input) != 0 || len(e.budget.control) != 0 {
+		t.Fatalf("valid tool calls=%d input=%d control=%d", calls.Load(), len(e.input), len(e.budget.control))
+	}
+}
+
 func TestInputAndControlBudgetsAreIndependent(t *testing.T) {
 	e := inputEntry(t)
 	entered := make(chan struct{}, transport.MaxMCPInputOperations)
