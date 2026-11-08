@@ -37,12 +37,20 @@ administrator projections, including summaries and cached views on return. An
 unchanged older directory cannot restore permission; a new membership identity or
 version provides fresh authority. Only media/principal-validated server error semantics revoke an owner or
 withdraw a missing resource; protocol failures carrying those statuses retain
-verified state and recovery. Forbidden configuration or receipt reads revoke the whole owner; forbidden
-management or secret requests withdraw administrator projections while preserving
-member read admission. Request-owner and authorization-key fencing prevent old
-denials from revoking new authority. The
+verified state and recovery. Forbidden configuration or receipt reads revoke the
+whole owner; forbidden management or secret requests withdraw administrator
+projections while preserving member read admission. Request-owner and
+authorization-key fencing prevent old denials from revoking new authority. The
 [management-denial decision](../bug-fix/2026-11-08-webhook-management-denial.md)
-owns that distinction. Resource absence remains local. Original receipts remain independent. These reads preserve mounted
+owns that distinction. Resource absence remains local. Management observation and
+readable membership identity are separate: a restrictive Delivery destination
+can withdraw old endpoint, secret and administrator projections while continuous
+Team membership retains its Project and history read access. ID-only
+configuration-checking and missing-configuration history contexts do not
+fabricate configuration DTOs. Their established history lifetime uses readable
+identity independently of configuration reads: a later configuration 500 displays
+separately while preserving authorized history and the last authoritative
+context. Original receipts remain independent. These reads preserve mounted
 nodes, drafts, focus, selected tabs and loaded pagination through unchanged
 background checks. Confirmed identity or disclosure changes
 withdraw private values. Explicit or responsive departure from the secret
@@ -70,10 +78,12 @@ component styles and local geometry.
 
 ## Consequences
 
-Configuration, subscriptions and signing secrets share one submission and
-recovery mechanism. Delivery diagnostics can reuse it with their own target and
+Configuration, subscriptions, signing secrets and delivery registration share
+one submission and recovery mechanism. The [delivery observation decision](2026-11-08-webhook-web-deliveries.md)
+extends it with independent resource disclosure, payload integrity and original
 generation validation. Mutation admission distinguishes receipt reads from
-writes and checks current catalog expansion permission before preparing and
+writes and checks the frozen validated original target as well as current catalog
+permission before generating the operation identity, after readiness and before
 dispatching an intent; restrictive changes remain available. Finite receipt retention limits confirmation availability;
 absence and cleanup failures cannot establish rollback. Browser permission checks
 may suspend admission while keeping the visible draft intact. Visual evidence

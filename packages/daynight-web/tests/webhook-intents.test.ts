@@ -1,7 +1,7 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebhookIntentController, assertWebhookReceiptMatches, clearWebhookPending, parseWebhookPreparedMetadata, type WebhookIntentInput, type WebhookPreparedMetadata } from "../src/features/webhook-intents/controller";
-import type { WebhookReceipt } from "../src/api/webhooks";
+import { WebhookIntentController, assertWebhookReceiptMatches, clearWebhookPending, parseWebhookPreparedMetadata, type WebhookIntentInput, type WebhookIntentTarget, type WebhookPreparedMetadata } from "../src/features/webhook-intents/controller";
+import { listWebhookAttempts, type WebhookReceipt } from "../src/api/webhooks";
 import { pauseAuthRequests } from "../src/api/client";
 
 const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
@@ -9,7 +9,7 @@ const user = uuid(1), endpointId = uuid(2), owner = { kind: "personal" as const,
 const now = "2026-11-08T12:00:00Z", expiresAt = "2026-12-08T12:00:00Z";
 const admission = () => ({ userId: user, onPrincipalMismatch: vi.fn() });
 const controller = (signal = new AbortController().signal, storage: Storage = sessionStorage) => new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal, storage });
-const patch = (): WebhookIntentInput => ({ kind: "endpoint.patch", endpointId, ifVersion: "9007199254740993", destinationRevision: "1", body: { name: "Release 通知", enabled: false } });
+const patch = () => ({ kind: "endpoint.patch" as const, endpointId, ifVersion: "9007199254740993", destinationRevision: "1", body: { name: "Release 通知", enabled: false } });
 const metadata = (): WebhookPreparedMetadata => ({ serviceOrigin, actorUserId: user, owner, operationId: uuid(3), issuedAt: now, requestSha256: "a".repeat(64), kind: "endpoint.patch", endpointId, deliveryId: null, ifVersion: "9007199254740993", ifGeneration: null, destinationRevision: "1" });
 const receipt = (prepared = metadata()): WebhookReceipt => ({ operationId: prepared.operationId, kind: prepared.kind, issuedAt: prepared.issuedAt, requestSha256: prepared.requestSha256, actorUserId: prepared.actorUserId, owner: prepared.owner, endpointId: prepared.endpointId ?? endpointId, effect: "applied", configVersionAfter: prepared.ifVersion === null ? "1" : String(BigInt(prepared.ifVersion) + 1n), destinationRevisionAfter: prepared.destinationRevision ?? "1", deliveryId: null, generationAfter: null, keyId: prepared.kind === "signing-secret.rotate" ? uuid(4) : null, overlapUntil: null, recordedAt: now, expiresAt });
 const endpoint = (version = "9007199254740994") => ({ id: endpointId, owner, lifecycle: "active", configVersion: version, deletedAt: null, name: "Release 通知", enabled: false, destinationRevision: "1", destination: { kind: "http", adapterVersion: "1", url: "https://receiver.example/path?token=private", displayUrl: "https://receiver.example/path?token=private" }, signing: { scheme: "standard-webhooks-v1", activeKeyId: uuid(4), overlapUntil: null }, subscriptions: [], capabilities: { manage: true, readSecret: true, redeliver: true }, createdAt: now, updatedAt: now });
@@ -20,6 +20,17 @@ const submittedReceipt = async (options: RequestInit, mutation: Partial<WebhookR
   const body = JSON.parse(String(options.body)) as { operationId: string; issuedAt: string; expectedUserId: string; ifVersion?: string };
   return { ...receipt(), operationId: body.operationId, issuedAt: body.issuedAt, requestSha256: await hashBody(String(options.body)), actorUserId: body.expectedUserId, configVersionAfter: body.ifVersion === undefined ? "1" : String(BigInt(body.ifVersion) + 1n), ...mutation };
 };
+const deliveryId = uuid(10);
+const redeliveryInput = (): Extract<WebhookIntentInput, { kind: "delivery.redeliver" }> => ({ kind: "delivery.redeliver", endpointId, deliveryId, ifVersion: "9007199254740993", ifGeneration: "9007199254740993", destinationRevision: "1", body: {} });
+const submittedRedeliveryReceipt = async (options: RequestInit, changed: Partial<WebhookReceipt> = {}): Promise<WebhookReceipt> => {
+  const body = JSON.parse(String(options.body)) as { ifVersion: string; ifGeneration: string };
+  return submittedReceipt(options, { kind: "delivery.redeliver", deliveryId, generationAfter: String(BigInt(body.ifGeneration) + 1n), configVersionAfter: body.ifVersion, ...changed });
+};
+const currentDelivery = (generation = "9007199254740994") => ({
+  id: deliveryId, endpointId, eventId: uuid(11), owner, eventType: "task.paused", resource: { projectId: uuid(12), taskId: uuid(13), stepId: null, messageId: null, displayName: "Private task" }, occurredAt: now, resourceVersion: "9007199254740993",
+  target: { destinationRevision: "1", url: "https://receiver.example/original?token=private", displayUrl: "https://receiver.example/original?token=private" }, generation, state: "pending", attemptCount: 2, automaticAttemptCount: 1, manualOperationCount: 1,
+  nextAttemptAt: now, lastAttemptAt: now, expiresAt: "2026-11-15T12:00:00Z", automaticExpiresAt: "2026-11-11T12:00:00Z", payloadExpiresAt: "2026-12-08T12:00:00Z", lastAcknowledgedAt: now, lastResult: null, payloadAvailable: true, disclosure: "full",
+});
 
 beforeEach(() => { sessionStorage.clear(); vi.stubGlobal("crypto", webcrypto); });
 afterEach(() => { sessionStorage.clear(); vi.unstubAllGlobals(); });
@@ -451,5 +462,127 @@ describe("Webhook pending cleanup failures", () => {
     const storage = memoryStorage(); Object.defineProperty(storage, "length", { get: () => { throw "storage-unavailable"; } });
     const error = clearWebhookPending(serviceOrigin, user, storage);
     expect(error).toBeInstanceOf(Error); expect(error?.cause).toBe("storage-unavailable");
+  });
+});
+
+describe("Webhook fixed redelivery intents", () => {
+  it("registers exactly the observed v/g with final byte proof and distinguishes original from later generation", async () => {
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery("9007199254740997") }, 202)); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), confirmed = await intent.submit(redeliveryInput());
+    const serialized = String(fetch.mock.calls[0]![1].body), body = JSON.parse(serialized);
+    expect(Object.keys(body)).toEqual(["operationId", "issuedAt", "expectedUserId", "ifVersion", "ifGeneration"]);
+    expect(body).toMatchObject({ expectedUserId: user, ifVersion: "9007199254740993", ifGeneration: "9007199254740993" });
+    expect(fetch.mock.calls[0]![0]).toBe(`/api/v1/me/webhooks/${endpointId}/deliveries/${deliveryId}/redeliveries`); expect(fetch.mock.calls[0]![1].method).toBe("POST");
+    expect(confirmed.phase).toBe("confirmed"); expect(confirmed.prepared?.requestSha256).toBe(await hashBody(serialized));
+    expect(confirmed.result?.operation).toMatchObject({ kind: "delivery.redeliver", endpointId, deliveryId, configVersionAfter: "9007199254740993", generationAfter: "9007199254740994", destinationRevisionAfter: "1", effect: "applied" });
+    expect(confirmed.result?.delivery?.generation).toBe("9007199254740997"); expect(sessionStorage.length).toBe(0);
+  });
+  it("deduplicates button and Enter while one redelivery POST is pending", async () => {
+    let release!: () => void; const barrier = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { await barrier; return response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202); }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), first = intent.submit(redeliveryInput()), second = intent.submit(redeliveryInput()); expect(second).toBe(first); release(); await first; expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each([[409, "generation_conflict"], [409, "version_conflict"], [409, "delivery_busy"], [409, "target_changed"], [409, "delivery_stopped"], [403, "forbidden"], [410, "payload_expired"]] as const)("keeps explicit %i %s refusal without new generation or automatic reads", async (status, code) => {
+    const fetch = vi.fn().mockResolvedValue(failure(status, code)); vi.stubGlobal("fetch", fetch);
+    const rejected = await controller().submit(redeliveryInput()); expect(rejected.phase).toBe("rejected"); expect(rejected.error).toMatchObject({ status, code }); expect(rejected.result).toBeNull(); expect(fetch).toHaveBeenCalledOnce(); expect(sessionStorage.length).toBe(0);
+  });
+  it.each(["dependency_unavailable", "write_outcome_unknown", "webhooks_unavailable"])("uses only receipt GET after an ambiguous 503 %s", async code => {
+    const fetch = vi.fn().mockResolvedValueOnce(failure(503, code)).mockResolvedValue(failure()); vi.stubGlobal("fetch", fetch);
+    const unknown = await controller().submit(redeliveryInput()); expect(unknown.phase).toBe("unknown"); expect(unknown.prepared?.deliveryId).toBe(deliveryId); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined]);
+  });
+  it("confirms one lost redelivery through original receipt GET without a second POST", async () => {
+    let original!: WebhookReceipt;
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { if (options.method === "POST") { original = await submittedRedeliveryReceipt(options); throw new TypeError("Response lost"); } return response(original); }); vi.stubGlobal("fetch", fetch);
+    const confirmed = await controller().submit(redeliveryInput()); expect(confirmed.phase).toBe("confirmed"); expect(confirmed.result?.operation).toEqual(original); expect(confirmed.result?.delivery).toBeUndefined(); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined]);
+  });
+  it("restores opaque E/D/v/g metadata and performs GET-only recovery without a request body", async () => {
+    let original!: WebhookReceipt, lookups = 0;
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { if (options.method === "POST") { original = await submittedRedeliveryReceipt(options); throw new TypeError("Response lost"); } return ++lookups === 1 ? failure() : response(original); }); vi.stubGlobal("fetch", fetch);
+    const first = controller(); await first.submit(redeliveryInput());
+    const saved = sessionStorage.getItem(sessionStorage.key(0)!)!; expect(saved).not.toMatch(/receiver|token|Private task|secret|payload|body/); expect(JSON.parse(saved)).toMatchObject({ kind: "delivery.redeliver", endpointId, deliveryId, ifVersion: "9007199254740993", ifGeneration: "9007199254740993" });
+    first.dispose(); const restored = controller(); expect(restored.getSnapshot().phase).toBe("unknown"); const confirmed = await restored.reconcile(); expect(confirmed.phase).toBe("confirmed"); expect(confirmed.result?.operation.operationId).toBe(original.operationId); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined, undefined]);
+  });
+  it.each([
+    { actorUserId: uuid(99) }, { deliveryId: uuid(99) }, { endpointId: uuid(99) }, { requestSha256: "0".repeat(64) }, { generationAfter: "9007199254740995" }, { configVersionAfter: "9007199254740994" }, { destinationRevisionAfter: "2" },
+    { kind: "endpoint.patch", deliveryId: null, generationAfter: null },
+  ] as const)("does not confirm a redelivery receipt with wrong fixed binding %j", async changed => {
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => options.method === "POST" ? response({ operation: await submittedRedeliveryReceipt(options, changed), delivery: currentDelivery() }, 202) : failure()); vi.stubGlobal("fetch", fetch);
+    const unknown = await controller().submit(redeliveryInput()); expect(unknown.phase).toBe("unknown"); expect(unknown.result).toBeNull(); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined]);
+  });
+  it.each([{ generation: "9007199254740993" }, { id: uuid(99) }, { target: { ...currentDelivery().target, destinationRevision: "2" } }])("preserves original registered generation when current delivery projection is invalid %j", async changed => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedRedeliveryReceipt(options), delivery: { ...currentDelivery(), ...changed } }, 202)));
+    const confirmed = await controller().submit(redeliveryInput()); expect(confirmed.phase).toBe("confirmed"); expect(confirmed.result?.operation.generationAfter).toBe("9007199254740994"); expect(confirmed.result?.delivery).toBeUndefined(); expect(confirmed.error).toMatchObject({ kind: "protocol" });
+  });
+  it("rejects a 200 response as unconfirmed rather than treating it as a registered redelivery", async () => {
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => options.method === "POST" ? response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 200) : failure()); vi.stubGlobal("fetch", fetch);
+    const unknown = await controller().submit(redeliveryInput()); expect(unknown.phase).toBe("unknown"); expect(unknown.result).toBeNull(); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined]);
+  });
+  it("keeps first confirmed generation when a later original operation GET contradicts its receipt", async () => {
+    let original!: WebhookReceipt;
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { if (options.method === "POST") { original = await submittedRedeliveryReceipt(options); return response({ operation: original, delivery: currentDelivery("9007199254740997") }, 202); } return response({ ...original, expiresAt: "2026-12-09T12:00:00Z" }); }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), first = await intent.submit(redeliveryInput()), later = await intent.reconcile(); expect(later.phase).toBe("confirmed"); expect(later.result).toBe(first.result); expect(later.error).toMatchObject({ kind: "protocol" }); expect(later.result?.operation.generationAfter).toBe("9007199254740994"); expect(later.result?.delivery?.generation).toBe("9007199254740997");
+  });
+  it("forgets a private current delivery projection without losing original generation or receipt", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202)));
+    const intent = controller(), first = await intent.submit(redeliveryInput()), listener = vi.fn(); intent.subscribe(listener); intent.forgetCurrentProjection(); const stripped = intent.getSnapshot(); intent.forgetCurrentProjection();
+    expect(stripped.phase).toBe("confirmed"); expect(stripped.result?.delivery).toBeUndefined(); expect(stripped.result?.operation).toBe(first.result?.operation); expect(stripped.prepared).toBe(first.prepared); expect(listener).toHaveBeenCalledOnce();
+  });
+  it("does not publish a late administrator delivery response after lifetime withdrawal", async () => {
+    const lifetime = new AbortController(); let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { entered(); await barrier; return response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202); }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(lifetime.signal), pending = intent.submit(redeliveryInput()); await waiting; lifetime.abort(); release(); const unknown = await pending;
+    expect(unknown.phase).toBe("unknown"); expect(unknown.result?.delivery).toBeUndefined(); expect(unknown.prepared?.deliveryId).toBe(deliveryId); expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("gates redelivery dispatch by operation kind before preparing an ID or write", () => {
+    const generated = vi.spyOn(crypto, "randomUUID"), canSubmit = vi.fn(kind => kind !== "delivery.redeliver");
+    const intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit }); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    expect(() => intent.submit(redeliveryInput())).toThrow(); expect(canSubmit).toHaveBeenCalledWith("delivery.redeliver", { owner, endpointId, deliveryId, ifVersion: "9007199254740993", ifGeneration: "9007199254740993", destinationRevision: "1" }); expect(generated).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled(); expect(sessionStorage.length).toBe(0);
+  });
+  it("stops the original target after validated attempts404 while its native digest is pending", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    vi.stubGlobal("crypto", { randomUUID: webcrypto.randomUUID.bind(webcrypto), subtle: { digest: async (...args: Parameters<typeof webcrypto.subtle.digest>) => { entered(); await barrier; return webcrypto.subtle.digest(...args); } } });
+    const observed = new Map([[deliveryId, true], [uuid(99), true]]);
+    const canSubmit = vi.fn((_kind: string, target: WebhookIntentTarget) => observed.get(target.deliveryId!) === true);
+    const intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit });
+    const fetch = vi.fn().mockResolvedValue(failure(404, "not_found")); vi.stubGlobal("fetch", fetch);
+    const pending = intent.submit(redeliveryInput()); await waiting;
+    await expect(listWebhookAttempts(owner, endpointId, deliveryId, {}, new AbortController().signal, admission())).rejects.toMatchObject({ kind: "server", status: 404, code: "not_found" });
+    observed.set(deliveryId, false);
+    release(); const rejected = await pending;
+    expect(rejected.phase).toBe("rejected"); expect(rejected.prepared).toMatchObject({ endpointId, deliveryId, ifVersion: "9007199254740993", ifGeneration: "9007199254740993", destinationRevision: "1" });
+    expect(fetch.mock.calls.filter(call => call[1]?.method === "POST")).toHaveLength(0); expect(observed.get(uuid(99))).toBe(true);
+    expect(canSubmit.mock.calls).toHaveLength(2); expect(canSubmit.mock.calls[1]![1]).toBe(canSubmit.mock.calls[0]![1]); expect(canSubmit.mock.calls[1]![1].deliveryId).toBe(deliveryId);
+  });
+  it("passes one frozen original target at initial admission, readiness and actual-fetch boundaries", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    vi.stubGlobal("crypto", { randomUUID: webcrypto.randomUUID.bind(webcrypto), subtle: { digest: async (...args: Parameters<typeof webcrypto.subtle.digest>) => { entered(); await barrier; return webcrypto.subtle.digest(...args); } } });
+    const targets: WebhookIntentTarget[] = [], canSubmit = vi.fn((_kind: string, target: WebhookIntentTarget) => { targets.push(target); return true; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202)); vi.stubGlobal("fetch", fetch);
+    const input = { ...redeliveryInput() }, intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit });
+    const pending = intent.submit(input); Object.assign(input, { kind: "endpoint.patch", deliveryId: uuid(99), ifGeneration: "9007199254740999" }); await waiting; release(); const confirmed = await pending;
+    expect(confirmed.phase).toBe("confirmed"); expect(targets).toHaveLength(3); expect(targets.every(target => target === targets[0])).toBe(true);
+    expect(Object.isFrozen(targets[0])).toBe(true); expect(Object.isFrozen(targets[0]!.owner)).toBe(true);
+    expect(targets[0]).toEqual({ owner, endpointId, deliveryId, ifVersion: "9007199254740993", ifGeneration: "9007199254740993", destinationRevision: "1" });
+    expect(canSubmit.mock.calls.every(call => call[0] === "delivery.redeliver")).toBe(true);
+    expect(fetch.mock.calls[0]![0]).toContain(`/deliveries/${deliveryId}/redeliveries`); expect(JSON.parse(String(fetch.mock.calls[0]![1].body)).ifGeneration).toBe("9007199254740993");
+  });
+  it("keeps an original confirmed effect when current target reading and new admission are rejected", async () => {
+    const generated = vi.spyOn(crypto, "randomUUID"); let available = true;
+    const canSubmit = vi.fn((_kind: string, target: WebhookIntentTarget) => target.deliveryId === deliveryId && available);
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => options.method === "POST" ? response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202) : failure()); vi.stubGlobal("fetch", fetch);
+    const intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit }), first = await intent.submit(redeliveryInput());
+    await expect(listWebhookAttempts(owner, endpointId, deliveryId, {}, new AbortController().signal, admission())).rejects.toMatchObject({ status: 404 }); available = false; intent.forgetCurrentProjection();
+    const original = intent.getSnapshot(); expect(() => intent.submit(redeliveryInput())).toThrow(); expect(intent.getSnapshot()).toBe(original); expect(generated).toHaveBeenCalledOnce();
+    const unavailable = await intent.reconcile(); expect(unavailable.phase).toBe("confirmed"); expect(unavailable.result?.operation).toBe(first.result?.operation); expect(unavailable.result?.operation.generationAfter).toBe("9007199254740994"); expect(unavailable.error).toMatchObject({ status: 404 });
+    expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined, undefined]);
+  });
+  it.each([
+    { ifGeneration: "01" }, { ifGeneration: "9223372036854775808" }, { ifGeneration: undefined }, { deliveryId: undefined }, { destinationRevision: undefined }, { body: { payload: "private" } },
+  ])("rejects malformed redelivery descriptors without assigning a new identity %j", changed => {
+    const generated = vi.spyOn(crypto, "randomUUID"), fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    expect(() => controller().submit({ ...redeliveryInput(), ...changed } as unknown as WebhookIntentInput)).toThrow(); expect(generated).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
   });
 });
