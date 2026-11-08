@@ -4,7 +4,7 @@
 
 Task、Step 和 Thread 的真实写入在其原事务中捕获事件。Task 状态和暂停可在一次变更中分别形成两个事实；Step 的一次集合逻辑变化和 Thread 的最终消息各形成一个事实。Thread 保持独立事务，捕获不反向取得 Project 根锁。无变化或业务拒绝不产生事实；删除使用数据库返回的最终墓碑版本和时间。
 
-捕获器在一个 Read Committed 语句快照中读取全部合格的 endpoint、订阅、绑定和当前授权来源，不增加这些资源的行锁。冻结前来源事务必须已有顶层事务 ID；隔离级别或事务 ID 不满足时捕获失败。[配置回收](webhook-retention.md)以此等待可能看到旧资格的捕获事务结束。相同事件和 endpoint 的所有原匹配归入一份 Delivery，保留每个订阅、绑定、项目、事件类型及授权 epoch。快照后的新订阅不补发历史，零目标不保存 Event。事实、全部责任和源变更同事务提交；渲染、加密、数据库写入或提交错误不会变成部分成功。
+捕获器在一个 Read Committed 语句快照中读取全部合格的 endpoint、订阅、绑定和当前授权来源，不增加这些资源的行锁。冻结前来源事务必须已有顶层事务 ID；隔离级别或事务 ID 不满足时捕获失败。[配置回收](webhook-retention.md)以此等待可能看到旧资格的捕获事务结束。相同事件和 endpoint 的所有原匹配归入一份 Delivery，保留每个订阅、绑定、项目、事件类型及授权 epoch。快照后的新订阅不补发历史，零目标不保存 Event。事实、全部责任和源变更同事务提交；渲染、目标解码、数据库写入或提交错误不会变成部分成功。
 
 ## 固定内容和证明
 
@@ -12,7 +12,7 @@ Task、Step 和 Thread 的真实写入在其原事务中捕获事件。Task 状�
 
 原匹配摘要将匹配按 subscription ID、binding ID 升序排列，编码为无空白的 JSON 数组；每项依次为 subscription ID、binding ID、project ID、event type 和十进制 authorization epoch 字符串。对 UTF-8 字节计算 SHA-256；原数量另存正 bigint。后续读取须验证完整集合及其与 Event、Delivery 的关联，不能用新订阅替代原证明。
 
-当前通用 HTTP 请求固定为 POST、`application/cloudevents+json` 和空的确定头数组。捕获器解密冻结的配置，使用运行时 active master 和绑定 owner、endpoint、Delivery ID 的独立 AAD 重新加密目标快照。启动扫描 endpoint、签名密钥和 Delivery 的 master 引用；存在引用时密钥环必须含对应密钥。`DAYNIGHT_WEBHOOK_KEYRING_FILE` 指定密钥环文件；未配置且没有引用时服务可启动，实际匹配需要密钥时失败并回滚源事务。
+当前通用 HTTP 请求固定为 POST、`application/cloudevents+json` 和空的确定头数组。捕获器严格解码冻结的 endpoint 目标配置并核对 kind、adapter version 和 origin，然后复制规范化 JSON 明文字节到 `webhook_deliveries.destination_configuration`；该 `bytea` 字段非空，长度为 1–262144 字节。每份 Delivery 保存独立固定快照，后续目标修改、重试和重投均不替换它。签名秘密保留在 endpoint 的签名 key 行中，在发送准入时读取有效的当前和重叠 key；Delivery 不复制签名秘密。目标存储格式由[管理设计](webhook-management.md)规定。
 
 ## 调度登记
 

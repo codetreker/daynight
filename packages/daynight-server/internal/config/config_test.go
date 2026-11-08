@@ -223,14 +223,9 @@ func TestWebhookConfiguration(t *testing.T) {
 			t.Fatalf("invalid flag %q: %v", v, err)
 		}
 	}
-	_, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_WEBHOOK_ENABLED": "1"}))
-	var invalid *ConfigurationError
-	if !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_WEBHOOK_KEYRING_FILE" {
-		t.Fatalf("enabled without keyring: %v", err)
-	}
-	c, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_WEBHOOK_ENABLED": "1", "DAYNIGHT_WEBHOOK_KEYRING_FILE": "/private/keyring"}))
+	c, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_WEBHOOK_ENABLED": "1"}))
 	if err != nil || !c.WebhookEnabled {
-		t.Fatalf("valid webhook configuration: %v", err)
+		t.Fatalf("enabled webhook configuration: %v", err)
 	}
 	_, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_SHUTDOWN_TIMEOUT": "11s"}))
 	if err == nil {

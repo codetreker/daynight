@@ -87,16 +87,14 @@ func TestWebhookSchemaConstraints(t *testing.T) {
 	owner, endpoint, key := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	_, err := pool.Exec(ctx, `INSERT INTO webhook_endpoints
 		(id,owner_kind,owner_id,name,enabled,config_version,destination_revision,destination_kind,adapter_version,
-		 configuration_schema_version,destination_origin,destination_envelope_version,destination_master_key_id,
-		 destination_nonce,destination_ciphertext,active_key_id,created_at,updated_at)
-		VALUES($1,'personal',$2,'Name',true,1,1,'http',1,1,'https://example.test',1,'primary',
-		 decode(repeat('00',12),'hex'),decode(repeat('00',32),'hex'),$3,now(),now())`, endpoint, owner, key)
+		 configuration_schema_version,destination_origin,destination_configuration,active_key_id,created_at,updated_at)
+		VALUES($1,'personal',$2,'Name',true,1,1,'http',1,1,'https://example.test',convert_to('{"kind":"http","adapterVersion":"1","configuration":{"url":"https://example.test/hook"}}','UTF8'),$3,now(),now())`, endpoint, owner, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO webhook_signing_keys
-		(id,endpoint_id,slot,envelope_version,master_key_id,nonce,ciphertext,created_at)
-		VALUES($1,$2,'current',1,'primary',decode(repeat('00',12),'hex'),decode(repeat('00',48),'hex'),now())`, key, endpoint)
+		(id,endpoint_id,slot,secret,created_at)
+		VALUES($1,$2,'current',decode(repeat('00',32),'hex'),now())`, key, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,10 +107,12 @@ func TestWebhookSchemaConstraints(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ name, query string }{
-		{"partial endpoint envelope", `UPDATE webhook_endpoints SET destination_nonce=NULL`},
+		{"missing endpoint configuration", `UPDATE webhook_endpoints SET destination_configuration=NULL`},
+		{"empty endpoint configuration", `UPDATE webhook_endpoints SET destination_configuration=decode('','hex')`},
+		{"oversized endpoint configuration", `UPDATE webhook_endpoints SET destination_configuration=convert_to(repeat('x',262145),'UTF8')`},
 		{"zero config version", `UPDATE webhook_endpoints SET config_version=0`},
 		{"invalid owner", `UPDATE webhook_endpoints SET owner_kind='user'`},
-		{"invalid key ciphertext", `UPDATE webhook_signing_keys SET ciphertext=decode('00','hex')`},
+		{"invalid signing secret", `UPDATE webhook_signing_keys SET secret=decode('00','hex')`},
 		{"incomplete overlap", `UPDATE webhook_signing_keys SET slot='overlap',overlap_until=now()`},
 		{"policy update", `UPDATE webhook_policies SET http_timeout_seconds=16 WHERE version=1`},
 		{"wrong request hash length", `UPDATE webhook_operations SET request_sha256=decode('00','hex')`},
@@ -127,8 +127,7 @@ func TestWebhookSchemaConstraints(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `UPDATE webhook_endpoints SET deleted_at=now(),enabled=false,name=NULL,
 		destination_kind=NULL,adapter_version=NULL,configuration_schema_version=NULL,destination_origin=NULL,
-		destination_envelope_version=NULL,destination_master_key_id=NULL,destination_nonce=NULL,
-		destination_ciphertext=NULL,active_key_id=NULL WHERE id=$1`, endpoint); err != nil {
+		destination_configuration=NULL,active_key_id=NULL WHERE id=$1`, endpoint); err != nil {
 		t.Fatalf("valid tombstone: %v", err)
 	}
 }

@@ -89,7 +89,7 @@ func TestRedeliveryHTTPDatabaseDiagnosticDoesNotExposeSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	observed := &diagnosticObservedStore{WebhookTransactions: r.f.db, failures: make(chan error, 1)}
-	svc := &webhook.Service{DB: observed, Keys: r.f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: observed, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	mux := http.NewServeMux()
 	webhookhttp.NewRoutes(svc, auth, logger).RegisterRoutes(mux)
 	host := httptest.NewServer(httpx.RequestLogging(logger, mux))

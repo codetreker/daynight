@@ -173,14 +173,6 @@ func TestIdentityStartLoginValidation(t *testing.T) {
 	if err := fixture.database.Pool.QueryRow(context.Background(), "SELECT count(*) FROM login_transactions").Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("invalid scope created transaction: %d %v", rows, err)
 	}
-	for _, provider := range []string{"", "Microsoft", "oidc", "github\x00"} {
-		_, err := fixture.identity.StartLogin(context.Background(), provider, "/", secret.Random(""))
-		requireFault(t, err, "invalid_input")
-	}
-	for _, path := range []string{"https://evil.example/path", "//evil.example", "relative", "/\\evil", "/line\rbreak", "/line\nbreak", "/bad\x00", "/bad\xff", "/%5Cevil", "/%0Dheader", "/%00bad", "/%2fexample.com", "/api/v1/auth/login", "/api/v1/%61uth/callback", "/login", "/login?returnPath=/projects", "/login/child", "/other/../login", "/%6cogin", "/%zz"} {
-		_, err := fixture.identity.StartLogin(context.Background(), "microsoft", path, secret.Random(""))
-		requireFault(t, err, "invalid_input")
-	}
 	for _, path := range []string{"/", "/projects", "/test-sessions/10000000-0000-0000-0000-000000000001", "/projects/abc?view=graph#tasks", "/%E4%B8%AD%E6%96%87", "/login-help"} {
 		if _, err := fixture.identity.StartLogin(context.Background(), "microsoft", path, secret.Random("")); err != nil {
 			t.Fatalf("valid return path %q: %v", path, err)

@@ -3,16 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -29,11 +24,6 @@ func TestWebhookProcessShutdownPreservesCapturedWork(t *testing.T) {
 	values := processAPIEnvironment(t)
 	values["DAYNIGHT_SHUTDOWN_TIMEOUT"] = "5s"
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "1"
-	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = filepath.Join(testStorageRoot(t), "keys.json")
-	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	if err := os.WriteFile(values["DAYNIGHT_WEBHOOK_KEYRING_FILE"], []byte(`{"activeKeyId":"primary","keys":{"primary":"`+key+`"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	adminURL := values["DAYNIGHT_DATABASE_URL"]
 	parsed, err := url.Parse(adminURL)
 	if err != nil {
@@ -209,30 +199,25 @@ func TestWebhookProcessShutdownPreservesCapturedWork(t *testing.T) {
 	if err = observer.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=$1`, application).Scan(&connections); err != nil || connections != 0 {
 		t.Fatalf("process retained connections: %d %v", connections, err)
 	}
-	// The persisted endpoint requires the key even when dispatch is disabled.
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
-	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = ""
-	bad := startMigrationProcess(t, values)
-	select {
-	case err = <-bad.finished:
-		bad.stopped = true
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
-			t.Fatalf("missing key exit: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("missing-key process did not exit")
+	restarted := startPersistenceProcess(t, values)
+	if err = observer.QueryRow(ctx, `SELECT d.state,d.lease_token::text,(SELECT count(*) FROM webhook_attempts WHERE delivery_id=d.id),(SELECT count(*) FROM webhook_events WHERE id=d.event_id) FROM webhook_deliveries d WHERE d.endpoint_id=$1`, created.Endpoint.ID).Scan(&state, &lease, &attempts, &events); err != nil || state != "pending" || lease != nil || attempts != 0 || events != 1 {
+		t.Fatalf("disabled restart changed captured work: state=%s lease=%v attempts=%d events=%d err=%v", state, lease, attempts, events, err)
+	}
+	if err = restarted.stop(); err != nil {
+		t.Fatalf("disabled restart shutdown: %v", err)
 	}
 	listener, err := net.Listen("tcp", values["DAYNIGHT_LISTEN_ADDR"])
 	if err != nil {
-		t.Fatalf("failed startup retained listener: %v", err)
+		t.Fatalf("restart shutdown retained listener: %v", err)
 	}
 	_ = listener.Close()
 	if err = observer.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=$1`, application).Scan(&connections); err != nil || connections != 0 {
-		t.Fatalf("failed startup retained connections: %d %v", connections, err)
+		t.Fatalf("restart shutdown retained connections: %d %v", connections, err)
 	}
-	if strings.Contains(bad.logs.String(), key) || strings.Contains(bad.logs.String(), values["DAYNIGHT_STORAGE_ROOT"]) {
-		t.Fatal("startup log leaked key or path")
+	if strings.Contains(restarted.logs.String(), values["DAYNIGHT_STORAGE_ROOT"]) {
+		t.Fatal("startup log leaked storage path")
 	}
-	t.Logf("SIGTERM process HTTP-drain observed: listener_closed=true DB_in_use_before_release=true source_commit=201 event=1 delivery=pending claims=0 attempts=0 DB_connections_after_exit=0 missing_key_exit=1")
+	t.Logf("SIGTERM process HTTP-drain observed: listener_closed=true DB_in_use_before_release=true source_commit=201 event=1 delivery=pending claims=0 attempts=0 DB_connections_after_exit=0 disabled_restart_without_keyring=true")
+
 }

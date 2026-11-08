@@ -3,11 +3,9 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -169,11 +167,6 @@ func TestWebhookProductionApplicationMaintenance(t *testing.T) {
 		t.Fatalf("disabled mutation effects: endpoints=%d receipts=%d err=%v", endpoints, receipts, err)
 	}
 	f.stop()
-	keyring := []byte(`{"activeKeyId":"primary","keys":{"primary":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)) + `"}}`)
-	f.cfg.WebhookKeyringFile = filepath.Join(filepath.Dir(f.cfg.StorageRoot), "keys.json")
-	if err = os.WriteFile(f.cfg.WebhookKeyringFile, keyring, 0600); err != nil {
-		t.Fatal(err)
-	}
 	f.cfg.WebhookEnabled = true
 	f.start()
 	created := f.expect("POST", "/api/v1/me/webhooks", create(), 201)
@@ -184,6 +177,10 @@ func TestWebhookProductionApplicationMaintenance(t *testing.T) {
 	}
 	if err = json.Unmarshal(created, &result); err != nil || result.Endpoint.ID == "" {
 		t.Fatalf("endpoint response %s err=%v", created, err)
+	}
+	var fixedDestination, signingSecret []byte
+	if err = db.Pool.QueryRow(ctx, `SELECT e.destination_configuration,k.secret FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id WHERE e.id=$1`, result.Endpoint.ID).Scan(&fixedDestination, &signingSecret); err != nil || len(signingSecret) != 32 || !bytes.Contains(fixedDestination, []byte("https://receiver.example/hook")) {
+		t.Fatalf("plaintext configuration: destination=%s secret_bytes=%d err=%v", fixedDestination, len(signingSecret), err)
 	}
 	f.stop()
 	f.cfg.WebhookEnabled = false
@@ -231,14 +228,14 @@ func TestWebhookProductionApplicationMaintenance(t *testing.T) {
 		t.Fatalf("disabled claim: state=%s generation=%d lease=%v attempts=%d err=%v", state, generation, lease, attempts, err)
 	}
 	f.stop()
-	f.cfg.WebhookKeyringFile = ""
-	app, err := service.OpenApp(ctx, f.cfg)
-	if app != nil {
-		_ = app.Close(ctx)
-		t.Fatal("missing key accepted")
+	f.cfg.WebhookEnabled = true
+	f.start()
+	f.expect("GET", "/readyz", "", 200)
+	f.expect("GET", "/api/v1/me/webhooks/"+result.Endpoint.ID, "", 200)
+	var restartedDestination, restartedSecret []byte
+	if err = db.Pool.QueryRow(ctx, `SELECT e.destination_configuration,k.secret FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id WHERE e.id=$1`, result.Endpoint.ID).Scan(&restartedDestination, &restartedSecret); err != nil || !bytes.Equal(fixedDestination, restartedDestination) || !bytes.Equal(signingSecret, restartedSecret) {
+		t.Fatalf("enabled restart changed persisted configuration: %v", err)
 	}
-	if err == nil {
-		t.Fatal("missing key not reported")
-	}
-	t.Logf("production application: catalog=6 disabled_create=503 captured_delivery=%s history=200 expired_claim_recovered_generation=2 new_claims=0 missing_key_startup_failed=true", delivery)
+	f.stop()
+	t.Logf("production application: catalog=6 disabled_create=503 captured_delivery=%s history=200 expired_claim_recovered_generation=2 new_claims=0 enabled_restart=true plaintext_configuration_preserved=true", delivery)
 }

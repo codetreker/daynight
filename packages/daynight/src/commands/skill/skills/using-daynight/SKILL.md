@@ -20,7 +20,7 @@ Use the `daynight` CLI to operate it and [Daynight](https://daynight.cc) to brow
 | Attachment | A task's independent attachment area for inputs and results such as documents, prototypes, and images. |
 | worker-managed | An execution environment assigned and managed by `daynight worker`; the agent executes only its explicit assignment. |
 
-The CLI supports project registration and lookup, task creation, search and filtering, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, and worker-managed execution.
+The CLI supports project registration and lookup, task creation, search and filtering, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, Webhook management, and worker-managed execution.
 Creation, execution, and handoff are separate operations; see [authorization and scope](references/authorization.md).
 
 ## Setup and CLI
@@ -46,6 +46,7 @@ Read only the files and required references for the current operation, not every
 | Read or post task discussion | [Task management](references/task-management.md#discussion-threads): bounded pages, author attribution, replies and read continuity |
 | Submit and reconcile writes safely | [Write safety](references/write-safety.md): versions, conflicts, uncertain results, and attachment concurrency |
 | Write or read descriptions, attachments, and shared inputs | [Task content standard](references/task-content.md): boundaries, ownership, references, and sufficiency |
+| Manage Webhooks | [Webhook management](references/webhooks.md): explicit owners, writes, receipts and payloads |
 | Create or register work | [Create task](references/create-task.md): duplicate checks, preparation, registration, and readback |
 | Organize a multi-stage objective | [Goal protocol](references/goal.md): stage confirmation, breakdown, and whole-Goal completion |
 | Review tasks and enable automatic execution | [Task handoff](references/handoff.md): content and authenticated-responsibility review, then permission enablement |

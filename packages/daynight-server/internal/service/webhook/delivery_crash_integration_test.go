@@ -22,7 +22,6 @@ import (
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/httpoutbound"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -71,20 +70,15 @@ func TestDeliveryProcessExitRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-		keys, err := secretbox.Parse([]byte(`{"activeKeyId":"primary","keys":{"primary":"` + raw + `"}}`))
-		if err != nil {
-			t.Fatal(err)
-		}
 		db := &postgres.Store{Pool: pool}
 		if mode == "captured" {
 			principal := model.Principal{Kind: model.SessionCredential, UserID: os.Getenv("DAYNIGHT_T04_EXIT_USER"), CredentialID: os.Getenv("DAYNIGHT_T04_EXIT_SESSION")}
-			if _, err := taskservice.NewTasks(db, &webhook.Capturer{Keys: keys}).Create(ctx, principal, os.Getenv("DAYNIGHT_T04_EXIT_PROJECT"), taskcore.CreateTask{Title: "child capture"}); err != nil {
+			if _, err := taskservice.NewTasks(db, &webhook.Capturer{}).Create(ctx, principal, os.Getenv("DAYNIGHT_T04_EXIT_PROJECT"), taskcore.CreateTask{Title: "child capture"}); err != nil {
 				t.Fatal(err)
 			}
 			os.Exit(0)
 		}
-		svc := &webhook.Service{DB: db, Keys: keys}
+		svc := &webhook.Service{DB: db}
 		runner := webhook.NewRunner(db, svc, true)
 		der, err := base64.StdEncoding.DecodeString(os.Getenv("DAYNIGHT_T04_EXIT_CERT"))
 		if err != nil {
@@ -126,7 +120,7 @@ func TestDeliveryProcessExitRecovery(t *testing.T) {
 			if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
 				t.Fatal(err)
 			}
-			svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+			svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 			m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}}
 			if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 				t.Fatal(err)

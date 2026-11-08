@@ -52,7 +52,7 @@ func TestBoundedScopedProjectsPreservePrefixAndAuthority(t *testing.T) {
 }
 
 func TestBoundedProjectListRejectsInvalidBudgets(t *testing.T) {
-	projects, _, _, owner := projectService(t)
+	projects, owner := projectValidationFixture()
 	request := coreproject.ProjectListRequest{Page: model.PageRequest{Limit: 1}}
 	for _, limit := range []int{-1, 0, (128 << 20) + 1} {
 		page, err := projects.ListScopedBounded(context.Background(), owner, request, limit)

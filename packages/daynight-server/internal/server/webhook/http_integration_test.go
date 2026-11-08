@@ -24,7 +24,6 @@ import (
 	identity "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -47,11 +46,6 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
-	master := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"main","keys":{"main":"` + master + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	id := identity.New(db, nil, testOrigin+"/auth/callback")
 	authenticator, err := auth.NewAuthentication(id, config.AuthSettings{PublicOrigin: testOrigin, AllowHTTPTestOrigin: true}, logger)
@@ -59,7 +53,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	httpwebhook.NewRoutes(&service.Service{DB: db, Keys: keys, ConfigurationExpansionAvailable: true, DispatchEnabled: false}, authenticator, logger).RegisterRoutes(mux)
+	httpwebhook.NewRoutes(&service.Service{DB: db, ConfigurationExpansionAvailable: true, DispatchEnabled: false}, authenticator, logger).RegisterRoutes(mux)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return &httpFixture{ctx: ctx, db: db, server: server}
@@ -197,9 +191,9 @@ func TestHTTPPostgresOwnerCRUDAndAuthorization(t *testing.T) {
 			t.Fatalf("invalid timestamp %q: %v", value, err)
 		}
 	}
-	var ciphertext []byte
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT destination_ciphertext FROM webhook_endpoints WHERE id=$1`, id).Scan(&ciphertext); err != nil || bytes.Contains(ciphertext, []byte("Private")) {
-		t.Fatalf("destination was not encrypted: %v", err)
+	var destination []byte
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT destination_configuration FROM webhook_endpoints WHERE id=$1`, id).Scan(&destination); err != nil || !bytes.Contains(destination, []byte("https://receiver.example/Private?token=secret")) {
+		t.Fatalf("plaintext destination was not retained: %v", err)
 	}
 	status, _, b = f.request(t, admin, "POST", base, " \n"+wire)
 	mustStatus(t, status, 200, b)
@@ -211,8 +205,17 @@ func TestHTTPPostgresOwnerCRUDAndAuthorization(t *testing.T) {
 	mustStatus(t, status, 404, b)
 	status, _, b = f.request(t, admin, "GET", base+"/"+id+"/signing-secret", "")
 	mustStatus(t, status, 200, b)
-	if !strings.HasPrefix(jsonBody(t, b)["secret"].(string), "whsec_") {
+	wireSecret := jsonBody(t, b)["secret"].(string)
+	if !strings.HasPrefix(wireSecret, "whsec_") {
 		t.Fatal("secret format")
+	}
+	decodedSecret, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(wireSecret, "whsec_"))
+	if err != nil || len(decodedSecret) != 32 {
+		t.Fatalf("signing secret encoding: %v", err)
+	}
+	var storedSecret []byte
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT k.secret FROM webhook_signing_keys k JOIN webhook_endpoints e ON e.active_key_id=k.id WHERE e.id=$1`, id).Scan(&storedSecret); err != nil || !bytes.Equal(storedSecret, decodedSecret) {
+		t.Fatalf("plaintext signing secret differs from authorized response: %v", err)
 	}
 	patch := operationFields(admin)
 	patch["ifVersion"] = "1"

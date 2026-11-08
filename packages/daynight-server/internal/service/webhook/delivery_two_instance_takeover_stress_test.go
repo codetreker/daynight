@@ -125,7 +125,7 @@ func testTwoInstanceTakeover(t *testing.T, stopBeforeTakeover bool) {
 	// Only this fixture uses the deterministic stream; the production policy
 	// and capturer still generate and persist the complete jittered schedule.
 	f.capture.Random = rand.New(rand.NewSource(25))
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	var endpoint string
 	var version int64
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {

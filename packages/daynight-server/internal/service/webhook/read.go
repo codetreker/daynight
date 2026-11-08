@@ -13,33 +13,11 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
-func binding(e wm.Endpoint, purpose, id string) []string {
-	return []string{e.Owner.Kind, e.Owner.ID, e.ID, purpose, id}
-}
-func (s *Service) decrypt(data []byte, b []string) ([]byte, error) {
-	if s.Keys == nil {
-		return nil, secretbox.ErrMissingKey
-	}
-	e, err := secretbox.ParseEnvelope(data)
-	if err != nil {
-		return nil, err
-	}
-	return s.Keys.Open(e, b)
-}
-func (s *Service) encrypt(data []byte, b []string) ([]byte, error) {
-	if s.Keys == nil {
-		return nil, secretbox.ErrMissingKey
-	}
-	e, err := s.Keys.Seal(data, b, s.Random)
-	if err != nil {
-		return nil, err
-	}
-	return e.MarshalBinary()
-}
 func notFound(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
 		return fault("not_found", "Webhook resource was not found.")
@@ -75,8 +53,22 @@ func opView(o wm.Operation) map[string]any {
 	if o.GenerationAfter != nil {
 		generationAfter = version(*o.GenerationAfter)
 	}
-	return map[string]any{"operationId": o.ID, "kind": wireOperationKind(o.Kind), "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": deliveryID, "generationAfter": generationAfter, "keyId": key, "recordedAt": o.RecordedAt.UTC(), "expiresAt": o.ExpiresAt.UTC()}
+	return map[string]any{"operationId": o.ID, "kind": wireOperationKind(o.Kind), "issuedAt": o.IssuedAt, "requestSha256": o.RequestSHA256, "actorUserId": o.ActorID, "owner": map[string]any{"kind": o.Owner.Kind, "id": o.Owner.ID}, "endpointId": o.TargetID, "effect": o.Effect, "configVersionAfter": version(o.ConfigVersion), "destinationRevisionAfter": version(o.DestinationRevisionAfter), "deliveryId": deliveryID, "generationAfter": generationAfter, "keyId": key, "overlapUntil": utcTime(o.OverlapUntil), "recordedAt": o.RecordedAt.UTC(), "expiresAt": o.ExpiresAt.UTC()}
 }
+func requireLiveOperation(ctx context.Context, sc store.WebhookReadScope, op wm.Operation, code string) error {
+	now, err := sc.ObservedAt(ctx)
+	if err != nil {
+		return err
+	}
+	if !op.ExpiresAt.After(now) {
+		if code == "not_found" {
+			return fault(code, "Webhook resource was not found.")
+		}
+		return fault(code, "Operation has expired.")
+	}
+	return nil
+}
+
 func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope, e wm.Endpoint, actor string, manage bool) (map[string]any, error) {
 	owner := map[string]any{"kind": e.Owner.Kind, "id": e.Owner.ID}
 	if e.DeletedAt != nil {
@@ -85,11 +77,7 @@ func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope
 	var url any
 	display := e.Origin + "/…"
 	if manage {
-		b, err := s.decrypt(e.DestinationCiphertext, binding(e, "endpoint-current", version(e.DestinationRevision)))
-		if err != nil {
-			return nil, err
-		}
-		destination, err := decodeDestination(b)
+		destination, err := decodeEndpointDestination(e)
 		if err != nil {
 			return nil, err
 		}
@@ -146,6 +134,9 @@ func (s *Service) Operation(ctx context.Context, p model.Principal, o Owner, id 
 		if !m && op.ActorID != p.UserID {
 			return fault("forbidden", "Access to this operation is denied.")
 		}
+		if e = requireLiveOperation(ctx, sc, op, "not_found"); e != nil {
+			return e
+		}
 		v = opView(op)
 		return nil
 	})
@@ -174,11 +165,10 @@ func (s *Service) Secret(ctx context.Context, p model.Principal, o Owner, id str
 		}
 		for _, k := range keys {
 			if k.ID == ep.ActiveKeyID && k.RevokedAt == nil {
-				b, e := s.decrypt(k.Ciphertext, binding(ep, "signing-key", k.ID))
-				if e != nil {
-					return e
+				if len(k.Secret) != 32 {
+					return fmt.Errorf("invalid webhook signing key")
 				}
-				v = map[string]any{"endpointId": id, "configVersion": version(ep.ConfigVersion), "keyId": k.ID, "scheme": "standard-webhooks-v1", "secret": "whsec_" + base64.StdEncoding.EncodeToString(b)}
+				v = map[string]any{"endpointId": id, "configVersion": version(ep.ConfigVersion), "keyId": k.ID, "scheme": "standard-webhooks-v1", "secret": "whsec_" + base64.StdEncoding.EncodeToString(k.Secret)}
 				return nil
 			}
 		}
@@ -192,6 +182,24 @@ type cursor struct {
 	Version                                              int
 	List, User, Kind, Owner, Query, Enabled, View, After string
 	CreatedAt                                            time.Time
+}
+
+func decodeCursor(data []byte, target any) error {
+	var allowed []string
+	switch target.(type) {
+	case *cursor:
+		allowed = []string{"Version", "List", "User", "Kind", "Owner", "Query", "Enabled", "View", "After", "CreatedAt"}
+	case *historyCursor:
+		allowed = []string{"Version", "Kind", "User", "OwnerKind", "OwnerID", "Endpoint", "Delivery", "Filter", "View", "ID", "Time", "Generation", "Sequence"}
+	case *historyDisclosure:
+		allowed = []string{"At", "State"}
+	default:
+		return fmt.Errorf("unsupported webhook cursor")
+	}
+	if _, err := jsonobject.Decode(data, "cursor", allowed...); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, target)
 }
 
 func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQuery) (any, error) {
@@ -220,7 +228,7 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 				return fault("invalid_input", "Invalid cursor.")
 			}
 			var old cursor
-			if json.Unmarshal(b, &old) != nil || old.Version != c.Version || old.List != c.List || old.View != c.View || old.CreatedAt.IsZero() || old.User != c.User || old.Kind != c.Kind || old.Owner != c.Owner || old.Query != c.Query || old.Enabled != c.Enabled || old.After == "" {
+			if decodeCursor(b, &old) != nil || old.Version != c.Version || old.List != c.List || old.View != c.View || old.CreatedAt.IsZero() || old.User != c.User || old.Kind != c.Kind || old.Owner != c.Owner || old.Query != c.Query || old.Enabled != c.Enabled || core.CanonicalUUID(old.After) != nil {
 				return fault("invalid_input", "Invalid cursor.")
 			}
 			c.After = old.After

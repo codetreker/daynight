@@ -3,7 +3,6 @@ package webhook_test
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,7 +17,6 @@ import (
 	httpwebhook "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
 	identity "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 )
 
 type failedResponseWriter struct {
@@ -48,11 +46,6 @@ func TestHTTPCommittedWriteResponseLoss(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newHTTPFixture(t)
 			actor := f.actor(t)
-			master := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
-			keys, err := secretbox.Parse([]byte(`{"activeKeyId":"main","keys":{"main":"` + master + `"}}`))
-			if err != nil {
-				t.Fatal(err)
-			}
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
 			id := identity.New(f.db, nil, testOrigin+"/auth/callback")
@@ -61,7 +54,7 @@ func TestHTTPCommittedWriteResponseLoss(t *testing.T) {
 				t.Fatal(err)
 			}
 			mux := http.NewServeMux()
-			httpwebhook.NewRoutes(&service.Service{DB: f.db, Keys: keys, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
+			httpwebhook.NewRoutes(&service.Service{DB: f.db, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
 			destination := "https://receiver.example/private-path?token=private-query"
 			fields := createFields(actor, "response-loss", destination)
 			body := encoded(t, fields)

@@ -161,8 +161,10 @@ func ReadBody(w http.ResponseWriter, r *http.Request, maxBytes int64, timeout ti
 	return nil, err
 }
 
-// WriteBodyError is the only cancellation-independent response path. A read
-// timeout cancels net/http's request context; it must not restart business work.
+// WriteBodyError is the only cancellation-independent response path. Read
+// timeouts and closing oversized chunked bodies can cancel net/http's request
+// context while its response socket is still writable. Only these terminal
+// input refusals may detach cancellation; business work keeps the original context.
 func WriteBodyError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, component, phase string, err error) {
 	bodyErr := bodyReadFailure(err)
 	if bodyErr == nil {
@@ -170,17 +172,27 @@ func WriteBodyError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 		return
 	}
 	logger.ErrorContext(r.Context(), "request body read failed", "type", "operation_error", "component", component, "phase", phase, "error_code", bodyErr.Code, "request_id", RequestID(r.Context()))
-	if bodyErr.Status != http.StatusRequestTimeout {
+	if bodyErr.Status != http.StatusRequestTimeout && bodyErr.Status != http.StatusRequestEntityTooLarge {
 		WriteJSON(w, r, logger, bodyErr.Status, api.ErrorResponse{Error: api.Error{Code: bodyErr.Code, Message: bodyErr.Message, RequestID: RequestID(r.Context())}})
 		return
 	}
 	CloseUnreadBody(w, r)
 	controller := http.NewResponseController(w)
 	if err := controller.SetWriteDeadline(time.Now().Add(time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return
+		LogFailure(logger, r.Context(), component, "body rejection write deadline", err)
+		panic(http.ErrAbortHandler)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Second)
 	defer cancel()
 	WriteJSON(w, r.WithContext(ctx), logger, bodyErr.Status, api.ErrorResponse{Error: api.Error{Code: bodyErr.Code, Message: bodyErr.Message, RequestID: RequestID(ctx)}})
-	_ = controller.Flush()
+	if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		LogFailure(logger, r.Context(), component, "body rejection flush", err)
+		panic(http.ErrAbortHandler)
+	}
+	if !r.Close {
+		if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			LogFailure(logger, r.Context(), component, "body rejection clear deadline", err)
+			panic(http.ErrAbortHandler)
+		}
+	}
 }

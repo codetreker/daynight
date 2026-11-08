@@ -159,11 +159,7 @@ func (r *Runner) admit(ctx context.Context, claimed store.WebhookDelivery) (*pre
 		if len(d.Body) != d.OriginalBodyBytes || !bytes.Equal(hash[:], d.BodySHA256) {
 			return fmt.Errorf("invalid webhook body")
 		}
-		plain, err := r.service.decrypt(d.DestinationCiphertext, binding(sources.Endpoint, "delivery-destination", d.ID))
-		if err != nil {
-			return fmt.Errorf("open webhook destination: %w", err)
-		}
-		destination, err := decodeDestination(plain)
+		destination, err := decodeDeliveryDestination(d)
 		if err != nil {
 			return err
 		}
@@ -284,11 +280,10 @@ func (r *Runner) signingKeys(s store.WebhookAdmissionSources, now time.Time) ([]
 			if slot == "current" && key.ID != s.Endpoint.ActiveKeyID {
 				return nil, nil, fmt.Errorf("invalid current webhook key")
 			}
-			secret, err := r.service.decrypt(key.Ciphertext, binding(s.Endpoint, "signing-key", key.ID))
-			if err != nil || len(secret) != 32 {
+			if len(key.Secret) != 32 {
 				return nil, nil, fmt.Errorf("webhook signing key unavailable")
 			}
-			ids, secrets = append(ids, key.ID), append(secrets, secret)
+			ids, secrets = append(ids, key.ID), append(secrets, key.Secret)
 		}
 	}
 	if len(ids) == 0 || len(ids) > 2 || ids[0] != s.Endpoint.ActiveKeyID {

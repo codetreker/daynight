@@ -12,8 +12,8 @@
 
 ## 配置与回执
 
-回执清理先取得与管理写入相同的 operation advisory 围栏，再锁定原回执并以数据库时钟复查截止。过期回执的缺失不能证明原操作未提交。回执、墓碑、退役订阅与 binding、旧等待及过期 overlap key 各自复核实际引用和有效状态；系统清理不授予资料读取权。
+回执清理先取得与管理写入相同的 operation advisory 围栏，再锁定原回执并以数据库时钟复查截止。[管理模块](webhook-management.md#写入与回执)的逻辑到期检查独立于清理进度；围栏的先后顺序只影响物理回收，不能延长回执查询或重放有效期。过期回执的缺失不能证明原操作未提交。回执、墓碑、退役订阅与 binding、旧等待及过期 overlap key 各自复核实际引用和有效状态；系统清理不授予资料读取权。
 
 捕获先写入来源事务再冻结 audience，使用 Read Committed 且已有顶层事务 ID。配置清理读取已退役候选后分配并提交一个事务 ID 作为屏障，等待新快照的最小活动事务 ID 到达该屏障，再按来源、owner、endpoint、订阅和 binding 的既有顺序取得锁并重查引用。冻结旧 audience 的在途事务因此必须先结束；已提交的责任在重查中可见。长事务会延迟清理，重启后重新取得屏障。清理不反向锁来源，也不将已退役身份替换成新身份。
 
-主密钥盘点、重包及恢复条件见[主密钥维护与恢复](webhook-key-maintenance.md)。完整应用生命周期与公开管理接口的组合见[运行设计](webhook-runtime.md)。
+明文目标快照随所属 Delivery 保留并在该 Delivery 回收时删除；删除 endpoint 不会绕过历史责任保留。当前签名秘密和未过期 overlap key 由配置生命周期保护，过期 overlap key 在引用与状态复查后回收。完整应用生命周期与公开管理接口的组合见[运行设计](webhook-runtime.md)，明文存储的成本见[存储决策](../../.agents/notes/implemented/simplification/2026-11-08-webhook-plaintext-storage.md)。

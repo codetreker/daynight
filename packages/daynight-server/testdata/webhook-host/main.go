@@ -3,9 +3,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,7 +36,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/httpoutbound"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -173,14 +170,6 @@ func startWithAdmin(ctx context.Context, databaseURL, token, pat, memberToken, m
 			return nil, err
 		}
 	}
-	key := make([]byte, 32)
-	if _, err = rand.Read(key); err != nil {
-		return nil, err
-	}
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"fixture","keys":{"fixture":"` + base64.StdEncoding.EncodeToString(key) + `"}}`))
-	if err != nil {
-		return nil, err
-	}
 	receiverPath := "/" + uuid.NewString()
 	f.receiverAccepting = true
 	f.receiver = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,8 +207,8 @@ func startWithAdmin(ctx context.Context, databaseURL, token, pat, memberToken, m
 	if err != nil {
 		return nil, err
 	}
-	svc := &webhook.Service{DB: f.db, Keys: keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
-	capture := &webhook.Capturer{Keys: keys, Logger: logger}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	capture := &webhook.Capturer{Logger: logger}
 	f.runner = webhook.NewRunner(f.db, svc, true)
 	roots := x509.NewCertPool()
 	roots.AddCert(f.receiver.Certificate())

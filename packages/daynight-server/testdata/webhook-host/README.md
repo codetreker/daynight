@@ -2,7 +2,9 @@
 
 This fixture runs the production webhook, identity, Team, Task, Step, Thread and Project routes
 with real authentication and PostgreSQL. It binds only to loopback and creates
-an isolated schema. It does not start the delivery runner until requested.
+an isolated schema. Destinations and signing secrets use the production plaintext
+storage format. The controlled receiver records HMAC headers for independent
+verification. It does not start the delivery runner until requested.
 
 From `packages/daynight-server`, set `DAYNIGHT_TEST_DATABASE_URL` to a disposable
 PostgreSQL database and set `DAYNIGHT_WEBHOOK_FIXTURE_TOKEN` to a valid `dnst_`

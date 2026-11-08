@@ -14,8 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,11 +42,6 @@ func TestWebhookAppEventLogThroughGCStress(t *testing.T) {
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: receiver.Certificate().Raw})
 	values := processAPIEnvironment(t)
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "1"
-	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = filepath.Join(testStorageRoot(t), "keys.json")
-	encoded := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	if err := os.WriteFile(values["DAYNIGHT_WEBHOOK_KEYRING_FILE"], []byte(`{"activeKeyId":"primary","keys":{"primary":"`+encoded+`"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	prep := startPersistenceProcess(t, values)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -106,6 +99,11 @@ func TestWebhookAppEventLogThroughGCStress(t *testing.T) {
 	}
 	operation := uuid.NewString()
 	endpoint := request("/api/v1/me/webhooks", map[string]any{"operationId": operation, "issuedAt": time.Now().UTC().Format(time.RFC3339Nano), "expectedUserId": user, "name": "log-chain", "enabled": true, "destination": map[string]any{"kind": "http", "adapterVersion": "1", "configuration": map[string]any{"url": receiver.URL + "/classified-hook"}}, "subscriptions": []any{map[string]any{"id": nil, "projectId": project, "eventTypes": []string{"task.created"}}}}, "endpoint-create", 201)["endpoint"].(map[string]any)["id"].(string)
+	var signingSecret []byte
+	if err = db.QueryRow(ctx, `SELECT secret FROM webhook_signing_keys WHERE endpoint_id=$1 AND slot='current'`, endpoint).Scan(&signingSecret); err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(signingSecret)
 	if err = prep.stop(); err != nil {
 		t.Fatal(err)
 	}

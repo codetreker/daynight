@@ -10,7 +10,6 @@ import (
 
 type Config struct {
 	WebhookEnabled       bool
-	WebhookKeyringFile   string
 	PublicOrigin         string
 	MCPAllowedOrigins    []string
 	OAuthClients         map[string][]byte
@@ -73,7 +72,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	config := Config{
 		WebhookEnabled:       webhookEnabled,
-		WebhookKeyringFile:   getenv("DAYNIGHT_WEBHOOK_KEYRING_FILE"),
 		PublicOrigin:         getenv("DAYNIGHT_PUBLIC_ORIGIN"),
 		MCPAllowedOrigins:    splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
 		OAuthClients:         clients,
@@ -146,9 +144,6 @@ func loadDuration(getenv func(string) string, field string) (time.Duration, erro
 }
 
 func (c Config) Validate() error {
-	if c.WebhookEnabled && strings.TrimSpace(c.WebhookKeyringFile) == "" {
-		return &ConfigurationError{Field: "DAYNIGHT_WEBHOOK_KEYRING_FILE", Rule: "is required when webhooks are enabled"}
-	}
 	if err := validateOAuthClients(c.OAuthClients); err != nil {
 		return err
 	}

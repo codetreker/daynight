@@ -28,7 +28,7 @@ func (s passedMixedConfigBarrier) WebhookConfigGCBarrierPassed(context.Context, 
 // controlled so the test need not wait for the real retention intervals.
 func TestRetentionMixedConfigReferencesAndDeletedOwner(t *testing.T) {
 	f := newCaptureFixture(t, 1)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
 	name, enabled := "other receiver", true
 	create := webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://other.example/hook"}, HasSubscriptions: true, Subscriptions: []core.SubscriptionInput{{ProjectID: f.project, EventTypes: []string{"task.created"}}}}
@@ -49,7 +49,7 @@ func TestRetentionMixedConfigReferencesAndDeletedOwner(t *testing.T) {
 	}
 	var delivery, subscription, binding string
 	var target []byte
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT d.id::text,m.subscription_id::text,m.binding_id::text,d.destination_ciphertext FROM webhook_deliveries d JOIN webhook_delivery_matches m ON m.delivery_id=d.id WHERE d.endpoint_id=$1`, endpoint).Scan(&delivery, &subscription, &binding, &target); err != nil {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT d.id::text,m.subscription_id::text,m.binding_id::text,d.destination_configuration FROM webhook_deliveries d JOIN webhook_delivery_matches m ON m.delivery_id=d.id WHERE d.endpoint_id=$1`, endpoint).Scan(&delivery, &subscription, &binding, &target); err != nil {
 		t.Fatal(err)
 	}
 	remove := webhook.Mutation{Kind: "endpoint.delete", EndpointID: endpoint, IfVersion: 1, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, RequestSHA256: strings.Repeat("c", 64)}
@@ -70,7 +70,7 @@ func TestRetentionMixedConfigReferencesAndDeletedOwner(t *testing.T) {
 	var tomb, subRetired, bindingRetired bool
 	var matches, receipts, current, overlap int
 	var retainedTarget []byte
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT EXISTS(SELECT 1 FROM webhook_endpoints WHERE id=$1 AND deleted_at IS NOT NULL),EXISTS(SELECT 1 FROM webhook_subscriptions WHERE id=$2 AND deleted_at IS NOT NULL),EXISTS(SELECT 1 FROM webhook_bindings WHERE id=$3 AND deleted_at IS NOT NULL),(SELECT count(*) FROM webhook_delivery_matches WHERE delivery_id=$4),(SELECT count(*) FROM webhook_operations WHERE endpoint_id=$1),(SELECT count(*) FROM webhook_signing_keys WHERE endpoint_id=$5 AND slot='current'),(SELECT count(*) FROM webhook_signing_keys WHERE endpoint_id=$5 AND slot='overlap' AND overlap_until>clock_timestamp()),(SELECT destination_ciphertext FROM webhook_deliveries WHERE id=$4)`, endpoint, subscription, binding, delivery, other).Scan(&tomb, &subRetired, &bindingRetired, &matches, &receipts, &current, &overlap, &retainedTarget); err != nil || !tomb || !subRetired || !bindingRetired || matches != 1 || receipts != 2 || current != 1 || overlap != 1 || !bytes.Equal(target, retainedTarget) {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT EXISTS(SELECT 1 FROM webhook_endpoints WHERE id=$1 AND deleted_at IS NOT NULL),EXISTS(SELECT 1 FROM webhook_subscriptions WHERE id=$2 AND deleted_at IS NOT NULL),EXISTS(SELECT 1 FROM webhook_bindings WHERE id=$3 AND deleted_at IS NOT NULL),(SELECT count(*) FROM webhook_delivery_matches WHERE delivery_id=$4),(SELECT count(*) FROM webhook_operations WHERE endpoint_id=$1),(SELECT count(*) FROM webhook_signing_keys WHERE endpoint_id=$5 AND slot='current'),(SELECT count(*) FROM webhook_signing_keys WHERE endpoint_id=$5 AND slot='overlap' AND overlap_until>clock_timestamp()),(SELECT destination_configuration FROM webhook_deliveries WHERE id=$4)`, endpoint, subscription, binding, delivery, other).Scan(&tomb, &subRetired, &bindingRetired, &matches, &receipts, &current, &overlap, &retainedTarget); err != nil || !tomb || !subRetired || !bindingRetired || matches != 1 || receipts != 2 || current != 1 || overlap != 1 || !bytes.Equal(target, retainedTarget) {
 		t.Fatalf("retained references tomb=%v sub=%v binding=%v matches=%d receipts=%d keys=%d/%d err=%v", tomb, subRetired, bindingRetired, matches, receipts, current, overlap, err)
 	}
 	// Age only the terminated Delivery's activity. The real original Event and

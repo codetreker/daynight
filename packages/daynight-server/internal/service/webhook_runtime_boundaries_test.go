@@ -41,9 +41,9 @@ func TestWebhookRuntimeRejectsInvalidAndFailedStarts(t *testing.T) {
 
 func TestWebhookRuntimeDrainRetainsEngineUntilAllWorkersStop(t *testing.T) {
 	app := NewModules(config.Config{}, nil, nil, nil, nil)
-	supervisor, keyWorker, logWorker := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	app.webhookRuntime = &webhookRuntime{runner: webhook.NewRunner(nil, &webhook.Service{}, false), retention: webhook.NewRetention(nil), done: supervisor, keyDone: keyWorker, logDone: logWorker}
-	for i, ch := range []chan struct{}{supervisor, keyWorker, logWorker} {
+	supervisor, logWorker := make(chan struct{}), make(chan struct{})
+	app.webhookRuntime = &webhookRuntime{runner: webhook.NewRunner(nil, &webhook.Service{}, false), retention: webhook.NewRetention(nil), done: supervisor, logDone: logWorker}
+	for i, ch := range []chan struct{}{supervisor, logWorker} {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		err := app.Drain(ctx)
 		cancel()

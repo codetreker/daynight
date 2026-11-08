@@ -8,7 +8,7 @@ Webhook histories and retired configuration must eventually release storage with
 
 ## Decision
 
-The maintenance component closes eligible history under Delivery then Attempt locks before deleting children in bounded batches. It checks shared Event references and retains original hashes after payload expiry. Separate configuration and receipt collectors preserve their own lock prefixes. A transaction snapshot barrier drains captures that could have observed a retired identity before configuration reclamation; capture requires an assigned transaction ID and Read Committed. The [retention design](../../../../docs/design/webhook-retention.md) describes the lifecycle and failure handling. Master rewrapping and recovery are described in the [key maintenance design](../../../../docs/design/webhook-key-maintenance.md).
+The maintenance component closes eligible history under Delivery then Attempt locks before deleting children in bounded batches. It checks shared Event references and retains original hashes after payload expiry. Separate configuration and receipt collectors preserve their own lock prefixes. [Logical receipt expiry](../bug-fix/2026-11-08-webhook-receipt-results.md) is enforced by the management service independently of collection progress. A transaction snapshot barrier drains captures that could have observed a retired identity before configuration reclamation; capture requires an assigned transaction ID and Read Committed. The [retention design](../../../../docs/design/webhook-retention.md) describes the lifecycle and failure handling. The [plaintext storage decision](../simplification/2026-11-08-webhook-plaintext-storage.md) replaces the initial master-key maintenance design; target snapshots follow their existing Delivery retention.
 
 ## Alternatives
 
@@ -16,8 +16,8 @@ The maintenance component closes eligible history under Delivery then Attempt lo
 
 **Delete configuration after one empty reference query.** A capture may have frozen an older committed audience and subsequently commit a new reference; the query alone cannot see that in-flight transaction.
 
-**Use a zero-reference scan as a master retirement decision.** A still-running producer or a retained backup may require the old key after the scan.
+**Use a zero-reference scan as a master retirement decision.** The initial encrypted design rejected this shortcut because a still-running producer or retained backup could still require the old key. That rationale applies if application-level encryption is reconsidered; current plaintext retention has no master-key retirement lifecycle.
 
 ## Consequences
 
-Closed history can be reclaimed across process exits without confusing a partially deleted proof with an active one. Long transactions can delay configuration collection, and the snapshot barrier is reacquired after restart. Key retirement requires evidence from the deployment and backup owners in addition to the database scan. The [application runtime](2026-11-08-webhook-application-runtime.md) owns composition and coordinated shutdown.
+Closed history can be reclaimed across process exits without confusing a partially deleted proof with an active one. Long transactions can delay configuration collection, and the snapshot barrier is reacquired after restart. Retained targets and signing secrets remain readable to database and backup readers until their own records are reclaimed. The [application runtime](2026-11-08-webhook-application-runtime.md) owns composition and coordinated shutdown.

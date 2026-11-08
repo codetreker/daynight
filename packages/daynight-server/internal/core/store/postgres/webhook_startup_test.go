@@ -19,15 +19,15 @@ func TestWebhookStartupReferences(t *testing.T) {
 	}
 	endpoint, owner, key := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	_, err = s.Pool.Exec(ctx, `INSERT INTO webhook_endpoints
-		(id,owner_kind,owner_id,name,enabled,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,active_key_id,created_at,updated_at)
-		VALUES($1,'personal',$2,'name',true,1,1,'http',1,1,'https://example.test',1,'key',decode(repeat('00',12),'hex'),decode(repeat('00',16),'hex'),$3,now(),now())`, endpoint, owner, key)
+		(id,owner_kind,owner_id,name,enabled,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_configuration,active_key_id,created_at,updated_at)
+		VALUES($1,'personal',$2,'name',true,1,1,'http',1,1,'https://example.test',convert_to('{"kind":"http","adapterVersion":"1","configuration":{"url":"https://example.test/hook"}}','UTF8'),$3,now(),now())`, endpoint, owner, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CheckWebhookCurrentReferences(ctx); err == nil {
 		t.Fatal("missing current key and wait accepted")
 	}
-	_, err = s.Pool.Exec(ctx, `INSERT INTO webhook_signing_keys(id,endpoint_id,slot,envelope_version,master_key_id,nonce,ciphertext,created_at) VALUES($1,$2,'current',1,'key',decode(repeat('00',12),'hex'),decode(repeat('00',48),'hex'),now())`, key, endpoint)
+	_, err = s.Pool.Exec(ctx, `INSERT INTO webhook_signing_keys(id,endpoint_id,slot,secret,created_at) VALUES($1,$2,'current',decode(repeat('00',32),'hex'),now())`, key, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}

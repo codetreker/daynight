@@ -17,9 +17,9 @@ func TestCreationReadsBoundedWorkerInputs(t *testing.T) {
 	telemetry := `{"platform":"linux","machine":{"id":"host","name":"host"},"assistantHost":{"protocolVersion":1,"observedAt":"2026-11-07T00:00:00Z","defaultCwd":"/work","defaultProvider":"codex","providers":[{"provider":"codex","available":true,"reason":null,"model":"example","args":["large-argument"]}]}}`
 	// Malformed snapshots and unrelated telemetry detect accidental full decoding.
 	exec(t, f.tx, `UPDATE workers SET telemetry=$3::jsonb, task_snapshot='{"items":"not-an-array"}' WHERE user_id=$1 AND worker_id=$2`, owner, target, telemetry)
-	for i := 0; i < 130; i++ {
-		exec(t, f.tx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now()-interval '2 days',now()-interval '1 day','{"platform":123}','{"items":"not-an-array"}')`, owner, uuid.NewString())
-	}
+	exec(t, f.tx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
+		SELECT $1,gen_random_uuid(),now()-interval '2 days',now()-interval '1 day','{"platform":123}','{"items":"not-an-array"}'
+		FROM generate_series(1,130)`, owner)
 	exec(t, f.tx, `INSERT INTO bot_worker_preferences(user_id,worker_id,creation_order) VALUES($1,$2,1)`, owner, target)
 	exec(t, f.tx, `INSERT INTO bot_configuration_preferences(user_id,worker_id,cwd,cwd_creation_order,provider,provider_creation_order) VALUES($1,$2,'/preferred',1,'codex',1)`, owner, target)
 	exec(t, f.tx, `INSERT INTO bot_model_preferences(user_id,worker_id,provider,model,creation_order) VALUES($1,$2,'codex','chosen',1)`, owner, target)
@@ -61,9 +61,9 @@ func TestCreationReadsBoundedWorkerInputs(t *testing.T) {
 	if _, err := f.reader.BotDefaults(ctx, owner); err == nil {
 		t.Fatal("full directory did not decode historical data")
 	}
-	for i := 0; i < 105; i++ {
-		exec(t, f.tx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now()+($3 * interval '1 millisecond'),now(),$4::jsonb,'{}')`, owner, uuid.NewString(), i+1, telemetry)
-	}
+	exec(t, f.tx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot)
+		SELECT $1,gen_random_uuid(),now()+(n * interval '1 millisecond'),now(),$2::jsonb,'{}'
+		FROM generate_series(1,105) AS n`, owner, telemetry)
 	active, err := f.reader.BotCreationCandidates(ctx, owner)
 	if err != nil || len(active.Workers) != 101 || active.Workers[0].WorkerID != target {
 		t.Fatalf("bounded candidates: %d %v", len(active.Workers), err)

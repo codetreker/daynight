@@ -124,7 +124,6 @@ func (d *DAO) LatestAttempt(ctx context.Context, endpoint string) (*store.Webhoo
 
 // HistoryDisclosure binds a cursor to current readable projects and Task
 // tombstones without depending on retained webhook records or subscriptions.
-// The service encrypts this digest before putting it into the cursor.
 func (d *DAO) HistoryDisclosure(ctx context.Context, _ wm.Owner, _ string, actor string, before time.Time) (string, error) {
 	rows, err := d.tx.Query(ctx, `WITH accessible AS (
 		SELECT p.id FROM projects p JOIN project_ownership po ON po.project_id=p.id JOIN teams team ON team.id=po.team_id

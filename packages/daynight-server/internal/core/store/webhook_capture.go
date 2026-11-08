@@ -18,12 +18,6 @@ type WebhookCaptureDAO interface {
 	SaveCapture(context.Context, WebhookCapturedEvent, []WebhookCapturedDelivery) error
 }
 
-// WebhookMasterReferences enumerates every retained ciphertext's master key.
-// The result is a single database snapshot and contains each key ID once.
-type WebhookMasterReferences interface {
-	WebhookMasterKeyIDs(context.Context) ([]string, error)
-}
-
 type WebhookAudience struct {
 	EventType, ProjectID, SubscriptionID, BindingID string
 	AuthorizationEpoch                              int64
@@ -53,7 +47,7 @@ type WebhookCapturedDelivery struct {
 	PolicyVersion, DestinationRevision, AdapterVersion                      int64
 	DestinationKind, DestinationOrigin                                      string
 	RenderVersion, ConfigurationSchemaVersion                               int16
-	DestinationCiphertext                                                   []byte
+	DestinationConfiguration                                                []byte
 	RequestMethod, RequestMediaType                                         string
 	DeterministicHeadersJSON, Body, BodySHA256                              []byte
 	AutomaticScheduleAt                                                     []time.Time

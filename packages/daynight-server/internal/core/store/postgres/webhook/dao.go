@@ -11,7 +11,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	model "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -21,27 +20,24 @@ func New(tx pgx.Tx) *DAO { return &DAO{tx: tx} }
 
 var _ store.WebhookWriter = (*DAO)(nil)
 
-const endpointColumns = `id::text,owner_kind,owner_id::text,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,destination_origin,destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,active_key_id::text,created_at,updated_at`
+const endpointColumns = `id::text,owner_kind,owner_id::text,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,destination_origin,destination_configuration,active_key_id::text,created_at,updated_at`
 
 func scanEndpoint(row pgx.Row) (model.Endpoint, error) {
 	var e model.Endpoint
-	var name, kind, origin, master, active *string
+	var name, kind, origin, active *string
 	var adapter *int64
-	var version *int16
-	var nonce, ciphertext []byte
-	err := row.Scan(&e.ID, &e.Owner.Kind, &e.Owner.ID, &name, &e.Enabled, &e.DeletedAt, &e.ConfigVersion, &e.DestinationRevision, &kind, &adapter, &origin, &version, &master, &nonce, &ciphertext, &active, &e.CreatedAt, &e.UpdatedAt)
+	err := row.Scan(&e.ID, &e.Owner.Kind, &e.Owner.ID, &name, &e.Enabled, &e.DeletedAt, &e.ConfigVersion, &e.DestinationRevision, &kind, &adapter, &origin, &e.DestinationConfiguration, &active, &e.CreatedAt, &e.UpdatedAt)
 	if err != nil {
 		return model.Endpoint{}, err
 	}
 	if e.DeletedAt != nil {
 		return e, nil
 	}
-	if name == nil || kind == nil || adapter == nil || origin == nil || version == nil || master == nil || active == nil {
-		return model.Endpoint{}, fmt.Errorf("incomplete endpoint ciphertext or configuration")
+	if name == nil || kind == nil || adapter == nil || origin == nil || len(e.DestinationConfiguration) == 0 || active == nil {
+		return model.Endpoint{}, fmt.Errorf("incomplete endpoint configuration")
 	}
 	e.Name, e.DestinationKind, e.AdapterVersion, e.Origin, e.ActiveKeyID = *name, *kind, strconv.FormatInt(*adapter, 10), *origin, *active
-	e.DestinationCiphertext, err = (secretbox.Envelope{Version: int(*version), MasterKeyID: *master, Nonce: nonce, Ciphertext: ciphertext}).MarshalBinary()
-	return e, err
+	return e, nil
 }
 func (d *DAO) Endpoint(ctx context.Context, o model.Owner, id string) (model.Endpoint, error) {
 	e, err := scanEndpoint(d.tx.QueryRow(ctx, `SELECT `+endpointColumns+` FROM webhook_endpoints WHERE owner_kind=$1 AND owner_id=$2 AND id=$3`, o.Kind, o.ID, id))
@@ -77,7 +73,7 @@ func (d *DAO) Endpoints(ctx context.Context, o model.Owner) ([]model.Endpoint, e
 	return out, nil
 }
 func (d *DAO) SigningKeys(ctx context.Context, id string) ([]model.SigningKey, error) {
-	rows, err := d.tx.Query(ctx, `SELECT endpoint_id::text,id::text,slot,envelope_version,master_key_id,nonce,ciphertext,created_at,overlap_started_at,overlap_until FROM webhook_signing_keys WHERE endpoint_id=$1 ORDER BY created_at,id`, id)
+	rows, err := d.tx.Query(ctx, `SELECT endpoint_id::text,id::text,slot,secret,created_at,overlap_started_at,overlap_until FROM webhook_signing_keys WHERE endpoint_id=$1 ORDER BY created_at,id`, id)
 	if err != nil {
 		return nil, pg.QueryError("read webhook keys", err)
 	}
@@ -85,12 +81,7 @@ func (d *DAO) SigningKeys(ctx context.Context, id string) ([]model.SigningKey, e
 	out := make([]model.SigningKey, 0)
 	for rows.Next() {
 		var k model.SigningKey
-		var e secretbox.Envelope
-		if err := rows.Scan(&k.EndpointID, &k.ID, &k.Slot, &e.Version, &e.MasterKeyID, &e.Nonce, &e.Ciphertext, &k.CreatedAt, &k.OverlapStartedAt, &k.OverlapUntil); err != nil {
-			return nil, pg.QueryError("read webhook keys", err)
-		}
-		k.Ciphertext, err = e.MarshalBinary()
-		if err != nil {
+		if err := rows.Scan(&k.EndpointID, &k.ID, &k.Slot, &k.Secret, &k.CreatedAt, &k.OverlapStartedAt, &k.OverlapUntil); err != nil {
 			return nil, pg.QueryError("read webhook keys", err)
 		}
 		out = append(out, k)
@@ -153,19 +144,18 @@ func (d *DAO) Policy(ctx context.Context, version int64) (model.Policy, error) {
 	return p, nil
 }
 func (d *DAO) PutEndpoint(ctx context.Context, e model.Endpoint) error {
-	var name, kind, origin, master, active any
-	var adapter, schema, ver, nonce, cipher any
+	var name, kind, origin, active, configuration any
+	var adapter, schema any
 	if e.DeletedAt == nil {
-		env, err := secretbox.ParseEnvelope(e.DestinationCiphertext)
-		if err != nil {
-			return fmt.Errorf("parse destination envelope: %w", err)
+		if len(e.DestinationConfiguration) < 1 || len(e.DestinationConfiguration) > 262144 {
+			return fmt.Errorf("invalid destination configuration length")
 		}
 		av, err := strconv.ParseInt(e.AdapterVersion, 10, 64)
 		if err != nil {
 			return fmt.Errorf("parse adapter version: %w", err)
 		}
-		name, kind, origin, master, active = e.Name, e.DestinationKind, e.Origin, env.MasterKeyID, e.ActiveKeyID
-		adapter, schema, ver, nonce, cipher = av, int16(1), int16(env.Version), env.Nonce, env.Ciphertext
+		name, kind, origin, active, configuration = e.Name, e.DestinationKind, e.Origin, e.ActiveKeyID, e.DestinationConfiguration
+		adapter, schema = av, int16(1)
 	}
 	var previousRevision int64
 	err := d.tx.QueryRow(ctx, `SELECT destination_revision FROM webhook_endpoints WHERE id=$1`, e.ID).Scan(&previousRevision)
@@ -173,7 +163,7 @@ func (d *DAO) PutEndpoint(ctx context.Context, e model.Endpoint) error {
 		return pg.QueryError("read webhook endpoint revision", err)
 	}
 	newRevision := errors.Is(err, pgx.ErrNoRows) || previousRevision != e.DestinationRevision
-	tag, err := d.tx.Exec(ctx, `INSERT INTO webhook_endpoints(id,owner_kind,owner_id,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,active_key_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,enabled=EXCLUDED.enabled,deleted_at=EXCLUDED.deleted_at,config_version=EXCLUDED.config_version,destination_revision=EXCLUDED.destination_revision,destination_kind=EXCLUDED.destination_kind,adapter_version=EXCLUDED.adapter_version,configuration_schema_version=EXCLUDED.configuration_schema_version,destination_origin=EXCLUDED.destination_origin,destination_envelope_version=EXCLUDED.destination_envelope_version,destination_master_key_id=EXCLUDED.destination_master_key_id,destination_nonce=EXCLUDED.destination_nonce,destination_ciphertext=EXCLUDED.destination_ciphertext,active_key_id=EXCLUDED.active_key_id,updated_at=EXCLUDED.updated_at WHERE webhook_endpoints.owner_kind=EXCLUDED.owner_kind AND webhook_endpoints.owner_id=EXCLUDED.owner_id`, e.ID, e.Owner.Kind, e.Owner.ID, name, e.Enabled, e.DeletedAt, e.ConfigVersion, e.DestinationRevision, kind, adapter, schema, origin, ver, master, nonce, cipher, active, e.CreatedAt, e.UpdatedAt)
+	tag, err := d.tx.Exec(ctx, `INSERT INTO webhook_endpoints(id,owner_kind,owner_id,name,enabled,deleted_at,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_configuration,active_key_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,enabled=EXCLUDED.enabled,deleted_at=EXCLUDED.deleted_at,config_version=EXCLUDED.config_version,destination_revision=EXCLUDED.destination_revision,destination_kind=EXCLUDED.destination_kind,adapter_version=EXCLUDED.adapter_version,configuration_schema_version=EXCLUDED.configuration_schema_version,destination_origin=EXCLUDED.destination_origin,destination_configuration=EXCLUDED.destination_configuration,active_key_id=EXCLUDED.active_key_id,updated_at=EXCLUDED.updated_at WHERE webhook_endpoints.owner_kind=EXCLUDED.owner_kind AND webhook_endpoints.owner_id=EXCLUDED.owner_id`, e.ID, e.Owner.Kind, e.Owner.ID, name, e.Enabled, e.DeletedAt, e.ConfigVersion, e.DestinationRevision, kind, adapter, schema, origin, configuration, active, e.CreatedAt, e.UpdatedAt)
 	if err != nil {
 		return pg.QueryError("save webhook endpoint", err)
 	}
@@ -188,11 +178,10 @@ func (d *DAO) PutEndpoint(ctx context.Context, e model.Endpoint) error {
 	return nil
 }
 func (d *DAO) PutSigningKey(ctx context.Context, k model.SigningKey) error {
-	e, err := secretbox.ParseEnvelope(k.Ciphertext)
-	if err != nil {
-		return fmt.Errorf("parse signing envelope: %w", err)
+	if len(k.Secret) != 32 {
+		return fmt.Errorf("invalid signing secret length")
 	}
-	tag, err := d.tx.Exec(ctx, `INSERT INTO webhook_signing_keys(endpoint_id,id,slot,envelope_version,master_key_id,nonce,ciphertext,created_at,overlap_started_at,overlap_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO UPDATE SET slot=EXCLUDED.slot,envelope_version=EXCLUDED.envelope_version,master_key_id=EXCLUDED.master_key_id,nonce=EXCLUDED.nonce,ciphertext=EXCLUDED.ciphertext,overlap_started_at=EXCLUDED.overlap_started_at,overlap_until=EXCLUDED.overlap_until WHERE webhook_signing_keys.endpoint_id=EXCLUDED.endpoint_id`, k.EndpointID, k.ID, k.Slot, e.Version, e.MasterKeyID, e.Nonce, e.Ciphertext, k.CreatedAt, k.OverlapStartedAt, k.OverlapUntil)
+	tag, err := d.tx.Exec(ctx, `INSERT INTO webhook_signing_keys(endpoint_id,id,slot,secret,created_at,overlap_started_at,overlap_until) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO UPDATE SET slot=EXCLUDED.slot,secret=EXCLUDED.secret,overlap_started_at=EXCLUDED.overlap_started_at,overlap_until=EXCLUDED.overlap_until WHERE webhook_signing_keys.endpoint_id=EXCLUDED.endpoint_id`, k.EndpointID, k.ID, k.Slot, k.Secret, k.CreatedAt, k.OverlapStartedAt, k.OverlapUntil)
 	if err != nil {
 		return pg.QueryError("save webhook key", err)
 	}

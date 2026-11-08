@@ -60,10 +60,7 @@ CREATE TABLE webhook_deliveries (
     render_version smallint NOT NULL CHECK (render_version = 1),
     configuration_schema_version smallint NOT NULL CHECK (configuration_schema_version = 1),
     destination_origin text NOT NULL CHECK (octet_length(destination_origin) > 0),
-    destination_envelope_version smallint NOT NULL CHECK (destination_envelope_version = 1),
-    destination_master_key_id text NOT NULL CHECK (destination_master_key_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'),
-    destination_nonce bytea NOT NULL CHECK (octet_length(destination_nonce) = 12),
-    destination_ciphertext bytea NOT NULL CHECK (octet_length(destination_ciphertext) >= 16),
+    destination_configuration bytea NOT NULL CHECK (octet_length(destination_configuration) BETWEEN 1 AND 262144),
     request_method text NOT NULL CHECK (request_method = 'POST'),
     request_media_type text NOT NULL CHECK (request_media_type = 'application/cloudevents+json'),
     deterministic_headers_json bytea NOT NULL CHECK (deterministic_headers_json = convert_to('[]', 'UTF8')),
@@ -125,7 +122,6 @@ CREATE INDEX webhook_deliveries_lease ON webhook_deliveries (lease_until, id) WH
 CREATE INDEX webhook_deliveries_history ON webhook_deliveries (owner_kind, owner_id, endpoint_id, occurred_at DESC, id DESC);
 CREATE INDEX webhook_deliveries_event ON webhook_deliveries (event_id, id);
 CREATE INDEX webhook_deliveries_endpoint_revision ON webhook_deliveries (endpoint_id, destination_revision, id);
-CREATE INDEX webhook_deliveries_master_key ON webhook_deliveries (destination_master_key_id, id);
 CREATE INDEX webhook_deliveries_metadata_expiry ON webhook_deliveries (metadata_expires_at, id);
 CREATE INDEX webhook_deliveries_purging ON webhook_deliveries (purging_at, id) WHERE purging_at IS NOT NULL;
 

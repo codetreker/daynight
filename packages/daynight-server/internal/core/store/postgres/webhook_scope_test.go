@@ -10,7 +10,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -19,15 +18,9 @@ func webhookStoredFixture(t *testing.T) (webhook.Owner, webhook.Endpoint, webhoo
 	owner := webhook.Owner{Kind: "personal", ID: uuid.NewString()}
 	id, keyID := uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	envelope := func(size int) []byte {
-		raw, err := (secretbox.Envelope{Version: 1, MasterKeyID: "primary", Nonce: make([]byte, 12), Ciphertext: make([]byte, size)}).MarshalBinary()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return raw
-	}
-	endpoint := webhook.Endpoint{ID: id, Owner: owner, Name: "sample", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.org", DestinationCiphertext: envelope(32), ActiveKeyID: keyID, CreatedAt: now, UpdatedAt: now}
-	key := webhook.SigningKey{EndpointID: id, ID: keyID, Slot: "current", Ciphertext: envelope(48), CreatedAt: now}
+	configuration := []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://example.org/hook"}}`)
+	endpoint := webhook.Endpoint{ID: id, Owner: owner, Name: "sample", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.org", DestinationConfiguration: configuration, ActiveKeyID: keyID, CreatedAt: now, UpdatedAt: now}
+	key := webhook.SigningKey{EndpointID: id, ID: keyID, Slot: "current", Secret: bytes.Repeat([]byte{2}, 32), CreatedAt: now}
 	receipt := webhook.Operation{Owner: owner, ID: uuid.NewString(), ActorID: owner.ID, Kind: "endpoint.create", TargetID: id, IssuedAt: now.Format(time.RFC3339Nano), RequestSHA256: strings.Repeat("a", 64), Fingerprint: strings.Repeat("b", 64), Effect: "applied", ConfigVersion: 1, DestinationRevisionAfter: 1, RecordedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)}
 	return owner, endpoint, key, receipt
 }
@@ -55,14 +48,14 @@ func TestWebhookPersistenceAndSnapshot(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if got.Name != endpoint.Name || !bytes.Equal(got.DestinationCiphertext, endpoint.DestinationCiphertext) {
+		if got.Name != endpoint.Name || !bytes.Equal(got.DestinationConfiguration, endpoint.DestinationConfiguration) {
 			t.Fatalf("endpoint %#v", got)
 		}
 		keys, err := dao.SigningKeys(ctx, endpoint.ID)
 		if err != nil {
 			return err
 		}
-		if len(keys) != 1 || keys[0].ID != key.ID || !bytes.Equal(keys[0].Ciphertext, key.Ciphertext) {
+		if len(keys) != 1 || keys[0].ID != key.ID || !bytes.Equal(keys[0].Secret, key.Secret) {
 			t.Fatalf("keys %#v", keys)
 		}
 		saved, err := dao.Operation(ctx, owner, receipt.ID)
@@ -111,10 +104,10 @@ func TestWebhookReceiptInsertFailureRollsBackEffects(t *testing.T) {
 		t.Fatalf("setup: %v %v", completion, err)
 	}
 	mustQueryExec(t, s, `CREATE FUNCTION reject_webhook_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1901', MESSAGE='receipt storage failure'; END $$; CREATE TRIGGER reject_webhook_receipt BEFORE INSERT ON webhook_operations FOR EACH ROW EXECUTE FUNCTION reject_webhook_receipt()`)
-	originalCipher := bytes.Clone(key.Ciphertext)
+	originalSecret := bytes.Clone(key.Secret)
 	endpoint.Name, endpoint.ConfigVersion = "changed", 2
-	key.Ciphertext = bytes.Clone(key.Ciphertext)
-	key.Ciphertext[len(key.Ciphertext)-1] ^= 1
+	key.Secret = bytes.Clone(key.Secret)
+	key.Secret[len(key.Secret)-1] ^= 1
 	receipt := initial
 	receipt.ID, receipt.Kind, receipt.ConfigVersion = uuid.NewString(), "endpoint.update", 2
 	completion, err = s.WriteWebhook(ctx, owner, receipt.ID, func(sc store.WebhookWriteScope) error {
@@ -140,7 +133,7 @@ func TestWebhookReceiptInsertFailureRollsBackEffects(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if got.Name != "sample" || got.ConfigVersion != 1 || len(keys) != 1 || !bytes.Equal(keys[0].Ciphertext, originalCipher) {
+		if got.Name != "sample" || got.ConfigVersion != 1 || len(keys) != 1 || !bytes.Equal(keys[0].Secret, originalSecret) {
 			t.Fatalf("partial effects: endpoint=%#v keys=%#v", got, keys)
 		}
 		return nil
