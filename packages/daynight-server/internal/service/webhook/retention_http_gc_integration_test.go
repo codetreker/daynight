@@ -265,7 +265,7 @@ func TestJointHTTPAdmittedLeaseAcrossPayloadExpiry(t *testing.T) {
 	}
 	intent := strings.Replace(r.intent(), `"ifVersion":"1"`, `"ifVersion":"2"`, 1)
 	retentionReceive(t, r, r.call("POST", "/redeliveries", intent), http.StatusAccepted)
-	runner := webhook.NewRunner(r.f.db, r.svc, true)
+	runner := newTestRunner(r.f.db, r.svc, true)
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
@@ -360,7 +360,7 @@ func testJointHTTPLateAndRetentionLockBarriers(t *testing.T, lateFirst bool) {
 	clockService := &webhook.Service{DB: jointHistoryClock{f.db, controlledAt}, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	clockAPI := jointRetentionHost(t, f, clockService, token, endpoint, delivery)
 	late := &lateAttemptBarrier{base: observer, locked: make(chan struct{}), release: make(chan struct{}), at: controlledAt}
-	runner := webhook.NewRunner(late, svc, true)
+	runner := newTestRunner(late, svc, true)
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
@@ -413,7 +413,7 @@ func testJointHTTPLateAndRetentionLockBarriers(t *testing.T, lateFirst bool) {
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET lease_claimed_at=clock_timestamp()-interval '46 seconds',lease_until=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	recovery := webhook.NewRunner(f.db, svc, false)
+	recovery := newTestRunner(f.db, svc, false)
 	if err := recovery.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

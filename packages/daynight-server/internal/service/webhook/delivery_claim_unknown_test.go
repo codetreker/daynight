@@ -69,6 +69,7 @@ func TestWorkerUnknownClaimNeverSendsAndRetries(t *testing.T) {
 	sender := &countUnexpectedDelivery{}
 	r := NewRunner(db, &Service{}, true)
 	r.client = sender
+	r.pollInterval = 20 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	err := r.worker(ctx, ctx)

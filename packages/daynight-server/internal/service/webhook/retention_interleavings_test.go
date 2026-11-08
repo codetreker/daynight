@@ -346,7 +346,7 @@ func TestRetentionDuringRealAdmissionAndFinalize(t *testing.T) {
 	var releaseAdmission, releaseFinish sync.Once
 	defer releaseAdmission.Do(func() { close(g.releaseAdmission) })
 	defer releaseFinish.Do(func() { close(g.releaseFinish) })
-	runner := webhook.NewRunner(g, svc, true)
+	runner := newTestRunner(g, svc, true)
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
@@ -440,9 +440,9 @@ func TestRetentionProtectsRealAdmissionAcrossPayloadDeadline(t *testing.T) {
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
 	}
-	// This controlled event clock leaves a few seconds for actual admission,
-	// then the already admitted request crosses the immutable seven-day edge.
-	occurred := time.Now().UTC().Add(-7*24*time.Hour + 6*time.Second)
+	// Keep admission inside the original payload lifetime, then advance only
+	// maintenance time after the actual receiver has accepted the request.
+	occurred := time.Now().UTC().Add(-7*24*time.Hour + 10*time.Second)
 	if _, err := taskservice.NewTasks(f.db, retentionOldCapture{f.capture, occurred}).Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "cross expiry"}); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestRetentionProtectsRealAdmissionAcrossPayloadDeadline(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `UPDATE webhook_deliveries SET trigger='manual',manual_operation_id=$1,manual_operation_count=1,automatic_open=false,expires_at=payload_expires_at,next_attempt_at=clock_timestamp() RETURNING id::text,body,payload_expires_at`, uuid.NewString()).Scan(&id, &body, &expiry); err != nil {
 		t.Fatal(err)
 	}
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
@@ -477,10 +477,7 @@ func TestRetentionProtectsRealAdmissionAcrossPayloadDeadline(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("manual admission absent")
 	}
-	if delay := time.Until(expiry) + 50*time.Millisecond; delay > 0 {
-		time.Sleep(delay)
-	}
-	if _, _, err := webhook.NewRetention(f.db).Pass(f.ctx); err != nil {
+	if _, _, err := webhook.NewRetention(&sharedHistoryFutureStore{Store: f.db, advance: time.Until(expiry) + 50*time.Millisecond}).Pass(f.ctx); err != nil {
 		t.Fatal(err)
 	}
 	var stored, fact []byte

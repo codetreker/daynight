@@ -90,7 +90,7 @@ func TestApplicationSourcesToTwoOwnersTLS(t *testing.T) {
 		t.Fatalf("keys=%d err=%v", len(keys), err)
 	}
 	app := application.New(f.db, nil, nil, "https://daynight.example/auth/callback", 0, f.capture)
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))

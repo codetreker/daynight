@@ -111,7 +111,7 @@ func TestDeliveryLostCommitReceipts(t *testing.T) {
 			}
 			defer pool.Close()
 			db := &postgres.Store{Pool: pool}
-			runner := webhook.NewRunner(db, svc, true)
+			runner := newTestRunner(db, svc, true)
 			roots := x509.NewCertPool()
 			roots.AddCert(receiver.Certificate())
 			runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))

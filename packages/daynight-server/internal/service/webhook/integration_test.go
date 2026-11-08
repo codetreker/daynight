@@ -590,6 +590,8 @@ func TestPostgresWaitingWriteRevocationAndExpiry(t *testing.T) {
 	for _, scenario := range []string{"revoked", "expired"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newFixture(t, true)
+			clock := &operationClockStore{Store: f.db}
+			f.svc.DB = clock
 			p := f.principal(t)
 			owner := Owner{Kind: "personal", ID: p.UserID}
 			created, err := f.svc.Mutate(f.ctx, p, owner, createMutation(p, "original", "https://receiver.example/path"))
@@ -628,13 +630,7 @@ func TestPostgresWaitingWriteRevocationAndExpiry(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				deadline, err := time.Parse(time.RFC3339Nano, change.IssuedAt)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if remaining := time.Until(deadline.Add(301 * time.Second)); remaining > 0 {
-					time.Sleep(remaining)
-				}
+				clock.advance.Store(int64(2 * time.Second))
 			}
 			if err := lock.Commit(f.ctx); err != nil {
 				t.Fatal(err)
@@ -752,6 +748,8 @@ func TestPostgresReadsAndCursorAuthorization(t *testing.T) {
 
 func TestPostgresNewIntentDemotionPrecedesExpiryAfterFence(t *testing.T) {
 	f := newFixture(t, true)
+	clock := &operationClockStore{Store: f.db}
+	f.svc.DB = clock
 	admin := f.principal(t)
 	team := uuid.NewString()
 	owner := Owner{Kind: "team", ID: team}
@@ -783,13 +781,7 @@ func TestPostgresNewIntentDemotionPrecedesExpiryAfterFence(t *testing.T) {
 	if _, err := aux.Exec(f.ctx, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, team, admin.UserID); err != nil {
 		t.Fatal(err)
 	}
-	issued, err := time.Parse(time.RFC3339Nano, m.IssuedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if remaining := time.Until(issued.Add(301 * time.Second)); remaining > 0 {
-		time.Sleep(remaining)
-	}
+	clock.advance.Store(int64(2 * time.Second))
 	if err := lock.Commit(f.ctx); err != nil {
 		t.Fatal(err)
 	}

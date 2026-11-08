@@ -68,7 +68,7 @@ func TestDeliveryRunnerDisabledRecoversAndExpires(t *testing.T) {
 	if _, err = f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, ids[2]); err != nil {
 		t.Fatal(err)
 	}
-	runner := webhook.NewRunner(f.db, svc, false)
+	runner := newTestRunner(f.db, svc, false)
 	if err = runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestDeliveryRunnerReportsPermanentDatabaseFailure(t *testing.T) {
 	if _, err := f.db.Pool.Exec(f.ctx, `DROP TABLE webhook_attempts`); err != nil {
 		t.Fatal(err)
 	}
-	runner := webhook.NewRunner(f.db, &webhook.Service{DB: f.db, Keys: f.capture.Keys}, false)
+	runner := newTestRunner(f.db, &webhook.Service{DB: f.db, Keys: f.capture.Keys}, false)
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

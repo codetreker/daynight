@@ -58,7 +58,7 @@ func TestRedeliveryRealIntentAndRunner(t *testing.T) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 	if err = runner.Start(context.Background()); err != nil {
 		t.Fatal(err)

@@ -85,7 +85,7 @@ func TestDeliveryProcessExitRecovery(t *testing.T) {
 			os.Exit(0)
 		}
 		svc := &webhook.Service{DB: db, Keys: keys}
-		runner := webhook.NewRunner(db, svc, true)
+		runner := newTestRunner(db, svc, true)
 		der, err := base64.StdEncoding.DecodeString(os.Getenv("DAYNIGHT_T04_EXIT_CERT"))
 		if err != nil {
 			t.Fatal(err)
@@ -196,7 +196,7 @@ func TestDeliveryProcessExitRecovery(t *testing.T) {
 			if _, err = f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET lease_claimed_at=now()-interval '46 seconds',lease_until=now()-interval '1 second' WHERE id=$1`, id); err != nil {
 				t.Fatal(err)
 			}
-			recovery := webhook.NewRunner(f.db, svc, false)
+			recovery := newTestRunner(f.db, svc, false)
 			if err = recovery.Start(context.Background()); err != nil {
 				t.Fatal(err)
 			}

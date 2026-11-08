@@ -24,6 +24,8 @@ type retentionStore interface {
 // Construction does not start work; the owner must stop it before closing DB.
 type Retention struct {
 	DB             retentionStore
+	retryInterval  time.Duration
+	passTimeout    time.Duration
 	mu             sync.Mutex
 	passMu         sync.Mutex
 	observationMu  sync.RWMutex
@@ -45,7 +47,7 @@ type Retention struct {
 type retentionUnknown struct{ kind, id string }
 
 func NewRetention(db retentionStore) *Retention {
-	return &Retention{DB: db, failures: make(chan error, 1), events: make(chan RetentionEvent, 128)}
+	return &Retention{DB: db, retryInterval: time.Second, passTimeout: 2 * time.Second, failures: make(chan error, 1), events: make(chan RetentionEvent, 128)}
 }
 func (r *Retention) Failures() <-chan error { return r.failures }
 func (r *Retention) Start(parent context.Context) error {
@@ -102,14 +104,10 @@ func (r *Retention) run(ctx context.Context) error {
 		}
 		delay := time.Minute
 		if more || n == retentionBatch {
-			delay = time.Second
+			delay = r.retryInterval
 		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !waitPoll(ctx, delay) {
 			return nil
-		case <-timer.C:
 		}
 	}
 	return nil
@@ -131,7 +129,7 @@ func (r *Retention) Pass(parent context.Context) (total int, continueSoon bool, 
 	if r.DB == nil {
 		return 0, false, fmt.Errorf("missing webhook retention store")
 	}
-	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	ctx, cancel := context.WithTimeout(parent, r.passTimeout)
 	defer cancel()
 	if err := r.receipts.Reconcile(ctx, r.DB); err != nil {
 		if ctx.Err() != nil && parent.Err() == nil {

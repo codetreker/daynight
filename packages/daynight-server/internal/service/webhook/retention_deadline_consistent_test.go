@@ -78,7 +78,7 @@ func TestRetentionConsistentOriginalDeadlineBoundaries(t *testing.T) {
 			gc := webhook.NewRetention(f.db)
 			if tc.mode == "automatic" || tc.mode == "payload" {
 				svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
-				runner := webhook.NewRunner(f.db, svc, false)
+				runner := newTestRunner(f.db, svc, false)
 				if err = runner.Start(context.Background()); err != nil {
 					t.Fatal(err)
 				}

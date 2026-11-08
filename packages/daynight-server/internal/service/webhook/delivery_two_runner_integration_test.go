@@ -94,7 +94,7 @@ func TestDeliveryTwoRunnersDrainAndContinue(t *testing.T) {
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
 	newRunner := func(db *postgres.Store) *webhook.Runner {
-		r := webhook.NewRunner(db, svc, true)
+		r := newTestRunner(db, svc, true)
 		r.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 		return r
 	}

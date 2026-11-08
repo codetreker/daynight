@@ -649,6 +649,14 @@ the real Web assets described under [Build and run](#build-and-run).
 
 ### Business rules and DAO mocks
 
+Webhook integration fixtures configure short instance polling and retry intervals
+while retaining real SQL, TLS delivery and persisted readback. Scoped clocks
+advance operation or retention time only after the corresponding database lock
+or receiver-admission observation. Production construction keeps one-second
+polling/retry intervals and a two-second retention pass; dedicated tests check
+those defaults. The [Webhook test decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-test-cost.md)
+records the timing and redelivery proofs.
+
 Business-rule unit tests construct domain facts directly and use narrow mocks
 of the `core/store` DAO interfaces when a rule needs query results or storage
 errors. Check arguments, expected calls, results and error chains; unconfigured

@@ -23,20 +23,21 @@ type outboundClient interface {
 
 // Runner owns the delivery pool. Construction starts no background work.
 type Runner struct {
-	DB         store.WebhookDeliveryTransactions
-	Logger     *slog.Logger
-	service    *Service
-	client     outboundClient
-	enabled    bool
-	mu         sync.Mutex
-	cancel     context.CancelFunc
-	stopClaims context.CancelFunc
-	finished   chan struct{}
-	failures   chan error
+	DB           store.WebhookDeliveryTransactions
+	Logger       *slog.Logger
+	service      *Service
+	client       outboundClient
+	enabled      bool
+	pollInterval time.Duration
+	mu           sync.Mutex
+	cancel       context.CancelFunc
+	stopClaims   context.CancelFunc
+	finished     chan struct{}
+	failures     chan error
 }
 
 func NewRunner(db store.WebhookDeliveryTransactions, service *Service, enabled bool) *Runner {
-	return &Runner{DB: db, service: service, client: httpoutbound.New(), enabled: enabled, failures: make(chan error, 1)}
+	return &Runner{DB: db, service: service, client: httpoutbound.New(), enabled: enabled, pollInterval: time.Second, failures: make(chan error, 1)}
 }
 
 // Failures reports permanent worker failure to the application owner.
@@ -154,8 +155,8 @@ func transactionError(phase string, c store.Completion, err error) error {
 	}
 	return nil
 }
-func waitPoll(ctx context.Context) bool {
-	t := time.NewTimer(time.Second)
+func waitPoll(ctx context.Context, delay time.Duration) bool {
+	t := time.NewTimer(delay)
 	defer t.Stop()
 	select {
 	case <-ctx.Done():
@@ -185,7 +186,7 @@ func (r *Runner) worker(ctx, claimCtx context.Context) error {
 			}
 			failure := transactionError("claim", completion, err)
 			if errors.Is(failure, errDeliveryOutcomeUnknown) {
-				if !waitPoll(claimCtx) {
+				if !waitPoll(claimCtx, r.pollInterval) {
 					return nil
 				}
 				continue
@@ -193,7 +194,7 @@ func (r *Runner) worker(ctx, claimCtx context.Context) error {
 			return failure
 		}
 		if len(deliveries) == 0 {
-			if !waitPoll(claimCtx) {
+			if !waitPoll(claimCtx, r.pollInterval) {
 				return nil
 			}
 			continue
@@ -278,14 +279,14 @@ func (r *Runner) maintenance(ctx context.Context) error {
 	for ctx.Err() == nil {
 		if err := r.recoverExpired(ctx); err != nil {
 			if errors.Is(err, errDeliveryOutcomeUnknown) {
-				if !waitPoll(ctx) {
+				if !waitPoll(ctx, r.pollInterval) {
 					return nil
 				}
 				continue
 			}
 			return err
 		}
-		if !waitPoll(ctx) {
+		if !waitPoll(ctx, r.pollInterval) {
 			return nil
 		}
 	}

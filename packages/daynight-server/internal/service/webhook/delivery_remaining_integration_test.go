@@ -72,7 +72,7 @@ func remainingReceiver(t *testing.T, f *captureFixture, handler http.Handler) (*
 }
 func remainingRunner(t *testing.T, f *captureFixture, svc *webhook.Service, c *httpoutbound.Client) *webhook.Runner {
 	t.Helper()
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	runner.SetTestTransport(c)
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)

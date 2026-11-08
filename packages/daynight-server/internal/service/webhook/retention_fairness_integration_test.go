@@ -28,11 +28,13 @@ func TestRetentionContinuesOtherClassesAfterConfigTimeout(t *testing.T) {
 	ageRetention(t, f, id, 8*24*time.Hour)
 	db := &slowConfigScan{Store: f.db}
 	gc := webhook.NewRetention(db)
+	gc.SetTestPassTimeout(100 * time.Millisecond)
 	started := time.Now()
 	_, more, err := gc.Pass(f.ctx)
-	if err != nil || !more || time.Since(started) > 2500*time.Millisecond {
-		t.Fatalf("bounded pass: more=%v elapsed=%v err=%v", more, time.Since(started), err)
+	if err != nil || !more || !db.slow || time.Since(started) > 500*time.Millisecond {
+		t.Fatalf("bounded pass: scanned=%v more=%v elapsed=%v err=%v", db.slow, more, time.Since(started), err)
 	}
+	gc.SetTestPassTimeout(2 * time.Second)
 	if _, _, err = gc.Pass(f.ctx); err != nil {
 		t.Fatal(err)
 	}

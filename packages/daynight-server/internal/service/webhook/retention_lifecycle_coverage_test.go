@@ -155,6 +155,7 @@ func TestRetentionBackgroundReconcilesUnknownBeforeMoreWrites(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			db := &retentionLifecycleDB{mode: mode, observed: make(chan struct{}, 1)}
 			r := NewRetention(db)
+			r.retryInterval = 20 * time.Millisecond
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := r.Start(ctx); err != nil {

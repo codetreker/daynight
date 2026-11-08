@@ -197,7 +197,7 @@ func TestRetentionOriginalDeadlinesWithDeliveryRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
-	runner := webhook.NewRunner(f.db, svc, false)
+	runner := newTestRunner(f.db, svc, false)
 	if err = runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

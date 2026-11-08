@@ -88,7 +88,7 @@ func TestDeliveryRealCaptureTLSAndSignature(t *testing.T) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	if os.Getenv("DAYNIGHT_T07_LOG_STDERR") == "1" {
 		runner.Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	}
@@ -173,7 +173,7 @@ func TestDeliveryAttemptInsertFailureNeverSends(t *testing.T) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestDeliveryOldDestinationDoesNotRevive(t *testing.T) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestDeliveryRetryAfterPreservesBytes(t *testing.T) {
 		}
 		requests <- observedRequest{b, r.Header.Get("Webhook-Id"), r.Header.Get("Webhook-Timestamp"), r.Header.Get("Webhook-Signature"), r.Header.Get("Content-Type")}
 		if count.Add(1) == 1 {
-			w.Header().Set("Retry-After", "6")
+			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -315,12 +315,12 @@ func TestDeliveryRetryAfterPreservesBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Use a near-future second slot so this test observes the receiver's wait.
-	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET automatic_schedule_at[2]=occurred_at+interval '1 second'`); err != nil {
+	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET automatic_schedule_at[2]=occurred_at+interval '20 milliseconds'`); err != nil {
 		t.Fatal(err)
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -361,7 +361,7 @@ func TestDeliveryRetryAfterPreservesBytes(t *testing.T) {
 		t.Fatal("retry ignored receiver wait")
 	case err := <-runner.Failures():
 		t.Fatalf("runner failure: %v", err)
-	case <-time.After(3 * time.Second):
+	case <-time.After(50 * time.Millisecond):
 	}
 	select {
 	case second = <-requests:
@@ -471,7 +471,7 @@ func TestDeliveryRevocationWinsAdmission(t *testing.T) {
 		t.Fatal("removal did not hold source lock")
 	}
 	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestDeliveryAdmissionBeforeRevocationPreservesAcknowledgement(t *testing.T)
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -676,7 +676,7 @@ func TestDeliveryTaskAndStepDeletionAnchors(t *testing.T) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 	if err = runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -783,7 +783,7 @@ func TestDeliveryOriginalProofContinuity(t *testing.T) {
 			}
 			roots := x509.NewCertPool()
 			roots.AddCert(receiver.Certificate())
-			runner := webhook.NewRunner(f.db, svc, true)
+			runner := newTestRunner(f.db, svc, true)
 			runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 			if err := runner.Start(context.Background()); err != nil {
 				t.Fatal(err)
@@ -869,7 +869,7 @@ func TestDeliveryRunsAfterSourceHTTPContextCancelled(t *testing.T) {
 	cancel()
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -943,7 +943,7 @@ func TestDeliveryRegrantDoesNotReviveOriginalEpoch(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT m.authorization_epoch,s.authorization_epoch FROM webhook_delivery_matches m JOIN webhook_subscriptions s ON s.id=m.subscription_id`).Scan(&original, &current); err != nil || original != 1 || current != 2 {
 		t.Fatalf("epochs %d/%d err=%v", original, current, err)
 	}
-	runner := webhook.NewRunner(f.db, svc, true)
+	runner := newTestRunner(f.db, svc, true)
 	if err = runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

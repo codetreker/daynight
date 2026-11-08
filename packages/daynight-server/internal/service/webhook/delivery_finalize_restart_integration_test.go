@@ -96,7 +96,7 @@ func TestDeliveryFinalizeReceiptLossProcessRestart(t *testing.T) {
 		}
 		roots := x509.NewCertPool()
 		roots.AddCert(cert)
-		runner := webhook.NewRunner(db, svc, true)
+		runner := newTestRunner(db, svc, true)
 		runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 		if err = runner.Start(ctx); err != nil {
 			t.Fatal(err)

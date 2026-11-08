@@ -100,7 +100,7 @@ func TestDeliveryLateObservationWithNewLeaseLocked(t *testing.T) {
 				t.Fatal(err)
 			}
 			observer := &observeLateTransactions{base: f.db, committed: make(chan struct{}, 1)}
-			runner := webhook.NewRunner(observer, svc, true)
+			runner := newTestRunner(observer, svc, true)
 			roots := x509.NewCertPool()
 			roots.AddCert(receiver.Certificate())
 			runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
@@ -128,7 +128,7 @@ func TestDeliveryLateObservationWithNewLeaseLocked(t *testing.T) {
 			if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET lease_claimed_at=now()-interval '46 seconds',lease_until=now()-interval '1 second' WHERE id=$1`, id); err != nil {
 				t.Fatal(err)
 			}
-			recovery := webhook.NewRunner(f.db, svc, false)
+			recovery := newTestRunner(f.db, svc, false)
 			if err := recovery.Start(context.Background()); err != nil {
 				t.Fatal(err)
 			}

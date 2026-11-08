@@ -56,7 +56,7 @@ func TestDeliveryOldWaitRemovedAfterAdmission(t *testing.T) {
 			}
 			roots := x509.NewCertPool()
 			roots.AddCert(receiver.Certificate())
-			runner := webhook.NewRunner(f.db, svc, true)
+			runner := newTestRunner(f.db, svc, true)
 			runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
 			if err := runner.Start(context.Background()); err != nil {
 				t.Fatal(err)
@@ -92,7 +92,7 @@ func TestDeliveryOldWaitRemovedAfterAdmission(t *testing.T) {
 				if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET lease_claimed_at=now()-interval '46 seconds',lease_until=now()-interval '1 second' WHERE id=$1`, delivery); err != nil {
 					t.Fatal(err)
 				}
-				recovery = webhook.NewRunner(f.db, svc, false)
+				recovery = newTestRunner(f.db, svc, false)
 				if err := recovery.Start(context.Background()); err != nil {
 					t.Fatal(err)
 				}

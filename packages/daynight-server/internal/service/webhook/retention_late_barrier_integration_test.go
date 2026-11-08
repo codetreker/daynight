@@ -205,7 +205,7 @@ func testRetentionLateAttemptLockBarriers(t *testing.T, lateFirst bool) {
 	observer := &observeLateTransactions{base: runnerDB, committed: make(chan struct{}, 1)}
 	controlledAt := created.CreatedAt.Add(40 * 24 * time.Hour)
 	late := &lateAttemptBarrier{base: observer, locked: make(chan struct{}), release: make(chan struct{}), at: controlledAt}
-	runner := webhook.NewRunner(late, svc, true)
+	runner := newTestRunner(late, svc, true)
 	roots := x509.NewCertPool()
 	roots.AddCert(receiver.Certificate())
 	runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
@@ -258,7 +258,7 @@ func testRetentionLateAttemptLockBarriers(t *testing.T, lateFirst bool) {
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_deliveries SET lease_claimed_at=clock_timestamp()-interval '46 seconds',lease_until=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	recovery := webhook.NewRunner(f.db, svc, false)
+	recovery := newTestRunner(f.db, svc, false)
 	if err := recovery.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

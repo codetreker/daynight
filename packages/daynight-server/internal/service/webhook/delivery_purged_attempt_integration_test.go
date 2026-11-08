@@ -52,7 +52,7 @@ func TestDeliveryLateResultAfterAttemptPurged(t *testing.T) {
 				t.Fatal(err)
 			}
 			observer := &observeLateTransactions{base: f.db, committed: make(chan struct{}, 1)}
-			runner := webhook.NewRunner(observer, svc, true)
+			runner := newTestRunner(observer, svc, true)
 			roots := x509.NewCertPool()
 			roots.AddCert(receiver.Certificate())
 			runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))

@@ -94,7 +94,7 @@ func TestAdmissionAfterClaimedHistoryCleanup(t *testing.T) {
 			gate := &claimCleanupGate{base: f.db, entered: make(chan struct{}), release: make(chan struct{}), forceExpired: mode == "deleted"}
 			var releaseOnce sync.Once
 			defer releaseOnce.Do(func() { close(gate.release) })
-			runner := webhook.NewRunner(gate, svc, true)
+			runner := newTestRunner(gate, svc, true)
 			roots := x509.NewCertPool()
 			roots.AddCert(receiver.Certificate())
 			runner.SetTestTransport(httpoutbound.NewForTesting(testResolver{}, func(ip netip.Addr) bool { return ip.IsLoopback() }, roots))
