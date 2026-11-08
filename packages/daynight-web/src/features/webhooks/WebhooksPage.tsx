@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { ApiError } from "../../api/client";
 import type { CurrentUser } from "../../api/auth-types";
 import { getWebhookSecret, type WebhookActiveEndpoint, type WebhookCatalog, type WebhookEndpointSummary, type WebhookOwner, type WebhookSecret, type WebhookSubscription } from "../../api/webhooks";
 import { navigate, webhookUrl, type WebhookRoute } from "../../app/router";
@@ -108,8 +109,13 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const selectOwner = (kind: "personal" | "team", teamId: string | null) => { interactionSequence.current++; navigate(webhookUrl({ owner: kind, teamId, endpointId: null, tab: "configuration" })); };
   const select = (id: string) => { saveListPosition(); interactionSequence.current++; setMenu(null); navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: id, tab: route.tab })); };
   const open = (value: ModalBody, opener: HTMLElement | null) => { if (scope !== null) { interactionSequence.current++; setLocalError(null); setRotation("overlap"); setModal({ ...value, scope, opener } as Modal); setMenu(null); } };
+  const observeDenial = (error: unknown, requestedOwner: WebhookOwner, authorizationKey: string, management: boolean): void => {
+    if (!(error instanceof ApiError) || error.kind !== "server" || error.status !== 403 || error.code !== "forbidden" || admission.isInvalidated || live.current.owner?.kind !== requestedOwner.kind || live.current.owner.id !== requestedOwner.id || directories.getAuthorization(requestedOwner).key !== authorizationKey) return;
+    const authorization = management ? directories.observeManagementDenied(requestedOwner, authorizationKey) : directories.observeOwnerDenied(requestedOwner, authorizationKey);
+    if (authorization.key !== authorizationKey) { setLocalError(error); directories.refresh(); }
+  };
   const submit = async (input: WebhookIntentInput): Promise<WebhookIntentState> => {
-    if (controller === null || scope === null || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
+    if (controller === null || scope === null || owner === null || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
     const state = controller.getSnapshot();
     if (state.reconciling || state.phase === "unknown") throw webhookAdmissionError("WebhookIntentBusy");
     if (!isBusy(state)) {
@@ -118,7 +124,12 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
       operationExpansions.current.set(scope, expansion); writeFences.current.set(scope, data.captureFence());
     }
     const fence = writeFences.current.get(scope) ?? null;
+    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).key;
     const outcome = await controller.submit(input);
+    // A receipt read requires owner access; a rejected management request only
+    // disproves administrator authority, not the member's redacted reads.
+    observeDenial(outcome.error, requestedOwner, authorizationKey, outcome.phase === "rejected");
+    observeDenial(outcome.result?.currentError, requestedOwner, authorizationKey, true);
     if (outcome.phase === "confirmed") {
       if (outcome.result?.endpoint !== undefined && !data.accept(outcome.result.endpoint, fence)) controller.forgetCurrentProjection();
       data.refresh(); directories.refresh();
@@ -126,8 +137,10 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     return outcome;
   };
   const reconcile = async () => {
-    if (controller === null || !canRead) return;
+    if (controller === null || owner === null || !canRead) return;
+    const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).key;
     const outcome = await controller.reconcile();
+    observeDenial(outcome.error, requestedOwner, authorizationKey, false);
     if (outcome.phase === "confirmed") { data.refresh(); directories.refresh(); }
   };
   const patch = (body: WebhookIntentInput["body"]) => { if (endpoint !== null && manage) void submit({ kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body }).catch(setLocalError); };
@@ -140,7 +153,10 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
       const value = await getWebhookSecret(owner, endpoint.id, admission.signal, { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: signal => admission.ready(signal) });
       const current = live.current.endpoint;
       if (fence !== null && data.fenceCurrent(fence) && generation === secretSequence.current && live.current.active && live.current.secretAreaVisible && current?.id === requested.id && current.capabilities.readSecret && current.signing.activeKeyId === value.keyId && current.configVersion === value.configVersion && scope !== null) setSecret({ scope, value });
-    } catch (error) { if (generation === secretSequence.current && !admission.isInvalidated) setSecretError(error); }
+    } catch (error) {
+      if (fence !== null) observeDenial(error, owner, fence.authorizationKey, true);
+      if (generation === secretSequence.current && !admission.isInvalidated) setSecretError(error);
+    }
     finally { if (generation === secretSequence.current) setSecretBusy(false); }
   };
   const rowAction = async (item: WebhookEndpointSummary, action: "edit" | "toggle" | "delete", opener: HTMLElement) => {
