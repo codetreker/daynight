@@ -23,22 +23,22 @@
       ]
     },
     {
-      "base": "51fd1a13cea3bdf5c49a9108ba795d18a3d21e13",
+      "base": "639809574f0b4cba3752dd43a47b744704cc45ee",
       "implementation": {
         "pr": 860,
-        "sha": "0f295f608c9aab1e7d1d4078c19b6ba2a99f9106",
+        "sha": "01c377fe13e35f1a4d3a64cd7c9c08935ba65638",
         "reviews": [
-          5818795765
+          5819023399
         ]
       },
       "tests": {
         "pr": 861,
-        "sha": "cb206086969153bb14f049f987efba0f1668777e",
+        "sha": "f269091c0ccec91a15e226acc5c284aa3a5e061a",
         "reviews": [
-          5818799782
+          5819018402
         ]
       },
-      "productionTree": "761237d4a8da14720fc10ea257aa5cf0b09f15a4",
+      "productionTree": "528a22404612af7fe6a8ae1ac407c19d2a346e79",
       "allowPaths": [
         "packages/daynight/test/ci/image-test-pair-input.test.ts"
       ]
