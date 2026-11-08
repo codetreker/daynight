@@ -6,100 +6,87 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/jackc/pgx/v5/pgxpool"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func moveHTTPFixture(t *testing.T, logs io.Writer) (*postgres.Store, *resourceTestHandler, api.Task, string) {
-	t.Helper()
-	database, handler, task := stepsHTTPFixture(t, logs)
-	for index, id := range []string{"00000000", "abcdef01", "12345678", "fedcba98"} {
-		seedHTTPStep(t, database, task.ID, id, index, "same", "# private-move-markdown")
-	}
-	return database, handler, task, taskPath(task) + "/steps"
-}
-
 func TestStepsHTTPMovePlacementsAndUnchangedReceipts(t *testing.T) {
-	var logs bytes.Buffer
-	database, handler, task, path := moveHTTPFixture(t, &logs)
-	original := decodeResponse[api.StepsResource](t, projectRequest(handler, "GET", path, ""), 200)
-	byID := map[string]api.TaskStep{}
-	for _, step := range original.Steps {
-		byID[step.ID] = step
-	}
-	version := int64(1)
 	for _, tc := range []struct {
-		id        string
-		placement map[string]any
-		order     []string
-		changed   bool
+		name, id string
+		input    taskservice.MoveTaskStep
+		order    []int
+		changed  bool
 	}{
-		{"00000000", map[string]any{"after": "12345678"}, []string{"abcdef01", "12345678", "00000000", "fedcba98"}, true},
-		{"FEDCBA98", map[string]any{"before": "ABCDEF01"}, []string{"fedcba98", "abcdef01", "12345678", "00000000"}, true},
-		{"12345678", map[string]any{"position": "first"}, []string{"12345678", "fedcba98", "abcdef01", "00000000"}, true},
-		{"fedcba98", map[string]any{"position": "last"}, []string{"12345678", "abcdef01", "00000000", "fedcba98"}, true},
-		{"abcdef01", map[string]any{"before": "00000000"}, []string{"12345678", "abcdef01", "00000000", "fedcba98"}, false},
-		{"00000000", map[string]any{"after": "ABCDEF01"}, []string{"12345678", "abcdef01", "00000000", "fedcba98"}, false},
-		{"12345678", map[string]any{"position": "first"}, []string{"12345678", "abcdef01", "00000000", "fedcba98"}, false},
-		{"fedcba98", map[string]any{"position": "last"}, []string{"12345678", "abcdef01", "00000000", "fedcba98"}, false},
+		{"after", "ABCDEF01", taskservice.MoveTaskStep{Version: 9007199254740993, After: stepHTTPString("FEDCBA98")}, []int{1, 2, 0, 3}, true},
+		{"before", "FEDCBA98", taskservice.MoveTaskStep{Version: 9007199254740993, Before: stepHTTPString("ABCDEF01")}, []int{2, 0, 1, 3}, true},
+		{"first", "11111111", taskservice.MoveTaskStep{Version: 9007199254740993, Position: stepHTTPString("first")}, []int{3, 0, 1, 2}, true},
+		{"last", "ABCDEF01", taskservice.MoveTaskStep{Version: 9007199254740993, Position: stepHTTPString("last")}, []int{1, 2, 3, 0}, true},
+		{"unchanged before", "ABCDEF01", taskservice.MoveTaskStep{Version: 9007199254740993, Before: stepHTTPString("00000000")}, []int{0, 1, 2, 3}, false},
+		{"unchanged after", "FEDCBA98", taskservice.MoveTaskStep{Version: 9007199254740993, After: stepHTTPString("00000000")}, []int{0, 1, 2, 3}, false},
+		{"unchanged first", "ABCDEF01", taskservice.MoveTaskStep{Version: 9007199254740993, Position: stepHTTPString("first")}, []int{0, 1, 2, 3}, false},
+		{"unchanged last at max", "11111111", taskservice.MoveTaskStep{Version: 9223372036854775807, Position: stepHTTPString("last")}, []int{0, 1, 2, 3}, false},
 	} {
-		tc.placement["version"] = version
-		logs.Reset()
-		before := projectRequest(handler, "GET", path, "").Body.Bytes()
-		response := projectRequest(handler, "PUT", path+"/"+tc.id+"/position", jsonBody(t, tc.placement))
-		resource := decodeResponse[api.StepsResource](t, response, 200)
-		if tc.changed {
-			version++
-		}
-		if resource.ProjectID != task.ProjectID || resource.TaskID != task.ID || resource.Version != version || len(resource.Steps) != 4 || response.Header().Get("Location") != "" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != handler.principal.UserID {
-			t.Fatal("move receipt metadata invalid")
-		}
-		for index, step := range resource.Steps {
-			if step.ID != tc.order[index] || step != byID[step.ID] {
-				t.Fatal("move changed identity/content/time or order")
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := newHTTPFixture(t, &logs)
+			before := stepHTTPRows()
+			rows := make([]api.TaskStep, len(tc.order))
+			for i, index := range tc.order {
+				rows[i] = before[index]
 			}
-		}
-		if !bytes.Equal(response.Body.Bytes(), projectRequest(handler, "GET", path, "").Body.Bytes()) {
-			t.Fatal("move response differs from frozen GET collection")
-		}
-		if !tc.changed && (!bytes.Equal(before, response.Body.Bytes()) || strings.Contains(logs.String(), `"phase":"persist"`) || !strings.Contains(logs.String(), `"outcome":"unchanged"`)) {
-			t.Fatal("no-op changed bytes or claimed persistence")
-		}
-		if !strings.Contains(logs.String(), `"operation":"move"`) || !strings.Contains(logs.String(), `"tx_outcome":"committed"`) || strings.Contains(logs.String(), "private-move-markdown") {
-			t.Fatal("move diagnostics missing or leaked content")
-		}
+			version := tc.input.Version
+			if tc.changed {
+				version++
+			}
+			result := stepHTTPWrite(t, version, rows, tc.changed)
+			h.Steps.MoveFunc = func(ctx context.Context, p model.Principal, projectID, taskID, id string, input taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
+				checkStepHTTPCall(t, h, ctx, p, projectID, taskID)
+				if id != strings.ToLower(tc.id) || !reflect.DeepEqual(input, tc.input) {
+					t.Fatalf("Move arguments changed: %s %+v", id, input)
+				}
+				return result, nil
+			}
+			values := map[string]any{"version": tc.input.Version}
+			if tc.input.Before != nil {
+				values["before"] = *tc.input.Before
+			}
+			if tc.input.After != nil {
+				values["after"] = *tc.input.After
+			}
+			if tc.input.Position != nil {
+				values["position"] = *tc.input.Position
+			}
+			response := projectRequest(h, "PUT", stepHTTPPath()+"/"+tc.id+"/position", jsonBody(t, values))
+			resource := decodeResponse[api.StepsResource](t, response, 200)
+			if resource.ProjectID != testProjectID || resource.TaskID != testTaskID || resource.Version != version || !reflect.DeepEqual(resource.Steps, rows) || !bytes.Equal(response.Body.Bytes(), result.JSON) || response.Header().Get("Location") != "" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != h.principal.UserID {
+				t.Fatal("move result or metadata changed")
+			}
+			if tc.changed != strings.Contains(logs.String(), `"phase":"persist"`) || !strings.Contains(logs.String(), `"operation":"move"`) || !strings.Contains(logs.String(), `"tx_outcome":"committed"`) {
+				t.Fatal("move diagnostic facts changed")
+			}
+			if !tc.changed && !strings.Contains(logs.String(), `"outcome":"unchanged"`) {
+				t.Fatal("unchanged result claimed mutation")
+			}
+			if strings.Contains(logs.String(), "完整 Markdown") || strings.Contains(logs.String(), "<同名") {
+				t.Fatal("move content leaked")
+			}
+		})
 	}
-	assertProjectError(t, projectRequest(handler, "PUT", path+"/abcdef01/position", `{"version":1,"after":"ABCDEF01"}`), 409, "version_conflict")
-	assertProjectError(t, projectRequest(handler, "PUT", path+"/abcdef01/position", jsonBody(t, map[string]any{"version": version, "after": "ABCDEF01"})), 400, "invalid_input")
-	assertProjectError(t, projectRequest(handler, "PUT", path+"/ffffffff/position", jsonBody(t, map[string]any{"version": version, "position": "first"})), 404, "not_found")
-	assertProjectError(t, projectRequest(handler, "PUT", path+"/abcdef01/position", jsonBody(t, map[string]any{"version": version, "before": "ffffffff"})), 404, "not_found")
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET version=$2,status='done' WHERE id=$1`, task.ID, int64(math.MaxInt64)); err != nil {
-		t.Fatal(err)
-	}
-	maxBefore := projectRequest(handler, "GET", path, "").Body.Bytes()
-	response := projectRequest(handler, "PUT", path+"/12345678/position", `{"version":9223372036854775807,"position":"first"}`)
-	if response.Code != 200 || !bytes.Equal(maxBefore, response.Body.Bytes()) {
-		t.Fatal("maximum-version no-op changed full bytes")
-	}
-	assertProjectError(t, projectRequest(handler, "PUT", path+"/12345678/position", `{"version":9223372036854775807,"position":"last"}`), 409, "version_exhausted")
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, projectRequest(handler, "PUT", path+"/ffffffff/position", `{"version":1,"position":"first"}`), 410, "task_deleted")
 }
 
 func TestStepsHTTPMoveStrictInputAndMethods(t *testing.T) {
-	_, handler, _, path := moveHTTPFixture(t, io.Discard)
-	endpoint := path + "/abcdef01/position"
+	h := newHTTPFixture(t, io.Discard)
+	endpoint := stepHTTPPath() + "/abcdef01/position"
 	good := `{"version":1,"position":"first"}`
-	bad := []string{"", `{}`, `null`, `[]`, `{`, good + ` {}`, `{"version":1}`, `{"position":"first"}`, `{"version":1,"before":"00000000","after":"12345678"}`, `{"version":1,"before":"00000000","position":"first"}`, `{"version":1,"after":"00000000","position":"last"}`, `{"version":1,"position":"FIRST"}`, `{"version":1,"position":""}`, `{"version":1,"position":"middle"}`, `{"version":1,"first":true}`, `{"version":1,"last":true}`, `{"version":1,"position":"\ud800"}`, `{"version":1,"before":"\udfff"}`, `{"version":1,"position":"` + string([]byte{0xff}) + `"}`, `{"version":1,"position":"first","\u0070osition":"last"}`}
+	bad := []string{"", `{}`, `null`, `[]`, `{`, good + ` {}`, `{"position":"first"}`, `{"version":1,"first":true}`, `{"version":1,"last":true}`, `{"version":1,"position":"\ud800"}`, `{"version":1,"before":"\udfff"}`, `{"version":1,"position":"` + string([]byte{0xff}) + `"}`, `{"version":1,"position":"first","\u0070osition":"last"}`}
 	for _, field := range []string{"version", "before", "after", "position"} {
 		for _, value := range []string{"null", "false", "1", "[]", "{}"} {
 			input := map[string]json.RawMessage{"version": json.RawMessage("1")}
@@ -123,85 +110,108 @@ func TestStepsHTTPMoveStrictInputAndMethods(t *testing.T) {
 	for _, field := range []string{"id", "title", "description", "status", "createdAt", "updatedAt", "unknown"} {
 		bad = append(bad, strings.TrimSuffix(good, "}")+`,"`+field+`":"x"}`)
 	}
-	for _, field := range []string{"before", "after"} {
-		for _, id := range []string{"", "abc", "000000000", "0000000g"} {
-			bad = append(bad, jsonBody(t, map[string]any{"version": 1, field: id}))
-		}
-	}
 	for index, body := range bad {
 		t.Run(fmt.Sprint(index), func(t *testing.T) {
-			assertProjectError(t, projectRequest(handler, "PUT", endpoint, body), 400, "invalid_input")
+			assertProjectError(t, projectRequest(h, "PUT", endpoint, body), 400, "invalid_input")
 		})
 	}
 	for _, suffix := range []string{"?", "?x=1", "?bad=%xx"} {
-		assertProjectError(t, projectRequest(handler, "PUT", endpoint+suffix, good), 400, "invalid_input")
+		assertProjectError(t, projectRequest(h, "PUT", endpoint+suffix, good), 400, "invalid_input")
 	}
 	for _, id := range []string{"abc", "000000000", "0000000g"} {
-		assertProjectError(t, projectRequest(handler, "PUT", path+"/"+id+"/position", good), 400, "invalid_input")
+		assertProjectError(t, projectRequest(h, "PUT", stepHTTPPath()+"/"+id+"/position", good), 400, "invalid_input")
 	}
 	request := httptest.NewRequest("PUT", endpoint, strings.NewReader(good))
-	authorizeResourceRequest(handler, request)
+	authorizeResourceRequest(h, request)
 	request.Header.Set("X-Request-ID", "project-test")
 	request.Header.Set("Content-Type", "text/plain")
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	h.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
-	assertProjectError(t, projectRequest(handler, "PUT", endpoint, `{"version":1,"position":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 413, "payload_too_large")
+	assertProjectError(t, projectRequest(h, "PUT", endpoint, `{"version":1,"position":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 413, "payload_too_large")
 	for _, method := range []string{"GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"} {
-		response := projectRequest(handler, method, endpoint, `{}`)
+		response := projectRequest(h, method, endpoint, `{}`)
 		if response.Code != 405 || response.Header().Get("Allow") != "PUT" || response.Header().Get("Cache-Control") != "no-store" {
-			t.Fatal("position method fallback invalid")
+			t.Fatal("position method fallback changed")
 		}
 	}
-	// Request whitespace is part of the 1 MiB budget and cannot change placement.
-	exact := good + strings.Repeat(" ", httpx.MaxJSONBody-len(good))
-	resource := decodeResponse[api.StepsResource](t, projectRequest(handler, "PUT", endpoint, exact), 200)
-	if len(exact) != httpx.MaxJSONBody || resource.Version != 2 || resource.Steps[0].ID != "abcdef01" {
-		t.Fatal("exact request boundary failed")
+	if h.Steps.TotalCalls() != 0 {
+		t.Fatal("protocol rejection invoked Step service")
 	}
 }
 
-func TestStepsHTTPMoveCommittedResponseLossAndReadOnlyReconcile(t *testing.T) {
-	for _, mode := range []string{"short", "failed", "canceled_before_body"} {
-		t.Run(mode, func(t *testing.T) {
-			var logs bytes.Buffer
-			database, handler, _, path := moveHTTPFixture(t, &logs)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if mode == "canceled_before_body" {
-				config := database.Pool.Config().Copy()
-				config.ConnConfig.Tracer = &stepCommitCancelTracer{cancel: cancel}
-				pool, err := pgxpool.NewWithConfig(context.Background(), config)
-				if err != nil {
-					t.Fatal(err)
+func TestStepsHTTPMoveDomainRefusalsAndExactBodyBoundary(t *testing.T) {
+	invalid := []map[string]any{{"version": 1}, {"version": 1, "before": "00000000", "after": "12345678"}, {"version": 1, "before": "00000000", "position": "first"}, {"version": 1, "after": "00000000", "position": "last"}}
+	for _, position := range []string{"FIRST", "", "middle"} {
+		invalid = append(invalid, map[string]any{"version": 1, "position": position})
+	}
+	for _, field := range []string{"before", "after"} {
+		for _, id := range []string{"", "abc", "000000000", "0000000g"} {
+			invalid = append(invalid, map[string]any{"version": 1, field: id})
+		}
+	}
+	for i, values := range invalid {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			expected := taskservice.MoveTaskStep{Version: 1}
+			if value, ok := values["before"].(string); ok {
+				expected.Before = &value
+			}
+			if value, ok := values["after"].(string); ok {
+				expected.After = &value
+			}
+			if value, ok := values["position"].(string); ok {
+				expected.Position = &value
+			}
+			h.Steps.MoveFunc = func(ctx context.Context, p model.Principal, projectID, taskID, id string, input taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
+				checkStepHTTPCall(t, h, ctx, p, projectID, taskID)
+				if id != "abcdef01" || !reflect.DeepEqual(input, expected) {
+					t.Fatal("placement value changed before service")
 				}
-				t.Cleanup(pool.Close)
-				handler = projectTestHandler(t, &postgres.Store{Pool: pool}, &logs)
+				return taskservice.StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}, &model.Fault{Code: "invalid_input", Message: "Invalid Step placement."}
 			}
-			request := httptest.NewRequest("PUT", path+"/ABCDEF01/position", strings.NewReader(`{"version":1,"position":"last"}`)).WithContext(ctx)
-			authorizeResourceRequest(handler, request)
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("X-Request-ID", "steps-move-lost")
-			writer := &threadFailingWriter{ResponseRecorder: httptest.NewRecorder(), short: mode == "short"}
-			handler.ServeHTTP(writer, request)
-			if mode == "canceled_before_body" && writer.calls != 0 || mode != "canceled_before_body" && (writer.calls != 1 || writer.Code != 200) {
-				t.Fatal("lost response replayed or returned wrong status")
-			}
-			if !strings.Contains(logs.String(), `"tx_outcome":"committed"`) || !strings.Contains(logs.String(), `"written_bytes":0`) {
-				t.Fatal("move committed response facts missing")
-			}
-			request = httptest.NewRequest("GET", path, nil)
-			authorizeResourceRequest(handler, request)
-			request.Header.Set("X-Request-ID", "steps-move-lost.r1")
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			resource := decodeResponse[api.StepsResource](t, response, 200)
-			if resource.Version != 2 || resource.Steps[3].ID != "abcdef01" || !strings.Contains(logs.String(), `"read_kind":"reconcile"`) || !strings.Contains(logs.String(), `"outcome":"current_state"`) {
-				t.Fatal("move current order not reconciled")
-			}
-			if strings.Contains(logs.String(), "private-move-markdown") || strings.Contains(logs.String(), "private response failure") {
-				t.Fatal("move content or errors leaked")
-			}
+			assertProjectError(t, projectRequest(h, "PUT", stepHTTPPath()+"/ABCDEF01/position", jsonBody(t, values)), 400, "invalid_input")
 		})
 	}
+	for _, tc := range []struct {
+		name, id, code string
+		version        int64
+		status         int
+	}{
+		{"stale", "abcdef01", "version_conflict", 1, 409}, {"missing target", "ffffffff", "not_found", 1, 404},
+		{"missing anchor", "abcdef01", "not_found", 1, 404}, {"exhausted", "abcdef01", "version_exhausted", 9223372036854775807, 409}, {"deleted parent", "ffffffff", "task_deleted", 1, 410},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			h.Steps.MoveFunc = func(ctx context.Context, p model.Principal, projectID, taskID, id string, input taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
+				checkStepHTTPCall(t, h, ctx, p, projectID, taskID)
+				if id != tc.id || input.Version != tc.version || input.Before == nil || *input.Before != "ffffffff" {
+					t.Fatal("Move refusal arguments changed")
+				}
+				return taskservice.StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}, &model.Fault{Code: tc.code, Message: "Step move refused."}
+			}
+			assertProjectError(t, projectRequest(h, "PUT", stepHTTPPath()+"/"+strings.ToUpper(tc.id)+"/position", jsonBody(t, map[string]any{"version": tc.version, "before": "ffffffff"})), tc.status, tc.code)
+		})
+	}
+	t.Run("exact body boundary", func(t *testing.T) {
+		h := newHTTPFixture(t, io.Discard)
+		result := stepHTTPWrite(t, 2, stepHTTPRows(), true)
+		h.Steps.MoveFunc = func(ctx context.Context, p model.Principal, projectID, taskID, id string, input taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
+			checkStepHTTPCall(t, h, ctx, p, projectID, taskID)
+			if id != "abcdef01" || input.Version != 1 || input.Position == nil || *input.Position != "first" || input.Before != nil || input.After != nil {
+				t.Fatal("body whitespace changed placement")
+			}
+			return result, nil
+		}
+		body := `{"version":1,"position":"first"}`
+		exact := body + strings.Repeat(" ", httpx.MaxJSONBody-len(body))
+		response := projectRequest(h, "PUT", stepHTTPPath()+"/ABCDEF01/position", exact)
+		if len(exact) != httpx.MaxJSONBody || response.Code != 200 || !bytes.Equal(response.Body.Bytes(), result.JSON) {
+			t.Fatal("exact request boundary failed")
+		}
+	})
+}
+
+func TestStepsHTTPMoveCommittedResponseLossAndReadOnlyReconcile(t *testing.T) {
+	stepHTTPResponseLoss(t, "move")
 }

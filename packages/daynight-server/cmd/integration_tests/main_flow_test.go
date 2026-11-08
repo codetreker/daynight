@@ -1,0 +1,206 @@
+//go:build integration
+
+package main
+
+import (
+	"bytes"
+	"net/http"
+	"reflect"
+	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/google/uuid"
+)
+
+func TestServerAPINormalFlows(t *testing.T) {
+	f := newFixture(t)
+	t.Run("task lifecycle", func(t *testing.T) {
+		project := createProject(t, f, "API lifecycle")
+		task := createTask(t, f, project, "Created task", nil)
+		assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK), task)
+		updated := requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "title": "Updated task", "description": "Normal API content"}, http.StatusOK)
+		if updated.ID != task.ID || updated.Version != task.Version+1 || updated.Title != "Updated task" || updated.Description != "Normal API content" {
+			t.Fatalf("task update differs: %+v", updated)
+		}
+		started := setStatus(t, f, updated, "in_progress", nil)
+		done := setStatus(t, f, started, "done", nil)
+		assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(done), nil, http.StatusOK), done)
+		page := requestJSON[api.TaskPage](t, f, http.MethodGet, taskCollection(project.ID)+"?status=done", nil, http.StatusOK)
+		assertTaskContent(t, expectID(t, page.Items, done.ID, func(task api.Task) string { return task.ID }), done)
+	})
+	t.Run("search pagination and dependency graph", func(t *testing.T) {
+		project := createProject(t, f, "API search and graph")
+		root := createTask(t, f, project, "Prerequisite", nil)
+		root = setStatus(t, f, setStatus(t, f, root, "in_progress", nil), "done", nil)
+		first := createTask(t, f, project, "Cache title", map[string]any{"dependsOn": []string{root.ID}})
+		second := createTask(t, f, project, "Other title", map[string]any{"description": "Normal cache content"})
+		page := requestJSON[api.TaskSearchPage](t, f, http.MethodPost, taskCollection(project.ID)+"/search", map[string]any{"query": "cache", "limit": 1}, http.StatusOK)
+		if page.ProjectID != project.ID || page.Total != 2 || len(page.Items) != 1 || page.NextCursor == nil {
+			t.Fatalf("first search page differs: %+v", page)
+		}
+		next := requestJSON[api.TaskSearchPage](t, f, http.MethodPost, taskCollection(project.ID)+"/search", map[string]any{"query": "cache", "limit": 1, "cursor": *page.NextCursor}, http.StatusOK)
+		if next.ProjectID != project.ID || next.Total != 2 || len(next.Items) != 1 || next.NextCursor != nil || next.Items[0].ID == page.Items[0].ID {
+			t.Fatalf("next search page differs: %+v", next)
+		}
+		items := append(page.Items, next.Items...)
+		if actual := expectID(t, items, first.ID, func(task api.TaskSearchItem) string { return task.ID }); actual.Title != first.Title {
+			t.Fatal("search lost title content")
+		}
+		if actual := expectID(t, items, second.ID, func(task api.TaskSearchItem) string { return task.ID }); actual.Match.DescriptionSnippet == nil || *actual.Match.DescriptionSnippet != second.Description {
+			t.Fatal("search lost description content")
+		}
+		graph := requestJSON[api.TaskGraph](t, f, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph", nil, http.StatusOK)
+		if graph.Project.ID != project.ID || graph.Summary.Total != 3 {
+			t.Fatalf("graph identity/count differs: %+v", graph)
+		}
+		dependent := expectID(t, graph.Tasks, first.ID, func(task api.GraphTask) string { return task.ID })
+		if !reflect.DeepEqual(dependent.DependsOn, []string{root.ID}) || dependent.Status != first.Status {
+			t.Fatalf("graph dependency differs: %+v", dependent)
+		}
+		if actual := expectID(t, graph.Tasks, root.ID, func(task api.GraphTask) string { return task.ID }); actual.Status != "done" {
+			t.Fatal("graph did not read the completed prerequisite")
+		}
+	})
+	t.Run("property and sync readback", func(t *testing.T) {
+		project := createProject(t, f, "API properties and sync")
+		task := createTask(t, f, project, "Synchronized task", nil)
+		baseline := requestJSON[api.TaskSync](t, f, http.MethodGet, syncPath(project.ID), nil, http.StatusOK)
+		if baseline.Project.ID != project.ID || baseline.Epoch == "" || baseline.ObservedAt.IsZero() {
+			t.Fatalf("snapshot identity differs: %+v", baseline)
+		}
+		value := []api.PullRequestProperty{{URL: "https://github.com/example/tasks/pull/1", Title: "Normal evidence"}}
+		propertyPath := taskPath(task) + "/properties/pullRequests"
+		updated := requestJSON[api.PropertyResource](t, f, http.MethodPut, propertyPath, map[string]any{"version": task.Version, "valueText": `[{"url":"https://github.com/example/tasks/pull/1","title":"Normal evidence"}]`}, http.StatusOK)
+		if updated.ProjectID != project.ID || updated.TaskID != task.ID || updated.Version != task.Version+1 {
+			t.Fatalf("property mutation identity differs: %+v", updated)
+		}
+		read := requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK)
+		requireProperty(t, read.Properties, "pullRequests", value)
+		for _, path := range []string{syncPath(project.ID), deltaPath(project.ID, baseline)} {
+			result := requestJSON[api.TaskSync](t, f, http.MethodGet, path, nil, http.StatusOK)
+			if result.Project.ID != project.ID || result.Epoch != baseline.Epoch {
+				t.Fatalf("sync identity differs: %+v", result)
+			}
+			actual := expectID(t, result.Tasks, task.ID, func(task api.TaskViewRecord) string { return task.ID })
+			if actual.Version != resourceVersion(updated.Version) {
+				t.Fatal("sync lost property mutation version")
+			}
+			requireProperty(t, actual.Properties, "pullRequests", value)
+		}
+		removed := requestJSON[api.PropertyResource](t, f, http.MethodDelete, propertyPath, map[string]any{"version": updated.Version}, http.StatusOK)
+		if removed.TaskID != task.ID || removed.Version != updated.Version+1 {
+			t.Fatalf("property delete identity differs: %+v", removed)
+		}
+		current := requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK)
+		if _, exists := current.Properties["pullRequests"]; exists || current.Version != removed.Version {
+			t.Fatal("deleted property remained in Task readback")
+		}
+		result := requestJSON[api.TaskSync](t, f, http.MethodGet, syncPath(project.ID), nil, http.StatusOK)
+		actual := expectID(t, result.Tasks, task.ID, func(task api.TaskViewRecord) string { return task.ID })
+		if _, exists := actual.Properties["pullRequests"]; exists || actual.Version != resourceVersion(removed.Version) {
+			t.Fatal("deleted property remained in Sync readback")
+		}
+	})
+	t.Run("step reads and writes", func(t *testing.T) {
+		project := createProject(t, f, "API Steps")
+		task := createTask(t, f, project, "Step parent", nil)
+		path := taskPath(task) + "/steps"
+		first := requestJSON[api.StepsResource](t, f, http.MethodPost, path, map[string]any{"version": task.Version, "id": "abcdef01", "title": "First Step", "description": "Initial content"}, http.StatusCreated)
+		second := requestJSON[api.StepsResource](t, f, http.MethodPost, path, map[string]any{"version": first.Version, "id": "12345678", "title": "Second Step"}, http.StatusCreated)
+		read := requestJSON[api.StepsResource](t, f, http.MethodGet, path, nil, http.StatusOK)
+		if read.ProjectID != project.ID || read.TaskID != task.ID || read.Version != second.Version || !reflect.DeepEqual(read.Steps, second.Steps) {
+			t.Fatalf("Step list differs: %+v", read)
+		}
+		single := requestJSON[api.StepResource](t, f, http.MethodGet, path+"/abcdef01", nil, http.StatusOK)
+		if single.TaskID != task.ID || single.Step.ID != "abcdef01" || single.Step.Description != "Initial content" {
+			t.Fatalf("Step get differs: %+v", single)
+		}
+		changed := requestJSON[api.StepsResource](t, f, http.MethodPatch, path+"/abcdef01", map[string]any{"version": second.Version, "title": "Edited Step", "description": "Updated content"}, http.StatusOK)
+		active := requestJSON[api.StepsResource](t, f, http.MethodPut, path+"/abcdef01/status", map[string]any{"version": changed.Version, "status": "in_progress"}, http.StatusOK)
+		moved := requestJSON[api.StepsResource](t, f, http.MethodPut, path+"/12345678/position", map[string]any{"version": active.Version, "position": "first"}, http.StatusOK)
+		if len(moved.Steps) != 2 || moved.Steps[0].ID != "12345678" || moved.Steps[1].ID != "abcdef01" || moved.Steps[1].Title != "Edited Step" || moved.Steps[1].Description != "Updated content" || moved.Steps[1].Status != "in_progress" {
+			t.Fatalf("Step move/content differs: %+v", moved)
+		}
+		removed := requestJSON[api.StepsResource](t, f, http.MethodDelete, path+"/12345678", map[string]any{"version": moved.Version}, http.StatusOK)
+		current := requestJSON[api.StepsResource](t, f, http.MethodGet, path, nil, http.StatusOK)
+		if current.ProjectID != project.ID || current.TaskID != task.ID || current.Version != removed.Version || len(current.Steps) != 1 || current.Steps[0].ID != "abcdef01" || !reflect.DeepEqual(current.Steps, removed.Steps) {
+			t.Fatalf("Step deletion readback differs: %+v", current)
+		}
+	})
+	t.Run("thread messages and replies", func(t *testing.T) {
+		project := createProject(t, f, "API Thread")
+		task := createTask(t, f, project, "Thread parent", nil)
+		path := taskPath(task) + "/thread/messages"
+		first := requestJSON[api.ThreadMessage](t, f, http.MethodPost, path, map[string]any{"body": "Normal discussion"}, http.StatusCreated)
+		if first.ID == "" || first.Body != "Normal discussion" || first.Author.UserID != f.userID || first.Author.Agent {
+			t.Fatalf("Thread post differs: %+v", first)
+		}
+		reply := requestJSON[api.ThreadMessage](t, f, http.MethodPost, path, map[string]any{"body": "Normal reply", "replyTo": first.ID}, http.StatusCreated)
+		page := requestJSON[api.ThreadPage](t, f, http.MethodGet, path+"?fromBeginning=true", nil, http.StatusOK)
+		readFirst := expectID(t, page.Items, first.ID, func(message api.ThreadMessage) string { return message.ID })
+		readReply := expectID(t, page.Items, reply.ID, func(message api.ThreadMessage) string { return message.ID })
+		if readFirst.Body != first.Body || readReply.Body != reply.Body || readReply.ReplyTo == nil || *readReply.ReplyTo != first.ID || readReply.Author.UserID != f.userID {
+			t.Fatal("Thread readback lost content, identity or reply target")
+		}
+	})
+	t.Run("attachment bytes and lifecycle", func(t *testing.T) {
+		project := createProject(t, f, "API Attachments")
+		task := createTask(t, f, project, "Attachment parent", nil)
+		path := taskPath(task) + "/attachments/files/notes/result.txt"
+		payload := []byte("Normal attachment content\n")
+		_, data := f.request(t, http.MethodPut, path, "text/plain; charset=utf-8", payload, http.StatusCreated)
+		created := decodeAttachment(t, data)
+		if created.Path != "notes/result.txt" || created.SizeBytes != int64(len(payload)) {
+			t.Fatalf("attachment creation differs: %+v", created)
+		}
+		_, downloaded := f.request(t, http.MethodGet, path, "", nil, http.StatusOK)
+		if !bytes.Equal(downloaded, payload) {
+			t.Fatal("attachment download differs from uploaded bytes")
+		}
+		replacement := []byte("Replaced normal content\n")
+		_, data = f.request(t, http.MethodPut, path, "text/plain; charset=utf-8", replacement, http.StatusOK)
+		updated := decodeAttachment(t, data)
+		_, downloaded = f.request(t, http.MethodGet, path, "", nil, http.StatusOK)
+		if updated.Path != created.Path || updated.SizeBytes != int64(len(replacement)) || !bytes.Equal(downloaded, replacement) {
+			t.Fatal("attachment replacement readback differs")
+		}
+		page := requestJSON[api.AttachmentPage](t, f, http.MethodGet, taskPath(task)+"/attachments", nil, http.StatusOK)
+		if len(page.Items) != 1 || page.Items[0].Path != created.Path || page.Items[0].SizeBytes != updated.SizeBytes {
+			t.Fatalf("attachment list differs: %+v", page)
+		}
+		f.request(t, http.MethodDelete, path, "", nil, http.StatusNoContent)
+		empty := requestJSON[api.AttachmentPage](t, f, http.MethodGet, taskPath(task)+"/attachments", nil, http.StatusOK)
+		if len(empty.Items) != 0 {
+			t.Fatalf("deleted attachment remained in list: %+v", empty)
+		}
+	})
+	t.Run("worker claim and Agent discussion", func(t *testing.T) {
+		project := createProject(t, f, "API Worker claim")
+		task := createTask(t, f, project, "Worker task", map[string]any{"assignedTo": f.userID})
+		task = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, http.StatusOK)
+		claimID, workerID := uuid.NewString(), uuid.NewString()
+		claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(task)+"/worker-claim", map[string]any{"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Integration machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)
+		claim := workerClaim(t, claimed)
+		if claim.ClaimID != claimID || claim.WorkerID != workerID || claim.UserID != f.userID || claim.State != "active" || claimed.ID != task.ID || claimed.Status != "in_progress" {
+			t.Fatalf("Worker claim identity differs: %+v %+v", claimed, claim)
+		}
+		active := requestJSON[api.Task](t, f, http.MethodPatch, taskPath(claimed)+"/worker-claim", map[string]any{"version": claimed.Version, "claimId": claimID, "phase": "executing"}, http.StatusOK)
+		read := requestJSON[api.Task](t, f, http.MethodGet, taskPath(active), nil, http.StatusOK)
+		if actual := workerClaim(t, read); actual.ClaimID != claimID || actual.WorkerID != workerID || actual.Phase != "executing" {
+			t.Fatalf("Worker phase readback differs: %+v", actual)
+		}
+		path := taskPath(active) + "/thread/messages"
+		message := requestJSON[api.ThreadMessage](t, f, http.MethodPost, path, map[string]any{"body": "Agent discussion", "claimId": claimID}, http.StatusCreated)
+		page := requestJSON[api.ThreadPage](t, f, http.MethodGet, path+"?details=true", nil, http.StatusOK)
+		actual := expectID(t, page.Items, message.ID, func(message api.ThreadMessage) string { return message.ID })
+		if actual.Body != message.Body || !actual.Author.Agent || actual.Author.UserID != f.userID || actual.Author.Execution == nil || actual.Author.Execution.ClaimID != claimID || actual.Author.Execution.WorkerID != workerID {
+			t.Fatalf("Agent attribution readback differs: %+v", actual)
+		}
+		done := setStatus(t, f, active, "done", &claimID)
+		read = requestJSON[api.Task](t, f, http.MethodGet, taskPath(done), nil, http.StatusOK)
+		assertTaskContent(t, read, done)
+		if actual := workerClaim(t, read); actual.State != "completed" || actual.ClaimID != claimID {
+			t.Fatalf("completed Worker claim readback differs: %+v", actual)
+		}
+	})
+}

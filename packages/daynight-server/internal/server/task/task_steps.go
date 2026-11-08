@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
-
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -23,11 +21,11 @@ import (
 )
 
 type taskStepsHandler struct {
-	steps  *taskservice.TaskSteps
+	steps  StepService
 	logger *slog.Logger
 }
 
-func TaskStepsRoutes(mux *http.ServeMux, steps *taskservice.TaskSteps, auth *authhttp.Authentication, logger *slog.Logger) {
+func TaskStepsRoutes(mux *http.ServeMux, steps StepService, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &taskStepsHandler{steps: steps, logger: logger}
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/steps"
 	mux.HandleFunc("POST "+path, auth.Require(handler.add))

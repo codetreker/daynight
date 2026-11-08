@@ -354,11 +354,15 @@ SQLite SQL directories with the compiled dist tree; the
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
-`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. The Webhook service
-suite runs independently with DAO mocks; its focused command belongs to the
-[server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks). See the
-[development guide](docs/development.md) for prerequisites, native diagnostics,
-module validation commands. `pnpm e2e:test` separately builds and runs the complete
+`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. Task HTTP and
+Webhook service unit suites run independently without PostgreSQL; the
+[server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks)
+owns their focused commands. Normal Go API flows use the separate
+[API integration runner](packages/daynight-server/README.md#go-api-integration),
+which builds the production Server and uses a Go HTTP client with real
+authentication and an isolated database. See the
+[development guide](docs/development.md) for prerequisites, native diagnostics
+and module validation commands. `pnpm e2e:test` separately builds and runs the complete
 product with isolated PostgreSQL and full UniAuth; the [Product E2E guide](packages/e2e_tests/README.md)
 owns its Linux prerequisites, authentication topology and cleanup.
 

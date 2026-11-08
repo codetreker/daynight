@@ -13,15 +13,22 @@ state, so deleting root files as a group would lose independent assertions.
 
 ## Decision
 
-Domain packages own shared HTTP integration scenarios, including registration,
-strict input and authentication refusals, response-loss reconciliation,
-WebSocket transitions and archive readback. Full-application fixtures keep the
-production application, real database and UniAuth boundary. The focused browser
-ping regression constructs the production Session adapter with real business
-services and authentication so it can use a test-local interval. Its protocol
+Domain packages own their shared HTTP scenario bodies. Bot and Session fixtures
+retain registration, authentication refusal, response-loss, WebSocket and archive
+observations through the production application, real database and UniAuth.
+The focused browser ping regression constructs the production Session adapter
+with real services and authentication for its test-local interval. Its protocol
 completion and cleanup are described by the
 [Session test completion decision](2026-11-07-session-protocol-test-completion.md).
 Mutable state and cleanup remain local to each test.
+
+Task HTTP tests use the direct service/use-case boundary in the
+[Go test dependency decision](2026-11-08-go-test-dependency-boundaries.md), which
+partially supersedes full-application fixture retention for that suite. They
+retain real HTTP adaptation and credential middleware with controlled lower
+results. Representative normal Task API flows use the explicit production
+process integration runner; rule, response-loss and SQL proofs retain their
+actual protocol, service/core or store owners.
 
 The root package retains scenarios that require private composition access:
 runtime relay shutdown before dependency release and automation-recovery
@@ -52,11 +59,13 @@ their required fixtures remain in the root package.
 
 ## Consequences
 
-Shared HTTP scenarios prepare their database and authentication fixtures once
-per case. Consolidation preserves the retained scenario bodies and their
-failure, ordering, cancellation, isolation and cleanup assertions. It reduces
-repeated execution without changing the product or replacing real I/O with
-mocks.
+The original consolidation prepared database and authentication fixtures once
+per retained scenario, preserving its failure, ordering, cancellation, isolation
+and cleanup assertions. Bot and Session retain that arrangement. Task HTTP
+isolation changes the collaborator boundary while keeping actual HTTP and
+socket mechanisms; corresponding rule and storage observations have their own
+owners. The historical reduction of duplicate bodies does not require retaining
+a full-application fixture for every protocol assertion.
 
 The root and domain packages still contain independent scenarios and can run
 concurrently. Compilation, remaining fixtures and other packages still cost

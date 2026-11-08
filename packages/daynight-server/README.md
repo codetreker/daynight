@@ -83,7 +83,11 @@ lifecycle. The client HTTP foundation targets this service's API.
 The [candidate input limits](../../docs/spec/daynight-api-input-limits.md) and
 [measurement design](../../docs/design/daynight-api-input-limits.md) describe
 pure domain admission, protocol measurement, and the active HTTP input limits.
-Domain online admission is owned by each respective implementation.
+Bounded RawMessage output uses capped spans while retaining validation,
+escaping and writer-budget semantics; the
+[Raw JSON batching decision](../../.agents/notes/implemented/testing/2026-11-08-bounded-raw-json-batching.md)
+owns that shared encoding mechanism. Domain online admission is owned by each
+respective implementation.
 
 The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
@@ -675,15 +679,46 @@ the real Web assets described under [Build and run](#build-and-run).
 
 ### Business rules and DAO mocks
 
-Business-rule unit tests construct domain facts directly and use narrow mocks
-of the `core/store` DAO interfaces when a rule needs query results or storage
-errors. Check arguments, expected calls, results and error chains; unconfigured
-access must fail immediately. Pure functions need no storage mock. Keep these
-rule selections runnable without `DAYNIGHT_TEST_DATABASE_URL`, rather than
-preparing PostgreSQL merely to obtain fixed model data. Project settings and
-encoded-budget validation, Attachment input validation and invalid login scopes
-use these input-only fixtures; representative persisted refusals and accepted
-SDK paths retain real integration coverage.
+The [test-writing rules](../../docs/writing_tests.md) define the dependency
+boundary of each test. Core rules construct domain facts and use narrow
+`core/store` DAO mocks when they need query or storage results. Service tests
+control lower operations and DAO, scope or transaction results while exercising
+their own orchestration and lifecycle. Check arguments, expected calls, results
+and error chains; unconfigured access must fail immediately. Pure functions need
+no storage mock. Unit selections must execute without
+`DAYNIGHT_TEST_DATABASE_URL`; fixed model data does not require PostgreSQL.
+
+The regular `internal/server/task` suite uses direct Task, Step and Thread
+service mocks plus Search and Sync operations. It exercises production routing,
+HTTP parsing, credential middleware, DTO conversion, error mapping and the
+server-owned encoder or response writer. Configured mock calls are required;
+extra or unconfigured calls fail. Project/Task facts and principals are synthetic
+inputs, without an in-memory business state machine or full-application startup.
+The package's `!stress` TestMain clears `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_UNIAUTH_FIXTURE` before every regular suite execution, including
+the complete module coverage check. The other package binaries still receive
+their required infrastructure; an accidental Task HTTP fixture dependency fails
+rather than borrowing it. The separate stress suite excludes this TestMain.
+`RequestAuthentication` supplies the real Bearer, cookie and Origin policy with a
+controlled credential operation; account and login routes retain the complete
+`Authentication` adapter. From this module, run:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json ./internal/server/task
+```
+
+A mock committed or unknown result describes the supplied service outcome;
+actual SQL, locks, snapshot consistency, commit acknowledgement and persistence
+belong to store tests with isolated PostgreSQL. The real 15-second Step socket
+read-timeout proof remains in the regular HTTP suite. Capacity workloads retain
+their full fixture only behind the separate `stress` build tag.
+
+Project settings and encoded-budget validation, Attachment input validation and
+invalid login scopes use input-only fixtures. Existing fixture-based domain and
+process tests outside the Task HTTP suite remain part of the complete module
+check; their mechanism and ownership are determined by the test-writing rules.
 
 The complete `internal/service/webhook` suite uses narrow transaction and DAO
 mocks. The mocks return explicitly configured facts and projections, record
@@ -805,6 +840,67 @@ write. Graph and Sync split physical dataset/query proof from service count
 admission. The [Task test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-task-service-test-ownership.md)
 records this correction of existing tests and the earlier fixture decisions.
 
+### Go API integration
+
+On Linux with Docker, prepare the production Web build from the repository root
+and run the API suite from this module:
+
+```bash
+pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+pnpm web:build
+cd packages/daynight-server
+env -u DAYNIGHT_TEST_DATABASE_URL bash scripts/integration.sh
+```
+
+When the URL is unset, the runner owns a fresh PostgreSQL 18.6 container. An
+explicit `DAYNIGHT_TEST_DATABASE_URL` must refer to the invoking test
+environment's isolated instance, such as its fresh CI service or local validation
+container. It must not select a development, shared or production database.
+
+`scripts/integration.sh` builds the production `cmd/daynight-server` from the
+current source and checks its source fingerprint before and after the build.
+The suite verifies the binary hash, Go toolchain and race mode against that
+receipt. Local validation and main pushes use race instrumentation; PR and other
+CI events use the same non-race policy as the module check. Unit resource
+overlays are not used for this production binary.
+
+The explicit `integration` build tag keeps these flows outside ordinary unit
+test discovery. One real Server process, UniAuth gateway, login and PAT drive
+sequential groups with separate projects: Task lifecycle, search pagination and
+dependency graph, property and Sync readback, Step operations, Thread replies,
+Attachment bytes, and Worker claim/Agent discussion. Go HTTP clients check
+resource identities, versions and actual content. The suite does not run CLI,
+browser or Web tests, and it does not contain business boundary or fault
+matrices.
+
+Startup, build and test execution have deadlines. Owned process cleanup stops
+the Server before releasing its schema and storage and confirms authentication
+process termination. The shell EXIT handler uses `integration-runtime.mts` to
+reconcile owned process identities and the run's resources, including its local
+database container. Failed termination or cleanup remains a failure and retains
+the affected run directory; successful cleanup cannot erase a test failure.
+
+After interruption, run the independent reconciliation command from this module:
+
+```bash
+bash scripts/integration.sh --cleanup
+```
+
+Local reconciliation skips runs with a live runner. In CI it selects only the
+current workflow run, job and attempt, then drains that run's owned children and
+resources. It preserves the original command outcome and reports cleanup
+failures. CI invokes it in an always-run step after API validation.
+
+Safe evidence is retained under `.tmp/integration-results/<run-id>/`: `build.json`
+binds source/fingerprint, binary hash, toolchain and race mode; `result.json`
+records phase, command/test exit codes, run status and cleanup status. Successful
+reconciliation of an unobserved command retains its null exit and interrupted
+status. `run.log` contains streaming test output and bounded service diagnostics.
+The Go job prepares production Web resources, runs the module gate and explicit API
+suite, then uploads only these JSON and log files. Private ownership/resource
+receipts, configuration, credentials, database files and copied build artifacts
+stay outside the evidence directory.
+
 ### TaskSync lock and time windows
 
 TaskSync lock-wait regressions in store tests use a named 20-millisecond overlap
@@ -823,14 +919,17 @@ records why database clocks and lock observations are required together.
 
 ### HTTP scenario ownership
 
-Domain packages own their HTTP integration scenarios, including those that
-construct the production application and use real PostgreSQL and UniAuth
-fixtures. The root `internal/server` package retains tests that need internal
-composition access, shared startup/channel fixtures and runtime shutdown
-ordering. Shared scenarios run once in their domain owner; internal-only
-assertions remain in the root package. The
-[HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
-records the distinction and preservation requirements.
+Domain packages own HTTP protocol regressions. Task HTTP tests control directly
+called service/use-case results, while normal full-application API flows run in
+`cmd/integration_tests`. Bot and Session fixtures currently retain their real
+PostgreSQL and UniAuth boundaries. The root `internal/server` package retains
+private composition, shared startup/channel and runtime shutdown-ordering tests.
+Shared scenarios have one owner; different preparation and mechanism proofs
+remain separate. The
+[HTTP ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+preserves the earlier consolidation rationale, and the
+[Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
+owns the Task HTTP and API boundary.
 
 The Session browser ping regression uses production Session routes with real
 business services and authentication in a focused route fixture. Its test-local

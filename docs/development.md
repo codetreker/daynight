@@ -533,15 +533,37 @@ describes the actual check. The complete module check requires an isolated
 PostgreSQL instance and fails if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
-Business-rule unit tests use domain facts and DAO-interface mocks without a
-PostgreSQL fixture; SQL, transaction, persistence and cross-operation authority
-proofs remain integration tests. The
+The [test-writing rules](writing_tests.md) define test ownership. Task HTTP unit
+tests mock the directly called service/use-case operations while exercising real
+routing, credential middleware, parsing, responses and request lifecycle. Core
+rules use domain facts and required DAO mocks; service tests control lower
+operations and scope/transaction results. These unit selections execute without
+PostgreSQL. Store tests retain actual SQL, transaction, persistence and storage
+consistency proofs. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
-owns their scope and failure expectations. A selected pure-rule test must run
-without a database URL; the complete `internal/service/webhook` suite also has
-this property. Its source producers, HTTP/protocol adapters and PostgreSQL
-contracts retain their own proofs. The server guide owns the standalone command;
-the full module check still includes real PostgreSQL.
+owns focused commands and failure expectations. The complete
+`internal/service/webhook` suite also executes without a database URL; its source
+producers, HTTP/protocol adapters and PostgreSQL contracts retain their own
+proofs. Task HTTP's `!stress` TestMain clears the database and UniAuth fixture
+variables in its test binary even when the complete module check supplies them
+to other packages. It executes the whole regular suite with that boundary;
+stress workloads use their separate fixture. The complete module check still
+includes real PostgreSQL.
+
+The explicitly tagged `cmd/integration_tests` suite runs normal API flows through
+a production Server process and Go HTTP client. Build production Web resources
+once, then run `bash scripts/integration.sh` from the Go module. The runner owns
+a fresh PostgreSQL container when `DAYNIGHT_TEST_DATABASE_URL` is unset; an
+explicit URL must identify the invoking test environment's isolated instance.
+It also prepares real authentication, records the source and binary identity,
+and bounds startup, execution and cleanup. `bash scripts/integration.sh --cleanup`
+independently reconciles saved runs after interruption and preserves their
+original failure or unknown command outcome. Safe build/result JSON and streamed
+logs remain in `.tmp/integration-results/<run-id>/`; private ownership receipts,
+credentials, databases and copied binaries are not uploaded. The
+[API integration guide](../packages/daynight-server/README.md#go-api-integration)
+owns exact preparation, evidence fields and cleanup semantics. The suite does
+not run CLI or Web tests.
 
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;
@@ -802,8 +824,10 @@ final gate still run; publication validates its frozen artifact separately.
 Malformed manifests or Git failures fail detection.
 
 CLI selection runs ordinary and installed phases independently on Linux,
-Windows and macOS ARM64, plus Node compatibility and shell checks. Go has its
-own PostgreSQL-backed module gate and coverage artifact. Web quality owns full
+Windows and macOS ARM64, plus Node compatibility and shell checks. The Go job
+prepares production Web resources, runs its PostgreSQL-backed module gate and
+explicit normal API suite, then independently reconciles API resources. Coverage
+and safe API build/result/log evidence use separate artifacts. Web quality owns full
 typechecking, harness, production Docker Web build and coverage; its separate
 browser job owns frontend fixtures. Product E2E waits only for detection and
 prepares its own Node.js, pnpm, Go, Chromium, database and complete auth system.
