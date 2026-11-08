@@ -220,6 +220,116 @@ describe("Webhook fixed intent controller", () => {
     const intent = controller(); await intent.submit(patch()); expect(intent.getSnapshot().result?.endpoint).toBeTruthy();
     intent.dispose(); expect(intent.getSnapshot().result?.endpoint).toBeUndefined(); expect(intent.getSnapshot().result?.operation).toBeTruthy();
   });
+  it("forgets a confirmed current endpoint without losing its historical receipt or issuing writes", async () => {
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedReceipt(options), endpoint: endpoint() })); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), confirmed = await intent.submit(patch()), listener = vi.fn(); intent.subscribe(listener);
+    intent.forgetCurrentProjection();
+    expect(intent.getSnapshot()).toMatchObject({ phase: "confirmed", prepared: confirmed.prepared, error: confirmed.error, result: { operation: confirmed.result!.operation } });
+    expect(intent.getSnapshot().result?.endpoint).toBeUndefined(); expect(listener).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledOnce();
+    const cleared = intent.getSnapshot(); intent.forgetCurrentProjection();
+    expect(intent.getSnapshot()).toBe(cleared); expect(listener).toHaveBeenCalledOnce();
+  });
+  it("retains the original rotation key and deadline when forgetting current projections", async () => {
+    const overlapUntil = "2026-11-09T12:00:00Z";
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
+      const operation = await submittedReceipt(options, { kind: "signing-secret.rotate", keyId: uuid(4), overlapUntil });
+      return response({ operation, signing: { activeKeyId: operation.keyId, overlapUntil } });
+    }));
+    const intent = controller(); await intent.submit({ ...patch(), kind: "signing-secret.rotate", body: { mode: "overlap" } });
+    const confirmed = intent.getSnapshot(), listener = vi.fn(); intent.subscribe(listener); intent.forgetCurrentProjection();
+    expect(intent.getSnapshot()).toBe(confirmed); expect(intent.getSnapshot().result?.operation).toMatchObject({ keyId: uuid(4), overlapUntil }); expect(listener).not.toHaveBeenCalled();
+  });
+  it.each([
+    { keyId: uuid(99) },
+    { overlapUntil: "2026-11-09T13:00:00Z" },
+    { recordedAt: "2026-11-08T12:00:01Z" },
+    { expiresAt: "2026-12-09T12:00:00Z" },
+  ])("retains the first confirmed rotation receipt when a later GET contradicts immutable facts %j", async changed => {
+    let original!: WebhookReceipt;
+    const overlapUntil = "2026-11-09T12:00:00Z";
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "POST") {
+        original = await submittedReceipt(options, { kind: "signing-secret.rotate", keyId: uuid(4), overlapUntil });
+        return response({ operation: original, signing: { activeKeyId: original.keyId, overlapUntil } });
+      }
+      return response({ ...original, ...changed });
+    }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), first = await intent.submit({ ...patch(), kind: "signing-secret.rotate", body: { mode: "overlap" } });
+    intent.forgetCurrentProjection(); const later = await intent.reconcile();
+    expect(later.phase).toBe("confirmed"); expect(later.error).toMatchObject({ kind: "protocol" }); expect(later.result?.operation).toBe(first.result?.operation);
+    expect(later.result?.operation).toMatchObject({ keyId: uuid(4), overlapUntil }); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined]);
+  });
+  it.each([
+    { effect: "unchanged", configVersionAfter: "9007199254740993" },
+    { destinationRevisionAfter: "2" },
+  ] as const)("retains the first patch outcome when a different prepared-compatible outcome is observed %j", async changed => {
+    let original!: WebhookReceipt;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "PATCH") { original = await submittedReceipt(options); return response({ operation: original, endpoint: endpoint() }); }
+      return response({ ...original, ...changed });
+    }));
+    const intent = controller(), first = await intent.submit(patch()), later = await intent.reconcile();
+    expect(later.phase).toBe("confirmed"); expect(later.result).toBe(first.result); expect(later.error).toMatchObject({ kind: "protocol" });
+  });
+  it("does not replace a confirmed creation endpoint ID with another canonical ID", async () => {
+    let original!: WebhookReceipt;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "POST") { original = await submittedReceipt(options, { kind: "endpoint.create" }); return response({ operation: original, endpoint: endpoint("1") }); }
+      return response({ ...original, endpointId: uuid(99) });
+    }));
+    const intent = controller(), first = await intent.submit({ kind: "endpoint.create", body: { name: "Created", enabled: true, destination: { kind: "http", adapterVersion: "1", configuration: { url: "https://receiver.example/hooks" } }, subscriptions: [] } });
+    const later = await intent.reconcile(); expect(later.phase).toBe("confirmed"); expect(later.result?.operation.endpointId).toBe(endpointId); expect(later.result).toBe(first.result); expect(later.error).toMatchObject({ kind: "protocol" });
+  });
+  it("preserves the first result and independent current view on identical receipt reconciliation", async () => {
+    let original!: WebhookReceipt;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "PATCH") { original = await submittedReceipt(options); return response({ operation: original, endpoint: endpoint("9007199254740999") }); }
+      return response(original);
+    }));
+    const intent = controller(), first = await intent.submit(patch()), later = await intent.reconcile();
+    expect(later.phase).toBe("confirmed"); expect(later.error).toBeNull(); expect(later.result).toBe(first.result); expect(later.result?.operation).toBe(first.result?.operation);
+    expect(later.result?.endpoint?.configVersion).toBe("9007199254740999"); expect(later.result?.operation.configVersionAfter).toBe("9007199254740994");
+  });
+  it("keeps known confirmation and a later current view when the original receipt becomes unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => options.method === "PATCH" ? response({ operation: await submittedReceipt(options), endpoint: endpoint("9007199254740999") }) : failure()));
+    const intent = controller(), first = await intent.submit(patch()), later = await intent.reconcile();
+    expect(later.phase).toBe("confirmed"); expect(later.result).toBe(first.result); expect(later.error).toMatchObject({ status: 404 });
+    expect(later.result?.endpoint?.configVersion).toBe("9007199254740999"); expect(later.result?.operation.configVersionAfter).toBe("9007199254740994");
+  });
+  it("resets known outcome only for a new explicit intent", async () => {
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { const operation = await submittedReceipt(options); return response({ operation, endpoint: endpoint(operation.configVersionAfter) }); }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), first = await intent.submit(patch()), second = await intent.submit({ ...patch(), ifVersion: "9007199254740994", body: { name: "Explicit new decision" } });
+    expect(second.phase).toBe("confirmed"); expect(second.result?.operation.operationId).not.toBe(first.result?.operation.operationId); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["PATCH", "PATCH"]);
+  });
+  it("clears an unknown in-memory request while keeping the original ID and GET-only recovery", async () => {
+    let operation!: WebhookReceipt, lookups = 0;
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "PATCH") { operation = await submittedReceipt(options); throw new TypeError("Response lost"); }
+      return ++lookups === 1 ? failure() : response(operation);
+    }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), unknown = await intent.submit(patch()), listener = vi.fn(); intent.subscribe(listener);
+    intent.forgetCurrentProjection(); intent.forgetCurrentProjection();
+    expect(intent.getSnapshot()).toBe(unknown); expect(intent.getSnapshot().prepared?.operationId).toBe(operation.operationId); expect(listener).not.toHaveBeenCalled();
+    const confirmed = await intent.reconcile(); expect(confirmed.phase).toBe("confirmed"); expect(confirmed.result?.operation.operationId).toBe(operation.operationId);
+    expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["PATCH", undefined, undefined]);
+  });
+  it("does not dispatch a cleared pending body after identity admission completes", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const intent = new WebhookIntentController({ serviceOrigin, owner, admission: { ...admission(), ready: async () => { entered(); await barrier; } }, signal: new AbortController().signal, storage: sessionStorage });
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const pending = intent.submit(patch()); await waiting; const submitted = intent.getSnapshot(); intent.forgetCurrentProjection(); intent.forgetCurrentProjection(); release();
+    const stopped = await pending; expect(stopped.phase).toBe("rejected"); expect(stopped.prepared?.operationId).toBe(submitted.prepared?.operationId); expect(fetch).not.toHaveBeenCalled();
+  });
+  it("can idempotently strip a late postcommit projection without erasing original confirmation", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => { entered(); await barrier; return response({ operation: await submittedReceipt(options), endpoint: endpoint() }); }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), pending = intent.submit(patch()); await waiting; const operationId = intent.getSnapshot().prepared!.operationId;
+    intent.forgetCurrentProjection(); intent.forgetCurrentProjection(); release(); await pending;
+    const listener = vi.fn(); intent.subscribe(listener); intent.forgetCurrentProjection(); const stripped = intent.getSnapshot(); intent.forgetCurrentProjection();
+    expect(stripped.phase).toBe("confirmed"); expect(stripped.result?.operation.operationId).toBe(operationId); expect(stripped.result?.endpoint).toBeUndefined(); expect(listener).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledOnce();
+  });
   it("does not dispatch a pre-aborted lifetime", () => {
     const lifetime = new AbortController(); lifetime.abort(); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     expect(() => controller(lifetime.signal).submit(patch())).toThrow(); expect(fetch).not.toHaveBeenCalled();

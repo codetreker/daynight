@@ -26,12 +26,13 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true }: 
   const admission = { userId, signal: lifetime.signal, ready: async (signal: AbortSignal) => signal.throwIfAborted(), isInvalidated: false, principalMismatch: vi.fn() } as unknown as TaskCacheScope;
   const resources = new Map<string, WebhookEndpoint>(initial.map(value => [value.id, value])), receipts = new Map<string, WebhookReceipt>(), writes: { readonly method: string; readonly body: Record<string, unknown> }[] = [];
   let next = 50, secretReads = 0, active = true, loseWrite = false, holdWrite = false, writeResponse: Response | null = null;
+  let teamRole: "admin" | "member" | null = "admin", teamVersion = 1;
   const writeBarrier = barrier<Response>();
   let intercept: ((url: string, init: RequestInit) => Promise<Response> | null) | null = null;
   const fetch = vi.fn((url: string, init: RequestInit = {}) => {
     const held = intercept?.(url, init); if (held !== null && held !== undefined) return held;
     const target = new URL(url, location.origin), method = init.method ?? "GET";
-    if (target.pathname === "/api/v1/teams") return Promise.resolve(response({ items: [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: now, updatedAt: now, membership: { teamId, userId, role: "admin", version: 1, createdAt: now, updatedAt: now } }], nextCursor: null }));
+    if (target.pathname === "/api/v1/teams") return Promise.resolve(response({ items: teamRole === null ? [] : [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: now, updatedAt: now, membership: { teamId, userId, role: teamRole, version: teamVersion, createdAt: now, updatedAt: now } }], nextCursor: null }));
     if (target.pathname === "/api/v1/projects") return Promise.resolve(response({ items: [projectId, secondProjectId].map((project, index) => ({ id: project, name: index === 0 ? "Project one" : "Project two", ownership: { teamId, version: 1 }, repoUrl: "https://example.test/repo.git", settings: { version: 1, executionWarningMinutes: 60 }, createdAt: now, updatedAt: now })), nextCursor: null }));
     const operation = /\/operations\/([^/]+)$/.exec(target.pathname);
     if (operation !== null) return Promise.resolve(receipts.has(operation[1]!) ? response(receipts.get(operation[1]!)) : failure(404, "not_found"));
@@ -71,7 +72,7 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true }: 
   const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active={active} route={route} catalog={{ ...catalog, service: { ...catalog.service, configurationExpansionAvailable: expand } }}/> : null; };
   const content = () => strict ? <StrictMode><View/></StrictMode> : <View/>;
   const rendered = renderWithLocale(content(), { locale: "en" }); await flush();
-  return { ...rendered, fetch, writes, resources, receipts, admission, loseNextWrite: () => { loseWrite = true; }, holdNextWrite: () => { holdWrite = true; }, releaseWrite: () => { holdWrite = false; writeBarrier.resolve(writeResponse!); }, secretReads: () => secretReads, intercept: (value: typeof intercept) => { intercept = value; }, pause: () => { active = false; rendered.rerender(content()); }, resume: () => { active = true; rendered.rerender(content()); } };
+  return { ...rendered, fetch, writes, resources, receipts, admission, loseNextWrite: () => { loseWrite = true; }, holdNextWrite: () => { holdWrite = true; }, releaseWrite: () => { holdWrite = false; writeBarrier.resolve(writeResponse!); }, secretReads: () => secretReads, setTeamAuthorization: (role: typeof teamRole, version: number) => { teamRole = role; teamVersion = version; }, intercept: (value: typeof intercept) => { intercept = value; }, pause: () => { active = false; rendered.rerender(content()); }, resume: () => { active = true; rendered.rerender(content()); } };
 };
 const openEdit = () => fireEvent.click(screen.getByRole("button", { name: "Edit Endpoint 5" }));
 const setName = (name: string) => { const input = screen.getByRole("textbox", { name: /^Name$/ }); fireEvent.change(input, { target: { value: name } }); return input as HTMLInputElement; };
@@ -106,8 +107,35 @@ describe("Webhook configuration page", () => {
     const original = { ...endpoint(), configVersion: "9007199254740993" }; const view = await mount({ initial: [original] });
     openEdit(); setName("Changed"); view.resources.set(endpointId, { ...original, configVersion: "9007199254740994", name: "Other change" }); submitForm(); await waitFor(() => expect(view.writes.length).toBeGreaterThan(0)); await flush();
     expect(view.writes).toHaveLength(1); expect(view.writes[0]!.body.ifVersion).toBe("9007199254740993"); expect(screen.getByRole("textbox", { name: /^Name$/ })).toHaveValue("Changed"); expect(screen.getByRole("alert")).toHaveTextContent("configuration changed");
-    fireEvent.click(screen.getByRole("button", { name: "Review current version" })); await flush(); submitForm(); await waitFor(() => expect(view.writes.length).toBeGreaterThan(0)); await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Review current version" })); await screen.findByRole("button", { name: "Keep my edit" }); fireEvent.click(screen.getByRole("button", { name: "Keep my edit" })); submitForm(); await waitFor(() => expect(view.writes.length).toBeGreaterThan(0)); await flush();
     expect(view.writes).toHaveLength(2); expect(view.writes[1]!.body.ifVersion).toBe("9007199254740994"); expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each(["name", "url"] as const)("refreshes untouched fields after a CAS conflict without adding them to a %s edit", async edited => {
+    const view = await mount(); openEdit();
+    if (edited === "name") setName("My name"); else fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/my-url" } });
+    const current = endpoint(); view.resources.set(endpointId, edited === "name" ? { ...current, configVersion: "2", destinationRevision: "2", destination: { ...current.destination, url: "https://receiver.example/other-url", displayUrl: "https://receiver.example/other-url" } } : { ...current, configVersion: "2", name: "Other name" });
+    submitForm(); await waitFor(() => expect(view.writes).toHaveLength(1)); await screen.findByRole("button", { name: "Review current version" }); fireEvent.click(screen.getByRole("button", { name: "Review current version" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: edited === "name" ? "Endpoint URL" : "Name" })).toHaveValue(edited === "name" ? "https://receiver.example/other-url" : "Other name"));
+    expect(screen.queryByRole("button", { name: "Keep my edit" })).toBeNull(); submitForm(); await waitFor(() => expect(view.writes).toHaveLength(2));
+    const body = view.writes[1]!.body; expect(body.ifVersion).toBe("2");
+    if (edited === "name") { expect(body.name).toBe("My name"); expect(body).not.toHaveProperty("destination"); expect((view.resources.get(endpointId) as WebhookActiveEndpoint).destination.url).toBe("https://receiver.example/other-url"); expect((view.resources.get(endpointId) as WebhookActiveEndpoint).destinationRevision).toBe("2"); }
+    else { expect(body).not.toHaveProperty("name"); expect(body.destination).toEqual({ kind: "http", adapterVersion: "1", configuration: { url: "https://receiver.example/my-url" } }); expect((view.resources.get(endpointId) as WebhookActiveEndpoint).name).toBe("Other name"); }
+  });
+
+  it.each(["current", "keep", "reedit"] as const)("requires an explicit %s decision before submitting a concurrently changed edited URL", async decision => {
+    const view = await mount(); openEdit(); setName("My name"); const urlInput = screen.getByRole("textbox", { name: "Endpoint URL" }); fireEvent.change(urlInput, { target: { value: "https://receiver.example/my-url" } });
+    const current = endpoint(); view.resources.set(endpointId, { ...current, configVersion: "2", destinationRevision: "2", destination: { ...current.destination, url: "https://receiver.example/other-url", displayUrl: "https://receiver.example/other-url" } });
+    submitForm(); await waitFor(() => expect(view.writes).toHaveLength(1)); await screen.findByRole("button", { name: "Review current version" }); fireEvent.click(screen.getByRole("button", { name: "Review current version" })); await screen.findByRole("button", { name: "Keep my edit" });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); submitForm(); expect(view.writes).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Review current version" })); await flush(); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    if (decision === "current") fireEvent.click(screen.getByRole("button", { name: "Use current value" }));
+    else if (decision === "keep") fireEvent.click(screen.getByRole("button", { name: "Keep my edit" }));
+    else fireEvent.change(urlInput, { target: { value: "https://receiver.example/reedited" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitFor(() => expect(view.writes).toHaveLength(2));
+    const body = view.writes[1]!.body; expect(body.ifVersion).toBe("2"); expect(body.name).toBe("My name");
+    if (decision === "current") { expect(body).not.toHaveProperty("destination"); expect((view.resources.get(endpointId) as WebhookActiveEndpoint).destinationRevision).toBe("2"); }
+    else { expect(body.destination).toEqual({ kind: "http", adapterVersion: "1", configuration: { url: decision === "keep" ? "https://receiver.example/my-url" : "https://receiver.example/reedited" } }); expect((view.resources.get(endpointId) as WebhookActiveEndpoint).destinationRevision).toBe("3"); }
   });
 
   it("uses one fixed create intent for Enter/button duplicates and keeps empty explicit subscriptions", async () => {
@@ -180,6 +208,63 @@ describe("Webhook configuration page", () => {
     held.resolve(response(original)); await flush(); expect(document.body.textContent).not.toContain("private=hidden"); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled();
   });
 
+  it.each(["member", "absent"] as const)("withdraws privileged cached data on a confirmed Team directory %s result before held endpoint reads complete", async status => {
+    const teamEndpoint = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
+    const view = await mount({ initial: [teamEndpoint] }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush();
+    fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); await flush();
+    fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); await screen.findByText("Original operation confirmed");
+    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Retained admin draft");
+    const admin = view.resources.get(endpointId) as WebhookActiveEndpoint, heldList = barrier<Response>(), heldEndpoint = barrier<Response>();
+    view.intercept((url, init) => {
+      if ((init.method === undefined || init.method === "GET") && url.startsWith(`/api/v1/teams/${teamId}/webhooks`)) return url.includes(`/${endpointId}`) ? heldEndpoint.promise : heldList.promise;
+      return null;
+    });
+    view.setTeamAuthorization(status === "member" ? "member" : null, 2); fireEvent.focus(window);
+    await screen.findByText(status === "member" ? "Member · Read only" : "Team access is unavailable.");
+    expect(screen.queryByRole("dialog")).toBeNull(); expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); expect(screen.getByText("Original operation confirmed")).toBeVisible();
+    heldList.resolve(response({ items: [{ id: admin.id, owner: admin.owner, name: admin.name, enabled: admin.enabled, configVersion: admin.configVersion, destination: admin.destination, projectCount: 1, eventTypeCount: 2, lastAttemptAt: null, lastResult: null }], nextCursor: null })); heldEndpoint.resolve(response(admin)); await flush();
+    expect(document.body.textContent).not.toContain("private=hidden"); expect(screen.queryByRole("dialog")).toBeNull(); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
+    view.intercept(null); view.resources.set(endpointId, { ...admin, destination: { ...admin.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
+    fireEvent.click(screen.getByRole("button", { name: "Personal" })); await flush();
+    const beforeReturn = view.fetch.mock.calls.filter(([url]) => String(url).startsWith(`/api/v1/teams/${teamId}/webhooks`)).length;
+    act(() => navigate(`/webhooks?owner=team&teamId=${teamId}&endpointId=${endpointId}`));
+    expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); await flush();
+    expect(document.body.textContent).not.toContain("private=hidden"); expect(screen.getByText("Original operation confirmed")).toBeVisible();
+    if (status === "absent") expect(view.fetch.mock.calls.filter(([url]) => String(url).startsWith(`/api/v1/teams/${teamId}/webhooks`))).toHaveLength(beforeReturn);
+    else { expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Show secret" })).toBeDisabled(); }
+    expect(view.writes).toHaveLength(1);
+  });
+
+  it("treats a limited Endpoint as owner-wide restriction even while the directory and prior list still contain admin data", async () => {
+    const initial = [endpoint(), endpoint(8)].map(value => ({ ...value, owner: { kind: "team" as const, id: teamId } }));
+    const view = await mount({ initial }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); await flush();
+    fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); await screen.findByText("Original operation confirmed"); await flush();
+    const admins = [...view.resources.values()] as WebhookActiveEndpoint[];
+    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Admin draft");
+    for (const admin of admins) view.resources.set(admin.id, { ...admin, destination: { ...admin.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
+    let firstList = true;
+    view.intercept((url, init) => {
+      if (firstList && url.startsWith(`/api/v1/teams/${teamId}/webhooks?`) && (init.method === undefined || init.method === "GET")) {
+        firstList = false; return Promise.resolve(response({ items: admins.map(admin => ({ id: admin.id, owner: admin.owner, name: admin.name, enabled: admin.enabled, configVersion: admin.configVersion, destination: admin.destination, projectCount: 1, eventTypeCount: 2, lastAttemptAt: null, lastResult: null })), nextCursor: null }));
+      }
+      return null;
+    });
+    fireEvent.focus(window); await screen.findByText("Member · Read only"); await flush();
+    expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); expect(screen.getByText("Original operation confirmed")).toBeVisible(); expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.focus(window); await flush(); expect(screen.getByText("Member · Read only")).toBeVisible(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Personal" })); await flush(); act(() => navigate(`/webhooks?owner=team&teamId=${teamId}&endpointId=${endpointId}`));
+    expect(document.body.textContent).not.toContain("private=hidden"); await flush(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); expect(screen.getByText("Original operation confirmed")).toBeVisible();
+    view.intercept(null); for (const admin of admins) view.resources.set(admin.id, admin); view.setTeamAuthorization("admin", 3); fireEvent.focus(window);
+    await waitFor(() => expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled()); await screen.findByRole("button", { name: "Edit Endpoint 5" }); await flush();
+    expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled(); expect(screen.getByRole("button", { name: "Show secret" })).toBeEnabled(); expect(view.secretReads()).toBe(1); expect(view.writes).toHaveLength(1);
+  });
+
+  it("preserves the current Team editor and focus when a directory background observation is unchanged", async () => {
+    const view = await mount({ initial: [{ ...endpoint(), owner: { kind: "team", id: teamId } }] }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    openEdit(); const input = setName("Team draft"), dialog = screen.getByRole("dialog"); input.focus(); input.setSelectionRange(1, 4);
+    fireEvent.focus(window); await flush(); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Team draft"); expect(input).toHaveFocus(); expect(input.selectionStart).toBe(1); expect(input.selectionEnd).toBe(4); expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
   it("confirms a delayed write receipt while refusing its stale privileged current projection", async () => {
     const view = await mount(); openEdit(); setName("Committed name"); view.holdNextWrite(); submitForm();
     await waitFor(() => expect(view.writes).toHaveLength(1)); const committed = view.resources.get(endpointId) as WebhookActiveEndpoint;
@@ -215,6 +300,13 @@ describe("Webhook configuration page", () => {
     const dialog = await screen.findByRole("dialog"); fireEvent.click(within(dialog).getByRole("button", { name: "Delete webhook" }));
     await waitFor(() => expect(view.writes).toHaveLength(1)); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(screen.getAllByRole("button", { name: "New webhook" })[0]!).toHaveFocus());
+  });
+
+  it("retains the original rotation key and deadline while exposing a contradictory later receipt", async () => {
+    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await flush();
+    const original = [...view.receipts.values()][0]!; view.receipts.set(original.operationId, { ...original, keyId: id(999), overlapUntil: "2026-11-10T00:00:00Z" });
+    fireEvent.click(screen.getByRole("button", { name: "Check operation" })); await screen.findByRole("alert");
+    expect(screen.getByText("Original operation confirmed")).toBeVisible(); expect(screen.getByText(original.keyId!)).toBeVisible(); expect(screen.getByText(original.overlapUntil!)).toBeVisible(); expect(document.body.textContent).not.toContain(id(999)); expect(view.writes).toHaveLength(1);
   });
 
   it("translates retained drafts and restores the opener after native cancel", async () => {

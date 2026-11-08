@@ -84,6 +84,11 @@ export const assertWebhookReceiptMatches = (receipt: WebhookReceipt, prepared: W
   }
 };
 
+const assertReceiptUnchanged = (receipt: WebhookReceipt, confirmed: WebhookReceipt): void => {
+  const { owner, ...facts } = receipt, { owner: confirmedOwner, ...confirmedFacts } = confirmed;
+  if (owner.kind !== confirmedOwner.kind || owner.id !== confirmedOwner.id || Object.keys(facts).some(field => facts[field as keyof typeof facts] !== confirmedFacts[field as keyof typeof confirmedFacts])) return invalid();
+};
+
 const inputBody = (input: WebhookIntentInput): Record<string, unknown> => {
   if (!kindChoices.includes(input.kind) || input.kind === ("delivery.redeliver" as WebhookOperationKind)) return invalid();
   const body = record(input.body);
@@ -205,11 +210,14 @@ export class WebhookIntentController {
         requestSignal.throwIfAborted();
         if (this.#options.canSubmit !== undefined && !this.#options.canSubmit()) throw new ApiError("server", 503, "webhooks_unavailable");
       } };
-      const result = await submitWebhookMutation(prepared.owner, kind, endpointId, operationId, this.#body!, signal, admission, receipt => {
+      const body = this.#body;
+      if (body === null) throw new DOMException("The pending request body was cleared.", "AbortError");
+      const result = await submitWebhookMutation(prepared.owner, kind, endpointId, operationId, body, signal, admission, receipt => {
         assertWebhookReceiptMatches(receipt, prepared);
         this.#publish({ ...this.#state, phase: "confirmed", result: { operation: receipt }, error: null });
         this.#persist(null);
       }, () => {
+        if (this.#body === null) throw new DOMException("The pending request body was cleared.", "AbortError");
         if (this.#options.canSubmit !== undefined && !this.#options.canSubmit()) throw new ApiError("server", 503, "webhooks_unavailable");
         dispatched = true;
       });
@@ -242,11 +250,21 @@ export class WebhookIntentController {
     this.#publish({ ...this.#state, reconciling: true });
     return getWebhookOperation(prepared.owner, prepared.operationId, signal, this.#options.admission).then(receipt => {
       assertWebhookReceiptMatches(receipt, prepared);
+      const confirmed = this.#state.phase === "confirmed" ? this.#state.result : null;
+      if (confirmed !== null) assertReceiptUnchanged(receipt, confirmed.operation);
       this.#body = null;
       this.#persist(null);
-      return this.#publish({ ...this.#state, phase: "confirmed", result: { operation: receipt }, error: null, reconciling: false });
+      return this.#publish({ ...this.#state, phase: "confirmed", result: confirmed ?? { operation: receipt }, error: null, reconciling: false });
     }).catch(error => this.#publish({ ...this.#state, error, reconciling: false }));
   }
+
+  forgetCurrentProjection = (): void => {
+    this.#body = null;
+    const result = this.#state.result;
+    if (result?.endpoint === undefined) return;
+    const { endpoint: _endpoint, ...retained } = result;
+    this.#publish({ ...this.#state, result: retained });
+  };
 
   dispose = (): void => {
     this.#disposed = true;

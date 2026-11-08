@@ -38,27 +38,31 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const [filters, setFilters] = useState<ReadonlyMap<string, { readonly q: string; readonly enabled: "all" | "enabled" | "paused" }>>(new Map());
   const filter = scope === null ? { q: "", enabled: "all" as const } : filters.get(scope) ?? { q: "", enabled: "all" as const };
   const query = useMemo(() => ({ q: filter.q, limit: 50, ...(filter.enabled === "all" ? {} : { enabled: filter.enabled === "enabled" }) }), [filter.q, filter.enabled]);
-  const canRead = active && route.error === null;
+  const directoryActive = active && route.error === null;
+  const directories = useWebhookDirectories(owner, admission, directoryActive);
+  const ownerAuthorization = owner === null ? null : directories.getAuthorization(owner);
+  const canRead = directoryActive && ownerAuthorization?.readable === true;
   const interactionSequence = useRef(0), previousSelection = useRef("");
   const selectionKey = JSON.stringify([scope, route.endpointId, route.tab, query]);
   if (previousSelection.current !== selectionKey) { previousSelection.current = selectionKey; interactionSequence.current++; }
-  const data = useWebhookData(owner, route.endpointId, query, admission, canRead), directories = useWebhookDirectories(owner, admission, canRead);
+  const data = useWebhookData(owner, route.endpointId, query, admission, canRead, directories.getAuthorization, directories.authorizationRevision, directories.observeEndpoint);
   const sourceEndpoint = data.endpoint?.lifecycle === "active" ? data.endpoint : null;
-  const controllers = useRef(new Map<string, WebhookIntentController>()), live = useRef({ active: canRead, owner, endpoint: sourceEndpoint, catalog });
+  const controllers = useRef(new Map<string, WebhookIntentController>()), controllerAuthorizations = useRef(new Map<string, string>()), live = useRef({ active: canRead, owner, endpoint: sourceEndpoint, catalog, manageOwner: ownerAuthorization?.manage === true });
   let controller: WebhookIntentController | null = null;
   if (owner !== null && route.error === null) {
     controller = controllers.current.get(webhookOwnerKey(owner)) ?? null;
     if (controller === null) {
       const controllerOwner = owner;
-      controller = new WebhookIntentController({ serviceOrigin: window.location.origin, owner, signal: admission.signal, admission: { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: signal => admission.ready(signal) }, canSubmit: () => live.current.active && !admission.isInvalidated && live.current.owner?.kind === controllerOwner.kind && live.current.owner.id === controllerOwner.id });
+      controller = new WebhookIntentController({ serviceOrigin: window.location.origin, owner, signal: admission.signal, admission: { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: signal => admission.ready(signal) }, canSubmit: () => live.current.active && live.current.manageOwner && !admission.isInvalidated && live.current.owner?.kind === controllerOwner.kind && live.current.owner.id === controllerOwner.id });
       controllers.current.set(webhookOwnerKey(owner), controller);
+      controllerAuthorizations.current.set(webhookOwnerKey(owner), directories.getAuthorization(owner).key);
     }
   }
   const intent = useSyncExternalStore(controller?.subscribe ?? inertSubscribe, controller?.getSnapshot ?? idleSnapshot);
   const deletedByReceipt = intent.phase === "confirmed" && intent.result?.operation.kind === "endpoint.delete" ? intent.result.operation.endpointId : null;
   const endpoint = sourceEndpoint?.id === deletedByReceipt ? null : sourceEndpoint;
   const visibleItems = data.items === null ? null : data.items.filter(item => item.id !== deletedByReceipt);
-  live.current = { active: canRead, owner, endpoint, catalog };
+  live.current = { active: canRead, owner, endpoint, catalog, manageOwner: ownerAuthorization?.manage === true };
   const [modal, setModal] = useState<Modal | null>(null), [menu, setMenu] = useState<string | null>(null), [rotation, setRotation] = useState<"overlap" | "immediate">("overlap"), [secret, setSecret] = useState<{ readonly scope: string; readonly value: WebhookSecret } | null>(null), [secretBusy, setSecretBusy] = useState(false), [secretError, setSecretError] = useState<unknown>(null), [copyStatus, setCopyStatus] = useState<string | null>(null), [localError, setLocalError] = useState<unknown>(null);
   const secretSequence = useRef(0), handled = useRef(new Set<string>()), lifecycle = useRef(0), listRef = useRef<HTMLElement>(null);
   const writeFences = useRef(new Map<string, WebhookReadFence | null>());
@@ -66,6 +70,15 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   useEffect(() => { const generation = ++lifecycle.current; return () => { queueMicrotask(() => { if (lifecycle.current === generation) { for (const value of controllers.current.values()) value.dispose(); controllers.current.clear(); } }); }; }, []);
   useEffect(() => { setModal(null); setMenu(null); setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); setLocalError(null); secretSequence.current++; }, [scope]);
   useEffect(() => { setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); secretSequence.current++; }, [endpoint?.id, endpoint?.signing.activeKeyId, endpoint?.capabilities.readSecret, route.tab]);
+  useEffect(() => { if (ownerAuthorization?.manage !== true) { setSecret(null); setSecretError(null); setSecretBusy(false); setModal(null); secretSequence.current++; } }, [ownerAuthorization?.key]);
+  useEffect(() => {
+    for (const [scope, controller] of controllers.current) {
+      const kind = scope.startsWith("team:") ? "team" : "personal", owner = { kind, id: scope.slice(kind.length + 1) } as WebhookOwner;
+      const key = directories.getAuthorization(owner).key;
+      if (controllerAuthorizations.current.get(scope) !== key) { controller.forgetCurrentProjection(); controllerAuthorizations.current.set(scope, key); }
+    }
+  }, [directories.authorizationRevision, scope]);
+  useEffect(() => { if (sourceEndpoint !== null && (!sourceEndpoint.capabilities.manage || !sourceEndpoint.capabilities.readSecret)) controller?.forgetCurrentProjection(); }, [sourceEndpoint?.id, sourceEndpoint?.capabilities.manage, sourceEndpoint?.capabilities.readSecret]);
   useEffect(() => { if (modal !== null && modal.kind !== "create" && (endpoint?.id === modal.endpoint.id && !endpoint.capabilities.manage || data.detailError !== null && endpoint === null)) setModal(null); }, [endpoint, modal]);
   useEffect(() => {
     if (intent.phase !== "confirmed" || intent.result === null || intent.prepared === null || handled.current.has(intent.prepared.operationId)) return;
@@ -81,8 +94,8 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const setFilter = (value: Partial<typeof filter>) => { interactionSequence.current++; if (scope !== null) setFilters(old => { const next = new Map(old); next.set(scope, { ...filter, ...value }); return next; }); };
   const selectedTeam = owner?.kind === "team" ? directories.teams?.find(team => team.id === owner.id) : null;
   const projectLabels = new Map(directories.projects?.map(project => [project.id, project.ownership.teamId === user.personalTeam.id ? m.projectOriginPersonal : directories.teams?.find(team => team.id === project.ownership.teamId)?.name ?? m.sharedOrigin]));
-  const manageOwner = owner?.kind === "personal" || selectedTeam?.membership.role === "admin";
-  const manage = canRead && endpoint?.capabilities.manage === true && !blockedIntent(intent), createAllowed = canRead && manageOwner && catalog.service.configurationExpansionAvailable && !blockedIntent(intent);
+  const manageOwner = ownerAuthorization?.manage === true;
+  const manage = canRead && manageOwner && endpoint?.capabilities.manage === true && !blockedIntent(intent), createAllowed = canRead && manageOwner && catalog.service.configurationExpansionAvailable && !blockedIntent(intent);
   const ownerLabel = owner?.kind === "personal" ? user.name ?? user.email ?? user.id : selectedTeam?.name ?? owner?.id ?? m.chooseTeam;
   const selectOwner = (kind: "personal" | "team", teamId: string | null) => { interactionSequence.current++; navigate(webhookUrl({ owner: kind, teamId, endpointId: null, tab: "configuration" })); };
   const select = (id: string) => { saveListPosition(); interactionSequence.current++; setMenu(null); navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: id, tab: route.tab })); };
@@ -93,7 +106,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     const fence = writeFences.current.get(scope) ?? null;
     const outcome = await controller.submit(input);
     if (outcome.phase === "confirmed") {
-      if (outcome.result?.endpoint !== undefined) data.accept(outcome.result.endpoint, fence);
+      if (outcome.result?.endpoint !== undefined && !data.accept(outcome.result.endpoint, fence)) controller.forgetCurrentProjection();
       data.refresh(); directories.refresh();
     }
     return outcome;
@@ -105,7 +118,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   };
   const patch = (body: WebhookIntentInput["body"]) => { if (endpoint !== null && manage) void submit({ kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body }).catch(setLocalError); };
   const reveal = async () => {
-    if (owner === null || endpoint === null || !endpoint.capabilities.readSecret || !canRead || secretBusy) return;
+    if (owner === null || endpoint === null || !manageOwner || !endpoint.capabilities.readSecret || !canRead || secretBusy) return;
     if (secret !== null) { setSecret(null); secretSequence.current++; return; }
     const generation = ++secretSequence.current, requested = endpoint, fence = data.captureFence();
     setSecretBusy(true); setSecretError(null); setCopyStatus(null);
@@ -123,7 +136,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
       const read = await data.readEndpoint(item.id);
       if (read === null) return;
       const value = read.endpoint;
-      if (interactionSequence.current !== interaction || admission.isInvalidated || !live.current.active || live.current.owner?.kind !== requestedOwner.kind || live.current.owner.id !== requestedOwner.id || value.lifecycle !== "active" || !value.capabilities.manage) return;
+      if (interactionSequence.current !== interaction || admission.isInvalidated || !live.current.active || !live.current.manageOwner || live.current.owner?.kind !== requestedOwner.kind || live.current.owner.id !== requestedOwner.id || value.lifecycle !== "active" || !value.capabilities.manage) return;
       if (!data.accept(value, read.fence)) return;
       select(value.id); setMenu(null);
       if (action === "toggle") await submit({ kind: "endpoint.patch", endpointId: value.id, ifVersion: value.configVersion, destinationRevision: value.destinationRevision, body: { enabled: !value.enabled } });
@@ -136,8 +149,8 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     try { await navigator.clipboard.writeText(displayedSecret); setCopyStatus(m.copied); }
     catch { const node = document.getElementById("webhook-secret"); if (node !== null) { const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); } setCopyStatus(m.copyManual); }
   };
-  const actions: WebhookFormActions = { state: intent, canRead, reconcile: () => { void reconcile(); }, canSubmit: canRead && !blockedIntent(intent) && (modal?.kind === "create" ? createAllowed : endpoint?.capabilities.manage === true), submit, onClose: () => setModal(null), opener: modal?.opener ?? null };
-  const validModal = modal?.scope === scope && (modal.kind === "create" ? manageOwner : endpoint?.id === modal.endpoint.id && endpoint.capabilities.manage) ? modal : null;
+  const actions: WebhookFormActions = { state: intent, canRead, reconcile: () => { void reconcile(); }, canSubmit: canRead && !blockedIntent(intent) && (modal?.kind === "create" ? createAllowed : manageOwner && endpoint?.capabilities.manage === true), submit, onClose: () => setModal(null), opener: modal?.opener ?? null };
+  const validModal = manageOwner && modal?.scope === scope && (modal.kind === "create" ? manageOwner : endpoint?.id === modal.endpoint.id && endpoint.capabilities.manage) ? modal : null;
   const tabKeys: readonly WebhookRoute["tab"][] = ["configuration", "subscriptions"];
   const tabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -146,18 +159,19 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   };
   return <section className="webhooks" aria-label="Webhooks">
     <div className="heading"><div className="heading-text"><h1>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div><button className="button primary" type="button" disabled={!createAllowed} title={!manageOwner ? m.readOnlyReason : !catalog.service.configurationExpansionAvailable ? m.maintenance : undefined} onClick={event => open({ kind: "create" }, event.currentTarget)}><WebhookIcon name="plus" size={15}/>{m.new}</button></div>
-    <div className="scope-bar"><div className="scope-group" role="group" aria-label={m.owner}><button className={`scope-button ${route.owner === "personal" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "personal"} onClick={() => selectOwner("personal", null)}><WebhookIcon name="user" size={15}/>{m.personal}</button><button className={`scope-button ${route.owner === "team" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "team"} onClick={() => selectOwner("team", null)}><WebhookIcon name="team" size={16}/>{m.team}</button></div><div className="scope-context"><WebhookIcon name={route.owner === "team" ? "team" : "user"} size={13}/>{route.owner === "team" ? <select className="filter webhook-team-select" aria-label={m.chooseTeam} value={route.teamId ?? ""} onChange={event => selectOwner("team", event.target.value === "" ? null : event.target.value)}><option value="">{m.chooseTeam}</option>{route.teamId !== null && !directories.teams?.some(team => team.id === route.teamId) && <option value={route.teamId}>{route.teamId}</option>}{directories.teams?.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}</select> : <strong>{ownerLabel}</strong>}<span className="context-divider"/><span>{route.owner === "team" ? m.scopeTeam : m.scopePersonal}</span>{route.owner === "team" && <span className="role-label">{manageOwner ? m.administrator : m.member}</span>}</div></div>
+    <div className="scope-bar"><div className="scope-group" role="group" aria-label={m.owner}><button className={`scope-button ${route.owner === "personal" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "personal"} onClick={() => selectOwner("personal", null)}><WebhookIcon name="user" size={15}/>{m.personal}</button><button className={`scope-button ${route.owner === "team" ? "selected" : ""}`} type="button" aria-pressed={route.owner === "team"} onClick={() => selectOwner("team", null)}><WebhookIcon name="team" size={16}/>{m.team}</button></div><div className="scope-context"><WebhookIcon name={route.owner === "team" ? "team" : "user"} size={13}/>{route.owner === "team" ? <select className="filter webhook-team-select" aria-label={m.chooseTeam} value={route.teamId ?? ""} onChange={event => selectOwner("team", event.target.value === "" ? null : event.target.value)}><option value="">{m.chooseTeam}</option>{route.teamId !== null && !directories.teams?.some(team => team.id === route.teamId) && <option value={route.teamId}>{route.teamId}</option>}{directories.teams?.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}</select> : <strong>{ownerLabel}</strong>}<span className="context-divider"/><span>{route.owner === "team" ? m.scopeTeam : m.scopePersonal}</span>{route.owner === "team" && (ownerAuthorization?.status === "admin" || ownerAuthorization?.status === "member") && <span className="role-label">{manageOwner ? m.administrator : m.member}</span>}</div></div>
     {route.error !== null && <div className="inline-error" role="alert">{m.invalidNavigation}</div>}
     {!catalog.service.configurationExpansionAvailable && <p className="hint webhook-maintenance">{m.maintenance}</p>}
     {directories.error !== null && <div className="webhook-directory-error"><WebhookError error={directories.error}/><button className="text-button" type="button" onClick={directories.refresh}>{m.retry}</button></div>}
     {(intent.phase === "unknown" || intent.phase === "confirmed") && intent.prepared !== null && <div className={`webhook-operation ${intent.phase === "unknown" ? "warning-box" : "value-box"}`} role="status"><div><p>{intent.phase === "unknown" ? m.unknown : intent.result?.operation.effect === "unchanged" ? m.unchanged : m.confirmed}</p><span className="tiny">{m.operationId}</span><code>{intent.prepared.operationId}</code>{intent.result?.operation.keyId !== null && intent.result?.operation.keyId !== undefined && <><span className="tiny">{m.originalKey}</span><code>{intent.result.operation.keyId}</code><span className="tiny">{m.originalDeadline}</span><span>{intent.result.operation.overlapUntil ?? m.noOverlap}</span></>}</div><button className="button small" type="button" disabled={!canRead || intent.reconciling} onClick={() => { void reconcile(); }}>{intent.reconciling ? <span className="spinner"/> : <WebhookIcon name="refresh"/>}{m.checkOperation}</button></div>}
+    {intent.phase === "confirmed" && intent.error !== null && <WebhookError error={intent.error}/>}
     {intent.persistenceError !== null && <p className="inline-error" role="alert">{m.persistenceError}</p>}{localError !== null && <WebhookError error={localError}/>}
     <div className={`management-grid ${route.endpointId !== null ? "has-mobile-detail" : ""}`}>
       <section className="panel list-panel" aria-labelledby="webhook-list-title" ref={listRef}>
         <div className="panel-heading"><h2 id="webhook-list-title">{m.endpoints}{visibleItems !== null && <span className="count">{visibleItems.length}</span>}</h2><button className="button ghost icon-only" type="button" aria-label={m.refresh} disabled={!canRead || data.refreshing} onClick={() => { data.refresh(); directories.refresh(); }}>{data.refreshing ? <span className="spinner"/> : <WebhookIcon name="refresh"/>}</button></div>
         <div className="panel-tools"><div className="search-wrap"><WebhookIcon name="search" size={15}/><input type="search" aria-label={m.search} placeholder={m.search} value={filter.q} maxLength={200} onChange={event => setFilter({ q: event.target.value })}/></div><select className="filter" aria-label={m.all} value={filter.enabled} onChange={event => setFilter({ enabled: event.target.value as typeof filter.enabled })}><option value="all">{m.all}</option><option value="enabled">{m.enabled}</option><option value="paused">{m.paused}</option></select></div>
         {data.error !== null && <><WebhookError error={data.error}/><button className="text-button webhook-list-retry" type="button" disabled={!canRead} onClick={data.refresh}>{m.retry}</button></>}
-        <div className="endpoint-list">{owner === null ? <WebhookState title={m.chooseTeam}/> : visibleItems === null ? data.error === null ? <WebhookSkeleton/> : <WebhookState title={m.loadError}/> : visibleItems.length === 0 ? <WebhookState title={filter.q === "" && filter.enabled === "all" ? m.emptyTitle : m.noMatches} description={filter.q === "" && filter.enabled === "all" ? m.emptyCopy : m.noMatchesCopy}>{filter.q === "" && filter.enabled === "all" && <button className="button primary" type="button" disabled={!createAllowed} onClick={event => open({ kind: "create" }, event.currentTarget)}><WebhookIcon name="plus"/>{m.new}</button>}</WebhookState> : visibleItems.map(item => <WebhookRow key={item.id} item={item} selected={data.endpointId === item.id} menu={menu === item.id} onSelect={() => select(item.id)} onMenu={() => setMenu(menu === item.id ? null : item.id)} canManage={canRead && manageOwner && !blockedIntent(intent)} onAction={(action, opener) => { void rowAction(item, action, opener); }}/> )}</div>
+        <div className="endpoint-list">{owner === null ? <WebhookState title={m.chooseTeam}/> : ownerAuthorization?.status === "absent" ? <div role="alert"><WebhookState title={m.teamUnavailable}/></div> : visibleItems === null ? data.error === null ? <WebhookSkeleton/> : <WebhookState title={m.loadError}/> : visibleItems.length === 0 ? <WebhookState title={filter.q === "" && filter.enabled === "all" ? m.emptyTitle : m.noMatches} description={filter.q === "" && filter.enabled === "all" ? m.emptyCopy : m.noMatchesCopy}>{filter.q === "" && filter.enabled === "all" && <button className="button primary" type="button" disabled={!createAllowed} onClick={event => open({ kind: "create" }, event.currentTarget)}><WebhookIcon name="plus"/>{m.new}</button>}</WebhookState> : visibleItems.map(item => <WebhookRow key={item.id} item={item} selected={data.endpointId === item.id} menu={menu === item.id} onSelect={() => select(item.id)} onMenu={() => setMenu(menu === item.id ? null : item.id)} canManage={canRead && manageOwner && !blockedIntent(intent)} onAction={(action, opener) => { void rowAction(item, action, opener); }}/> )}</div>
         {visibleItems !== null && visibleItems.length > 0 && <div className="list-note"><WebhookIcon name="lock" size={11}/><span>{data.pendingQuery ? m.previousResults : data.nextCursor === null ? m.complete : m.partial}</span>{data.nextCursor !== null && <button className="text-button" type="button" disabled={!canRead || data.refreshing} onClick={data.more}>{m.more}</button>}</div>}
       </section>
       <aside className={`panel detail-panel ${route.endpointId !== null ? "mobile-open" : ""}`} aria-label={endpoint?.name ?? m.selectDetail}>

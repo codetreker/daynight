@@ -23,11 +23,21 @@ issued time, actor, versions and SHA-256 at submission. Unknown results reconcil
 only through the original receipt GET. Session storage contains minimal prepared
 metadata without the body, URL, credentials, secret or payload; reloaded records
 support GET recovery only. Confirmed historical effects and the current resource
-projection remain distinct. The shared receipt rules are owned by the
+projection remain distinct. Confirmed receipts reject later contradictory
+results. Configuration forms preserve explicit field edits independently of the
+CAS baseline: review refreshes untouched values, and concurrent dirty-field
+changes require a deliberate resolution before a new submission. The shared
+receipt rules are owned by the
 [receipt decision](../bug-fix/2026-11-08-webhook-receipt-results.md).
 
-Scoped reads preserve mounted nodes, drafts, focus, selected tabs and loaded
-pagination through background checks. Confirmed identity or disclosure changes
+Scoped reads bind endpoint and auxiliary publication to both its owner read
+generation and confirmed Team membership role/version. A directory-confirmed
+downgrade or a newer restrictive endpoint observation invalidates old
+administrator projections, including summaries and cached views on return. An
+unchanged older directory cannot restore permission; a new membership identity or
+version provides fresh authority. Original receipts remain independent. These reads preserve mounted
+nodes, drafts, focus, selected tabs and loaded pagination through unchanged
+background checks. Confirmed identity or disclosure changes
 withdraw private values. Storage cleanup failures remain visible and retryable
 without blocking identity quarantine. Native dialogs inherit page language and
 keep keyboard isolation, opener restoration and reachable scrolling actions.

@@ -617,3 +617,6 @@
 
 .webhooks .webhook-icon, .webhook-dialog .webhook-icon { width: var(--webhook-icon-size); height: var(--webhook-icon-size); }
 @media (max-width: 450px) { .webhooks .scope-button .webhook-icon { width: 14px; height: 14px; } .webhooks .search-wrap .webhook-icon { width: 13px; } }
+
+.webhook-dialog .webhook-field-conflict { display: grid; gap: 8px; }
+.webhook-dialog .webhook-field-conflict-actions { display: flex; flex-wrap: wrap; gap: 8px; }
