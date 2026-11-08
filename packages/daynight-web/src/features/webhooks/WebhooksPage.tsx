@@ -127,7 +127,8 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).key;
     const outcome = await controller.submit(input);
     // A receipt read requires owner access; a rejected management request only
-    // disproves administrator authority, not the member's redacted reads.
+    // disproves administrator authority for forbidden, not Project eligibility
+    // refusals or the member's redacted reads.
     observeDenial(outcome.error, requestedOwner, authorizationKey, outcome.phase === "rejected");
     observeDenial(outcome.result?.currentError, requestedOwner, authorizationKey, true);
     if (outcome.phase === "confirmed") {

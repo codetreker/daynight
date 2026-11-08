@@ -124,6 +124,7 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 	statuses := map[string]int{
 		"invalid_input": 400, "invalid_cursor": 400, "invalid_operation_time": 400,
 		"unauthenticated": 401, "forbidden": 403, "permission_denied": 403, "not_found": 404,
+		"webhook_project_ineligible": 403,
 		"identity_mismatch": 409, "version_conflict": 409, "operation_conflict": 409,
 		"version_exhausted": 409, "destination_unsupported": 409,
 		"generation_conflict": 409, "delivery_busy": 409, "target_changed": 409, "delivery_stopped": 409,

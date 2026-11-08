@@ -320,7 +320,7 @@ func TestUnicodeAndInvalidDestination(t *testing.T) {
 }
 
 func TestServiceErrorsDoNotDiscloseSensitiveDiagnostics(t *testing.T) {
-	for _, err := range []error{&model.Fault{Code: "forbidden", Message: "https://secret.test/token"}, fmt.Errorf("database password is private")} {
+	for _, err := range []error{&model.Fault{Code: "forbidden", Message: "https://secret.test/token"}, &model.Fault{Code: "webhook_project_ineligible", Message: "https://secret.test/token"}, fmt.Errorf("database password is private")} {
 		var logs bytes.Buffer
 		s := &fakeService{err: err}
 		h := fixture(s, &logs)
@@ -338,6 +338,10 @@ func TestFailurePreservesCompletionPriorityAndHidesCauses(t *testing.T) {
 		code   string
 	}{
 		{&model.Fault{Code: "forbidden"}, 403, "forbidden"},
+		{&model.Fault{Code: "webhook_project_ineligible", Message: "private project details"}, 403, "webhook_project_ineligible"},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &model.Fault{Code: "webhook_project_ineligible"}}, 403, "webhook_project_ineligible"},
+		{&model.Fault{Code: "webhook_project_ineligible", Cause: &store.Error{DatabaseFailure: true}}, 503, "dependency_unavailable"},
+		{&model.Fault{Code: "webhook_project_ineligible", Cause: &store.TransactionError{Phase: "rollback", Outcome: store.TransactionUnknown, CleanupFailed: true}}, 500, "internal_error"},
 		{&store.Error{Cause: &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &model.Fault{Code: "operation_expired"}}}, 410, "operation_expired"},
 		{&model.Fault{Code: "write_outcome_unknown", Cause: &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: &store.Error{DatabaseFailure: true}}}, 503, "write_outcome_unknown"},
 		{&model.Fault{Code: "forbidden", Cause: &store.Error{DatabaseFailure: true}}, 503, "dependency_unavailable"},
