@@ -65,8 +65,7 @@ func TestProjectSettingsSavedValueVersionAndMembership(t *testing.T) {
 }
 
 func TestProjectSettingsValidationBeforeStorage(t *testing.T) {
-	_, _, _, principal := projectService(t)
-	projects := NewProjects(nil)
+	projects, principal := projectValidationFixture()
 	ctx := context.Background()
 	for _, absent := range []model.Principal{{}, {UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: "unknown"}} {
 		_, err := projects.UpdateSettings(ctx, absent, uuid.NewString(), coreproject.UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 60})

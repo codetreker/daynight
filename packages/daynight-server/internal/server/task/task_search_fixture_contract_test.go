@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -106,4 +107,34 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 	if strings.Contains(response.Body.String(), *page.NextCursor) {
 		t.Fatal("response leaked cursor")
 	}
+}
+
+func TestSearchHTTPResponseBudgetPreservesCursor(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	project := taskProject(t, handler)
+	first := createHTTPTask(t, handler, project.ID, "first")
+	second := createHTTPTask(t, handler, project.ID, "second")
+	large := "match" + strings.Repeat("\x01", 180000)
+	for i, id := range []string{first.ID, second.ID} {
+		if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET title=$2,updated_at=clock_timestamp()-($3 * interval '1 second'),version=version+1 WHERE id=$1`, id, large, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := taskCollection(project.ID) + "/search"
+	response := projectRequest(handler, "POST", path, `{"query":"match","limit":2}`)
+	page := decodeResponse[api.TaskSearchPage](t, response, 200)
+	if len(response.Body.Bytes()) > 2<<20 || len(page.Items) != 1 || page.Items[0].ID != first.ID || page.NextCursor == nil {
+		t.Fatalf("first page size=%d page=%+v", len(response.Body.Bytes()), page)
+	}
+	response = projectRequest(handler, "POST", path, jsonBody(t, map[string]any{"query": "match", "limit": 2, "cursor": *page.NextCursor}))
+	next := decodeResponse[api.TaskSearchPage](t, response, 200)
+	if len(response.Body.Bytes()) > 2<<20 || len(next.Items) != 1 || next.Items[0].ID != second.ID || next.NextCursor != nil {
+		t.Fatalf("next page size=%d page=%+v", len(response.Body.Bytes()), next)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET title=$2,updated_at=clock_timestamp(),version=version+1 WHERE id=$1`, first.ID, "match"+strings.Repeat("\x01", 360000)); err != nil {
+		t.Fatal(err)
+	}
+	response = projectRequest(handler, "POST", path, `{"query":"match","limit":2}`)
+	assertProjectError(t, response, 409, "resource_limit_exceeded")
 }

@@ -1,10 +1,11 @@
 package task
 
 import (
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
-	"strconv"
 	"time"
 
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
@@ -56,18 +61,28 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 
 func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
 	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	if sync.Sessions != nil {
+		result.Sessions = make(map[string]string, len(sync.Sessions))
+		for taskID, state := range sync.Sessions {
+			result.Sessions[taskID] = string(state)
+		}
+	}
 	for _, person := range sync.AssigneeVersions {
 		result.AssigneeVersions = append(result.AssigneeVersions, api.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
 	}
 	for _, task := range sync.Tasks {
-		result.Tasks = append(result.Tasks, api.TaskViewRecord{
-			Properties: propertiesResponse(task.Properties),
-			ID:         task.ID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: string(task.Status), Version: strconv.FormatInt(task.Version, 10),
-			DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform), AssignedTo: task.AssignedTo,
-			CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(), StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
-		})
+		result.Tasks = append(result.Tasks, taskprotocol.RESTSyncRecord(task))
 	}
 	return result
+}
+
+func admitSyncResponse(response api.TaskSync, max int64) error {
+	_, err := measure.JSON(io.Discard, "task sync", max, response, true)
+	var violation *limit.Violation
+	if errors.As(err, &violation) {
+		return &model.Fault{Code: "resource_limit_exceeded", Message: "Task sync exceeds the encoded resource limit.", Cause: err}
+	}
+	return err
 }
 
 func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -92,7 +107,12 @@ func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, pri
 		httpx.WriteError(w, request, logger, "task_sync", "get", err)
 		return
 	}
+	response := TaskSyncResponse(result)
+	if err := admitSyncResponse(response, taskcore.MaxSyncResponseJSONBytes); err != nil {
+		httpx.WriteError(w, request, logger, "task_sync", "response", err)
+		return
+	}
 	logger.InfoContext(request.Context(), "task sync read", "type", "resource", "component", "task_sync", "phase", "get",
 		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "mode", result.Mode, "returned_tasks", len(result.Tasks))
-	httpx.WriteJSON(w, request, logger, http.StatusOK, TaskSyncResponse(result))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }

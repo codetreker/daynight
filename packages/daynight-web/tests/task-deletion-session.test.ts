@@ -11,7 +11,7 @@ const project = '10000000-0000-4000-8000-000000000001';
 const task = '20000000-0000-4000-8000-000000000001';
 const sibling = '20000000-0000-4000-8000-000000000002';
 const initial = detailFixture(project, task, { title: 'Delete reviewed task', version: 9_007_199_254_740_993n });
-const source = (status: TaskStatus): TaskDetail => ({ ...initial, status, ready: status === 'todo', startedAt: status === 'todo' ? null : initial.createdAt, completedAt: status === 'done' ? initial.createdAt : null });
+const source = (status: TaskStatus): TaskDetail => ({ ...initial, status, ready: status === 'todo', startedAt: status === 'todo' ? null : initial.createdAt, completedAt: status === 'done' ? initial.createdAt : null, cancelledAt: null });
 const reads = vi.mocked(getTask); const writes = vi.mocked(deleteTask);
 const deleted = () => new ApiError('server', 410, 'task_deleted', 'deleted-request');
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };

@@ -1,6 +1,7 @@
+import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import type { Project, TaskStatus } from "../../api/types";
+import type { GraphTask, Project, TaskStatus } from "../../api/types";
 import { navigate, taskDetailUrl } from "../../app/router";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
@@ -38,6 +39,19 @@ const focusVisible = (element: HTMLElement | null | undefined) => {
   return true;
 };
 
+const visibleTaskFilters = (tasks: readonly GraphTask[], assignee: AssigneeFilter, status: TaskStatus | "all", userId: string, every: boolean) => {
+  const assigneeMatches = (task: GraphTask) => matchesAssignee(task.assignedTo, assignee, userId);
+  const statusMatches = (task: GraphTask) => status === "all" || task.status === status;
+  if (every) return {
+    assignee: tasks.every(assigneeMatches) ? assignee : { kind: "all" } as const,
+    status: tasks.every(statusMatches) ? status : "all" as const,
+  };
+  if (tasks.some((task) => assigneeMatches(task) && statusMatches(task))) return { assignee, status };
+  if (tasks.some(assigneeMatches)) return { assignee, status: "all" as const };
+  if (tasks.some(statusMatches)) return { assignee: { kind: "all" } as const, status };
+  return { assignee: { kind: "all" } as const, status: "all" as const };
+};
+
 const ProjectView = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => {
   const graph = useTaskGraph(projectId);
   const graphOwner = useRef(Symbol());
@@ -56,7 +70,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const searchActive = search.applied !== null;
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
   const [pageNavigation, setPageNavigation] = useState<"overview" | TaskView | null>(null);
-  const [overviewTarget, setOverviewTarget] = useState<OverviewTaskTarget | null>(null);
+  const [listTarget, setListTarget] = useState<OverviewTaskTarget | null>(null);
   const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
@@ -90,7 +104,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     let unfinishedChainTaskCount = 0;
     let unfinishedStandaloneTaskCount = 0;
     for (const task of snapshot.index.nodes.values()) {
-      if (task.status === "done") continue;
+      if (isTerminalStatus(task.status)) continue;
       if (snapshot.index.components.get(snapshot.index.componentByTask.get(task.id)!)!.memberIds.size === 1) unfinishedStandaloneTaskCount++;
       else unfinishedChainTaskCount++;
     }
@@ -124,7 +138,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     setPageNavigation(null);
   }, [pageNavigation, chainPagination.page, standalonePagination.page, overviewPagination.page, savePosition]);
   const representative = openChainWitness === null ? undefined : snapshot?.index.componentByTask.get(openChainWitness);
-  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && pageRootIds.includes(representative) ? representative : null;
+  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && snapshot!.index.components.get(representative)!.memberIds.size > 1 ? representative : null;
   openChain.current = openChainId;
   useLayoutEffect(() => {
     if (openChainWitness === null || openChainId !== null) return;
@@ -205,40 +219,46 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       const ids = target.kind === "standalone" ? progress.recentStandaloneIds
         : [...(snapshot.index.components.get(snapshot.index.componentByTask.get(target.taskId) ?? "")?.memberIds ?? [])];
       const tasks = ids.map((id) => snapshot.index.nodes.get(id)!).filter(Boolean);
-      const assigneeMatches = (task: typeof tasks[number]) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId);
-      const statusMatches = (task: typeof tasks[number]) => statusFilter === "all" || task.status === statusFilter;
-      const covered = target.kind === "standalone" ? tasks.every((task) => assigneeMatches(task) && statusMatches(task))
-        : tasks.some((task) => assigneeMatches(task) && statusMatches(task));
-      if (!covered) {
+      const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, target.kind === "standalone");
+      if (filters.assignee !== assigneeFilter || filters.status !== statusFilter) {
         chainPagination.onPageChange(1); standalonePagination.onPageChange(1);
-        if (target.kind === "standalone") {
-          if (!tasks.every(assigneeMatches)) setAssigneeFilter({ kind: "all" });
-          if (!tasks.every(statusMatches)) setStatusFilter("all");
-        } else if (tasks.some(assigneeMatches)) setStatusFilter("all");
-        else if (tasks.some(statusMatches)) setAssigneeFilter({ kind: "all" });
-        else { setAssigneeFilter({ kind: "all" }); setStatusFilter("all"); }
+        setAssigneeFilter(filters.assignee);
+        setStatusFilter(filters.status);
       }
     }
-    setOverviewTarget(target);
+    setListTarget(target);
     selectView(target.kind === "chain" ? "chains" : "standalone");
     selectSection("tasks");
   }, [selectSection, selectView, snapshot, progress.recentStandaloneIds, assigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear]);
 
+  const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
+    const index = snapshot!.index;
+    const representative = index.componentByTask.get(id)!;
+    const component = index.components.get(representative)!;
+    if (component.memberIds.size === 1) {
+      setOpenChainWitness(null);
+      onOpenTask(id, trigger);
+      return;
+    }
+    setNotice(null);
+    setOpenChainWitness(id);
+  }, [snapshot, onOpenTask]);
+
   useLayoutEffect(() => {
-    if (overviewTarget === null || section !== "tasks") return;
-    const view = overviewTarget.kind === "chain" ? "chains" : "standalone";
+    if (listTarget === null || section !== "tasks") return;
+    const view = listTarget.kind === "chain" ? "chains" : "standalone";
     if (activeView !== view) return;
-    const representative = overviewTarget.kind === "chain" ? snapshot?.index.componentByTask.get(overviewTarget.taskId) : undefined;
+    const representative = listTarget.kind === "chain" ? snapshot?.index.componentByTask.get(listTarget.taskId) : undefined;
     const position = representative === undefined ? -1 : rootIds.indexOf(representative);
-    const destinationPage = overviewTarget.kind === "standalone" ? 1 : Math.floor(position / taskPageSize) + 1;
-    const pagination = overviewTarget.kind === "standalone" ? standalonePagination : chainPagination;
+    const destinationPage = listTarget.kind === "standalone" ? 1 : Math.floor(position / taskPageSize) + 1;
+    const pagination = listTarget.kind === "standalone" ? standalonePagination : chainPagination;
     if (destinationPage > 0 && pagination.page !== destinationPage) {
       pagination.onPageChange(destinationPage);
       return;
     }
-    setOverviewTarget(null);
+    setListTarget(null);
     clearTargetHighlight();
-    const target = overviewTarget.kind === "standalone" ? document.getElementById("project-task-panel-standalone")
+    const target = listTarget.kind === "standalone" ? document.getElementById("project-task-panel-standalone")
       : representative !== undefined && position >= 0
         ? document.getElementById(`task-root-${representative}`) : null;
     if (target === null) {
@@ -247,12 +267,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       return;
     }
     // Explicit overview navigation runs after the task list restores its saved position.
-    target.scrollIntoView({ block: overviewTarget.kind === "chain" ? "center" : "start", behavior: "instant" });
+    target.scrollIntoView({ block: listTarget.kind === "chain" ? "center" : "start", behavior: "instant" });
     target.focus({ preventScroll: true });
     savePosition();
     target.classList.add("overview-progress-target");
     highlightedTarget.current = { element: target, timer: setTimeout(clearTargetHighlight, 2_200) };
-  }, [overviewTarget, section, activeView, snapshot, rootIds, chainPagination, standalonePagination, savePosition, clearTargetHighlight]);
+  }, [listTarget, section, activeView, snapshot, rootIds, chainPagination, standalonePagination, savePosition, clearTargetHighlight]);
 
   return (
     <>
@@ -309,10 +329,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
             <div hidden={searchActive} inert={searchActive}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} active={section === "tasks" && !searchActive}
-              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} sessionStore={graph.sessionStore} active={section === "tasks" && !searchActive}
+              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
               unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView}
-              chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain,
+              chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain, onNavigateExternalTask,
                 onOpenTask, onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
               standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,

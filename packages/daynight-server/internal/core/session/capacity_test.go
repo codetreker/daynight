@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
@@ -174,7 +175,7 @@ func TestReconciliationRechecksRevokedSubmittingCredential(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
 	publishState(t, f, v, idleState())
-	actor := addMember(t, f, "admin")
+	actor := listCredential(t, f, f.p.UserID, model.PATCredential)
 	c := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "revoked", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"queued"}],"expectedTurnId":null}`)}
 	if _, err := f.s.Submit(ctx, actor, f.project, f.task, v.SessionID, c); err != nil {
 		t.Fatal(err)

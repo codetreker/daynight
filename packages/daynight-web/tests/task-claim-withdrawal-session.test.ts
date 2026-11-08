@@ -20,11 +20,11 @@ const initial: TaskDetail = { assignedTo: null,
   id: taskId, projectId, title: 'Keep the delivery', description: 'Existing task materials', status: 'in_progress', version: 9_007_199_254_740_993n,
   allowAgents: true, requiredPlatform: 'macos', ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [],
   properties: { worker, pullRequests: [{ title: 'Implementation', url: 'https://example.com/pull/42' }] },
-  startedAt: time, completedAt: null, createdAt: time, updatedAt: time,
+  startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 };
 const { worker: _initialWorker, ...resetProperties } = initial.properties;
 const reset: TaskDetail = { ...initial, status: 'todo', allowAgents: false, ready: true, properties: resetProperties,
-  startedAt: null, completedAt: null, version: initial.version + 1n, updatedAt: '2026-10-24T00:01:00Z' };
+  startedAt: null, completedAt: null, cancelledAt: null, version: initial.version + 1n, updatedAt: '2026-10-24T00:01:00Z' };
 const reads = vi.mocked(getTask);
 const writes = vi.mocked(withdrawWorkerClaim);
 const worlds = new Map<TaskDetailSessions, ReturnType<typeof createTaskSessionWorld>>();
@@ -194,4 +194,18 @@ describe('worker claim withdrawal mutation ownership', () => {
     await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation.phase).toBe('confirmed'));
     expect(sessions.snapshot(projectId, taskId).detail).toEqual(reset);
   });
+});
+
+it('keeps cancelled released history readable while rejecting every execution restoration before dispatch', async () => {
+  const cancelled: TaskDetail = { ...initial, status: 'cancelled', cancelledAt: time, properties: { ...initial.properties, worker: { ...worker, state: 'released' } } };
+  const sessions = createSessions();
+  await open(sessions, cancelled);
+  expect(sessions.snapshot(projectId, taskId).detail).toEqual(cancelled);
+  expect(canWithdrawClaim(sessions.snapshot(projectId, taskId))).toBe(false);
+  expect(canSetStatus(sessions.snapshot(projectId, taskId))).toBe(false);
+  sessions.withdrawClaim(projectId, taskId, claimId, cancelled.version);
+  for (const status of ['todo', 'in_progress', 'done'] as const) sessions.setStatus(projectId, taskId, status, cancelled.version);
+  expect(writes).not.toHaveBeenCalled();
+  expect(setTaskStatus).not.toHaveBeenCalled();
+  expect(sessions.snapshot(projectId, taskId).detail!.description).toBe(initial.description);
 });

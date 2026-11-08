@@ -88,8 +88,20 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
   const availableProvider = selected?.providers.find(item => item.provider === selectedProvider)?.available ?? false;
   const canCreate = !loading && defaultsError === null && selected?.state === 'available' && configuration != null && availableProvider && validDirectory;
   const models = useBotCreationModels(advanced && !unknown && controlsEnabled && selected?.state === 'available' && validDirectory, selected?.workerId ?? null, selectedProvider, directory || null, model);
-  const effectiveModel = model ?? configuration?.model ?? null;
+  const nativeModelDelegated = configuration?.model === null && configuration.selection?.modelSource === 'native';
+  // Discovery fills only unresolved native values; server preferences and form
+  // overrides remain authoritative, and observations never enter choices.
+  const observedDefaults = models.value?.selectionError === null ? models.value.defaults : null;
+  const observedModel = nativeModelDelegated ? observedDefaults?.model : undefined;
+  const effectiveModel = model ?? configuration?.model ?? observedModel?.value ?? null;
   const modelOption = models.value?.models.find(option => option.id === effectiveModel || effectiveModel !== null && option.aliases.includes(effectiveModel));
+  const observedModelValue = observedDefaults?.model.value;
+  const sameObservedModel = effectiveModel !== null && observedModelValue != null
+    && (effectiveModel === observedModelValue || modelOption?.id === observedModelValue || modelOption?.aliases.includes(observedModelValue));
+  const observedEffort = configuration?.reasoningEffort === null && configuration.selection?.reasoningEffortSource === 'native' && sameObservedModel ? observedDefaults?.reasoningEffort : undefined;
+  const modelSource = model !== null ? 'explicit' : configuration?.model != null ? configuration.selection?.modelSource : observedModel?.source ?? configuration?.selection?.modelSource;
+  const effortSource = effort !== null ? 'explicit' : configuration?.reasoningEffort != null ? configuration.selection?.reasoningEffortSource : observedEffort?.source ?? configuration?.selection?.reasoningEffortSource;
+  const visibleModels = models.value?.models.filter(option => !option.hidden);
   const efforts = modelOption?.reasoningEfforts;
   const changeWorker = (value: string) => {
     invalidateDefaults(); setWorkerId(value === '' ? null : value); setCwd(null); setProvider(null); setModel(null); setEffort(null); setValidation(null); setBrowsing(null);
@@ -148,9 +160,9 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
   const reason = !loading && defaultsError === null && !canCreate ? defaults?.reason ?? selected?.reason : null;
   const agentName = (value: string | null | undefined) => value === 'codex' ? 'Codex' : value === 'claude' ? 'Claude Code' : value === 'copilot' ? 'Copilot' : c.unknownValue;
   const sourceValue = (value: string | null | undefined, source: keyof typeof c.sources | undefined) => `${value ?? (source === 'native' ? c.nativeValue : c.unknownValue)} · ${c.sources[source ?? 'unknown']}`;
-  const modelSummary = sourceValue(configuration?.model, configuration?.selection?.modelSource);
-  const effortSummary = sourceValue(configuration?.reasoningEffort, configuration?.selection?.reasoningEffortSource);
-  const sources = [...new Set([configuration?.selection?.modelSource ?? 'unknown', configuration?.selection?.reasoningEffortSource ?? 'unknown'] as const)].map(source => c.sources[source]).join(' / ');
+  const modelSummary = sourceValue(effectiveModel, modelSource);
+  const effortSummary = sourceValue(effort ?? configuration?.reasoningEffort ?? observedEffort?.value, effortSource);
+  const sources = [...new Set([modelSource ?? 'unknown', effortSource ?? 'unknown'] as const)].map(source => c.sources[source]).join(' / ');
   const effectiveDescription = `${selected?.machine.name ?? ''} · ${agentName(selectedProvider)} · ${workerId === null && Object.keys(choices).length === 0 ? c.defaultConfiguration : c.customConfiguration} · ${sources}`;
   const configurationError = defaultsError instanceof ApiError && defaultsError.serverMessage ? defaultsError.serverMessage : m.defaultsError;
   const capabilityError = models.error instanceof WorkerReadonlyError ? `${c.modelError} (${models.error.code})` : models.error ? c.modelError : null;
@@ -176,13 +188,13 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
             <div className="field"><label htmlFor="bot-cwd">{m.cwd}</label><div className="bot-create-directory"><input id="bot-cwd" value={directory} disabled={busy || !controlsEnabled || selected?.state !== 'available'} onChange={event => changeCwd(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={validation === 'cwd' || !validDirectory} /><button ref={browseButton} className="button" type="button" disabled={busy || !controlsEnabled || loading || selected?.state !== 'available' || !directory || !validDirectory} onClick={() => { if (!selected || !controlsEnabled) return; setBrowsing({ workerId: selected.workerId, workerName: selected.machine.name, path: directory, defaultPath: defaultDirectories.current.get(selected.workerId) ?? selected.configuration?.cwd ?? directory }); }}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 7V5h6l2 3h10v11H3Z" /></svg>{c.browse}</button></div><button className="bot-create-default-action" type="button" disabled={busy || !controlsEnabled || !cwd} onClick={() => changeCwd(null)}>{c.defaultDirectory}</button></div>
             <div className="field"><label htmlFor="bot-agent">{m.agent}</label><select id="bot-agent" value={provider ?? ''} disabled={busy || !controlsEnabled || selected?.state !== 'available'} onChange={event => changeProvider(event.target.value)}><option value="">{c.defaultValue} · {agentName(configuration?.provider)}</option>{selected?.providers.map(item => <option key={item.provider} value={item.provider} disabled={!item.available}>{agentName(item.provider)}{item.available ? '' : ` · ${item.reason}`}</option>)}</select></div>
             <div className="bot-create-model-row">
-              <div className="field"><label htmlFor="bot-model">{c.model}</label><select id="bot-model" value={model ?? ''} disabled={busy || !controlsEnabled || models.value === null && model === null} onChange={event => changeModel(event.target.value)}><option value="">{c.defaultValue} · {modelSummary}</option>{model !== null && !models.value?.models.some(option => option.id === model) && <option value={model}>{model}</option>}{models.value?.models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
+              <div className="field"><label htmlFor="bot-model">{c.model}</label><select id="bot-model" value={model ?? ''} disabled={busy || !controlsEnabled || models.value === null && model === null} onChange={event => changeModel(event.target.value)}><option value="">{c.defaultValue} · {modelSummary}</option>{model !== null && !visibleModels?.some(option => option.id === model) && <option value={model}>{model}</option>}{visibleModels?.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
               <div className="field"><label htmlFor="bot-effort">{c.effort}</label><select id="bot-effort" value={effort ?? ''} disabled={busy || !controlsEnabled || !efforts?.length && effort === null} onChange={event => changeEffort(event.target.value)}><option value="">{c.defaultValue} · {effortSummary}</option>{effort !== null && !efforts?.includes(effort) && <option value={effort}>{effort}</option>}{efforts?.map(value => <option key={value} value={value}>{value}</option>)}</select></div>
             </div>
             <div className="bot-create-capabilities">
               {models.value !== null && !models.busy && !efforts?.length && <p className="bot-create-field-hint">{modelOption ? c.noEfforts : c.unknownEfforts}</p>}
               {capabilityError && <div className="notice error" role="alert"><p>{capabilityError}</p><button className="button" type="button" disabled={!controlsEnabled || models.busy} onClick={() => void models.reload()}>{m.retry}</button></div>}
-              {models.value?.selectionError && configuration == null && <p className="notice error" role="alert">{models.value.selectionError.message}</p>}
+              {models.value?.selectionError && (configuration == null || nativeModelDelegated) && <p className="notice error" role="alert">{models.value.selectionError.message}</p>}
             </div>
             <button className="bot-create-default-action" type="button" disabled={busy || !controlsEnabled} onClick={reset}>{c.resetAll}</button>
           </details>

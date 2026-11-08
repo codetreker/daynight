@@ -3,7 +3,8 @@ import * as fake from "fake-indexeddb";
 import { openDB, type IDBPDatabase } from "idb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { pauseAuthRequests } from "../src/api/client";
-import type { Project, TaskSummary, TaskSync } from "../src/api/types";
+import type { Project, TaskSummary, TaskSync, WorkerClaim } from "../src/api/types";
+import { deriveTaskSyncBindings, eligibleTaskExecutionBinding, sameTaskExecutionBinding, taskExecutionBinding } from "../src/features/task-cache/execution-binding";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema, type TaskIntrinsicDetail } from "../src/features/task-cache/database";
 import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
@@ -20,9 +21,16 @@ const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(1
 const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
-const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, sessions: {}, ...changes });
 const signal = () => new AbortController().signal;
+const worker = (changes: Partial<WorkerClaim> = {}): WorkerClaim => ({
+  claimId: taskId(91), state: "active", userId, workerId: taskId(92), machine: { id: taskId(93), name: "test" },
+  platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: taskId(94), phase: "executing", herdr: null,
+  nativeSessionId: "native-session", claimedAt: time, ...changes,
+});
+const executing = (changes: Partial<TaskSummary> = {}, claimChanges: Partial<WorkerClaim> = {}): TaskSummary =>
+  task(1, { status: "in_progress", startedAt: time, properties: { worker: { ...worker(claimChanges) } }, ...changes });
 const scopes: TaskCacheScope[] = [];
 const connections: IDBPDatabase<TaskCacheSchema>[] = [];
 class Channel {
@@ -282,6 +290,80 @@ it("retains intrinsic row, graph and index identities on duplicate receipt", asy
   expect([...counts]).toEqual([]); expect(Channel.hints).toEqual([]);
 });
 
+it("captures request bindings and the watermark in the existing same IndexedDB transaction", async () => {
+  const cache = scope(); const initial = await seed(cache, [executing()]);
+  const manifestTransactions: IDBTransaction[] = [];
+  const summaryTransactions: IDBTransaction[] = [];
+  const get = fake.IDBObjectStore.prototype.get;
+  vi.spyOn(fake.IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === "projects") manifestTransactions.push(this.transaction);
+    return get.apply(this, args);
+  });
+  const getAll = fake.IDBIndex.prototype.getAll;
+  vi.spyOn(fake.IDBIndex.prototype, "getAll").mockImplementation(function (this: IDBIndex, ...args) {
+    if (this.objectStore.name === "summaries") summaryTransactions.push(this.objectStore.transaction);
+    return getAll.apply(this, args);
+  });
+  const ticket = await cache.beginSync(projectId, signal());
+  expect(manifestTransactions).toHaveLength(1); expect(summaryTransactions).toEqual(manifestTransactions);
+  expect(ticket).toMatchObject({ epoch, maxUpdatedAt: time, cacheGeneration: initial.project.manifest.cacheGeneration });
+  const binding = ticket.taskBindings.get(taskId(1))!;
+  expect(binding).toEqual(taskExecutionBinding(executing()));
+  expect(Object.isFrozen(binding)).toBe(true); expect(Object.isFrozen(binding.worker)).toBe(true);
+  await delta(cache, [executing({ version: 2n, updatedAt: later }, { claimId: taskId(95) })]);
+  expect(ticket.taskBindings.get(taskId(1))!.worker!.claimId).toBe(taskId(91));
+  expect((await cache.beginSync(projectId, signal())).taskBindings.get(taskId(1))!.worker!.claimId).toBe(taskId(95));
+});
+
+it("retains the response's execution observation when a newer cache row wins its merge", async () => {
+  const owner = scope(); await seed(owner, [executing()]);
+  const observer = scope(); const old = await observer.beginSync(projectId, signal());
+  await delta(owner, [executing({ version: 3n, updatedAt: later }, { claimId: taskId(95) })]);
+  const incoming = response([executing({ version: 2n })], { sessions: { [taskId(1)]: "notice" } });
+  const accepted = await observer.applySync(old, incoming, signal());
+  expect(taskExecutionBinding(accepted.project.summaries.get(taskId(1))!).worker!.claimId).toBe(taskId(95));
+  expect(deriveTaskSyncBindings(old, incoming).get(taskId(1))!.worker!.claimId).toBe(taskId(91));
+  expect(deriveTaskSyncBindings(old, response([])).get(taskId(1))!.worker!.claimId).toBe(taskId(91));
+  expect([...deriveTaskSyncBindings(old, response([task(2)], { mode: "snapshot", epoch: nextEpoch })).keys()]).toEqual([taskId(2)]);
+});
+
+it("keeps Session-only data out of persistence, detail invalidation and generic notifications", async () => {
+  const cache = scope(); const row = executing(); const initial = await seed(cache, [row]);
+  const ticket = await cache.beginSync(projectId, signal());
+  await cache.detailTransaction(ticket, signal(), async (details, manifest) => {
+    const detail: TaskIntrinsicDetail = { ...detailFixture(projectId, row.id, { status: row.status, startedAt: row.startedAt, properties: row.properties }), version: row.version };
+    await details.put({ userId, projectId, taskId: row.id, userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
+  });
+  const database = await inspect(); const before = await Promise.all([database.getAll("projects"), database.getAll("summaries"), database.getAll("details")]);
+  const counts = putCounts(); Channel.hints = []; const notifications = vi.fn(); cache.subscribe(notifications);
+  for (const state of ["working", "notice", "warning", "pending"] as const) {
+    const result = await delta(cache, [], { sessions: { [row.id]: state } });
+    expect(result.changed).toBe(false); expect(result.changedTaskIds).toEqual([]);
+    expect(result.project.graph).toBe(initial.project.graph); expect(result.project.index).toBe(initial.project.index);
+    expect(result.project.summaries.get(row.id)).toBe(initial.project.summaries.get(row.id));
+  }
+  await delta(cache, [], { sessions: {} });
+  expect([...counts]).toEqual([]); expect(Channel.hints).toEqual([]); expect(notifications).not.toHaveBeenCalled();
+  expect(await Promise.all([database.getAll("projects"), database.getAll("summaries"), database.getAll("details")])).toEqual(before);
+});
+
+it("compares all execution binding fields while excluding unrelated Task presentation data", () => {
+  const binding = taskExecutionBinding(executing());
+  expect(sameTaskExecutionBinding(binding, taskExecutionBinding(executing({ titlePreview: "new title", version: 5n })))).toBe(true);
+  for (const changes of [{ claimId: taskId(95) }, { workerId: taskId(95) }, { worktreeId: taskId(95) }, { state: "completed" as const }, { agentControlMode: "herdr" as const }]) {
+    expect(sameTaskExecutionBinding(binding, taskExecutionBinding(executing({}, changes)))).toBe(false);
+  }
+  const withoutWorker = taskExecutionBinding(task(1));
+  expect(sameTaskExecutionBinding(withoutWorker, taskExecutionBinding(task(1)))).toBe(true);
+  expect(sameTaskExecutionBinding(binding, withoutWorker)).toBe(false);
+  expect(sameTaskExecutionBinding(withoutWorker, binding)).toBe(false);
+  expect(sameTaskExecutionBinding(binding, taskExecutionBinding(executing({ status: "done" })))).toBe(false);
+  expect(eligibleTaskExecutionBinding(binding)).toBe(true);
+  expect(eligibleTaskExecutionBinding(withoutWorker)).toBe(false);
+  expect(eligibleTaskExecutionBinding(taskExecutionBinding(executing({}, { agentControlMode: "herdr" })))).toBe(false);
+  expect(eligibleTaskExecutionBinding(taskExecutionBinding(executing({ status: "done" })))).toBe(false);
+});
+
 it("merges late responses into the current full set even when task versions share the watermark", async () => {
   const first = scope(); const second = scope(); await seed(first);
   const a = await first.beginSync(projectId, signal()); const b = await second.beginSync(projectId, signal());
@@ -385,7 +467,7 @@ it("re-reads hints for authorized projects and never relays hints or repeated co
 
 it("exposes fenced detail transactions whose detail timestamps cannot advance the project maximum", async () => {
   const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal());
-  const detail: TaskIntrinsicDetail = { assignedTo: null, id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: later };
+  const detail: TaskIntrinsicDetail = { assignedTo: null, id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: later };
   await cache.detailTransaction(ticket, signal(), async (details, manifest, summaries) => {
     expect(summaries.get(taskId(1))!.version).toBe(1n);
     await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
@@ -665,12 +747,12 @@ it("merges ownership within one epoch and replaces restored history without pers
 it('publishes claim changes and removal only within the authorized user and project generation', async () => {
   const worker = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: taskId(101), state, userId, workerId: taskId(102), machine: { id: taskId(103), name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: taskId(104), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
   const cache = scope();
-  const initial = await seed(cache, [task(1, { properties: { worker: worker('first', 'active') } })]);
+  const initial = await seed(cache, [task(1, { status: 'in_progress', startedAt: time, properties: { worker: worker('first', 'active') } })]);
   expect(initial.project.workerMachines.get(taskId(1))?.machine.name).toBe('first');
   const stale = await cache.beginSync(projectId, signal());
   const changed = await delta(cache, [task(1, { version: 2n, allowAgents: false, properties: { worker: worker('finished', 'completed') } })]);
   expect(changed.project.workerMachines.get(taskId(1))).toMatchObject({ state: 'completed', machine: { name: 'finished' } });
-  const late = await cache.applySync(stale, response([task(1, { properties: { worker: worker('first', 'active') } })]), signal());
+  const late = await cache.applySync(stale, response([task(1, { status: 'in_progress', startedAt: time, properties: { worker: worker('first', 'active') } })]), signal());
   expect(late.project.workerMachines.get(taskId(1))?.machine.name).toBe('finished');
   const removed = await delta(cache, [task(1, { version: 3n, properties: {} })]);
   expect(removed.project.workerMachines.has(taskId(1))).toBe(false);

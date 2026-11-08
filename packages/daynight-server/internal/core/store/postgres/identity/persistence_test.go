@@ -62,7 +62,7 @@ func TestCredentialIssuanceExpiryAndOwnerBoundRevocation(t *testing.T) {
 		t.Fatalf("upsert lost account identity: %+v", updated)
 	}
 
-	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: hash("state"), BrowserBindingHash: hash("binding"), Provider: "github", ReturnPath: "/projects", ExpiresAt: now.Add(time.Hour)}
+	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: hash("state"), BrowserBindingHash: hash("binding"), ScopeHash: hash("scope"), Provider: "github", ReturnPath: "/projects", ExpiresAt: now.Add(time.Hour)}
 	requireNoError(t, dao.InsertLogin(ctx, login))
 	_, err = dao.ConsumeLogin(ctx, login.StateHash, hash("other-browser"), now)
 	requireMissing(t, err)
@@ -270,7 +270,7 @@ func TestCredentialCleanupRetainsActiveAndPermanentTokens(t *testing.T) {
 	requireNoError(t, err)
 	expired := now
 	old := now.Add(-time.Hour)
-	requireNoError(t, dao.InsertLogin(ctx, model.LoginTransaction{ID: uuid.NewString(), StateHash: hash("cleanup-login"), BrowserBindingHash: hash("cleanup-binding"), Provider: "github", ReturnPath: "/", ExpiresAt: now}))
+	requireNoError(t, dao.InsertLogin(ctx, model.LoginTransaction{ID: uuid.NewString(), StateHash: hash("cleanup-login"), BrowserBindingHash: hash("cleanup-binding"), ScopeHash: hash("scope"), Provider: "github", ReturnPath: "/", ExpiresAt: now}))
 	requireNoError(t, dao.InsertSession(ctx, model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("cleanup-session"), CreatedAt: old, ExpiresAt: now}))
 	requireNoError(t, dao.InsertPAT(ctx, model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("expired-pat"), Name: "Expired", CreatedAt: old, ExpiresAt: &expired}))
 	first := model.PersonalAccessToken{ID: "00000000-0000-0000-0000-000000000001", UserID: user.ID, TokenHash: hash("first-pat"), Name: "Permanent", CreatedAt: now}
@@ -300,5 +300,56 @@ func TestCredentialCleanupRetainsActiveAndPermanentTokens(t *testing.T) {
 	requireNoError(t, err)
 	if len(other) != 0 {
 		t.Fatalf("another owner's tokens exposed: %+v", other)
+	}
+}
+
+func TestLoginExpiryUsesDatabaseTimeAcrossApplicationClockSkew(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		delta            time.Duration
+		admissionCleanup bool
+	}{
+		{"admission service behind", -24 * time.Hour, true},
+		{"admission service ahead", 24 * time.Hour, true},
+		{"PAT service behind", -24 * time.Hour, false},
+		{"PAT service ahead", 24 * time.Hour, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tx, scope := identityTransaction(t)
+			ctx, dao := t.Context(), scope.IdentityDAO()
+			var databaseNow time.Time
+			requireNoError(t, tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&databaseNow))
+			appNow := databaseNow.Add(test.delta)
+			active := model.LoginTransaction{ID: uuid.NewString(), StateHash: hash("active-state"), BrowserBindingHash: hash("binding"), ScopeHash: hash("scope"), Provider: "github", ReturnPath: "/", ExpiresAt: databaseNow.Add(10 * time.Minute)}
+			expired := active
+			expired.ID, expired.StateHash, expired.ExpiresAt = uuid.NewString(), hash("expired-state"), databaseNow.Add(-time.Minute)
+			requireNoError(t, dao.InsertLogin(ctx, active))
+			requireNoError(t, dao.InsertLogin(ctx, expired))
+			_, err := dao.ConsumeLogin(ctx, expired.StateHash, expired.BrowserBindingHash, databaseNow.Add(-24*time.Hour))
+			requireMissing(t, err)
+
+			user, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "skew-owner"}, appNow)
+			requireNoError(t, err)
+			expiry := appNow.Add(time.Hour)
+			requireNoError(t, dao.InsertSession(ctx, model.Session{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-session"), CreatedAt: appNow, ExpiresAt: expiry}))
+			requireNoError(t, dao.InsertPAT(ctx, model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("skew-pat"), Name: "Skew", CreatedAt: appNow, ExpiresAt: &expiry}))
+			if test.admissionCleanup {
+				requireNoError(t, dao.CleanupLoginCredentials(ctx, databaseNow, appNow))
+			} else {
+				requireNoError(t, dao.CleanupCredentials(ctx, appNow))
+			}
+			var logins, sessions, pats int
+			requireNoError(t, tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM login_transactions),(SELECT count(*) FROM sessions),(SELECT count(*) FROM personal_access_tokens)`).Scan(&logins, &sessions, &pats))
+			if logins != 1 || sessions != 1 || pats != 1 {
+				t.Fatalf("cleanup mixed clock domains: logins=%d sessions=%d pats=%d", logins, sessions, pats)
+			}
+			consumed, err := dao.ConsumeLogin(ctx, active.StateHash, active.BrowserBindingHash, databaseNow.Add(24*time.Hour))
+			requireNoError(t, err)
+			if consumed.ID != active.ID {
+				t.Fatalf("wrong login consumed: %+v", consumed)
+			}
+			_, err = dao.ConsumeLogin(ctx, active.StateHash, active.BrowserBindingHash, databaseNow.Add(-24*time.Hour))
+			requireMissing(t, err)
+		})
 	}
 }

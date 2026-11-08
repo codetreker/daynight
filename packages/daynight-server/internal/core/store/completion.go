@@ -27,6 +27,7 @@ type Error struct {
 	Phase           string
 	SQLState        string
 	DatabaseFailure bool
+	MissingRow      bool
 	Cause           error
 }
 

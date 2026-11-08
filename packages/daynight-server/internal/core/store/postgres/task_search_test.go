@@ -5,12 +5,14 @@ import (
 	"crypto/rand"
 	"net/url"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	searchmodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 	"github.com/google/uuid"
@@ -66,7 +68,7 @@ func TestTaskSearchSQLMatchesEvidenceAndPaginates(t *testing.T) {
 		id, title, description string
 		updated                time.Time
 	}
-	texts := [][2]string{{"CacheManager", "old"}, {"缓存", "登录"}, {"cache", "数据库"}, {"猫", "Markdown **缓存** https://example.com"}, {strings.Repeat("x", 200) + "缓存", "x"}, {"İ Café", "%_\\"}, {"other", "CACHE"}, {"none", ""}}
+	texts := [][2]string{{"CacheManager", "old"}, {"缓存", "登录"}, {"cache", "数据库"}, {"猫", "Markdown **缓存** https://example.com"}, {strings.Repeat("x", 200) + "缓存", "x"}, {"İ Café", "%_\\"}, {"other", "CACHE"}, {"large", strings.Repeat("界", 300) + "缓存" + strings.Repeat("😀", 300)}, {"none", ""}}
 	fixtures := make([]fixture, 0, len(texts))
 	for i, pair := range texts {
 		f := fixture{id: uuid.NewString(), title: pair[0], description: pair[1], updated: time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC)}
@@ -116,7 +118,29 @@ func TestTaskSearchSQLMatchesEvidenceAndPaginates(t *testing.T) {
 				}
 				for _, row := range page.Items {
 					got = append(got, row.ID)
-					evidence := query.Evaluate(root, row.Title, row.Description)
+					if row.Description != "" {
+						t.Fatal("full description crossed the database boundary")
+					}
+					var original fixture
+					for _, value := range fixtures {
+						if value.id == row.ID {
+							original = value
+							break
+						}
+					}
+					evidence := query.Evaluate(root, original.title, original.description)
+					hits := map[searchmodel.Atom]query.Evidence{}
+					for _, hit := range row.Hits {
+						leaf := query.Evaluate(&searchmodel.Node{Kind: searchmodel.Leaf, Atom: hit.Atom}, original.title, original.description)
+						if hit.Title != leaf.Title || hit.Description != leaf.Description || !reflect.DeepEqual(hit.Snippet, query.Snippet(original.description, leaf)) {
+							t.Fatalf("projected hit differs: %+v %+v", hit, leaf)
+						}
+						hits[hit.Atom] = query.Evidence{Title: hit.Title, Description: hit.Description}
+					}
+					projected, err := query.EvaluateHits(ctx, root, hits)
+					if err != nil || !reflect.DeepEqual(projected, evidence) {
+						t.Fatalf("projected evidence: %+v expected %+v err=%v", projected, evidence, err)
+					}
 					if !evidence.Matches || row.TitlePriority != evidence.Title {
 						t.Fatalf("SQL evidence mismatch: %+v %+v", row, evidence)
 					}
@@ -261,6 +285,70 @@ func TestTaskSearchSnapshotAndFilters(t *testing.T) {
 		}
 		if page.Total != 2 {
 			t.Errorf("new snapshot count: %d", page.Total)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskSearchProjectionBoundsHistoricalDescription(t *testing.T) {
+	db := searchTestStore(t)
+	ctx := context.Background()
+	project, id := uuid.NewString(), uuid.NewString()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'search','example')`, project); err != nil {
+		t.Fatal(err)
+	}
+	description := strings.Repeat("界", 800000) + "needle" + strings.Repeat("😀", 500000)
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title,description) VALUES($1,$2,'small',$3)`, id, project, description); err != nil {
+		t.Fatal(err)
+	}
+	root, err := query.Parse("description:needle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = NewTaskSearch(db.Pool).ReadTaskSearch(ctx, func(snapshot store.TaskSearchSnapshot) error {
+		page, err := snapshot.Matches(ctx, project, store.TaskSearchQuery{Expression: root, Limit: 1})
+		if err != nil {
+			return err
+		}
+		if len(page.Items) != 1 || page.Items[0].Description != "" || len(page.Items[0].Hits) != 1 {
+			t.Fatalf("unbounded projection: %+v", page)
+		}
+		want := "…" + strings.Repeat("界", 80) + "needle" + strings.Repeat("😀", 74) + "…"
+		hit := page.Items[0].Hits[0]
+		if !hit.Description || hit.Snippet == nil || *hit.Snippet != want {
+			t.Fatalf("snippet differs: %+v", page.Items[0].Hits[0])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskSearchContextRepresentativeProjection(t *testing.T) {
+	db := searchTestStore(t)
+	ctx := context.Background()
+	project, a, b, single := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'search','example')`, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$4,'a'),($2,$4,'b'),($3,$4,'single')`, a, b, single, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,false)`, project, b, a); err != nil {
+		t.Fatal(err)
+	}
+	err := NewTaskSearch(db.Pool).ReadTaskSearch(ctx, func(snapshot store.TaskSearchSnapshot) error {
+		rep, ok, err := snapshot.ContextRepresentative(ctx, project, b)
+		if err != nil || !ok || rep != a {
+			t.Fatalf("component representative %s %v %v", rep, ok, err)
+		}
+		rep, ok, err = snapshot.ContextRepresentative(ctx, project, single)
+		if err != nil || !ok || rep != "" {
+			t.Fatalf("singleton %s %v %v", rep, ok, err)
 		}
 		return nil
 	})

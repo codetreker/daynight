@@ -27,7 +27,7 @@ func (s *Service) registerTask(ctx context.Context, p model.Principal, project, 
 		if err = op.LockCredential(ctx, scope, p); err != nil {
 			return err
 		}
-		if _, err = op.ProjectAdmin(ctx, scope, p, project); err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, p, project); err != nil {
 			return err
 		}
 		if err = op.CheckRegistration(task, p, input); err != nil {
@@ -117,7 +117,7 @@ func (s *Service) controllerGrant(ctx context.Context, hash []byte, work func(*s
 			if err = op.LockCredential(ctx, scope, parent); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, parent, authority.ProjectID); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, parent, authority.ProjectID); err != nil {
 				return err
 			}
 		}

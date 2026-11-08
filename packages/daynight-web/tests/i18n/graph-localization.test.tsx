@@ -16,13 +16,13 @@ import { installGraphMeasurements } from '../graph-measurements';
 const time = '2026-10-20T00:00:00Z';
 const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
-  summary: { total: 5, todo: 2, inProgress: 1, done: 2, ready: 1, blocked: 1 },
+  summary: { total: 5, todo: 2, inProgress: 1, done: 2, cancelled: 0, ready: 1, blocked: 1 },
   tasks: [
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, cancelledAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, cancelledAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
   ],
 };
 const index = buildGraphIndex(graph);
@@ -37,11 +37,24 @@ const ready = async (container: HTMLElement) => {
 beforeEach(installGraphMeasurements);
 
 describe('localized task graph presentation', () => {
+  it('translates the external navigation action while retaining its native button and callback', async () => {
+    const navigate = vi.fn();
+    const view = renderWithLocale(<TaskGraph index={index} rootId="A" onOpenTask={noop} onNavigateExternalTask={navigate} />, { locale: 'en' });
+    await ready(view.container);
+    const button = screen.getByRole('button', { name: 'Expand 设计方案 in its task or Goal' });
+    expect(button).toHaveTextContent('Expand');
+    view.setLocale('zh-CN');
+    expect(screen.getByRole('button', { name: '展开 设计方案 所属的任务或 Goal' })).toBe(button);
+    expect(button).toHaveTextContent('展开');
+    fireEvent.click(button);
+    expect(navigate).toHaveBeenCalledWith('B', button);
+  });
+
   it('retranslates waiting chain roots and nodes while preserving external context, node identity and layout', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const waitingGraph: GraphData = {
       ...graph,
-      summary: { total: 3, todo: 3, inProgress: 0, done: 0, ready: 2, blocked: 1 },
+      summary: { total: 3, todo: 3, inProgress: 0, done: 0, cancelled: 0, ready: 2, blocked: 1 },
       tasks: [
         { ...graph.tasks[0]!, status: 'todo', ready: true },
         { ...graph.tasks[3]!, status: 'todo', dependsOn: ['A', 'F'], blockedBy: ['A', 'F'] },
@@ -223,7 +236,7 @@ describe('localized task graph presentation', () => {
     const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');
-    const completeIndex = buildGraphIndex({ ...graph, summary: { total: 5, todo: 0, inProgress: 0, done: 5, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
+    const completeIndex = buildGraphIndex({ ...graph, summary: { total: 5, todo: 0, inProgress: 0, done: 5, cancelled: 0, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
     view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
     expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
   });
@@ -234,6 +247,6 @@ describe('localized task graph presentation', () => {
     const formatted = new Intl.NumberFormat('en').format(value);
     expect(en.counts({ main: value, external: value, visible: value, total: 1000, edges: value, dependencies: 1000 })).toBe(`Chain ${formatted} · External ${formatted} · Tasks ${formatted}/1,000 · Dependencies ${formatted}/1,000`);
     expect(zh.counts({ main: value, external: value, visible: value, total: 1000, edges: value, dependencies: 1000 })).toBe(`链内 ${formatted} · 外部 ${formatted} · 任务 ${formatted}/1,000 · 依赖 ${formatted}/1,000`);
-    expect(en.progress({ done: value, total: 1000 })).toBe(`${formatted}/1,000 completed`);
+    expect(en.progress({ done: value, cancelled: 0, total: 1000 })).toBe(`${formatted}/1,000 completed`);
   });
 });

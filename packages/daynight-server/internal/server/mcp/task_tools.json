@@ -491,7 +491,7 @@
   },
   {
     "name": "task_set_status",
-    "description": "Set Task status; explicit claimId is valid only for completing an owned active claim.",
+    "description": "Set Task status; cancelled is irreversible and satisfies dependencies. Explicit claimId is valid only for completing an owned active claim.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -508,7 +508,8 @@
           "enum": [
             "todo",
             "in_progress",
-            "done"
+            "done",
+            "cancelled"
           ]
         },
         "claimId": {

@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	searchmodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 const MaxNodes int64 = 20000
@@ -40,14 +42,15 @@ type Match struct {
 	DescriptionSnippet *string  `json:"descriptionSnippet"`
 }
 type Item struct {
-	ID         string           `json:"id"`
-	ProjectID  string           `json:"projectId"`
-	Title      string           `json:"title"`
-	Status     model.TaskStatus `json:"status"`
-	AssignedTo *string          `json:"assignedTo"`
-	UpdatedAt  time.Time        `json:"updatedAt"`
-	Context    *Context         `json:"context"`
-	Match      Match            `json:"match"`
+	ID          string           `json:"id"`
+	ProjectID   string           `json:"projectId"`
+	Title       string           `json:"title"`
+	Status      model.TaskStatus `json:"status"`
+	AssignedTo  *string          `json:"assignedTo"`
+	CancelledAt *time.Time       `json:"cancelledAt"`
+	UpdatedAt   time.Time        `json:"updatedAt"`
+	Context     *Context         `json:"context"`
+	Match       Match            `json:"match"`
 }
 type Page struct {
 	ProjectID  string  `json:"projectId"`
@@ -78,7 +81,7 @@ func invalidCursor() error {
 	return &model.Fault{Code: "invalid_input", Message: "Cursor is invalid for this search."}
 }
 func decodeCursor(encoded string, scope cursorScope) (cursor, error) {
-	if len(encoded) > 16384 {
+	if len(encoded) > transport.MaxEncodedCursorBytes {
 		return cursor{}, invalidCursor()
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
@@ -181,65 +184,47 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		if prior != nil {
 			selection.After = &prior.Position
 		}
-		rows, err := snapshot.Matches(ctx, projectID, selection)
-		if err != nil {
-			return err
-		}
-		result.Total = rows.Total
-		ids := make([]string, 0, len(rows.Items))
-		for _, row := range rows.Items {
-			ids = append(ids, row.ID)
-		}
-		contexts := map[string]*Context{}
-		if len(ids) > 0 {
-			size, err := snapshot.ContextSize(ctx, projectID, ids)
-			if err != nil {
-				return err
-			}
-			result.NodeCount = size.NodeCount
-			if size.NodeCount > MaxNodes || size.EdgeCount > MaxEdges {
-				return &model.Fault{Code: "search_context_limit_exceeded", Message: "Search task context exceeds its limit.", GraphLimit: &model.GraphLimitDetails{NodeCount: size.NodeCount, EdgeCount: size.EdgeCount, MaxNodes: MaxNodes, MaxEdges: MaxEdges}}
-			}
-			graph, err := snapshot.ContextGraph(ctx, projectID, ids)
-			if err != nil {
-				return err
-			}
-			representatives, err := componentRepresentatives(ctx, graph, ids)
-			if err != nil {
-				return err
-			}
-			wanted := make([]string, 0, len(representatives))
-			seen := map[string]bool{}
-			for _, id := range representatives {
-				if id != "" && !seen[id] {
-					seen[id] = true
-					wanted = append(wanted, id)
+		var draft []Item
+		var positions []store.TaskSearchPosition
+		itemBytes := 0
+		total, hasMore, err := snapshot.MatchesEach(ctx, projectID, selection, func(total int64, row store.TaskSearchRow) (bool, error) {
+			if row.TitleOversized {
+				if len(draft) == 0 {
+					return false, &model.Fault{Code: "resource_limit_exceeded", Message: "Search item exceeds the page budget."}
 				}
+				return false, nil
 			}
-			titles, err := snapshot.Titles(ctx, projectID, wanted)
-			if err != nil {
-				return err
-			}
-			for id, representative := range representatives {
-				if representative != "" {
-					title, ok := titles[representative]
-					if !ok {
-						return fmt.Errorf("missing search context title")
+			var evidence query.Evidence
+			var snippet *string
+			var err error
+			if row.Hits != nil {
+				hits := make(map[searchmodel.Atom]query.Evidence, len(row.Hits))
+				for _, hit := range row.Hits {
+					hits[hit.Atom] = query.Evidence{Title: hit.Title, Description: hit.Description}
+				}
+				evidence, err = query.EvaluateHits(ctx, ast, hits)
+				if err == nil && len(evidence.DescriptionTerms) != 0 {
+					for _, hit := range row.Hits {
+						if hit.Description && hit.Atom.Term == evidence.DescriptionTerms[0] {
+							snippet = hit.Snippet
+							break
+						}
 					}
-					contexts[id] = &Context{TaskID: representative, Title: title}
+					if snippet == nil {
+						return false, fmt.Errorf("missing search description snippet")
+					}
+				}
+			} else {
+				evidence, err = query.EvaluateContext(ctx, ast, row.Title, row.Description)
+				if err == nil {
+					snippet, err = query.SnippetContext(ctx, row.Description, evidence)
 				}
 			}
-		}
-		for _, row := range rows.Items {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			evidence, err := query.EvaluateContext(ctx, ast, row.Title, row.Description)
 			if err != nil {
-				return err
+				return false, err
 			}
 			if !evidence.Matches || evidence.Title != row.TitlePriority {
-				return fmt.Errorf("search evidence differs from database result")
+				return false, fmt.Errorf("search evidence differs from database result")
 			}
 			fields := []string{}
 			if evidence.Title {
@@ -248,23 +233,174 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			if evidence.Description {
 				fields = append(fields, "description")
 			}
-			snippet, err := query.SnippetContext(ctx, row.Description, evidence)
+			item := Item{ID: row.ID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, CancelledAt: row.CancelledAt, UpdatedAt: row.UpdatedAt.UTC(), Match: Match{Fields: fields, DescriptionSnippet: snippet}}
+			encoded, err := json.Marshal(item)
+			if err != nil {
+				return false, err
+			}
+			empty, err := json.Marshal(Page{ProjectID: projectID, Total: total, Items: []Item{}})
+			if err != nil {
+				return false, err
+			}
+			candidateBytes := itemBytes + len(encoded)
+			if len(draft) > 0 {
+				candidateBytes++
+			}
+			if len(empty)+candidateBytes+1 > MaxPageResponseJSONBytes {
+				if len(draft) == 0 {
+					return false, &model.Fault{Code: "resource_limit_exceeded", Message: "Search item exceeds the page budget."}
+				}
+				return false, nil
+			}
+			itemBytes = candidateBytes
+			draft = append(draft, item)
+			positions = append(positions, store.TaskSearchPosition{TitlePriority: row.TitlePriority, UpdatedAt: row.UpdatedAt, ID: row.ID})
+			return true, nil
+		})
+		if err != nil {
+			return err
+		}
+		result.Total = total
+		if hasMore && len(draft) == 0 {
+			return fmt.Errorf("search page has no continuation position")
+		}
+		// A byte-limited page must not fail because an excluded later item's
+		// component exceeds the graph limit. Admit components one candidate at
+		// a time and cache their members in this repeatable-read snapshot.
+		representatives := map[string]string{}
+		titles := map[string]string{}
+		var nodeCount, edgeCount int64
+		for i, item := range draft {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			representative, known := representatives[item.ID]
+			if !known {
+				size, err := snapshot.ContextSize(ctx, projectID, []string{item.ID})
+				if err != nil {
+					return err
+				}
+				if nodeCount+size.NodeCount > MaxNodes || edgeCount+size.EdgeCount > MaxEdges {
+					if len(result.Items) > 0 {
+						rep, valid, err := snapshot.ContextRepresentative(ctx, projectID, item.ID)
+						if err != nil {
+							return err
+						}
+						if valid {
+							candidate := item
+							oversized := false
+							if rep != "" {
+								found, err := snapshot.Titles(ctx, projectID, []string{rep})
+								if err != nil {
+									return err
+								}
+								title, ok := found[rep]
+								if !ok {
+									return fmt.Errorf("missing search context title")
+								}
+								if title == "\x00" {
+									oversized = true
+								} else {
+									candidate.Context = &Context{TaskID: rep, Title: title}
+								}
+							}
+							if !oversized {
+								prospective := result
+								prospective.Items = append(append([]Item(nil), result.Items...), candidate)
+								prospective.NextCursor = nil
+								if i < len(draft)-1 || hasMore {
+									next, err := encodeCursor(cursor{Scope: scope, Fence: fence, Position: positions[i]})
+									if err != nil {
+										return err
+									}
+									prospective.NextCursor = &next
+								}
+								raw, err := json.Marshal(prospective)
+								if err != nil {
+									return err
+								}
+								oversized = len(raw)+1 > MaxPageResponseJSONBytes
+							}
+							if oversized {
+								break
+							}
+						}
+					}
+					return &model.Fault{Code: "search_context_limit_exceeded", Message: "Search task context exceeds its limit.", GraphLimit: &model.GraphLimitDetails{NodeCount: nodeCount + size.NodeCount, EdgeCount: edgeCount + size.EdgeCount, MaxNodes: MaxNodes, MaxEdges: MaxEdges}}
+				}
+				graph, err := snapshot.ContextGraph(ctx, projectID, []string{item.ID})
+				if err != nil {
+					return err
+				}
+				seeds := make([]string, 0, len(graph.Nodes))
+				for _, node := range graph.Nodes {
+					seeds = append(seeds, node.ID)
+				}
+				projected, err := componentRepresentatives(ctx, graph, seeds)
+				if err != nil {
+					return err
+				}
+				representative, known = projected[item.ID]
+				if !known {
+					return fmt.Errorf("search context missing matching task")
+				}
+				for id, rep := range projected {
+					representatives[id] = rep
+				}
+				nodeCount += size.NodeCount
+				edgeCount += size.EdgeCount
+			}
+			if representative != "" {
+				title, ok := titles[representative]
+				if !ok {
+					found, err := snapshot.Titles(ctx, projectID, []string{representative})
+					if err != nil {
+						return err
+					}
+					title, ok = found[representative]
+					if !ok {
+						return fmt.Errorf("missing search context title")
+					}
+				}
+				if title == "\x00" {
+					if len(result.Items) == 0 {
+						return &model.Fault{Code: "resource_limit_exceeded", Message: "Search item exceeds the page budget."}
+					}
+					break
+				}
+				item.Context = &Context{TaskID: representative, Title: title}
+			}
+			result.Items = append(result.Items, item)
+			result.NextCursor = nil
+			if i < len(draft)-1 || hasMore {
+				encoded, err := encodeCursor(cursor{Scope: scope, Fence: fence, Position: positions[i]})
+				if err != nil {
+					return err
+				}
+				result.NextCursor = &encoded
+			}
+			encoded, err := json.Marshal(result)
 			if err != nil {
 				return err
 			}
-			result.Items = append(result.Items, Item{ID: row.ID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, UpdatedAt: row.UpdatedAt.UTC(), Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
-		}
-		if rows.HasMore {
-			if len(rows.Items) == 0 {
-				return fmt.Errorf("search page has no continuation position")
+			if len(encoded)+1 > MaxPageResponseJSONBytes {
+				result.Items = result.Items[:len(result.Items)-1]
+				if len(result.Items) == 0 {
+					return &model.Fault{Code: "resource_limit_exceeded", Message: "Search item exceeds the page budget."}
+				}
+				previous, err := encodeCursor(cursor{Scope: scope, Fence: fence, Position: positions[i-1]})
+				if err != nil {
+					return err
+				}
+				result.NextCursor = &previous
+				break
 			}
-			last := rows.Items[len(rows.Items)-1]
-			encoded, err := encodeCursor(cursor{Scope: scope, Fence: fence, Position: store.TaskSearchPosition{TitlePriority: last.TitlePriority, UpdatedAt: last.UpdatedAt, ID: last.ID}})
-			if err != nil {
-				return err
+			result.NodeCount = nodeCount
+			if item.Context != nil {
+				titles[item.Context.TaskID] = item.Context.Title
 			}
-			result.NextCursor = &encoded
 		}
+
 		return ctx.Err()
 	})
 	if err != nil {

@@ -152,7 +152,7 @@ func TestStepsHTTPChangeStrictInputAndMethods(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			assertProjectError(t, response, 400, "invalid_input")
-			assertProjectError(t, projectRequest(handler, tc.method, path+tc.suffix, strings.TrimSuffix(tc.good, "}")+`,"description":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 400, "invalid_input")
+			assertProjectError(t, projectRequest(handler, tc.method, path+tc.suffix, strings.TrimSuffix(tc.good, "}")+`,"description":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 413, "payload_too_large")
 		})
 	}
 	for _, tc := range []struct {
@@ -175,11 +175,11 @@ func TestStepsHTTPChangeStrictInputAndMethods(t *testing.T) {
 	if resource.Steps[0].Title != "�😀\\ud800" || resource.Steps[0].Description != "\uFEFF" {
 		t.Fatal("valid Unicode changed")
 	}
-	prefix := `{"version":2,"description":"`
-	exact := prefix + strings.Repeat("X", httpx.MaxJSONBody-len(prefix)-len(`"}`)) + `"}`
+	body := `{"version":2,"description":"X"}`
+	exact := body + strings.Repeat(" ", httpx.MaxJSONBody-len(body))
 	response = projectRequest(handler, "PATCH", path+"/abcdef01", exact)
 	boundary := decodeResponse[api.StepsResource](t, response, 200)
-	if len(exact) != httpx.MaxJSONBody || len(boundary.Steps[0].Description) != httpx.MaxJSONBody-len(prefix)-len(`"}`) || boundary.Version != 3 {
+	if len(exact) != httpx.MaxJSONBody || boundary.Steps[0].Description != "X" || boundary.Version != 3 {
 		t.Fatal("exact request boundary changed or truncated content")
 	}
 

@@ -374,7 +374,7 @@ func TestAttachmentHTTPUploadStreamFailureAndCancel(t *testing.T) {
 				t.Fatalf("canceled upload response: %s", response.Body)
 			}
 		} else {
-			assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+			assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 		}
 		assertProjectError(t, attachmentRequest(handler, http.MethodGet, location, "", nil), http.StatusNotFound, "not_found")
 	}

@@ -2,7 +2,7 @@
 
 The `@codetreker/daynight` package provides the `daynight` command and its `dn`
 alias. Use it to manage server-backed projects, tasks, discussion threads,
-attachments and Bot definitions, inspect remote Workers, install the
+attachments, Webhooks and Bot definitions, inspect remote Workers, install the
 `using-daynight` skill for coding agents, run foreground task workers through
 Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer
 through Copilot CLI. Both command names share configuration and behavior. Supported native platforms are Linux, Windows
@@ -34,6 +34,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Task deletion](#task-deletion)
 - [Task discussion threads](#task-discussion-threads)
 - [Task attachments](#task-attachments)
+- [Webhook management](#webhook-management)
 - [Bot management](#bot-management)
 - [Remote Worker queries](#remote-worker-queries)
 - [Worker configuration and startup](#worker-configuration-and-startup)
@@ -131,7 +132,7 @@ explains the mapping, platform limits, fixed build lifetime and shell verificati
 daynight                            # Show root help
 daynight --help                      # Also -h
 daynight --version                   # Also -v
-daynight --skill                    # Print the project/task usage manual
+daynight --skill                    # Print the CLI usage manual
 daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
@@ -181,6 +182,16 @@ daynight team default show [--json]
 daynight team default set <uuid|personal> [--confirm] [--json]
 daynight invitation inspect [--stdin] [--json]
 daynight invitation accept [--stdin] [--confirm] [--json]
+daynight webhook                         # Show Webhook help
+daynight webhook catalog [--json]
+daynight webhook list --personal [--json]
+daynight webhook show <endpoint-id> --team <team-id> [--json]
+daynight webhook create --personal --file <path> --confirm [--json]
+daynight webhook subscription --help
+daynight webhook secret --help
+daynight webhook delivery --help
+daynight webhook attempt --help
+daynight webhook operation --help
 daynight bot list [--json]
 daynight bot show <bot-id> [--json]
 daynight bot create --name <name> [--worker <worker-id>] [--cwd <path>] [--agent <codex|claude|copilot>] [--request-id <uuid>] [--json]
@@ -230,10 +241,10 @@ daynight --skill
 dn --skill
 ```
 
-`--skill` prints one standalone English project/task usage manual from the
+`--skill` prints one standalone English CLI usage manual from the
 current package. It covers project selection, task queries and writes,
 dependencies, properties, attachments and ordered Step list/show reads, Add, Update,
-Set-status, Move and Delete. Other capabilities are discovered
+Set-status, Move and Delete, and Webhook management. Other capabilities are discovered
 through `daynight --help`, with exact options in each subcommand's help. The
 output preserves the manual's original bytes, including YAML
 frontmatter and the final newline. The document has no package-relative
@@ -720,6 +731,84 @@ follow a commit and is reported as an unknown outcome; the CLI does not replay
 it automatically. Reading current membership cannot recover the original
 receipt. Use `--json` for the validated preview or acceptance receipt.
 
+## Webhook management
+
+`webhook` manages event types, endpoints, subscriptions, signing secrets,
+delivery history, payloads, redelivery and operation receipts through the
+authenticated service. Run `daynight webhook --help` and each leaf's `--help`
+for the complete command and option list. The `dn` alias has the same commands.
+
+Every leaf except `catalog` requires exactly one explicit owner: `--personal`
+selects the authenticated User, and `--team <team-id>` selects a Team UUID.
+The current Git directory and default Team do not select an owner; `--team personal`
+is not accepted. The CLI verifies the authenticated user once and
+checks the response identity throughout the command. IDs are canonical UUIDs;
+versions and generations are positive decimal int64 values, preserved exactly.
+
+```bash
+daynight webhook catalog --json
+daynight webhook list --personal --json
+daynight webhook create --personal --file ./endpoint.json --confirm --json
+daynight webhook update <endpoint-id> --team <team-id> --if-version <version> --file ./patch.json --confirm --json
+daynight webhook subscription reconfirm <endpoint-id> --personal --if-version <version> --project <project-id> --confirm
+daynight webhook secret show <endpoint-id> --personal --reveal
+daynight webhook delivery list <endpoint-id> --personal --limit 50 --json
+daynight webhook delivery payload <endpoint-id> <delivery-id> --personal --output ./payload.json
+daynight webhook delivery redeliver <endpoint-id> <delivery-id> --personal --if-version <version> --if-generation <generation> --confirm --json
+daynight webhook operation show <operation-id> --personal --json
+```
+
+Create, update and subscription replacement take exactly one of `--file` or
+`--stdin`. Inputs are strict UTF-8 JSON with no duplicate or unknown keys,
+at most 32 levels and 256 KiB; the final request including control fields is
+also limited to 256 KiB. Files must be regular files. Supply URL and adapter
+configuration in the JSON, not command arguments. Update is a nonempty partial
+object; subscription replacement is a complete array. Reconfirmation accepts
+one or more distinct `--project` values. All writes except create require the
+observed `--if-version`; redelivery also requires `--if-generation`. No write
+implicitly reads the latest version or retries a conflict. Noninteractive and
+stdin writes require `--confirm`; an interactive confirmation contains only
+the owner, operation, opaque targets and versions.
+
+Writes preserve an operation ID and original issued time. Supply both
+`--operation-id` and `--issued-at`, or let the CLI generate both after
+confirmation. `--operation-out <path>` exclusively creates a private prepared
+record before sending; it contains the scope, versions and request hash, but no
+body, URL, credentials or secret. Private prepared-file creation is unavailable
+on Windows and fails before sending. An unknown result retains the original
+identity and is never automatically replayed. Inspect the original receipt with
+`operation show`; current resource values or a missing receipt do not establish
+the original outcome. To resume, use `--resume-operation <path>` on the original
+write command and supply the same owner, targets, versions, mode and input. It
+verifies the record and exact request hash before reading the receipt. A matching
+receipt confirms the original operation without another write. The CLI rejects a
+receipt whose expiry is at or before the local clock. The service also enforces
+expiry with its database clock: expired receipt reads return `404 not_found`,
+and matching retained expired replays return `410 operation_expired`. Rotation
+receipts retain their original `keyId` and nullable `overlapUntil` even after
+later rotations or endpoint deletion. A missing receipt
+permits at most one identical submission only with `--confirm`, complete original
+input and an issued time within the service's admission window (five minutes
+past and sixty seconds future). An inaccessible receipt or expired window leaves
+the outcome unknown. A prepared record alone cannot reconstruct the body.
+
+Endpoint list validates every page before producing a complete result; delivery
+and attempt lists return one page, defaulting to 50 items, with `--limit` from 1
+to 100 and an explicit `--cursor` for continuation. History can be incomplete
+because of retention. Secret show reports metadata unless `--reveal` is explicitly
+requested; rotation does not reveal the new secret. A successful redelivery only
+registers it and does not mean delivery has completed.
+
+Payload output defaults to the exact original bytes without an added newline.
+`--json` returns its validated Base64 wrapper; `--output <path>` writes a private
+file after validation and never overwrites an existing target. File publication
+requires Linux with procfs and glibc; it fails when inode-bound publication is unavailable.
+These two options are mutually exclusive. Payload access and retention are independently enforced
+by the service. Normal JSON output is one value followed by LF. Runtime errors
+with `--json` go to stderr and distinguish invocation from original operation
+outcomes; a confirmed write remains confirmed if local output fails. Exit status
+is 0 for success, 2 for usage errors and 1 for runtime failures or unknown results.
+
 ## Task management
 
 `daynight task search <expression>` searches complete Task titles and Markdown
@@ -745,7 +834,7 @@ server's order. Text shows the full Task ID and title, status, chain representat
 or `none`, positive match fields, and a description snippet when present. A
 negative-only match is identified as such; text escapes terminal controls.
 `--json` emits one newline-terminated array whose entries contain only `id`,
-`projectId`, `title`, `status`, `context`, and `match`. Both formats omit the
+`projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
 assignee and update time; use `task show` for complete Task details. An empty
 result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
 expression syntax exit 2; read, permission, protocol, cancellation, budget and
@@ -822,7 +911,9 @@ use and remains stable if another project later shares that repository.
 Creation starts in `todo` with `allowAgents=false` and unrestricted
 `requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
-sets `todo`, `in_progress` or `done`, including reopening and direct completion.
+sets `todo`, `in_progress`, `done` or `cancelled`. The original three states retain
+reopening and direct completion; cancellation is irreversible and does not prove
+delivery. Cancelled records and materials remain readable.
 Every project member may use ordinary status setting. Active worker completion
 requires the current owner and an explicit `--claim-id <claim-id>` with target
 `done`; the CLI uses the existing typed completion operation. The option is
@@ -837,10 +928,14 @@ provided worktree, finishes with the explicit claim ID after delivery, and leave
 system worktree cleanup and next-task selection to its controller. Version is
 checked before same-state handling: current same-state keeps
 version, update time and timing unchanged; actual changes increment once.
+Actual cancellation records required nullable `cancelledAt`, preserves existing
+execution times and materials, and satisfies dependencies without deleting edges.
+Active ownership must first be released; cancelled tasks cannot resume or withdraw
+back to todo.
 
 Entering in_progress or done requires all direct prerequisites, ordinary and
-external, to be done. Reopening done requires no direct in-progress or done
-dependents. Refusals return sorted blocking task IDs without cascading changes.
+external, to be done or cancelled. Reopening done requires no direct in-progress or done
+dependents; cancelled dependents do not add a reopen restriction. Refusals return sorted blocking task IDs without cascading changes.
 The project transaction serializes status and dependency writes and preserves
 materials, assignedTo, properties/PRs, permission, both dependency sets and attachments.
 
@@ -850,7 +945,9 @@ preserving every other field, including requiredPlatform and historical executio
 data, CHECK and ledger change atomically. Other rows and applied migrations remain
 unchanged; restart does not repeat the conversion. Runtime readers reject the old state.
 
-Task resources expose required nullable `startedAt` and `completedAt`. Actual entry
+Task resources expose required nullable startedAt, completedAt and cancelledAt.
+Cancellation preserves both execution endpoints and records its own database
+time; a cancelled task never resumes execution or starts a new duration. Actual entry
 into in_progress starts a new interval and clears the end; return to todo clears
 both. In-progress to done preserves a nullable start and records a real end;
 todo to done records only an end, leaving duration unknown. Metadata and same-state
@@ -895,14 +992,23 @@ and disappear on completion without changing task status. The server-sample
 clock avoids client wall-clock skew but does not remove network sampling delay.
 
 
-The Web detail header places a three-item status menu beside the actual task
-title on both tabs. The current item remains selectable. Confirmation names the
-task, current/target states and timing effects; Cancel and Escape send no write.
-Status, **Automatic execution / 自动执行** and platform confirmation share one per-task mutation owner.
-Pending, stale or unknown results block conflicting writes. Current-version same-state responses
-confirm no stored change; actual changes refresh the graph. Unknown outcomes use
-GET-only reconciliation, preserving errors and never attributing the observed
-state to the uncertain request. Closing details does not roll back a submission.
+The Web shared status row offers todo, in progress, done and cancelled on every
+material tab. Cancelled tasks retain readable status and materials without
+reopen, resume or withdraw actions. The current original-state item remains
+selectable. Cancellation uses the existing confirmation with the task name,
+transition, irreversibility, retained readability and dependency consequence.
+Active claims mark cancellation unavailable and expose the existing release
+requirement on hover or keyboard focus without submitting. Dismissing the
+confirmation or pressing Escape sends no write.
+
+Status, **Automatic execution / 自动执行** and platform confirmation share one
+per-task mutation owner. Pending, stale or unknown results block conflicting
+writes. Current-version same-state responses confirm no stored change; actual
+cancellation requires cancelledAt and preserves both execution endpoints and
+other Task fields. Confirmed changes refresh the normal graph, retaining the
+cancelled node and materials. Unknown outcomes use GET-only reconciliation,
+preserving errors and never attributing observed state to the uncertain request.
+Closing details does not roll back a submission.
 
 Task details use one platform select in the left status group to display the
 confirmed requirement and offer Any platform, Windows, Linux and macOS. Choosing
@@ -935,15 +1041,15 @@ task-list request with `ready=true`, the chosen limit and optional
 filters, without fetching later pages. Compatibility includes unrestricted tasks
 and tasks requiring that platform. The service applies all filters before
 pagination and binds them to the cursor. The service orders results by creation time and then task ID, both
-ascending. A ready task is `todo` with all direct dependencies `done`. This
+ascending. A ready task is `todo` with all direct dependencies done or cancelled. This
 bounded selection supports choosing the next work without retrieving the whole
 project; `task graph <task-id>` provides the selected chain and one layer of
 external prerequisites. `task list`
-reads every matching page, including with `--ready`, and excludes `done` by
+reads every matching page, including with `--ready`, and excludes done and cancelled by
 default. `--all` includes every status; `--status <status>` selects one status,
 including `done`. These two options conflict. `--ready` intersects the selected
 statuses and can be combined with `--all`. List results place `in_progress`
-first, then ready tasks, other `todo` tasks, and `done`; each group retains
+first, then ready tasks, other todo tasks, and terminal done/cancelled; each group retains
 service order across all pages. This order applies to human and JSON results.
 `task ready` accepts neither `--status` nor `--cursor`. `task list` supports the
 same permission and compatibility filters across every matching page. Both are
@@ -1188,6 +1294,8 @@ daynight task step add <task-id> --title "Review round 2" --id 00abcdef --status
 Add requires a raw nonblank title. Description may be empty; omitted description
 and status mean empty text and todo. Before/after are mutually exclusive Task-local
 anchors; omitting both appends. Input IDs normalize without losing leading zeros.
+The service admits at most 1024 UTF-8 bytes for the title and 65536 for the
+description; the complete encoded collection must also fit its 64 MiB limit.
 Without an explicit ID, the command selects the first eight-hex segment of one
 UUIDv4 before submission. A separate full UUID identifies the POST through
 X-Request-ID. Neither identity is regenerated after a conflict or unknown result.
@@ -1234,6 +1342,8 @@ require a non-Unicode-White_Space character, including a valid standalone U+FEFF
 standalone U+0085 is invalid. All text is preserved without trimming. Status uses
 the separate set-status command and accepts any of the four states directly,
 including the current state, independently from Task status or other Steps.
+The service applies Add's text limits to the complete target, including omitted
+fields, and reports a field limit violation as a confirmed `invalid_input` refusal.
 
 An explicit project/version sends exactly one PATCH for content or one PUT to
 /status. Without --if-version, the command reads complete Steps once before that
@@ -2379,9 +2489,11 @@ uses the bundled Agent SDK, and Copilot uses the bundled SDK with
 its own headless runtime. Provider arguments are checked for that backend before
 claiming. The service must advertise the matching Session protocol and provider.
 Keep authentication in the native provider profile; credentials never enter a
-Session URL. Open the task's Session tab for messages, tools, model and permission
-settings, supported slash commands, native steer, interrupt and current approvals.
-Unsupported native controls remain unavailable.
+Session URL. Project members can read the task's Session tab for messages and tools.
+Only the persisted Session owner can send input, change model or permission
+settings, execute supported slash commands, steer, interrupt or answer current
+approvals; other administrators and members are read-only. Unsupported native
+controls remain unavailable.
 
 Copilot Web bundles SDK 1.0.11 and the `@github/copilot` 1.0.105 package, with token-authenticated loopback
 transport to its private runtime. `COPILOT_HOME` chooses the native profile;

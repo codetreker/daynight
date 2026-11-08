@@ -74,13 +74,13 @@ HTTP 接受且仅接受一个必填 taskId query，返回 no-store，沿用 requ
 
 ## 时间窗口摘要读取
 
-`NewTaskSync(store, overlap)` 接收已验证的配置，独立的 `taskSyncRoutes` 与原任务/图路由共同注册。
+`NewTaskSync(store, engine, overlap)` 接收消费方定义的单方法 `SessionStateReader` 及已验证的配置；应用组装注入同一个共享 Session Engine，独立的 `taskSyncRoutes` 与原任务/图路由共同注册。
 服务复用具体 store、项目读授权及 `ReadSnapshot`，在同一快照中取得 Project、
-`task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。域拒绝在事务成功结束后返回，
+`task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。已有授权、Project 和 ReadSync 成功且无 refusal 后，同一 SnapshotScope 的只读 SessionReader 查询全项目当前 Task Session source；共享 Engine 只读已提交 live 标量，投影完整最小 `sessions` 集合，不读完整 Current 或持有 live draft。域拒绝在事务成功结束后返回，
 操作和清理失败优先，与任务链图查询相同。
 
 store 先投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、assignedTo、时间和两类依赖，
-关闭任务 rows 后复用 loadTaskProperties 批量装配完整属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
+关闭任务 rows 后逐返回项有预算读取并装配完整属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
 [时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整属性，普通属性变化不轮换 epoch。服务在快照回调内保存属性校验拒绝，正常完成后才返回 400；数据库和事务完成错误优先，保持 500。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
@@ -113,7 +113,7 @@ packages/daynight-server/
                 └── migrations/
 ```
 
-`cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。优雅期限由 `DAYNIGHT_SHUTDOWN_TIMEOUT` 控制；超时后取消请求、通知 Operation 停止并强关 transport；断连收尾仍可启动所需事务，再用独立的五秒清理期限等待实际工作。只有全部使用者退出后应用才关闭文件和数据库；清理超时保留资源供关闭重试，已发生的优雅超时仍作为错误返回。
+`cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。HTTP、Session、Webhook 工作与依赖释放共用 `DAYNIGHT_SHUTDOWN_TIMEOUT`，上限十秒。超时后取消请求、通知 Operation 停止并强关 transport；已准入 transport 的断连收尾仍可启动所需事务。只有全部使用者退出后应用才关闭文件和数据库，未确认停止时保留资源供关闭重试并返回错误。Webhook 的监督和关闭顺序见[运行设计](webhook-runtime.md)。
 `api` 拥有 HTTP 请求、响应和错误
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、
 HTTP 错误映射和服务生命周期。`internal/service` 拥有 project/task 用例、业务
@@ -134,7 +134,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 调用方向为 `server → service → core/store`。传输层将 API DTO 转换为 service
 参数，core 不依赖 HTTP，store 不决定状态转换或依赖规则。事务内查询所需的数据、
 加锁和持久化操作由 store 提供，已拆分领域的候选变更由 core 判断，service 编排作用域与跨领域操作。现有关系型数据只有 PostgreSQL 一个实现，
-`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task 与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力；离线维护使用独立连接及维护合同。附件的字节存储接口由其独立
+`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Session、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task 与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力；离线维护使用独立连接及维护合同。附件的字节存储接口由其独立
 架构拥有，不替代这里的具体 PostgreSQL store。
 
 独立模块允许服务拥有自己的 Go/PostgreSQL 生命周期，避免将数据库事务接入现有
@@ -149,7 +149,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 | 对象 | 字段与含义 |
 |---|---|
 | Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes）；内部真实 `Ownership` 保存 TeamID、Version、UpdatedAt，公开内在字段必含 `ownership:{teamId,version}`；GET 另含同快照 access |
-| Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt` |
+| Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt`、`cancelledAt` |
 | TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
 | WorkerConfiguration | 同一账号 Worker 行上的独立目标版本、值、应用观测版本与最近结果；[配置设计](daynight-worker-configuration.md) |
@@ -212,6 +212,11 @@ ssh://git@git.example.com/team/repo.git
 git@git.example.com:team/repo.git
 ```
 
+Team 与 Project 的共同领域准入分别检查原始名称的有效性，以及最多 256 个 Unicode code points
+和 1024 个 UTF-8 bytes；普通 Team 创建和真实改名、Project 创建及仓库注册共用这些规则。Team 同名 no-op 保留存量超限名称。
+Project `repoUrl` 在 URL/SCP 解析和仓库匹配前检查最多 4096 个 UTF-8 bytes；容量失败
+映射为 `invalid_input`，发生在创建或修改任何持久数据之前，不截断输入。
+
 解析器校验协议、主机及非空仓库路径等语法，拒绝控制字符、嵌入密码、HTTPS userinfo、
 query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；私钥、口令、token 等
 认证材料不得出现在保存的地址中。地址处理不限定 GitHub 或其他 provider，不进行
@@ -225,18 +230,18 @@ query 和 fragment。SSH 用户名是传输地址组成部分，可以保存；�
 
 ## 状态与依赖不变量
 
-Task 只使用 `todo`、`in_progress`、`done`，创建与数据库默认均为 todo。
+Task 使用 `todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 todo。
 `014_task_status_assignment.sql` 将旧 proposed 行归类为 todo，对转换行 version+1、更新 updatedAt，
 保留执行时间及所有其他事实；默认、数据、CHECK 与 ledger 同一事务。已应用历史迁移保持不变。
-[状态架构](daynight-task-status.md)拥有九种状态对、迁移和计时的完整机制与理由。
+[状态架构](daynight-task-status.md)拥有四态转换、迁移和计时的完整机制与理由。
 
 `Tasks.SetStatus` 复用 `Tasks.write`，在项目锁和成员复核后先比较精确版本，再处理同状态 no-op。
-实际进入 in_progress/done 检查全部直接前置，done 退回检查全部直接 active/done 后继；普通与外部边一致。
+实际进入in_progress/done检查全部直接前置为done或cancelled，取消本身不要求前置满足；done退回todo/in_progress检查全部直接active/done后继；done→cancelled保持依赖满足，取消后继不增加重开保护；普通与外部边一致。
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
-同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通 setter 不能释放 active 或开始/完成 released task。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
+同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform、assignedTo 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通setter不能释放active或开始/完成released task；released可以取消，取消后各恢复入口包括withdraw明确拒绝。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
 
 普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台、负责人和属性。完整候选校验保证
-in_progress/done 的全部直接前置已 done，todo 允许未完成前置。引用必须同 project 且存在；
+in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
 重复、自身引用、缺失、跨项目和环均拒绝。状态设置与元数据具有单独公开职责。
 
 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
@@ -256,12 +261,12 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 3. 元数据更新构造完整候选；状态设置先检查版本，再判断同状态。实际改变检查全部前置及受保护后继，
    不满足时使用 dependency_unsatisfied。in_progress 实际许可、平台或负责人变化继续使用 invalid_transition。
 4. 原子写入任务、依赖集合与执行起止；存在真实变更时，将版本加 1，并更新 `updatedAt`。
-5. 提交后返回资源；失败回滚，原始错误链保留至顶层错误处理。
+5. DAO 返回最终资源后、提交前以实际协议编码检查成功响应容量；超限作为事务错误回滚。提交后返回资源；提交或发送故障保留实际完成事实与原始错误链。
 
 同 project 的 task 写入由 project 行锁串行化，不同 project 可以并行。获得锁与读取
 任务不能合并为一个依赖同一旧快照的 SQL 语句：等待锁结束后，后续查询需要看到刚
 提交的 project 内写入。任务 UPDATE 依据实际旧/新状态维护时间：进入 in_progress 产生新起点并清空终点，
-退回 todo 清空两端，in_progress→done 保留可空起点并写真实终点，todo→done 起点保持 null。
+退回 todo 清空两端，in_progress→done 保留可空起点并写真实终点，todo→done起点保持null。取消记录cancelledAt并保留原执行起止；同状态和普通编辑不刷新取消时间。
 普通编辑和同状态不改变执行时间。时间使用锁后的 `statement_timestamp()`，不使用可能早于锁等待结束的事务时间。该机制依赖 PostgreSQL 在 `READ COMMITTED` 下为每条命令
 取得新快照的语义，见[事务隔离文档](https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED)
 及[行锁文档](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS)。
@@ -294,6 +299,14 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 另一种并发控制，但还需要全操作重试及冲突响应策略；project 已经是依赖范围，因此
 以 project 行锁组织写入更直接。若出现单 project 写入瓶颈，再根据观测重新评估。
 
+## HTTP 传输准入
+
+Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHeaderBytes` 设置为 64 KiB 减去初始读取的 4096-byte slop。该预算适用于 HTTP/1；未来 HTTP/2 的解压头字段需独立定义。`httpx` 沿 `ResponseWriter.Unwrap` 使用 `ResponseController`，在实际读取开始时设置 socket deadline。成功读到 EOF 后清除期限；请求入口跟踪底层 body 的实际 EOF，使已消费正文的业务错误保留连接与正常取消语义。取消或未消费正文时关闭连接并阻止自动 drain。流式读取使用 `DeadlineBody`，供附件和归档入口在授权后的实际读取处应用各自期限。
+
+确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
+
+MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读并交给 SDK。名额持续到 HTTP 与 SDK handler 均不再持有输入，与 Control 和 Large 工具预算独立。失败、取消、初始化和关闭均释放名额。详细额度及适用状态见[输入规范](../spec/daynight-api-input-limits.md)。
+
 ## HTTP API
 
 接口使用 `/api/v1` 和 JSON：
@@ -312,7 +325,7 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
 | `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
-| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标三状态，done 可带当前 claimId |
+| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标四状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
 | `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active/released，清除归属并关闭自动执行 |
@@ -349,14 +362,14 @@ Task PATCH 必须提交期望的 `version`，并至少提供 `title`、`descript
 }
 ```
 
-状态 PUT 严格接受正 int64 version 与三状态 status，返回 200 和完整 task。通用 PATCH 中出现
+状态 PUT 严格接受正 int64 version 与四状态 status，返回 200 和完整 task。通用 PATCH 中出现
 status 是输入错误，含其他合法字段也不写入。HTTP 与日志保留 invalid_transition
 用于 in_progress 的实际许可或平台切换拒绝；前置或受保护后继拒绝使用 dependency_unsatisfied。
 严格 request DTO 和具体服务 use case 共用原 project 锁。
 
 省略可更新字段表示保持原值；`description: ""` 清空描述，`dependsOn: []` 清空
 依赖，`properties.pullRequests: []` 清空 PR 引用。`allowAgents` 使用可选布尔输入保留 omitted/false 的区别，创建严格拒绝该字段。`requiredPlatform` 使用明确的字段存在性和可空值区分省略、设置与清除：PATCH 省略保持、枚举设置、null 清除；创建省略或 null 均不限制。`model.TaskPlatform.Valid()` 验证枚举，`model.PlatformCompatible(required, actual)` 以 null/同值规则匹配，不读取服务进程的平台。PATCH 的双层指针明确区分未提供和显式 null，不把清除转换为省略。属性数组按序比较并整体替换，
-具体记录只有字符串 `url` 和 `title`；内容不做业务校验。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台和负责人字段允许清除外，显式 `null`、嵌套未知或
+具体记录只有字符串 `url` 和 `title`；保留原始文本语义并执行各自字节额度。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台和负责人字段允许清除外，显式 `null`、嵌套未知或
 重复字段、不合理的类型及非法枚举均为输入错误。`id`、
 `projectId`、创建时间及更新时间不可由调用者写入。任务返回结构包含模型字段及
 `dependsOn`、`externalDependsOn`、`blockedBy`、`ready`；外部子集是必填读取字段，也是创建/PATCH 的可选分类输入。
@@ -379,7 +392,8 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 下一页时后者为 `null`。
 task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
-普通列表保留 SQL limit；指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属，收集到 page limit+1 个匹配项或结束。最终分页和 lookahead 在归属筛选后计算，cursor 来自最后返回的匹配项。选中任务再批量加载全部属性，保持一致快照；不通过 SQL JSON 转换 PR 文本，也不引入独立 claim 权威表。
+普通列表按原 keyset 在同一快照逐项读取并用实际 REST 投影计量，4 MiB 页上限包含外壳、cursor 和换行。指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属；分页和 lookahead 在归属筛选后计算。字节限制提前结束时 cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。
+编码预算与分页的取舍见[响应预算决策](../../.agents/notes/implemented/architecture/2026-11-07-encoded-response-budgets.md)。
 
 项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
 
@@ -464,7 +478,7 @@ TCP 网关组合启动，Go 服务同时提供内嵌任务看板和 JSON API。�
 转发不解析 HTTP，响应、请求大小限制和错误语义继续由服务处理。数据库通过内部
 Compose 网络访问，PostgreSQL 18 数据卷挂到 `/var/lib/postgresql`。
 服务等待数据库健康后启动，由既有流程执行迁移；两条 HTTP 健康检查分别通过
-服务回环端口和网关访问公开 `/readyz`，只验证数据库就绪；`/healthz` 提供进程存活
+服务回环端口和网关访问公开 `/readyz`，验证数据库与 Webhook 后台工作状态；`/healthz` 提供进程存活
 响应，二者均支持 HEAD，不要求登录。网关配置或网络拓扑变化时整体
 重建容器并保留数据卷。部署脚本每次重新构建并整体重建容器，用相同命令完成启动、
 源码更新及转发恢复；数据卷持续保留。网关意外单独重启时，Docker 不会自动重启
@@ -494,8 +508,8 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 及监听资源。没有依赖后台任务去补齐图状态或引用。
 
 请求 context 贯穿 server、service 和 store，数据库查询及锁等待遵守取消和截止
-时间。服务关闭时停止接受新连接，在有界时间内等待请求，随后取消剩余请求并关闭
-连接池。`main` 拥有根 context、HTTP server 和 pool 的关闭顺序；请求代码只拥有
+时间。服务关闭时停止接受新连接，在共享期限内等待请求和后台工作，并在使用者停止后关闭
+连接池；超时未确认停止时保留连接池并返回错误。`main` 拥有根 context、HTTP server 和 pool 的关闭顺序；请求代码只拥有
 自身事务。错误回滚及资源释放不得覆盖原始失败；若清理也失败，保留两者的错误信息。
 
 ## 验证设计
@@ -507,7 +521,7 @@ PostgreSQL 实例及隔离数据库或 schema，验证 SQL、锁和事务行为�
 的数据库测试按职责位于对应模块。
 
 覆盖范围包括正常资源操作、非法字段和地址、同 project 限制、自身及重复依赖、环、
-完整依赖替换、三状态九组合、同状态+0/实际改变+1、PATCH status 拒绝、版本冲突、语义空更新、
+完整依赖替换、四态转换与取消不可恢复、同状态+0/实际改变+1、PATCH status 拒绝、版本冲突、语义空更新、
 原子起止时间、未知历史、锁等待后的实际开始、普通编辑保持计时、数据库图时间样本、失败回滚，以及一致的
 `dependsOn`/`blockedBy`/`ready`。并发测试使用协调屏障观察真实锁等待，证明并发
 反向依赖、同版本状态及依赖更新/状态竞争、重开与后继开始/完成竞争最终仍保持不变量，同时证明不同 project 可以并行。
@@ -536,13 +550,13 @@ Go 模块须使用实际构建的服务及固定的真实 UniAuth gateway 夹具
 
 当前 `bash scripts/check.sh` 要求隔离的 `DAYNIGHT_TEST_DATABASE_URL`，使用
 单测资源 overlay 构建和 vet，准备固定 UniAuth fixture，清除 Go 测试缓存后调用
-`go-cov` v0.1.4 运行模块测试。配置不排除生产 package、文件或函数，但未通过 `-coverpkg` 统计跨包调用；
+`go-cov` v0.1.4 运行模块测试。配置不排除生产 package、文件或函数，并通过 `-coverpkg` 统计跨包调用；
 package 和 function 门槛分别为 85% 和 80%。原始 `coverage.out`
 另按语句数精确检查 `covered * 10 > total * 9`，恰好 90% 失败。
 
-需求 V8 仍要求本地与 main CI 开启 race、PR CI 关闭并阻断关键代码块缺口；
-当前 `.go-cov.toml` 设置 `test.race = false` 和 `critical_blocks.fail = false`，
-入口未按事件选择 race，因此现有检查不满足这些要求。配置、实际入口及本地
+需求 V8 要求本地与 main CI 开启 race、PR CI 关闭并阻断关键代码块缺口。
+入口按事件选择 race；当前 `.go-cov.toml` 的 `critical_blocks.fail = false`
+不分析关键代码块，因此该部分要求仍未满足。配置、实际入口及本地
 stress 命令由[服务端验证说明](../../packages/daynight-server/README.md#validate)维护。
 覆盖率不替代并发、回滚、实际进程或调用方行为证据。
 

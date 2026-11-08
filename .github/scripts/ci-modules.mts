@@ -2,23 +2,41 @@ import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
-type Module = "cli" | "server" | "web";
+type Module = "cli" | "server" | "web" | "e2e";
 export type ModuleSelection = Record<Module, boolean>;
 
-const allModules: ModuleSelection = { cli: true, server: true, web: true };
+const allModules: ModuleSelection = { cli: true, server: true, web: true, e2e: true };
 const nodeInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
 const cliManifestPath = "packages/daynight/package.json";
+const cliBuildInputs = new Set([
+  cliManifestPath,
+  "packages/daynight/config.example.yml",
+  "packages/daynight/scripts/clean-dist.ts",
+  "packages/daynight/scripts/copy-resources.ts",
+]);
+const webBuildInputs = new Set([
+  "packages/daynight-web/package.json",
+  "packages/daynight-web/index.html",
+  "packages/daynight-web/vite.config.ts",
+  "packages/daynight-web/scripts/publish-assets.mts",
+]);
+const serverBuildInputs = new Set(["packages/daynight-server/go.mod", "packages/daynight-server/go.sum"]);
+const serverRuntimeInput = (path: string): boolean =>
+  /^(?:packages\/daynight-server\/(?:api|cmd|internal)\/)/.test(path) &&
+  !path.endsWith("_test.go") && !path.includes("/testdata/");
 
 export const selectModules = (paths: readonly string[]): ModuleSelection => {
-  const selected = { cli: false, server: false, web: false };
+  const selected: ModuleSelection = { cli: false, server: false, web: false, e2e: false };
   for (const path of paths) {
     if (nodeInputs.has(path)) {
       selected.cli = true;
       selected.web = true;
+      selected.e2e = true;
       continue;
     }
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
+      selected.e2e = true;
       continue;
     }
     if (
@@ -26,13 +44,23 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
       /(^|\/)(README|AGENTS|CLAUDE)\.md$/.test(path) || path === ".gitignore" ||
       path === ".github/workflows/publish.yml"
     ) continue;
-    if (path.startsWith("patches/")) {
+    if (path.startsWith("packages/e2e_tests/")) selected.e2e = true;
+    else if (path.startsWith("patches/")) {
       selected.cli = true;
       selected.web = true;
-    } else if (path.startsWith("packages/daynight/") || path.startsWith("scripts/")) selected.cli = true;
-    else if (path.startsWith("packages/daynight-server/")) selected.server = true;
-    else if (path.startsWith("packages/daynight-web/")) selected.web = true;
-    else if (path.startsWith("deployment/")) selected.web = true;
+      selected.e2e = true;
+    } else if (path.startsWith("packages/daynight/")) {
+      selected.cli = true;
+      selected.e2e ||= cliBuildInputs.has(path) || /^packages\/daynight\/tsconfig(?:\.[^/]+)?\.json$/.test(path);
+    } else if (path.startsWith("scripts/")) selected.cli = true;
+    else if (path.startsWith("packages/daynight-server/")) {
+      selected.server = true;
+      selected.e2e ||= serverBuildInputs.has(path) || serverRuntimeInput(path);
+    } else if (path.startsWith("packages/daynight-web/")) {
+      selected.web = true;
+      selected.e2e ||= path.startsWith("packages/daynight-web/src/") || path.startsWith("packages/daynight-web/public/") ||
+        webBuildInputs.has(path) || /^packages\/daynight-web\/tsconfig(?:\.[^/]+)?\.json$/.test(path);
+    } else if (path.startsWith("deployment/")) selected.web = true;
     else return { ...allModules };
   }
   return selected;
@@ -102,7 +130,7 @@ export const detectModules = async ({ event, base, head, cwd }: { event: string 
       const before = parseManifest(beforeSource);
       const after = parseManifest(afterSource);
       if (diff.changes.length === 1 && beforeMode === afterMode && isDeepStrictEqual(before.inputs, after.inputs) && before.version !== after.version) {
-        return { cli: false, server: false, web: false };
+        return { cli: false, server: false, web: false, e2e: false };
       }
     }
   }

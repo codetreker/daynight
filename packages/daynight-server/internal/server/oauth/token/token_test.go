@@ -47,6 +47,26 @@ type tokenStub struct {
 	fail  error
 }
 
+type countedBody struct{ reads int }
+
+func (b *countedBody) Read([]byte) (int, error) { b.reads++; return 0, errors.New("unexpected read") }
+func (*countedBody) Close() error               { return nil }
+
+func TestTokenCapacityRefusalDoesNotReadBody(t *testing.T) {
+	d := &tokenRate{counts: map[string]int{string(secret.Hash("oauth:token:global")): 1200}}
+	h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}}
+	body := &countedBody{}
+	r := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+	r.Body, r.ContentLength = body, 1<<20
+	r.RemoteAddr = "192.0.2.1:123"
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.Token(w, r)
+	if w.Code != http.StatusTooManyRequests || !r.Close || body.reads != 0 {
+		t.Fatalf("status=%d close=%v reads=%d", w.Code, r.Close, body.reads)
+	}
+}
+
 func (s *tokenStub) RedeemCode(ctx context.Context, in service.RedeemInput) (service.TokenResult, error) {
 	s.calls++
 	if s.fail != nil {
@@ -174,7 +194,11 @@ func TestPublicMethodsAndMalformedRequests(t *testing.T) {
 			r.Header.Set("Content-Type", tc.contentType)
 			w := httptest.NewRecorder()
 			h.Token(w, r)
-			if w.Code != http.StatusBadRequest || s.calls != 0 {
+			want := http.StatusBadRequest
+			if tc.name == "oversized" {
+				want = http.StatusRequestEntityTooLarge
+			}
+			if w.Code != want || s.calls != 0 {
 				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), s.calls)
 			}
 		})

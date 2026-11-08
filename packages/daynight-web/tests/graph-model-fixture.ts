@@ -7,8 +7,8 @@ export const graph = (seeds: readonly Seed[]): TaskGraph => {
   const tasks: GraphTask[] = seeds.map((seed) => {
     const dependsOn = seed.dependsOn ?? [];
     const status = seed.status ?? "todo";
-    const blockedBy = dependsOn.filter((predecessor) => seeds.find((item) => item.id === predecessor)?.status !== "done");
-    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null,
+    const blockedBy = dependsOn.filter((predecessor) => seeds.find((item) => item.id === predecessor)?.status !== "done" && seeds.find((item) => item.id === predecessor)?.status !== "cancelled");
+    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, cancelledAt: status === "cancelled" ? time : null,
       id: seed.id, status, dependsOn, blockedBy, ready: status === "todo" && blockedBy.length === 0,
       titlePreview: "Private task text", titleTruncated: false, createdAt: time, updatedAt: time,
     };
@@ -19,7 +19,7 @@ export const graph = (seeds: readonly Seed[]): TaskGraph => {
     tasks,
     summary: {
       total: tasks.length, todo: todo.length, inProgress: tasks.filter((task) => task.status === "in_progress").length,
-      done: tasks.filter((task) => task.status === "done").length,
+      done: tasks.filter((task) => task.status === "done").length, cancelled: tasks.filter((task) => task.status === "cancelled").length,
       ready: todo.filter((task) => task.ready).length, blocked: todo.filter((task) => !task.ready).length,
     },
   };

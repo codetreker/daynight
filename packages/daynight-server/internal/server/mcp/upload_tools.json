@@ -1,7 +1,7 @@
 [
   {
     "name": "task_attachment_put",
-    "description": "Put bytes inline or through a task-bound upload lifecycle. Chunk decoded size at most512KiB; total file size is not capped.",
+    "description": "Put bytes inline or through a task-bound upload lifecycle. Each decoded chunk is at most 512 KiB; the complete file is at most 5 MiB.",
     "inputSchema": {
       "type": "object",
       "oneOf": [

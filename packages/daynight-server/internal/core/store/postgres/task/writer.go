@@ -87,8 +87,8 @@ func (tx *Writer) CreateTask(ctx context.Context, id string, values TaskWrite) (
 		return model.Task{}, pg.QueryError("validate task properties", err)
 	}
 	values.Properties = properties
-	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
+	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to, cancelled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $5 = 'cancelled' THEN statement_timestamp() ELSE NULL END)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
 		return model.Task{}, pg.QueryError("create task", err)
 	}
@@ -117,7 +117,10 @@ func (tx *Writer) UpdateTask(ctx context.Context, id string, values TaskWrite) (
 			WHEN status <> $5 AND $5 = 'done' THEN statement_timestamp()
 			WHEN status <> $5 AND $5 IN ('todo', 'in_progress') THEN NULL
 			ELSE completed_at END,
-		version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
+		cancelled_at = CASE
+            WHEN status <> $5 AND $5 = 'cancelled' THEN statement_timestamp()
+            ELSE cancelled_at END,
+        version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
 		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
 		return model.Task{}, pg.QueryError("update task", err)
@@ -171,24 +174,24 @@ func (tx *Writer) DependentIDs(ctx context.Context, id string) ([]string, error)
 	return ids, nil
 }
 
-func (tx *Writer) DeleteTask(ctx context.Context, id string, removeDepends bool) error {
+func (tx *Writer) DeleteTask(ctx context.Context, id string, removeDepends bool) (model.TaskTombstone, error) {
+	var tombstone model.TaskTombstone
 	if removeDepends {
 		if _, err := tx.tx.Exec(ctx, `WITH removed AS (
 			DELETE FROM task_dependencies WHERE project_id = $1 AND depends_on_task_id = $2
 			RETURNING task_id
 		) UPDATE tasks SET version = version + 1, updated_at = statement_timestamp()
 		WHERE project_id = $1 AND id IN (SELECT task_id FROM removed)`, tx.projectID, id); err != nil {
-			return pg.QueryError("remove dependent relationships", err)
+			return tombstone, pg.QueryError("remove dependent relationships", err)
 		}
 	}
-	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET deleted_at = statement_timestamp(),
+	err := tx.tx.QueryRow(ctx, `UPDATE tasks SET deleted_at = statement_timestamp(),
 		updated_at = statement_timestamp(), version = version + 1
-		WHERE project_id = $1 AND id = $2 AND deleted_at IS NULL`, tx.projectID, id)
+		WHERE project_id = $1 AND id = $2 AND deleted_at IS NULL
+		RETURNING project_id::text, id::text, version, deleted_at`, tx.projectID, id).
+		Scan(&tombstone.ProjectID, &tombstone.ID, &tombstone.Version, &tombstone.DeletedAt)
 	if err != nil {
-		return pg.QueryError("delete task", err)
+		return tombstone, pg.QueryError("delete task", err)
 	}
-	if result.RowsAffected() == 0 {
-		return pg.QueryError("delete task", model.ErrNotFound)
-	}
-	return nil
+	return tombstone, nil
 }

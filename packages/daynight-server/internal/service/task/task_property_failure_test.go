@@ -1,27 +1,39 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-
 	"context"
 	"errors"
-	"strings"
+	"reflect"
 	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
-func TestWorkerClaimClockFailurePreservesTask(t *testing.T) {
-	tasks, _, project, databaseURL, principal := taskService(t)
-	target := claimableTask(t, tasks, principal, project.ID)
-	ctx, cancel := context.WithCancel(context.Background())
+func TestWorkerClaimClockFailurePreventsTaskWrite(t *testing.T) {
+	_, target, _ := taskMockModels()
+	target.AllowAgents = true
+	f := newPropertyWriteFixture(t, target, propertyAbort(t, func(err error) {
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("clock callback lost cancellation: %v", err)
+		}
+	}))
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	traced := tracedTasks(t, databaseURL, taskQueryAction{
-		match: func(sql string) bool { return strings.Contains(sql, "SELECT statement_timestamp()") },
-		start: cancel,
-	})
-	_, err := traced.ClaimWorker(ctx, principal, project.ID, target.ID, taskcore.ClaimWorker{Version: target.Version, WorkerDescriptor: workerDescriptor()})
-	assertOperational(t, err)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("claim clock failure lost cancellation: %v", err)
+	f.ctx = ctx
+	calls := 0
+	f.dao.ObservedAtFn = func(actual context.Context) (time.Time, error) {
+		calls++
+		if actual != ctx {
+			t.Fatal("claim clock changed context")
+		}
+		cancel()
+		return time.Time{}, actual.Err()
 	}
-	assertTaskUnchanged(t, tasks, principal, target)
+	actual, err := f.tasks.ClaimWorker(ctx, f.principal, f.project.ID, target.ID, taskcore.ClaimWorker{Version: target.Version, WorkerDescriptor: workerDescriptor()})
+	assertOperational(t, err)
+	if !errors.Is(err, context.Canceled) || calls != 1 || !reflect.DeepEqual(actual, model.Task{}) {
+		t.Fatalf("claim clock failure: %#v %v, calls=%d", actual, err, calls)
+	}
 }

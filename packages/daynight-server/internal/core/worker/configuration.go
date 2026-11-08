@@ -13,11 +13,22 @@ import (
 )
 
 func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfiguration, error) {
+	if err := AdmitConfiguration(value); err != nil {
+		return model.WorkerConfiguration{}, InputLimit(err)
+	}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return model.WorkerConfiguration{}, invalidInput("Worker configuration is invalid.")
 	}
 	return ParseWorkerConfiguration(raw)
+}
+
+func normalizeStoredConfiguration(value model.WorkerConfiguration) (model.WorkerConfiguration, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return model.WorkerConfiguration{}, invalidInput("Stored Worker configuration is invalid.")
+	}
+	return parseWorkerConfiguration(raw, false)
 }
 
 func configurationProjects(ctx context.Context, dao store.WorkerWriteDAO, userID string, current *model.WorkerDesiredConfiguration, value model.WorkerConfiguration) error {
@@ -58,7 +69,7 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if actual != expected {
 		return model.WorkerConfigurationResource{}, &model.Fault{Code: "version_conflict", Message: "Worker configuration revision does not match."}
 	}
-	current.Desired.Value, err = NormalizeConfiguration(current.Desired.Value)
+	current.Desired.Value, err = normalizeStoredConfiguration(current.Desired.Value)
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}

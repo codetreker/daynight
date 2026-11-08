@@ -22,7 +22,7 @@ the application owns the Session engine and underlying resources. The
 closes admission before waiting for admitted users. Session Operations finish
 transaction and publication work before the engine reports idle. See the
 [server design](../../../../docs/design/daynight-server.md) for the shutdown
-sequence and timeout behavior.
+sequence and timeout behavior. The [webhook runtime decision](2026-11-08-webhook-application-runtime.md) replaces the separate cleanup budget with one shared deadline.
 
 ## Alternatives
 
@@ -30,8 +30,8 @@ sequence and timeout behavior.
 or hijacked connection may still be releasing locks or doing file work; closing
 its dependencies would convert a bounded wait into an unsafe use-after-close.
 
-**Reuse the expired grace context for resource cleanup.** It cannot wait for
-work responding to cancellation and would report a cleanup timeout immediately.
+**Reuse the expired grace context for resource cleanup.** At this decision, it could not wait for
+work responding to cancellation and would report a cleanup timeout immediately. The later shared-deadline decision retains resources when that deadline expires.
 
 ## Consequences
 

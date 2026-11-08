@@ -82,23 +82,34 @@ func TestScanProjectRequiresOwnershipAndNormalizesTimes(t *testing.T) {
 
 func taskProjection(at time.Time, status model.TaskStatus) projectionRow {
 	platform, assignee := model.TaskPlatform("linux"), "assignee"
-	return projectionRow{values: []any{"task", "project", "title", "description", status, int64(9), at, at, &at, &at, true, &platform, &assignee,
+	var cancelled *time.Time
+	if status == model.TaskCancelled {
+		value := at.Add(time.Minute)
+		cancelled = &value
+	}
+	return projectionRow{values: []any{"task", "project", "title", "description", status, int64(9), at, at, &at, &at, cancelled, true, &platform, &assignee,
 		[]string{"dependency"}, []string{"external"}, []string{"blocked"}, true}}
 }
 
 func TestScanTaskPreservesProjectionAndRejectsInvalidStatus(t *testing.T) {
 	at := projectionTime()
-	task, err := ScanTask(taskProjection(at, model.TaskDone))
-	if err != nil {
-		t.Fatal(err)
-	}
 	platform, assignee, utc := model.TaskPlatform("linux"), "assignee", at.UTC()
-	want := model.Task{ID: "task", ProjectID: "project", Title: "title", Description: "description", Status: model.TaskDone, Version: 9,
-		CreatedAt: utc, UpdatedAt: utc, StartedAt: &utc, CompletedAt: &utc, AllowAgents: true, RequiredPlatform: &platform,
-		AssignedTo: &assignee, DependsOn: []string{"dependency"}, ExternalDependsOn: []string{"external"}, BlockedBy: []string{"blocked"}, Ready: true,
-		Properties: model.TaskProperties{}}
-	if !reflect.DeepEqual(task, want) {
-		t.Fatalf("task = %#v, want %#v", task, want)
+	for _, status := range []model.TaskStatus{model.TaskDone, model.TaskCancelled} {
+		task, err := ScanTask(taskProjection(at, status))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := model.Task{ID: "task", ProjectID: "project", Title: "title", Description: "description", Status: status, Version: 9,
+			CreatedAt: utc, UpdatedAt: utc, StartedAt: &utc, CompletedAt: &utc, AllowAgents: true, RequiredPlatform: &platform,
+			AssignedTo: &assignee, DependsOn: []string{"dependency"}, ExternalDependsOn: []string{"external"}, BlockedBy: []string{"blocked"}, Ready: true,
+			Properties: model.TaskProperties{}}
+		if status == model.TaskCancelled {
+			cancelled := utc.Add(time.Minute)
+			want.CancelledAt = &cancelled
+		}
+		if !reflect.DeepEqual(task, want) {
+			t.Fatalf("task = %#v, want %#v", task, want)
+		}
 	}
 	if _, err := ScanTask(taskProjection(at, "invalid")); err == nil {
 		t.Fatal("invalid stored status accepted")
@@ -117,9 +128,9 @@ func TestScanTaskPreservesProjectionAndRejectsInvalidStatus(t *testing.T) {
 
 func TestCollectTasksClosesRowsAndRetainsReadFailures(t *testing.T) {
 	at := projectionTime()
-	rows := &projectionRows{items: []projectionRow{taskProjection(at, model.TaskTodo), taskProjection(at, model.TaskDone)}}
+	rows := &projectionRows{items: []projectionRow{taskProjection(at, model.TaskTodo), taskProjection(at, model.TaskCancelled)}}
 	tasks, err := CollectTasks(rows)
-	if err != nil || len(tasks) != 2 || tasks[0].Status != model.TaskTodo || tasks[1].Status != model.TaskDone || !rows.closed {
+	if err != nil || len(tasks) != 2 || tasks[0].Status != model.TaskTodo || tasks[1].Status != model.TaskCancelled || tasks[1].CancelledAt == nil || !rows.closed {
 		t.Fatalf("tasks = %#v, error = %v, closed = %v", tasks, err, rows.closed)
 	}
 	rows = &projectionRows{}

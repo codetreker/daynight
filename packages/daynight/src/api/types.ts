@@ -1,3 +1,6 @@
+import type { TaskStatus } from "../task/status.js";
+export type { TaskStatus } from "../task/status.js";
+
 export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
 export type TaskStep = {
   readonly id: string;
@@ -47,7 +50,6 @@ export type MoveTaskStepInput = {
 };
 export type MoveTaskStepOptions = TaskStepWriteOptions;
 
-export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
 
 export type User = {
@@ -323,6 +325,7 @@ export type Task = {
   readonly assignedTo: string | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly cancelledAt: string | null;
   readonly version: bigint;
   readonly properties: TaskProperties;
   readonly createdAt: string;
@@ -343,6 +346,7 @@ export type TaskGraphSummary = {
   readonly todo: number;
   readonly inProgress: number;
   readonly done: number;
+  readonly cancelled: number;
   readonly ready: number;
   readonly blocked: number;
 };
@@ -418,6 +422,7 @@ export type TaskSearchItem = {
   readonly projectId: string;
   readonly title: string;
   readonly status: TaskStatus;
+  readonly cancelledAt: string | null;
   readonly context: { readonly taskId: string; readonly title: string } | null;
   readonly match: { readonly fields: readonly ("title" | "description")[]; readonly descriptionSnippet: string | null };
 };

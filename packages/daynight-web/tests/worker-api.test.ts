@@ -14,7 +14,7 @@ const worker: WorkerClaim = {
 const task: TaskDetail = { assignedTo: null,
   id: taskId, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null,
   version: 9_223_372_036_854_775_807n, properties: { pullRequests: [{ url: "\0", title: "\ud800" }], worker },
-  startedAt: time, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
+  startedAt: time, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };
 const invalidWorkers: unknown[] = [
   undefined, null, {}, [], false, { ...worker, state: "expired" }, { ...worker, claimId: "bad" }, { ...worker, userId: "bad" },
@@ -73,4 +73,13 @@ describe("worker ownership detail reads", () => {
     expect(() => parseTaskDetail({ ...task, status: "done" }, projectId, taskId)).toThrow("invalid response");
     expect(() => parseTaskDetail({ ...task, properties: { ...task.properties, worker: { ...worker, state: "released" } } }, projectId, taskId)).toThrow("invalid response");
   });
+});
+
+it("accepts cancelled released history without accepting an active cancelled execution", () => {
+  const value = { ...task, status: "cancelled", cancelledAt: time, properties: { ...task.properties, worker: { ...worker, state: "released" } } };
+  expect(parseTaskDetail(value, projectId, taskId)).toEqual(value);
+  expect(() => parseTaskDetail({ ...value, properties: task.properties }, projectId, taskId)).toThrow("invalid response");
+  for (const patch of [{ cancelledAt: undefined }, { cancelledAt: null }, { status: "todo" }]) {
+    expect(() => parseTaskDetail({ ...value, ...patch }, projectId, taskId)).toThrow("invalid response");
+  }
 });

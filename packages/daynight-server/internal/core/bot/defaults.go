@@ -126,11 +126,7 @@ func resolveBotWorker(worker model.WorkerSnapshot, now time.Time, preference mod
 }
 
 func resolveBotCreation(ctx context.Context, tx store.BotWriteDAO, principal model.Principal, input CreateBot) (model.BotConfiguration, error) {
-	defaults, err := tx.BotDefaults(ctx, principal.UserID)
-	if err != nil {
-		return model.BotConfiguration{}, err
-	}
-	resolved, err := ResolveBotDefaults(defaults, input.Overrides)
+	defaults, resolved, err := CreationDefaults(ctx, tx, principal.UserID, input.Overrides)
 	if err != nil {
 		return model.BotConfiguration{}, err
 	}

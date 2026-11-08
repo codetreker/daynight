@@ -173,6 +173,7 @@ export const parseWorkerCloudBootstrap = async (
   const worker = workerMapping(sourceMapping(source, paths));
   const repositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
   if (!Array.isArray(repositories)) throw new TypeError("worker.repositories must be a sequence.");
+  if (repositories.length > 128) throw new RangeError("worker.repositories must contain at most 128 Projects.");
   const projects = [];
   for (const [index, entry] of repositories.entries()) {
     signal.throwIfAborted();

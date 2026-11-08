@@ -133,6 +133,10 @@ export type InspectionMessages = {
     readonly startTiming: string;
     readonly finishTiming: string;
     readonly directFinishTiming: string;
+    readonly cancelQuestion: string;
+    readonly confirmCancellation: string;
+    readonly cancelExplanation: string;
+    readonly releaseBeforeCancel: string;
     readonly pending: string;
     readonly confirmed: string;
     readonly currentState: string;

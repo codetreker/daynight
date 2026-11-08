@@ -194,6 +194,110 @@ func TestMCPTaskProperties(t *testing.T) {
 	}
 }
 
+func TestMCPTaskCancellationPreservesReadabilityAndSatisfiesDependencies(t *testing.T) {
+	client, project, _, tasks, database, entry, _ := taskResourceClient(t)
+	if err := RegisterTaskQueryTools(entry, tasks); err != nil {
+		t.Fatal(err)
+	}
+	prerequisite := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Abandoned prerequisite", "description": "Retained material", "returnView": "full"})
+	id := prerequisite["id"].(string)
+	if value, present := prerequisite["cancelledAt"]; !present || value != nil {
+		t.Fatalf("initial nullable cancellation time: %#v", prerequisite)
+	}
+	dependent := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Dependent", "externalDependsOn": []string{id}, "returnView": "full"})
+	if dependent["ready"] != false {
+		t.Fatalf("unsatisfied prerequisite: %#v", dependent)
+	}
+	var epoch string
+	if err := database.Pool.QueryRow(t.Context(), "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project).Scan(&epoch); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := taskData(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": "1", "returnView": "full"})
+	if cancelled["status"] != "cancelled" || cancelled["version"] != "2" || cancelled["ready"] != false || cancelled["description"] != prerequisite["description"] || cancelled["assignedTo"] != prerequisite["assignedTo"] || cancelled["allowAgents"] != prerequisite["allowAgents"] || cancelled["startedAt"] != nil || cancelled["completedAt"] != nil {
+		t.Fatalf("cancelled resource: %#v", cancelled)
+	}
+	stamp, ok := cancelled["cancelledAt"].(string)
+	if !ok {
+		t.Fatalf("missing cancellation time: %#v", cancelled)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
+		t.Fatal(err)
+	}
+	same := taskData(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": "2", "returnView": "full"})
+	if !reflect.DeepEqual(same, cancelled) {
+		t.Fatalf("same-status mutation: before=%#v after=%#v", cancelled, same)
+	}
+	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": "1"}, "version_conflict")
+	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "claimId": uuid.NewString()}, "invalid_input")
+	for _, status := range []string{"todo", "in_progress", "done"} {
+		taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": status, "ifVersion": "2"}, "invalid_transition")
+	}
+	show := taskData(t, client, "task_show", map[string]any{"projectId": project, "taskId": id, "view": "full"})
+	if !reflect.DeepEqual(show, cancelled) {
+		t.Fatalf("cancelled material unreadable or changed: %#v", show)
+	}
+	dependent = taskData(t, client, "task_show", map[string]any{"projectId": project, "taskId": dependent["id"], "view": "full"})
+	if dependent["ready"] != true || dependent["version"] != "1" || !reflect.DeepEqual(dependent["dependsOn"], []any{id}) || !reflect.DeepEqual(dependent["externalDependsOn"], []any{id}) {
+		t.Fatalf("dependency satisfaction changed intrinsic material: %#v", dependent)
+	}
+	graph := taskData(t, client, "task_graph", map[string]any{"projectId": project, "taskId": id, "view": "full"})
+	summary := object(t, graph["summary"])
+	if summary["cancelled"] != float64(1) || summary["done"] != float64(0) || summary["ready"] != float64(0) || summary["total"] != float64(1) {
+		t.Fatalf("graph cancellation summary: %#v", summary)
+	}
+	var graphCancelled map[string]any
+	for _, value := range graph["tasks"].([]any) {
+		node := object(t, value)
+		if node["id"] == id {
+			graphCancelled = node
+		}
+	}
+	if graphCancelled == nil || graphCancelled["cancelledAt"] != stamp {
+		t.Fatalf("cancelled graph node: %#v", graphCancelled)
+	}
+	list := taskData(t, client, "task_list", map[string]any{"projectId": project})
+	if items := list["items"].([]any); len(items) != 1 || object(t, items[0])["id"] != dependent["id"] {
+		t.Fatalf("unfinished list retained cancellation: %#v", list)
+	}
+	list = taskData(t, client, "task_list", map[string]any{"projectId": project, "status": "cancelled", "view": "full"})
+	if items := list["items"].([]any); len(items) != 1 || object(t, items[0])["id"] != id || object(t, items[0])["cancelledAt"] != stamp {
+		t.Fatalf("cancelled list filtering or full time: %#v", list)
+	}
+	var afterEpoch string
+	if err := database.Pool.QueryRow(t.Context(), "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project).Scan(&afterEpoch); err != nil {
+		t.Fatal(err)
+	}
+	if afterEpoch != epoch {
+		t.Fatalf("cancellation rotated cache epoch: before=%q after=%q", epoch, afterEpoch)
+	}
+}
+
+func TestMCPTaskCancellationRequiresReleaseAndRetainsClaimHistory(t *testing.T) {
+	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
+	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Release then cancel"})
+	id := task["id"].(string)
+	taskData(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "allowAgents": true})
+	current, err := tasks.Get(t.Context(), principal, project, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "test machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, WorktreeID: uuid.NewString()}
+	claimed, err := tasks.ClaimWorker(t.Context(), principal, project, id, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": Decimal(claimed.Version)}, "invalid_transition")
+	released, err := tasks.ReleaseWorker(t.Context(), principal, project, id, taskcore.ReleaseWorker{Version: claimed.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := taskData(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": Decimal(released.Version), "returnView": "full"})
+	worker := object(t, object(t, cancelled["properties"])["worker"])
+	if cancelled["status"] != "cancelled" || worker["state"] != "released" || worker["claimId"] != descriptor.ClaimID || cancelled["allowAgents"] != true {
+		t.Fatalf("released cancellation history: %#v", cancelled)
+	}
+}
+
 func TestMCPTaskCompletesOnlyExplicitClaim(t *testing.T) {
 	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
 	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Claim"})
@@ -239,13 +343,7 @@ func TestMCPTaskPropertyBudgetFollowsMode(t *testing.T) {
 
 func TestMCPTaskBusinessJSONLimit(t *testing.T) {
 	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
-	// The REST create body is the corresponding business JSON; transport-only
-	// projectId and returnView fields do not consume its one MiB allowance.
-	base, err := json.Marshal(map[string]any{"title": "Limit", "description": ""})
-	if err != nil {
-		t.Fatal(err)
-	}
-	description := strings.Repeat("x", (1<<20)-len(base))
+	description := strings.Repeat("x", 65536)
 	data := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Limit", "description": description})
 	got, err := tasks.Get(context.Background(), principal, project, data["id"].(string))
 	if err != nil || got.Description != description {
@@ -327,11 +425,7 @@ func TestMCPTaskPropertyBusinessLimitCountsEncodedText(t *testing.T) {
 
 func TestMCPTaskBusinessLimitDoesNotEscapeRawHTML(t *testing.T) {
 	_, project, principal, tasks, _, _, server := taskResourceClient(t)
-	base, err := json.Marshal(map[string]any{"title": "HTML", "description": ""})
-	if err != nil {
-		t.Fatal(err)
-	}
-	description := strings.Repeat("<", (1<<20)-len(base))
+	description := strings.Repeat("<", 65536)
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_create","arguments":{"projectId":%q,"title":"HTML","description":"%s"}}}`, project, description)
 	req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(body))
 	if err != nil {
@@ -446,7 +540,7 @@ func TestMCPTaskExternalDependenciesCountCompiledBusinessPayload(t *testing.T) {
 	}
 	result, envelope := callTaskResource(t, client, "task_create", map[string]any{"projectId": project, "title": "Large", "externalDependsOn": dependencies})
 	failure := object(t, envelope["error"])
-	if !result.IsError || failure["code"] != "invalid_input" || !strings.Contains(failure["message"].(string), "1 MiB") {
+	if !result.IsError || failure["code"] != "invalid_input" {
 		t.Fatalf("compiled payload not rejected at size limit: %#v", envelope)
 	}
 	var count int
@@ -487,5 +581,27 @@ func TestMCPRejectsUnknownToolBudgetClass(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("unknown budget class registered")
+	}
+}
+
+func TestMCPTaskWriteAdmission(t *testing.T) {
+	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
+	title := strings.Repeat("界", 341) + "x"
+	created := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": title, "description": strings.Repeat("d", 65536), "returnView": "full"})
+	id := created["id"].(string)
+	before, err := tasks.Get(context.Background(), principal, project, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskError(t, client, "task_create", map[string]any{"projectId": project, "title": title + "x"}, "invalid_input")
+	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "description": strings.Repeat("d", 65537)}, "invalid_input")
+	deps := make([]string, 16)
+	for i := range deps {
+		deps[i] = uuid.NewString()
+	}
+	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "dependsOn": deps}, "invalid_input")
+	after, err := tasks.Get(context.Background(), principal, project, id)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("rejected updates changed task: %v", err)
 	}
 }

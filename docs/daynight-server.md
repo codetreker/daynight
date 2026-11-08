@@ -69,9 +69,9 @@ server 管理 HTTP listener、HTTP server 和请求的生命周期，并与模�
 
 ## 测试职责
 
-业务规则的单元测试优先使用合成领域数据；规则需要查询结果或存储错误时，通过 `core/store` 的 DAO 接口 mock 控制并验证返回值、参数、调用和错误链。纯函数直接构造输入，不为使用 mock 引入存储依赖，也不为取得固定模型数据启动 PostgreSQL。
+业务规则与 service 编排的单元测试使用合成领域数据；需要查询结果、存储错误或事务完成结果时，通过 `core/store` 的 DAO、scope 与 transaction 接口 mock 控制并验证返回值、参数、调用和错误链。纯函数直接构造输入，不为使用 mock 引入存储依赖，也不为取得固定模型数据启动 PostgreSQL。
 
-Mock 只实现当前规则需要的接口能力，未配置的调用应立即使测试失败。不要 mock SQL 字符串或另建完整内存数据库来模拟 PostgreSQL。转换后的业务规则选择应能在未设置 `DAYNIGHT_TEST_DATABASE_URL` 时实际执行；不得以跳过测试或默认空结果代替隔离。
+Mock 只实现当前规则需要的接口能力，未配置或额外调用应立即使测试失败。事务 callback、拟写参数与 committed、not_committed、unknown 结果必须分开；记录过写入不等于已经持久化。并发顺序只验证同一逻辑操作或明确 barrier 的关系，不要求所有 goroutine 使用全局 FIFO。后台未预期调用也必须独立标记测试失败并完成取消与 drain。不要 mock SQL 字符串或另建完整内存数据库来模拟 PostgreSQL。转换后的业务规则选择应能在未设置 `DAYNIGHT_TEST_DATABASE_URL` 时实际执行；不得以跳过测试或默认空结果代替隔离。
 
 真实 SQL、约束、锁、事务提交与回滚、持久化读回以及跨操作的权限和版本重新检查由 PostgreSQL 集成测试证明。HTTP 与进程测试保留其装配和协议边界。拆分纯规则矩阵时，必须保留这些独有证明；一次函数调用不能替代真实事务或跨调用状态变化。
 

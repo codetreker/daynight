@@ -1,4 +1,5 @@
-import { act, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, renderHook, screen, waitFor as waitForDom, within } from "@testing-library/react";
+import { waitForState as waitFor } from "./helpers/waitForState";
 import type { ReactNode } from "react";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
@@ -35,7 +36,7 @@ const apply = async (scope: TaskCacheScope, detail: TaskDetail, snapshot = false
 const applyAbsentSnapshot = async (scope: TaskCacheScope, withSurvivor = false) => {
   const graph = graphFixture([body()]);
   const empty = withSurvivor ? graphFixture([detailFixture(projectId, "20000000-0000-4000-8000-000000000002")])
-    : { ...graph, tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } };
+    : { ...graph, tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } };
   const ticket = await scope.beginSync(projectId, signal());
   return scope.applySync(ticket, taskSyncFromGraph(empty, { epoch: "30000000-0000-4000-8000-000000000003", versionForTask: () => 1n }), signal());
 };
@@ -64,7 +65,10 @@ it.each(["before", "after"] as const)("retains a dirty delete draft when old adm
   </TaskDetailSessionProvider></TaskCacheProvider>;
   const view = renderWithLocale(tree(), { locale: "en" });
   act(() => { session.observe(projectId, taskId, node(scope)); session.load(projectId, taskId, 1, "open"); session.loadSteps(projectId, taskId); });
-  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  await waitForDom(() => {
+    expect(session.canSetStepStatus(projectId, taskId)).toBe(true);
+    expect(screen.getByRole("button", { name: "Read" })).toBeVisible();
+  });
   fireEvent.click(screen.getByRole("button", { name: "Read" }));
   fireEvent.click(screen.getByRole("button", { name: "Edit step" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Unsaved revision" } });
@@ -83,8 +87,14 @@ it.each(["before", "after"] as const)("retains a dirty delete draft when old adm
     // Retire the real receipt ticket before its cache admission transaction runs.
     await act(async () => { restoredHistory = true; await apply(scope, body(7n), true); view.rerender(tree()); });
     if (releaseOrder === "before") await act(async () => { release.resolve(); });
-    await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ stale: false, resource: { version: 7n } }));
-    await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 7n }, requiresFreshRead: false }));
+    // Flush the inactive-reader cleanup before observing the replacement UI.
+    await act(async () => {});
+    await waitForDom(() => {
+      expect(session.snapshot(projectId, taskId)).toMatchObject({ status: "ready", refreshing: false, detail: { version: 7n }, requiresFreshRead: false });
+      expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ status: "ready", stale: false, refreshing: false, error: null, resource: resource(7n, [item]) });
+      expect(screen.getByRole("button", { name: "Read" })).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
+    });
     expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual([item]);
     expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
     if (releaseOrder === "after") await act(async () => { release.resolve(); });
@@ -112,7 +122,10 @@ it.each([true, false])("cleans a confirmed delete draft after admission with the
     <TaskDraftBoundary projectId={projectId} taskId={taskId} page><Workspace /></TaskDraftBoundary>
   </TaskDetailSessionProvider></TaskCacheProvider>;
   const view = renderWithLocale(tree(), { locale: "en" });
-  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  await waitForDom(() => {
+    expect(session.canSetStepStatus(projectId, taskId)).toBe(true);
+    expect(screen.getByRole("button", { name: "Read" })).toBeVisible();
+  });
   fireEvent.click(screen.getByRole("button", { name: "Read" }));
   fireEvent.click(screen.getByRole("button", { name: "Edit step" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Unsaved revision" } });
@@ -131,8 +144,8 @@ it.each([true, false])("cleans a confirmed delete draft after admission with the
     visible = true; view.rerender(tree());
   }
   await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ stale: false, resource: { version: 6n, steps: [] } }));
-  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull());
-  await waitFor(() => expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus());
+  await waitForDom(() => expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull());
+  await waitForDom(() => expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus());
   expect(fetcher.mock.calls.filter(([, options]) => options.method === "DELETE")).toHaveLength(1);
 });
 

@@ -40,12 +40,12 @@ func (h *taskStepsHandler) change(w http.ResponseWriter, request *http.Request, 
 		return
 	}
 	fields, err := httpx.DecodeObject(w, request, allowed...)
-	if request.Context().Err() != nil {
-		refuse(request.Context().Err())
-		return
-	}
 	if err != nil {
 		refuse(err)
+		return
+	}
+	if request.Context().Err() != nil {
+		refuse(request.Context().Err())
 		return
 	}
 	var result taskservice.StepsWriteResult

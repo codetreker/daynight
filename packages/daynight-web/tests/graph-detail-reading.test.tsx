@@ -1,5 +1,5 @@
 import { selectTaskList } from './helpers/projectViews';
-import { TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
+import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,7 +32,7 @@ const attachment: Attachment = {
 let root: HTMLDivElement;
 
 beforeEach(() => {
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n, propertiesForTask: (task) => task.id === detail.id ? detail.properties : {} }));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n, propertiesForTask: (task) => task.id === detail.id ? detail.properties : {} })));
 });
 
 beforeEach(() => {
@@ -72,18 +72,17 @@ describe('graph inspection and detail reading integration', () => {
     const view = render(<ProjectPage projectId={graph.project.id} />, { container: root });
     await selectTaskList();
     await user.click(await screen.findByRole('button', { name: '外部上下文 · 链内交付起点，查看依赖关系' }));
-    await waitFor(() => { expect(root.querySelectorAll('.react-flow__node')).toHaveLength(6); });
+    await waitFor(() => { expect(root.querySelectorAll('.react-flow__node')).toHaveLength(3); });
     await waitFor(() => { expect(root.querySelector<HTMLElement>('.react-flow__viewport')!.style.transform).not.toBe('translate(0px,0px) scale(1)'); });
     const selected = root.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${selectedId}"] .task-node-body`)!;
     await user.click(selected);
     expect(selected).toHaveAttribute('aria-pressed', 'true');
     const state = graphSnapshot(root);
+    expect(state.hiddenUpstream).toBe('3');
     expect(state.nodes.filter((node) => node.inspection === 'selected').map((node) => node.id)).toEqual([selectedId]);
-    expect(state.nodes.filter((node) => node.inspection === 'prerequisite').map((node) => node.id)).toEqual(
-      [14, 15, 16].map((number) => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`),
-    );
+    expect(state.nodes.filter((node) => node.inspection === 'prerequisite').map((node) => node.id)).toEqual([]);
     expect(state.nodes.filter((node) => node.inspection === 'unrelated').map((node) => node.id)).toEqual([rootId, detailNode.id]);
-    expect(state.edges.filter((edge) => edge.inspection === 'highlighted')).toHaveLength(4);
+    expect(state.edges.filter((edge) => edge.inspection === 'highlighted')).toHaveLength(0);
     const trigger = within(root.querySelector<HTMLElement>(`.react-flow__node[data-id="${detailNode.id}"]`)!).getByRole('button', { name: `${detail.title}，详情` });
     await user.click(trigger);
     const dialog = await screen.findByRole('dialog', { name: detail.title });

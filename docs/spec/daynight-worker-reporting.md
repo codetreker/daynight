@@ -14,7 +14,7 @@ CLI 将当前运行包的 version 及启动时捕获一次的绝对 workingDirec
 
 同一进程最多进行一次报告尝试，并合并最多一个待执行触发。进行中的尝试结束后，待执行尝试重新采集；多个触发不积压报告正文。单次尝试总预算 15 秒，其中采集最多 5 秒、HTTP 最多 10 秒。探测命令的终止、进程树清理及输出流关闭等待计入采集预算。
 
-失败后等待后续触发，以新的观测发送完整报告。HTTP 写入结果未知时不重放旧请求。单个字段失败仍可上报其余字段；采集整体失败、传输失败、响应格式或 principal 校验失败使该次报告失败，不改变任务执行。
+报告遵循[快照](daynight-worker-snapshots.md#上报结构)和[配置](daynight-worker-configuration.md#应用观测)的字段、集合及完整资源预算；不得截断任务清单或丢弃未确认配置结果来制造成功。失败后等待后续触发，以新的观测发送完整报告。HTTP 写入结果未知时不重放旧请求。服务端 active 名额拒绝 `409 active_worker_limit_exceeded` 是本次报告失败，不停止或驱逐本机执行；[快照协议](daynight-worker-snapshots.md#最新快照与时间)定义准入与时间边界。单个字段失败仍可上报其余字段；采集整体失败、传输失败、响应格式或 principal 校验失败使该次报告失败，不改变任务执行。
 
 退出分为取消与收尾两个阶段：根取消信号同步停止报告触发和 coordinator 调度，并中止全部运行中的 job，包括终止清理 job；这些动作必须在等待报告收尾之前完成。随后等待进行中的报告尝试和既有 job 收尾，再直接停止执行资源，最后释放存储、日志与实例锁。等待报告期间，已选中的终止清理不能继续删除 worktree 或把未完成行置 done；未完成 claim、worktree、原生 session ID 及 active/pending 行保持既有退出保留语义。超时本身不能证明原生进程已退出；命令清理尚未确认期间保留原始错误，并禁止为该探测启动替代进程。确认与恢复遵守下述原生只读探测规则，其他字段及后续部分报告继续工作。
 
@@ -33,6 +33,10 @@ CLI 将当前运行包的 version 及启动时捕获一次的绝对 workingDirec
 确认前不得用超时重试、缓存过期或重新构造 collector 绕过原探测的清理责任。新 collector 探测成功、其它 Provider 成功、已有 Bot 的持久 `startupResult=ready` 和页面刷新均不能确认旧探测已清理。此规则只恢复只读探测，不重放用户输入、不替换 Session、不切换默认 Provider，也不改变任务或 Bot 的执行恢复规则。
 
 `assistantHost` 与 `versions` 分别绑定各自的原探测。不同 Provider、不同采集轮次以及不同采集器的确认不能相互清除；旧轮次的晚到确认不能解除新轮次的阻塞。嵌套 `cause` 和 `AggregateError` 中的各项清理责任须独立判断，只要对应聚合中仍有未确认项，该探测就保持阻塞。一般聚合错误本身不等同于清理未确认；确认清理也不能吞掉聚合中其它错误。
+
+显式组合 `versions` 与 `assistantHost` 时，相同 Codex PATH 调用共享替代探测屏障，并串行执行普通版本和助手完整版本/帮助链。共享范围是 executable 名称 `codex`、相同原始启动目录及实际交给 launcher 的 PATH（Windows 还含 PATHEXT）搜索输入；不同 executable、搜索输入、目录和其他 Provider 保持独立，不推断绝对路径或别名的文件身份。任一匹配链清理未确认时，后续普通版本不能复用旧成功或在缓存到期后重启，助手不能开始版本/帮助或声明可用。原清理可靠确认后，共享屏障只恢复重采资格；普通成功缓存自匹配清理失败时失效，不能因确认先于下轮采集而复用失败前的成功。
+
+Windows bare Codex 探测先按 Node 字母序选择第一个大小写不敏感 PATH/PATHEXT 键，移除重复别名，以唯一大写键将同一选定环境交给 launcher 和 owner。native executable 保留 Node 原有搜索选择；shebang wrapper 不能因重复 PATH/Path 选择与清理匹配分离。其他 Provider、显式 executable 及非搜索环境键保留原值。
 
 可靠确认只恢复重采资格，不发布成功结果。下一轮正常采集须绕过因该次清理未确认而保留的旧 `unavailable` 或失败缓存，实际执行探测；无需等待该缓存的剩余有效期。新探测成功后才能发布对应 `available` 或版本，并使用本次真实观测时间；失败则发布按实际错误映射的失败结果，不能回退到旧成功。助手结果仍须匹配当前有效配置，不能以旧配置探测结果或普通机器报告刷新 `assistantHost.observedAt`。
 
@@ -100,6 +104,8 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 - 分别验证 `assistantHost` 与 `versions`、不同 Provider 和不同轮次的隔离，以及嵌套 `cause`、多个清理错误与混合 `AggregateError`：局部确认保留其余阻塞，全部清理确认不吞掉独立错误。
 - 覆盖确认与取消、`reporter.stop()` 的交错；取消后不产生新进程，已启动探测完成有界收尾。只有已确认历史清理超时时，stop 不再因此失败；存在未确认清理、终止失败或其它应传播错误时，stop 仍保留真实失败。
 - 恢复期间验证预算、单飞、配置变更与结果时效、凭据隔离和诊断清洗；报告不泄漏原始错误或确认句柄。
+
+组合验证经实际 Bot host 包装与 telemetry 采集，覆盖双向清理失败、助手版本/帮助阶段、普通成功缓存失效及过期、可靠确认先于下一轮采集、整条匹配链串行、queued cancellation 和关停 join；原始错误对象保持，可靠 late-close 只解除自己的阻塞。不同搜索输入、目录、显式 executable 和其它 Provider 保持独立。Windows 验证用锁定 launcher 源码及全 fake filesystem/process，覆盖 PATH/Path、PATHEXT/Pathext 的 native 与 shebang 选择，并检查生产组合实际传递一致捕获环境。
 
 受控命令或内存复现只证明上述分支与清理确认规则，不证明真实 Worker 已恢复或助手创建、启动成功。现场首次超时原因与原进程实际退出时刻须有各自证据；新采集器成功不能补足旧进程证据，也不能据此承诺刷新页面恢复旧 Worker。
 

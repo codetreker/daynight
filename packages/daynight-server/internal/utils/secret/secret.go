@@ -23,6 +23,9 @@ func Valid(secret, prefix string) bool {
 		return false
 	}
 	raw := strings.TrimPrefix(secret, prefix)
+	if len(raw) != base64.RawURLEncoding.EncodedLen(32) {
+		return false
+	}
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	return err == nil && len(decoded) == 32 && base64.RawURLEncoding.EncodeToString(decoded) == raw
 }

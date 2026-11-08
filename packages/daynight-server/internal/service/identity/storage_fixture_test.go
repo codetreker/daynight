@@ -152,7 +152,8 @@ func storeTokenExpiry(value time.Time) *time.Time { return &value }
 
 func testCreateLogin(s *postgres.Store, ctx context.Context, p model.LoginTransaction, now time.Time) error {
 	return testIdentityWrite(s, ctx, func(sc store.IdentityScope) error {
-		return core.NewIdentity("").CreateLogin(ctx, sc.IdentityDAO(), p, now)
+		_, err := core.NewIdentity("").CreateLogin(ctx, sc.IdentityDAO(), p, now)
+		return err
 	})
 }
 func testConsumeLogin(s *postgres.Store, ctx context.Context, h, b []byte, now time.Time) (model.LoginTransaction, error) {

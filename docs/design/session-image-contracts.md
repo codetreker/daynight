@@ -424,7 +424,7 @@ HTTP、stream、历史及归档读取每次显式选择表示；cursor 同时绑
 
 ### 鉴权与锁顺序
 
-Task base 为 `/api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}`；Test/Bot 为当前 resolver 的 `/api/v1/test-sessions/{sessionId}`，Bot 还须关联检查和删除屏障。历史记录只提供读取。serverOrigin 来自受信配置，不信 body/Host；actor 来自当前认证。Task 操作沿 owner/admin 与 `ReadProjectAccess`（含 Team 继承），Test/Bot 沿 owner/parent PAT。
+Task base 为 `/api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}`；Test/Bot 为当前 resolver 的 `/api/v1/test-sessions/{sessionId}`，Bot 还须关联检查和删除屏障。历史记录只提供读取。serverOrigin 来自受信配置，不信 body/Host；actor 来自当前认证。Task 读取沿 `ReadProjectAccess`（含 Team 继承）；输入上传与执行交互还要求认证 actor 等于持久 Session owner，其他管理员与成员只读。Test/Bot 沿 owner/parent PAT。
 
 创建、写块、继续验证要求原 actor、当前准确 target、活动生命周期、操作权和图片输入资格；准备不要求此刻可 steer。GET 原上传仅要求原 actor 和原 Session/历史访问权，不要求 Controller 在线或 current claim 仍相同；它不重新授权新目标。DELETE 要求原目标当前操作权，并与发送引用竞争。已发送图片由合法读者读取，不要求读者等于上传者；未发送资源仅在原 actor receipt/私有授权中可见，不广播。
 
@@ -490,7 +490,7 @@ image-content-v1/
   native/<nativeBindingId>/<resourceId>.<verified-extension>
 ```
 
-owner.json 本地 schemaVersion=1 绑定规范 origin、Session owner scope、executionId、原 claimId/testExecutionId；generation 不是目录归属，但每次写核验当前 ControllerFence、writer 和 ImageTarget。原 actor 不必等于 Controller/ticket owner。路径组件只用校验 UUID 或私有随机ID，不拼接用户 name/URL/native ID。目录0700、原件/暂存0600、native文件0400，Windows等价私有ACL；这些不防同OS用户恶意进程。
+owner.json 本地 schemaVersion=1 绑定规范 origin、Session owner scope、executionId、原 claimId/testExecutionId；generation 不是目录归属，但每次写核验当前 ControllerFence、writer 和 ImageTarget。原 actor 必须满足该 Session 的操作授权，不能借 Controller/ticket owner 的凭据替代。路径组件只用校验 UUID 或私有随机ID，不拼接用户 name/URL/native ID。目录0700、原件/暂存0600、native文件0400，Windows等价私有ACL；这些不防同OS用户恶意进程。
 
 根及已有父组件须可信、拒symlink/reparse；exclusive create、禁跟随打开、fstat核验regular file与登记身份。来源模块交付已授权打开的stream，存储模块不能重新按不可信path打开。native使用私有不可变副本，不能硬链接或直接读取会变化的用户文件。
 

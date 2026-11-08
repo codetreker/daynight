@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -23,8 +24,8 @@ func workerRuntimeConfigurationInput(raw json.RawMessage) (*model.WorkerRuntimeC
 		return nil, err
 	}
 	var projects []json.RawMessage
-	if json.Unmarshal(fields["projects"], &projects) != nil || projects == nil || len(projects) > 1024 {
-		return nil, httpx.InvalidInput("runtimeConfiguration.projects must be an array of at most 1024 projects")
+	if json.Unmarshal(fields["projects"], &projects) != nil || projects == nil || len(projects) > workercore.MaxProjects {
+		return nil, httpx.InvalidInput("runtimeConfiguration.projects must be an array of at most 128 projects")
 	}
 	result.Projects = make([]model.WorkerRuntimeProject, 0, len(projects))
 	for _, raw := range projects {

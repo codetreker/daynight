@@ -13,6 +13,9 @@ const workerSafeInteger = int64(1<<53 - 1)
 var workerProbeCodes = []string{"not_found", "permission_denied", "timeout", "command_failed", "invalid_output", "invalid_sample", "out_of_range", "io_error", "unavailable"}
 
 func ValidateReport(input model.WorkerReport) (model.WorkerReport, error) {
+	if err := AdmitReport(input); err != nil {
+		return model.WorkerReport{}, InputLimit(err)
+	}
 	telemetry := &input.Telemetry
 	machineID, err := model.CanonicalID(telemetry.Machine.ID)
 	if err != nil {

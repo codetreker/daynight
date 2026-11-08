@@ -434,7 +434,7 @@ func (s *Execution) refreshTerminalControl(ctx context.Context, tx *operationTx,
 		expiry, e := time.Parse(time.RFC3339Nano, r.Control.Lease.ExpiresAt)
 		valid := e == nil && s.now().Before(expiry) && r.ControlActor != nil
 		if valid {
-			admin, e := s.authorizationRun(ctx, tx.op, tx.scope, *r.ControlActor, Authority{ProjectID: r.Owner.ProjectID})
+			e := s.authorizationRun(ctx, tx.op, tx.scope, *r.ControlActor, Authority{ProjectID: r.Owner.ProjectID})
 			if e != nil {
 				var refusal *model.Fault
 				if !errors.As(e, &refusal) {
@@ -442,7 +442,7 @@ func (s *Execution) refreshTerminalControl(ctx context.Context, tx *operationTx,
 				}
 				valid = false
 			} else {
-				valid = admin || r.ControlActor.UserID == r.Owner.OwnerUserID
+				valid = r.ControlActor.UserID == r.Owner.OwnerUserID
 			}
 		}
 		if !valid {
@@ -668,8 +668,8 @@ func (s *Execution) PollTerminal(ctx context.Context, p model.Principal, project
 			if err != nil {
 				return err
 			}
-			admin, authorizeErr := s.authorizationRun(ctx, tx.op, tx.scope, op.Actor, Authority{ProjectID: project})
-			if authorizeErr == nil && !admin && op.Actor.UserID != r.Owner.OwnerUserID {
+			authorizeErr := s.authorizationRun(ctx, tx.op, tx.scope, op.Actor, Authority{ProjectID: project})
+			if authorizeErr == nil && op.Actor.UserID != r.Owner.OwnerUserID {
 				authorizeErr = denied()
 			}
 			if authorizeErr == nil {
@@ -764,14 +764,14 @@ func (s *Execution) HandleTerminalControl(ctx context.Context, p model.Principal
 			}
 			current := op.Result.State == "dispatching" && terminalFenceMatches(r, m.Envelope) && epoch == r.ConnectionEpoch && r.ServerInstance == s.instance && terminalActive(t, r) && r.Control != nil && r.ControlEpoch == op.Command.Request.ControlEpoch && s.terminalOnline(r)
 			if current && payload.Result.State == "transport_completed" {
-				admin, authorization := s.authorizationRun(ctx, tx.op, tx.scope, op.Actor, Authority{ProjectID: project})
+				authorization := s.authorizationRun(ctx, tx.op, tx.scope, op.Actor, Authority{ProjectID: project})
 				if authorization != nil {
 					var refusal *model.Fault
 					if !errors.As(authorization, &refusal) {
 						return authorization
 					}
 				}
-				if authorization == nil && (admin || op.Actor.UserID == r.Owner.OwnerUserID) {
+				if authorization == nil && op.Actor.UserID == r.Owner.OwnerUserID {
 					authorization = s.terminalCommandAllowed(ctx, tx, r, t, op.Actor, op.Command)
 				} else if authorization == nil {
 					authorization = denied()

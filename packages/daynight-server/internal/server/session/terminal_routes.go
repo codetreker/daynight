@@ -181,17 +181,13 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 			if _, err = httpx.QueryValues(r); err != nil {
 				break
 			}
-			content, contentErr := h.service.TerminalArchiveContent(r.Context(), p, project, task, id)
+			content, contentErr := h.service.TerminalArchiveContentReserved(r.Context(), p, project, task, id, archiveReservation(r))
 			if contentErr != nil {
 				err = contentErr
 				break
 			}
 			// The immutable receipt hashes these exact bytes, including JSON whitespace.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			if _, writeErr := w.Write(content); writeErr != nil {
-				httpx.LogFailure(h.logger, r.Context(), "session", "response", writeErr)
-			}
+			h.sendArchive(w, r, content.Data, 120*time.Second, content)
 			return
 		case strings.HasSuffix(path, "/archive/receipt"):
 			if _, err = httpx.QueryValues(r); err == nil {
@@ -213,11 +209,40 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 			err = terminalFault("unsupported_content_kind", "This endpoint does not serve terminal content.")
 		}
 	case r.Method == http.MethodPut && strings.HasSuffix(path, "/archive"):
+		if err = validateArchiveBody(r); err != nil {
+			httpx.CloseUnreadBody(w, r)
+			break
+		}
+		var op *sessioncore.ArchiveOperation
+		op, err = h.service.BeginArchiveReserved(r.Context(), p, project, task, id, sessioncore.ArchiveV2Upload, archiveReservation(r))
+		if err != nil {
+			httpx.CloseUnreadBody(w, r)
+			break
+		}
+		defer func() {
+			if op != nil {
+				h.closeArchive(r, op)
+			}
+		}()
 		var body []byte
 		body, err = archiveBody(w, r)
-		if err == nil {
-			result, err = h.service.PutTerminalArchive(r.Context(), p, project, task, id, body)
+		if err != nil {
+			err = archiveCleanupError(err, op.Close())
+			op = nil
+			httpx.WriteBodyError(w, r, h.logger, "session", "archive", err)
+			return
 		}
+		result, err = op.PutTerminalArchive(r.Context(), body)
+		if err != nil {
+			err = archiveCleanupError(err, op.Close())
+			op = nil
+			h.Failure(w, r, err)
+			return
+		}
+		lease := op
+		op = nil
+		h.archiveResult(w, r, result, lease)
+		return
 	case r.Method == http.MethodPost:
 		var m v2.Message
 		m, err = terminalBody(w, r)

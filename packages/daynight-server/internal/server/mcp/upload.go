@@ -67,6 +67,15 @@ func RegisterUploadTools(e *Entry, uploads uploadOperations) error {
 				refs[key] = value
 			}
 		}
+		// A chunk receipt confirms the private transfer update, not publication
+		// of the target attachment. Preserve only facts returned by the service.
+		if in.Action == "chunk" && data["receipt"] != nil {
+			for _, key := range []string{"chunkId", "offset", "acceptedBytes", "sha256", "receipt", "expiresAt"} {
+				if value, ok := data[key]; ok {
+					refs[key] = value
+				}
+			}
+		}
 		outcome, _ := data["writeOutcome"].(string)
 		phase, _ := data["phase"].(string)
 		if outcome == "confirmed" {

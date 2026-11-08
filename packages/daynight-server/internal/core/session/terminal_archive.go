@@ -130,7 +130,10 @@ func verifyTerminalArchive(r *terminalRecord, doc v2.Archive) error {
 	}
 	return nil
 }
-func (s *Execution) readTerminalObject(ctx context.Context, path string, hash string, size string) ([]byte, error) {
+func (s *Execution) readTerminalObject(ctx context.Context, op *ArchiveOperation, path string, hash string, size string) (data []byte, result error) {
+	if op == nil || op.execution != s || op.closed || (op.mode != ArchiveV2Read && op.mode != ArchiveV2Upload) {
+		return nil, errors.New("invalid archive operation")
+	}
 	if s.files == nil {
 		return nil, fault("archive_pending", "Archive file storage is unavailable.")
 	}
@@ -138,8 +141,8 @@ func (s *Execution) readTerminalObject(ctx context.Context, path string, hash st
 	if err != nil {
 		return nil, err
 	}
-	defer obj.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(obj.Body, v2.MaxArchiveBytes+1))
+	defer func() { result = archiveCleanupFailure(result, obj.Body.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(obj.Body, v2.MaxArchiveBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +154,17 @@ func (s *Execution) readTerminalObject(ctx context.Context, path string, hash st
 
 // PutTerminalArchive reads the stored object back before publishing its immutable
 // receipt; forwarding or a successful upload alone does not establish integrity.
-func (s *Execution) PutTerminalArchive(ctx context.Context, p model.Principal, project, taskID, id string, data []byte) (v2.Message, error) {
+func (s *Execution) PutTerminalArchive(ctx context.Context, p model.Principal, project, taskID, id string, data []byte) (out v2.Message, err error) {
+	op, err := s.BeginArchive(ctx, p, project, taskID, id, ArchiveV2Upload)
+	if err != nil {
+		return out, err
+	}
+	defer func() { err = errors.Join(err, op.Close()) }()
+	return op.PutTerminalArchive(ctx, data)
+}
+
+func (s *Execution) putTerminalArchive(ctx context.Context, op *ArchiveOperation, data []byte) (v2.Message, error) {
+	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out v2.Message
 	doc, err := v2.DecodeArchive(data)
 	if err != nil {
@@ -159,6 +172,9 @@ func (s *Execution) PutTerminalArchive(ctx context.Context, p model.Principal, p
 	}
 	hash, size := v2.HashBytes(data), strconv.Itoa(len(data))
 	err = s.terminalAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
+		if r.Owner.OwnerUserID != op.owner {
+			return conflict()
+		}
 		if err := terminalOwner(p, r); err != nil {
 			return err
 		}
@@ -193,7 +209,7 @@ func (s *Execution) PutTerminalArchive(ctx context.Context, p model.Principal, p
 		if info.Size != int64(len(data)) {
 			return fault("source_corrupt", "Archive storage length mismatch.")
 		}
-		stored, err := s.readTerminalObject(ctx, path, hash, size)
+		stored, err := s.readTerminalObject(ctx, op, path, hash, size)
 		if err != nil {
 			return err
 		}
@@ -292,9 +308,35 @@ func (s *Execution) UpdateTerminalArchive(ctx context.Context, p model.Principal
 	})
 	return out, err
 }
-func (s *Execution) TerminalArchiveContent(ctx context.Context, p model.Principal, project, taskID, id string) (json.RawMessage, error) {
+func (s *Execution) TerminalArchiveContent(ctx context.Context, p model.Principal, project, taskID, id string) (*RetainedArchive, error) {
+	reservation, err := s.TryReserveArchivePreflight()
+	if err != nil {
+		return nil, err
+	}
+	return s.TerminalArchiveContentReserved(ctx, p, project, taskID, id, reservation)
+}
+
+func (s *Execution) TerminalArchiveContentReserved(ctx context.Context, p model.Principal, project, taskID, id string, reservation *ArchivePreflightReservation) (*RetainedArchive, error) {
+	op, err := s.BeginArchiveReserved(ctx, p, project, taskID, id, ArchiveV2Read, reservation)
+	if err != nil {
+		return nil, err
+	}
+	op.mu.Lock()
+	data, err := s.terminalArchiveContent(ctx, op)
+	op.mu.Unlock()
+	if err != nil {
+		return nil, errors.Join(err, op.Close())
+	}
+	return &RetainedArchive{Data: data, operation: op}, nil
+}
+
+func (s *Execution) terminalArchiveContent(ctx context.Context, op *ArchiveOperation) (json.RawMessage, error) {
+	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out json.RawMessage
 	err := s.terminalAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
+		if r.Owner.OwnerUserID != op.owner {
+			return conflict()
+		}
 		status, receipt, path, err := terminalArchive(ctx, tx, r)
 		if err != nil {
 			return err
@@ -302,7 +344,7 @@ func (s *Execution) TerminalArchiveContent(ctx context.Context, p model.Principa
 		if status.State != "ready" || receipt == nil || status.SHA256 == nil || status.ByteLength == nil {
 			return fault("archive_pending", "No terminal archive is ready.")
 		}
-		data, err := s.readTerminalObject(ctx, path, *status.SHA256, *status.ByteLength)
+		data, err := s.readTerminalObject(ctx, op, path, *status.SHA256, *status.ByteLength)
 		if err != nil {
 			return err
 		}

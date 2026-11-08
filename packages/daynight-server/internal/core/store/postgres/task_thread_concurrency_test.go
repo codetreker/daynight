@@ -174,7 +174,8 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 						return err
 					}
 					if mutation == "delete" {
-						return tx.TaskDAO().DeleteTask(ctx, task.ID, false)
+						_, err := tx.TaskDAO().DeleteTask(ctx, task.ID, false)
+						return err
 					}
 					_, err := tx.(*ProjectTx).tx.Exec(ctx, `UPDATE tasks SET status='in_progress' WHERE id=$1`, task.ID)
 					return err
@@ -445,6 +446,10 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 		items, err := snapshot.TaskDAO().ThreadCandidates(ctx, task.ID, nil, false, 10)
 		if err != nil || len(items) != 1 || items[0].ID != first.ID {
 			t.Fatalf("snapshot messages changed: %#v %v", items, err)
+		}
+		before, after, err := snapshot.TaskDAO().ThreadSides(ctx, task.ID, first.Position(), first.Position())
+		if err != nil || before || after {
+			t.Fatalf("snapshot sides changed with concurrent append: before=%v after=%v error=%v", before, after, err)
 		}
 		return nil
 	}); err != nil {

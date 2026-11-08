@@ -84,7 +84,12 @@ complete，也不能伪造一个不存在的采集段。
 
 ## 控制与输入
 
-页面默认只读；查看、刷新、回放或获取 lease 不得 native attach。明确提交
+页面默认只读；所有当前具有项目访问权的成员可查看，只有持久 Session owner
+可以提交人工输入、取得或维护控制租约、处置初始提交和恢复自动执行。其他项目
+管理员、普通成员与 Team 继承读者不能交互。owner 身份不能由项目角色、当前
+Task assignee 或 browserClientId 替代；服务端在接纳、派发、lease 重检和 ACK
+授租时重新核对原 actor。旧非 owner 操作、租约和迟到 ACK 不得恢复控制。
+查看、刷新、回放或获取 lease 不得 native attach。明确提交
 `paste`/`keys` 才能严格 `AttachTerminal(terminalId)`，等待完整基线和键盘模式，
 再次校验 binding 与当前准入条件，然后发送并 Detach。目标消失不能按名称回退。
 attach 本身可能重应用尺寸或恢复 pending agent，不能承诺无副作用。
@@ -179,14 +184,14 @@ SHA-256。发送前持久原请求；请求响应丢失后，通过
 按原项目和 Session UUID 前两位分组，与 Web Task 归档使用同一目录规则。既有
 文件和元数据保持原状，读取继续使用登记位置；正文、校验值、回执、公开 URL
 和上传重试沿用原语义。
-[共享 Session 需求](task-sessions.md#内容归属与结束后历史)拥有目录布局要求。
+[共享 Session 需求](task-sessions.md#内容归属与结束后历史)拥有目录布局和归档占用及传输期限要求。
 正文 hash 对实际上传 UTF-8 字节计算，重试上传同一字节。帧 hash 对所保存的原始
 帧 JSON 字节计算。`dispositionDigest` 对规范化终态记录计算，与正文 hash 不可
 互换。ready 回执绑定正文 hash、长度、完整性；unavailable 回执绑定不可变原因
 和无内容证据。只有可信服务端生成并持久读回的回执才可作为清理门禁。
 
 任务重新领取后仍应按原 Session 发现历史；读取重新检查权限，删除任务或撤销
-成员不恢复访问。历史阅读不取得 lease、不 attach、不恢复 native session。
+成员不恢复访问。历史阅读不取得执行 lease、不 attach、不恢复 native session；归档正文读取仍受共享归档占用额度约束。
 原 owner 的删除任务归档收尾权限沿用现有规则，与用户读取权限分别判断。
 
 ## 录制证据的来源与失败边界

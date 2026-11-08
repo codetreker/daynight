@@ -210,3 +210,25 @@ func TestAuthenticationConfigurationIsRequiredAndFlagsAreExplicit(t *testing.T) 
 		t.Fatalf("HTTPS primary origin and explicit numeric-loopback gateway rejected: %+v %v", config, err)
 	}
 }
+
+func TestWebhookConfiguration(t *testing.T) {
+	c, err := LoadConfig(configEnvironment(nil))
+	if err != nil || c.WebhookEnabled {
+		t.Fatalf("webhooks should default disabled: %v", err)
+	}
+	for _, v := range []string{"true", "yes", "2"} {
+		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_WEBHOOK_ENABLED": v}))
+		var invalid *ConfigurationError
+		if !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_WEBHOOK_ENABLED" {
+			t.Fatalf("invalid flag %q: %v", v, err)
+		}
+	}
+	c, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_WEBHOOK_ENABLED": "1"}))
+	if err != nil || !c.WebhookEnabled {
+		t.Fatalf("enabled webhook configuration: %v", err)
+	}
+	_, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_SHUTDOWN_TIMEOUT": "11s"}))
+	if err == nil {
+		t.Fatal("shutdown exceeded shared budget")
+	}
+}

@@ -50,6 +50,8 @@ func SummarizeGraph(tasks []model.GraphTask) model.TaskGraphSummary {
 			summary.InProgress++
 		case model.TaskDone:
 			summary.Done++
+		case model.TaskCancelled:
+			summary.Cancelled++
 		}
 	}
 	return summary

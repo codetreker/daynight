@@ -1,5 +1,8 @@
 # Task Session 模式与共享契约
 
+
+Session 和 Test Session 的专用 cursor 在 base64 解码前检查原有较小的编码长度限制。废弃的 Controller resource PUT 在读取正文之前拒绝，并关闭未消费正文的连接；Controller 资源继续由现有流程处理。
+
 ## 组件与实现边界
 
 [需求](../spec/task-sessions.md)定义两种互斥执行方式。认领服务保存实际模式，CLI 冻结执行配置，Web 读取同一字段。共享纯 TypeScript 协议位于 `packages/daynight/src/session/`；CLI 发布时随包编译，Web 从同一源码消费类型与解析，避免产生独立发布包或重复协议副本。模块不得依赖 Node 进程、文件系统或认证配置。
@@ -129,6 +132,26 @@ runtime 从已读回 ticket 条件构造 `ProviderOptions.instructions`，新建
 
 生成新 generation 的生产者负责携带已冻结的原文。journal 保存整份 ticket hash 和原执行/停止/native 身份，不增加角色副本或角色变更机制；它不能独立判断生产者是否在两代间换了模板。Bot 的版本化模板、首次准备与服务端冻结不由这个共享层承担。三种 Provider 的原生追加映射也有各自实现与运行验收；共享透传不宣称原生追加或完整 Bot 托管已经可用。取舍见[角色传递决策](../../.agents/notes/archived/architecture/2026-11-04-controller-role-instructions.md)。
 
+### Codex 初始设置持久化
+
+新建 Codex Provider 先通过 `thread/start` 应用明确 model 与 `config.model_reasoning_effort`，读取能力并完成现有选择校验，再执行 `thread/read(includeTurns: true)` 物化空线程。原生空线程读取可能已经写入 rollout，却返回 code 为 `-32601`、message 为 `list_turns is not supported yet` 的 `NativeRpcError`；有明确初始选择时仅兼容这一精确组合。其他读取拒绝立即终止初始化，不继续更新设置：写盘失败后 `thread/settings/update` 仍可能返回 `{}`，不足以证明 rollout 存在。双省略沿用原有原生读取错误兼容行为；传输错误继续终止初始化。
+
+完成读取后，仅当存在明确初始选择时调用一次 `thread/settings/update`，patch 只包含 `threadId`、实际指定的 model 和解析后的 effort。不能将更新前移到空线程读取之前：原生尚未物化 rollout 时的更新不足以让无输入线程冷恢复保留设置。双省略不新增更新，也不使用 controls 的模型默认 effort 或目录默认值构造 patch。
+
+同值更新可能返回合法空对象而不发送 `thread/settings/updated`，而成功 RPC 回执只证明更新已排队。因此 `codex-initial-settings.ts` 在派发前打开 `thread/start` 返回的 `thread.path`，要求普通文件位于本次 native home 的真实 `sessions` 路径内，核对唯一 `session_meta` 的 id 与真实 cwd，并保存当前字节位置。只使用原生给出的路径，不扫描历史、不推算文件名、不写原生记录。路径缺失、越界、符号链接逃逸或身份无法核实均拒绝初始化。
+
+派发一次更新并核对对象回执后，屏障只读观察该文件的追加内容。基线之后完整换行记录中的 `event_msg/thread_settings_applied` 必须属于原 thread，且明确字段匹配；这只是历史文件确认，尚不足以允许 idle 或返回 Provider handle。启用启动选择校验时，model 使用通过既有校验的启动回执有效值；未启用时使用明确请求值，不接受未经校验的错误启动值。effort 读取 `thread_settings.collaboration_mode.settings.reasoning_effort`，省略字段不参与匹配，目录默认与 controls 显示回退不作为持久证据。基线之前的同值记录及基线已开始的半行均不能确认本次更新。
+
+原生先追加 JSONL，再更新 SQLite metadata；另一个原生客户端正常读取空线程即可提前建立缺少 model/effort 的旧行。若只观察 JSONL 就就绪，在 SQLite 提交前进程退出，冷恢复仍可能用旧 metadata 覆盖历史设置。因此 `codex-settings-metadata.ts` 还须确认 SQLite 的已提交行。派发更新前读取 `config/read` 和 `configRequirements/read`，按 managed `requirements.sqliteHome` 的本地文件 URI、有效 `config.sqlite_home` 的绝对路径、实际子进程环境 `CODEX_SQLITE_HOME`、native home 的顺序确定 SQLite 目录；环境相对路径按本次 cwd 解析。只支持已核实的 `state_5.sqlite` 布局，不扫描目录选择数据库，不把父进程未传入的环境值补给子进程。
+
+历史记录满足条件后，每次用现有 `better-sqlite3` 打开只读、必须存在、busy timeout 为 0 的连接，以一次 SELECT 读取原 ID 的 `rollout_path`、`cwd`、model 和 reasoning_effort，随后立即关闭连接。必须核对同一原生路径和真实 cwd，且同一已提交行中的明确字段匹配。查询前后校验普通文件、真实路径与文件身份；替换或归属不符立即失败。读锁冲突、缺文件、缺行或字段尚未匹配在总期限内重查；未知 schema、损坏或未知路径配置失败，不允许仅凭 JSONL 成功。不保持跨轮询事务，不使用 `immutable` 跳过 WAL，不迁移、checkpoint 或直接修改原生数据库。metadata 确认后再次核对历史文件没有新增未处理内容，再允许就绪。
+
+屏障先以 `lstat` 拒绝非普通文件，打开后以 `fstat` 再核对同一文件身份；可用的 `O_NOFOLLOW` / `O_NONBLOCK` 进一步防止检查后被替换为链接或 FIFO，但不替代前后身份校验。屏障持有同一只读文件句柄，以 64 KiB 块读取并保留未完成尾行，每 20 ms 至多读取一次新增内容。总文件预算为 16 MiB，配置读取、唯一设置更新与双层观察共享 30 秒总期限；不支持的持久化格式、损坏完整记录、文件身份替换、截断、路径消失或预算超限均失败。错误 owner 或值不能满足屏障，后续完整正确事件仍可确认；超时保留持久化结果未知。原生异步 error、退出及关闭会取消观察，所有出口释放文件和计时器。拒绝、畸形回执及断流同样沿初始化异常路径关闭拥有的进程并传播错误，不重试或抹掉已观察的 native ID。此屏障证明原生冷恢复所用历史与 metadata 已可读，不承诺断电耐久性或排除其他客户端后续修改。
+
+此确认依赖 fresh 初始化阶段只有一个设置 writer：Provider handle 返回之前不能接收交互 controls，原生 fresh 启动也不自发提交 `ThreadSettings` 操作，因此基线后的匹配设置记录可归属于本次唯一更新，而不需要伪造 operationId。若原生事件来源或初始化 writer 数量改变，必须重新验证这项归属条件。
+
+`thread/resume` 和双省略不新增配置读取或进入双层屏障。恢复不重写初始选择，用户会话内变更继续由原生持久设置拥有。取舍与固定原生源码依据见[空线程初始设置决策](../../.agents/notes/implemented/bug-fix/2026-11-07-codex-empty-thread-settings.md)。
+
 ### Codex 原生角色映射
 
 Codex 适配器在 `thread/start` 与 `thread/resume` 共用的参数构造中，仅当 `ProviderOptions.instructions` 存在时设置 `developerInstructions`，不改写原文，不设置 `baseInstructions`。使用独立的 developer 层可保留原生基础提示；Codex 会以提供的文本覆盖该层配置，并不会自动拼接已有的 `developer_instructions`。新建仍按既有条件选择 model、sandbox、approvalPolicy，恢复仍使用原 threadId 与 excludeTurns；CLI alias 和 native PATH override 保持在原 config 合并路径中。角色本身不调用 send，也不改变首个真实用户请求的 effort 选择。
@@ -185,9 +208,11 @@ Claude 原生中断会生成内容恰为 `[Request interrupted by user]` 或 `[R
 
 ## Relay 与恢复
 
-Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用项目准入：先核验当前凭据，再在调用方的 `store.SessionScope` 中通过 `SessionDAO` 读取项目权限。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。admin 或 Session owner 的控制资格、Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
+Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用项目准入：先核验当前凭据，再在调用方的 `store.SessionScope` 中通过 `SessionDAO` 读取项目权限。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。读取准入与执行交互分别判断：当前项目成员可读，执行交互只允许认证用户等于持久 `owner_user_id` 的原 Session owner，项目或 Team 的 admin 角色不授予交互权。Web 与 Herdr 共用这项限制；Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
 
-派发前按原始 requester 重新准入，不借用 Controller 的角色。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查项目准入与执行身份，失权后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+派发前按原始 requester 重新检查有效凭据、项目准入和持久 Session owner，不借用 Controller 的身份或角色。Web 的 offer、operation_begin 和重连 reconcile 均保留该检查；Herdr 的控制派发、租约重检及 ACK 授租也核对原 actor，已存在的非 owner 操作或 lease 不能继续执行。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查项目准入与执行身份，失去读取资格后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+
+Web 的 current 与 browser channel 按当前读者投影权限：非 owner 的 `operations` 全部关闭，setting 的 `mutable` 与命令的 `available` 为 false；投影复制控制目录，不能改写 Controller 的持久能力。Herdr 对非 owner 清空 `control.availableActions`，保留画面与控制归属供阅读。
 
 Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限建立另一条 WebSocket；命令和历史也有 HTTP 接口。bootstrap grant 有效期 120 秒，reconnect grant 为 15 分钟；launcher 在首次 spawn 前将 bootstrap 换成可复连凭据，避免首次连接后短暂断网必须等待续签；grant 冻结签发凭据归属，撤销父凭据会使现有连接失效。服务端每次操作核验项目权限、claim、executionGeneration 和连接 fencing，不将浏览器传入的 native ID 当作授权。Controller 在 WebSocket 升级前先验证 grant、父凭据与 active scope，收到 hello 后在 Connect 事务中重复验证并消费凭据；握手预检不能替代原子 fence 校验。连接配额包含正在升级的请求，失败升级释放预留名额，伪造或失效 token 不能先占用 WebSocket。
 
@@ -256,6 +281,12 @@ Task 软删除保留原 Session 的归档收尾能力：仅原 owner 的有效 P
 
 本地文件存储在重命名前同步文件，发布后同步父目录。初始化存储根时，先打开父目录，再创建并同步新目录及其父目录条目；不能在不可读父目录下创建未同步条目。创建父目录时保留原路径组件的次序；相对路径只前置对应当前目录而不清理原始组件，然后解析符号链接，得到同步与 OpenRoot 共用的真实绝对路径。这样即使当前目录通过符号链接进入，也不会提前消掉链接后的 `..` 而改变存储位置。每次初始化在返回可写存储前同步实际根目录及所有可读祖先，即使目录已经存在，也不能依赖其他初始化者已经完成同步。仅非根祖先的打开权限错误可以跳过，跳过后继续向上同步；根目录打开错误、实际同步错误及其他 I/O 错误均明确失败。初始化失败保留已创建目录，包括空目录：另一个实例可能已打开它但尚未写入，创建者没有独占删除权。再次初始化仍须完成祖先同步屏障，不能将目录存在视为持久化完成。文件可靠写入后才提交 ready，数据库事务失败可重试同对象；读取时重新验证对象大小、SHA-256 和归档结构。PostgreSQL 不保存消息正文。正文及数据库元信息需要一起备份；多实例读取要求共享文件存储。
 
+### 归档操作占用
+
+归档上传和正文读取先以非阻塞方式取得实例内单项预检名额，在短暂的权限作用域中取得可信原 owner；结束数据库作用域后，以非阻塞方式取得实例单项额度和共享存储根内的 owner 精确键额度。预检名额有界，数据库繁忙时不会累积无限等待的归档预检。实际业务操作重新执行原有权限、fence 与 Task-before-Session 锁定规则；删除后收尾使用原 owner 的专用资格，不恢复正文读取权限。精确键 gate 使用稳定锁文件，不在释放时删除可能已被其他实例打开的 inode。额度不占用额外 PostgreSQL 连接，嵌套的存储读回复用同一操作。
+
+占用从读取上传正文或存储对象之前开始，贯穿解析、校验、写入以及响应编码和发送。返回的大正文由调用方持有并在最后使用后关闭，释放幂等；失败保留原始及清理错误。HTTP 上传使用 120 秒实际读取期限，归档响应使用独立 120 秒实际写入期限；已发送响应头后的传输失败中断连接，不伪造完整错误响应。归档正文 GET 不消费请求正文；若正文未读，入口关闭连接并设置读取期限，防止发送前的自动 drain 阻塞。上传超时后，仅固定 Go 版本的原生 HTTP/1 请求 body 在同一 socket 上的期限触发 drain 错误可以归入读取超时；未知 body 的关闭错误保留为清理失败。正文和不可变回执的字节及校验语义不变。选择理由见[归档占用决策](../../.agents/notes/implemented/architecture/2026-11-07-session-archive-residency.md)。
+
 ### 服务端存储与容量
 
 PostgreSQL 保存 Session 归属、注册身份、授权、原生与连接代次、生命周期、水位和最小操作账本。不写入时间线、消息、工具输出、资源、动态 controls、待审批正文或自由文本错误；操作正文也不藏在 command 或 snapshot 中。既有内容表和历史行不自动删除，当前实现停止向其中新增内容；既有备份或历史行的清理由运维单独决定，迁移不会宣称已擦除旧数据。
@@ -290,6 +321,16 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 安全原因使用稳定 reasonCode 的中英文固定映射，通过原生 details/summary 控件按需展开。真实权限或协议错误不会被状态归并吞掉。时间、HTTP 轮询与 UI 状态都不能授权原生重启、重新发送 assignment 或创建替代会话。决策和取舍见[启动状态呈现](../../.agents/notes/implemented/bug-fix/2026-11-05-session-startup-presentation.md)。
 
+## Task Current 的读取可见性
+
+`TaskAgentSession` 在首次 availability 同步前，将 `activeRef.current && document.visibilityState !== 'hidden'` 传给 `TaskSessionClient.setCurrentReadVisible`。Task client 的读取可见性初始为 false；页签提交后的 layout effect 和 document `visibilitychange` 同步实际状态，现有 250 ms availability 检查继续复核准入。读取可见性独立于 `owned`、`live`、`isCurrent` 和身份暂停，不把隐藏解释成执行失效。
+
+完整 current 的三个调用点共用 Task-only flight：`start` 在 disconnect 前和发 HTTP 前检查；`observeCurrent` 在 timer 和 HTTP 前检查；归档 ready 后的最终绑定由 `bindReadyArchive` 检查。每个 flight 持有读取用途、连接代次和专属 AbortController；所有等待结束后复验请求所有者、取消、可见性及既有账号和执行身份。隐藏取消 current 及 auth-queued current，停止或延后对应 timer，flight 保留到 Promise settle。快速重开只登记恢复意图，不越过取消中请求的名额。
+
+尚未发现、断线或中断的 Task 读取在可见和准入恢复后续接一次原发现或重连。健康 native channel 保留内容、草稿和阅读位置；重开恢复现有 3 秒 startup/report 观察，不先 disconnect。未注册重试、错误退避、WebSocket、历史与操作逻辑仍使用原策略。AuthenticatedApp 的隐藏/离焦身份暂停及 native 60 秒 suspension 保持，Task 读取门禁不扩展到独立 Test/Bot authority observation。
+
+归档状态读取沿用原流程；ready 但 tab 已隐藏时，最终 current 绑定保留原 snapshot 与代次，延后到可见。恢复仍验证当前 fence 和归档正文身份，不以 ready receipt 替代已校验的内容。completed automatic hook 同时订阅文档可见性，等待 `scope.ready` 后在发 current 前复验，并在响应和后续准入等待后再次检查。取消中 flight 未 settle 时重开不启动第二次读取；旧 owner 的完成不能发布到新 claim，settle 后可恢复新 owner 的发现。详细取舍见[Task Current 可见性决策](../../.agents/notes/implemented/architecture/2026-11-08-task-current-read-visibility.md)。
+
 ## Session View 的阅读与输入状态
 
 `SessionInteractionCard` 在交互为 `resolved` / `expired` 或本地回答成功后，保留标题与状态，并使用默认关闭的原生 `details` / `summary` 展示原请求。只读区域只从 `SessionInteraction` 读取审批 `detail`、问题与选项、表单字段名，不读取回答表单的局部 `values`，因此不会泄漏敏感自定义输入或把请求状态解释成批准/拒绝结果。该区域限高、允许长字符串换行，并以具名可聚焦区域支持键盘阅读。展开不调用响应接口、不修改条目或滚动意图；布局变化由既有时间线观察器处理。在线与归档复用同一组件，权限门控继续独立约束回答。取舍见[历史请求展示决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-interaction-request-history.md)。
@@ -298,7 +339,7 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 Claude SDK 不保证实时回显提交的 user message。Controller 在本地派发时按 `operationId:0` 投影用户文本，与以后原生 echo/history 的稳定 ID 相同，避免重复行。这条本地展示不调用 `onInputObserved`、不验证原生身份、不确认回执；原生受理及恢复对账仍必须有真实输入或响应证据。unknown 状态下可查看提交原文，不能因该行存在重发或消除 unknown。
 
-Task 与 Test 共用 `SessionView`、Session client、timeline 和 composer。`SessionMarkdown` 对消息和 reasoning 使用安全 Markdown，保留软换行，为每个实例生成脚注命名空间；只允许该实例生成的脚注内部链接，外链保留协议限制。工具文本用原始文本区域显示，参数和输出限高、可聚焦滚动，展开后才挂载内容。工具摘要从已有参数提取，不向模型补发请求。Copilot 投影去除相同的结果字段，保留不同结果与失败附带的错误/输出；工具状态取原生 `success`，不解释 shell 日志中的自由文本退出码。
+Task 与 Test 共用 `SessionView`、Session client、timeline 和 composer。Task 的当前 claim 将已验证的 `WorkerClaim.userId` 与 claim 身份一起传到 native client，客户端统一拒绝非 owner 的新交互，服务端仍使用持久 Session owner 作最终授权。Session View 将生命周期与交互权限分开：非 owner 保留 live timeline、历史、资源、Display、刷新和全屏，Chatbox 与请求回答不可操作；不能将权限只读当作 archived 而切换到归档等待。独立 Test/Bot 保留已有本人准入。`SessionMarkdown` 对消息和 reasoning 使用安全 Markdown，保留软换行，为每个实例生成脚注命名空间；只允许该实例生成的脚注内部链接，外链保留协议限制。工具文本用原始文本区域显示，参数和输出限高、可聚焦滚动，展开后才挂载内容。工具摘要从已有参数提取，不向模型补发请求。Copilot 投影去除相同的结果字段，保留不同结果与失败附带的错误/输出；工具状态取原生 `success`，不解释 shell 日志中的自由文本退出码。
 
 `SessionView` 顶部及 `SessionActivity` 底部状态、composer 的权限入口和主发送/中断按钮、timeline 内建工具类型只读取消息模块导出的英语标签子集，固定文本局部标为 `lang="en"`。同一消息键在其他位置仍可本地化，例如操作回执中的 unknown、归档正文和交互卡 pending。组件不替换整份消息目录或重建语言 Provider，状态选择及操作 gating 沿用既有逻辑。具体语言取舍见[Session 英语操作标签决策](../../.agents/notes/archived/bug-fix/2026-11-04-english-session-operation-labels.md)。
 
@@ -408,9 +449,11 @@ read、invalid、write issue 只在打开的菜单内按当前语言映射说明
 
 `SessionFullscreenContext` 允许共享视图向 `TaskDetailSurface` 登记 owner、原 section 和退出操作。登记期间 Surface 使用独立 Session 全屏样式占满 viewport，隐藏任务 chrome、Tabs 和通知；原 `DetailFullscreen.active` 不变。取消登记按 owner 核对，旧视图清理不能撤销新视图的登记。Surface 禁止自身 Escape/Tab 与 Session 的键盘边界竞争。Test 入口直接使用共享视图的 viewport 样式，不需要任务容器或另一份 Session。既有 section、portal、key 和 DOM 层级不变；任务容器同时展开并取消入场 transform，避免固定定位被祖先 containing block 或裁剪边界限制。首次进入 Session 全屏后，同一 Surface 挂载周期不再重播入场 transform 动画，防止退出时的动画几何污染阅读位置。
 
-全屏 hook 沿 Session 到 body 的祖先链将旁支设为 `inert`，记录并恢复原值，且覆盖全屏期间新增的背景节点；不能使包含 Session 的共同祖先 inert。背景隔离和 `useBodyScrollLock` 均有所有权计数，退出仅释放当前视图的计数，不提前解除外层 modal 的背景锁。Tab 在 Session 内按实际可聚焦控件循环，无可用控件时聚焦 section；外部焦点被限制回会话。内层菜单先在自己的冒泡处理器消费 Escape，Session 再消费尚未处理的 Escape 并退出，外层任务不处理同一次按键。显式退出使用 `preventScroll` 恢复仍连接且未隐藏或 inert 的入口；失效身份清理不将焦点抢回旧视图。
+全屏 hook 沿 Session 到 body 的祖先链将旁支设为 `inert`，记录并恢复原值，且覆盖全屏期间新增的背景节点；不能使包含 Session 的共同祖先 inert。背景隔离和 `useBodyScrollLock` 均有所有权计数。Session 以 `freezePosition=true` 额外取得根页面定位锁：首个定位 owner 保存 window 坐标、body 定位和 html 滚动样式，以负偏移固定 body；末个定位 owner 释放时恢复这些属性及原坐标。定位计数与普通 overflow 计数独立，Session 退出后外层 modal 的 overflow 锁继续生效。只恢复本机制修改的属性及优先级，保留其他属性变更；坐标恢复使用 instant，避免页面 smooth scrolling 延迟复位。Tab 在 Session 内按实际可聚焦控件循环，无可用控件时聚焦 section；外部焦点被限制回会话。内层菜单先在自己的冒泡处理器消费 Escape，Session 再消费尚未处理的 Escape 并退出，外层任务不处理同一次按键。显式退出使用 `preventScroll` 恢复仍连接且未隐藏或 inert 的入口；失效身份清理不将焦点抢回旧视图。
 
-共享全屏样式使用 CSS viewport，不调用原生 Fullscreen API。`visualViewport` 存在时监听尺寸和偏移变化，以 `--session-viewport-width/height/top/left` 使全屏布局跟随可见区域；否则使用窗口 viewport。退出恢复原样式值并移除监听。输入框宽度观察回调将高度调整合并到下一 animation frame，并在清理时取消待执行帧，避免在 ResizeObserver 交付期间改变被观察尺寸；首次布局及文本变化仍同步调整。工具栏保持独立可见空间，内容保留各自滚动所有权；长文本、窄容器和较短可见高度不能把退出按钮推到不可达区域。布局与生命周期选择理由见[Session 全屏决策](../../.agents/notes/archived/feature/2026-11-04-session-fullscreen.md)。
+共享全屏样式使用 CSS viewport，不调用原生 Fullscreen API。不透明全屏根固定覆盖完整 layout viewport；`visualViewport` 存在时监听尺寸和偏移变化，以 `--session-viewport-width/height/top/left` 计算根的 padding，将原有 flex 内容区限制在可见矩形，避免白色表面随软件键盘一起缩小。缺失 API 时使用窗口 viewport。Bot 根复用相同几何并保留 16px 内边距，独立任务页将删除结果高度计入底部预留，结果槽在不透明表面之上保持可操作。退出恢复原样式值并移除监听。Display popover 的宽高和位置同样限制在 visual viewport 内，监听其 scroll/resize，避免键盘平移后菜单脱离可见区域。输入框宽度观察回调将高度调整合并到下一 animation frame，并在清理时取消待执行帧，避免在 ResizeObserver 交付期间改变被观察尺寸；首次布局及文本变化仍同步调整。工具栏保持独立可见空间，内容保留各自滚动所有权；长文本、窄容器和较短可见高度不能把退出按钮推到不可达区域。布局与生命周期选择理由见[Session 全屏决策](../../.agents/notes/archived/feature/2026-11-04-session-fullscreen.md)。
+
+`containSessionScroll` 在 document 冒泡阶段按全屏根及其独立任务结果槽过滤 touch/wheel；React 时间线先处理阅读意图和历史加载，再决定是否阻止默认滚动。单指手势沿主方向检查边界内可滚动祖先的剩余空间；不能由内部消费的边界拖动才被取消，不允许借用任务背景祖先。多指缩放、缩放 wheel 与文本选区交给浏览器；隐藏或 inert 的 Session 不干预上层 modal。退出和卸载移除监听。textarea 和菜单保留局部 overscroll 隔离，代码块不设置双轴 contain，以允许其纵向手势交给时间线。实现取舍见[全屏覆盖与滚动隔离决策](../../.agents/notes/implemented/bug-fix/2026-11-07-session-keyboard-scroll-isolation.md)。受控视口与合成手势证明这些浏览器机制，不能证明原设备的键盘动画、系统附件栏合成或 IME 行为。
 
 ## 关闭与清理
 

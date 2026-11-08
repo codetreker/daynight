@@ -20,9 +20,9 @@ func TestBoundedTeamReadsAndWrites(t *testing.T) {
 	ctx := context.Background()
 	initial := newTestTeam(t, teams, actor, "Before")
 	name := strings.Repeat("<", (1<<20)-100)
-	updated, err := teams.RenameBounded(ctx, actor, initial.ID, coreteam.ChangeTeam{Name: name, Version: initial.Version, ExpectedUserID: actor.UserID}, 1<<20)
-	if err != nil || updated.Name == nil || *updated.Name != name {
-		t.Fatalf("valid large rename: %v", err)
+	// Existing rows may predate the admission limit.
+	if _, err := db.Pool.Exec(ctx, `UPDATE teams SET name=$2,version=version+1 WHERE id=$1`, initial.ID, name); err != nil {
+		t.Fatal(err)
 	}
 	got, err := teams.GetBounded(ctx, actor, initial.ID, 1<<20)
 	if err != nil || got.Name == nil || *got.Name != name {
@@ -55,6 +55,11 @@ func TestBoundedTeamReadsAndWrites(t *testing.T) {
 	_, err = teams.GetBounded(ctx, outsider, initial.ID, 1<<20)
 	teamFault(t, err, "not_found")
 	_, err = teams.Member(ctx, outsider, initial.ID, actor.UserID)
+	teamFault(t, err, "not_found")
+	if err := teams.Delete(ctx, actor, initial.ID, coreteam.ChangeTeam{Name: *full.Name, Version: full.Version, ExpectedUserID: actor.UserID}); err != nil {
+		t.Fatalf("legacy exact-name deletion: %v", err)
+	}
+	_, err = teams.Get(ctx, actor, initial.ID)
 	teamFault(t, err, "not_found")
 }
 

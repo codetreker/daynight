@@ -19,7 +19,8 @@ rm -f coverage.out
 # Migration fixtures share a database-wide advisory lock across isolated schemas.
 unit_go_flags="${GOFLAGS:+$GOFLAGS }-p=2 -overlay=scripts/unit-overlay.json"
 
-# CI and local runs use the same coverage gates, with race detection locally.
+# CI and local runs use the same coverage gates. PR and other CI runs without
+# a main push disable race; local runs and main pushes enable it.
 unset COVERPROFILE MODULE_PREFIX PROJECT_NAME HTML_OUT THRESHOLD_FUNC \
   THRESHOLD_PACKAGE THRESHOLD_PRINT THRESHOLD_TOTAL UNCOVERED_LIMIT \
   EXCLUDE_PACKAGES SKIP_RESULT_PACKAGES EXCLUDE_FILES EXCLUDE_FUNCS \
@@ -27,8 +28,11 @@ unset COVERPROFILE MODULE_PREFIX PROJECT_NAME HTML_OUT THRESHOLD_FUNC \
   RACE_DETECTION FAIL_ON_CRITICAL_BLOCKS
 
 race=true
-if [[ -n "${CI:-}" ]]; then race=false; fi
-if [[ "$race" == false ]]; then unit_go_flags="$unit_go_flags -race=false"; fi
+if [[ -n "${CI:-}" ]] && [[ "${GITHUB_EVENT_NAME:-}" != push || "${GITHUB_REF:-}" != refs/heads/main ]]; then
+  race=false
+fi
+# The final flag overrides inherited GOFLAGS for every instrumented check.
+unit_go_flags="$unit_go_flags -race=$race"
 
 node --test scripts/coverage.test.mts scripts/check.test.mts
 GOFLAGS="$unit_go_flags" go build -o .tmp/daynight-server-unit ./cmd/daynight-server
@@ -36,7 +40,9 @@ GOFLAGS="$unit_go_flags" go vet ./...
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 # Go's ./... discovery excludes testdata; verify this shared fixture explicitly.
-go test -count=1 -timeout=30s ./testdata/testauth
+GOFLAGS="$unit_go_flags" go test -count=1 -timeout=30s ./testdata/testauth
+# Process recovery needs the loopback transport available only in this test build.
+GOFLAGS="$unit_go_flags" go test -count=1 -timeout=3m -tags=webhooktest -run '^TestWebhookRunnerAbruptProcessRecovery$' ./internal/server
 # Database state is outside Go's test-result cache key.
 # https://github.com/golang/go/blob/go1.27.2/src/cmd/go/internal/test/test.go#L1867-L1869
 go clean -testcache

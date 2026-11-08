@@ -42,6 +42,7 @@ func RegisterRoutes(mux *http.ServeMux, grants lifecycle, auth *authhttp.Authent
 func (h *routes) session(next httpx.AuthenticatedHandler) http.HandlerFunc {
 	return h.auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 		if p.Kind != model.SessionCredential || model.RequirePrincipal(p) != nil {
+			httpx.CloseUnreadBody(w, r)
 			httpx.WriteError(w, r, h.logger, "oauth_grants", "session", &model.Fault{Code: "forbidden", Message: "A main-site browser session is required."})
 			return
 		}
@@ -99,6 +100,7 @@ func (h *routes) list(w http.ResponseWriter, r *http.Request, p model.Principal)
 
 func (h *routes) revoke(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if r.URL.RawQuery != "" {
+		httpx.CloseUnreadBody(w, r)
 		httpx.WriteError(w, r, h.logger, "oauth_grants", "revoke", httpx.InvalidInput("Query parameters are not supported."))
 		return
 	}

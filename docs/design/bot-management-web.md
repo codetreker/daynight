@@ -28,7 +28,9 @@
 
 确认目录或明确选择 Agent、Model、effort 时，将当前解析到的 Worker 固定为显式目标。切换 Worker 清除旧机器的 cwd、Provider、model 和 effort；切换 Provider 保留目录，清除 model 和 effort；切换 model 清除表单 effort，再读取该模型的权威默认。Worker 当前明确 effort 的兼容性由服务端解析与真实能力校验，不能通过 UI 丢弃该配置来绕过错误。显式 Worker 不可用时保留错误，不自动换机。
 
-`useBotCreationModels` 在设置展开后通过 `discoverWorkerModels` 读取目标 Worker、Provider、cwd 和模型的原生能力。它按相同连接及能力代次收齐分页，并核对 configurationGeneration、catalogGeneration、目录、Provider、重复模型和游标，再发布完整目录。模型查询的 defaults 只表达 Worker/原生观察；Bot defaults 还包括成功偏好，两者不能互相替代。没有已确认的模型或 effort 列表时不生成静态选项，失败保留重试入口；模型别名用于匹配有效选择，提交仍保留用户明确选择的标识。请求取消和表单代次隔离迟到响应。
+`useBotCreationModels` 在设置展开后通过 `discoverWorkerModels` 读取目标 Worker、Provider、cwd 和模型的原生能力，使用 `includeHidden:true` 在同一次有界分页查询中取得隐藏默认模型的能力。它按相同连接及能力代次收齐分页，并核对 configurationGeneration、catalogGeneration、目录、Provider、重复模型和游标，再发布完整目录。表单用完整目录匹配模型与别名，模型菜单只显示非隐藏项；已明确选择的模型后来变为隐藏时保留该值以便恢复默认。
+
+有效模型依次取表单明确值、服务端 Bot defaults 已解析值；仅当服务端以 native/null 委托原生时，才使用无 selectionError 的同目标目录默认模型。effort 摘要同样只补充 native/null，且目录默认模型必须匹配有效模型或其别名，避免把其它模型的默认强度带入。成功偏好和本地/云端明确值仍由 Bot defaults 拥有，未知或失败目录不伪造默认。目录观察只影响摘要与可选能力，始终独立于显式状态；因此仅选 effort 的请求固定 Worker，但不带 model，查看默认仍保持名字请求。没有已确认的模型或 effort 列表时不生成静态选项，失败保留重试入口；提交保留用户明确选择的标识。请求取消和表单代次隔离迟到响应。
 
 ## 同一弹窗中的目录浏览
 

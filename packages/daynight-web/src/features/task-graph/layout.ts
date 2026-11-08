@@ -6,8 +6,8 @@ import type { TaskExpansions } from './visibility';
 export const TASK_NODE_WIDTH = 220;
 export const TASK_NODE_COMPACT_HEIGHT = 96;
 export const TASK_NODE_EXPANDABLE_HEIGHT = 136;
-export const getTaskNodeHeight = (expansions: TaskExpansions): number =>
-  expansions.prerequisites.ids.length > 0 || expansions.successors.ids.length > 0
+export const getTaskNodeHeight = (expansions: TaskExpansions, external = false): number =>
+  external || expansions.prerequisites.ids.length > 0 || expansions.successors.ids.length > 0
     ? TASK_NODE_EXPANDABLE_HEIGHT : TASK_NODE_COMPACT_HEIGHT;
 
 export type CanvasPoint = {

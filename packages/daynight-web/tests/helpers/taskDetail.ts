@@ -10,12 +10,12 @@ const timestamp = '2026-10-22T10:00:00Z';
 export const detailFixture = (projectId: string, taskId: string, changes: Partial<TaskDetail> = {}): TaskDetail => ({ assignedTo: null,
   id: taskId, projectId, title: '完整任务详情', description: '', status: 'todo', version: 1n,
   allowAgents: false, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
-  startedAt: null, completedAt: null, properties: { pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp, ...changes,
+  startedAt: null, completedAt: null, cancelledAt: null, properties: { pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
 export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
   const projectId = details[0]!.projectId;
   const current = details.map((task) => {
-    const blockedBy = task.dependsOn.filter((id) => details.find((item) => item.id === id)!.status !== 'done');
+    const blockedBy = task.dependsOn.filter((id) => details.find((item) => item.id === id)!.status !== 'done' && details.find((item) => item.id === id)!.status !== 'cancelled');
     return { ...task, blockedBy, ready: task.status === 'todo' && blockedBy.length === 0 };
   });
   return {
@@ -23,9 +23,9 @@ export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: '任务项目', repoUrl: 'https://github.com/example/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: timestamp, updatedAt: timestamp },
     tasks: current.map((task) => ({ assignedTo: task.assignedTo, id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160, status: task.status,
       allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
-      blockedBy: task.blockedBy, ready: task.ready, startedAt: task.startedAt, completedAt: task.completedAt, createdAt: task.createdAt, updatedAt: task.updatedAt })),
+      blockedBy: task.blockedBy, ready: task.ready, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt, createdAt: task.createdAt, updatedAt: task.updatedAt })),
     summary: { total: details.length, todo: current.filter((task) => task.status === 'todo').length, inProgress: current.filter((task) => task.status === 'in_progress').length,
-      done: current.filter((task) => task.status === 'done').length, ready: current.filter((task) => task.ready).length,
+      done: current.filter((task) => task.status === 'done').length, cancelled: current.filter((task) => task.status === 'cancelled').length, ready: current.filter((task) => task.ready).length,
       blocked: current.filter((task) => task.status === 'todo' && !task.ready).length },
   };
 };

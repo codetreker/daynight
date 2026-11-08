@@ -1,5 +1,5 @@
 import { selectTaskList } from '../helpers/projectViews';
-import { createGraphSyncFixture } from "../helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "../helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,10 +23,10 @@ const projectId = "10000000-0000-4000-8000-000000000001";
 const taskId = "20000000-0000-4000-8000-000000000001";
 const date = "2026-10-20T12:34:56Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Project 用户数据", repoUrl: "https://example.com/repo", createdAt: date, updatedAt: date };
-const tasks: readonly GraphTask[] = [{ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: taskId, titlePreview: "Task 用户数据", titleTruncated: false, status: "todo", dependsOn: [], blockedBy: [], ready: true, createdAt: date, updatedAt: date }];
+const tasks: readonly GraphTask[] = [{ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: taskId, titlePreview: "Task 用户数据", titleTruncated: false, status: "todo", dependsOn: [], blockedBy: [], ready: true, createdAt: date, updatedAt: date }];
 const graph = (items = tasks): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
   project, tasks: items,
-  summary: { total: items.length, todo: items.filter((task) => task.status === "todo").length, done: items.filter((task) => task.status === "done").length,
+  summary: { total: items.length, todo: items.filter((task) => task.status === "todo").length, done: items.filter((task) => task.status === "done").length, cancelled: 0,
     inProgress: items.filter((task) => task.status === "in_progress").length, ready: items.filter((task) => task.ready).length,
     blocked: items.filter((task) => task.status === "todo" && !task.ready).length },
 });
@@ -46,7 +46,7 @@ beforeEach(() => {
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
-    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+    return taskSyncReadFixture(syncFixture.toSync(value, query, replacementEpochs.get(value)));
   });
 });
 

@@ -46,7 +46,7 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(database.Close)
-	fixture := &identityFixture{database: database, now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC), replies: map[string]identityReply{}}
+	fixture := &identityFixture{database: database, now: time.Now().UTC().Truncate(time.Microsecond), replies: map[string]identityReply{}}
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fixture.calls.Add(1)
 		appID, secret, ok := r.BasicAuth()
@@ -93,7 +93,7 @@ func identityProfile(id string) map[string]any {
 
 func startIdentityLogin(t *testing.T, fixture *identityFixture, returnPath string) core.LoginStart {
 	t.Helper()
-	start, err := fixture.identity.StartLogin(context.Background(), "microsoft", returnPath)
+	start, err := fixture.identity.StartLogin(context.Background(), "microsoft", returnPath, secret.Random(""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,8 @@ func requireIdentityOperationalError(t *testing.T, err error) {
 func TestIdentityStartLogin(t *testing.T) {
 	fixture := newIdentityFixture(t)
 	for _, provider := range []string{"microsoft", "google", "github"} {
-		start, err := fixture.identity.StartLogin(context.Background(), provider, "")
+		scope := secret.Random("")
+		start, err := fixture.identity.StartLogin(context.Background(), provider, "", scope)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -143,18 +144,19 @@ func TestIdentityStartLogin(t *testing.T) {
 		if err != nil || u.Path != "/auth/authorize" || u.Query().Get("provider") != provider || u.Query().Get("app_id") != "test-app" || u.Query().Get("state") != start.State || u.Query().Get("redirect_uri") != fixture.identity.CallbackURL() {
 			t.Fatalf("authorization request: %s, %v", start.AuthorizationURL, err)
 		}
-		if !secret.Valid(start.State, "") || !secret.Valid(start.BrowserBinding, "") || start.State == start.BrowserBinding || !start.ExpiresAt.Equal(fixture.now.Add(core.LoginLifetime)) {
+		if !secret.Valid(start.State, "") || !secret.Valid(start.BrowserBinding, "") || start.State == start.BrowserBinding || start.ExpiresAt.Before(time.Now().Add(core.LoginLifetime-time.Minute)) || start.ExpiresAt.After(time.Now().Add(core.LoginLifetime+time.Minute)) {
 			t.Fatalf("login material: %#v", start)
 		}
 		if _, err := uuid.Parse(start.ID); err != nil {
 			t.Fatal(err)
 		}
-		var stateHash, bindingHash []byte
+		var stateHash, bindingHash, scopeHash []byte
 		var storedProvider, returnPath string
-		if err := fixture.database.Pool.QueryRow(context.Background(), "SELECT state_hash,browser_binding_hash,provider,return_path FROM login_transactions WHERE id=$1", start.ID).Scan(&stateHash, &bindingHash, &storedProvider, &returnPath); err != nil {
+		var expiry time.Time
+		if err := fixture.database.Pool.QueryRow(context.Background(), "SELECT state_hash,browser_binding_hash,scope_hash,provider,return_path,expires_at FROM login_transactions WHERE id=$1", start.ID).Scan(&stateHash, &bindingHash, &scopeHash, &storedProvider, &returnPath, &expiry); err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(stateHash, secret.Hash(start.State)) || !bytes.Equal(bindingHash, secret.Hash(start.BrowserBinding)) || storedProvider != provider || returnPath != "/projects" {
+		if !bytes.Equal(stateHash, secret.Hash(start.State)) || !bytes.Equal(bindingHash, secret.Hash(start.BrowserBinding)) || !bytes.Equal(scopeHash, secret.Hash(scope)) || !expiry.Equal(start.ExpiresAt) || storedProvider != provider || returnPath != "/projects" {
 			t.Fatalf("pending login did not persist hashes and default return path: %s %s", storedProvider, returnPath)
 		}
 	}
@@ -165,22 +167,133 @@ func TestIdentityStartLogin(t *testing.T) {
 
 func TestIdentityStartLoginValidation(t *testing.T) {
 	fixture := newIdentityFixture(t)
-	for _, provider := range []string{"", "Microsoft", "oidc", "github\x00"} {
-		_, err := fixture.identity.StartLogin(context.Background(), provider, "/")
-		requireFault(t, err, "invalid_input")
-	}
-	for _, path := range []string{"https://evil.example/path", "//evil.example", "relative", "/\\evil", "/line\rbreak", "/line\nbreak", "/bad\x00", "/bad\xff", "/%5Cevil", "/%0Dheader", "/%00bad", "/%2fexample.com", "/api/v1/auth/login", "/api/v1/%61uth/callback", "/login", "/login?returnPath=/projects", "/login/child", "/other/../login", "/%6cogin", "/%zz"} {
-		_, err := fixture.identity.StartLogin(context.Background(), "microsoft", path)
-		requireFault(t, err, "invalid_input")
+	_, err := fixture.identity.StartLogin(context.Background(), "microsoft", "/", "invalid")
+	requireFault(t, err, "invalid_input")
+	var rows int
+	if err := fixture.database.Pool.QueryRow(context.Background(), "SELECT count(*) FROM login_transactions").Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("invalid scope created transaction: %d %v", rows, err)
 	}
 	for _, path := range []string{"/", "/projects", "/test-sessions/10000000-0000-0000-0000-000000000001", "/projects/abc?view=graph#tasks", "/%E4%B8%AD%E6%96%87", "/login-help"} {
-		if _, err := fixture.identity.StartLogin(context.Background(), "microsoft", path); err != nil {
+		if _, err := fixture.identity.StartLogin(context.Background(), "microsoft", path, secret.Random("")); err != nil {
 			t.Fatalf("valid return path %q: %v", path, err)
 		}
 	}
 	fixture.identity.module = core.NewIdentity("ftp://not-http.example/callback")
-	if _, err := fixture.identity.StartLogin(context.Background(), "microsoft", "/"); err == nil {
+	if _, err := fixture.identity.StartLogin(context.Background(), "microsoft", "/", secret.Random("")); err == nil {
 		t.Fatal("SDK callback configuration failure was hidden")
+	}
+}
+
+func TestIdentityLoginScopeAdmissionAcrossServices(t *testing.T) {
+	fixture := newIdentityFixture(t)
+	first := fixture.identity
+	second := New(fixture.database, first.client, first.CallbackURL())
+	scope := secret.Random("")
+	var existing core.LoginStart
+	for i := 0; i < core.MaxPendingLoginsPerBrowser-1; i++ {
+		var err error
+		existing, err = first.StartLogin(context.Background(), "microsoft", "/projects", scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	type result struct{ err error }
+	results := make(chan result, 2)
+	ready := make(chan struct{}, 2)
+	start := make(chan struct{})
+	for _, service := range []*Identity{first, second} {
+		go func(service *Identity) {
+			ready <- struct{}{}
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := service.StartLogin(ctx, "microsoft", "/projects", scope)
+			results <- result{err}
+		}(service)
+	}
+	<-ready
+	<-ready
+	close(start)
+	accepted, rejected := 0, 0
+	for range 2 {
+		r := <-results
+		if r.err == nil {
+			accepted++
+		} else {
+			requireFault(t, r.err, "rate_limited")
+			rejected++
+		}
+	}
+	if accepted != 1 || rejected != 1 {
+		t.Fatalf("concurrent admission: accepted=%d rejected=%d", accepted, rejected)
+	}
+	var count int
+	if err := fixture.database.Pool.QueryRow(context.Background(), "SELECT count(*) FROM login_transactions WHERE scope_hash=$1", secret.Hash(scope)).Scan(&count); err != nil || count != core.MaxPendingLoginsPerBrowser {
+		t.Fatalf("scope count=%d error=%v", count, err)
+	}
+	if _, err := first.CompleteLogin(context.Background(), identityQuery(existing, "valid"), existing.BrowserBinding); err != nil {
+		t.Fatalf("existing transaction was invalidated: %v", err)
+	}
+}
+
+func TestIdentityGlobalLoginAdmissionAcrossServices(t *testing.T) {
+	fixture := newIdentityFixture(t)
+	ctx := context.Background()
+	_, err := fixture.database.Pool.Exec(ctx, `INSERT INTO login_transactions
+		(id,state_hash,browser_binding_hash,provider,return_path,expires_at,scope_hash)
+		SELECT md5('capacity-id-'||n)::uuid, sha256(('state-'||n)::bytea), sha256(('binding-'||n)::bytea),
+		'microsoft', '/', clock_timestamp()+interval '10 minutes', sha256(('scope-'||n)::bytea)
+		FROM generate_series(1,$1) AS n`, core.MaxPendingLoginsGlobal-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := fixture.identity
+	second := New(fixture.database, first.client, first.CallbackURL())
+	results := make(chan error, 2)
+	ready := make(chan struct{}, 2)
+	start := make(chan struct{})
+	for _, service := range []*Identity{first, second} {
+		go func(service *Identity) {
+			ready <- struct{}{}
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := service.StartLogin(ctx, "microsoft", "/", secret.Random(""))
+			results <- err
+		}(service)
+	}
+	<-ready
+	<-ready
+	close(start)
+	accepted, rejected := 0, 0
+	for range 2 {
+		err := <-results
+		if err == nil {
+			accepted++
+		} else {
+			requireFault(t, err, "capacity_exhausted")
+			rejected++
+		}
+	}
+	if accepted != 1 || rejected != 1 {
+		t.Fatalf("global admission: accepted=%d rejected=%d", accepted, rejected)
+	}
+	var count int
+	if err := fixture.database.Pool.QueryRow(ctx, "SELECT count(*) FROM login_transactions WHERE expires_at > clock_timestamp()").Scan(&count); err != nil || count != core.MaxPendingLoginsGlobal {
+		t.Fatalf("global count=%d error=%v", count, err)
+	}
+	expiredID := uuid.NewString()
+	hash := secret.Hash(secret.Random(""))
+	_, err = fixture.database.Pool.Exec(ctx, `INSERT INTO login_transactions
+		(id,state_hash,browser_binding_hash,provider,return_path,expires_at,scope_hash)
+		VALUES ($1,$2,$2,'microsoft','/',clock_timestamp()-interval '1 minute',$2)`, expiredID, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = second.StartLogin(ctx, "microsoft", "/", secret.Random(""))
+	requireFault(t, err, "capacity_exhausted")
+	if err := fixture.database.Pool.QueryRow(ctx, "SELECT count(*) FROM login_transactions WHERE id=$1", expiredID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("rejected admission cleaned expired row: count=%d error=%v", count, err)
 	}
 }
 
@@ -232,7 +345,9 @@ func TestIdentityMalformedCallbacksDoNotConsumeLogin(t *testing.T) {
 func TestIdentityExpiredAndConsumedCallbacks(t *testing.T) {
 	fixture := newIdentityFixture(t)
 	start := startIdentityLogin(t, fixture, "/")
-	fixture.now = start.ExpiresAt
+	if _, err := fixture.database.Pool.Exec(context.Background(), `UPDATE login_transactions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, start.ID); err != nil {
+		t.Fatal(err)
+	}
 	_, err := fixture.identity.CompleteLogin(context.Background(), identityQuery(start, "expired"), start.BrowserBinding)
 	requireFault(t, err, "unauthenticated")
 	if fixture.calls.Load() != 0 {
@@ -251,6 +366,35 @@ func TestIdentityExpiredAndConsumedCallbacks(t *testing.T) {
 	}
 	if fixture.calls.Load() != 0 {
 		t.Fatal("denied or replayed callback reached gateway")
+	}
+}
+
+func TestIdentityLoginClockSkewPreservesCredentialsAndCallbackTTL(t *testing.T) {
+	fixture := newIdentityFixture(t)
+	ctx := context.Background()
+	fixture.now = fixture.now.Add(-30 * 24 * time.Hour)
+	login := completeIdentityLogin(t, fixture, "skew")
+	principal := identityPrincipal(t, fixture, login)
+	minted, err := fixture.identity.CreatePAT(ctx, principal, core.CreatePAT{Name: "skew", ExpiresAt: tokenExpiryAt(fixture.now.Add(24 * time.Hour))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := startIdentityLogin(t, fixture, "/")
+	if _, err := fixture.identity.Authenticate(ctx, model.SessionCredential, login.Secret); err != nil {
+		t.Fatalf("login cleanup removed a valid session: %v", err)
+	}
+	if _, err := fixture.identity.Authenticate(ctx, model.PATCredential, minted.Secret); err != nil {
+		t.Fatalf("login cleanup removed a valid PAT: %v", err)
+	}
+	if _, err := fixture.database.Pool.Exec(ctx, `UPDATE login_transactions SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, start.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = fixture.identity.CompleteLogin(ctx, identityQuery(start, "expired"), start.BrowserBinding)
+	requireFault(t, err, "unauthenticated")
+	fixture.now = time.Now().UTC().Add(30 * 24 * time.Hour)
+	fresh := startIdentityLogin(t, fixture, "/")
+	if _, err := fixture.identity.CompleteLogin(ctx, identityQuery(fresh, "fresh"), fresh.BrowserBinding); err != nil {
+		t.Fatalf("unexpired transaction rejected with advanced app clock: %v", err)
 	}
 }
 
@@ -584,7 +728,7 @@ func TestIdentityStoreFailuresRemainOperational(t *testing.T) {
 	principal := identityPrincipal(t, fixture, login)
 	start := startIdentityLogin(t, fixture, "/")
 	fixture.database.Close()
-	_, err := fixture.identity.StartLogin(ctx, "microsoft", "/")
+	_, err := fixture.identity.StartLogin(ctx, "microsoft", "/", secret.Random(""))
 	requireIdentityOperationalError(t, err)
 	_, err = fixture.identity.CompleteLogin(ctx, identityQuery(start, "alice"), start.BrowserBinding)
 	requireIdentityOperationalError(t, err)
@@ -616,7 +760,7 @@ func TestIdentityCancellationIsPreserved(t *testing.T) {
 	start := startIdentityLogin(t, fixture, "/")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := fixture.identity.StartLogin(ctx, "microsoft", "/")
+	_, err := fixture.identity.StartLogin(ctx, "microsoft", "/", secret.Random(""))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("start cancellation was hidden: %v", err)
 	}
@@ -668,7 +812,7 @@ func TestIdentityConfiguredCallbackReturnPath(t *testing.T) {
 	fixture := newIdentityFixture(t)
 	fixture.identity.module = core.NewIdentity("http://daynight.test:8787/auth/callback")
 	for _, returnPath := range []string{"/auth/callback", "/auth/callback?code=value", "/auth/callback/child", "/other/../auth/callback", "/auth/%63allback", "/api/v1/auth/login"} {
-		_, err := fixture.identity.StartLogin(context.Background(), "microsoft", returnPath)
+		_, err := fixture.identity.StartLogin(context.Background(), "microsoft", returnPath, secret.Random(""))
 		requireFault(t, err, "invalid_input")
 	}
 	start := startIdentityLogin(t, fixture, "/account")

@@ -17,7 +17,7 @@ func TaskGraphResponse(graph model.TaskGraph) api.TaskGraph {
 		ObservedAt: graph.ObservedAt.UTC(),
 		Summary: api.TaskGraphSummary{
 			Total: graph.Summary.Total, Todo: graph.Summary.Todo, InProgress: graph.Summary.InProgress,
-			Done: graph.Summary.Done, Ready: graph.Summary.Ready, Blocked: graph.Summary.Blocked,
+			Done: graph.Summary.Done, Cancelled: graph.Summary.Cancelled, Ready: graph.Summary.Ready, Blocked: graph.Summary.Blocked,
 		},
 		Tasks: make([]api.GraphTask, 0, len(graph.Tasks)),
 	}
@@ -26,7 +26,7 @@ func TaskGraphResponse(graph model.TaskGraph) api.TaskGraph {
 			ID: task.ID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: string(task.Status),
 			DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), BlockedBy: append([]string{}, task.BlockedBy...), Ready: task.Ready, AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform), AssignedTo: task.AssignedTo,
 			CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(),
-			StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
+			StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt), CancelledAt: timestampResponse(task.CancelledAt),
 		})
 	}
 	return response

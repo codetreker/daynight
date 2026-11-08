@@ -22,7 +22,7 @@ const native = (value: unknown): WorkerRuntimeNative | null => {
 
 export const parseWorkerRuntimeConfiguration = (value: unknown): WorkerRuntimeConfiguration => {
   const data = exact(value, ["schemaVersion", "native", "projects"]);
-  if (data.schemaVersion !== 1 || !Array.isArray(data.projects) || data.projects.length > 1024) return malformed();
+  if (data.schemaVersion !== 1 || !Array.isArray(data.projects) || data.projects.length > 128) return malformed();
   const projects = array(data.projects, value => {
     const project = exact(value, ["projectId", "native"]);
     return { projectId: id(project.projectId), native: native(project.native) };

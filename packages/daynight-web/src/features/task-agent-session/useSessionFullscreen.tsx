@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useLayoutEffect, useRef, useSta
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { acquireInert } from '../../app/inert';
 import { dialogFocusables } from '../task-detail/focus';
+import { containSessionScroll } from './containSessionScroll';
 
 export type SessionFullscreenRegistration = { readonly owner: object; readonly root: HTMLElement; readonly exit: () => void };
 export const SessionFullscreenContext = createContext<((registration: SessionFullscreenRegistration) => (() => void)) | null>(null);
@@ -34,7 +35,11 @@ export function useSessionFullscreen({ client, userId, active, identity, fullscr
   const restoreFocus = useRef(false);
   const exit = useCallback(() => { restoreFocus.current = true; setExpanded(null); }, []);
   const toggle = () => { if (fullscreen) exit(); else if (active) setExpanded(knownIdentity.current); };
-  useBodyScrollLock(fullscreen);
+  useBodyScrollLock(fullscreen, true);
+
+  useLayoutEffect(() => {
+    if (fullscreen) return containSessionScroll(rootElement(), resultSlot);
+  }, [fullscreen, rootElement, resultSlot]);
 
   useLayoutEffect(() => {
     if (expanded !== null && !fullscreen) setExpanded(null);

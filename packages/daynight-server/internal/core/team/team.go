@@ -27,6 +27,18 @@ type TeamPage struct {
 
 func invalidInput(message string) error { return &model.Fault{Code: "invalid_input", Message: message} }
 func ValidateName(name string) error {
+	if err := validateNameText(name); err != nil {
+		return err
+	}
+	return validateNameSize(name)
+}
+func validateNameSize(name string) error {
+	if err := AdmitName(name); err != nil {
+		return &model.Fault{Code: "invalid_input", Message: err.Error(), Cause: err}
+	}
+	return nil
+}
+func validateNameText(name string) error {
 	if !utf8.ValidString(name) || strings.ContainsRune(name, 0) || strings.TrimSpace(name) == "" {
 		return invalidInput("Team name must be nonempty Unicode text without NUL characters.")
 	}
@@ -59,6 +71,9 @@ func ValidateCreate(p model.Principal, input CreateTeam) error {
 	return ValidateName(input.Name)
 }
 func Create(ctx context.Context, dao store.TeamCreationDAO, input CreateTeam) (model.Team, error) {
+	if err := validateNameSize(input.Name); err != nil {
+		return model.Team{}, err
+	}
 	id, err := uuid.NewRandom()
 	if err != nil {
 		return model.Team{}, fmt.Errorf("generate Team ID: %w", err)
@@ -154,7 +169,7 @@ func ValidateChange(p model.Principal, id string, input ChangeTeam) (string, err
 	if input.Version < 1 {
 		return "", invalidInput("Version must be a positive integer.")
 	}
-	if err := ValidateName(input.Name); err != nil {
+	if err := validateNameText(input.Name); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -185,6 +200,9 @@ func Rename(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, inpu
 	}
 	if t.Version == math.MaxInt64 {
 		return model.Team{}, &model.Fault{Code: "version_exhausted", Message: "Team version is exhausted."}
+	}
+	if err := ValidateName(input.Name); err != nil {
+		return model.Team{}, err
 	}
 	return dao.Rename(ctx, p.UserID, input.Name)
 }

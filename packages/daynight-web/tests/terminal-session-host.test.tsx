@@ -224,20 +224,20 @@ describe('unified Session and managed records', () => {
     const key = `daynight:recording:${TEST_VIEWER_ID}:${projectId}:${taskId}`;
     sessionStorage.setItem(key, JSON.stringify(record));
     sessionStorage.setItem('unrelated', 'keep');
-    const view = render(<TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current />);
+    const view = render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current />);
     const timeline = screen.getByText('Native timeline');
     expect(timeline).toBeVisible();
     expect(screen.queryByRole('combobox', { name: 'Execution record' })).toBeNull();
     expect(sessionStorage.getItem(key)).toBeNull();
     expect(sessionStorage.getItem('unrelated')).toBe('keep');
-    view.rerender(<TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current={false} />);
+    view.rerender(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current={false} />);
     expect(screen.getByText('Native timeline')).toBe(timeline);
     expect(api.history).not.toHaveBeenCalled(); expect(api.archive).not.toHaveBeenCalled();
   });
   it('resolves a completed Herdr claim through current without opening a live channel or controls', async () => {
     const api = fixture();
     api.current.mockResolvedValue({ status: 'registered', ...record });
-    render(<TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
+    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
     expect(await screen.findByText('Recording is waiting to be archived.')).toBeVisible();
     expect(api.archive).toHaveBeenCalledWith(expect.objectContaining({ sessionId: record.sessionId, claimId }), expect.any(AbortSignal));
     expect(screen.queryByRole('textbox')).toBeNull();
@@ -247,7 +247,7 @@ describe('unified Session and managed records', () => {
   it('refuses a current response from a different claim rather than substituting history', async () => {
     const api = fixture();
     api.current.mockResolvedValue({ status: 'registered', ...record, claimId: taskId });
-    render(<TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
+    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
     expect(await screen.findByRole('alert')).toBeVisible();
     expect(api.archive).not.toHaveBeenCalled(); expect(api.history).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled();
   });
@@ -257,7 +257,7 @@ describe('unified Session and managed records', () => {
     Object.assign(api, { nativeArchive });
     const current = vi.fn(async () => ({ status: 'registered', session: { sessionId: record.sessionId, claimId, executionGeneration: '1', identity: { projectId, taskId } } }));
     vi.mocked(createSessionApi).mockReturnValue({ current } as never);
-    render(<TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current completed />);
+    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current completed />);
     expect(await screen.findByText('This recording could not be saved or verified.')).toBeVisible();
     expect(screen.queryByText('Native timeline')).toBeNull();
     expect(nativeArchive).toHaveBeenCalledWith(expect.objectContaining({ sessionId: record.sessionId, claimId, agentControlMode: 'web' }), expect.any(AbortSignal));
@@ -272,7 +272,7 @@ describe('unified Session and managed records', () => {
     const current = vi.fn().mockResolvedValueOnce({ status: 'registered', session: { ...snapshot, lifecycle: 'draining' } }).mockResolvedValue({ status: 'registered', session: { ...snapshot, lifecycle: 'archived' } });
     vi.mocked(createSessionApi).mockReturnValue({ current } as never);
     const timer = vi.spyOn(globalThis, 'setTimeout');
-    render(<TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current completed />);
+    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current completed />);
     expect(await screen.findByText('The session is ending. Waiting for its history archive.')).toBeVisible();
     expect(screen.queryByText('No recording is available for this execution.')).toBeNull();
     const polls = timer.mock.calls.filter(([, milliseconds]) => milliseconds === 3000).map(([callback]) => callback);
@@ -337,7 +337,7 @@ describe('unified Session and managed records', () => {
   it.each(['not_registered', 'not_applicable'] as const)('keeps completed %s recoverable without consulting old history', async status => {
     const api = fixture();
     api.current.mockResolvedValue({ status, claimId });
-    render(<TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
+    render(<TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current completed />);
     expect(await screen.findByText(status === 'not_registered' ? 'This execution has not registered a Session yet.' : 'No recording is available for this execution.')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
     expect(api.history).not.toHaveBeenCalled(); expect(api.archive).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled();

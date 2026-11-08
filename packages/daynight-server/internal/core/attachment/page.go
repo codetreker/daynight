@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 type cursor struct {
@@ -36,6 +37,9 @@ func ListQuery(request model.PageRequest, projectID, taskID string) (store.Attac
 	query := store.AttachmentQuery{Limit: request.Limit}
 	if request.Cursor == nil {
 		return query, nil
+	}
+	if len(*request.Cursor) > transport.MaxEncodedCursorBytes {
+		return store.AttachmentQuery{}, invalidInput("Cursor is invalid for this list.")
 	}
 	data, err := base64.RawURLEncoding.Strict().DecodeString(*request.Cursor)
 	if err != nil {

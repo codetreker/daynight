@@ -319,7 +319,7 @@ func TestControlReaderProjectionAndRevokedWriterAtDispatch(t *testing.T) {
 	ctx := context.Background()
 	publishState(t, f, v, controlState())
 	reader := addMember(t, f, "member")
-	admin := addMember(t, f, "admin")
+	actor := listCredential(t, f, f.p.UserID, model.PATCredential)
 	current, err := f.s.Current(ctx, reader, f.project, f.task)
 	if err != nil {
 		t.Fatal(err)
@@ -354,13 +354,13 @@ func TestControlReaderProjectionAndRevokedWriterAtDispatch(t *testing.T) {
 		}
 	}
 	c := controlCommand(v, "execute_command")
-	if _, err := f.s.Submit(ctx, admin, f.project, f.task, v.SessionID, c); err != nil {
+	if _, err := f.s.Submit(ctx, actor, f.project, f.task, v.SessionID, c); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.Poll(ctx, v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
+	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, actor.CredentialID); err != nil {
 		t.Fatal(err)
 	}
 	assertRejectedBegin(t, f, v, c.OperationID)

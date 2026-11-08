@@ -16,16 +16,20 @@ browser suite from running when an earlier quality stage fails.
 ## Decision
 
 Web selection starts two independent jobs after module detection.
-`verify-web-quality` runs the tooling harness, Vitest coverage and statement
-checker. `verify-web-browser` runs the existing assistant Playwright suite with
+`verify-web-quality` runs full Web typechecking, the tooling harness, the
+production Docker Web build, Vitest coverage and the statement checker. `verify-web-browser` runs the existing assistant Playwright suite with
 its locked Chromium installation and browser evidence. Both jobs prepare their
-own checkout, Node and locked workspace dependencies, and have a 20-minute limit.
+own checkout, Node and locked workspace dependencies. Quality has a 30-minute
+limit and browser validation has a 20-minute limit.
 The browser configuration starts its own controlled Vite host; it needs no
 quality artifact or earlier quality result.
 
 The quality runner gives the four-worker Vitest coverage process 15 minutes,
 including startup, reporting and exit. Tooling tests retain their three-minute
-limit and the statement checker retains its one-minute limit.
+limit and the statement checker retains its one-minute limit. Full typechecking
+has a one-minute limit and the Docker Web build has a five-minute limit. The
+[production build decision](../bug-fix/2026-11-07-localhost-web-build-inputs.md)
+owns compilation inputs and the Docker regression check.
 
 Vitest uses `silent: "passed-only"` to suppress console output from passing
 tests and retain output from failing tests. Tests still execute all console

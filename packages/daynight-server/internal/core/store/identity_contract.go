@@ -20,6 +20,13 @@ type IdentityScope interface {
 
 type IdentityDAO interface {
 	CleanupCredentials(context.Context, time.Time) error
+	// Login admission uses its post-lock database time for login expiry and the
+	// application clock for session and PAT expiry.
+	CleanupLoginCredentials(context.Context, time.Time, time.Time) error
+	// AdmitLogin serializes capacity checks until the surrounding transaction
+	// ends. The returned time is sampled after the lock is acquired. A nonempty
+	// code is a rejection and must not be followed by cleanup or insertion.
+	AdmitLogin(context.Context, []byte, int, int) (time.Time, string, error)
 	InsertLogin(context.Context, model.LoginTransaction) error
 	ConsumeLogin(context.Context, []byte, []byte, time.Time) (model.LoginTransaction, error)
 	UpsertUser(context.Context, model.User, time.Time) (model.User, error)

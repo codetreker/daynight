@@ -1,7 +1,7 @@
 import { selectTaskList } from './helpers/projectViews';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
-import { TEST_VIEWER_ID, taskSyncFromGraph, directAccessFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, TEST_VIEWER_ID, taskSyncFromGraph, directAccessFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor as waitForWithRealTimers, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
@@ -41,7 +41,7 @@ const confirmStatus = async (button: HTMLElement) => {
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const project = id(100); const parent = id(1); const child = id(2); const standalone = id(3);
 const time = '2026-10-22T00:00:00Z';
-const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: id(number), projectId: project,
+const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: id(number), projectId: project,
   version: 9007199254740993n, title: `Task ${number}`, description: `Complete description ${number}`, properties: { pullRequests: [] },
   status: 'todo', dependsOn, blockedBy: [], ready: true, createdAt: time, updatedAt: time });
 let records: Map<string, TaskDetail>;
@@ -49,12 +49,12 @@ const otherRecords = new Map<string, TaskDetail>();
 const graph = (): TaskGraph => {
   const tasks = [...records.values()].map((task) => {
     const blockedBy = task.dependsOn.filter((dependency) => records.get(dependency)!.status !== 'done');
-    return { assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
+    return { assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0, createdAt: time, updatedAt: task.updatedAt };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: project, name: 'Approval project', repoUrl: 'https://example.com/repo', createdAt: time, updatedAt: time }, tasks,
     summary: { total: tasks.length,
-      todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length,
+      todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, cancelled: 0,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length } };
 };
 const commit = (taskId = child): TaskDetail => {
@@ -70,7 +70,7 @@ const deferred = <T,>() => {
 const stat = (label: string) => screen.getByText(label, { selector: '.stat-label' }).parentElement!.querySelector('.stat-number')!;
 let root: HTMLDivElement;
 beforeEach(() => {
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.version, propertiesForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.properties }));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncReadFixture(taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.version, propertiesForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.properties })));
 });
 
 beforeEach(() => {
@@ -107,6 +107,16 @@ const openChild = async () => {
   return dialog;
 };
 
+const openChildFromChain = async () => {
+  const toggle = await screen.findByRole('button', { name: /^Task 1/, expanded: false });
+  fireEvent.click(toggle);
+  const children = document.getElementById(`goal-children-${parent}`)!;
+  fireEvent.click(within(children).getByRole('button', { name: /^Task 2/ }));
+  const dialog = await screen.findByRole('dialog', { name: 'Task 2' });
+  await within(dialog).findByRole('heading', { name: 'Task 2' });
+  return dialog;
+};
+
 describe('status in shared production task details', () => {
   it.each(['status', 'automatic poll'] as const)('keeps another task Markdown-linked attachment draft and upload mounted during a background detail refresh triggered by %s', async (trigger) => {
     if (trigger === 'automatic poll') vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
@@ -121,10 +131,9 @@ describe('status in shared production task details', () => {
     records.set(standalone, { ...records.get(standalone)!, description: '# Task materials\n\n[Selected attachment](kept.txt)' });
     let otherReads = 0;
     vi.mocked(getTask).mockImplementation(async (_project, taskId) => taskId === standalone && ++otherReads === 2 ? refresh.promise : records.get(taskId)!);
-    await mount(); let dialog = await openChild();
+    await mount(); let dialog = await openChildFromChain();
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
-    closeGraph();
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
     dialog = detailDialog();
@@ -197,7 +206,7 @@ describe('status in shared production task details', () => {
     vi.mocked(setTaskStatus).mockRejectedValueOnce(original);
     renderWithLocale(<TaskDetailSessionProvider><Subject /></TaskDetailSessionProvider>, { taskCache: true, locale: 'en', container: root });
     await selectTaskList();
-    const dialog = await openChild();
+    const dialog = await openChildFromChain();
     access.mockClear().mockResolvedValue(directAccessFixture(project));
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await waitFor(() => expect(access).toHaveBeenCalled());
@@ -229,9 +238,9 @@ describe('status in shared production task details', () => {
     otherRecords.set(otherTask, other);
     const otherGraph: TaskGraph = { observedAt: "2026-10-20T12:00:00Z",
       project: { ...graph().project, id: otherProject, name: 'Other project' },
-      tasks: [{ assignedTo: other.assignedTo, requiredPlatform: other.requiredPlatform, allowAgents: other.allowAgents, externalDependsOn: other.externalDependsOn, startedAt: null, completedAt: null, id: otherTask, titlePreview: other.title, titleTruncated: false, status: 'todo',
+      tasks: [{ assignedTo: other.assignedTo, requiredPlatform: other.requiredPlatform, allowAgents: other.allowAgents, externalDependsOn: other.externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null, id: otherTask, titlePreview: other.title, titleTruncated: false, status: 'todo',
         dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time }],
-      summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
+      summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
     };
     graphRequest.mockImplementation(async (projectId) => projectId === project ? graph() : otherGraph);
     vi.mocked(getTask).mockImplementation(async (projectId, taskId) => projectId === project ? records.get(taskId)! : other);

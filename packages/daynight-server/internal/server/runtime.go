@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -65,8 +66,10 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 	}
 	r.closeLock <- struct{}{}
 	r.http = &http.Server{
-		Handler: httpx.RequestLogging(logger, r.admit(handler)), ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return requests },
+		Handler: httpx.RequestLogging(logger, httpx.LimitRequestTarget(logger, r.admit(handler))), ReadHeaderTimeout: 5 * time.Second,
+		// net/http adds 4096 bytes of read-ahead to MaxHeaderBytes.
+		MaxHeaderBytes: transport.MaxRequestHeadersBytes - 4096,
+		IdleTimeout:    60 * time.Second, BaseContext: func(net.Listener) context.Context { return requests },
 	}
 	return r, nil
 }
@@ -219,7 +222,13 @@ func (r *Runtime) grace() error {
 		r.startAppDrain(ctx)
 		appErr = r.waitAppDrain(ctx)
 	}
-	r.graceErr = errors.Join(httpErr, drainErr, relayErr, appErr)
+	// Resource release belongs to the same budget as transport and application
+	// draining. A timed-out process must not close dependencies still in use.
+	var closeErr error
+	if httpErr == nil && drainErr == nil && r.relayDone && appErr == nil && r.appDrained && ctx.Err() == nil {
+		closeErr = r.finish(ctx)
+	}
+	r.graceErr = errors.Join(httpErr, drainErr, relayErr, appErr, closeErr)
 	if ctx.Err() != nil && !errors.Is(r.graceErr, context.DeadlineExceeded) {
 		r.graceErr = errors.Join(r.graceErr, ctx.Err())
 	}
@@ -242,6 +251,9 @@ func (r *Runtime) grace() error {
 	}
 	if appErr != nil && !onlyContextError(appErr) {
 		return appErr
+	}
+	if closeErr != nil && !onlyContextError(closeErr) {
+		return closeErr
 	}
 	return nil
 }
@@ -340,13 +352,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	_ = r.acquireClose(context.Background())
 	graceErr := r.grace()
-	cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	var cleanupErr error
-	if graceErr == nil {
-		cleanupErr = r.finish(cleanup)
-	}
-	cancel()
-	shutdownErr := errors.Join(r.graceErr, graceErr, cleanupErr)
+	shutdownErr := errors.Join(r.graceErr, graceErr)
 	r.closeLock <- struct{}{}
 	if !served {
 		serveErr = <-result

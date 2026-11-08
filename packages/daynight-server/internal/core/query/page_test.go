@@ -3,12 +3,14 @@ package query
 import (
 	"encoding/base64"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 )
 
 func TestListCursorBindingAndFormat(t *testing.T) {
@@ -61,6 +63,59 @@ func TestListCursorBindingAndFormat(t *testing.T) {
 				if _, err := ListPage(model.PageRequest{Limit: 5, Cursor: &raw}, scope); err == nil {
 					t.Fatalf("accepted invalid cursor %q", raw)
 				}
+			}
+		})
+	}
+}
+
+func TestCursorEncodedBoundBeforeDecode(t *testing.T) {
+	id := "f47ac10b-58cc-11cf-a447-001122334455"
+	scope := store.ProjectScope{Kind: store.ProjectScopeAll}
+	listScope := ListScope{Kind: "teams", UserID: id}
+	list, err := EncodeListCursor(listScope, time.Now(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := EncodeProjectCursor(model.Project{ID: id, CreatedAt: time.Now()}, id, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, encoded string
+		parse         func(string) error
+	}{
+		{"list", list, func(s string) error {
+			_, err := ListPage(model.PageRequest{Limit: 1, Cursor: &s}, listScope)
+			return err
+		}},
+		{"project", project, func(s string) error {
+			_, err := ProjectListPage(model.PageRequest{Limit: 1, Cursor: &s}, id, scope)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := base64.RawURLEncoding.DecodeString(tc.encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = append(raw, []byte(strings.Repeat(" ", transport.MaxEncodedCursorBytes*3/4-len(raw)))...)
+			boundary := base64.RawURLEncoding.EncodeToString(raw)
+			if len(boundary) != transport.MaxEncodedCursorBytes {
+				t.Fatal("bad fixture")
+			}
+			if err := tc.parse(boundary); err != nil {
+				t.Fatalf("boundary rejected: %v", err)
+			}
+			if err := tc.parse(boundary + "A"); err == nil {
+				t.Fatal("accepted oversized cursor")
+			}
+			oversized := strings.Repeat("A", 1<<20)
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			_ = tc.parse(oversized)
+			runtime.ReadMemStats(&after)
+			if used := after.TotalAlloc - before.TotalAlloc; used > 64<<10 {
+				t.Fatalf("oversized cursor allocated %d bytes", used)
 			}
 		})
 	}

@@ -233,14 +233,6 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 	if err := authorize(principal, "oauth", grant); err != nil {
 		t.Fatal(err)
 	}
-	// Hold authorization after the access lock until that access expires. The
-	// final clock check must reject it even though it was valid at admission.
-	shortAccess := uuid.NewString()
-	hash := make([]byte, 32)
-	hash[0] = 3
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, shortAccess, grant, user, hash, now, time.Now().Add(2*time.Second)); err != nil {
-		t.Fatal(err)
-	}
 	blocker, err := db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -253,6 +245,33 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 	if _, err := blocker.Exec(ctx, `SELECT 1 FROM project_ownership WHERE project_id=$1 FOR UPDATE`, projectID); err != nil {
 		t.Fatal(err)
 	}
+	newExpiringAccess := func(marker byte) (string, time.Time) {
+		t.Helper()
+		id := uuid.NewString()
+		hash := make([]byte, 32)
+		hash[0] = marker
+		var expiry time.Time
+		if err := db.Pool.QueryRow(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at)
+			VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '500 milliseconds') RETURNING expires_at`, id, grant, user, hash, now).Scan(&expiry); err != nil {
+			t.Fatal(err)
+		}
+		return id, expiry
+	}
+	waitForExpiry := func(expiry time.Time) {
+		t.Helper()
+		var live bool
+		if err := db.Pool.QueryRow(ctx, `SELECT $1::timestamptz>clock_timestamp()`, expiry).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		if !live {
+			t.Fatal("credential expired before its lock wait was observed")
+		}
+		if _, err := db.Pool.Exec(ctx, `SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.005)`, expiry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The credential stays locked while real database time crosses its expiry.
+	shortAccess, shortExpiry := newExpiringAccess(3)
 	shortPrincipal := principal
 	shortPrincipal.CredentialID = shortAccess
 	result := make(chan error, 1)
@@ -273,7 +292,7 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	time.Sleep(2100 * time.Millisecond)
+	waitForExpiry(shortExpiry)
 	if err := blocker.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -282,11 +301,6 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 	}
 	// The ledger can be contended after authorization. Expiry while waiting
 	// must roll back a reservation instead of accepting an expired credential.
-	ledgerAccess := uuid.NewString()
-	hash[0] = 4
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, ledgerAccess, grant, user, hash, now, time.Now().Add(2*time.Second)); err != nil {
-		t.Fatal(err)
-	}
 	transfer := transferRecord(user, now)
 	transfer.ProjectID = projectID
 	transfer.TaskID = taskID
@@ -310,6 +324,7 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 	if _, err := ledgerBlocker.Exec(ctx, `SELECT 1 FROM private_transfer_ledger WHERE singleton FOR UPDATE`); err != nil {
 		t.Fatal(err)
 	}
+	ledgerAccess, ledgerExpiry := newExpiringAccess(4)
 	ledgerPrincipal := principal
 	ledgerPrincipal.CredentialID = ledgerAccess
 	go func() {
@@ -341,7 +356,7 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	time.Sleep(2100 * time.Millisecond)
+	waitForExpiry(ledgerExpiry)
 	if err := ledgerBlocker.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -46,10 +46,13 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 	if current.Status == input.Status {
 		return store.TaskWrite{}, false, nil
 	}
-	if (input.Status == model.TaskInProgress || input.Status == model.TaskDone) && len(current.BlockedBy) > 0 {
-		return store.TaskWrite{}, false, &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
+	if current.Status == model.TaskCancelled {
+		return store.TaskWrite{}, false, cancelledTransition()
 	}
-	if current.Status == model.TaskDone {
+	if input.Status.RequiresSatisfiedPrerequisites() && len(current.BlockedBy) > 0 {
+		return store.TaskWrite{}, false, &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done or cancelled.", TaskIDs: current.BlockedBy}
+	}
+	if current.Status == model.TaskDone && !input.Status.IsTerminal() {
 		dependents, err := dao.ActiveDependentIDs(ctx, current.ID)
 		if err != nil {
 			return store.TaskWrite{}, false, err
@@ -74,18 +77,22 @@ func StatusCandidate(ctx context.Context, dao store.TaskWriteDAO, principal mode
 		var err error
 		values.Properties, err = properties.WithWorker(values.Properties, &next)
 		if err != nil {
-			return store.TaskWrite{}, false, err
+			return store.TaskWrite{}, false, PropertyInputError(err)
 		}
 	} else {
 		if input.ClaimID != nil {
 			return store.TaskWrite{}, false, ClaimConflict()
 		}
-		if worker != nil && worker.State == model.WorkerReleased {
+		if worker != nil && worker.State == model.WorkerReleased && input.Status != model.TaskCancelled {
 			return store.TaskWrite{}, false, &model.Fault{Code: "invalid_transition", Message: "Released worker execution requires a controlled continuation of its original worktree."}
 		}
 	}
 	values.Status = input.Status
 	return values, true, nil
+}
+
+func cancelledTransition() error {
+	return &model.Fault{Code: "invalid_transition", Message: "Cancelled tasks cannot resume execution or change status."}
 }
 
 func ClaimConflict() error {

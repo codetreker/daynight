@@ -52,10 +52,5 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		outcome = "changed"
 	}
 	logger.InfoContext(request.Context(), "task status set", "type", "resource", "component", "task", "phase", "set_status", "outcome", outcome, "request_id", httpx.RequestID(request.Context()))
-	response, err := taskResponse(task, request)
-	if err != nil {
-		httpx.WriteError(w, request, logger, "task", "status", err)
-		return
-	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
+	writeTaskMutation(w, request, logger, "task", http.StatusOK, "", task)
 }

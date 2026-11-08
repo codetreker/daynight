@@ -2,7 +2,6 @@ package auth
 
 import (
 	"errors"
-	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
@@ -39,6 +39,7 @@ func (h *Authentication) registerDeviceRoutes(mux *http.ServeMux) {
 func (h *Authentication) requireDeviceBrowser(next httpx.AuthenticatedHandler) http.HandlerFunc {
 	return h.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 		if p.Kind != model.SessionCredential {
+			httpx.CloseUnreadBody(w, r)
 			httpx.WriteError(w, r, h.logger, "auth", "device_browser", &model.Fault{Code: "forbidden", Message: "A main-site browser session is required for this operation."})
 			return
 		}
@@ -55,10 +56,14 @@ func (h *Authentication) deviceError(w http.ResponseWriter, r *http.Request, sta
 func deviceForm(w http.ResponseWriter, r *http.Request, required ...string) (url.Values, error) {
 	media, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/x-www-form-urlencoded" || parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8") || r.URL.RawQuery != "" {
+		httpx.CloseUnreadBody(w, r)
 		return nil, httpx.InvalidInput("Device authorization requires a UTF-8 form body without query parameters.")
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
-	if err != nil || !utf8.Valid(body) {
+	body, err := httpx.ReadBody(w, r, 4096, transport.JSONBodyReadTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if !utf8.Valid(body) {
 		return nil, httpx.InvalidInput("Device authorization form exceeds its input limit.")
 	}
 	values, err := url.ParseQuery(string(body))
@@ -106,6 +111,11 @@ func (h *Authentication) deviceCode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	values, err := deviceForm(w, r, "client_id")
 	if err != nil {
+		var bodyErr *httpx.BodyReadError
+		if errors.As(err, &bodyErr) {
+			httpx.WriteBodyError(w, r, h.logger, "auth", "device_code", err)
+			return
+		}
 		h.deviceError(w, r, 400, "invalid_request")
 		return
 	}
@@ -129,6 +139,11 @@ func (h *Authentication) deviceToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	values, err := deviceForm(w, r, "client_id", "grant_type", "device_code", "device_name")
 	if err != nil {
+		var bodyErr *httpx.BodyReadError
+		if errors.As(err, &bodyErr) {
+			httpx.WriteBodyError(w, r, h.logger, "auth", "device_token", err)
+			return
+		}
 		h.deviceError(w, r, 400, "invalid_request")
 		return
 	}

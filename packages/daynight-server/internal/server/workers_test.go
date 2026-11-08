@@ -101,9 +101,10 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	id := uuid.NewString()
 	path := "/api/v1/me/workers/" + id
-	for _, body := range []string{"", `null`, `[]`, `{}`, `{"state":true}`, `{"machine":null,"machine":null}`, strings.Repeat(" ", httpx.MaxJSONBody) + "{}", string([]byte{'{', 0xff, '}'})} {
+	for _, body := range []string{"", `null`, `[]`, `{}`, `{"state":true}`, `{"machine":null,"machine":null}`, string([]byte{'{', 0xff, '}'})} {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, path+"/report", body), http.StatusBadRequest, "invalid_input")
 	}
+	assertProjectError(t, projectRequest(handler, http.MethodPost, path+"/report", strings.Repeat(" ", httpx.MaxJSONBody)+"{}"), http.StatusRequestEntityTooLarge, "payload_too_large")
 	for _, mutate := range []func(map[string]any){
 		func(b map[string]any) { b["userId"] = uuid.NewString() }, func(b map[string]any) { b["workingDirectory"] = "NUL\x00" }, func(b map[string]any) { b["platform"] = "unknown" },
 		func(b map[string]any) { b["cpu"].(map[string]any)["value"].(map[string]any)["usagePercent"] = 101 },

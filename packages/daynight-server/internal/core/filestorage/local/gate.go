@@ -25,6 +25,90 @@ type gatePermit struct {
 	err   error
 }
 
+type residencyPermit struct {
+	storage *Storage
+	key     string
+	file    *os.File
+	once    sync.Once
+	err     error
+}
+
+func (p *residencyPermit) Close() error {
+	p.once.Do(func() {
+		p.err = p.file.Close()
+		p.storage.residencyMu.Lock()
+		delete(p.storage.residency, p.key)
+		p.storage.residencyMu.Unlock()
+	})
+	return p.err
+}
+
+var _ filestorage.ResidencyGate = (*Storage)(nil)
+
+// TryAcquireResidency uses a separate exact-key namespace from the blocking
+// striped gates. Lock files persist: unlinking one could split a lock across
+// descriptors that another instance has already opened.
+func (s *Storage) TryAcquireResidency(ctx context.Context, key string) (io.Closer, error) {
+	if key == "" {
+		return nil, errors.New("empty residency gate key")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.residencyMu.Lock()
+	if s.residency == nil {
+		s.residency = make(map[string]struct{})
+	}
+	if _, exists := s.residency[key]; exists {
+		s.residencyMu.Unlock()
+		return nil, filestorage.ErrGateBusy
+	}
+	s.residency[key] = struct{}{}
+	s.residencyMu.Unlock()
+	acquired := false
+	defer func() {
+		if !acquired {
+			s.residencyMu.Lock()
+			delete(s.residency, key)
+			s.residencyMu.Unlock()
+		}
+	}()
+	if err := s.root.Mkdir(gateDirectory, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, fmt.Errorf("create gate directory: %w", err)
+	}
+	info, err := s.root.Lstat(gateDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("inspect gate directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%w: gate directory", filestorage.ErrNotRegular)
+	}
+	hash := sha256.Sum256([]byte(key))
+	name := fmt.Sprintf("%s/residency-%x", gateDirectory, hash)
+	file, err := s.root.OpenFile(name, os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open residency gate: %w", err)
+	}
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = filestorage.ErrNotRegular
+		}
+		return nil, errors.Join(err, file.Close())
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+			err = filestorage.ErrGateBusy
+		}
+		return nil, errors.Join(err, file.Close())
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	acquired = true
+	return &residencyPermit{storage: s, key: key, file: file}, nil
+}
+
 func (p *gatePermit) Close() error {
 	p.once.Do(func() {
 		p.err = p.file.Close() // Closing the descriptor releases the advisory lock.

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -118,11 +119,24 @@ func TestSourceResetAndCursorRecoveryKeepStableTimelineIdentity(t *testing.T) {
 	if next.err != nil || len(next.page["items"].([]sp.TimelineEntry)) != 2 {
 		t.Fatal("after page", next.err)
 	}
-	read = readPage(ctx, f, v, "before", "invalid", 1)
+	readCtx, cancelRead := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelRead()
+	read = readPage(readCtx, f, v, "before", "controller-owned-invalid-cursor", 1)
 	request = nextContent(t, f, v)
+	if request["kind"] != "timeline" || request["direction"] != "before" || request["cursor"] != "controller-owned-invalid-cursor" || request["limit"] != 1 {
+		t.Fatalf("local cursor request changed: %#v", request)
+	}
 	replyContent(t, f, v, request, nil, &sp.OperationError{Code: "reset_required", Message: "Local cursor invalid"})
-	if got := <-read; got.err == nil {
-		t.Fatal("invalid local cursor accepted")
+	got := <-read
+	var rejected *model.Fault
+	if !errors.As(got.err, &rejected) || rejected.Code != "reset_required" || got.page != nil {
+		t.Fatalf("local cursor reset response: page=%#v error=%v", got.page, got.err)
+	}
+	f.s.content.mu.Lock()
+	pending := len(f.s.content.pending)
+	f.s.content.mu.Unlock()
+	if pending != 0 {
+		t.Fatal("completed cursor reset retained a content request")
 	}
 
 	for _, args := range []struct {

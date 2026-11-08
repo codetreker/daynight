@@ -22,6 +22,10 @@ type TaskGraphSelection struct {
 type TaskStepProjection struct {
 	Step           model.TaskStep
 	TitleTruncated bool
+	// Oversized means the full text was withheld before crossing the database boundary.
+	Oversized bool
+	// InvalidTitle records a title consisting entirely of Unicode whitespace.
+	InvalidTitle bool
 }
 
 type TaskReader interface {
