@@ -8,6 +8,7 @@ import { browserNavigation } from "../src/app/navigation";
 import { navigate, parseAuthRoute } from "../src/app/router";
 import type { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { WebhooksPage } from "../src/features/webhooks/WebhooksPage";
+import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -21,6 +22,7 @@ const flush = () => act(async () => { for (let i = 0; i < 80; i++) await Promise
 const barrier = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 
 const mount = async ({ strict = false, initial = [endpoint()], expand = true, firstReadFailure }: { readonly strict?: boolean; readonly initial?: readonly WebhookActiveEndpoint[]; readonly expand?: boolean; readonly firstReadFailure?: "network" | "media" | "503" } = {}) => {
+  const media = mockSidebarMediaQuery();
   vi.stubGlobal("crypto", { subtle: webcrypto.subtle, randomUUID });
   const lifetime = new AbortController();
   const admission = { userId, signal: lifetime.signal, ready: async (signal: AbortSignal) => signal.throwIfAborted(), isInvalidated: false, principalMismatch: vi.fn() } as unknown as TaskCacheScope;
@@ -78,7 +80,7 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true, fi
   const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active={active} route={route} catalog={{ ...catalog, service: { ...catalog.service, configurationExpansionAvailable: expansionAvailable } }}/> : null; };
   const content = () => strict ? <StrictMode><View/></StrictMode> : <View/>;
   const rendered = renderWithLocale(content(), { locale: "en" }); await flush();
-  return { ...rendered, fetch, writes, resources, receipts, admission, loseNextWrite: () => { loseWrite = true; }, holdNextWrite: () => { holdWrite = true; }, releaseWrite: () => { holdWrite = false; writeBarrier.resolve(writeResponse!); }, secretReads: () => secretReads, setExpansion: (value: boolean) => { expansionAvailable = value; rendered.rerender(content()); }, setTeamAuthorization: (role: typeof teamRole, version: number) => { teamRole = role; teamVersion = version; }, intercept: (value: typeof intercept) => { intercept = value; }, pause: () => { active = false; rendered.rerender(content()); }, resume: () => { active = true; rendered.rerender(content()); } };
+  return { ...rendered, media, fetch, writes, resources, receipts, admission, loseNextWrite: () => { loseWrite = true; }, holdNextWrite: () => { holdWrite = true; }, releaseWrite: () => { holdWrite = false; writeBarrier.resolve(writeResponse!); }, secretReads: () => secretReads, setExpansion: (value: boolean) => { expansionAvailable = value; rendered.rerender(content()); }, setTeamAuthorization: (role: typeof teamRole, version: number) => { teamRole = role; teamVersion = version; }, intercept: (value: typeof intercept) => { intercept = value; }, pause: () => { active = false; rendered.rerender(content()); }, resume: () => { active = true; rendered.rerender(content()); } };
 };
 const openEdit = () => fireEvent.click(screen.getByRole("button", { name: "Edit Endpoint 5" }));
 const setName = (name: string) => { const input = screen.getByRole("textbox", { name: /^Name$/ }); fireEvent.change(input, { target: { value: name } }); return input as HTMLInputElement; };
@@ -96,6 +98,25 @@ describe("Webhook configuration page", () => {
     const held = barrier<Response>(); view.intercept((url, init) => url.startsWith("/api/v1/me/webhooks?") && (init.method === undefined || init.method === "GET") ? held.promise : null); fireEvent.focus(window); await flush();
     fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 8", level: 2 });
     held.resolve(failure(503, "database_unavailable")); await flush(); expect(screen.getByRole("heading", { name: "Endpoint 8", level: 2 })).toBeVisible(); expect(screen.queryByRole("alert")).toBeNull(); expect(document.querySelectorAll(".endpoint-row")).toHaveLength(1); expect(view.writes).toHaveLength(0);
+  });
+
+  it.each([403, 404] as const)("retains scope, drafts and secrets for a malformed %s response until a validated retry", async status => {
+    const teamEndpoint = { ...endpoint(), owner: { kind: "team" as const, id: teamId } }; const view = await mount({ initial: [teamEndpoint] }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); const input = setName("Retained draft"), dialog = screen.getByRole("dialog");
+    view.intercept(url => url.startsWith(`/api/v1/teams/${teamId}/webhooks?`) ? Promise.resolve(new Response(JSON.stringify({ error: { code: status === 403 ? "forbidden" : "not_found", message: "Failure", requestId: "media-test" } }), { status, headers: { "Content-Type": "text/html", "Daynight-User-ID": userId } })) : null);
+    fireEvent.focus(window); await screen.findByRole("alert"); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Retained draft"); expect(document.body.textContent).toContain("private=hidden"); expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible(); expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    view.intercept(url => url.startsWith(`/api/v1/teams/${teamId}/webhooks?`) ? Promise.resolve(new Response('{"error":{"code":"forbidden"}}', { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } })) : null); fireEvent.focus(window); await flush(); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Retained draft");
+    view.intercept(null); fireEvent.click(screen.getByRole("button", { name: "Retry" })); await waitFor(() => expect(screen.queryByRole("alert")).toBeNull()); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Retained draft"); expect(view.writes).toHaveLength(0);
+  });
+
+  it("clears revealed secrets on narrow Back and requires a new read for the same endpoint", async () => {
+    const view = await mount(); act(() => view.media.webhook.setNarrow(true)); fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); await flush(); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Back to endpoints" })); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); await flush(); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(2);
+  });
+
+  it("clears the secret when responsive layout exits the detail area and refuses a pending reply after Back", async () => {
+    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); act(() => view.media.webhook.setNarrow(true)); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); act(() => view.media.webhook.setNarrow(false)); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
+    fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); await flush(); const held = barrier<Response>(); let admitted = false; view.intercept(url => url.endsWith("/signing-secret") ? (admitted = true, held.promise) : null); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await waitFor(() => expect(admitted).toBe(true)); act(() => view.media.webhook.setNarrow(true)); fireEvent.click(screen.getByRole("button", { name: "Back to endpoints" }));
+    held.resolve(response({ endpointId, configVersion: "1", keyId, scheme: "standard-webhooks-v1", secret: `whsec_${Buffer.alloc(32, 7).toString("base64")}` })); await flush(); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.getByRole("button", { name: "Show secret", hidden: true })).toBeEnabled();
   });
 
   it("loads the real nullable summary shape and requires an explicit team selection", async () => {

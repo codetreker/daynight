@@ -29,11 +29,17 @@ type ModalBody =
 type Modal = { readonly scope: string; readonly opener: HTMLElement | null } & ModalBody;
 const isBusy = (state: WebhookIntentState) => state.phase === "preparing" || state.phase === "submitting";
 const blockedIntent = (state: WebhookIntentState) => isBusy(state) || state.phase === "unknown" || state.reconciling;
+const useNarrowWebhookLayout = (): boolean => {
+  const query = useMemo(() => window.matchMedia("(max-width: 1080px)"), []);
+  const subscribe = useMemo(() => (listener: () => void) => { query.addEventListener("change", listener); return () => query.removeEventListener("change", listener); }, [query]);
+  return useSyncExternalStore(subscribe, () => query.matches);
+};
+
 
 export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   readonly user: CurrentUser; readonly admission: TaskCacheScope; readonly active: boolean; readonly route: WebhookRoute; readonly catalog: WebhookCatalog;
 }) => {
-  const m = useWebhookMessages();
+  const m = useWebhookMessages(), narrow = useNarrowWebhookLayout();
   const owner = useMemo<WebhookOwner | null>(() => route.owner === "personal" ? { kind: "personal", id: user.id } : route.teamId === null ? null : { kind: "team", id: route.teamId }, [route.owner, route.teamId, user.id]);
   const scope = owner === null ? null : webhookOwnerKey(owner);
   const [filters, setFilters] = useState<ReadonlyMap<string, { readonly q: string; readonly enabled: "all" | "enabled" | "paused" }>>(new Map());
@@ -48,7 +54,8 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   if (previousSelection.current !== selectionKey) { previousSelection.current = selectionKey; interactionSequence.current++; }
   const data = useWebhookData(owner, route.endpointId, query, admission, canRead, directories.getAuthorization, directories.authorizationRevision, directories.observeConfiguration, directories.observeOwnerDenied);
   const sourceEndpoint = data.endpoint?.lifecycle === "active" ? data.endpoint : null;
-  const controllers = useRef(new Map<string, WebhookIntentController>()), controllerAuthorizations = useRef(new Map<string, string>()), operationExpansions = useRef(new Map<string, boolean>()), live = useRef({ active: canRead, owner, endpoint: sourceEndpoint, catalog, manageOwner: ownerAuthorization?.manage === true });
+  const secretAreaVisible = route.tab === "configuration" && (!narrow || route.endpointId !== null);
+  const controllers = useRef(new Map<string, WebhookIntentController>()), controllerAuthorizations = useRef(new Map<string, string>()), operationExpansions = useRef(new Map<string, boolean>()), live = useRef({ active: canRead, owner, endpoint: sourceEndpoint, catalog, secretAreaVisible, manageOwner: ownerAuthorization?.manage === true });
   let controller: WebhookIntentController | null = null;
   if (owner !== null && route.error === null) {
     controller = controllers.current.get(webhookOwnerKey(owner)) ?? null;
@@ -63,14 +70,14 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const deletedByReceipt = intent.phase === "confirmed" && intent.result?.operation.kind === "endpoint.delete" ? intent.result.operation.endpointId : null;
   const endpoint = sourceEndpoint?.id === deletedByReceipt ? null : sourceEndpoint;
   const visibleItems = data.items === null ? null : data.items.filter(item => item.id !== deletedByReceipt);
-  live.current = { active: canRead, owner, endpoint, catalog, manageOwner: ownerAuthorization?.manage === true };
+  live.current = { active: canRead, owner, endpoint, catalog, secretAreaVisible, manageOwner: ownerAuthorization?.manage === true };
   const [modal, setModal] = useState<Modal | null>(null), [menu, setMenu] = useState<string | null>(null), [rotation, setRotation] = useState<"overlap" | "immediate">("overlap"), [secret, setSecret] = useState<{ readonly scope: string; readonly value: WebhookSecret } | null>(null), [secretBusy, setSecretBusy] = useState(false), [secretError, setSecretError] = useState<unknown>(null), [copyStatus, setCopyStatus] = useState<string | null>(null), [localError, setLocalError] = useState<unknown>(null);
   const secretSequence = useRef(0), handled = useRef(new Set<string>()), lifecycle = useRef(0), listRef = useRef<HTMLElement>(null);
   const writeFences = useRef(new Map<string, WebhookReadFence | null>());
   const saveListPosition = useWebhookListPosition(listRef, JSON.stringify([scope, query]), route.endpointId !== null, visibleItems !== null);
   useEffect(() => { const generation = ++lifecycle.current; return () => { queueMicrotask(() => { if (lifecycle.current === generation) { for (const value of controllers.current.values()) value.dispose(); controllers.current.clear(); } }); }; }, []);
   useEffect(() => { setModal(null); setMenu(null); setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); setLocalError(null); secretSequence.current++; }, [scope]);
-  useEffect(() => { setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); secretSequence.current++; }, [endpoint?.id, endpoint?.signing.activeKeyId, endpoint?.capabilities.readSecret, route.tab]);
+  useEffect(() => { setSecret(null); setSecretBusy(false); setSecretError(null); setCopyStatus(null); secretSequence.current++; }, [endpoint?.id, endpoint?.signing.activeKeyId, endpoint?.capabilities.readSecret, route.tab, route.endpointId, secretAreaVisible]);
   useEffect(() => { if (ownerAuthorization?.manage !== true) { setSecret(null); setSecretError(null); setSecretBusy(false); setModal(null); secretSequence.current++; } }, [ownerAuthorization?.key]);
   useEffect(() => {
     for (const [scope, controller] of controllers.current) {
@@ -125,14 +132,14 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   };
   const patch = (body: WebhookIntentInput["body"]) => { if (endpoint !== null && manage) void submit({ kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body }).catch(setLocalError); };
   const reveal = async () => {
-    if (owner === null || endpoint === null || !manageOwner || !endpoint.capabilities.readSecret || !canRead || secretBusy) return;
+    if (owner === null || endpoint === null || !manageOwner || !endpoint.capabilities.readSecret || !secretAreaVisible || !canRead || secretBusy) return;
     if (secret !== null) { setSecret(null); secretSequence.current++; return; }
     const generation = ++secretSequence.current, requested = endpoint, fence = data.captureFence();
     setSecretBusy(true); setSecretError(null); setCopyStatus(null);
     try {
       const value = await getWebhookSecret(owner, endpoint.id, admission.signal, { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: signal => admission.ready(signal) });
       const current = live.current.endpoint;
-      if (fence !== null && data.fenceCurrent(fence) && generation === secretSequence.current && live.current.active && current?.id === requested.id && current.capabilities.readSecret && current.signing.activeKeyId === value.keyId && current.configVersion === value.configVersion && scope !== null) setSecret({ scope, value });
+      if (fence !== null && data.fenceCurrent(fence) && generation === secretSequence.current && live.current.active && live.current.secretAreaVisible && current?.id === requested.id && current.capabilities.readSecret && current.signing.activeKeyId === value.keyId && current.configVersion === value.configVersion && scope !== null) setSecret({ scope, value });
     } catch (error) { if (generation === secretSequence.current && !admission.isInvalidated) setSecretError(error); }
     finally { if (generation === secretSequence.current) setSecretBusy(false); }
   };
@@ -150,7 +157,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
       else open({ kind: action, endpoint: value }, opener);
     } catch (error) { if (!admission.isInvalidated) setLocalError(error); }
   };
-  const displayedSecret = secret !== null && secret.scope === scope && endpoint?.capabilities.readSecret && endpoint.signing.activeKeyId === secret.value.keyId ? secret.value.secret : null;
+  const displayedSecret = secretAreaVisible && secret !== null && secret.scope === scope && endpoint?.capabilities.readSecret && endpoint.signing.activeKeyId === secret.value.keyId ? secret.value.secret : null;
   const copy = async () => {
     if (displayedSecret === null) { await reveal(); return; }
     try { await navigator.clipboard.writeText(displayedSecret); setCopyStatus(m.copied); }

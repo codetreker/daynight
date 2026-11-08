@@ -21,6 +21,7 @@ export type WebhookData = {
   readonly authorizationKey: string | null;
 };
 const empty = (): WebhookData => ({ items: null, nextCursor: null, endpoint: null, endpointId: null, error: null, detailError: null, refreshing: false, queryKey: null, pageCount: 0, authorizationKey: null });
+const serverFailure = (error: unknown, status: number, code: string): error is ApiError => error instanceof ApiError && error.kind === "server" && error.status === status && error.code === code;
 export const webhookOwnerKey = (owner: WebhookOwner): string => `${owner.kind}:${owner.id}`;
 
 export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | null, query: WebhookListQuery, admission: TaskCacheScope, active: boolean, getAuthorization: WebhookAuthorizationResolver, authorizationRevision: number, observeConfiguration: WebhookConfigurationObservation, observeOwnerDenied: WebhookOwnerDenial) => {
@@ -97,21 +98,21 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
           });
         } catch (detailError) {
           if (live()) {
-            if (detailError instanceof ApiError && detailError.status === 403) {
+            if (serverFailure(detailError, 403, "forbidden")) {
               const denied = observeOwnerDenied(scope, authorization.key);
               update(scopeKey, () => ({ ...empty(), endpointId: chosen, detailError, authorizationKey: denied.key }));
-            } else update(scopeKey, old => ({ ...old, endpointId: chosen, endpoint: detailError instanceof ApiError && detailError.status === 404 ? null : old.endpoint?.id === chosen ? old.endpoint : null, detailError }));
+            } else update(scopeKey, old => ({ ...old, endpointId: chosen, endpoint: serverFailure(detailError, 404, "not_found") ? null : old.endpoint?.id === chosen ? old.endpoint : null, detailError }));
           }
         }
       } else update(scopeKey, old => ({ ...old, endpoint: null, endpointId: null, detailError: null }));
     } catch (error) {
       if (live()) {
-        if (error instanceof ApiError && error.status === 403) {
+        if (serverFailure(error, 403, "forbidden")) {
           const denied = observeOwnerDenied(scope, authorization.key);
           update(scopeKey, () => ({ ...empty(), error, authorizationKey: denied.key }));
         } else update(scopeKey, previous => ({
           ...(previous.authorizationKey === authorization.key ? previous : { ...empty(), endpointId: selected ?? previous.endpointId }),
-          ...(error instanceof ApiError && error.status === 404 ? { items: null, endpoint: null } : {}),
+          ...(serverFailure(error, 404, "not_found") ? { items: null, endpoint: null } : {}),
           error, refreshing: false, authorizationKey: authorization.key,
         }));
       }
@@ -159,10 +160,10 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
       return { endpoint, fence: { ...fence, authorizationKey: endpointAuthorization.key } };
     } catch (error) {
       if (signal.aborted || !fenceCurrent(fence)) return null;
-      if (error instanceof ApiError && error.status === 403) {
+      if (serverFailure(error, 403, "forbidden")) {
         const denied = observeOwnerDenied(owner, authorization.key);
         update(ownerKey, old => ({ ...empty(), endpointId: old.endpointId, authorizationKey: denied.key }));
-      } else if (error instanceof ApiError && error.status === 404) update(ownerKey, old => ({ ...old, items: old.items === null ? null : old.items.filter(item => item.id !== endpointId), endpoint: old.endpoint?.id === endpointId ? null : old.endpoint, detailError: old.endpointId === endpointId ? error : old.detailError }));
+      } else if (serverFailure(error, 404, "not_found")) update(ownerKey, old => ({ ...old, items: old.items === null ? null : old.items.filter(item => item.id !== endpointId), endpoint: old.endpoint?.id === endpointId ? null : old.endpoint, detailError: old.endpointId === endpointId ? error : old.detailError }));
       throw error;
     }
   };

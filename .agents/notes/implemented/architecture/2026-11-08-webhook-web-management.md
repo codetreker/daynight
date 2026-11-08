@@ -35,11 +35,15 @@ generation and confirmed Team membership role/version. A directory-confirmed
 downgrade or a newer restrictive endpoint or summary observation invalidates old
 administrator projections, including summaries and cached views on return. An
 unchanged older directory cannot restore permission; a new membership identity or
-version provides fresh authority. Validated owner-forbidden responses revoke the whole owner, while resource
-absence remains local. Original receipts remain independent. These reads preserve mounted
+version provides fresh authority. Only media/principal-validated server error semantics revoke an owner or
+withdraw a missing resource; protocol failures carrying those statuses retain
+verified state and recovery. Owner-forbidden revokes the whole owner, while
+resource absence remains local. Original receipts remain independent. These reads preserve mounted
 nodes, drafts, focus, selected tabs and loaded pagination through unchanged
 background checks. Confirmed identity or disclosure changes
-withdraw private values. Storage cleanup failures remain visible and retryable
+withdraw private values. Explicit or responsive departure from the secret
+region removes its plaintext and invalidates late reads, including when the
+endpoint cache remains available. Storage cleanup failures remain visible and retryable
 without blocking identity quarantine. Native dialogs inherit page language and
 keep keyboard isolation, opener restoration and reachable scrolling actions.
 The [browser design](../../../../docs/design/webhook-web.md) owns the mechanisms
