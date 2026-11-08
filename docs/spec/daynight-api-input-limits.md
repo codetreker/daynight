@@ -36,7 +36,7 @@
 
 ## 传输额度
 
-普通 REST JSON body 上限为 1 MiB，普通 MCP body 为 4 MiB；附件实际文件的 5 MiB 额度由附件入口接入。raw query、request-target、HTTP/1 请求行与头合计上限分别为 24 KiB、48 KiB、64 KiB，通用 encoded cursor 为 16 KiB；既有更小的专用 cursor 限制继续适用。普通短 body 从读取开始限时 15 秒。附件和归档分别提供 60 秒和 120 秒读取期限合同，由各自入口接入。Session、SSE、WebSocket 和长轮询沿用自己的协议及生命周期，不套用普通 body 期限。认证后的 MCP 预读每实例最多 16 个，独立于工具预算。
+普通 REST JSON body 上限为 1 MiB，普通 MCP body 为 4 MiB；附件实际文件的 5 MiB 额度由附件入口接入。raw query、request-target、HTTP/1 请求行与头合计上限分别为 24 KiB、48 KiB、64 KiB，通用 encoded cursor 为 16 KiB；既有更小的专用 cursor 限制继续适用。普通短 body 从读取开始限时 15 秒。Content-Length 与 chunked 正文使用相同实际字节上限；超限返回 `413 payload_too_large`，读取超时在可写时返回 `408 request_timeout`。关闭失败正文导致请求 context 取消时，终止拒绝仍须有界尝试发送，业务处理保持取消。附件和归档分别提供 60 秒和 120 秒读取期限合同，由各自入口接入。Session、SSE、WebSocket 和长轮询沿用自己的协议及生命周期，不套用普通 body 期限。认证后的 MCP 预读每实例最多 16 个，独立于工具预算。
 
 ## 输出与剩余范围
 
