@@ -120,6 +120,29 @@ export const parseWebhookSecret = (value: unknown, endpointId: string) => {
   return { endpointId, configVersion: webhookVersion(d.configVersion), keyId: id(d.keyId), scheme: oneOf(d.scheme, ["standard-webhooks-v1"] as const), secret };
 };
 
+const retention = (value: unknown) => { const d = fields(value, ["payloadRetentionSeconds", "metadataRetentionSeconds"]); return { payloadRetentionSeconds: positive(d.payloadRetentionSeconds), metadataRetentionSeconds: positive(d.metadataRetentionSeconds) }; };
+export const parseWebhookDelivery = (value: unknown, owner: WebhookOwner, endpointId: string, expectedId?: string) => {
+  const d = fields(value, ["id", "endpointId", "eventId", "owner", "eventType", "resource", "occurredAt", "resourceVersion", "target", "generation", "state", "attemptCount", "automaticAttemptCount", "manualOperationCount", "nextAttemptAt", "lastAttemptAt", "expiresAt", "automaticExpiresAt", "payloadExpiresAt", "lastAcknowledgedAt", "lastResult", "payloadAvailable", "disclosure"]);
+  const deliveryId = id(d.id); if (id(d.endpointId) !== endpointId || (expectedId !== undefined && deliveryId !== expectedId)) return malformed();
+  const r = fields(d.resource, ["projectId", "taskId", "stepId", "messageId", "displayName"]), t = fields(d.target, ["destinationRevision", "url", "displayUrl"]);
+  const step = nullable(r.stepId, string); if (step !== null && !/^[0-9a-f]{8}$/.test(step)) return malformed();
+  if (d.disclosure === "metadata_only" && (d.eventType !== null || d.resourceVersion !== null || Object.values(r).some((item) => item !== null) || t.url !== null || t.displayUrl !== null || d.payloadAvailable !== false)) return malformed();
+  if (d.disclosure === "full" && (d.eventType === null || r.projectId === null || r.taskId === null || t.displayUrl === null)) return malformed();
+  return { id: deliveryId, endpointId, eventId: id(d.eventId), owner: parseWebhookOwner(d.owner, owner), eventType: nullable(d.eventType, parseWebhookEventType), resource: { projectId: nullable(r.projectId, id), taskId: nullable(r.taskId, id), stepId: step, messageId: nullable(r.messageId, id), displayName: nullable(r.displayName, string) }, occurredAt: timestamp(d.occurredAt), resourceVersion: nullable(d.resourceVersion, webhookVersion), target: { destinationRevision: webhookVersion(t.destinationRevision), url: nullable(t.url, nonempty), displayUrl: nullable(t.displayUrl, nonempty) }, generation: webhookVersion(d.generation), state: oneOf(d.state, ["pending", "leased", "delivered", "failed", "suppressed"] as const), attemptCount: count(d.attemptCount), automaticAttemptCount: count(d.automaticAttemptCount), manualOperationCount: count(d.manualOperationCount), nextAttemptAt: nullableTimestamp(d.nextAttemptAt), lastAttemptAt: nullableTimestamp(d.lastAttemptAt), expiresAt: timestamp(d.expiresAt), automaticExpiresAt: timestamp(d.automaticExpiresAt), payloadExpiresAt: timestamp(d.payloadExpiresAt), lastAcknowledgedAt: nullableTimestamp(d.lastAcknowledgedAt), lastResult: nullable(d.lastResult, result), payloadAvailable: boolean(d.payloadAvailable), disclosure: oneOf(d.disclosure, ["full", "metadata_only"] as const) };
+};
+export const parseWebhookAttempt = (value: unknown, endpointId: string, deliveryId: string) => {
+  const d = fields(value, ["id", "endpointId", "deliveryId", "generation", "number", "claimedAt", "admittedAt", "dispatchedAt", "finishedAt", "outcome", "httpStatus", "durationMs", "error", "recoveredUnknownAt", "lateResult"]);
+  if (id(d.endpointId) !== endpointId || id(d.deliveryId) !== deliveryId) return malformed();
+  const error = nullable(d.error, (v) => { const e = fields(v, ["category", "code", "message"]); return { category: outcome(e.category), code: nonempty(e.code), message: string(e.message) }; });
+  const lateResult = nullable(d.lateResult, (v) => { const e = fields(v, ["observedAt", "outcome", "httpStatus", "durationMs", "error"]); return { observedAt: timestamp(e.observedAt), outcome: outcome(e.outcome), httpStatus: nullable(e.httpStatus, httpStatus), durationMs: nullable(e.durationMs, count), error: nullable(e.error, nonempty) }; });
+  return { id: id(d.id), endpointId, deliveryId, generation: webhookVersion(d.generation), number: positive(d.number), claimedAt: timestamp(d.claimedAt), admittedAt: nullableTimestamp(d.admittedAt), dispatchedAt: nullableTimestamp(d.dispatchedAt), finishedAt: nullableTimestamp(d.finishedAt), outcome: nullable(d.outcome, outcome), httpStatus: nullable(d.httpStatus, httpStatus), durationMs: nullable(d.durationMs, count), error, recoveredUnknownAt: nullableTimestamp(d.recoveredUnknownAt), lateResult };
+};
+export const parseWebhookHistoryPage = <T>(value: unknown, parse: (value: unknown) => T) => {
+  const d = fields(value, ["items", "nextCursor", "historyMayBeIncomplete", "retention"]);
+  if (d.historyMayBeIncomplete !== true) return malformed();
+  return { items: array(d.items, parse), nextCursor: nullable(d.nextCursor, nonempty), historyMayBeIncomplete: true as const, retention: retention(d.retention) };
+};
+
 export type WebhookCatalog = ReturnType<typeof parseWebhookCatalog>;
 export type WebhookEndpoint = ReturnType<typeof parseWebhookEndpoint>;
 export type WebhookActiveEndpoint = Extract<WebhookEndpoint, { lifecycle: "active" }>;
@@ -130,6 +153,14 @@ export type WebhookSubscription = ReturnType<typeof parseWebhookSubscription>;
 export type WebhookEventType = ReturnType<typeof parseWebhookEventType>;
 export type WebhookReceipt = ReturnType<typeof parseWebhookReceipt>;
 export type WebhookSecret = ReturnType<typeof parseWebhookSecret>;
+export type WebhookDelivery = ReturnType<typeof parseWebhookDelivery>;
+export type WebhookAttempt = ReturnType<typeof parseWebhookAttempt>;
+export type WebhookHistoryPage<T> = { readonly items: readonly T[]; readonly nextCursor: string | null; readonly historyMayBeIncomplete: true; readonly retention: ReturnType<typeof retention> };
+export type WebhookDeliveryPage = WebhookHistoryPage<WebhookDelivery>;
+export type WebhookAttemptPage = WebhookHistoryPage<WebhookAttempt>;
+export type WebhookDeliveryQuery = { readonly eventType?: WebhookEventType; readonly state?: WebhookDelivery["state"]; readonly projectId?: string; readonly from?: string; readonly to?: string; readonly limit?: number; readonly cursor?: string };
+export type WebhookAttemptQuery = { readonly generation?: string; readonly limit?: number; readonly cursor?: string };
+export type WebhookPayload = { readonly owner: WebhookOwner; readonly endpointId: string; readonly deliveryId: string; readonly eventId: string; readonly mediaType: "application/cloudevents+json"; readonly encoding: "base64"; readonly body: string; readonly bytes: number; readonly sha256: string; readonly rawBytes: Uint8Array<ArrayBuffer>; readonly text: string };
 export type WebhookOperationKind = WebhookReceipt["kind"];
 export type WebhookAdmission = { readonly userId: string; readonly onPrincipalMismatch: () => void; readonly ready?: (signal: AbortSignal) => Promise<void> };
 export type WebhookListQuery = { readonly q?: string; readonly enabled?: boolean; readonly limit?: number; readonly cursor?: string };
@@ -139,6 +170,7 @@ export type WebhookConfigurationInput = { readonly name?: string; readonly enabl
 export type WebhookMutationResult = {
   readonly operation: WebhookReceipt;
   readonly endpoint?: WebhookEndpoint;
+  readonly delivery?: WebhookDelivery;
   readonly signing?: { readonly activeKeyId: string; readonly overlapUntil: string | null };
   readonly currentError?: ApiError;
 };
@@ -239,23 +271,108 @@ export const getWebhookSecret = (owner: WebhookOwner, endpointId: string, signal
 export const getWebhookOperation = (owner: WebhookOwner, operationId: string, signal: AbortSignal, admission: WebhookAdmission): Promise<WebhookReceipt> =>
   exchange(`${webhookBase(owner, admission.userId)}/operations/${requestId(operationId)}`, signal, admission, value => parseWebhookReceipt(value, owner, requestId(operationId)));
 
+const historyQuery = (query: WebhookDeliveryQuery | WebhookAttemptQuery, kind: "deliveries" | "attempts"): URLSearchParams => {
+  const allowed = kind === "deliveries" ? ["eventType", "state", "projectId", "from", "to", "limit", "cursor"] : ["generation", "limit", "cursor"];
+  if (Object.keys(query).some(field => !allowed.includes(field))) throw new ApiError("protocol");
+  const parameters = new URLSearchParams();
+  if (query.limit !== undefined) { if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new ApiError("protocol"); parameters.set("limit", String(query.limit)); }
+  if (query.cursor !== undefined) { if (query.cursor === "" || !query.cursor.isWellFormed()) throw new ApiError("protocol"); parameters.set("cursor", query.cursor); }
+  if (kind === "attempts") {
+    const attempts = query as WebhookAttemptQuery;
+    if (attempts.generation !== undefined) parameters.set("generation", webhookVersion(attempts.generation));
+  } else {
+    const deliveries = query as WebhookDeliveryQuery;
+    if (deliveries.eventType !== undefined) parameters.set("eventType", parseWebhookEventType(deliveries.eventType));
+    if (deliveries.state !== undefined) parameters.set("state", oneOf(deliveries.state, ["pending", "leased", "delivered", "failed", "suppressed"] as const));
+    if (deliveries.projectId !== undefined) parameters.set("projectId", id(deliveries.projectId));
+    for (const field of ["from", "to"] as const) {
+      const value = deliveries[field];
+      if (value !== undefined) { if (!value.endsWith("Z") || !isWebhookIssuedAt(value)) throw new ApiError("protocol"); parameters.set(field, value); }
+    }
+    if (deliveries.from !== undefined && deliveries.to !== undefined && timeKey(deliveries.from) > timeKey(deliveries.to)) throw new ApiError("protocol");
+  }
+  return parameters;
+};
+const timeKey = (value: string): string => `${value.slice(0, 19)}${(value.match(/\.(\d+)Z$/)?.[1] ?? "").slice(0, 9).padEnd(9, "0")}`;
+const historyPath = (owner: WebhookOwner, endpointId: string, userId: string): string => `${webhookBase(owner, userId)}/${requestId(endpointId)}/deliveries`;
+const validateHistoryPage = <T extends { readonly id: string }>(page: WebhookHistoryPage<T>, cursor: string | undefined, compare: (left: T, right: T) => number): WebhookHistoryPage<T> => {
+  if (new Set(page.items.map(item => item.id)).size !== page.items.length || cursor !== undefined && page.nextCursor === cursor || page.items.some((item, index) => index > 0 && compare(page.items[index - 1]!, item) >= 0)) return malformed();
+  return page;
+};
+const lexical = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
+
+export const listWebhookDeliveries = (owner: WebhookOwner, endpointId: string, query: WebhookDeliveryQuery, signal: AbortSignal, admission: WebhookAdmission): Promise<WebhookDeliveryPage> => {
+  const parameters = historyQuery(query, "deliveries"), path = historyPath(owner, endpointId, admission.userId);
+  return exchange(`${path}${parameters.size === 0 ? "" : `?${parameters}`}`, signal, admission, value => validateHistoryPage(parseWebhookHistoryPage(value, item => parseWebhookDelivery(item, owner, requestId(endpointId))), query.cursor, (left, right) => lexical(timeKey(left.occurredAt), timeKey(right.occurredAt)) || lexical(left.id, right.id)));
+};
+export const getWebhookDelivery = (owner: WebhookOwner, endpointId: string, deliveryId: string, signal: AbortSignal, admission: WebhookAdmission): Promise<WebhookDelivery> =>
+  exchange(`${historyPath(owner, endpointId, admission.userId)}/${requestId(deliveryId)}`, signal, admission, value => parseWebhookDelivery(value, owner, requestId(endpointId), requestId(deliveryId)));
+export const listWebhookAttempts = (owner: WebhookOwner, endpointId: string, deliveryId: string, query: WebhookAttemptQuery, signal: AbortSignal, admission: WebhookAdmission): Promise<WebhookAttemptPage> => {
+  const parameters = historyQuery(query, "attempts"), path = `${historyPath(owner, endpointId, admission.userId)}/${requestId(deliveryId)}/attempts`;
+  return exchange(`${path}${parameters.size === 0 ? "" : `?${parameters}`}`, signal, admission, value => {
+    const page = parseWebhookHistoryPage(value, item => parseWebhookAttempt(item, requestId(endpointId), requestId(deliveryId)));
+    if (query.generation !== undefined && page.items.some(item => item.generation !== query.generation)) return malformed();
+    return validateHistoryPage(page, query.cursor, (left, right) => BigInt(left.generation) < BigInt(right.generation) ? -1 : BigInt(left.generation) > BigInt(right.generation) ? 1 : left.number - right.number || lexical(left.id, right.id));
+  });
+};
+
+const parsePayloadEnvelope = (value: unknown, owner: WebhookOwner, endpointId: string, deliveryId: string, eventId: string) => {
+  const data = fields(value, ["owner", "endpointId", "deliveryId", "eventId", "mediaType", "encoding", "body", "bytes", "sha256"]);
+  parseWebhookOwner(data.owner, owner);
+  if (id(data.endpointId) !== endpointId || id(data.deliveryId) !== deliveryId || id(data.eventId) !== eventId || data.mediaType !== "application/cloudevents+json" || data.encoding !== "base64") return malformed();
+  const body = string(data.body), sha256 = string(data.sha256);
+  if (body.length > 87_384 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body) || !/^[a-f0-9]{64}$/.test(sha256)) return malformed();
+  const decoded = atob(body), rawBytes = Uint8Array.from(decoded, character => character.charCodeAt(0));
+  if (btoa(decoded) !== body || rawBytes.length > 65_536 || count(data.bytes) !== rawBytes.length) return malformed();
+  return { owner, endpointId, deliveryId, eventId, mediaType: "application/cloudevents+json" as const, encoding: "base64" as const, body, bytes: rawBytes.length, sha256, rawBytes };
+};
+const verifyPayload = async (payload: ReturnType<typeof parsePayloadEnvelope>, signal: AbortSignal): Promise<WebhookPayload> => {
+  try {
+    signal.throwIfAborted();
+    const digest = await crypto.subtle.digest("SHA-256", payload.rawBytes);
+    signal.throwIfAborted();
+    const sha256 = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (sha256 !== payload.sha256) return malformed();
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(payload.rawBytes);
+    return { ...payload, text };
+  } catch (cause) {
+    signal.throwIfAborted();
+    throw new ApiError("protocol", 200, "protocol", null, undefined, cause);
+  }
+};
+export const parseWebhookPayload = async (value: unknown, owner: WebhookOwner, endpointId: string, deliveryId: string, eventId: string, signal: AbortSignal): Promise<WebhookPayload> =>
+  verifyPayload(parsePayloadEnvelope(value, owner, endpointId, deliveryId, eventId), signal);
+export const getWebhookPayload = async (owner: WebhookOwner, endpointId: string, deliveryId: string, eventId: string, signal: AbortSignal, admission: WebhookAdmission): Promise<WebhookPayload> => {
+  const expectedEventId = requestId(eventId);
+  const path = `${historyPath(owner, endpointId, admission.userId)}/${requestId(deliveryId)}/payload`;
+  const payload = await exchange(path, signal, admission, value => parsePayloadEnvelope(value, owner, requestId(endpointId), requestId(deliveryId), expectedEventId));
+  return verifyPayload(payload, signal);
+};
+
 export const submitWebhookMutation = (
-  owner: WebhookOwner, kind: Exclude<WebhookOperationKind, "delivery.redeliver">, endpointId: string | null, operationId: string,
+  owner: WebhookOwner, kind: WebhookOperationKind, endpointId: string | null, operationId: string,
   serializedBody: string, signal: AbortSignal, admission: WebhookAdmission, onReceipt: (receipt: WebhookReceipt) => void, onDispatch?: () => void,
+  deliveryId: string | null = null,
 ): Promise<WebhookMutationResult> => {
   const base = webhookBase(owner, admission.userId);
-  if (!["endpoint.create", "endpoint.patch", "endpoint.delete", "signing-secret.rotate"].includes(kind) || new TextEncoder().encode(serializedBody).length > 262_144) throw new ApiError("protocol");
-  const create = kind === "endpoint.create", rotate = kind === "signing-secret.rotate";
+  if (!["endpoint.create", "endpoint.patch", "endpoint.delete", "signing-secret.rotate", "delivery.redeliver"].includes(kind) || new TextEncoder().encode(serializedBody).length > 262_144) throw new ApiError("protocol");
+  const create = kind === "endpoint.create", rotate = kind === "signing-secret.rotate", redeliver = kind === "delivery.redeliver";
   if (create !== (endpointId === null)) throw new ApiError("protocol");
+  if (redeliver !== (deliveryId !== null)) throw new ApiError("protocol");
   const resource = create ? base : `${base}/${requestId(endpointId!)}`;
-  const url = rotate ? `${resource}/signing-secret/rotations` : resource;
-  const method = create || rotate ? "POST" : kind === "endpoint.patch" ? "PATCH" : "DELETE";
+  const url = redeliver ? `${resource}/deliveries/${requestId(deliveryId!)}/redeliveries` : rotate ? `${resource}/signing-secret/rotations` : resource;
+  const method = create || rotate || redeliver ? "POST" : kind === "endpoint.patch" ? "PATCH" : "DELETE";
   return exchange(url, signal, admission, value => {
-    const data = fields(value, ["operation", rotate ? "signing" : "endpoint"]);
+    const data = fields(value, ["operation", redeliver ? "delivery" : rotate ? "signing" : "endpoint"]);
     const operation = parseWebhookReceipt(data.operation, owner, operationId);
-    if (operation.kind !== kind || endpointId !== null && operation.endpointId !== endpointId) return malformed();
+    if (operation.kind !== kind || endpointId !== null && operation.endpointId !== endpointId || operation.deliveryId !== deliveryId) return malformed();
     onReceipt(operation);
     try {
+      if (redeliver) {
+        const delivery = parseWebhookDelivery(data.delivery, owner, operation.endpointId, deliveryId!);
+        if (BigInt(delivery.generation) < BigInt(operation.generationAfter!) || delivery.target.destinationRevision !== operation.destinationRevisionAfter) return malformed();
+        return { operation, delivery };
+      }
       if (!rotate) return { operation, endpoint: parseWebhookEndpoint(data.endpoint, owner, operation.endpointId) };
       const signing = fields(data.signing, ["activeKeyId", "overlapUntil"]);
       const activeKeyId = id(signing.activeKeyId), overlapUntil = nullableTimestamp(signing.overlapUntil);
@@ -264,5 +381,5 @@ export const submitWebhookMutation = (
     } catch (cause) {
       return { operation, currentError: new ApiError("protocol", null, "protocol", null, undefined, cause) };
     }
-  }, { method, headers: { "Content-Type": "application/json" }, body: serializedBody }, create ? [200, 201] : [200], onDispatch);
+  }, { method, headers: { "Content-Type": "application/json" }, body: serializedBody }, redeliver ? [202] : create ? [200, 201] : [200], onDispatch);
 };
