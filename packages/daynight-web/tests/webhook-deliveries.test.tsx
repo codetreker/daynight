@@ -2,7 +2,7 @@ import { createHash, webcrypto } from "node:crypto";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { parseWebhookCatalog, type WebhookActiveEndpoint, type WebhookAttempt, type WebhookDelivery } from "../src/api/webhooks";
+import { parseWebhookCatalog, type WebhookActiveEndpoint, type WebhookAttempt, type WebhookDelivery, type WebhookReceipt } from "../src/api/webhooks";
 import type { CurrentUser } from "../src/api/auth-types";
 import type { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import type { WebhookIntentInput, WebhookIntentState } from "../src/features/webhook-intents/controller";
@@ -29,13 +29,14 @@ beforeEach(() => vi.stubGlobal("crypto", { subtle: webcrypto.subtle }));
 
 const mount = ({ initialId = null, items = [delivery()], interceptInitial = () => null }: { readonly initialId?: string | null; readonly items?: readonly WebhookDelivery[]; readonly interceptInitial?: (url: URL) => Promise<Response> | null } = {}) => {
   const lifetime = new AbortController(), denied = vi.fn(), submitted = vi.fn<(input: WebhookIntentInput) => Promise<WebhookIntentState>>().mockResolvedValue(idle);
+  const controller = { getSnapshot: vi.fn((): WebhookIntentState => idle), forgetCurrentProjection: vi.fn(), reconcile: async () => idle };
   const admission = { userId, signal: lifetime.signal, ready: async (signal: AbortSignal) => signal.throwIfAborted(), isInvalidated: false, principalMismatch: vi.fn() } as unknown as TaskCacheScope;
   let detail = items[0] ?? delivery(), intercept: ((url: URL) => Promise<Response> | null) | null = interceptInitial;
   const fetch = vi.fn((input: string) => { const url = new URL(input, location.origin), held = intercept?.(url); if (held !== null && held !== undefined) return held; if (url.pathname.endsWith("/payload")) return Promise.resolve(response(payloadResponse())); if (url.pathname.endsWith("/attempts")) return Promise.resolve(response(page([attempt]))); if (url.pathname.endsWith("/deliveries")) return Promise.resolve(response(page(items))); return Promise.resolve(response(detail)); });
   vi.stubGlobal("fetch", fetch);
-  const View = ({ visible = true, auth = "owner-1", value = endpoint, readable = true, manager = true }: { readonly visible?: boolean; readonly auth?: string; readonly value?: WebhookHistoryEndpoint; readonly readable?: boolean; readonly manager?: boolean }) => { const [selected, setSelected] = useState(initialId); return <section className="webhooks"><WebhookDeliveriesPanel owner={owner} endpoint={value} admission={admission} active={readable} visible={visible} authorizationKey={auth} catalog={catalog} controller={{ getSnapshot: () => idle, forgetCurrentProjection: vi.fn(), reconcile: async () => idle } as never} intent={idle} submit={submitted} onOwnerDenied={denied} onRefreshEndpoint={() => {}} routeDeliveryId={selected} onSelectDelivery={setSelected} manageOwner={manager}/></section>; };
+  const View = ({ visible = true, auth = "owner-1", value = endpoint, readable = true, manager = true }: { readonly visible?: boolean; readonly auth?: string; readonly value?: WebhookHistoryEndpoint; readonly readable?: boolean; readonly manager?: boolean }) => { const [selected, setSelected] = useState(initialId); return <section className="webhooks"><WebhookDeliveriesPanel owner={owner} endpoint={value} admission={admission} active={readable} visible={visible} authorizationKey={auth} catalog={catalog} controller={controller as never} intent={idle} submit={submitted} onOwnerDenied={denied} onRefreshEndpoint={() => {}} routeDeliveryId={selected} onSelectDelivery={setSelected} manageOwner={manager}/></section>; };
   const rendered = renderWithLocale(<View/>, { locale: "en" });
-  return { ...rendered, denied, submitted, fetch, setDetail: (value: WebhookDelivery) => { detail = value; }, intercept: (read: typeof intercept) => { intercept = read; }, rerenderView: (props: Parameters<typeof View>[0]) => rendered.rerender(<View {...props}/>) };
+  return { ...rendered, denied, submitted, fetch, controller, setDetail: (value: WebhookDelivery) => { detail = value; }, intercept: (read: typeof intercept) => { intercept = read; }, rerenderView: (props: Parameters<typeof View>[0]) => rendered.rerender(<View {...props}/>) };
 };
 const open = async () => { const row = await screen.findByRole("button", { name: /task.created.*Failed/ }); fireEvent.click(row); return screen.findByRole("dialog", { name: "Delivery details" }); };
 
@@ -117,6 +118,40 @@ describe("webhook delivery diagnostics", () => {
     await act(async () => held.resolve(response(page([delivery()]))));
     expect(document.body).not.toHaveTextContent("Original title"); expect(document.body).not.toHaveTextContent("token=private");
     view.intercept(null); fireEvent.focus(window); await within(screen.getByRole("dialog")).findByText("Original title"); expect(view.submitted).not.toHaveBeenCalled();
+  });
+  it("fences an initial URL-only restricted detail against an earlier full list and forgets a private current write projection", async () => {
+    const held = barrier<Response>(), limited: WebhookDelivery = { ...delivery(), target: { ...delivery().target, url: null, displayUrl: "https://receiver.test/…" } };
+    const view = mount({ initialId: deliveryId, interceptInitial: url => url.pathname.endsWith("/deliveries") ? held.promise : url.pathname.endsWith(`/deliveries/${deliveryId}`) ? Promise.resolve(response(limited)) : null });
+    const receipt: WebhookReceipt = { operationId: id(90), kind: "delivery.redeliver", issuedAt: occurred, requestSha256: "a".repeat(64), actorUserId: userId, owner, endpointId, effect: "applied", configVersionAfter: endpoint.configVersion, destinationRevisionAfter: "12", deliveryId, generationAfter: delivery().generation, keyId: null, overlapUntil: null, recordedAt: occurred, expiresAt: expires };
+    view.controller.getSnapshot.mockReturnValue({ ...idle, phase: "confirmed", result: { operation: receipt, delivery: delivery() } });
+    const dialog = await screen.findByRole("dialog"); await within(dialog).findByText("https://receiver.test/…");
+    await act(async () => held.resolve(response(page([delivery()]))));
+    expect(document.body).not.toHaveTextContent("token=private"); expect(within(dialog).getByRole("button", { name: /^Redeliver$/ })).toBeDisabled(); expect(view.controller.forgetCurrentProjection).toHaveBeenCalled(); expect(view.controller.getSnapshot().result?.operation).toBe(receipt);
+    view.intercept(null); view.setDetail(delivery()); fireEvent.focus(window); await within(dialog).findByText(endpoint.destination.url!); expect(view.denied).not.toHaveBeenCalled(); expect(view.submitted).not.toHaveBeenCalled();
+  });
+  it("shares a URL-only list restriction with an earlier full detail while retaining authorized resource information", async () => {
+    const view = mount(); const dialog = await open(), held = barrier<Response>();
+    const limited = { ...delivery(), target: { ...delivery().target, url: null, displayUrl: "https://receiver.test/…" } };
+    view.intercept(url => url.pathname.endsWith("/deliveries") ? Promise.resolve(response(page([limited]))) : url.pathname.endsWith(`/deliveries/${deliveryId}`) ? held.promise : null);
+    fireEvent.focus(window); await within(dialog).findByText("https://receiver.test/…"); await act(async () => held.resolve(response(delivery())));
+    expect(document.body).not.toHaveTextContent("token=private"); expect(within(dialog).getByText("Original title")).toBeVisible(); expect(view.denied).not.toHaveBeenCalled(); expect(view.submitted).not.toHaveBeenCalled();
+  });
+  it("withdraws the selected history, payload and confirmation after an authoritative Attempt404 and fences earlier full reads", async () => {
+    const view = mount(); const dialog = await open(); fireEvent.click(within(dialog).getByRole("button", { name: "View payload" })); await within(dialog).findByLabelText("Event payload"); fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    const heldList = barrier<Response>(), heldDetail = barrier<Response>();
+    view.intercept(url => url.pathname.endsWith("/attempts") ? Promise.resolve(failure(404, "not_found")) : url.pathname.endsWith("/deliveries") ? heldList.promise : url.pathname.endsWith(`/deliveries/${deliveryId}`) ? heldDetail.promise : null);
+    fireEvent.focus(window); await within(dialog).findByText("This history has expired; its absence does not mean the event never occurred.");
+    expect(within(dialog).queryByLabelText("Event payload")).toBeNull(); expect(within(dialog).queryByText("Confirm redelivery")).toBeNull();
+    await act(async () => { heldList.resolve(response(page([delivery()]))); heldDetail.resolve(response(delivery())); });
+    expect(document.body).not.toHaveTextContent("Original title"); expect(document.body).not.toHaveTextContent("token=private"); expect(view.denied).not.toHaveBeenCalled(); expect(view.submitted).not.toHaveBeenCalled();
+  });
+  it("ignores an Attempt404 belonging to an earlier selection after another delivery is opened", async () => {
+    const next: WebhookDelivery = { ...delivery(8), eventId: id(9), resource: { ...delivery(8).resource, displayName: "Next delivery" } }, held = barrier<Response>();
+    const view = mount({ initialId: deliveryId, items: [next, delivery()], interceptInitial: url => url.pathname.includes(`/deliveries/${deliveryId}/attempts`) ? held.promise : url.pathname.endsWith(`/deliveries/${deliveryId}`) ? Promise.resolve(response(delivery())) : url.pathname.endsWith(`/deliveries/${next.id}`) ? Promise.resolve(response(next)) : url.pathname.includes(`/deliveries/${next.id}/attempts`) ? Promise.resolve(response(page([]))) : url.pathname.includes(`/deliveries/${next.id}/payload`) ? Promise.resolve(response({ ...payloadResponse(), deliveryId: next.id, eventId: next.eventId })) : null });
+    const initial = await screen.findByRole("dialog"); await within(initial).findByText("Original title"); fireEvent.click(within(initial).getAllByRole("button", { name: "Close" })[1]!);
+    fireEvent.click(screen.getByRole("button", { name: /Next delivery/ })); const dialog = await screen.findByRole("dialog"); await within(dialog).findByText("Next delivery"); fireEvent.click(within(dialog).getByRole("button", { name: "View payload" })); const code = await within(dialog).findByLabelText("Event payload"); fireEvent.click(within(dialog).getByRole("button", { name: /^Redeliver$/ }));
+    await act(async () => held.resolve(failure(404, "not_found")));
+    expect(screen.getByRole("dialog")).toBe(dialog); expect(within(dialog).getByLabelText("Event payload")).toBe(code); expect(within(dialog).getByText("Confirm redelivery")).toBeVisible(); expect(within(dialog).getByText("Next delivery")).toBeVisible(); expect(view.denied).not.toHaveBeenCalled(); expect(view.submitted).not.toHaveBeenCalled();
   });
   it("treats payload 403 as a resource denial and keeps its error visible without revoking the owner", async () => {
     const view = mount(); const dialog = await open(); view.intercept(url => url.pathname.endsWith("/payload") ? Promise.resolve(failure(403, "forbidden")) : null);

@@ -1,7 +1,7 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebhookIntentController, assertWebhookReceiptMatches, clearWebhookPending, parseWebhookPreparedMetadata, type WebhookIntentInput, type WebhookPreparedMetadata } from "../src/features/webhook-intents/controller";
-import type { WebhookReceipt } from "../src/api/webhooks";
+import { WebhookIntentController, assertWebhookReceiptMatches, clearWebhookPending, parseWebhookPreparedMetadata, type WebhookIntentInput, type WebhookIntentTarget, type WebhookPreparedMetadata } from "../src/features/webhook-intents/controller";
+import { listWebhookAttempts, type WebhookReceipt } from "../src/api/webhooks";
 import { pauseAuthRequests } from "../src/api/client";
 
 const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
@@ -537,7 +537,47 @@ describe("Webhook fixed redelivery intents", () => {
   it("gates redelivery dispatch by operation kind before preparing an ID or write", () => {
     const generated = vi.spyOn(crypto, "randomUUID"), canSubmit = vi.fn(kind => kind !== "delivery.redeliver");
     const intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit }); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
-    expect(() => intent.submit(redeliveryInput())).toThrow(); expect(canSubmit).toHaveBeenCalledWith("delivery.redeliver"); expect(generated).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled(); expect(sessionStorage.length).toBe(0);
+    expect(() => intent.submit(redeliveryInput())).toThrow(); expect(canSubmit).toHaveBeenCalledWith("delivery.redeliver", { owner, endpointId, deliveryId, ifVersion: "9007199254740993", ifGeneration: "9007199254740993", destinationRevision: "1" }); expect(generated).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled(); expect(sessionStorage.length).toBe(0);
+  });
+  it("stops the original target after validated attempts404 while its native digest is pending", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    vi.stubGlobal("crypto", { randomUUID: webcrypto.randomUUID.bind(webcrypto), subtle: { digest: async (...args: Parameters<typeof webcrypto.subtle.digest>) => { entered(); await barrier; return webcrypto.subtle.digest(...args); } } });
+    const observed = new Map([[deliveryId, true], [uuid(99), true]]);
+    const canSubmit = vi.fn((_kind: string, target: WebhookIntentTarget) => observed.get(target.deliveryId!) === true);
+    const intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit });
+    const fetch = vi.fn().mockResolvedValue(failure(404, "not_found")); vi.stubGlobal("fetch", fetch);
+    const pending = intent.submit(redeliveryInput()); await waiting;
+    await expect(listWebhookAttempts(owner, endpointId, deliveryId, {}, new AbortController().signal, admission())).rejects.toMatchObject({ kind: "server", status: 404, code: "not_found" });
+    observed.set(deliveryId, false);
+    release(); const rejected = await pending;
+    expect(rejected.phase).toBe("rejected"); expect(rejected.prepared).toMatchObject({ endpointId, deliveryId, ifVersion: "9007199254740993", ifGeneration: "9007199254740993", destinationRevision: "1" });
+    expect(fetch.mock.calls.filter(call => call[1]?.method === "POST")).toHaveLength(0); expect(observed.get(uuid(99))).toBe(true);
+    expect(canSubmit.mock.calls).toHaveLength(2); expect(canSubmit.mock.calls[1]![1]).toBe(canSubmit.mock.calls[0]![1]); expect(canSubmit.mock.calls[1]![1].deliveryId).toBe(deliveryId);
+  });
+  it("passes one frozen original target at initial admission, readiness and actual-fetch boundaries", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    vi.stubGlobal("crypto", { randomUUID: webcrypto.randomUUID.bind(webcrypto), subtle: { digest: async (...args: Parameters<typeof webcrypto.subtle.digest>) => { entered(); await barrier; return webcrypto.subtle.digest(...args); } } });
+    const targets: WebhookIntentTarget[] = [], canSubmit = vi.fn((_kind: string, target: WebhookIntentTarget) => { targets.push(target); return true; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202)); vi.stubGlobal("fetch", fetch);
+    const input = { ...redeliveryInput() }, intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit });
+    const pending = intent.submit(input); Object.assign(input, { kind: "endpoint.patch", deliveryId: uuid(99), ifGeneration: "9007199254740999" }); await waiting; release(); const confirmed = await pending;
+    expect(confirmed.phase).toBe("confirmed"); expect(targets).toHaveLength(3); expect(targets.every(target => target === targets[0])).toBe(true);
+    expect(Object.isFrozen(targets[0])).toBe(true); expect(Object.isFrozen(targets[0]!.owner)).toBe(true);
+    expect(targets[0]).toEqual({ owner, endpointId, deliveryId, ifVersion: "9007199254740993", ifGeneration: "9007199254740993", destinationRevision: "1" });
+    expect(canSubmit.mock.calls.every(call => call[0] === "delivery.redeliver")).toBe(true);
+    expect(fetch.mock.calls[0]![0]).toContain(`/deliveries/${deliveryId}/redeliveries`); expect(JSON.parse(String(fetch.mock.calls[0]![1].body)).ifGeneration).toBe("9007199254740993");
+  });
+  it("keeps an original confirmed effect when current target reading and new admission are rejected", async () => {
+    const generated = vi.spyOn(crypto, "randomUUID"); let available = true;
+    const canSubmit = vi.fn((_kind: string, target: WebhookIntentTarget) => target.deliveryId === deliveryId && available);
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => options.method === "POST" ? response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202) : failure()); vi.stubGlobal("fetch", fetch);
+    const intent = new WebhookIntentController({ serviceOrigin, owner, admission: admission(), signal: new AbortController().signal, storage: sessionStorage, canSubmit }), first = await intent.submit(redeliveryInput());
+    await expect(listWebhookAttempts(owner, endpointId, deliveryId, {}, new AbortController().signal, admission())).rejects.toMatchObject({ status: 404 }); available = false; intent.forgetCurrentProjection();
+    const original = intent.getSnapshot(); expect(() => intent.submit(redeliveryInput())).toThrow(); expect(intent.getSnapshot()).toBe(original); expect(generated).toHaveBeenCalledOnce();
+    const unavailable = await intent.reconcile(); expect(unavailable.phase).toBe("confirmed"); expect(unavailable.result?.operation).toBe(first.result?.operation); expect(unavailable.result?.operation.generationAfter).toBe("9007199254740994"); expect(unavailable.error).toMatchObject({ status: 404 });
+    expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined, undefined]);
   });
   it.each([
     { ifGeneration: "01" }, { ifGeneration: "9223372036854775808" }, { ifGeneration: undefined }, { deliveryId: undefined }, { destinationRevision: undefined }, { body: { payload: "private" } },

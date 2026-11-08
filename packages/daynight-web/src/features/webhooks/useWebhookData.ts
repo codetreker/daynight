@@ -3,7 +3,7 @@ import { ApiError, listProjects } from "../../api/client";
 import { listTeams, type Team } from "../../api/teams";
 import type { Project } from "../../api/types";
 import { getWebhook, listWebhooks, type WebhookEndpoint, type WebhookEndpointSummary, type WebhookListQuery, type WebhookOwner } from "../../api/webhooks";
-import { assertOwnerDisclosure, ownerAuthorization, type WebhookAuthorizationResolver, type WebhookConfigurationObservation, type WebhookOwnerDenial, type WebhookTeamObservation } from "./authorization";
+import { assertOwnerDisclosure, ownerAuthorization, type WebhookAuthorizationResolver, type WebhookConfigurationObservation, type WebhookOwnerDenial, type WebhookOwnerManagementRestriction, type WebhookTeamObservation } from "./authorization";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 
 export type WebhookReadFence = { readonly ownerKey: string; readonly generation: number; readonly authorizationKey: string };
@@ -183,20 +183,25 @@ export const useWebhookDirectories = (owner: WebhookOwner | null, admission: Tas
   const observations = useRef<{ observed: boolean; teams: ReadonlyMap<string, WebhookTeamObservation> }>({ observed: false, teams: new Map() });
   const [authorizationRevision, setAuthorizationRevision] = useState(0);
   const getAuthorization = useCallback<WebhookAuthorizationResolver>(owner => ownerAuthorization(owner, admission.userId, observations.current.observed, observations.current.teams), [admission.userId]);
+  const observeManagementRestricted = useCallback<WebhookOwnerManagementRestriction>((owner, authorizationKey) => {
+    const authorization = getAuthorization(owner);
+    if (authorization.key !== authorizationKey || owner.kind !== "team") return authorization;
+    const old = observations.current.teams.get(owner.id);
+    if (old !== undefined && old.role === "admin" && !old.restricted) {
+      const next = new Map(observations.current.teams); next.set(owner.id, { ...old, restricted: true, epoch: old.epoch + 1 });
+      observations.current = { ...observations.current, teams: next }; setAuthorizationRevision(value => value + 1);
+    }
+    return getAuthorization(owner);
+  }, [getAuthorization]);
   const observeConfiguration = useCallback<WebhookConfigurationObservation>((endpoint, authorizationKey) => {
     const authorization = getAuthorization(endpoint.owner);
     if (authorization.key !== authorizationKey || endpoint.owner.kind !== "team" || "lifecycle" in endpoint && endpoint.lifecycle === "deleted" || "capabilities" in endpoint && endpoint.capabilities.manage || !("capabilities" in endpoint) && endpoint.destination.url !== null) return authorization;
     if (endpoint.destination.url !== null || "capabilities" in endpoint && (endpoint.capabilities.readSecret || endpoint.capabilities.redeliver)) throw new ApiError("protocol");
-    const old = observations.current.teams.get(endpoint.owner.id);
-    if (old !== undefined && old.role === "admin" && !old.restricted) {
-      const next = new Map(observations.current.teams); next.set(endpoint.owner.id, { ...old, restricted: true, epoch: old.epoch + 1 });
-      observations.current = { ...observations.current, teams: next }; setAuthorizationRevision(value => value + 1);
-    }
-    return getAuthorization(endpoint.owner);
-  }, [getAuthorization]);
+    return observeManagementRestricted(endpoint.owner, authorizationKey);
+  }, [getAuthorization, observeManagementRestricted]);
   const observeOwnerDenied = useCallback<WebhookOwnerDenial>((owner, authorizationKey) => {
     const authorization = getAuthorization(owner);
-    if (authorization.key !== authorizationKey || owner.kind !== "team") return authorization;
+    if (authorization.key !== authorizationKey && authorization.readKey !== authorizationKey || owner.kind !== "team") return authorization;
     const old = observations.current.teams.get(owner.id);
     if (old !== undefined && !old.denied) {
       const next = new Map(observations.current.teams); next.set(owner.id, { ...old, denied: true, epoch: old.epoch + 1 });
@@ -254,5 +259,5 @@ export const useWebhookDirectories = (owner: WebhookOwner | null, admission: Tas
     window.addEventListener("focus", check); document.addEventListener("visibilitychange", visible);
     return () => { window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", visible); };
   }, [active, admission]);
-  return { teams, getAuthorization, observeConfiguration, observeOwnerDenied, authorizationRevision, projects: projects?.key === key ? projects.items : null, error, refresh: () => setRevision(value => value + 1) };
+  return { teams, getAuthorization, observeConfiguration, observeManagementRestricted, observeOwnerDenied, authorizationRevision, projects: projects?.key === key ? projects.items : null, error, refresh: () => setRevision(value => value + 1) };
 };

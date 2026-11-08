@@ -56,10 +56,18 @@ attempts, historical acknowledgements, current failures and late observations.
 Payloads require an explicit independent read and are displayed as text only after
 identity, canonical Base64, length, SHA-256 and UTF-8 verification. A shared resource
 observation prevents old list or detail responses from restoring withdrawn private
-data. Retention deadlines also apply to delayed responses.
+data, including URL-only redaction that still permits full event and payload
+access. Management and readable membership observations remain separate, so a
+continuous admin-to-member change withdraws old manager views and signing secrets
+while preserving authorized history and payload state. A validated missing Attempt history withdraws the selected Delivery and
+its private current projection without changing a confirmed operation receipt.
+Known payload deadlines also apply to delayed responses; metadata retention uses
+authoritative reads.
 
 Changes use the observed configuration version and one fixed operation identity,
-request body and digest. Manual redelivery adds the observed original generation;
+request body and digest. Admission repeatedly validates the same frozen original
+resource target; selecting another eligible Delivery cannot authorize it. Manual
+redelivery adds the observed original generation;
 202 confirms registration, and subsequent reads observe actual sending. Its
 original receipt and current Delivery generation stay distinct. Unknown results
 reconcile the original receipt using GET; reloading keeps minimal operation

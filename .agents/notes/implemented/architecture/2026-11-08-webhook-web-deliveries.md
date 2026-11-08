@@ -22,18 +22,34 @@ tombstone while Delivery rows still reference it. The HTTP history contract also
 supports a missing endpoint with retained Delivery rows: a valid history route
 uses an explicit ID-only context after the configuration GET returns a validated
 404. It invents no name, version or capabilities. Both contexts expose history
-without current configuration or redelivery admission. Native dialogs preserve
+without current configuration or redelivery admission. A separate ID-only
+checking-configuration context preserves authorized history while a withdrawn
+configuration projection is being checked; it does not claim the endpoint is
+missing or invent an Endpoint DTO. Native dialogs preserve
 the workspace shell, language, focus and scroll behavior.
 
 A shared observation registry binds every list and detail read to its start
 observation. Each Delivery retains its latest generation and disclosure watermark.
-Restrictive metadata, payload denial or expiry and missing history advance that
-watermark across all readers. Older reads publish the current restricted view;
+Restrictive metadata, payload denial or expiry, URL-only destination redaction
+and missing history advance that watermark across all readers. A full event can
+still have a null target URL and a redacted display URL while retaining authorized
+resource and payload access; that field restriction cannot restore an earlier
+private destination. Full history with a null target URL also restricts the
+owner management observation through the directory authority. Old endpoint,
+signing-secret, manager caches and Admin labels are withdrawn. An independent
+readable membership key preserves authorized Delivery and displayed payload
+state: a continuous Team admin-to-member downgrade retains Team Project read
+access. Older reads publish the current restricted view;
 fresh authorized reads can restore a full view while retaining a watermark that
 still rejects earlier reads. Page assembly, continuation failures and the current
 operation projection use the same observation. Original receipts remain intact
-when their private current projection is withdrawn. Payload denials concern the
-individual resource, independently of owner authorization.
+when their private current projection is withdrawn. A validated 404 from the
+selected Delivery, Attempt or payload GET withdraws its detail, displayed body,
+redelivery confirmation and current operation projection, and fences pending
+detail and list reads in that same scope. A configuration GET404 remains separate
+from this history observation because retained history can still be authorized.
+Payload denial concerns individual resource access. URL redaction additionally
+restricts owner management authority without revoking its remaining read access.
 
 Payload publication evaluates its known expiry against fresh time. Local payload
 deadlines withdraw displayed bytes, and delayed responses cannot reinstall them.
@@ -56,7 +72,12 @@ resource labels without executable markup; current tasks and destinations do not
 reconstruct history.
 
 The redelivery descriptor fixes its original versions, generation and destination
-revision along with the request identity and digest. Only the expected 202 receipt
+revision along with the request identity and digest. The controller freezes the
+validated owner, endpoint, Delivery, versions and revision as the admission
+target. Kind-aware admission checks that same target before creating a nonce,
+after identity readiness and before fetch. A per-original-target validator
+prevents another currently selected eligible Delivery from authorizing a pending
+intent for a different record. Only the expected 202 receipt
 confirms registration. Its generation remains an immutable original result;
 current history may have advanced further. A subsequent read failure cannot
 reverse that confirmation. The server owns attempt creation, manual counts and

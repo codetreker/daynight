@@ -3,7 +3,7 @@ import type { WebhookDelivery } from "../../api/webhooks";
 export const redactWebhookDelivery = (value: WebhookDelivery): WebhookDelivery => ({ ...value, disclosure: "metadata_only", eventType: null, resourceVersion: null, resource: { projectId: null, taskId: null, stepId: null, messageId: null, displayName: null }, target: { ...value.target, url: null, displayUrl: null }, payloadAvailable: false });
 
 type Observation = { readonly epoch: number; readonly generation: string | null; readonly value: WebhookDelivery | null };
-const restricted = (value: WebhookDelivery | null): boolean => value === null || value.disclosure === "metadata_only" || !value.payloadAvailable;
+export const webhookDeliveryRestricted = (value: WebhookDelivery | null): boolean => value === null || value.disclosure === "metadata_only" || !value.payloadAvailable || value.target.url === null;
 
 // A delivery generation does not change when current disclosure changes. Reads
 // begun before a restrictive observation cannot reinstall their older projection.
@@ -18,10 +18,18 @@ export class WebhookDeliveryObservations {
   observe = (value: WebhookDelivery, startedAt: number): WebhookDelivery | null => {
     const previous = this.#values.get(value.id);
     if (previous !== undefined && (startedAt < previous.epoch || previous.generation !== null && BigInt(value.generation) < BigInt(previous.generation))) return previous.value;
-    const advances = restricted(value) || previous !== undefined && restricted(previous.value);
+    const advances = webhookDeliveryRestricted(value) || previous !== undefined && webhookDeliveryRestricted(previous.value);
     const epoch = advances ? ++this.#epoch : previous?.epoch ?? this.#epoch;
     this.#values.set(value.id, { epoch, generation: value.generation, value });
     return value;
+  };
+
+  restrictTargets = (): void => {
+    for (const [id, observation] of this.#values) {
+      const value = observation.value;
+      if (value === null || value.target.url === null) continue;
+      this.restrict(id, { ...value, target: { ...value.target, url: null, displayUrl: `${new URL(value.target.url).origin}/…` } });
+    }
   };
 
   restrict = (id: string, value: WebhookDelivery | null): void => {

@@ -42,13 +42,21 @@ export type WebhookIntentState = {
   readonly reconciling: boolean;
   readonly persistenceError: unknown;
 };
+export type WebhookIntentTarget = {
+  readonly owner: WebhookOwner;
+  readonly endpointId: string | null;
+  readonly deliveryId: string | null;
+  readonly ifVersion: string | null;
+  readonly ifGeneration: string | null;
+  readonly destinationRevision: string | null;
+};
 type Options = {
   readonly serviceOrigin: string;
   readonly owner: WebhookOwner;
   readonly admission: WebhookAdmission;
   readonly signal: AbortSignal;
   readonly storage?: Storage;
-  readonly canSubmit?: (kind: WebhookOperationKind) => boolean;
+  readonly canSubmit?: (kind: WebhookOperationKind, target: WebhookIntentTarget) => boolean;
 };
 class WebhookIntentBusy extends Error {
   constructor() {
@@ -196,7 +204,6 @@ export class WebhookIntentController {
       return this.#pending;
     }
     if (this.#state.phase === "unknown") return Promise.resolve(this.#state);
-    if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(input.kind)) throw new ApiError("server", 503, "webhooks_unavailable");
     const signal = this.#signal();
     signal.throwIfAborted();
     const body = inputBody(input), create = input.kind === "endpoint.create", redeliver = input.kind === "delivery.redeliver";
@@ -205,12 +212,15 @@ export class WebhookIntentController {
     const deliveryId = redeliver ? uuid(input.deliveryId) : null, ifGeneration = redeliver ? webhookVersion(input.ifGeneration) : null;
     if (!redeliver && (Object.hasOwn(input, "deliveryId") || Object.hasOwn(input, "ifGeneration"))) return invalid();
     const destinationRevision = redeliver ? webhookVersion(input.destinationRevision) : input.destinationRevision === undefined ? null : webhookVersion(input.destinationRevision);
+    const kind = input.kind;
+    const target: WebhookIntentTarget = Object.freeze({ owner: this.#options.owner, endpointId, deliveryId, ifVersion, ifGeneration, destinationRevision });
+    if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(kind, target)) throw new ApiError("server", 503, "webhooks_unavailable");
     const operationId = uuid(crypto.randomUUID()), issuedAt = new Date().toISOString();
     const serializedBody = JSON.stringify({ operationId, issuedAt, expectedUserId: this.#options.admission.userId, ...(ifVersion === null ? {} : { ifVersion }), ...(ifGeneration === null ? {} : { ifGeneration }), ...body });
     const bytes = new TextEncoder().encode(serializedBody);
     if (bytes.length > 262_144) return invalid();
     this.#body = serializedBody;
-    const pending = Promise.resolve().then(() => this.#prepareAndSubmit(input.kind, endpointId, deliveryId, ifVersion, ifGeneration, destinationRevision, operationId, issuedAt, bytes, signal));
+    const pending = Promise.resolve().then(() => this.#prepareAndSubmit(kind, target, operationId, issuedAt, bytes, signal));
     this.#pending = pending;
     this.#pendingKind = "write";
     this.#publish({ ...this.#state, phase: "preparing", prepared: null, result: null, error: null, reconciling: false });
@@ -218,7 +228,8 @@ export class WebhookIntentController {
     return pending;
   };
 
-  async #prepareAndSubmit(kind: WebhookIntentInput["kind"], endpointId: string | null, deliveryId: string | null, ifVersion: string | null, ifGeneration: string | null, destinationRevision: string | null, operationId: string, issuedAt: string, bytes: Uint8Array<ArrayBuffer>, signal: AbortSignal): Promise<WebhookIntentState> {
+  async #prepareAndSubmit(kind: WebhookIntentInput["kind"], target: WebhookIntentTarget, operationId: string, issuedAt: string, bytes: Uint8Array<ArrayBuffer>, signal: AbortSignal): Promise<WebhookIntentState> {
+    const { endpointId, deliveryId, ifVersion, ifGeneration, destinationRevision } = target;
     let dispatched = false;
     try {
       const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -229,7 +240,7 @@ export class WebhookIntentController {
       const admission: WebhookAdmission = { ...this.#options.admission, ready: async requestSignal => {
         await this.#options.admission.ready?.(requestSignal);
         requestSignal.throwIfAborted();
-        if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(kind)) throw new ApiError("server", 503, "webhooks_unavailable");
+        if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(kind, target)) throw new ApiError("server", 503, "webhooks_unavailable");
       } };
       const body = this.#body;
       if (body === null) throw new DOMException("The pending request body was cleared.", "AbortError");
@@ -239,7 +250,7 @@ export class WebhookIntentController {
         this.#persist(null);
       }, () => {
         if (this.#body === null) throw new DOMException("The pending request body was cleared.", "AbortError");
-        if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(kind)) throw new ApiError("server", 503, "webhooks_unavailable");
+        if (this.#options.canSubmit !== undefined && !this.#options.canSubmit(kind, target)) throw new ApiError("server", 503, "webhooks_unavailable");
         dispatched = true;
       }, deliveryId);
       this.#body = null;

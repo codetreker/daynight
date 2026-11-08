@@ -7,10 +7,10 @@ export const webhookHistoryDenied = (error: unknown): boolean => error instanceo
 export const webhookHistoryMissing = (error: unknown): boolean => error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
 type Snapshot<T> = { readonly key: string; readonly queryKey: string; readonly page: WebhookHistoryPage<T> | null; readonly pages: number; readonly error: unknown; readonly refreshing: boolean };
 
-export const useWebhookHistory = <T extends { readonly id: string }, Q extends { readonly cursor?: string }>(key: string, query: Q, admission: TaskCacheScope, active: boolean, read: (query: Q, signal: AbortSignal) => Promise<WebhookHistoryPage<T>>, denied: () => void, observe: (items: readonly T[], startedAt: number) => readonly T[] = items => items, beginRead: () => number = () => 0, project: (items: readonly T[]) => readonly T[] = items => items) => {
+export const useWebhookHistory = <T extends { readonly id: string }, Q extends { readonly cursor?: string }>(key: string, query: Q, admission: TaskCacheScope, active: boolean, read: (query: Q, signal: AbortSignal) => Promise<WebhookHistoryPage<T>>, denied: () => void, observe: (items: readonly T[], startedAt: number) => readonly T[] = items => items, beginRead: () => number = () => 0, project: (items: readonly T[]) => readonly T[] = items => items, onFailure: (error: unknown) => void = () => {}) => {
   const [state, setState] = useState<Snapshot<T>>({ key, queryKey: "", page: null, pages: 0, error: null, refreshing: false });
   const stored = useRef(state); stored.current = state;
-  const current = useRef({ key, query, active, read, denied, observe, beginRead, project }); current.current = { key, query, active, read, denied, observe, beginRead, project };
+  const current = useRef({ key, query, active, read, denied, observe, beginRead, project, onFailure }); current.current = { key, query, active, read, denied, observe, beginRead, project, onFailure };
   const request = useRef<AbortController | null>(null), sequence = useRef(0);
   const queryKey = JSON.stringify(query), snapshot = state.key === key ? state : { key, queryKey: "", page: null, pages: 0, error: null, refreshing: false };
   const update = useCallback((next: Snapshot<T>) => { stored.current = next; setState(next); }, []);
@@ -42,6 +42,7 @@ export const useWebhookHistory = <T extends { readonly id: string }, Q extends {
     } catch (error) {
       if (!live()) return;
       if (webhookHistoryDenied(error)) scope.denied();
+      scope.onFailure(error);
       const retained = stored.current.key === scope.key ? stored.current : previous;
       update({ ...retained, ...(webhookHistoryMissing(error) || webhookHistoryDenied(error) ? { page: null, pages: 0 } : {}), error, refreshing: false });
     }

@@ -637,8 +637,7 @@
 .webhooks .delivery-history-note { padding:15px 0 0;margin-top:23px;border-top:1px solid var(--line);font-size:10px;color:#9aa2b0;line-height:1.7 }
 .webhooks .delivery-loading { min-height:120px;display:grid;place-items:center;color:#97a0b0;font-size:12px }
 .webhooks .delivery-filters { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px;padding:12px;border:1px solid #e5e8f0;border-radius:7px }
-.webhooks .delivery-filters label, .webhook-dialog .delivery-generation-filter label { display:grid;gap:5px;font-size:10px;color:#8490a1;min-width:0 }
-.webhooks .delivery-filters input, .webhooks .delivery-filters select, .webhook-dialog .delivery-generation-filter input { width:100%;min-width:0;border:1px solid #dce0e8;border-radius:6px;padding:7px 8px;background:#fff;font-size:10px }
+.webhooks .delivery-filters .form-field { min-width:0 }
 .webhooks .delivery-filter-actions, .webhook-dialog .delivery-filter-actions { display:flex;gap:9px;align-items:center;grid-column:1/-1 }
 .webhooks .delivery-filters .inline-error { grid-column:1/-1;margin:0 }
 .webhook-dialog:has(.delivery-details) { width:min(720px,calc(100vw - 40px)) }
@@ -651,7 +650,7 @@
 .webhook-dialog .section-title { font-size:12px;font-weight:600;color:#5a6780;margin:20px 0 12px }
 .webhook-dialog .delivery-attempt-heading { display:flex;justify-content:space-between;align-items:baseline;gap:8px }
 .webhook-dialog .delivery-generation-filter { display:flex;gap:9px;align-items:flex-end;margin-bottom:17px }
-.webhook-dialog .delivery-generation-filter label { max-width:210px;flex:1 }
+.webhook-dialog .delivery-generation-filter form { max-width:210px;min-width:0;flex:1 }
 .webhook-dialog .timeline { display:grid;gap:0 }
 .webhook-dialog .attempt { position:relative;margin-left:5px;border-left:1px solid #e5e8ee;padding:0 0 17px 21px }
 .webhook-dialog .attempt:last-child { padding-bottom:0;border-left-color:transparent }
