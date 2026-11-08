@@ -1,6 +1,6 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebhookIntentController, assertWebhookReceiptMatches, clearWebhookPending, parseWebhookPreparedMetadata, type WebhookIntentInput, type WebhookPreparedMetadata } from "../src/features/webhook-intents";
+import { WebhookIntentController, assertWebhookReceiptMatches, clearWebhookPending, parseWebhookPreparedMetadata, type WebhookIntentInput, type WebhookPreparedMetadata } from "../src/features/webhook-intents/controller";
 import type { WebhookReceipt } from "../src/api/webhooks";
 import { pauseAuthRequests } from "../src/api/client";
 
