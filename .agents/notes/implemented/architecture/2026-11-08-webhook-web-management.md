@@ -13,18 +13,34 @@ also need to preserve unfinished forms without granting unverified admission.
 ## Decision
 
 The authenticated workspace keeps its shared shell and mounts `/webhooks` with
-explicit owner, endpoint and tab navigation. A service/principal-bound catalog
+explicit owner, endpoint and tab navigation. A selected detail frame survives
+withdrawal of its configuration projection: it presents owner access loss, read
+failure or loading and retains an explicit return to the same owner’s list. Read
+errors belong to the panel selected by navigation, so a narrow hidden list cannot
+be their only presentation. A service/principal-bound catalog
 gates reads and writes independently of sidebar Team preferences. The page uses
 strict browser DTO decoding and fresh authorization; private configuration stays
-in scoped memory, separate from task IndexedDB.
+in scoped memory, separate from task IndexedDB. Empty subscription
+presentation depends on the validated endpoint collection independently of the
+project directory. Scoped state-icon track alignment excludes unrelated generic
+page styles. Its scope placeholder, numeric badge text and fixed heading
+styles retain the prototype geometry without weakening long resource-name
+wrapping. Tab labels keep the trailing separator in one text node so glyph
+shaping does not depend on an extra inline text fragment. The heading's unstyled action wrapper keeps the native button in an
+inline formatting context. Creation forms alone retain the prototype fieldset
+intrinsic minimum; editing and subscription forms keep their existing sizing.
 
 One controller per owner fixes the exact request bytes, operation identity,
 issued time, actor, versions and SHA-256 at submission. Unknown results reconcile
 only through the original receipt GET. Session storage contains minimal prepared
 metadata without the body, URL, credentials, secret or payload; reloaded records
 support GET recovery only. Confirmed historical effects and the current resource
-projection remain distinct. Confirmed receipts reject later contradictory
-results. Configuration forms preserve explicit field edits independently of the
+projection remain distinct. Confirmed submission and receipt reconciliation
+refresh the current owner, endpoint and filter through the live route reference.
+Creation confirmation selects the new endpoint; a callback captured before its
+navigation cannot restart a read for the old selection. Read generations still
+exclude late responses, and the original operation remains fixed. Confirmed
+receipts reject later contradictory results. Configuration forms preserve explicit field edits independently of the
 CAS baseline: review refreshes untouched values, and concurrent dirty-field
 changes require a deliberate resolution before a new submission. The shared
 receipt rules are owned by the
@@ -67,6 +83,12 @@ and its [requirements](../../../../docs/spec/webhook-web.md) own visible behavio
 imports are runtime dependencies unsuitable for the browser bundle. The Web
 client instead uses the existing browser request stack and Web Crypto.
 
+**Refresh the route captured by the submitting callback.** Creation confirmation
+changes the selected endpoint before the callback finishes. Restarting the old
+selection advances the same owner read generation and can cancel the new detail
+load. The existing live-route refresh keeps the current view independent of the
+fixed original operation.
+
 **Persist full requests for recovery.** This retains sensitive configuration
 outside the active page. Minimal identity and hash metadata support safe GET
 reconciliation without granting replay from a missing body.
@@ -75,6 +97,19 @@ reconciliation without granting replay from a missing body.
 and sidebar interactions already have production behavior. Preserving the shell
 keeps those controls intact while product content and dialogs follow the approved
 component styles and local geometry.
+
+**Force display on a direct flex item.** Flex-item blockification changes the
+resolved display despite an inline-flex declaration. An unstyled wrapper restores
+the intended formatting context while retaining the same native button.
+
+**Apply intrinsic fieldset sizing to every form.** Creation has the matched
+prototype layout, while editing and subscription forms have separate established
+layouts. A creation-only marker avoids changing those unrelated forms.
+
+**Return to the list when private detail data disappears.** This changes the
+visible selection while the address still names an endpoint and hides the
+requested detail’s failure. Keeping a stateful detail frame preserves explicit
+navigation without retaining withdrawn private values.
 
 ## Consequences
 

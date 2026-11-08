@@ -6,11 +6,17 @@
 
 `WebhooksPage`组织配置、订阅、秘密和投递页签；`useWebhookData`管理配置列表与详情，`useWebhookDirectories`读取实际Team/Project目录。`WebhookDeliveriesPanel`拥有Delivery列表、详情dialog、Attempt分页、独立payload及重投确认；`useWebhookHistory`共用历史读取、页数和错误保留逻辑，`useScopedState`隔离筛选。正常配置GC在Delivery仍引用endpoint时保留墓碑，页面可挂载只读投递页签。有效归属的deliveries地址在配置GET返回真实404且配置未加载时，使用`WebhookHistoryEndpoint`的`{kind:"retained-history",id}`分支挂载独立历史读取。它只持有endpoint ID，不合成配置名称、版本、capabilities或活跃endpoint；历史自身的200/403/404由严格读取处理。`{kind:"checking-configuration",id}`另表示配置尚在核验且当前管理投影已撤下，仍按独立历史读权保留资料；它与真实配置404后的retained-history分支有不同提示。两者都是客户端上下文，不是合成的Endpoint DTO，均不添加名称、版本或capabilities。授权历史的生命周期按service/principal/owner/endpointId/readKey隔离，与当前配置渲染分支及配置请求成败无关。管理缓存已撤下或配置404后的非权威配置500保留同一ID-only上下文、在途Delivery/payload读取及详情交互，错误在配置区域单独显示。缺失配置事实保留到同scope新的权威配置观察；500不撤销它，也不能恢复旧管理投影。身份/owner可读性、导航、历史404及已知载荷期限仍执行各自清理。墓碑、缺失配置及配置核验上下文均无重投入口资格。页面保持生产shell，Webhook组件使用独立作用域样式。可见结果由[Web规格](../spec/webhook-web.md)拥有，服务端管理和历史机制分别见[管理设计](webhook-management.md)与[历史设计](webhook-history.md)。
 
+页面的空状态从当前已经验证的资源集合派生：endpoint 的空 subscriptions 产生独立 code 图标和订阅提示，项目目录的空集合只在项目选择中表达；读取未完成或失败不替换为这些空状态。 状态图标在 Webhook 样式范围内明确采用正常 grid 轨道分布，避免其他页面的同名 state-icon 规则将内部轨道收缩成 SVG 宽度。范围摘要的空集合使用 tiny 样式的“—”，保留与非空字段一致的结构。数字 SPAN 只包含计数；标签与尾部分隔空格形成同一外部文本节点，保留参考的字符 shaping 与窄屏徽标换行。固定页面/列表标题及数字计数采用原型的正常换行，动态资源名称继续允许长内容换行。
+
+新建按钮保留原生事件目标与禁用语义，并在未设样式的 SPAN 内参与页头布局；按钮自身处于普通内联上下文，避免直接 flex item 的 blockification 改变 resolved display/min-width。新建配置 form 使用 webhook-create-form 标记，其 fieldset.form-field 采用 min-content 最小尺寸；编辑和订阅 form 保留各自现有尺寸规则。该标记只表达表单布局类型，不改变创建、版本或请求逻辑。
+
 ## 请求与配置发布
 
 `api/webhooks.ts`复用现有同源request、取消、401清理与requestId机制。成功及非401错误响应先校验当前主体，成功再验证严格DTO和请求资源；浏览器使用Web Crypto，不导入CLI的Node依赖。配置版本、destinationRevision和generation为规范int64字符串，nullable和数组必须真实存在。历史参数、顺序、重复ID与cursor严格验证；UTC筛选按服务端纳秒精度比较，Attempt代次使用BigInt。
 
-读取按service/principal/owner/endpoint/查询代次发布；旧请求、低版本和错主体不能覆盖新视图。Endpoint读取和辅助请求共用owner发布围栏；Team归属的已确认membership role/version另约束配置、列表、秘密、管理控件及弹窗。团队目录确认降权或关系失效时，撤下旧管理员资料并失效其读取依据，迟到响应和返回该归属的缓存不能恢复旧权限；较新的限制性Endpoint或列表摘要投影也立即推进归属权限观察，不等待后续页或详情。
+显式 endpoint 路由决定窄屏列表与详情的可见区域，已读取的 endpoint 投影只决定其中可展示的资料。选中路由的集合读取错误与配置读取错误在详情区显示；无显式选择时，集合错误在列表区显示。当前资料被撤下后，详情框架仍提供返回列表入口，分别表达已确认的 Team 失权、实际读取错误或加载状态。返回仅清除 endpoint 选择并保留原 owner；不通过更换归属掩盖失败。
+
+读取按service/principal/owner/endpoint/查询代次发布；旧请求、低版本和错主体不能覆盖新视图。提交及原回执核对确认后使用`useWebhookData.refreshCurrent`，从当前路由引用取得owner、endpoint与筛选；创建确认引发的导航不被await前捕获的旧选择再次刷新覆盖。原操作确认和当前视图刷新各自保持原有身份与发布围栏。Endpoint读取和辅助请求共用owner发布围栏；Team归属的已确认membership role/version另约束配置、列表、秘密、管理控件及弹窗。团队目录确认降权或关系失效时，撤下旧管理员资料并失效其读取依据，迟到响应和返回该归属的缓存不能恢复旧权限；较新的限制性Endpoint或列表摘要投影也立即推进归属权限观察，不等待后续页或详情。
 
 只有主体、媒体和错误DTO均验证成立的server forbidden403才推进拒绝观察：配置及原回执读取拒绝撤销该归属全部私有投影；秘密读取或管理写入拒绝仅撤销管理员资料与能力、关闭编辑器、清除秘密、失效旧读取围栏并刷新权威Team目录，保留成员脱敏读取准入。辅助请求拒绝绑定发起时的owner与authorizationKey，切换归属或新权限代次后不发布旧拒绝。server not_found404只表示对应资源当前不可用；带403/404状态的协议损坏不构成授权或资源不存在事实，保留合法数据和草稿并允许恢复读取。未变化的旧管理员目录不能恢复已被否定的管理权，新的membership身份或版本提供复权依据。[管理拒绝决策](../../.agents/notes/implemented/bug-fix/2026-11-08-webhook-management-denial.md)记录该区分。
 

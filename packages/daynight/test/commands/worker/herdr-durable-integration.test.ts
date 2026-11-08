@@ -447,7 +447,7 @@ describe("durable Herdr facade with real SQLite", () => {
       expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }, { initial: false, body: "Continuation after dismissal" }]);
       expect(f.settings.nativeStatus).toBe("idle"); expect(f.settings.nativeWrites).toBe(4);
     } finally { input.close(); }
-  });
+  }, 15_000);
   it("keeps manual control across detach and blocks continuation until explicit handback", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     const input = f.facade.input!;

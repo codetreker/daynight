@@ -107,6 +107,48 @@ const selectTeamEndpoint = async (view: Awaited<ReturnType<typeof mount>>, value
 };
 
 describe("Webhook configuration page", () => {
+  it.each(["en", "zh-CN"] as const)("distinguishes an empty subscription scope from available projects in %s", async locale => {
+    const empty = { ...endpoint(), subscriptions: [] };
+    const view = await mount({ initial: [empty] }); view.setLocale(locale);
+    const labels = locale === "en" ? { scope: "Subscription scope", tab: /^Subscriptions/, empty: "No subscriptions yet", copy: "Select projects and events to receive.", noProjects: "No accessible projects", add: "Add subscription", project: "Project one" } : { scope: "订阅范围", tab: /^订阅/, empty: "还没有订阅", copy: "选择需要接收的项目与事件。", noProjects: "没有可访问项目", add: "添加订阅", project: "Project one" };
+    const scope = screen.getByText(labels.scope).closest(".field-view")!;
+    expect(within(scope as HTMLElement).getByText("—")).toBeVisible();
+    const tab = screen.getByRole("tab", { name: labels.tab });
+    expect(tab.querySelector(".count")).toHaveTextContent(/^0$/);
+    expect(tab.querySelector(".count")!.textContent).toBe("0");
+    fireEvent.click(tab);
+    expect(screen.getByRole("heading", { name: labels.empty })).toBeVisible();
+    expect(screen.getByText(labels.copy)).toBeVisible(); expect(screen.queryByText(labels.noProjects)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: labels.add }));
+    await within(screen.getByRole("dialog")).findByRole("option", { name: new RegExp(labels.project) });
+    expect(view.writes).toHaveLength(0);
+  });
+
+  it("publishes subscription counts and summaries only after the current background read finishes", async () => {
+    const original = { ...endpoint(), subscriptions: [] };
+    const view = await mount({ initial: [original] });
+    const scope = () => screen.getByText("Subscription scope").closest(".field-view")! as HTMLElement;
+    const current = barrier<Response>(); let observed = false;
+    view.resources.set(original.id, { ...endpoint(), configVersion: "2" });
+    view.intercept(url => url === `/api/v1/me/webhooks/${original.id}` ? (observed = true, current.promise) : null);
+    fireEvent.focus(window); await waitForState(() => expect(observed).toBe(true));
+    expect(within(scope()).getByText("—")).toBeVisible();
+    expect(screen.getByRole("tab", { name: /^Subscriptions/ }).querySelector(".count")).toHaveTextContent(/^0$/);
+    await act(async () => { current.resolve(response({ ...endpoint(), configVersion: "2" })); });
+    await within(scope()).findByText("Project one");
+    expect(within(scope()).queryByText("—")).toBeNull();
+    expect(screen.getByRole("tab", { name: /^Subscriptions/ }).querySelector(".count")).toHaveTextContent(/^1$/);
+    expect(view.writes).toHaveLength(0);
+  });
+
+  it("keeps a failed initial read distinct from empty subscriptions and empty scope", async () => {
+    const view = await mount({ initial: [{ ...endpoint(), subscriptions: [] }], firstReadFailure: "503" });
+    expect(screen.getByRole("alert")).toBeVisible(); expect(screen.queryByRole("heading", { name: "No subscriptions yet" })).toBeNull(); expect(document.querySelector(".field-view")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    expect(screen.getByText("Subscription scope").closest(".field-view")).toHaveTextContent("—");
+    expect(view.writes).toHaveLength(0);
+  });
   it.each(["network", "media", "503"] as const)("publishes an initial %s list failure with its owner binding and recovers through read-only retry", async firstReadFailure => {
     const view = await mount({ firstReadFailure }); await screen.findByRole("alert");
     expect(screen.queryByLabelText("Loading…")).toBeNull(); expect(screen.queryByText("No webhooks yet")).toBeNull(); expect(document.querySelectorAll(".endpoint-row")).toHaveLength(0); expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
@@ -226,6 +268,46 @@ describe("Webhook configuration page", () => {
     }
   });
 
+  it.each([true, false])("keeps a selected detail failure and Back after Team read loss with narrow=%s", async narrow => {
+    const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
+    const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
+    act(() => view.media.webhook.setNarrow(narrow));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: admin.name })); });
+    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
+    openEdit(); setName("Private draft");
+    const oldDetail = barrier<Response>(); let admitted = false;
+    view.intercept((url, init) => url === `/api/v1/teams/${teamId}/webhooks/${admin.id}` && (init.method === undefined || init.method === "GET") ? (admitted = true, oldDetail.promise) : null);
+    fireEvent.focus(window); await waitForState(() => expect(admitted).toBe(true));
+    view.setTeamAuthorization(null, 2); fireEvent.focus(window);
+    const detail = document.querySelector<HTMLElement>(".detail-panel")!;
+    await within(detail).findByText("Team access is unavailable.");
+    expect(within(detail).getByRole("alert")).toHaveTextContent("Team access is unavailable.");
+    expect(within(detail).queryByText("Select an endpoint")).toBeNull();
+    expect(location.search).toContain(`teamId=${teamId}`); expect(location.search).toContain(`endpointId=${admin.id}`);
+    expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () => { oldDetail.resolve(response(admin)); });
+    expect(within(detail).queryByRole("heading", { name: admin.name })).toBeNull(); expect(document.body.textContent).not.toContain("private=hidden");
+    const back = within(detail).getByRole("button", { name: "Back to endpoints", hidden: true }); back.focus(); expect(back).toHaveFocus(); fireEvent.click(back);
+    expect(location.search).toContain("owner=team"); expect(location.search).toContain(`teamId=${teamId}`); expect(location.search).not.toContain("endpointId=");
+    expect(document.querySelector(".management-grid")).not.toHaveClass("has-mobile-detail"); await screen.findByText("Team access is unavailable."); expect(view.writes).toHaveLength(0);
+  });
+
+  it.each([404, 503])("shows selected read %s in the detail region and keeps its explicit exit", async status => {
+    const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
+    const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
+    act(() => view.media.webhook.setNarrow(true)); await act(async () => { fireEvent.click(screen.getByRole("button", { name: admin.name })); });
+    view.intercept(url => (status === 404 ? url === `/api/v1/teams/${teamId}/webhooks/${admin.id}` : url.startsWith(`/api/v1/teams/${teamId}/webhooks?`)) ? Promise.resolve(failure(status, status === 404 ? "not_found" : "database_unavailable")) : null);
+    fireEvent.focus(window);
+    const detail = document.querySelector<HTMLElement>(".detail-panel")!;
+    await within(detail).findByRole("alert");
+    expect(within(detail).getByRole("alert")).toHaveTextContent(status === 404 ? "not_found" : "database_unavailable");
+    expect(within(detail).queryByText("Select an endpoint")).toBeNull();
+    if (status === 404) { await within(detail).findByText("Could not load this Webhook"); expect(within(detail).queryByRole("heading", { name: admin.name })).toBeNull(); }
+    else expect(within(detail).getByRole("heading", { name: admin.name })).toBeVisible();
+    fireEvent.click(within(detail).getByRole("button", { name: "Back to endpoints", hidden: true }));
+    expect(location.search).toContain("owner=team"); expect(location.search).toContain(`teamId=${teamId}`); expect(location.search).not.toContain("endpointId="); expect(view.writes).toHaveLength(0);
+  });
+
   it("clears revealed secrets on narrow Back and requires a new read for the same endpoint", async () => {
     const view = await mount(); act(() => view.media.webhook.setNarrow(true)); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Back to endpoints" })); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(2);
@@ -299,6 +381,56 @@ describe("Webhook configuration page", () => {
   it("uses one fixed create intent for Enter/button duplicates and keeps empty explicit subscriptions", async () => {
     const view = await mount({ initial: [] }); fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!); setName("Created"); fireEvent.change(screen.getByRole("textbox", { name: /Endpoint URL/ }), { target: { value: "https://receiver.example/new" } });
     submitForm(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); expect(view.writes).toHaveLength(1); expect(view.writes[0]!.body.subscriptions).toEqual([]); expect(view.writes[0]!.body.expectedUserId).toBe(userId); expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each([
+    ["personal", false, "response"], ["personal", true, "response"],
+    ["team", false, "response"], ["team", true, "response"],
+    ["personal", false, "receipt"], ["personal", true, "receipt"],
+    ["team", false, "receipt"], ["team", true, "receipt"],
+  ] as const)("reads the newly created %s endpoint from a populated=%s view after %s confirmation", async (ownerKind, populated, confirmation) => {
+    const original = { ...endpoint(), owner: { kind: ownerKind, id: ownerKind === "team" ? teamId : userId } };
+    const view = await mount({ initial: populated ? [original] : [] });
+    if (ownerKind === "team") {
+      if (populated) await selectTeamEndpoint(view, original);
+      else {
+        fireEvent.click(screen.getByRole("button", { name: "Team shared" }));
+        await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
+        fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } });
+        await waitForState(() => expect(screen.getAllByRole("button", { name: "New webhook" })[0]).toBeEnabled());
+      }
+    }
+    const prefix = ownerKind === "team" ? `/api/v1/teams/${teamId}/webhooks` : "/api/v1/me/webhooks";
+    const oldRead = barrier<Response>(); let oldRequested = false, receiptAvailable = confirmation === "response";
+    view.intercept((url, init) => {
+      if (populated && url === `${prefix}/${original.id}` && (init.method === undefined || init.method === "GET")) {
+        oldRequested = true; return oldRead.promise.then(value => value.clone());
+      }
+      return !receiptAvailable && url.includes("/operations/") ? Promise.resolve(failure(404, "not_found")) : null;
+    });
+    if (populated) { fireEvent.focus(window); await waitForState(() => expect(oldRequested).toBe(true)); }
+    fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!);
+    const name = `Created ${ownerKind} ${confirmation}`; setName(name);
+    fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/new" } });
+    if (confirmation === "receipt") view.loseNextWrite(); else view.holdNextWrite();
+    submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1));
+    if (confirmation === "receipt") {
+      await waitForState(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown"));
+      receiptAvailable = true; fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Check operation" }));
+    } else await act(async () => { view.releaseWrite(); });
+    const created = [...view.resources.values()].find(value => value.lifecycle === "active" && value.name === name)!;
+    await screen.findByRole("heading", { name, level: 2 });
+    expect(new URL(location.href).searchParams.get("endpointId")).toBe(created.id);
+    expect(new URL(location.href).searchParams.get("owner")).toBe(ownerKind);
+    expect(new URL(location.href).searchParams.get("teamId")).toBe(ownerKind === "team" ? teamId : null);
+    expect(view.fetch.mock.calls.some(([url, init]) => url === `${prefix}/${created.id}` && (init?.method === undefined || init.method === "GET"))).toBe(true);
+    expect(screen.getByRole("button", { name: `Edit ${name}` })).toBeEnabled();
+    if (populated) {
+      await act(async () => { oldRead.resolve(response(original)); });
+      expect(screen.getByRole("heading", { name, level: 2 })).toBeVisible();
+      expect(screen.queryByRole("heading", { name: original.name, level: 2 })).toBeNull();
+    }
+    expect(view.writes).toHaveLength(1); expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("replaces a changed subscription project with id:null in one complete CAS array", async () => {
