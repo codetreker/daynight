@@ -43,9 +43,12 @@ const operations: Operation[] = [];
 const hosts: ReturnType<typeof createWorkerBotHost>[] = [];
 const operation = () => { const result = createOperation({ limits: { totalMs: 15_000 } }); operations.push(result); return result; };
 const cwd = path.resolve("fixture-startup");
-const output = async (command: HerdrCommand): Promise<HerdrCommandResult> => ({ stderr: "", stdout: command.args.includes("--version")
-  ? command.file.endsWith("codex") ? "codex-cli 0.1.0" : command.file.endsWith("claude") ? "2.1.247 (Claude Code)" : "GitHub Copilot CLI 1.0.83"
-  : command.file.endsWith("codex") ? "app-server --stdio" : command.file.endsWith("claude") ? "--input-format --output-format --include-partial-messages" : "--no-auto-update" });
+const output = async (command: HerdrCommand): Promise<HerdrCommandResult> => {
+  const executable = path.win32.basename(command.file).replace(/\.exe$/i, "");
+  return { stderr: "", stdout: command.args.includes("--version")
+    ? executable === "codex" ? "codex-cli 0.1.0" : executable === "claude" ? "2.1.247 (Claude Code)" : "GitHub Copilot CLI 1.0.83"
+    : executable === "codex" ? "app-server --stdio" : executable === "claude" ? "--input-format --output-format --include-partial-messages" : "--no-auto-update" };
+};
 const collector = (overrides: Partial<Parameters<typeof createAssistantHostCollector>[0]> = {}) => createWorkerTelemetryCollector({
   paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example",
   assistantHost: createAssistantHostCollector({ workingDirectory: cwd, configuration: { agent: "copilot", model: null, args: [], agentControlMode: "herdr", recoveryLimit: 3 }, environment,
