@@ -115,7 +115,7 @@
 .webhooks .panel,
 .webhook-dialog .panel { background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);min-width:0 }
 .webhooks .panel-heading,
-.webhook-dialog .panel-heading { padding:20px 23px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px }
+.webhook-dialog .panel-heading { padding:20px 23px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:0 }
 .webhooks .panel-heading h2,
 .webhook-dialog .panel-heading h2 { font-size:15px;font-weight:650 }
 .webhooks .count,
