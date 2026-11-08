@@ -22,7 +22,7 @@ func TestWebhookCredentialObservationAfterRowLockWait(t *testing.T) {
 			user, session := uuid.NewString(), uuid.NewString()
 			mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$1::uuid::text,now(),now())`, user)
 			var expiry time.Time
-			if err := s.Pool.QueryRow(ctx, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,decode(repeat('ab',32),'hex'),now(),clock_timestamp()+CASE WHEN $3='natural expiry' THEN interval '2 seconds' ELSE interval '1 day' END) RETURNING expires_at`, session, user, mode).Scan(&expiry); err != nil {
+			if err := s.Pool.QueryRow(ctx, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,decode(repeat('ab',32),'hex'),now(),clock_timestamp()+CASE WHEN $3='natural expiry' THEN interval '500 milliseconds' ELSE interval '1 day' END) RETURNING expires_at`, session, user, mode).Scan(&expiry); err != nil {
 				t.Fatal(err)
 			}
 			locked, err := s.Pool.Begin(ctx)
@@ -96,6 +96,10 @@ func TestWebhookCredentialObservationAfterRowLockWait(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
+				var live bool
+				if err = s.Pool.QueryRow(ctx, `SELECT clock_timestamp() < $1`, expiry).Scan(&live); err != nil || !live {
+					t.Fatalf("credential expired before its lock wait was observed: live=%t err=%v", live, err)
+				}
 				for {
 					var expired bool
 					if err = s.Pool.QueryRow(ctx, `SELECT clock_timestamp() >= $1`, expiry).Scan(&expired); err != nil {

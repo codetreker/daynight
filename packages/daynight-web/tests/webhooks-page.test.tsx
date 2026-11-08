@@ -141,7 +141,7 @@ describe("Webhook configuration page", () => {
     if (request === "secret") { fireEvent.click(screen.getByRole("button", { name: "Hide secret" })); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); }
     openEdit(); setName("Administrator draft");
     if (request === "patch") submitForm();
-    await waitFor(() => expect(admitted).toBe(true));
+    await waitForState(() => expect(admitted).toBe(true));
     view.resources.set(admin.id, { ...admin, destination: { ...admin.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
     await act(async () => { denied.resolve(failure(403, "forbidden")); });
     await screen.findByText("Member · Read only"); await waitForState(() => expect(directoryReads).toBeGreaterThan(0));
@@ -157,9 +157,12 @@ describe("Webhook configuration page", () => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
     const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
     fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
-    view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? Promise.resolve(new Response(JSON.stringify({ error: damage === "media" ? { code: "forbidden", message: "Denied", requestId: "malformed-media" } : { code: "forbidden" } }), { status: 403, headers: { "Content-Type": damage === "media" ? "text/html" : "application/json", "Daynight-User-ID": userId } })) : null);
+    const held = barrier<Response>(); let admitted = false;
+    view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? (admitted = true, held.promise) : null);
     if (request === "secret") { fireEvent.click(screen.getByRole("button", { name: "Hide secret" })); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); }
     openEdit(); const draft = setName("Retained administrator draft"), dialog = screen.getByRole("dialog"); if (request === "patch") submitForm();
+    await waitForState(() => expect(admitted).toBe(true));
+    await act(async () => { held.resolve(new Response(JSON.stringify({ error: damage === "media" ? { code: "forbidden", message: "Denied", requestId: "malformed-media" } : { code: "forbidden" } }), { status: 403, headers: { "Content-Type": damage === "media" ? "text/html" : "application/json", "Daynight-User-ID": userId } })); });
     await screen.findAllByRole("alert");
     if (request === "patch") await waitFor(() => expect(screen.getAllByRole("button", { name: "Check operation" }).every(button => !button.hasAttribute("disabled"))).toBe(true));
     else await waitFor(() => expect(screen.getByRole("button", { name: "Show secret" })).toBeEnabled());
@@ -193,7 +196,7 @@ describe("Webhook configuration page", () => {
     const held = barrier<Response>(); let admitted = false;
     view.intercept((url, init) => (request === "secret" ? url.endsWith("/signing-secret") : init.method === "PATCH") ? (admitted = true, held.promise) : null);
     if (request === "secret") fireEvent.click(screen.getByRole("button", { name: "Show secret" })); else fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" }));
-    await waitFor(() => expect(admitted).toBe(true)); fireEvent.click(screen.getByRole("button", { name: "Personal" })); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
+    await waitForState(() => expect(admitted).toBe(true)); fireEvent.click(screen.getByRole("button", { name: "Personal" })); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 });
     await act(async () => { held.resolve(failure(403, "forbidden")); });
     expect(screen.getByRole("heading", { name: "Endpoint 5", level: 2 })).toBeVisible(); expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled(); expect(screen.queryByRole("alert")).toBeNull(); expect(document.body.textContent).toContain("private=hidden");
   });
@@ -202,12 +205,15 @@ describe("Webhook configuration page", () => {
     const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
     const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
     if (phase === "confirmed") {
-      fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Administrator draft");
     }
-    view.intercept(url => url.includes("/operations/") ? Promise.resolve(failure(403, "forbidden")) : null);
+    const denied = barrier<Response>(); let admitted = false;
+    view.intercept(url => url.includes("/operations/") ? (admitted = true, denied.promise) : null);
     if (phase === "confirmed") { fireEvent.click(screen.getByRole("button", { name: "Cancel" })); fireEvent.click(screen.getByRole("button", { name: "Check operation" })); }
     else { view.loseNextWrite(); fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); }
+    await waitForState(() => expect(admitted).toBe(true));
+    await act(async () => { denied.resolve(failure(403, "forbidden")); });
     await screen.findByText("Team access is unavailable.");
     expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull(); expect(view.writes).toHaveLength(1);
     const receipt = [...view.receipts.values()][0]!;

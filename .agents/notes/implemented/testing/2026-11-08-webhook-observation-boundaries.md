@@ -9,7 +9,10 @@ proof that requests, current projections and UI effects had completed. Request
 preparation awaits native Web Crypto SHA-256 work, which can finish after those
 tasks. A restrictive disable or delete could therefore still be preparing when
 the test inspected its recorded write. An earlier request count or confirmation
-notice also cannot identify completion of a later operation.
+notice also cannot identify completion of a later operation. Team directory
+refresh, management denial and receipt denial each publish authorization or
+operation state asynchronously; request dispatch does not prove those decisions
+have reached their consumers.
 
 ## Decision
 
@@ -23,7 +26,17 @@ Returning to a restricted Team retains the immediate private-data absence checks
 the cached owner-role label does not prove that fresh endpoint detail has arrived.
 Tests acquire the actual restricted detail controls and immediately verify they
 are disabled. Clearing a retained list error has its own DOM readiness predicate.
-The fixed microtask helper is absent.
+Team selection waits for the named option in the current selector. Management
+and receipt-denial cases hold each response until the request is admitted, then
+release it within async `act` before checking private-data withdrawal, retained
+drafts or the original operation result. Late-denial cases publish a newer Team
+membership through an async `act` directory refresh, or finish selecting another
+owner, before releasing the old response in a separate async `act`. The fixture
+uses immediately resolved directory responses, so that refresh settles directory
+admission and authorization publication. A dispatch count alone would leave the
+old authorization key current. Rotation confirmation also requires dialog
+removal and an enabled Check operation action before the next interaction. The
+fixed microtask helper is absent.
 
 The restrictive cleanup case holds each native digest behind a separate promise.
 It observes preparation through the digest call and blocked controls before
@@ -66,5 +79,7 @@ Preparation delays no longer determine whether tests inspect a missing write.
 The fixture catches rejected restrictive cleanup and omitted same-version private
 projection withdrawal while preserving real fingerprint validation. Controlled
 response release also keeps negative assertions tied to the response they reject.
+Authorization and receipt tests preserve their current-owner data, draft, secret,
+original-operation and no-replay assertions after the relevant response settles.
 The tests model frontend API behavior; they do not establish server transaction
 or delivery behavior, which belongs to the corresponding Go tests.
