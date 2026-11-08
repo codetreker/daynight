@@ -62,6 +62,9 @@ region removes its plaintext and invalidates late reads, including when the
 endpoint cache remains available. Storage cleanup failures remain visible and retryable
 without blocking identity quarantine. Native dialogs inherit page language and
 keep keyboard isolation, opener restoration and reachable scrolling actions.
+Create forms retain the prototype fieldsets' intrinsic minimum width under their
+own form scope. Existing project-label wrapping keeps long unbroken names within
+the dialog without changing edit or subscription forms.
 The [browser design](../../../../docs/design/webhook-web.md) owns the mechanisms
 and its [requirements](../../../../docs/spec/webhook-web.md) own visible behavior.
 
@@ -80,6 +83,11 @@ fixed original operation.
 **Persist full requests for recovery.** This retains sensitive configuration
 outside the active page. Minimal identity and hash metadata support safe GET
 reconciliation without granting replay from a missing body.
+
+**Force the create fieldset minimum width to zero.** This differs from the
+prototype's intrinsic minimum and its first-open rendering. Scoped intrinsic
+minimum widths preserve the approved form; the existing wrapping of project
+labels also bounds long-name layouts.
 
 **Replace the shared workspace shell with the prototype shell.** Account, Setup
 and sidebar interactions already have production behavior. Preserving the shell

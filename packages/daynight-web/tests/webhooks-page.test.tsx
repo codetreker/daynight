@@ -341,7 +341,7 @@ describe("Webhook configuration page", () => {
     expect(new URL(location.href).searchParams.get("endpointId")).toBe(created.id);
     expect(new URL(location.href).searchParams.get("owner")).toBe(ownerKind);
     expect(new URL(location.href).searchParams.get("teamId")).toBe(ownerKind === "team" ? teamId : null);
-    expect(view.fetch.mock.calls.some(([url, init]) => url === `${prefix}/${created.id}` && (init.method === undefined || init.method === "GET"))).toBe(true);
+    expect(view.fetch.mock.calls.some(([url, init]) => url === `${prefix}/${created.id}` && (init?.method === undefined || init.method === "GET"))).toBe(true);
     expect(screen.getByRole("button", { name: `Edit ${name}` })).toBeEnabled();
     if (populated) {
       await act(async () => { oldRead.resolve(response(original)); });
