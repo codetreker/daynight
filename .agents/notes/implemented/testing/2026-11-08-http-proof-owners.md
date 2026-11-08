@@ -37,10 +37,12 @@ origin mismatch.
 The HTTPS Cookie/Origin regression keeps its HTTPS authentication configuration
 and `__Host-daynight_session` credential. The browser-ping regression keeps its
 focused production adapter and 100 ms interval. These two scenarios require
-different application configuration or route assembly; they stop the preparation
-application before exercising their dedicated adapter. Application shutdown
-continues to precede release of borrowed database and file resources, using the
-existing explicit cleanup expectations.
+different application configuration or route assembly; they drain the preparation
+application's route admission before exercising their dedicated adapter. This
+handler shutdown does not close the borrowed Store or files and does not claim
+Engine shutdown. Existing fixture cleanup retains the database/file ownership
+and explicit shutdown-error expectations; the focused ping adapter also stops
+its own Engine.
 
 Test Session fixture creation performs only registration, grant, connection and
 synchronization. The existing untouched-execution stop test owns registration
