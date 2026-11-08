@@ -32,10 +32,11 @@ receipt rules are owned by the
 
 Scoped reads bind endpoint and auxiliary publication to both its owner read
 generation and confirmed Team membership role/version. A directory-confirmed
-downgrade or a newer restrictive endpoint observation invalidates old
+downgrade or a newer restrictive endpoint or summary observation invalidates old
 administrator projections, including summaries and cached views on return. An
 unchanged older directory cannot restore permission; a new membership identity or
-version provides fresh authority. Original receipts remain independent. These reads preserve mounted
+version provides fresh authority. Validated owner-forbidden responses revoke the whole owner, while resource
+absence remains local. Original receipts remain independent. These reads preserve mounted
 nodes, drafts, focus, selected tabs and loaded pagination through unchanged
 background checks. Confirmed identity or disclosure changes
 withdraw private values. Storage cleanup failures remain visible and retryable
@@ -63,7 +64,9 @@ component styles and local geometry.
 
 Configuration, subscriptions and signing secrets share one submission and
 recovery mechanism. Delivery diagnostics can reuse it with their own target and
-generation validation. Finite receipt retention limits confirmation availability;
+generation validation. Mutation admission distinguishes receipt reads from
+writes and checks current catalog expansion permission before preparing and
+dispatching an intent; restrictive changes remain available. Finite receipt retention limits confirmation availability;
 absence and cleanup failures cannot establish rollback. Browser permission checks
 may suspend admission while keeping the visible draft intact. Visual evidence
 compares content and dialog regions and separately checks the shared shell,

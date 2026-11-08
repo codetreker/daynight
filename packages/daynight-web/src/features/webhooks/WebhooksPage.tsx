@@ -10,6 +10,7 @@ import { WebhookPendingNotice } from "./WebhookPendingNotice";
 import { WebhookError } from "./WebhookError";
 import { WebhookIcon } from "./WebhookIcon";
 import { useWebhookMessages } from "./messages";
+import { webhookExpansion, webhookAdmissionError } from "./admission";
 import { useWebhookListPosition } from "./useWebhookListPosition";
 import { useWebhookData, useWebhookDirectories, webhookOwnerKey, type WebhookReadFence } from "./useWebhookData";
 import "./webhooks.css";
@@ -27,7 +28,7 @@ type ModalBody =
   | { readonly kind: "confirm-subscription"; readonly endpoint: WebhookActiveEndpoint; readonly subscription: WebhookSubscription };
 type Modal = { readonly scope: string; readonly opener: HTMLElement | null } & ModalBody;
 const isBusy = (state: WebhookIntentState) => state.phase === "preparing" || state.phase === "submitting";
-const blockedIntent = (state: WebhookIntentState) => isBusy(state) || state.phase === "unknown";
+const blockedIntent = (state: WebhookIntentState) => isBusy(state) || state.phase === "unknown" || state.reconciling;
 
 export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   readonly user: CurrentUser; readonly admission: TaskCacheScope; readonly active: boolean; readonly route: WebhookRoute; readonly catalog: WebhookCatalog;
@@ -45,15 +46,15 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const interactionSequence = useRef(0), previousSelection = useRef("");
   const selectionKey = JSON.stringify([scope, route.endpointId, route.tab, query]);
   if (previousSelection.current !== selectionKey) { previousSelection.current = selectionKey; interactionSequence.current++; }
-  const data = useWebhookData(owner, route.endpointId, query, admission, canRead, directories.getAuthorization, directories.authorizationRevision, directories.observeEndpoint);
+  const data = useWebhookData(owner, route.endpointId, query, admission, canRead, directories.getAuthorization, directories.authorizationRevision, directories.observeConfiguration, directories.observeOwnerDenied);
   const sourceEndpoint = data.endpoint?.lifecycle === "active" ? data.endpoint : null;
-  const controllers = useRef(new Map<string, WebhookIntentController>()), controllerAuthorizations = useRef(new Map<string, string>()), live = useRef({ active: canRead, owner, endpoint: sourceEndpoint, catalog, manageOwner: ownerAuthorization?.manage === true });
+  const controllers = useRef(new Map<string, WebhookIntentController>()), controllerAuthorizations = useRef(new Map<string, string>()), operationExpansions = useRef(new Map<string, boolean>()), live = useRef({ active: canRead, owner, endpoint: sourceEndpoint, catalog, manageOwner: ownerAuthorization?.manage === true });
   let controller: WebhookIntentController | null = null;
   if (owner !== null && route.error === null) {
     controller = controllers.current.get(webhookOwnerKey(owner)) ?? null;
     if (controller === null) {
       const controllerOwner = owner;
-      controller = new WebhookIntentController({ serviceOrigin: window.location.origin, owner, signal: admission.signal, admission: { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: signal => admission.ready(signal) }, canSubmit: () => live.current.active && live.current.manageOwner && !admission.isInvalidated && live.current.owner?.kind === controllerOwner.kind && live.current.owner.id === controllerOwner.id });
+      controller = new WebhookIntentController({ serviceOrigin: window.location.origin, owner, signal: admission.signal, admission: { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: signal => admission.ready(signal) }, canSubmit: () => live.current.active && live.current.manageOwner && !admission.isInvalidated && live.current.owner?.kind === controllerOwner.kind && live.current.owner.id === controllerOwner.id && (operationExpansions.current.get(webhookOwnerKey(controllerOwner)) === false || live.current.catalog.service.configurationExpansionAvailable) });
       controllers.current.set(webhookOwnerKey(owner), controller);
       controllerAuthorizations.current.set(webhookOwnerKey(owner), directories.getAuthorization(owner).key);
     }
@@ -101,8 +102,14 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
   const select = (id: string) => { saveListPosition(); interactionSequence.current++; setMenu(null); navigate(webhookUrl({ owner: route.owner, teamId: route.teamId, endpointId: id, tab: route.tab })); };
   const open = (value: ModalBody, opener: HTMLElement | null) => { if (scope !== null) { interactionSequence.current++; setLocalError(null); setRotation("overlap"); setModal({ ...value, scope, opener } as Modal); setMenu(null); } };
   const submit = async (input: WebhookIntentInput): Promise<WebhookIntentState> => {
-    if (controller === null || !canRead || scope === null) return intent;
-    if (!blockedIntent(controller.getSnapshot())) writeFences.current.set(scope, data.captureFence());
+    if (controller === null || scope === null || !live.current.active || !live.current.manageOwner) throw webhookAdmissionError("WebhookAdmissionUnavailable");
+    const state = controller.getSnapshot();
+    if (state.reconciling || state.phase === "unknown") throw webhookAdmissionError("WebhookIntentBusy");
+    if (!isBusy(state)) {
+      const expansion = webhookExpansion(input, live.current.endpoint);
+      if (expansion && !live.current.catalog.service.configurationExpansionAvailable) throw webhookAdmissionError("WebhookExpansionUnavailable");
+      operationExpansions.current.set(scope, expansion); writeFences.current.set(scope, data.captureFence());
+    }
     const fence = writeFences.current.get(scope) ?? null;
     const outcome = await controller.submit(input);
     if (outcome.phase === "confirmed") {
@@ -149,7 +156,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     try { await navigator.clipboard.writeText(displayedSecret); setCopyStatus(m.copied); }
     catch { const node = document.getElementById("webhook-secret"); if (node !== null) { const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); } setCopyStatus(m.copyManual); }
   };
-  const actions: WebhookFormActions = { state: intent, canRead, reconcile: () => { void reconcile(); }, canSubmit: canRead && !blockedIntent(intent) && (modal?.kind === "create" ? createAllowed : manageOwner && endpoint?.capabilities.manage === true), submit, onClose: () => setModal(null), opener: modal?.opener ?? null };
+  const actions: WebhookFormActions = { state: intent, expansionAvailable: catalog.service.configurationExpansionAvailable, canRead, reconcile: () => { void reconcile(); }, canSubmit: canRead && !blockedIntent(intent) && (modal?.kind === "create" ? createAllowed : manageOwner && endpoint?.capabilities.manage === true), submit, onClose: () => setModal(null), opener: modal?.opener ?? null };
   const validModal = manageOwner && modal?.scope === scope && (modal.kind === "create" ? manageOwner : endpoint?.id === modal.endpoint.id && endpoint.capabilities.manage) ? modal : null;
   const tabKeys: readonly WebhookRoute["tab"][] = ["configuration", "subscriptions"];
   const tabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {

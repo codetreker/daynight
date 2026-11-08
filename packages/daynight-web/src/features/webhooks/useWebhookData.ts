@@ -3,7 +3,7 @@ import { ApiError, listProjects } from "../../api/client";
 import { listTeams, type Team } from "../../api/teams";
 import type { Project } from "../../api/types";
 import { getWebhook, listWebhooks, type WebhookEndpoint, type WebhookEndpointSummary, type WebhookListQuery, type WebhookOwner } from "../../api/webhooks";
-import { assertOwnerDisclosure, ownerAuthorization, type WebhookAuthorizationResolver, type WebhookEndpointObservation, type WebhookTeamObservation } from "./authorization";
+import { assertOwnerDisclosure, ownerAuthorization, type WebhookAuthorizationResolver, type WebhookConfigurationObservation, type WebhookOwnerDenial, type WebhookTeamObservation } from "./authorization";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 
 export type WebhookReadFence = { readonly ownerKey: string; readonly generation: number; readonly authorizationKey: string };
@@ -23,7 +23,7 @@ export type WebhookData = {
 const empty = (): WebhookData => ({ items: null, nextCursor: null, endpoint: null, endpointId: null, error: null, detailError: null, refreshing: false, queryKey: null, pageCount: 0, authorizationKey: null });
 export const webhookOwnerKey = (owner: WebhookOwner): string => `${owner.kind}:${owner.id}`;
 
-export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | null, query: WebhookListQuery, admission: TaskCacheScope, active: boolean, getAuthorization: WebhookAuthorizationResolver, authorizationRevision: number, observeEndpoint: WebhookEndpointObservation) => {
+export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | null, query: WebhookListQuery, admission: TaskCacheScope, active: boolean, getAuthorization: WebhookAuthorizationResolver, authorizationRevision: number, observeConfiguration: WebhookConfigurationObservation, observeOwnerDenied: WebhookOwnerDenial) => {
   const [states, setStates] = useState<ReadonlyMap<string, WebhookData>>(new Map());
   const stored = useRef(states); stored.current = states;
   const generations = useRef(new Map<string, number>()), requests = useRef(new Map<string, AbortController>());
@@ -49,7 +49,7 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
   }, [authorizationRevision, getAuthorization]);
   const load = useCallback(async (scope: WebhookOwner, selected: string | null, filters: WebhookListQuery, append: boolean, visible: boolean): Promise<void> => {
     if (!current.current.active || admission.isInvalidated) return;
-    const authorization = current.current.getAuthorization(scope);
+    let authorization = current.current.getAuthorization(scope);
     if (!authorization.readable) return;
     const scopeKey = webhookOwnerKey(scope), generation = (generations.current.get(scopeKey) ?? 0) + 1;
     generations.current.set(scopeKey, generation); requests.current.get(scopeKey)?.abort();
@@ -72,6 +72,11 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
         const page = await listWebhooks(scope, { ...baseFilters, ...(cursor === undefined ? {} : { cursor }) }, signal, requestAdmission);
         await admission.ready(signal); if (!live()) return;
         if (page.items.some(item => items.some(old => old.id === item.id) || append && previous.items?.some(old => old.id === item.id)) || page.nextCursor !== null && cursors.has(page.nextCursor)) throw new ApiError("protocol");
+        const nextAuthorization = page.items.reduce((current, item) => observeConfiguration(item, current.key), authorization);
+        if (nextAuthorization.key !== authorization.key) {
+          authorization = nextAuthorization;
+          update(scopeKey, old => ({ ...empty(), endpointId: selected ?? old.endpointId, authorizationKey: authorization.key }));
+        }
         page.items.forEach(item => assertOwnerDisclosure(authorization, item));
         items.push(...page.items); nextCursor = page.nextCursor; pages++;
         if (nextCursor === null || pages >= targetPages) break;
@@ -83,17 +88,35 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
         try {
           const endpoint = await getWebhook(scope, chosen, signal, requestAdmission);
           await admission.ready(signal); if (!live()) return;
-          const endpointAuthorization = observeEndpoint(endpoint, authorization.key);
+          const endpointAuthorization = observeConfiguration(endpoint, authorization.key);
           assertOwnerDisclosure(endpointAuthorization, endpoint);
           update(scopeKey, previous => {
             const old = previous.authorizationKey === endpointAuthorization.key ? previous : empty();
             if (old.endpoint?.id === endpoint.id && BigInt(endpoint.configVersion) < BigInt(old.endpoint.configVersion)) return old;
             return { ...old, endpoint, endpointId: chosen, detailError: null, authorizationKey: endpointAuthorization.key };
           });
-        } catch (detailError) { if (live()) update(scopeKey, old => ({ ...old, endpointId: chosen, endpoint: detailError instanceof ApiError && (detailError.status === 403 || detailError.status === 404) ? null : old.endpoint?.id === chosen ? old.endpoint : null, detailError })); }
+        } catch (detailError) {
+          if (live()) {
+            if (detailError instanceof ApiError && detailError.status === 403) {
+              const denied = observeOwnerDenied(scope, authorization.key);
+              update(scopeKey, () => ({ ...empty(), endpointId: chosen, detailError, authorizationKey: denied.key }));
+            } else update(scopeKey, old => ({ ...old, endpointId: chosen, endpoint: detailError instanceof ApiError && detailError.status === 404 ? null : old.endpoint?.id === chosen ? old.endpoint : null, detailError }));
+          }
+        }
       } else update(scopeKey, old => ({ ...old, endpoint: null, endpointId: null, detailError: null }));
-    } catch (error) { if (live()) update(scopeKey, old => ({ ...old, ...(error instanceof ApiError && (error.status === 403 || error.status === 404) ? { items: null, endpoint: null } : {}), error, refreshing: false })); }
-  }, [admission, observeEndpoint, update]);
+    } catch (error) {
+      if (live()) {
+        if (error instanceof ApiError && error.status === 403) {
+          const denied = observeOwnerDenied(scope, authorization.key);
+          update(scopeKey, () => ({ ...empty(), error, authorizationKey: denied.key }));
+        } else update(scopeKey, previous => ({
+          ...(previous.authorizationKey === authorization.key ? previous : { ...empty(), endpointId: selected ?? previous.endpointId }),
+          ...(error instanceof ApiError && error.status === 404 ? { items: null, endpoint: null } : {}),
+          error, refreshing: false, authorizationKey: authorization.key,
+        }));
+      }
+    }
+  }, [admission, observeConfiguration, observeOwnerDenied, update]);
   const loadRef = useRef(load); loadRef.current = load;
   const queryKey = JSON.stringify(query);
   useEffect(() => {
@@ -110,7 +133,7 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
   const captureFence = (): WebhookReadFence | null => owner === null ? null : { ownerKey: webhookOwnerKey(owner), generation: generations.current.get(webhookOwnerKey(owner)) ?? 0, authorizationKey: current.current.getAuthorization(owner).key };
   const accept = (endpoint: WebhookEndpoint, fence: WebhookReadFence | null): boolean => {
     if (fence === null || webhookOwnerKey(endpoint.owner) !== fence.ownerKey || !fenceCurrent(fence)) return false;
-    const authorization = observeEndpoint(endpoint, fence.authorizationKey);
+    const authorization = observeConfiguration(endpoint, fence.authorizationKey);
     assertOwnerDisclosure(authorization, endpoint);
     const previous = stored.current.get(fence.ownerKey);
     if (previous?.endpoint?.id === endpoint.id && BigInt(previous.endpoint.configVersion) > BigInt(endpoint.configVersion)) return false;
@@ -131,12 +154,15 @@ export const useWebhookData = (owner: WebhookOwner | null, endpointId: string | 
       const endpoint = await getWebhook(owner, endpointId, signal, { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch, ready: readySignal => admission.ready(readySignal) });
       await admission.ready(signal);
       if (!fenceCurrent(fence)) return null;
-      const endpointAuthorization = observeEndpoint(endpoint, authorization.key);
+      const endpointAuthorization = observeConfiguration(endpoint, authorization.key);
       assertOwnerDisclosure(endpointAuthorization, endpoint);
       return { endpoint, fence: { ...fence, authorizationKey: endpointAuthorization.key } };
     } catch (error) {
       if (signal.aborted || !fenceCurrent(fence)) return null;
-      if (error instanceof ApiError && (error.status === 403 || error.status === 404)) update(ownerKey, old => ({ ...old, items: old.items === null ? null : old.items.filter(item => item.id !== endpointId), endpoint: old.endpoint?.id === endpointId ? null : old.endpoint, detailError: error }));
+      if (error instanceof ApiError && error.status === 403) {
+        const denied = observeOwnerDenied(owner, authorization.key);
+        update(ownerKey, old => ({ ...empty(), endpointId: old.endpointId, authorizationKey: denied.key }));
+      } else if (error instanceof ApiError && error.status === 404) update(ownerKey, old => ({ ...old, items: old.items === null ? null : old.items.filter(item => item.id !== endpointId), endpoint: old.endpoint?.id === endpointId ? null : old.endpoint, detailError: old.endpointId === endpointId ? error : old.detailError }));
       throw error;
     }
   };
@@ -156,16 +182,28 @@ export const useWebhookDirectories = (owner: WebhookOwner | null, admission: Tas
   const observations = useRef<{ observed: boolean; teams: ReadonlyMap<string, WebhookTeamObservation> }>({ observed: false, teams: new Map() });
   const [authorizationRevision, setAuthorizationRevision] = useState(0);
   const getAuthorization = useCallback<WebhookAuthorizationResolver>(owner => ownerAuthorization(owner, admission.userId, observations.current.observed, observations.current.teams), [admission.userId]);
-  const observeEndpoint = useCallback<WebhookEndpointObservation>((endpoint, authorizationKey) => {
+  const observeConfiguration = useCallback<WebhookConfigurationObservation>((endpoint, authorizationKey) => {
     const authorization = getAuthorization(endpoint.owner);
-    if (authorization.key !== authorizationKey || endpoint.owner.kind !== "team" || endpoint.lifecycle === "deleted" || endpoint.capabilities.manage) return authorization;
-    if (endpoint.destination.url !== null || endpoint.capabilities.readSecret || endpoint.capabilities.redeliver) throw new ApiError("protocol");
+    if (authorization.key !== authorizationKey || endpoint.owner.kind !== "team" || "lifecycle" in endpoint && endpoint.lifecycle === "deleted" || "capabilities" in endpoint && endpoint.capabilities.manage || !("capabilities" in endpoint) && endpoint.destination.url !== null) return authorization;
+    if (endpoint.destination.url !== null || "capabilities" in endpoint && (endpoint.capabilities.readSecret || endpoint.capabilities.redeliver)) throw new ApiError("protocol");
     const old = observations.current.teams.get(endpoint.owner.id);
     if (old !== undefined && old.role === "admin" && !old.restricted) {
       const next = new Map(observations.current.teams); next.set(endpoint.owner.id, { ...old, restricted: true, epoch: old.epoch + 1 });
       observations.current = { ...observations.current, teams: next }; setAuthorizationRevision(value => value + 1);
     }
     return getAuthorization(endpoint.owner);
+  }, [getAuthorization]);
+  const observeOwnerDenied = useCallback<WebhookOwnerDenial>((owner, authorizationKey) => {
+    const authorization = getAuthorization(owner);
+    if (authorization.key !== authorizationKey || owner.kind !== "team") return authorization;
+    const old = observations.current.teams.get(owner.id);
+    if (old !== undefined && !old.denied) {
+      const next = new Map(observations.current.teams); next.set(owner.id, { ...old, denied: true, epoch: old.epoch + 1 });
+      observations.current = { ...observations.current, teams: next }; setAuthorizationRevision(value => value + 1);
+      setTeams(teams => teams === null ? null : teams.filter(team => team.id !== owner.id));
+      setProjects(projects => projects?.key === webhookOwnerKey(owner) ? null : projects);
+    }
+    return getAuthorization(owner);
   }, [getAuthorization]);
   const key = owner === null ? "personal" : webhookOwnerKey(owner);
   useEffect(() => {
@@ -174,6 +212,7 @@ export const useWebhookDirectories = (owner: WebhookOwner | null, admission: Tas
     const read = async () => {
       try {
         await admission.ready(signal);
+        const initialObservations = observations.current.teams;
         const availableTeams: Team[] = [], teamCursors = new Set<string>(); let teamCursor: string | null = null;
         do {
           const page = await listTeams(teamCursor, admission.userId, signal, admission.principalMismatch);
@@ -183,17 +222,19 @@ export const useWebhookDirectories = (owner: WebhookOwner | null, admission: Tas
         await admission.ready(signal); signal.throwIfAborted();
         const ordinaryTeams = availableTeams.filter(team => team.kind === "ordinary"), nextObservations = new Map(observations.current.teams);
         let changed = !observations.current.observed;
-        for (const [id, old] of nextObservations) if (old.role !== null && !ordinaryTeams.some(team => team.id === id)) { nextObservations.set(id, { role: null, membershipVersion: null, membershipCreatedAt: null, restricted: false, epoch: old.epoch + 1 }); changed = true; }
+        for (const [id, old] of nextObservations) if (old.role !== null && !ordinaryTeams.some(team => team.id === id)) { nextObservations.set(id, { role: null, membershipVersion: null, membershipCreatedAt: null, restricted: false, denied: false, epoch: old.epoch + 1 }); changed = true; }
         for (const team of ordinaryTeams) {
           const old = nextObservations.get(team.id), membershipVersion = String(team.membership.version), membershipCreatedAt = team.membership.createdAt;
+          const initial = initialObservations.get(team.id);
+          if (old !== undefined && initial?.epoch !== old.epoch && (old.denied || old.restricted && team.membership.role === "admin")) continue;
           if (old?.membershipCreatedAt === membershipCreatedAt && old.membershipVersion !== null && team.membership.version < BigInt(old.membershipVersion)) continue;
           if (old === undefined || old.role !== team.membership.role || old.membershipVersion !== membershipVersion || old.membershipCreatedAt !== membershipCreatedAt) {
-            nextObservations.set(team.id, { role: team.membership.role, membershipVersion, membershipCreatedAt, restricted: false, epoch: (old?.epoch ?? 0) + 1 }); changed = true;
+            nextObservations.set(team.id, { role: team.membership.role, membershipVersion, membershipCreatedAt, restricted: false, denied: false, epoch: (old?.epoch ?? 0) + 1 }); changed = true;
           }
         }
         observations.current = { observed: true, teams: nextObservations };
         if (changed) setAuthorizationRevision(value => value + 1);
-        setTeams(ordinaryTeams);
+        setTeams(ordinaryTeams.filter(team => getAuthorization({ kind: "team", id: team.id }).readable));
         if (owner === null || !getAuthorization(owner).readable) { setProjects(null); setError(null); return; }
         const availableProjects: Project[] = [], projectCursors = new Set<string>(); let projectCursor: string | null = null;
         do {
@@ -212,5 +253,5 @@ export const useWebhookDirectories = (owner: WebhookOwner | null, admission: Tas
     window.addEventListener("focus", check); document.addEventListener("visibilitychange", visible);
     return () => { window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", visible); };
   }, [active, admission]);
-  return { teams, getAuthorization, observeEndpoint, authorizationRevision, projects: projects?.key === key ? projects.items : null, error, refresh: () => setRevision(value => value + 1) };
+  return { teams, getAuthorization, observeConfiguration, observeOwnerDenied, authorizationRevision, projects: projects?.key === key ? projects.items : null, error, refresh: () => setRevision(value => value + 1) };
 };

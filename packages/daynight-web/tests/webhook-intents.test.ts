@@ -75,6 +75,51 @@ describe("Webhook fixed intent controller", () => {
     intent.subscribe(() => { if (intent.getSnapshot().phase === "preparing") repeated = intent.submit({ ...patch(), body: { name: "Second event" } }); });
     const first = intent.submit(patch()); expect(repeated).toBe(first); await first; expect(fetch).toHaveBeenCalledOnce();
   });
+  it("refuses a new decision while a confirmed operation lookup is pending instead of returning its old result", async () => {
+    const generated = vi.spyOn(crypto, "randomUUID");
+    let original!: WebhookReceipt, entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "PATCH") { const operation = await submittedReceipt(options); original = operation; return response({ operation, endpoint: endpoint(operation.configVersionAfter) }); }
+      entered(); await barrier; return response(original);
+    }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), first = await intent.submit(patch()), secondInput = { ...patch(), ifVersion: "9007199254740994", body: { name: "Explicit second decision" } };
+    const lookup = intent.reconcile();
+    expect(() => intent.submit(secondInput)).toThrow(/operation is being checked/);
+    await waiting;
+    expect(() => intent.submit(secondInput)).toThrow(/operation is being checked/);
+    expect(intent.getSnapshot().prepared?.operationId).toBe(first.prepared?.operationId); expect(fetch.mock.calls.filter(call => call[1].method === "PATCH")).toHaveLength(1);
+    expect(generated).toHaveBeenCalledOnce();
+    release(); await lookup;
+    const second = await intent.submit(secondInput);
+    expect(second.phase).toBe("confirmed"); expect(second.prepared?.operationId).not.toBe(first.prepared?.operationId);
+    expect(second.result?.operation.operationId).toBe(second.prepared?.operationId); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["PATCH", undefined, "PATCH"]);
+    expect(generated).toHaveBeenCalledTimes(2);
+  });
+  it("blocks a new decision during unknown receipt lookup without returning the old lookup promise", async () => {
+    let entered!: () => void, release!: () => void, lookups = 0;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "PATCH") throw new TypeError("Response lost");
+      if (++lookups > 1) { entered(); await barrier; }
+      return failure();
+    }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), unknown = await intent.submit(patch()), lookup = intent.reconcile();
+    expect(() => intent.submit({ ...patch(), body: { name: "Blocked second decision" } })).toThrow(/operation is being checked/);
+    await waiting; expect(intent.getSnapshot().prepared?.operationId).toBe(unknown.prepared?.operationId); release();
+    expect((await lookup).phase).toBe("unknown"); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["PATCH", undefined, undefined]);
+  });
+  it("blocks a new decision during automatic unknown reconciliation while retaining the original intent", async () => {
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === "PATCH") throw new TypeError("Response lost");
+      entered(); await barrier; return failure();
+    }); vi.stubGlobal("fetch", fetch);
+    const intent = controller(), pending = intent.submit(patch()); await waiting; const operationId = intent.getSnapshot().prepared!.operationId;
+    expect(() => intent.submit({ ...patch(), body: { name: "Blocked second decision" } })).toThrow(/operation is being checked/);
+    release(); const unknown = await pending; expect(unknown.phase).toBe("unknown"); expect(unknown.prepared?.operationId).toBe(operationId); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["PATCH", undefined]);
+  });
   it("freezes form values before awaiting the browser digest", async () => {
     const input = { ...patch(), body: { name: "Original", enabled: false } };
     const fetch = vi.fn(async (_url: string, options: RequestInit) => response({ operation: await submittedReceipt(options), endpoint: endpoint() })); vi.stubGlobal("fetch", fetch);

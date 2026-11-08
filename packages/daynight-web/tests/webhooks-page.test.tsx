@@ -20,18 +20,24 @@ const failure = (status: number, code: string) => response({ error: { code, mess
 const flush = () => act(async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); await new Promise(resolve => setTimeout(resolve, 0)); });
 const barrier = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 
-const mount = async ({ strict = false, initial = [endpoint()], expand = true }: { readonly strict?: boolean; readonly initial?: readonly WebhookActiveEndpoint[]; readonly expand?: boolean } = {}) => {
+const mount = async ({ strict = false, initial = [endpoint()], expand = true, firstReadFailure }: { readonly strict?: boolean; readonly initial?: readonly WebhookActiveEndpoint[]; readonly expand?: boolean; readonly firstReadFailure?: "network" | "media" | "503" } = {}) => {
   vi.stubGlobal("crypto", { subtle: webcrypto.subtle, randomUUID });
   const lifetime = new AbortController();
   const admission = { userId, signal: lifetime.signal, ready: async (signal: AbortSignal) => signal.throwIfAborted(), isInvalidated: false, principalMismatch: vi.fn() } as unknown as TaskCacheScope;
   const resources = new Map<string, WebhookEndpoint>(initial.map(value => [value.id, value])), receipts = new Map<string, WebhookReceipt>(), writes: { readonly method: string; readonly body: Record<string, unknown> }[] = [];
-  let next = 50, secretReads = 0, active = true, loseWrite = false, holdWrite = false, writeResponse: Response | null = null;
+  let next = 50, secretReads = 0, active = true, loseWrite = false, holdWrite = false, writeResponse: Response | null = null, expansionAvailable = expand;
   let teamRole: "admin" | "member" | null = "admin", teamVersion = 1;
   const writeBarrier = barrier<Response>();
   let intercept: ((url: string, init: RequestInit) => Promise<Response> | null) | null = null;
   const fetch = vi.fn((url: string, init: RequestInit = {}) => {
     const held = intercept?.(url, init); if (held !== null && held !== undefined) return held;
     const target = new URL(url, location.origin), method = init.method ?? "GET";
+    if (firstReadFailure !== undefined && target.pathname === "/api/v1/me/webhooks" && method === "GET") {
+      const failureKind = firstReadFailure; firstReadFailure = undefined;
+      if (failureKind === "network") return Promise.reject(new Error("Initial connection lost"));
+      if (failureKind === "503") return Promise.resolve(failure(503, "database_unavailable"));
+      return Promise.resolve(new Response(JSON.stringify({ items: [], nextCursor: null }), { headers: { "Content-Type": "text/html", "Daynight-User-ID": userId } }));
+    }
     if (target.pathname === "/api/v1/teams") return Promise.resolve(response({ items: teamRole === null ? [] : [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: now, updatedAt: now, membership: { teamId, userId, role: teamRole, version: teamVersion, createdAt: now, updatedAt: now } }], nextCursor: null }));
     if (target.pathname === "/api/v1/projects") return Promise.resolve(response({ items: [projectId, secondProjectId].map((project, index) => ({ id: project, name: index === 0 ? "Project one" : "Project two", ownership: { teamId, version: 1 }, repoUrl: "https://example.test/repo.git", settings: { version: 1, executionWarningMinutes: 60 }, createdAt: now, updatedAt: now })), nextCursor: null }));
     const operation = /\/operations\/([^/]+)$/.exec(target.pathname);
@@ -69,16 +75,29 @@ const mount = async ({ strict = false, initial = [endpoint()], expand = true }: 
   });
   vi.stubGlobal("fetch", fetch);
   act(() => navigate("/webhooks?owner=personal"));
-  const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active={active} route={route} catalog={{ ...catalog, service: { ...catalog.service, configurationExpansionAvailable: expand } }}/> : null; };
+  const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active={active} route={route} catalog={{ ...catalog, service: { ...catalog.service, configurationExpansionAvailable: expansionAvailable } }}/> : null; };
   const content = () => strict ? <StrictMode><View/></StrictMode> : <View/>;
   const rendered = renderWithLocale(content(), { locale: "en" }); await flush();
-  return { ...rendered, fetch, writes, resources, receipts, admission, loseNextWrite: () => { loseWrite = true; }, holdNextWrite: () => { holdWrite = true; }, releaseWrite: () => { holdWrite = false; writeBarrier.resolve(writeResponse!); }, secretReads: () => secretReads, setTeamAuthorization: (role: typeof teamRole, version: number) => { teamRole = role; teamVersion = version; }, intercept: (value: typeof intercept) => { intercept = value; }, pause: () => { active = false; rendered.rerender(content()); }, resume: () => { active = true; rendered.rerender(content()); } };
+  return { ...rendered, fetch, writes, resources, receipts, admission, loseNextWrite: () => { loseWrite = true; }, holdNextWrite: () => { holdWrite = true; }, releaseWrite: () => { holdWrite = false; writeBarrier.resolve(writeResponse!); }, secretReads: () => secretReads, setExpansion: (value: boolean) => { expansionAvailable = value; rendered.rerender(content()); }, setTeamAuthorization: (role: typeof teamRole, version: number) => { teamRole = role; teamVersion = version; }, intercept: (value: typeof intercept) => { intercept = value; }, pause: () => { active = false; rendered.rerender(content()); }, resume: () => { active = true; rendered.rerender(content()); } };
 };
 const openEdit = () => fireEvent.click(screen.getByRole("button", { name: "Edit Endpoint 5" }));
 const setName = (name: string) => { const input = screen.getByRole("textbox", { name: /^Name$/ }); fireEvent.change(input, { target: { value: name } }); return input as HTMLInputElement; };
 const submitForm = () => fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
 
 describe("Webhook configuration page", () => {
+  it.each(["network", "media", "503"] as const)("publishes an initial %s list failure with its owner binding and recovers through read-only retry", async firstReadFailure => {
+    const view = await mount({ firstReadFailure }); await screen.findByRole("alert");
+    expect(screen.queryByLabelText("Loading…")).toBeNull(); expect(screen.queryByText("No webhooks yet")).toBeNull(); expect(document.querySelectorAll(".endpoint-row")).toHaveLength(0); expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" })); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); expect(screen.queryByRole("alert")).toBeNull(); expect(view.writes).toHaveLength(0);
+  });
+
+  it("does not publish a held old-owner read failure into a newly selected owner", async () => {
+    const initial = [endpoint(), { ...endpoint(8), owner: { kind: "team" as const, id: teamId } }]; const view = await mount({ initial });
+    const held = barrier<Response>(); view.intercept((url, init) => url.startsWith("/api/v1/me/webhooks?") && (init.method === undefined || init.method === "GET") ? held.promise : null); fireEvent.focus(window); await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 8", level: 2 });
+    held.resolve(failure(503, "database_unavailable")); await flush(); expect(screen.getByRole("heading", { name: "Endpoint 8", level: 2 })).toBeVisible(); expect(screen.queryByRole("alert")).toBeNull(); expect(document.querySelectorAll(".endpoint-row")).toHaveLength(1); expect(view.writes).toHaveLength(0);
+  });
+
   it("loads the real nullable summary shape and requires an explicit team selection", async () => {
     const view = await mount(); expect(screen.getByText("No deliveries yet")).toBeVisible(); expect(view.secretReads()).toBe(0);
     const personalReads = view.fetch.mock.calls.filter(([path]) => String(path).startsWith("/api/v1/me/webhooks")).length;
@@ -159,6 +178,33 @@ describe("Webhook configuration page", () => {
     const view = await mount(); view.intercept((url) => url.includes("q=missing") ? Promise.resolve(failure(503, "database_unavailable")) : null);
     fireEvent.change(screen.getByRole("searchbox", { name: "Search name or URL" }), { target: { value: "missing" } }); await flush();
     expect(document.querySelectorAll(".endpoint-row")).toHaveLength(1); expect(screen.getByText("Showing the previous search while the new search is checked")).toBeVisible(); expect(screen.queryByText("No matching Webhooks")).toBeNull(); expect(screen.getByRole("alert")).toBeVisible();
+  });
+
+  it("blocks a URL draft when expansion becomes unavailable and still saves a name-only cleanup", async () => {
+    const view = await mount(); openEdit(); setName("Name cleanup"); fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/new" } }); view.setExpansion(false);
+    expect(screen.getByRole("textbox", { name: "Endpoint URL" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); submitForm(); await flush(); expect(view.writes).toHaveLength(0); expect(Object.keys(sessionStorage).filter(key => key.startsWith("daynight.webhook.pending:"))).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Use current value" })); expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitFor(() => expect(view.writes).toHaveLength(1)); expect(view.writes[0]!.body.name).toBe("Name cleanup"); expect(view.writes[0]!.body).not.toHaveProperty("destination");
+  });
+
+  it.each(["event", "project"] as const)("blocks an existing subscription %s expansion but keeps event shrink available", async expansion => {
+    const view = await mount(); fireEvent.click(screen.getByRole("tab", { name: /Subscriptions/ })); await flush(); fireEvent.click(screen.getByRole("button", { name: "Edit subscription Project one" }));
+    if (expansion === "event") fireEvent.click(screen.getByRole("checkbox", { name: /task.status_changed/ })); else fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: secondProjectId } });
+    view.setExpansion(false); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); expect(screen.getByRole("checkbox", { name: /task.deleted/ })).toBeDisabled(); submitForm(); await flush(); expect(view.writes).toHaveLength(0); expect(Object.keys(sessionStorage).filter(key => key.startsWith("daynight.webhook.pending:"))).toHaveLength(0);
+    if (expansion === "event") fireEvent.click(screen.getByRole("checkbox", { name: /task.status_changed/ })); else fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: projectId } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /task.created/ })); expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(); submitForm(); await waitFor(() => expect(view.writes).toHaveLength(1)); expect(view.writes[0]!.body.subscriptions).toEqual([{ id: id(7), projectId, eventTypes: ["task.paused"] }]);
+  });
+
+  it("keeps an actually dispatched lost write unknown when expansion is later unavailable", async () => {
+    const view = await mount(); openEdit(); fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/dispatched" } }); view.loseNextWrite(); view.intercept(url => url.includes("/operations/") ? Promise.resolve(failure(503, "database_unavailable")) : null); submitForm(); await waitFor(() => expect(view.writes).toHaveLength(1)); view.setExpansion(false);
+    await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown")); expect(view.writes).toHaveLength(1); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    view.intercept(null); fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Check operation" })); await screen.findByText("Original operation confirmed"); expect(view.writes).toHaveLength(1);
+  });
+
+  it("blocks management while an original receipt lookup is held without clearing local editing", async () => {
+    const view = await mount(); fireEvent.click(screen.getByRole("button", { name: "Rotate secret" })); fireEvent.click(screen.getByRole("button", { name: "Generate new secret" })); await screen.findByText("Original rotation key"); await flush(); openEdit(); const draft = setName("Local draft"); fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const held = barrier<Response>(); view.intercept(url => url.includes("/operations/") ? held.promise : null); fireEvent.click(screen.getByRole("button", { name: "Check operation" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeDisabled()); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); expect(view.writes).toHaveLength(1);
+    held.resolve(response([...view.receipts.values()][0]!)); await waitFor(() => expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled()); expect(view.writes).toHaveLength(1); expect(draft).toHaveValue("Local draft");
   });
 
   it("performs restrictive cleanup while expansion is unavailable", async () => {
@@ -257,6 +303,26 @@ describe("Webhook configuration page", () => {
     view.intercept(null); for (const admin of admins) view.resources.set(admin.id, admin); view.setTeamAuthorization("admin", 3); fireEvent.focus(window);
     await waitFor(() => expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled()); await screen.findByRole("button", { name: "Edit Endpoint 5" }); await flush();
     expect(screen.getByRole("button", { name: "Edit Endpoint 5" })).toBeEnabled(); expect(screen.getByRole("button", { name: "Show secret" })).toBeEnabled(); expect(view.secretReads()).toBe(1); expect(view.writes).toHaveLength(1);
+  });
+
+  it("withdraws private detail and drafts immediately when a fresh list is limited but detail and directory reads wait", async () => {
+    const initial = [endpoint(), endpoint(8)].map(value => ({ ...value, owner: { kind: "team" as const, id: teamId } })); const view = await mount({ initial }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); await flush(); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); setName("Admin draft");
+    const held = barrier<Response>(); view.intercept((url, init) => {
+      if (url.startsWith("/api/v1/teams?") || url === `/api/v1/teams/${teamId}/webhooks/${endpointId}`) return held.promise;
+      return null;
+    });
+    for (const original of initial) view.resources.set(original.id, { ...original, destination: { ...original.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } });
+    fireEvent.focus(window); await screen.findByText("Member · Read only"); expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled();
+    held.resolve(response(initial[0])); await flush(); expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/);
+  });
+
+  it.each([403, 404] as const)("treats a sibling configuration GET %s as owner denial or resource absence according to its semantics", async status => {
+    const initial = [endpoint(), endpoint(8)].map(value => ({ ...value, owner: { kind: "team" as const, id: teamId } })); const view = await mount({ initial }); fireEvent.click(screen.getByRole("button", { name: "Team shared" })); await flush(); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); await flush(); fireEvent.click(screen.getByRole("switch", { name: "Enable delivery" })); await screen.findByText("Original operation confirmed"); await flush(); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
+    view.intercept((url, init) => url === `/api/v1/teams/${teamId}/webhooks/${id(8)}` ? Promise.resolve(failure(status, status === 403 ? "forbidden" : "not_found")) : null);
+    fireEvent.click(screen.getByRole("button", { name: "More actions Endpoint 8" })); fireEvent.click(within(document.querySelector(".row-menu")! as HTMLElement).getByRole("button", { name: "Edit" })); await screen.findAllByRole("alert"); await flush();
+    if (status === 403) { expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(document.body.textContent).not.toContain("Engineering"); expect(screen.queryByRole("dialog")).toBeNull(); expect(screen.getByRole("button", { name: "New webhook" })).toBeDisabled(); fireEvent.focus(window); await flush(); expect(document.body.textContent).not.toContain("private=hidden"); }
+    else { expect(document.body.textContent).toContain("private=hidden"); expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible(); expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled(); }
+    expect(screen.getByText("Original operation confirmed")).toBeVisible(); expect(view.writes).toHaveLength(1);
   });
 
   it("preserves the current Team editor and focus when a directory background observation is unchanged", async () => {

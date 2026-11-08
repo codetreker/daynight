@@ -4,6 +4,7 @@ import type { WebhookActiveEndpoint, WebhookEventType, WebhookSubscriptionInput,
 import type { WebhookIntentInput, WebhookIntentState } from "../webhook-intents/controller";
 import { WebhookDialog } from "./WebhookDialog";
 import { WebhookError } from "./WebhookError";
+import { webhookExpansion } from "./admission";
 import { WebhookPendingNotice } from "./WebhookPendingNotice";
 import { WebhookIcon } from "./WebhookIcon";
 import { useWebhookMessages } from "./messages";
@@ -17,13 +18,14 @@ const invalidUrl = (url: string) => { try { const value = new URL(url); return v
 export type WebhookFormActions = {
   readonly state: WebhookIntentState;
   readonly canSubmit: boolean;
+  readonly expansionAvailable: boolean;
   readonly canRead: boolean;
   readonly reconcile: () => void;
   readonly submit: (input: WebhookIntentInput) => Promise<WebhookIntentState>;
   readonly onClose: () => void;
   readonly opener: HTMLElement | null;
 };
-const isPending = (state: WebhookIntentState) => ["preparing", "submitting", "unknown"].includes(state.phase);
+const isPending = (state: WebhookIntentState) => ["preparing", "submitting", "unknown"].includes(state.phase) || state.reconciling;
 const errorFor = (state: WebhookIntentState) => state.phase === "rejected" || state.phase === "unknown" ? state.error : null;
 type ConfigurationField = "name" | "url";
 type ConfigurationDraft = {
@@ -55,7 +57,7 @@ export const WebhookConfigurationDialog = ({ endpoint, projects, projectLabels, 
   const resolveField = (field: ConfigurationField, keepEdit: boolean) => setDraft(old => ({ ...old, [field]: keepEdit ? old[field] : observedField(old.baseline, field), dirty: { ...old.dirty, [field]: keepEdit && old[field] !== observedField(old.baseline, field) }, conflicts: { ...old.conflicts, [field]: false } }));
   const conflicts = draft.conflicts.name || draft.conflicts.url;
   const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); if (!actions.canSubmit || isPending(actions.state) || conflicts) return;
+    event.preventDefault(); if (!actions.canSubmit || isPending(actions.state) || conflicts || !actions.expansionAvailable && (draft.baseline === null || draft.dirty.url)) return;
     if ((draft.baseline === null || draft.dirty.name) && draft.name.trim() === "") { setValidation(m.invalidName); return; }
     if ((draft.baseline === null || draft.dirty.url) && invalidUrl(draft.url)) { setValidation(m.invalidUrl); return; }
     if (draft.baseline === null && selectedProjects.length > 0 && selectedEvents.length === 0) { setValidation(m.invalidEvents); return; }
@@ -76,12 +78,12 @@ export const WebhookConfigurationDialog = ({ endpoint, projects, projectLabels, 
     <p>{m.fieldChanged}</p><span className="tiny">{m.currentValue}</span><div className="value-box"><span>{observedField(draft.baseline, field)}</span></div>
     <div className="webhook-field-conflict-actions"><button className="button small" type="button" onClick={() => resolveField(field, false)}>{m.useCurrent}</button><button className="button small" type="button" onClick={() => resolveField(field, true)}>{m.keepEdit}</button></div>
   </div>;
-  return <WebhookDialog title={draft.baseline === null ? m.newTitle : m.editTitle} opener={actions.opener} onClose={actions.onClose} footer={<><button className="button" type="button" onClick={actions.onClose}>{m.cancel}</button><button className="button primary" type="submit" form={formId} disabled={!actions.canSubmit || isPending(actions.state) || unchanged || conflicts || reviewing || draft.baseline === null && projects === null}>{draft.baseline === null ? m.create : m.save}</button></>}>
+  return <WebhookDialog title={draft.baseline === null ? m.newTitle : m.editTitle} opener={actions.opener} onClose={actions.onClose} footer={<><button className="button" type="button" onClick={actions.onClose}>{m.cancel}</button><button className="button primary" type="submit" form={formId} disabled={!actions.canSubmit || isPending(actions.state) || unchanged || conflicts || reviewing || !actions.expansionAvailable && (draft.baseline === null || draft.dirty.url) || draft.baseline === null && projects === null}>{draft.baseline === null ? m.create : m.save}</button></>}>
     <form id={formId} onSubmit={event => { void submit(event); }}><WebhookPendingNotice state={actions.state} active={actions.canRead} onCheck={actions.reconcile}/>
       {validation !== null && <div className="inline-error" role="alert">{validation}</div>}{(localError ?? errorFor(actions.state)) !== null && <WebhookError error={localError ?? errorFor(actions.state)}/>}
       {actions.state.phase === "rejected" && draft.baseline !== null && <button className="text-button" type="button" disabled={reviewing || !actions.canSubmit} onClick={() => { void review(); }}>{m.reviewCurrent}</button>}
       <div className="form-field"><label htmlFor="webhook-name">{m.name}</label><input id="webhook-name" className="input" name="name" value={draft.name} placeholder={m.namePlaceholder} onChange={event => changeField("name", event.target.value)} required autoComplete="off"/>{fieldConflict("name")}</div>
-      <div className="form-field"><label htmlFor="webhook-url">{m.url}</label><input id="webhook-url" className="input" name="url" type="url" value={draft.url} placeholder={m.urlPlaceholder} onChange={event => changeField("url", event.target.value)} required autoComplete="off"/>{fieldConflict("url")}</div>
+      <div className="form-field"><label htmlFor="webhook-url">{m.url}</label><input id="webhook-url" className="input" name="url" type="url" value={draft.url} disabled={!actions.expansionAvailable} placeholder={m.urlPlaceholder} onChange={event => changeField("url", event.target.value)} required autoComplete="off"/>{fieldConflict("url")}{!actions.expansionAvailable && draft.dirty.url && draft.baseline !== null && <button className="text-button" type="button" onClick={() => resolveField("url", false)}>{m.useCurrent}</button>}</div>
       <div className="form-field"><span className="field-title">{m.receiveType}</span><div className="selected-type"><WebhookIcon name="code" size={20}/><div><strong>{m.method}</strong><small>CloudEvents · Standard Webhooks</small></div></div></div>
       {draft.baseline === null && <><div className="form-divider"/><fieldset className="form-field"><legend className="field-title">{m.selectProjects}</legend><div className="checkbox-list">{projects === null ? <span>{m.loading}</span> : projects.length === 0 ? <span className="hint">{m.noProjects}</span> : projects.map(project => <label className="check-row" key={project.id}><input type="checkbox" checked={selectedProjects.includes(project.id)} onChange={event => setSelectedProjects(event.target.checked ? [...selectedProjects, project.id] : selectedProjects.filter(id => id !== project.id))}/><span className="check-main"><strong>{project.name}</strong><small>{projectLabels.get(project.id)}</small></span></label>)}</div></fieldset><EventChecks value={selectedEvents} onChange={setSelectedEvents}/></>}
     </form>
@@ -92,19 +94,22 @@ export const WebhookSubscriptionDialog = ({ endpoint, subscription, projects, pr
   readonly endpoint: WebhookActiveEndpoint; readonly subscription: WebhookSubscription | null; readonly projects: readonly Project[] | null; readonly projectLabels: ReadonlyMap<string, string>; readonly actions: WebhookFormActions;
 }) => {
   const m = useWebhookMessages(), formId = useId(), [projectId, setProjectId] = useState(subscription?.projectId ?? ""), [selectedEvents, setSelectedEvents] = useState<readonly WebhookEventType[]>(subscription?.eventTypes ?? []), [validation, setValidation] = useState<string | null>(null), [localError, setLocalError] = useState<unknown>(null);
-  const canExpand = subscription === null || subscription.eligibility === "eligible";
+  const eligible = subscription === null || subscription.eligibility === "eligible";
+  const canExpand = eligible && actions.expansionAvailable;
+  const replacement: WebhookSubscriptionInput = { id: subscription !== null && subscription.projectId === projectId ? subscription.id : null, projectId, eventTypes: selectedEvents };
+  const subscriptions = (subscription === null ? [...endpoint.subscriptions, replacement] : endpoint.subscriptions.map(old => old.id === subscription.id ? replacement : old)).map(({ id, projectId, eventTypes }) => ({ id, projectId, eventTypes }));
+  const input: WebhookIntentInput = { kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body: { subscriptions } };
+  const expansionBlocked = !actions.expansionAvailable && webhookExpansion(input, endpoint);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); if (!actions.canSubmit || isPending(actions.state)) return;
+    event.preventDefault(); if (!actions.canSubmit || isPending(actions.state) || expansionBlocked) return;
     if (projectId === "" || selectedEvents.length === 0) { setValidation(m.invalidEvents); return; }
-    const replacement: WebhookSubscriptionInput = { id: subscription !== null && subscription.projectId === projectId ? subscription.id : null, projectId, eventTypes: selectedEvents };
-    const subscriptions = subscription === null ? [...endpoint.subscriptions, replacement] : endpoint.subscriptions.map(old => old.id === subscription.id ? replacement : old);
     setValidation(null); setLocalError(null);
-    try { await actions.submit({ kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body: { subscriptions: subscriptions.map(({ id, projectId, eventTypes }) => ({ id, projectId, eventTypes })) } }); } catch (error) { setLocalError(error); }
+    try { await actions.submit(input); } catch (error) { setLocalError(error); }
   };
   const unavailableSelected = projectId !== "" && !projects?.some(project => project.id === projectId);
-  return <WebhookDialog title={subscription === null ? m.addSub : m.editSub} opener={actions.opener} onClose={actions.onClose} footer={<><button className="button" type="button" onClick={actions.onClose}>{m.cancel}</button><button className="button primary" type="submit" form={formId} disabled={!actions.canSubmit || isPending(actions.state) || projects === null && subscription === null}>{m.save}</button></>}>
+  return <WebhookDialog title={subscription === null ? m.addSub : m.editSub} opener={actions.opener} onClose={actions.onClose} footer={<><button className="button" type="button" onClick={actions.onClose}>{m.cancel}</button><button className="button primary" type="submit" form={formId} disabled={!actions.canSubmit || isPending(actions.state) || expansionBlocked || projects === null && subscription === null}>{m.save}</button></>}>
     <form id={formId} onSubmit={event => { void submit(event); }}><WebhookPendingNotice state={actions.state} active={actions.canRead} onCheck={actions.reconcile}/>{validation !== null && <div className="inline-error" role="alert">{validation}</div>}{(localError ?? errorFor(actions.state)) !== null && <WebhookError error={localError ?? errorFor(actions.state)}/>}
-      <div className="form-field"><label htmlFor="webhook-subscription-project">{m.project}</label><select id="webhook-subscription-project" className="input" value={projectId} onChange={event => setProjectId(event.target.value)} disabled={!canExpand}><option value="">{m.selectProjects}</option>{unavailableSelected && <option value={projectId}>{projectId}</option>}{projects?.map(project => <option value={project.id} key={project.id}>{project.name} · {projectLabels.get(project.id)}</option>)}</select></div>
+      <div className="form-field"><label htmlFor="webhook-subscription-project">{m.project}</label><select id="webhook-subscription-project" className="input" value={projectId} onChange={event => setProjectId(event.target.value)} disabled={!eligible || subscription === null && !actions.expansionAvailable}><option value="">{m.selectProjects}</option>{unavailableSelected && <option value={projectId}>{projectId}</option>}{projects?.map(project => <option value={project.id} key={project.id} disabled={!canExpand && project.id !== subscription?.projectId}>{project.name} · {projectLabels.get(project.id)}</option>)}</select></div>
       <EventChecks value={selectedEvents} onChange={setSelectedEvents} canAdd={canExpand}/>
     </form>
   </WebhookDialog>;

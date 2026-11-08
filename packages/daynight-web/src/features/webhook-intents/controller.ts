@@ -42,6 +42,12 @@ type Options = {
   readonly storage?: Storage;
   readonly canSubmit?: () => boolean;
 };
+class WebhookIntentBusy extends Error {
+  constructor() {
+    super("The original Webhook operation is being checked. Wait for it to finish before submitting another change.");
+    this.name = "WebhookIntentBusy";
+  }
+}
 const prefix = "daynight.webhook.pending:";
 const kindChoices: readonly WebhookOperationKind[] = ["endpoint.create", "endpoint.patch", "endpoint.delete", "signing-secret.rotate", "delivery.redeliver"];
 const invalid = (): never => { throw new ApiError("protocol"); };
@@ -132,6 +138,7 @@ export class WebhookIntentController {
   readonly #listeners = new Set<() => void>();
   #state: WebhookIntentState = { phase: "idle", prepared: null, result: null, error: null, reconciling: false, persistenceError: null };
   #pending: Promise<WebhookIntentState> | null = null;
+  #pendingKind: "write" | "reconcile" | null = null;
   #body: string | null = null;
   #disposed = false;
 
@@ -176,7 +183,10 @@ export class WebhookIntentController {
   #signal = (): AbortSignal => AbortSignal.any([this.#options.signal, this.#lifetime.signal]);
 
   submit = (input: WebhookIntentInput): Promise<WebhookIntentState> => {
-    if (this.#pending !== null) return this.#pending;
+    if (this.#pending !== null) {
+      if (this.#pendingKind === "reconcile") throw new WebhookIntentBusy();
+      return this.#pending;
+    }
     if (this.#state.phase === "unknown") return Promise.resolve(this.#state);
     if (this.#options.canSubmit !== undefined && !this.#options.canSubmit()) throw new ApiError("server", 503, "webhooks_unavailable");
     const signal = this.#signal();
@@ -192,8 +202,9 @@ export class WebhookIntentController {
     this.#body = serializedBody;
     const pending = Promise.resolve().then(() => this.#prepareAndSubmit(input.kind, endpointId, ifVersion, destinationRevision, operationId, issuedAt, bytes, signal));
     this.#pending = pending;
+    this.#pendingKind = "write";
     this.#publish({ ...this.#state, phase: "preparing", prepared: null, result: null, error: null, reconciling: false });
-    void pending.then(() => { if (this.#pending === pending) this.#pending = null; });
+    void pending.then(() => { if (this.#pending === pending) { this.#pending = null; this.#pendingKind = null; } });
     return pending;
   };
 
@@ -241,12 +252,14 @@ export class WebhookIntentController {
     signal.throwIfAborted();
     const pending = Promise.resolve().then(() => this.#observe(signal));
     this.#pending = pending;
-    void pending.then(() => { if (this.#pending === pending) this.#pending = null; });
+    this.#pendingKind = "reconcile";
+    void pending.then(() => { if (this.#pending === pending) { this.#pending = null; this.#pendingKind = null; } });
     return pending;
   };
 
   #observe(signal: AbortSignal): Promise<WebhookIntentState> {
     const prepared = this.#state.prepared!;
+    this.#pendingKind = "reconcile";
     this.#publish({ ...this.#state, reconciling: true });
     return getWebhookOperation(prepared.owner, prepared.operationId, signal, this.#options.admission).then(receipt => {
       assertWebhookReceiptMatches(receipt, prepared);
