@@ -10,13 +10,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func TestAttachmentHTTPInterruptedUploadDiscardsStaging(t *testing.T) {
@@ -30,9 +31,9 @@ func TestAttachmentHTTPInterruptedUploadDiscardsStaging(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	handler := attachmentTestHandler(t, projectTestStore(t), files, io.Discard)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Interrupted upload")
+	f := newAttachmentFixture(t, files, io.Discard)
+	handler, task := f.handler, f.task
+	f.expectAdmission(task, "interrupted/file.bin")
 	location := attachmentFilePath(task, "interrupted/file.bin")
 	finished := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,10 +109,15 @@ func TestAttachmentHTTPInterruptedUploadDiscardsStaging(t *testing.T) {
 	if count, size := staging(); count != 0 {
 		t.Fatalf("disconnected upload left staging: count=%d size=%d", count, size)
 	}
+	f.verify()
+	f.expectRead(task, "interrupted/file.bin", model.Attachment{}, model.ErrNotFound)
 	assertProjectError(t, attachmentRequest(handler, http.MethodGet, location, "", nil), http.StatusNotFound, "not_found")
+	f.verify()
+	f.expectList(task, store.AttachmentQuery{Limit: 50}, store.AttachmentPage{}, nil)
 	page := decodeResponse[api.AttachmentPage](t, attachmentRequest(handler, http.MethodGet, taskPath(task)+"/attachments", "", nil), http.StatusOK)
-	if len(page.Items) != 0 || !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
-		t.Fatalf("disconnected upload changed attachment or task state: %+v", page)
+	f.verify()
+	if len(page.Items) != 0 {
+		t.Fatalf("disconnected upload exposed attachment metadata: %+v", page)
 	}
 	if _, err := os.Stat(filepath.Join(root, "task-attachments", task.ProjectID, task.ID[:2], task.ID, "interrupted", "file.bin")); !os.IsNotExist(err) {
 		t.Fatalf("disconnected upload published a file: %v", err)

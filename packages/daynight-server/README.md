@@ -675,15 +675,15 @@ the real Web assets described under [Build and run](#build-and-run).
 
 ### Business rules and DAO mocks
 
-Business-rule unit tests construct domain facts directly and use narrow mocks
-of the `core/store` DAO interfaces when a rule needs query results or storage
-errors. Check arguments, expected calls, results and error chains; unconfigured
-access must fail immediately. Pure functions need no storage mock. Keep these
-rule selections runnable without `DAYNIGHT_TEST_DATABASE_URL`, rather than
-preparing PostgreSQL merely to obtain fixed model data. Project settings and
-encoded-budget validation, Attachment input validation and invalid login scopes
-use these input-only fixtures; representative persisted refusals and accepted
-SDK paths retain real integration coverage.
+Non-Store unit tests must construct domain facts directly and use narrow mocks
+of `core/store` DAO, scope and transaction interfaces when they need stored data
+or completion results. Check arguments, expected calls, results and error chains;
+unconfigured or additional access must fail immediately. Pure functions need no
+storage mock. These tests must execute without `DAYNIGHT_TEST_DATABASE_URL`.
+PostgreSQL tests in the Store layer own real database mechanisms; API integration
+tests own representative normal flows through the assembled Server. The
+[test-writing rules](../../docs/writing_tests.md) define these dependencies and
+ownership boundaries.
 
 The complete `internal/service/webhook` suite uses narrow transaction and DAO
 mocks. The mocks return explicitly configured facts and projections, record
@@ -722,37 +722,40 @@ a rule matrix does not remove these proofs or replace them with a single mock
 call. Do not mock SQL strings or implement a second in-memory database to test
 business rules.
 
-The Session control catalog, activity and argument rules call the authorization
-function with ordinary Task facts, a matching active Worker and fence, and a
-controlled clock. Positive commands establish that the fixture admits valid
-inputs. Real Submit/outsider, durable operation and offer/dispatch recheck tests
-retain the storage boundary. The
-[control-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-control-rule-isolation.md)
-records the proof split. The [server organization rules](../../docs/daynight-server.md#测试职责)
-own the stable test-layer policy.
+The complete `internal/core/session` suite uses synthetic domain facts and
+narrow DAO, scope and transaction mocks. It exercises the real Session engine,
+protocol validation and live state without PostgreSQL. Mocks supply explicit
+Task, Bot, credential, Session, operation and terminal facts and capture proposed
+write DTOs. A captured write is an intended operation, not proof of persistence;
+transaction completion separately selects `committed`, `not_committed` or
+`unknown`. Later reads and query decisions receive explicit scenario response
+facts; recording a write does not automatically change those responses.
 
-Session command and interaction admission tests use `SessionDAO` query mocks
-that check context, identity arguments, call counts and error propagation.
-Ordinary Task rules and independent Test Session first-input rules keep separate
-fixtures. A real timeline-upsert, Submit, operation-readback and duplicate-callback
-witness retains the persisted interaction-ID mapping. The
-[command-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-command-rule-isolation.md)
-records that split.
+Session tests retain command admission and interaction-ID propagation,
+owner/credential/version rechecks, generation and fence transitions, archive
+and content identity, capacity boundaries, source ACK, cancellation and cleanup.
+Controlled clocks and callback barriers exercise time and concurrency rules.
+Private conversation data is checked at proposed durable writes. Store tests
+separately prove SQL mapping, duplicate queries, locks, transactions, persistence
+and deletion; Bot and Task service tests own cross-module orchestration.
 
-Session load-state tests control `LockSession` through its DAO interface and
-observe local live-state and pending-content behavior for valid bindings,
-mismatches, missing records and operational errors. Actual row deletion, DAO
-missing-row mapping and Bot deletion/revocation barriers retain PostgreSQL. The
-[load-state decision](../../.agents/notes/implemented/testing/2026-11-06-session-load-state-isolation.md)
-records the error and invalidation expectations.
+From this module, run the complete database-independent Session suite with:
 
-Bot registration preflight tests use valid frozen-role, configuration and
-registration facts with the existing runner boundary. Invalid inputs must never
-enter the runner, and a valid-input sentinel proves the fixture can reach it.
-The PG frozen-configuration test first verifies an invalid registration created
-no Session or binding changes, then retains its real authority and version
-checks. The [Bot preflight decision](../../.agents/notes/implemented/testing/2026-11-06-bot-registration-preflight-isolation.md)
-records the shared-fixture and no-partial-write guarantees.
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 ./internal/core/session
+```
+
+The [Session test isolation decision](../../.agents/notes/implemented/testing/2026-11-08-session-test-dao-mocks.md)
+records the complete proof allocation and the costs of the prior partial split.
+The earlier
+[control-rule](../../.agents/notes/implemented/testing/2026-11-06-session-control-rule-isolation.md),
+[command-rule](../../.agents/notes/implemented/testing/2026-11-06-session-command-rule-isolation.md),
+[load-state](../../.agents/notes/implemented/testing/2026-11-06-session-load-state-isolation.md)
+and [Bot preflight](../../.agents/notes/implemented/testing/2026-11-06-bot-registration-preflight-isolation.md)
+decisions preserve their original rationale. The
+[server organization rules](../../docs/daynight-server.md#测试职责) own the stable
+mock and transaction policy.
 
 Project request validation uses a valid synthetic principal and a fail-on-access
 store for UUID, creation input, pagination and entropy refusals that precede
@@ -775,6 +778,36 @@ migration runner. Database-shape validation, command/root failures, maintenance
 queries and process crash recovery retain their PostgreSQL boundaries. The
 [record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
 records which storage facts are mocked and which durable operations remain real.
+
+### Attachment HTTP tests
+
+The `internal/server/attachment` suite assembles the real HTTP, authentication
+and attachment service adapters with controlled identity facts and strict DAO
+and scope callbacks. Existing route, request, header and response cases execute
+without preparing PostgreSQL or a complete product login flow. Unconfigured
+storage access fails explicitly; fixture writes do not simulate committed state.
+
+Run the suite from this module with the unit Web-resource overlay:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE GOFLAGS='-overlay=scripts/unit-overlay.json' go test -race -count=1 -timeout=5m ./internal/server/attachment
+```
+
+Tests retain actual TCP body reading and local file storage when those resources
+are the mechanism under test. The stalled-upload case uses the attachment
+handler's test-local read duration through the same `NewDeadlineBody` path,
+verifies `408 request_timeout`, no partial publication, capacity release and a
+subsequent successful upload. Production route registration still initializes
+the handler duration to the existing 60-second attachment deadline.
+
+The real 5 MiB content boundary, fixed-length and chunked requests, path guards,
+preview/download headers and error responses remain HTTP or native-resource
+assertions. Existing store metadata tests retain actual SQL, transaction and
+unchanged-state readback; native attachment lifecycle and process tests retain
+admission/publication barriers and exact metadata and bytes across restart. The
+[Attachment HTTP ownership decision](../../.agents/notes/implemented/testing/2026-11-08-attachment-http-test-ownership.md)
+records this correction of existing tests and their retained proof boundaries.
 
 ### Task service and store tests
 
@@ -823,12 +856,15 @@ records why database clocks and lock observations are required together.
 
 ### HTTP scenario ownership
 
-Domain packages own their HTTP integration scenarios, including those that
-construct the production application and use real PostgreSQL and UniAuth
-fixtures. The root `internal/server` package retains tests that need internal
-composition access, shared startup/channel fixtures and runtime shutdown
-ordering. Shared scenarios run once in their domain owner; internal-only
-assertions remain in the root package. The
+Domain packages own their HTTP tests. Attachment protocol fixtures assemble real
+adapters with controlled authentication and DAO facts; their
+[test guide](#attachment-http-tests) identifies the native transport and storage
+boundaries. Existing tests that require complete application composition still
+use the production application with real PostgreSQL and UniAuth fixtures. The
+root `internal/server` package retains tests that need internal composition
+access, shared startup/channel fixtures and runtime shutdown ordering. Shared
+scenarios run once in their domain owner; internal-only assertions remain in the
+root package. The
 [HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
 records the distinction and preservation requirements.
 

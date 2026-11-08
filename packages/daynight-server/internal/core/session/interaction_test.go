@@ -238,25 +238,49 @@ func TestInteractionResponsePersistsAndRejectsDuplicateCallback(t *testing.T) {
 	command := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "test", OperationID: uuid.NewString(), Kind: "interaction_response"}
 	payload := sp.InteractionResponse{InteractionID: interaction, InteractionRevision: "1", SubmissionID: uuid.NewString(), Response: json.RawMessage(`{"kind":"approval","action":"allow_once"}`)}
 	command.Payload = encode(payload)
-	accepted, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command)
+	insert := f.dao.InsertSessionOperationFn
+	writes := 0
+	f.dao.Expect("InsertSessionOperation", 1)
+	f.dao.Expect("HasInteractionResponse", 2)
+	f.dao.InsertSessionOperationFn = func(ctx context.Context, proposed store.SessionOperation) error {
+		writes++
+		var summary struct {
+			InteractionID string `json:"interactionId"`
+		}
+		if err := json.Unmarshal(proposed.Command.Payload, &summary); err != nil {
+			t.Fatal(err)
+		}
+		if proposed.SessionID != v.SessionID || proposed.OperationID != command.OperationID || proposed.Actor != f.p || summary.InteractionID != interaction {
+			t.Fatalf("interaction response proposed the wrong targeting data: %#v", proposed)
+		}
+		return insert(ctx, proposed)
+	}
+	accepted, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "HasInteractionResponse": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, command)
 	if err != nil || accepted.State != "accepted" {
 		t.Fatal("offered interaction response rejected", accepted, err)
 	}
-	stored, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, command.OperationID)
+	f.SelectOperationWrite(t)
+	f.SelectSessionWrite(t)
+	stored, err := f.s.Operation(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, command.OperationID)
 	if err != nil || stored.State != "accepted" || stored.Kind != "interaction_response" {
 		t.Fatal("interaction response was not persisted", stored, err)
 	}
 	command.OperationID = uuid.NewString()
 	payload.SubmissionID = uuid.NewString()
 	command.Payload = encode(payload)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command); err == nil {
+	f.dao.HasInteractionResponseFn = func(ctx context.Context, sessionID, operationID, interactionID string) (bool, error) {
+		if sessionID != v.SessionID || operationID != command.OperationID || interactionID != interaction {
+			t.Fatal("duplicate query lost the native interaction identity")
+		}
+		return true, nil
+	}
+	if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "HasInteractionResponse": 1}), f.p, f.project, f.task, v.SessionID, command); err == nil {
 		t.Fatal("duplicate native callback answer")
 	} else {
 		requireControlConflict(t, err)
 	}
-	var operations int
-	if err := f.db.Pool.QueryRow(ctx, "SELECT count(*) FROM session_operations WHERE session_id=$1", v.SessionID).Scan(&operations); err != nil || operations != 1 {
-		t.Fatalf("duplicate response changed the durable ledger: operations=%d error=%v", operations, err)
+	if writes != 1 {
+		t.Fatalf("duplicate response proposed another operation: writes=%d", writes)
 	}
 }
 
@@ -264,63 +288,95 @@ func TestDispatchReceiptAndExpiryPreserveActualExecutionBoundary(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
 	publishState(t, f, v, idleState())
-	first := submitText(t, f, v)
-	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: first.OperationID}); err == nil {
-		t.Fatal("accepted command skipped offer")
-	}
-	if _, err := f.s.Poll(ctx, v.ControllerFence); err != nil {
+	first, second, third := nativeOfferCommand(t, v.Fence, "first"), nativeOfferCommand(t, v.Fence, "second"), nativeOfferCommand(t, v.Fence, "third")
+	responses := configureContentOperations(t, f, first, second, third)
+	f.dao.Expect("SessionOperation", 19)
+	f.dao.Expect("InsertSessionOperation", 3)
+	f.dao.Expect("PendingSessionOperationCount", 3)
+	f.dao.Expect("AcceptedSessionOperations", 3)
+	f.dao.Expect("SetSessionOperationEpoch", 2)
+	f.dao.Expect("SetSessionOperationReceipt", 7)
+	if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, first); err != nil {
 		t.Fatal(err)
 	}
+	f.SelectSessionWrite(t)
+	deadline := f.s.now().Add(time.Minute)
+	responses.useProposedResponse(first.OperationID, deadline)
+	if _, err := f.s.Handle(f.ControllerPhase(ctx, map[string]int{"SessionOperation": 1}), sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: first.OperationID}); err == nil {
+		t.Fatal("accepted command skipped offer")
+	}
+	responses.accepted = []string{first.OperationID}
+	if _, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence); err != nil {
+		t.Fatal(err)
+	}
+	f.SelectSessionWrite(t)
+	responses.useProposedResponse(first.OperationID, deadline)
 	begin := sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: first.OperationID}
-	apply(t, f, begin)
-	apply(t, f, begin)
+	apply(t, f, begin, map[string]int{"SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationReceipt": 1})
+	responses.useProposedResponse(first.OperationID, deadline)
+	apply(t, f, begin, map[string]int{"SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2})
 	receipt := sp.Operation{Fence: v.Fence, Protocol: sp.Protocol, OperationID: first.OperationID, Kind: first.Kind, State: "provider_accepted"}
-	apply(t, f, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt})
+	apply(t, f, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}, map[string]int{"SessionOperation": 1, "SetSessionOperationReceipt": 1})
+	responses.useProposedResponse(first.OperationID, deadline)
 	receipt.State = "unknown"
-	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}); err == nil {
+	if _, err := f.s.Handle(f.ControllerPhase(ctx, map[string]int{"SessionOperation": 1}), sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}); err == nil {
 		t.Fatal("known provider acceptance downgraded")
 	}
-	apply(t, f, sp.ControllerMessage{Type: "reconcile", ControllerFence: v.ControllerFence, Final: true, Operations: []sp.Reconciliation{{OperationID: first.OperationID, State: "unknown"}}})
-	known, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, first.OperationID)
+	apply(t, f, sp.ControllerMessage{Type: "reconcile", ControllerFence: v.ControllerFence, Final: true, Operations: []sp.Reconciliation{{OperationID: first.OperationID, State: "unknown"}}}, map[string]int{"SessionOperation": 1, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "UnreconciledSessionOperations": 1})
+	responses.useProposedResponse(first.OperationID, deadline)
+	known, err := f.s.Operation(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, first.OperationID)
 	if err != nil || known.State != "provider_accepted" {
 		t.Fatal("reconciliation erased known provider acceptance", err)
 	}
 	receipt.State = "confirmed"
-	apply(t, f, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt})
-	apply(t, f, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt})
+	apply(t, f, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}, map[string]int{"SessionOperation": 1, "SetSessionOperationReceipt": 1})
+	responses.useProposedResponse(first.OperationID, deadline)
+	apply(t, f, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}, map[string]int{"SessionOperation": 1})
 	receipt.State = "failed"
-	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}); err == nil {
+	if _, err := f.s.Handle(f.ControllerPhase(ctx, map[string]int{"SessionOperation": 1}), sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}); err == nil {
 		t.Fatal("terminal receipt rewritten")
 	}
 	changed := first
 	changed.Payload = json.RawMessage(`{"content":[{"type":"text","text":"different"}],"expectedTurnId":null}`)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, changed); err == nil {
+	if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, changed); err == nil {
 		t.Fatal("operation collision")
 	}
-	second := submitText(t, f, v)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE session_operations SET deadline=now()-interval '1 second' WHERE operation_id=$1`, second.OperationID); err != nil {
+	if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, second); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.Poll(ctx, v.ControllerFence); err != nil {
+	f.SelectSessionWrite(t)
+	expired := f.s.now().Add(-time.Second)
+	responses.useProposedResponse(second.OperationID, expired)
+	responses.accepted = []string{second.OperationID}
+	if _, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	r, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, second.OperationID)
+	f.SelectSessionWrite(t)
+	responses.useProposedResponse(second.OperationID, expired)
+	r, err := f.s.Operation(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, second.OperationID)
 	if err != nil || r.State != "expired" {
 		t.Fatal("unsubmitted deadline not expired", err)
 	}
-	third := submitText(t, f, v)
+	if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, third); err != nil {
+		t.Fatal(err)
+	}
+	f.SelectSessionWrite(t)
+	responses.useProposedResponse(third.OperationID, deadline)
+	responses.accepted = []string{third.OperationID}
 	state := idleState()
 	state.Capabilities.Send = false
 	publishState(t, f, v, state)
-	if _, err = f.s.Poll(ctx, v.ControllerFence); err != nil {
+	if _, err = f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	r, err = f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, third.OperationID)
+	f.SelectSessionWrite(t)
+	responses.useProposedResponse(third.OperationID, deadline)
+	r, err = f.s.Operation(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, third.OperationID)
 	if err != nil || r.State != "rejected" {
 		t.Fatal("state changed before dispatch", err)
 	}
 	f.s.now = func() time.Time { return time.Now().Add(31 * time.Second) }
-	if _, err = f.s.Poll(ctx, v.ControllerFence); err == nil {
+	if _, err = f.s.Poll(f.ControllerPhase(ctx, map[string]int{}), v.ControllerFence); err == nil {
 		t.Fatal("dead controller accepted")
 	}
 }
@@ -330,13 +386,17 @@ func TestNativeRejectionIsAConfirmedNonAcceptanceReceipt(t *testing.T) {
 	ctx := context.Background()
 	publishState(t, f, v, idleState())
 	command := submitText(t, f, v)
-	if _, err := f.s.Poll(ctx, v.ControllerFence); err != nil {
+	f.data.AcceptedIDs = []string{command.OperationID}
+	if _, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	apply(t, f, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: command.OperationID})
+	selectContentOffer(t, f)
+	apply(t, f, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: command.OperationID}, map[string]int{"SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationReceipt": 1})
+	f.SelectReceiptWrite(t)
 	operation := sp.Operation{Fence: v.Fence, Protocol: sp.Protocol, OperationID: command.OperationID, Kind: command.Kind, State: "rejected", Error: &sp.OperationError{Code: "native_rejected", Message: "The native runtime rejected this input."}}
-	apply(t, f, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &operation})
-	saved, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, command.OperationID)
+	apply(t, f, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &operation}, map[string]int{"SessionOperation": 1, "SetSessionOperationReceipt": 1})
+	f.SelectReceiptWrite(t)
+	saved, err := f.s.Operation(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, command.OperationID)
 	if err != nil || saved.State != "rejected" {
 		t.Fatal("native rejection became unknown", err)
 	}

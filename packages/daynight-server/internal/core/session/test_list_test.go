@@ -2,235 +2,240 @@ package session
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
+	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
-func listRegistration(t *testing.T, f fixture, p model.Principal, provider string) sp.Snapshot {
-	t.Helper()
-	v, err := f.s.RegisterTest(context.Background(), p, sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: provider, InitialInput: "none"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return v
-}
 func listCredential(t *testing.T, f fixture, user string, kind model.CredentialKind) model.Principal {
 	t.Helper()
-	ctx := context.Background()
 	p := model.Principal{Kind: kind, UserID: user, CredentialID: uuid.NewString()}
-	hash := sha256.Sum256([]byte(p.CredentialID))
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now()) ON CONFLICT DO NOTHING`, user); err != nil {
-		t.Fatal(err)
+	priorLock := f.dao.LockCredentialFn
+	f.dao.LockCredentialFn = func(ctx context.Context, actual model.Principal, now time.Time) error {
+		if actual == p {
+			return nil
+		}
+		return priorLock(ctx, actual, now)
 	}
-	table := "personal_access_tokens"
-	columns := "id,user_id,token_hash,name,created_at,expires_at"
-	values := "$1,$2,$3,'list',now(),now()+interval '1 day'"
-	if kind == model.SessionCredential {
-		table = "sessions"
-		columns = "id,user_id,token_hash,created_at,expires_at"
-		values = "$1,$2,$3,now(),now()+interval '1 day'"
-	}
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO `+table+`(`+columns+`) VALUES(`+values+`)`, p.CredentialID, user, hash[:]); err != nil {
-		t.Fatal(err)
+	priorRead := f.dao.ReadCredentialFn
+	f.dao.ReadCredentialFn = func(ctx context.Context, actual model.Principal, now time.Time) error {
+		if actual == p {
+			return nil
+		}
+		if priorRead == nil {
+			panic("unexpected ReadCredential")
+		}
+		return priorRead(ctx, actual, now)
 	}
 	return p
 }
-func TestListTestSessionsUsesOwnerParentAndStableActivityPagination(t *testing.T) {
-	f := setup(t)
-	ctx := context.Background()
-	now := time.Now().UTC()
-	created := now.Add(-time.Hour).Truncate(time.Microsecond)
-	browser := listCredential(t, f, f.p.UserID, model.SessionCredential)
-	other := listCredential(t, f, uuid.NewString(), model.PATCredential)
-	listRegistration(t, f, other, "codex")
-	if _, err := f.s.Register(ctx, f.p, f.project, f.task, f.r); err != nil {
-		t.Fatal(err)
+
+type standaloneListDAO struct {
+	store.SessionDAO
+	list func(context.Context, string, time.Time, int, bool, time.Time, *time.Time, string) ([]store.TestSessionListItem, error)
+}
+
+func (d *standaloneListDAO) ListTestSessions(ctx context.Context, owner string, now time.Time, limit int, online bool, heartbeat time.Time, cursor *time.Time, id string) ([]store.TestSessionListItem, error) {
+	if d.list == nil {
+		panic("unexpected ListTestSessions")
 	}
-	values := []sp.Snapshot{listRegistration(t, f, f.p, "codex"), listRegistration(t, f, f.p, "claude"), listRegistration(t, f, f.p, "copilot")}
-	for i, v := range values {
-		if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET created_at=$2 WHERE id=$1`, v.SessionID, created.Add(time.Duration(i)*time.Second)); err != nil {
-			t.Fatal(err)
+	return d.list(ctx, owner, now, limit, online, heartbeat, cursor, id)
+}
+
+type standaloneListScope struct {
+	store.SessionScope
+	dao store.SessionDAO
+}
+
+func (s standaloneListScope) SessionDAO() store.SessionDAO { return s.dao }
+func (s standaloneListScope) BotDAO() store.BotWriteDAO    { return nil }
+
+type standaloneListCall struct {
+	actor                       model.Principal
+	limit                       int
+	online                      bool
+	cursor                      *time.Time
+	id                          string
+	items                       []store.TestSessionListItem
+	credentialError, queryError error
+}
+
+func standaloneListExecution(t *testing.T, now time.Time, calls ...standaloneListCall) *Execution {
+	t.Helper()
+	s := &Execution{Engine: NewEngine(nil)}
+	s.now = func() time.Time { return now }
+	index := 0
+	s.credentialRun = func(ctx context.Context, actor model.Principal, work func(*Operation, store.SessionScope) error) error {
+		if index >= len(calls) {
+			t.Fatal("unexpected credential runner call")
 		}
+		want := calls[index]
+		index++
+		if actor != want.actor {
+			t.Fatalf("credential actor %+v want %+v", actor, want.actor)
+		}
+		if want.credentialError != nil {
+			return want.credentialError
+		}
+		daoCalls := 0
+		dao := &standaloneListDAO{list: func(actual context.Context, owner string, at time.Time, limit int, online bool, heartbeat time.Time, cursor *time.Time, id string) ([]store.TestSessionListItem, error) {
+			daoCalls++
+			if daoCalls != 1 || actual != ctx || owner != actor.UserID || !at.Equal(now) || limit != want.limit || online != want.online || !heartbeat.Equal(now.Add(-HeartbeatTimeout)) || !reflect.DeepEqual(cursor, want.cursor) || id != want.id {
+				t.Fatalf("ListTestSessions call: owner=%s now=%s limit=%d online=%t heartbeat=%s cursor=%v id=%s", owner, at, limit, online, heartbeat, cursor, id)
+			}
+			return want.items, want.queryError
+		}}
+		op, err := s.BeginOperation()
+		if err != nil {
+			return err
+		}
+		defer op.Close()
+		err = work(op, standaloneListScope{dao: dao})
+		if daoCalls != 1 {
+			t.Fatalf("ListTestSessions calls %d want 1", daoCalls)
+		}
+		if err == nil {
+			op.Finish(store.TransactionCommitted)
+		} else {
+			op.Finish(store.TransactionNotCommitted)
+		}
+		return err
 	}
-	// An archived session remains discoverable; bounded lease metadata determines recency.
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{lifecycle}','"archived"') WHERE id=$1`, values[0].SessionID); err != nil {
-		t.Fatal(err)
-	}
-	eventTime := created.Add(time.Minute)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET last_seen=$2 WHERE id=$1`, values[0].SessionID, eventTime); err != nil {
-		t.Fatal(err)
-	}
-	expired := listCredential(t, f, f.p.UserID, model.PATCredential)
-	listRegistration(t, f, expired, "copilot")
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 second' WHERE id=$1`, expired.CredentialID); err != nil {
-		t.Fatal(err)
-	}
-	page, err := f.s.ListTest(ctx, browser, "", 2, false)
+	t.Cleanup(func() {
+		if index != len(calls) {
+			t.Errorf("credential runner calls %d want %d", index, len(calls))
+		}
+	})
+	return s
+}
+func standaloneListRow(id, provider, lifecycle, connection string, created, updated time.Time) store.TestSessionListItem {
+	return store.TestSessionListItem{Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: id}}, Identity: sp.Identity{Provider: provider}, Lifecycle: lifecycle, ConnectionState: connection}, CreatedAt: created, UpdatedAt: updated}
+}
+func TestListTestSessionsUsesOwnerParentAndStableActivityPagination(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	created, eventTime := now.Add(-time.Hour), now.Add(-59*time.Minute)
+	actor := model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	other := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	a := standaloneListRow(uuid.NewString(), "codex", "archived", "connected", created, eventTime)
+	a.LastSeen = &eventTime
+	b := standaloneListRow(uuid.NewString(), "copilot", "active", "disconnected", created.Add(2*time.Second), created.Add(2*time.Second))
+	c := standaloneListRow(uuid.NewString(), "claude", "active", "disconnected", created.Add(time.Second), created.Add(time.Second))
+	foreign := standaloneListRow(uuid.NewString(), "codex", "active", "disconnected", created, created)
+	refusal := &model.Fault{Code: "unauthenticated", Message: "Credential is revoked."}
+	s := standaloneListExecution(t, now, standaloneListCall{actor: actor, limit: 2, items: []store.TestSessionListItem{a, b, c}}, standaloneListCall{actor: actor, limit: 2, cursor: &b.UpdatedAt, id: b.Snapshot.SessionID, items: []store.TestSessionListItem{c}}, standaloneListCall{actor: other, limit: 50, items: []store.TestSessionListItem{foreign}}, standaloneListCall{actor: actor, limit: 50, items: []store.TestSessionListItem{}}, standaloneListCall{actor: actor, credentialError: refusal})
+	page, err := s.ListTest(ctx, actor, "", 2, false)
 	if err != nil || len(page.Items) != 2 || page.NextCursor == nil {
 		t.Fatal("first page", page, err)
 	}
-	if page.Items[0].SessionID != values[0].SessionID || page.Items[0].Lifecycle != "archived" || page.Items[0].ConnectionState != "disconnected" || !page.Items[0].UpdatedAt.Equal(eventTime) || !page.Items[0].CreatedAt.Equal(created) || page.Items[1].SessionID != values[2].SessionID {
+	if page.Items[0].SessionID != a.Snapshot.SessionID || page.Items[0].Lifecycle != "archived" || page.Items[0].ConnectionState != "disconnected" || !page.Items[0].CreatedAt.Equal(created) || !page.Items[0].UpdatedAt.Equal(eventTime) || page.Items[1].SessionID != b.Snapshot.SessionID {
 		t.Fatal("order/metadata", page)
 	}
-	tail, err := f.s.ListTest(ctx, browser, *page.NextCursor, 2, false)
-	if err != nil || len(tail.Items) != 1 || tail.Items[0].SessionID != values[1].SessionID || tail.NextCursor != nil {
+	tail, err := s.ListTest(ctx, actor, *page.NextCursor, 2, false)
+	if err != nil || len(tail.Items) != 1 || tail.Items[0].SessionID != c.Snapshot.SessionID || tail.NextCursor != nil {
 		t.Fatal("tail", tail, err)
 	}
-	if _, err = f.s.ListTest(ctx, other, *page.NextCursor, 2, false); err == nil {
+	if _, err := s.ListTest(ctx, other, *page.NextCursor, 2, false); err == nil {
 		t.Fatal("cross-owner cursor accepted")
 	}
-	foreign, err := f.s.ListTest(ctx, other, "", 50, false)
-	if err != nil || len(foreign.Items) != 1 {
-		t.Fatal("foreign ownership", foreign, err)
+	otherPage, err := s.ListTest(ctx, other, "", 50, false)
+	if err != nil || len(otherPage.Items) != 1 || otherPage.Items[0].SessionID != foreign.Snapshot.SessionID {
+		t.Fatal("foreign owner", otherPage, err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID); err != nil {
-		t.Fatal(err)
+	revoked, err := s.ListTest(ctx, actor, "", 50, false)
+	if err != nil || revoked.Items == nil || len(revoked.Items) != 0 {
+		t.Fatal("empty DAO result", revoked, err)
 	}
-	revoked, err := f.s.ListTest(ctx, browser, "", 50, false)
-	if err != nil || len(revoked.Items) != 0 || revoked.Items == nil {
-		t.Fatal("revoked parent still visible", revoked, err)
-	}
-	if _, err = f.s.ListTest(ctx, f.p, "", 50, false); err == nil {
-		t.Fatal("revoked calling credential")
+	if _, err := s.ListTest(ctx, actor, "", 50, false); err != refusal {
+		t.Fatal("credential refusal lost", err)
 	}
 }
 func TestListTestSessionsTieCursorAndReadState(t *testing.T) {
-	f := setup(t)
-	ctx := context.Background()
-	a := listRegistration(t, f, f.p, "codex")
-	b := listRegistration(t, f, f.p, "claude")
-	created := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET created_at=$1,snapshot=jsonb_set(snapshot,'{connectionState}','"connected"'),last_seen=now()-interval '1 minute' WHERE scope='test'`, created); err != nil {
-		t.Fatal(err)
+	ctx := t.Context()
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	created := now.Add(-time.Hour)
+	actor := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	high, low := "ffffffff-ffff-4fff-8fff-ffffffffffff", "00000000-0000-4000-8000-000000000000"
+	a := standaloneListRow(high, "codex", "active", "connected", created, created)
+	b := standaloneListRow(low, "claude", "active", "connected", created, created)
+	lastSeen := now.Add(-time.Minute)
+	a.LastSeen, b.LastSeen = &lastSeen, &lastSeen
+	drain := now.Add(-time.Second)
+	archived := a
+	archived.Snapshot.Lifecycle = "draining"
+	archived.DrainUntil = &drain
+	cause := errors.New("invalid stored Session snapshot")
+	queryError := fmt.Errorf("list Session: %w", cause)
+	s := standaloneListExecution(t, now, standaloneListCall{actor: actor, limit: 1, items: []store.TestSessionListItem{a, b}}, standaloneListCall{actor: actor, limit: 1, cursor: &created, id: high, items: []store.TestSessionListItem{b}}, standaloneListCall{actor: actor, limit: 50, items: []store.TestSessionListItem{archived, b}}, standaloneListCall{actor: actor, limit: 50, queryError: queryError})
+	page, err := s.ListTest(ctx, actor, "", 1, false)
+	if err != nil || len(page.Items) != 1 || page.Items[0].SessionID != high || page.Items[0].ConnectionState != "disconnected" || page.NextCursor == nil {
+		t.Fatal(page, err)
 	}
-	p, err := f.s.ListTest(ctx, f.p, "", 1, false)
-	if err != nil || p.NextCursor == nil {
-		t.Fatal(p, err)
-	}
-	high, low := a.SessionID, b.SessionID
-	if high < low {
-		high, low = low, high
-	}
-	if p.Items[0].SessionID != high || p.Items[0].ConnectionState != "disconnected" {
-		t.Fatal(p)
-	}
-	tail, err := f.s.ListTest(ctx, f.p, *p.NextCursor, 1, false)
-	if err != nil || tail.Items[0].SessionID != low || tail.NextCursor != nil {
+	tail, err := s.ListTest(ctx, actor, *page.NextCursor, 1, false)
+	if err != nil || len(tail.Items) != 1 || tail.Items[0].SessionID != low || tail.NextCursor != nil {
 		t.Fatal(tail, err)
 	}
 	for _, limit := range []int{0, 101} {
-		if _, err = f.s.ListTest(ctx, f.p, "", limit, false); err == nil {
-			t.Fatal("limit", limit)
+		if _, err := s.ListTest(ctx, actor, "", limit, false); err == nil {
+			t.Fatal("limit accepted", limit)
 		}
 	}
-	position := testListPosition{Kind: "test-sessions", Owner: f.p.UserID, UpdatedAt: created, SessionID: high}
-	for _, raw := range []string{"bad", strings.Repeat("a", 513), base64.RawURLEncoding.EncodeToString([]byte(`{"kind":"test-sessions","extra":1}`)), base64.RawURLEncoding.EncodeToString(encode(testListPosition{Kind: position.Kind, Owner: position.Owner, UpdatedAt: created, SessionID: "bad"}))} {
-		if _, err = f.s.ListTest(ctx, f.p, raw, 1, false); err == nil {
+	position := testListPosition{Kind: "test-sessions", Owner: actor.UserID, UpdatedAt: created, SessionID: high}
+	for _, raw := range []string{"bad", strings.Repeat("a", 513), base64.RawURLEncoding.EncodeToString([]byte(`{"kind":"test-sessions","extra":1}`)), base64.RawURLEncoding.EncodeToString(encode(testListPosition{Kind: position.Kind, Owner: position.Owner, UpdatedAt: created, SessionID: "bad"})), base64.RawURLEncoding.EncodeToString(encode(testListPosition{Kind: position.Kind, Owner: position.Owner, SessionID: high}))} {
+		if _, err := s.ListTest(ctx, actor, raw, 1, false); err == nil {
 			t.Fatal("cursor accepted", raw)
 		}
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_sessions SET draining_until=now()-interval '1 second',snapshot=jsonb_set(snapshot,'{lifecycle}','"draining"') WHERE id=$1`, high); err != nil {
-		t.Fatal(err)
-	}
-	all, err := f.s.ListTest(ctx, f.p, "", 50, false)
+	all, err := s.ListTest(ctx, actor, "", 50, false)
 	if err != nil || all.Items[0].Lifecycle != "archived" || all.Items[0].ConnectionState != "disconnected" {
 		t.Fatal(all, err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE task_sessions SET snapshot='"invalid snapshot"' WHERE id=$1`, high); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.s.ListTest(ctx, f.p, "", 50, false); err == nil {
-		t.Fatal("invalid persisted snapshot")
+	if _, err := s.ListTest(ctx, actor, "", 50, false); err != queryError || !errors.Is(err, cause) {
+		t.Fatal("DAO error chain lost", err)
 	}
 }
-
 func TestListOnlineTestSessionsFiltersBeforePaginationAndBindsCursor(t *testing.T) {
-	f := setup(t)
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	f.s.now = func() time.Time { return now }
-	connection := listCredential(t, f, f.p.UserID, model.PATCredential)
-	foreign := listCredential(t, f, uuid.NewString(), model.PATCredential)
-	expired := listCredential(t, f, f.p.UserID, model.PATCredential)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=$2::timestamptz-interval '1 hour',expires_at=$2 WHERE id=$1`, expired.CredentialID, now); err != nil {
-		t.Fatal(err)
+	ctx := t.Context()
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	actor := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	a := standaloneListRow(uuid.NewString(), "claude", "active", "synchronizing", now.Add(-time.Hour+time.Second), now.Add(-time.Hour+time.Second))
+	b := standaloneListRow(uuid.NewString(), "codex", "active", "connected", now.Add(-time.Hour), now.Add(-time.Hour))
+	edge := now.Add(-HeartbeatTimeout)
+	a.LastSeen, b.LastSeen = &now, &edge
+	s := standaloneListExecution(t, now, standaloneListCall{actor: actor, limit: 1, online: true, items: []store.TestSessionListItem{a, b}}, standaloneListCall{actor: actor, limit: 1, online: true, cursor: &a.UpdatedAt, id: a.Snapshot.SessionID, items: []store.TestSessionListItem{b}}, standaloneListCall{actor: actor, limit: 1, items: []store.TestSessionListItem{a, b}}, standaloneListCall{actor: actor, limit: 50, online: true, items: []store.TestSessionListItem{}}, standaloneListCall{actor: actor, limit: 50, items: []store.TestSessionListItem{a, b}})
+	page, err := s.ListTest(ctx, actor, "", 1, true)
+	if err != nil || len(page.Items) != 1 || page.Items[0].SessionID != a.Snapshot.SessionID || page.Items[0].ConnectionState != "connected" || page.NextCursor == nil {
+		t.Fatal("online first page", page, err)
 	}
-	makeOnline := func(provider string, created time.Time) sp.Snapshot {
-		v := listRegistration(t, f, f.p, provider)
-		if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET created_at=$2,snapshot=jsonb_set(snapshot,'{connectionState}','"connected"'),last_seen=$3::timestamptz,connection_expires_at=$3::timestamptz+interval '1 hour',connection_parent_credential_id=$4 WHERE id=$1`, v.SessionID, created, now, connection.CredentialID); err != nil {
-			t.Fatal(err)
-		}
-		return v
+	tail, err := s.ListTest(ctx, actor, *page.NextCursor, 1, true)
+	if err != nil || len(tail.Items) != 1 || tail.Items[0].SessionID != b.Snapshot.SessionID || tail.Items[0].ConnectionState != "connected" || tail.NextCursor != nil {
+		t.Fatal("online tail", tail, err)
 	}
-	connected := makeOnline("codex", now.Add(-time.Hour))
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET last_seen=$2 WHERE id=$1`, connected.SessionID, now.Add(-HeartbeatTimeout)); err != nil {
-		t.Fatal(err)
+	if _, err := s.ListTest(ctx, actor, *page.NextCursor, 1, false); err == nil {
+		t.Fatal("online cursor accepted for all")
 	}
-	synchronizing := makeOnline("claude", now.Add(-time.Hour+time.Second))
-	// A newly issued reconnect grant does not invalidate the still-live connection.
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{connectionState}','"synchronizing"'),grant_consumed=false,grant_expires_at=NULL WHERE id=$1`, synchronizing.SessionID); err != nil {
-		t.Fatal(err)
-	}
-	cases := []struct {
-		name, assignment string
-		argument         any
-	}{
-		{"archived", `snapshot=jsonb_set(snapshot,'{lifecycle}','"archived"')`, nil},
-		{"draining", `snapshot=jsonb_set(snapshot,'{lifecycle}','"draining"'),draining_until=$2`, now.Add(time.Hour)},
-		{"disconnected", `connection_expires_at=NULL`, nil},
-		{"no heartbeat", `last_seen=NULL`, nil},
-		{"expired heartbeat", `last_seen=$2`, now.Add(-HeartbeatTimeout - time.Microsecond)},
-		{"no expiry", `connection_expires_at=NULL`, nil},
-		{"expired connection", `connection_expires_at=$2`, now},
-		{"expired drain", `draining_until=$2`, now},
-		{"missing connection parent", `connection_parent_credential_id=NULL`, nil},
-		{"expired connection parent", `connection_parent_credential_id=$2`, expired.CredentialID},
-		{"foreign connection parent", `connection_parent_credential_id=$2`, foreign.CredentialID},
-	}
-	for i, tc := range cases {
-		v := makeOnline("copilot", now.Add(time.Duration(i)*time.Second))
-		args := []any{v.SessionID}
-		if tc.argument != nil {
-			args = append(args, tc.argument)
-		}
-		if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET `+tc.assignment+` WHERE id=$1`, args...); err != nil {
-			t.Fatal(tc.name, err)
-		}
-	}
-	page, err := f.s.ListTest(ctx, f.p, "", 1, true)
-	if err != nil || len(page.Items) != 1 || page.Items[0].SessionID != synchronizing.SessionID || page.Items[0].ConnectionState != "connected" || page.NextCursor == nil {
-		t.Fatal("filtered first page", page, err)
-	}
-	tail, err := f.s.ListTest(ctx, f.p, *page.NextCursor, 1, true)
-	if err != nil || len(tail.Items) != 1 || tail.Items[0].SessionID != connected.SessionID || tail.NextCursor != nil {
-		t.Fatal("filtered tail", tail, err)
-	}
-	if _, err := f.s.ListTest(ctx, f.p, *page.NextCursor, 1, false); err == nil {
-		t.Fatal("online cursor reused for all sessions")
-	}
-	all, err := f.s.ListTest(ctx, f.p, "", 1, false)
+	all, err := s.ListTest(ctx, actor, "", 1, false)
 	if err != nil || all.NextCursor == nil {
 		t.Fatal(all, err)
 	}
-	if _, err := f.s.ListTest(ctx, f.p, *all.NextCursor, 1, true); err == nil {
-		t.Fatal("all cursor reused for online sessions")
+	if _, err := s.ListTest(ctx, actor, *all.NextCursor, 1, true); err == nil {
+		t.Fatal("all cursor accepted for online")
 	}
-	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, connection.CredentialID); err != nil {
-		t.Fatal(err)
+	empty, err := s.ListTest(ctx, actor, "", 50, true)
+	if err != nil || empty.Items == nil || len(empty.Items) != 0 {
+		t.Fatal("empty online page", empty, err)
 	}
-	page, err = f.s.ListTest(ctx, f.p, "", 50, true)
-	if err != nil || len(page.Items) != 0 || page.Items == nil {
-		t.Fatal("revoked connection still online", page, err)
-	}
-	all, err = f.s.ListTest(ctx, f.p, "", 50, false)
-	if err != nil || len(all.Items) != len(cases)+2 {
-		t.Fatal("all retains readable history", all, err)
+	history, err := s.ListTest(ctx, actor, "", 50, false)
+	if err != nil || len(history.Items) != 2 {
+		t.Fatal("readable history", history, err)
 	}
 }
