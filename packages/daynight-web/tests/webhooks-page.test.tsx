@@ -226,6 +226,46 @@ describe("Webhook configuration page", () => {
     }
   });
 
+  it.each([true, false])("keeps a selected detail failure and Back after Team read loss with narrow=%s", async narrow => {
+    const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
+    const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
+    act(() => view.media.webhook.setNarrow(narrow));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: admin.name })); });
+    fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/);
+    openEdit(); setName("Private draft");
+    const oldDetail = barrier<Response>(); let admitted = false;
+    view.intercept((url, init) => url === `/api/v1/teams/${teamId}/webhooks/${admin.id}` && (init.method === undefined || init.method === "GET") ? (admitted = true, oldDetail.promise) : null);
+    fireEvent.focus(window); await waitForState(() => expect(admitted).toBe(true));
+    view.setTeamAuthorization(null, 2); fireEvent.focus(window);
+    const detail = document.querySelector<HTMLElement>(".detail-panel")!;
+    await within(detail).findByText("Team access is unavailable.");
+    expect(within(detail).getByRole("alert")).toHaveTextContent("Team access is unavailable.");
+    expect(within(detail).queryByText("Select an endpoint")).toBeNull();
+    expect(location.search).toContain(`teamId=${teamId}`); expect(location.search).toContain(`endpointId=${admin.id}`);
+    expect(document.body.textContent).not.toContain("private=hidden"); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () => { oldDetail.resolve(response(admin)); });
+    expect(within(detail).queryByRole("heading", { name: admin.name })).toBeNull(); expect(document.body.textContent).not.toContain("private=hidden");
+    const back = within(detail).getByRole("button", { name: "Back to endpoints", hidden: true }); back.focus(); expect(back).toHaveFocus(); fireEvent.click(back);
+    expect(location.search).toContain("owner=team"); expect(location.search).toContain(`teamId=${teamId}`); expect(location.search).not.toContain("endpointId=");
+    expect(document.querySelector(".management-grid")).not.toHaveClass("has-mobile-detail"); await screen.findByText("Team access is unavailable."); expect(view.writes).toHaveLength(0);
+  });
+
+  it.each([404, 503])("shows selected read %s in the detail region and keeps its explicit exit", async status => {
+    const admin = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
+    const view = await mount({ initial: [admin] }); await selectTeamEndpoint(view, admin);
+    act(() => view.media.webhook.setNarrow(true)); await act(async () => { fireEvent.click(screen.getByRole("button", { name: admin.name })); });
+    view.intercept(url => (status === 404 ? url === `/api/v1/teams/${teamId}/webhooks/${admin.id}` : url.startsWith(`/api/v1/teams/${teamId}/webhooks?`)) ? Promise.resolve(failure(status, status === 404 ? "not_found" : "database_unavailable")) : null);
+    fireEvent.focus(window);
+    const detail = document.querySelector<HTMLElement>(".detail-panel")!;
+    await within(detail).findByRole("alert");
+    expect(within(detail).getByRole("alert")).toHaveTextContent(status === 404 ? "not_found" : "database_unavailable");
+    expect(within(detail).queryByText("Select an endpoint")).toBeNull();
+    if (status === 404) { await within(detail).findByText("Could not load this Webhook"); expect(within(detail).queryByRole("heading", { name: admin.name })).toBeNull(); }
+    else expect(within(detail).getByRole("heading", { name: admin.name })).toBeVisible();
+    fireEvent.click(within(detail).getByRole("button", { name: "Back to endpoints", hidden: true }));
+    expect(location.search).toContain("owner=team"); expect(location.search).toContain(`teamId=${teamId}`); expect(location.search).not.toContain("endpointId="); expect(view.writes).toHaveLength(0);
+  });
+
   it("clears revealed secrets on narrow Back and requires a new read for the same endpoint", async () => {
     const view = await mount(); act(() => view.media.webhook.setNarrow(true)); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Back to endpoints" })); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Endpoint 5" })); }); expect(document.body.textContent).not.toMatch(/whsec_[A-Za-z]/); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); expect(view.secretReads()).toBe(2);
