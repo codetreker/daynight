@@ -123,6 +123,76 @@ func TestSubscriptionEnrollmentRecordsCompleteIdentityAndSources(t *testing.T) {
 	f.order("write.LockConfigurationSources", "write.dao.LockEndpoint", "eligibility.ReadEligibility", "write.dao.PutSubscription", "write.dao.PutBinding", "write.dao.PutOperation")
 }
 
+func TestSubscriptionEnrollmentRejectsRevokedEligibilityAfterSourceLock(t *testing.T) {
+	f := newMgmtFixture(t)
+	project := "77777777-7777-4777-8777-777777777777"
+	m := f.mutation("endpoint.create")
+	m.EndpointID, m.IfVersion = "", 0
+	m.Name, m.Enabled = mgmtPtr("Enrolled"), mgmtPtr(true)
+	m.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/Original?token=private"}
+	m.HasSubscriptions = true
+	m.Subscriptions = []core.SubscriptionInput{{ProjectID: project, EventTypes: []string{"task.created"}}}
+	mgmtInstallSubscriptions(f, nil, nil)
+
+	before := store.WebhookEligibility{Status: "eligible", ProjectName: mgmtPtr("Project")}
+	after := store.WebhookEligibility{Status: "access_revoked"}
+	locked, locks, finalReads := false, 0, 0
+	f.write.LockConfigurationSourcesFn = func(_ context.Context, owner wm.Owner, actor string, projects []string) error {
+		mgmtWantEqual(t, owner, f.owner)
+		mgmtWantEqual(t, actor, f.principal.UserID)
+		mgmtWantEqual(t, projects, []string{project})
+		locks++
+		if locks != 1 {
+			f.write.need("extra source lock", false)
+		}
+		locked = true
+		f.trace.add("source.lock.completed")
+		return nil
+	}
+	f.eligibility.ReadEligibilityFn = func(_ context.Context, owner wm.Owner, id, actor string) (store.WebhookEligibility, error) {
+		mgmtWantEqual(t, owner, f.owner)
+		mgmtWantEqual(t, id, project)
+		mgmtWantEqual(t, actor, f.principal.UserID)
+		if !locked {
+			return before, nil
+		}
+		finalReads++
+		if finalReads != 1 {
+			f.eligibility.need("extra final eligibility read", false)
+		}
+		return after, nil
+	}
+	callbacks := 0
+	write := f.db.WriteFn
+	f.db.WriteFn = func(ctx context.Context, owner wm.Owner, operation string, work func(store.WebhookWriteScope) error) (store.Completion, error) {
+		return write(ctx, owner, operation, func(scope store.WebhookWriteScope) error {
+			callbacks++
+			if callbacks != 1 {
+				f.db.need("extra write callback", false)
+			}
+			return work(scope)
+		})
+	}
+
+	// The complete response projection makes an incorrect acceptance observable
+	// at the business assertions.
+	endpoint := f.endpoint
+	endpoint.ID, endpoint.ActiveKeyID, endpoint.Name = mgmtRandomID(0), mgmtRandomID(16), *m.Name
+	endpoint.CreatedAt, endpoint.UpdatedAt = f.now, f.now
+	f.respondMutation(m, endpoint, "applied", []wm.SigningKey{{EndpointID: endpoint.ID, ID: endpoint.ActiveKeyID, Slot: "current", Secret: make([]byte, 32), CreatedAt: f.now}})
+	f.recordWrites()
+	result, err := f.service.Mutate(f.ctx, f.principal, f.owner, m)
+	mgmtWantFault(t, err, "forbidden")
+	if result.Body != nil || result.Replay {
+		t.Fatalf("revoked enrollment returned a result: %#v", result)
+	}
+	if locks != 1 || finalReads != 1 || callbacks != 1 {
+		t.Fatalf("enrollment boundary: locks=%d finalReads=%d callbacks=%d", locks, finalReads, callbacks)
+	}
+	f.order("source.lock.completed", "eligibility.ReadEligibility")
+	f.noEffects()
+}
+
 func TestSubscriptionReplacementRetiresOldBindingBeforeNewIdentity(t *testing.T) {
 	f := newMgmtFixture(t)
 	sub, old := mgmtSubscription(f)
