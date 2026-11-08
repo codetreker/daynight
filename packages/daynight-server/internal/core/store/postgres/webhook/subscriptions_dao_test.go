@@ -38,7 +38,7 @@ func TestSubscriptionDAOIdentityAndDatabaseFailures(t *testing.T) {
 	dao := New(tx)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	owner := model.Owner{Kind: "personal", ID: uuid.NewString()}
-	ep := model.Endpoint{ID: uuid.NewString(), Owner: owner, Name: "Endpoint", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationCiphertext: sampleEnvelope(t), ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
+	ep := model.Endpoint{ID: uuid.NewString(), Owner: owner, Name: "Endpoint", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationConfiguration: sampleDestination(), ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
 	if err = dao.PutEndpoint(ctx, ep); err != nil {
 		t.Fatal(err)
 	}

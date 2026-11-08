@@ -3,9 +3,7 @@ package postgres
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,7 +15,6 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -59,30 +56,19 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	encoded := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"primary","keys":{"primary":"` + encoded + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
 	// This is the persisted T02 shape. Current management code also writes the
 	// T04 wait table, which does not exist on the 49 schema under test.
 	endpoint, key, originalSubscription, originalBinding := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	const originalEpoch int64 = 1
-	destination, err := keys.Seal([]byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://receiver.example/hook"}}`), []string{"personal", user, endpoint, "endpoint-current", "1"}, rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secret, err := keys.Seal(bytes.Repeat([]byte{9}, 32), []string{"personal", user, endpoint, "signing-key", key}, rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	destination := []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://receiver.example/hook"}}`)
+	secret := bytes.Repeat([]byte{9}, 32)
 	for _, q := range []struct {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO webhook_endpoints(id,owner_kind,owner_id,name,enabled,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,active_key_id,created_at,updated_at) VALUES($1,'personal',$2,'receiver',true,1,1,'http',1,1,'https://receiver.example',$3,$4,$5,$6,$7,now(),now())`, []any{endpoint, user, destination.Version, destination.MasterKeyID, destination.Nonce, destination.Ciphertext, key}},
-		{`INSERT INTO webhook_signing_keys(id,endpoint_id,slot,envelope_version,master_key_id,nonce,ciphertext,created_at) VALUES($1,$2,'current',$3,$4,$5,$6,now())`, []any{key, endpoint, secret.Version, secret.MasterKeyID, secret.Nonce, secret.Ciphertext}},
+		{`INSERT INTO webhook_endpoints(id,owner_kind,owner_id,name,enabled,config_version,destination_revision,destination_kind,adapter_version,configuration_schema_version,destination_origin,destination_configuration,active_key_id,created_at,updated_at) VALUES($1,'personal',$2,'receiver',true,1,1,'http',1,1,'https://receiver.example',$3,$4,now(),now())`, []any{endpoint, user, destination, key}},
+		{`INSERT INTO webhook_signing_keys(id,endpoint_id,slot,secret,created_at) VALUES($1,$2,'current',$3,now())`, []any{key, endpoint, secret}},
 		{`INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'active',1,now(),now())`, []any{originalSubscription, endpoint, project, user}},
 		{`INSERT INTO webhook_bindings(id,subscription_id,event_type,created_at) VALUES($1,$2,'task.created',now())`, []any{originalBinding, originalSubscription}},
 	} {
@@ -128,7 +114,7 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT pg_get_expr(adbin,adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE d.adrelid='webhook_deliveries'::regclass AND a.attname='queue_order'`).Scan(&defaultExpr); err != nil || !strings.Contains(defaultExpr, "webhook_delivery_queue_order_seq") {
 		t.Fatalf("queue default %q: %v", defaultExpr, err)
 	}
-	tasks := taskservice.NewTasks(upgraded, &webhook.Capturer{Keys: keys})
+	tasks := taskservice.NewTasks(upgraded, &webhook.Capturer{})
 	var previous int64
 	for n := 0; n < 2; n++ {
 		created, err := tasks.Create(ctx, principal, project, taskcore.CreateTask{Title: fmt.Sprintf("after upgrade %d", n)})

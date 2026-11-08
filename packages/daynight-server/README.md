@@ -63,10 +63,13 @@ composition. `DAYNIGHT_WEBHOOK_ENABLED` defaults to `0`: existing subscriptions
 continue to capture, but new or expanded configuration and network claims are
 refused; authorized reads and restrictive cleanup remain available. Recovery and
 retention continue. The [runtime design](../../docs/design/webhook-runtime.md)
-contains deployment, rollback and recovery procedures. The [capture](../../docs/design/webhook-capture.md),
-[delivery](../../docs/design/webhook-delivery.md), [retention](../../docs/design/webhook-retention.md)
-and [key maintenance](../../docs/design/webhook-key-maintenance.md) designs own
-their respective data and transaction rules.
+contains enablement, maintenance and restart procedures. The [management](../../docs/design/webhook-management.md),
+[capture](../../docs/design/webhook-capture.md), [delivery](../../docs/design/webhook-delivery.md),
+[history](../../docs/design/webhook-history.md) and [retention](../../docs/design/webhook-retention.md)
+designs own their respective data and transaction rules. Endpoint configuration,
+fixed delivery destinations and 32-byte signing secrets are stored as plaintext
+bytes. HMAC request signatures, current authorization, HTTPS and safe logging
+remain enforced; database and backup readers can read retained credentials.
 
 ## Contracts
 
@@ -535,7 +538,6 @@ diagnostics and cause categories.
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
-| `DAYNIGHT_WEBHOOK_KEYRING_FILE` | Private keyring file; required when enabled or retained ciphertext needs a key | Empty |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |

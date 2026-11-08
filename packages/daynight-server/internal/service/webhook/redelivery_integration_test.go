@@ -36,7 +36,7 @@ func TestRedeliveryRealIntentAndRunner(t *testing.T) {
 	}))
 	defer receiver.Close()
 	f := newCaptureFixture(t, 1)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
 	var endpoint string
 	var config int64
@@ -131,7 +131,7 @@ func TestRedeliveryRealIntentAndRunner(t *testing.T) {
 
 func TestRedeliveryAtomicityAndConcurrentIntent(t *testing.T) {
 	f := newCaptureFixture(t, 1)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true, DispatchEnabled: true}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
 	if _, err := taskservice.NewTasks(f.db, f.capture).Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "atomic intent"}); err != nil {
 		t.Fatal(err)
@@ -210,7 +210,7 @@ func TestRedeliveryAtomicityAndConcurrentIntent(t *testing.T) {
 
 func TestRedeliveryExpiredLeaseRecovery(t *testing.T) {
 	f := newCaptureFixture(t, 1)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, DispatchEnabled: true}
 	owner := webhook.Owner{Kind: "personal", ID: f.principal.UserID}
 	if _, err := taskservice.NewTasks(f.db, f.capture).Create(f.ctx, f.principal, f.project, taskcore.CreateTask{Title: "lease"}); err != nil {
 		t.Fatal(err)

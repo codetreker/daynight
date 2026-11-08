@@ -13,7 +13,7 @@ type Endpoint struct {
 	DeletedAt                               *time.Time
 	ConfigVersion, DestinationRevision      int64
 	DestinationKind, AdapterVersion, Origin string
-	DestinationCiphertext                   []byte
+	DestinationConfiguration                []byte
 	ActiveKeyID                             string
 	CreatedAt, UpdatedAt                    time.Time
 }
@@ -21,7 +21,7 @@ type Endpoint struct {
 type SigningKey struct {
 	EndpointID, ID                 string
 	Slot                           string
-	Ciphertext                     []byte
+	Secret                         []byte
 	CreatedAt                      time.Time
 	OverlapStartedAt, OverlapUntil *time.Time
 	RevokedAt                      *time.Time

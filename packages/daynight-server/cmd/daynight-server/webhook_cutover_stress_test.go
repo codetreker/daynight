@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -24,15 +22,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type cutoverProcess struct {
+type webhookToggleProcess struct {
 	cmd  *exec.Cmd
 	done chan error
 	logs bytes.Buffer
 }
 
-func startCutoverProcess(t *testing.T, binary string, env map[string]string) *cutoverProcess {
+func startWebhookToggleProcess(t *testing.T, binary string, env map[string]string) *webhookToggleProcess {
 	t.Helper()
-	p := &cutoverProcess{cmd: exec.Command(binary), done: make(chan error, 1)}
+	p := &webhookToggleProcess{cmd: exec.Command(binary), done: make(chan error, 1)}
 	p.cmd.Env = os.Environ()
 	for key, value := range env {
 		p.cmd.Env = append(p.cmd.Env, key+"="+value)
@@ -69,7 +67,7 @@ func startCutoverProcess(t *testing.T, binary string, env map[string]string) *cu
 		}
 	}
 }
-func (p *cutoverProcess) stop(t *testing.T) {
+func (p *webhookToggleProcess) stop(t *testing.T) {
 	t.Helper()
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -84,13 +82,12 @@ func (p *cutoverProcess) stop(t *testing.T) {
 	}
 }
 
-// The binaries are built separately from the identified historical and current
-// source trees. The controlled writer inventory consists only of these child
-// processes; this test makes no statement about a real deployment fleet.
-func TestWebhookIsolatedCutoverAndRollback(t *testing.T) {
-	oldBinary, newBinary := os.Getenv("DAYNIGHT_T07_OLD_BINARY"), os.Getenv("DAYNIGHT_T07_NEW_BINARY")
-	if oldBinary == "" || newBinary == "" {
-		t.Fatal("isolated old and new binaries are required")
+// One current server binary runs through dispatch enablement and maintenance
+// restarts while PostgreSQL preserves the captured delivery responsibility.
+func TestWebhookDispatchTogglePreservesCapturedWorkStress(t *testing.T) {
+	binary := os.Getenv("DAYNIGHT_WEBHOOK_BINARY")
+	if binary == "" {
+		t.Fatal("DAYNIGHT_WEBHOOK_BINARY must identify the current server binary")
 	}
 	values := processAPIEnvironment(t)
 	values["DAYNIGHT_SHUTDOWN_TIMEOUT"] = "5s"
@@ -99,12 +96,12 @@ func TestWebhookIsolatedCutoverAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := parsed.Query()
-	q.Set("application_name", "t07_old_writer")
+	q.Set("application_name", "webhook_initial_writer")
 	parsed.RawQuery = q.Encode()
 	values["DAYNIGHT_DATABASE_URL"] = parsed.String()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	old := startCutoverProcess(t, oldBinary, values)
+	initial := startWebhookToggleProcess(t, binary, values)
 	pool, err := pgxpool.New(ctx, values["DAYNIGHT_DATABASE_URL"])
 	if err != nil {
 		t.Fatal(err)
@@ -149,13 +146,13 @@ func TestWebhookIsolatedCutoverAndRollback(t *testing.T) {
 		return data
 	}
 	path := "/api/v1/projects/" + project + "/tasks"
-	call("POST", path, `{"title":"old writer before stop"}`, 201)
-	oldPID := old.cmd.Process.Pid
-	old.stop(t)
-	// Close the observer before counting old process connections: it uses the
+	call("POST", path, `{"title":"source before endpoint setup"}`, 201)
+	initialPID := initial.cmd.Process.Pid
+	initial.stop(t)
+	// Close the observer before counting initial process connections: it uses the
 	// same application_name but is not part of the writer inventory.
 	pool.Close()
-	q.Set("application_name", "t07_cutover_observer")
+	q.Set("application_name", "webhook_toggle_observer")
 	parsed.RawQuery = q.Encode()
 	pool, err = pgxpool.New(ctx, parsed.String())
 	if err != nil {
@@ -163,24 +160,19 @@ func TestWebhookIsolatedCutoverAndRollback(t *testing.T) {
 	}
 	defer pool.Close()
 	var connections int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name='t07_old_writer'`).Scan(&connections); err != nil || connections != 0 {
-		t.Fatalf("old writer connections=%d err=%v", connections, err)
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name='webhook_initial_writer'`).Scan(&connections); err != nil || connections != 0 {
+		t.Fatalf("initial writer connections=%d err=%v", connections, err)
 	}
 	values["DAYNIGHT_DATABASE_URL"] = parsed.String()
-	keyring := filepath.Join(testStorageRoot(t), "keyring.json")
-	if err = os.WriteFile(keyring, []byte(`{"activeKeyId":"primary","keys":{"primary":"`+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))+`"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = keyring
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
-	disabled := startCutoverProcess(t, newBinary, values)
+	disabled := startWebhookToggleProcess(t, binary, values)
 	catalog := call("GET", "/api/v1/webhook-event-types", "", 200)
 	if !bytes.Contains(catalog, []byte(`"dispatchEnabled":false`)) {
 		t.Fatalf("disabled catalog: %s", catalog)
 	}
 	disabled.stop(t)
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "1"
-	enabled := startCutoverProcess(t, newBinary, values)
+	enabled := startWebhookToggleProcess(t, binary, values)
 	create := fmt.Sprintf(`{"operationId":%q,"issuedAt":%q,"expectedUserId":%q,"name":"receiver","enabled":true,"destination":{"kind":"http","adapterVersion":"1","configuration":{"url":"https://receiver.example/hook"}},"subscriptions":[{"id":null,"projectId":%q,"eventTypes":["task.created"]}]}`, uuid.NewString(), time.Now().UTC().Format(time.RFC3339Nano), user, project)
 	result := call("POST", "/api/v1/me/webhooks", create, 201)
 	var endpoint struct {
@@ -193,31 +185,31 @@ func TestWebhookIsolatedCutoverAndRollback(t *testing.T) {
 	}
 	enabled.stop(t)
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
-	rollback := startCutoverProcess(t, newBinary, values)
-	call("POST", path, `{"title":"captured during rollback"}`, 201)
+	maintenance := startWebhookToggleProcess(t, binary, values)
+	call("POST", path, `{"title":"captured during maintenance"}`, 201)
 	var id string
 	var body, hash []byte
 	var originalTargetAndBudget string
 	var expiry time.Time
 	var version int64
-	if err = pool.QueryRow(ctx, `SELECT id::text,body,body_sha256,payload_expires_at,policy_version,jsonb_build_object('target',encode(destination_ciphertext,'hex'),'nonce',encode(destination_nonce,'hex'),'master',destination_master_key_id,'revision',destination_revision,'automaticExpires',automatic_expires_at,'schedule',automatic_schedule_at,'attempts',automatic_attempt_count)::text FROM webhook_deliveries WHERE endpoint_id=$1`, endpoint.Endpoint.ID).Scan(&id, &body, &hash, &expiry, &version, &originalTargetAndBudget); err != nil {
+	if err = pool.QueryRow(ctx, `SELECT id::text,body,body_sha256,payload_expires_at,policy_version,jsonb_build_object('target',encode(destination_configuration,'hex'),'revision',destination_revision,'automaticExpires',automatic_expires_at,'schedule',automatic_schedule_at,'attempts',automatic_attempt_count,'generation',generation,'state',state,'leaseToken',lease_token,'leaseClaimedAt',lease_claimed_at,'leaseUntil',lease_until,'leaseGeneration',lease_generation,'leasePlanSlot',lease_plan_slot,'currentAttemptId',current_attempt_id,'currentSigningSecret',(SELECT encode(k.secret,'hex') FROM webhook_signing_keys k WHERE k.endpoint_id=webhook_deliveries.endpoint_id AND k.slot='current'))::text FROM webhook_deliveries WHERE endpoint_id=$1`, endpoint.Endpoint.ID).Scan(&id, &body, &hash, &expiry, &version, &originalTargetAndBudget); err != nil {
 		t.Fatal(err)
 	}
 	var pending, attempts int
 	time.Sleep(1200 * time.Millisecond)
 	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM webhook_deliveries WHERE state='pending'),(SELECT count(*) FROM webhook_attempts)`).Scan(&pending, &attempts); err != nil || pending != 1 || attempts != 0 {
-		t.Fatalf("rollback pending=%d attempts=%d err=%v", pending, attempts, err)
+		t.Fatalf("maintenance pending=%d attempts=%d err=%v", pending, attempts, err)
 	}
-	rollback.stop(t)
-	restarted := startCutoverProcess(t, newBinary, values)
+	maintenance.stop(t)
+	restarted := startWebhookToggleProcess(t, binary, values)
 	defer restarted.stop(t)
 	call("GET", "/api/v1/me/webhooks/"+endpoint.Endpoint.ID+"/deliveries/"+id, "", 200)
 	var bodyAfter, hashAfter []byte
 	var targetAndBudgetAfter string
 	var expiryAfter time.Time
 	var versionAfter int64
-	if err = pool.QueryRow(ctx, `SELECT body,body_sha256,payload_expires_at,policy_version,jsonb_build_object('target',encode(destination_ciphertext,'hex'),'nonce',encode(destination_nonce,'hex'),'master',destination_master_key_id,'revision',destination_revision,'automaticExpires',automatic_expires_at,'schedule',automatic_schedule_at,'attempts',automatic_attempt_count)::text FROM webhook_deliveries WHERE id=$1`, id).Scan(&bodyAfter, &hashAfter, &expiryAfter, &versionAfter, &targetAndBudgetAfter); err != nil || !bytes.Equal(body, bodyAfter) || !bytes.Equal(hash, hashAfter) || !expiry.Equal(expiryAfter) || version != versionAfter || originalTargetAndBudget != targetAndBudgetAfter {
-		t.Fatalf("rollback responsibility changed: %v", err)
+	if err = pool.QueryRow(ctx, `SELECT body,body_sha256,payload_expires_at,policy_version,jsonb_build_object('target',encode(destination_configuration,'hex'),'revision',destination_revision,'automaticExpires',automatic_expires_at,'schedule',automatic_schedule_at,'attempts',automatic_attempt_count,'generation',generation,'state',state,'leaseToken',lease_token,'leaseClaimedAt',lease_claimed_at,'leaseUntil',lease_until,'leaseGeneration',lease_generation,'leasePlanSlot',lease_plan_slot,'currentAttemptId',current_attempt_id,'currentSigningSecret',(SELECT encode(k.secret,'hex') FROM webhook_signing_keys k WHERE k.endpoint_id=webhook_deliveries.endpoint_id AND k.slot='current'))::text FROM webhook_deliveries WHERE id=$1`, id).Scan(&bodyAfter, &hashAfter, &expiryAfter, &versionAfter, &targetAndBudgetAfter); err != nil || !bytes.Equal(body, bodyAfter) || !bytes.Equal(hash, hashAfter) || !expiry.Equal(expiryAfter) || version != versionAfter || originalTargetAndBudget != targetAndBudgetAfter {
+		t.Fatalf("maintenance restart changed captured responsibility: %v", err)
 	}
-	t.Logf("old_pid=%d stopped=true old_db_connections=0 disabled_pid=%d enabled_pid=%d rollback_pid=%d restart_pid=%d preserved_delivery=%s attempts=0", oldPID, disabled.cmd.Process.Pid, enabled.cmd.Process.Pid, rollback.cmd.Process.Pid, restarted.cmd.Process.Pid, id)
+	t.Logf("initial_pid=%d stopped=true initial_db_connections=0 disabled_pid=%d enabled_pid=%d maintenance_pid=%d restart_pid=%d preserved_delivery=%s attempts=0", initialPID, disabled.cmd.Process.Pid, enabled.cmd.Process.Pid, maintenance.cmd.Process.Pid, restarted.cmd.Process.Pid, id)
 }

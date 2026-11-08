@@ -55,7 +55,7 @@ func (r *Runner) StartWithClaimContext(parent, claims context.Context) error {
 	if r.cancel != nil || r.finished != nil {
 		return fmt.Errorf("webhook runner already started")
 	}
-	if parent == nil || claims == nil || parent.Err() != nil || claims.Err() != nil || r.DB == nil || r.service == nil || (r.enabled && r.service.Keys == nil) || r.client == nil {
+	if parent == nil || claims == nil || parent.Err() != nil || claims.Err() != nil || r.DB == nil || r.service == nil || r.client == nil {
 		return fmt.Errorf("invalid webhook runner dependencies")
 	}
 	ctx, cancel := context.WithCancel(parent)

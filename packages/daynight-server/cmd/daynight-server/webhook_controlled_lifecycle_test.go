@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -201,11 +200,6 @@ func TestWebhookControlledProcessJointDrain(t *testing.T) {
 	values := processAPIEnvironment(t)
 	values["DAYNIGHT_SHUTDOWN_TIMEOUT"] = "5s"
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "1"
-	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = filepath.Join(testStorageRoot(t), "keys.json")
-	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	if err := os.WriteFile(values["DAYNIGHT_WEBHOOK_KEYRING_FILE"], []byte(`{"activeKeyId":"primary","keys":{"primary":"`+key+`"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	adminURL := values["DAYNIGHT_DATABASE_URL"]
 	parsed, err := url.Parse(adminURL)
 	if err != nil {
@@ -494,7 +488,6 @@ func TestWebhookControlledPartialStartProcessCleanup(t *testing.T) {
 	values := processAPIEnvironment(t)
 	values["DAYNIGHT_SHUTDOWN_TIMEOUT"] = "2s"
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
-	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = ""
 	parsed, err := url.Parse(values["DAYNIGHT_DATABASE_URL"])
 	if err != nil {
 		t.Fatal(err)

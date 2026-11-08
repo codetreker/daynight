@@ -22,7 +22,6 @@ import (
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/httpoutbound"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -79,13 +78,8 @@ func TestDeliveryFinalizeReceiptLossProcessRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer pool.Close()
-		raw := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-		keys, err := secretbox.Parse([]byte(`{"activeKeyId":"primary","keys":{"primary":"` + raw + `"}}`))
-		if err != nil {
-			t.Fatal(err)
-		}
 		db := &postgres.Store{Pool: pool}
-		svc := &webhook.Service{DB: db, Keys: keys}
+		svc := &webhook.Service{DB: db}
 		der, err := base64.StdEncoding.DecodeString(os.Getenv("DAYNIGHT_T07_FINALIZE_CERT"))
 		if err != nil {
 			t.Fatal(err)
@@ -130,7 +124,7 @@ func TestDeliveryFinalizeReceiptLossProcessRestart(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	_, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}})
 	if err != nil {
 		t.Fatal(err)

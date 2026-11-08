@@ -24,7 +24,7 @@ func TestCaptureCompleteAudienceBeyondFormerLimitsStress(t *testing.T) {
 		t.Fatal("stress tests are prohibited in CI")
 	}
 	f := newCaptureFixture(t, 51)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	name, enabled := "Another receiver", true
 	for i := 0; i < 256; i++ {
 		m := webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID,

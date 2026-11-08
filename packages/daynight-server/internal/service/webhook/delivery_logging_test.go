@@ -15,7 +15,7 @@ func TestDeliveryLogCorrelationExcludesSensitiveMaterial(t *testing.T) {
 	r := &Runner{Logger: slog.New(slog.NewJSONHandler(&output, nil))}
 	request := "origin-request"
 	operation := "manual-operation"
-	d := store.WebhookDelivery{ID: "delivery", EventID: "event", EndpointID: "endpoint", ProjectID: "project", Owner: wm.Owner{Kind: "personal", ID: "owner"}, Trigger: "automatic", Generation: 2, DestinationKind: "http", AdapterVersion: 1, DestinationOrigin: "https://secret-host/private-token", Body: []byte("sensitive-payload"), DestinationCiphertext: []byte("secret-key")}
+	d := store.WebhookDelivery{ID: "delivery", EventID: "event", EndpointID: "endpoint", ProjectID: "project", Owner: wm.Owner{Kind: "personal", ID: "owner"}, Trigger: "automatic", Generation: 2, DestinationKind: "http", AdapterVersion: 1, DestinationOrigin: "https://secret-host/private-token", Body: []byte("sensitive-payload"), DestinationConfiguration: []byte("secret-key")}
 	d.ManualOperationID = &operation
 	a := store.WebhookAttempt{ID: "attempt"}
 	r.logDelivery(d, &a, &request, "finished", "acknowledged")

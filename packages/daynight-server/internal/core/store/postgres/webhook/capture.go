@@ -8,7 +8,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -77,8 +76,7 @@ func (d *DAO) FreezeAudience(ctx context.Context, projectID string, eventTypes [
     SELECT f.event_type, e.id AS endpoint_id, e.owner_kind, e.owner_id,
            e.name,e.enabled,e.config_version,e.destination_revision,e.destination_kind,
            e.adapter_version,e.configuration_schema_version,e.destination_origin,
-           e.destination_envelope_version,e.destination_master_key_id,e.destination_nonce,
-           e.destination_ciphertext,e.active_key_id,e.created_at,e.updated_at,
+           e.destination_configuration,e.active_key_id,e.created_at,e.updated_at,
            s.id AS subscription_id,b.id AS binding_id,s.authorization_epoch
     FROM facts f CROSS JOIN scope p
     JOIN webhook_bindings b ON b.event_type=f.event_type AND b.deleted_at IS NULL
@@ -98,8 +96,7 @@ func (d *DAO) FreezeAudience(ctx context.Context, projectID string, eventTypes [
     COALESCE(m.owner_kind,''),COALESCE(m.owner_id::text,''),COALESCE(m.name,''),COALESCE(m.enabled,false),
     COALESCE(m.config_version,0),COALESCE(m.destination_revision,0),COALESCE(m.destination_kind,''),
     COALESCE(m.adapter_version,0),COALESCE(m.configuration_schema_version,0),COALESCE(m.destination_origin,''),
-    COALESCE(m.destination_envelope_version,0),COALESCE(m.destination_master_key_id,''),
-    COALESCE(m.destination_nonce,''::bytea),COALESCE(m.destination_ciphertext,''::bytea),
+    COALESCE(m.destination_configuration,''::bytea),
     COALESCE(m.active_key_id::text,''),COALESCE(m.created_at,'epoch'::timestamptz),COALESCE(m.updated_at,'epoch'::timestamptz),
     COALESCE(m.subscription_id::text,''),COALESCE(m.binding_id::text,''),COALESCE(m.authorization_epoch,0)
   FROM scope p LEFT JOIN matches m ON true
@@ -113,11 +110,10 @@ func (d *DAO) FreezeAudience(ctx context.Context, projectID string, eventTypes [
 		var a store.WebhookAudience
 		var live, ownership bool
 		var adapter int64
-		var env secretbox.Envelope
 		if err := rows.Scan(&live, &ownership, &a.EventType, &a.Endpoint.ID, &a.Endpoint.Owner.Kind, &a.Endpoint.Owner.ID,
 			&a.Endpoint.Name, &a.Endpoint.Enabled, &a.Endpoint.ConfigVersion, &a.Endpoint.DestinationRevision,
 			&a.Endpoint.DestinationKind, &adapter, &a.ConfigurationSchemaVersion, &a.Endpoint.Origin,
-			&env.Version, &env.MasterKeyID, &env.Nonce, &env.Ciphertext, &a.Endpoint.ActiveKeyID,
+			&a.Endpoint.DestinationConfiguration, &a.Endpoint.ActiveKeyID,
 			&a.Endpoint.CreatedAt, &a.Endpoint.UpdatedAt, &a.SubscriptionID, &a.BindingID, &a.AuthorizationEpoch); err != nil {
 			return nil, pg.QueryError("scan webhook audience", err)
 		}
@@ -132,10 +128,6 @@ func (d *DAO) FreezeAudience(ctx context.Context, projectID string, eventTypes [
 		}
 		a.ProjectID = projectID
 		a.Endpoint.AdapterVersion = strconv.FormatInt(adapter, 10)
-		a.Endpoint.DestinationCiphertext, err = env.MarshalBinary()
-		if err != nil {
-			return nil, fmt.Errorf("encode frozen webhook destination: %w", err)
-		}
 		result = append(result, a)
 	}
 	if err := rows.Err(); err != nil {
@@ -167,14 +159,10 @@ func (d *DAO) SaveCapture(ctx context.Context, event store.WebhookCapturedEvent,
 		return pg.QueryError("save webhook event", err)
 	}
 	for _, delivery := range deliveries {
-		env, err := secretbox.ParseEnvelope(delivery.DestinationCiphertext)
-		if err != nil {
-			return fmt.Errorf("parse captured webhook destination: %w", err)
-		}
 		_, err = d.tx.Exec(ctx, `INSERT INTO webhook_deliveries
- (id,event_id,endpoint_id,owner_kind,owner_id,event_type,project_id,occurred_at,original_match_count,original_match_sha256,policy_version,destination_revision,destination_kind,adapter_version,render_version,configuration_schema_version,destination_origin,destination_envelope_version,destination_master_key_id,destination_nonce,destination_ciphertext,request_method,request_media_type,deterministic_headers_json,body,original_body_bytes,body_sha256,automatic_schedule_at,automatic_expires_at,payload_expires_at,automatic_plan_cursor,automatic_open,automatic_attempt_count,manual_operation_count,attempt_sequence,generation,state,trigger,expires_at,next_attempt_at,last_activity_at,metadata_expires_at)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,0,true,0,0,0,1,'pending','automatic',$29,$31,$32,$33)`,
-			delivery.ID, event.ID, delivery.EndpointID, delivery.Owner.Kind, delivery.Owner.ID, event.EventType, event.ProjectID, event.OccurredAt, int64(len(delivery.Matches)), delivery.OriginalMatchSHA256, delivery.PolicyVersion, delivery.DestinationRevision, delivery.DestinationKind, delivery.AdapterVersion, delivery.RenderVersion, delivery.ConfigurationSchemaVersion, delivery.DestinationOrigin, int16(env.Version), env.MasterKeyID, env.Nonce, env.Ciphertext, delivery.RequestMethod, delivery.RequestMediaType, delivery.DeterministicHeadersJSON, delivery.Body, len(delivery.Body), delivery.BodySHA256, delivery.AutomaticScheduleAt, delivery.AutomaticExpiresAt, delivery.PayloadExpiresAt, delivery.AutomaticScheduleAt[0], delivery.LastActivityAt, delivery.MetadataExpiresAt)
+ (id,event_id,endpoint_id,owner_kind,owner_id,event_type,project_id,occurred_at,original_match_count,original_match_sha256,policy_version,destination_revision,destination_kind,adapter_version,render_version,configuration_schema_version,destination_origin,destination_configuration,request_method,request_media_type,deterministic_headers_json,body,original_body_bytes,body_sha256,automatic_schedule_at,automatic_expires_at,payload_expires_at,automatic_plan_cursor,automatic_open,automatic_attempt_count,manual_operation_count,attempt_sequence,generation,state,trigger,expires_at,next_attempt_at,last_activity_at,metadata_expires_at)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,0,true,0,0,0,1,'pending','automatic',$26,$28,$29,$30)`,
+			delivery.ID, event.ID, delivery.EndpointID, delivery.Owner.Kind, delivery.Owner.ID, event.EventType, event.ProjectID, event.OccurredAt, int64(len(delivery.Matches)), delivery.OriginalMatchSHA256, delivery.PolicyVersion, delivery.DestinationRevision, delivery.DestinationKind, delivery.AdapterVersion, delivery.RenderVersion, delivery.ConfigurationSchemaVersion, delivery.DestinationOrigin, delivery.DestinationConfiguration, delivery.RequestMethod, delivery.RequestMediaType, delivery.DeterministicHeadersJSON, delivery.Body, len(delivery.Body), delivery.BodySHA256, delivery.AutomaticScheduleAt, delivery.AutomaticExpiresAt, delivery.PayloadExpiresAt, delivery.AutomaticScheduleAt[0], delivery.LastActivityAt, delivery.MetadataExpiresAt)
 		if err != nil {
 			return pg.QueryError("save webhook delivery", err)
 		}

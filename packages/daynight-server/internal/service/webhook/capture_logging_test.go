@@ -20,7 +20,7 @@ type loggingFailedEntropy struct{ err error }
 
 func (r loggingFailedEntropy) Read([]byte) (int, error) { return 0, r.err }
 
-func TestCaptureLogsActualEventAndEncryptionFailure(t *testing.T) {
+func TestCaptureLogsActualEventAndScheduleEntropyFailure(t *testing.T) {
 	f := newCaptureFixture(t, 1)
 	var logs bytes.Buffer
 	f.capture.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
@@ -48,11 +48,11 @@ func TestCaptureLogsActualEventAndEncryptionFailure(t *testing.T) {
 	assertSafeCaptureLog(t, logs.String())
 	logs.Reset()
 	failure := errors.New("synthetic entropy failure")
-	// The two UUID reads succeed; the subsequent nonce read in Seal fails.
+	// The event and Delivery UUID reads succeed; schedule jitter entropy fails.
 	f.capture.Random = io.MultiReader(bytes.NewReader(bytes.Repeat([]byte{1}, 32)), loggingFailedEntropy{failure})
 	_, err = tasks.Create(ctx, f.principal, f.project, taskcore.CreateTask{Title: "secret task title"})
 	if !errors.Is(err, failure) {
-		t.Fatalf("encryption failure not preserved: %v", err)
+		t.Fatalf("schedule entropy failure not preserved: %v", err)
 	}
 	var failed map[string]any
 	if err = json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &failed); err != nil {
@@ -79,7 +79,7 @@ func TestCaptureLogsActualEventAndEncryptionFailure(t *testing.T) {
 
 func assertSafeCaptureLog(t *testing.T, log string) {
 	t.Helper()
-	for _, secret := range []string{"receiver.example", "/hook", "secret task title", "specversion", "destination_ciphertext"} {
+	for _, secret := range []string{"receiver.example", "/hook", "secret task title", "specversion", "destination_configuration"} {
 		if strings.Contains(log, secret) {
 			t.Fatalf("log contains %q: %s", secret, log)
 		}

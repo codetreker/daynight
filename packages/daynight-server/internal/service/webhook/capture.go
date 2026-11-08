@@ -16,14 +16,11 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
 // Capturer prepares and persists notification responsibilities in the source transaction.
-// Keys are required whenever the frozen audience is nonempty.
 type Capturer struct {
-	Keys      *secretbox.Keyring
 	Random    io.Reader
 	Logger    *slog.Logger
 	RequestID func(context.Context) string
@@ -159,9 +156,6 @@ func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO
 	if len(audience) == 0 {
 		return nil
 	}
-	if c.Keys == nil {
-		return secretbox.ErrMissingKey
-	}
 	policy, err := dao.Policy(ctx, 1)
 	if err != nil {
 		return fmt.Errorf("read webhook policy: %w", err)
@@ -235,26 +229,10 @@ func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO
 				return err
 			}
 			deliveryID = id
-			envelope, err := secretbox.ParseEnvelope(ep.DestinationCiphertext)
-			if err != nil {
-				return fmt.Errorf("parse webhook destination: %w", err)
-			}
-			plain, err := c.Keys.Open(envelope, binding(ep, "endpoint-current", version(ep.DestinationRevision)))
-			if err != nil {
-				return fmt.Errorf("open webhook destination: %w", err)
-			}
-			if _, err = decodeDestination(plain); err != nil {
+			if _, err := decodeEndpointDestination(ep); err != nil {
 				return fmt.Errorf("decode webhook destination: %w", err)
 			}
-			wrapped, err := c.Keys.Seal(plain, binding(ep, "delivery-destination", id), c.random())
-			if err != nil {
-				return fmt.Errorf("seal webhook destination: %w", err)
-			}
-			cipher, err := wrapped.MarshalBinary()
-			if err != nil {
-				return err
-			}
-			d := store.WebhookCapturedDelivery{ID: id, EndpointID: ep.ID, Owner: ep.Owner, PolicyVersion: 1, DestinationRevision: ep.DestinationRevision, DestinationKind: ep.DestinationKind, AdapterVersion: 1, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationOrigin: ep.Origin, DestinationCiphertext: cipher, RequestMethod: "POST", RequestMediaType: protocol.MediaType, DeterministicHeadersJSON: []byte("[]"), Body: body, BodySHA256: hash[:], AutomaticExpiresAt: f.OccurredAt.Add(72 * time.Hour), PayloadExpiresAt: f.OccurredAt.Add(7 * 24 * time.Hour), LastActivityAt: recorded, MetadataExpiresAt: recorded.Add(time.Duration(policy.MetadataRetentionSeconds) * time.Second)}
+			d := store.WebhookCapturedDelivery{ID: id, EndpointID: ep.ID, Owner: ep.Owner, PolicyVersion: 1, DestinationRevision: ep.DestinationRevision, DestinationKind: ep.DestinationKind, AdapterVersion: 1, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationOrigin: ep.Origin, DestinationConfiguration: append([]byte(nil), ep.DestinationConfiguration...), RequestMethod: "POST", RequestMediaType: protocol.MediaType, DeterministicHeadersJSON: []byte("[]"), Body: body, BodySHA256: hash[:], AutomaticExpiresAt: f.OccurredAt.Add(72 * time.Hour), PayloadExpiresAt: f.OccurredAt.Add(7 * 24 * time.Hour), LastActivityAt: recorded, MetadataExpiresAt: recorded.Add(time.Duration(policy.MetadataRetentionSeconds) * time.Second)}
 			for _, m := range selected[start:end] {
 				d.Matches = append(d.Matches, store.WebhookCapturedMatch{SubscriptionID: m.SubscriptionID, BindingID: m.BindingID, ProjectID: m.ProjectID, EventType: m.EventType, AuthorizationEpoch: m.AuthorizationEpoch})
 			}

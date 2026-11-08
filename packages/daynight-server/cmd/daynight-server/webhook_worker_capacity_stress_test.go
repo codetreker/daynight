@@ -6,14 +6,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -46,11 +43,6 @@ func TestWebhookAppEightWorkersBoundLocalClaimsStress(t *testing.T) {
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: receiver.Certificate().Raw})
 	values := processAPIEnvironment(t)
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "1"
-	values["DAYNIGHT_WEBHOOK_KEYRING_FILE"] = filepath.Join(testStorageRoot(t), "keys.json")
-	encoded := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	if err := os.WriteFile(values["DAYNIGHT_WEBHOOK_KEYRING_FILE"], []byte(`{"activeKeyId":"primary","keys":{"primary":"`+encoded+`"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	prep := startPersistenceProcess(t, values)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()

@@ -15,7 +15,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
-	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -59,36 +58,21 @@ func (s *Service) readHistoryCursor(raw *string, expected historyCursor) (histor
 	if err != nil {
 		return expected, fault("invalid_input", "Invalid cursor.")
 	}
-	plain, err := s.decrypt(b, historyCursorBinding(expected))
-	if err != nil {
-		return expected, fault("invalid_input", "Invalid cursor.")
-	}
 	var c historyCursor
-	if json.Unmarshal(plain, &c) != nil || c.Version != expected.Version || c.Kind != expected.Kind || c.User != expected.User || c.OwnerKind != expected.OwnerKind || c.OwnerID != expected.OwnerID || c.Endpoint != expected.Endpoint || c.Delivery != expected.Delivery || c.Filter != expected.Filter || (expected.View != "" && c.View != expected.View) || (c.ID == "" || core.CanonicalUUID(c.ID) != nil) {
+	if decodeCursor(b, &c) != nil || c.Version != expected.Version || c.Kind != expected.Kind || c.User != expected.User || c.OwnerKind != expected.OwnerKind || c.OwnerID != expected.OwnerID || c.Endpoint != expected.Endpoint || c.Delivery != expected.Delivery || c.Filter != expected.Filter || (expected.View != "" && c.View != expected.View) || (c.ID == "" || core.CanonicalUUID(c.ID) != nil) {
 		return expected, fault("invalid_input", "Invalid cursor.")
 	}
-	if c.Kind == "deliveries" && c.Time.IsZero() || c.Kind == "attempts" && (c.Generation < 1 || c.Sequence < 1) {
+	if c.Kind == "deliveries" && (c.Time.IsZero() || c.Generation != 0 || c.Sequence != 0) || c.Kind == "attempts" && (c.Generation < 1 || c.Sequence < 1 || c.Sequence > 13 || !c.Time.IsZero()) {
 		return expected, fault("invalid_input", "Invalid cursor.")
 	}
 	return c, nil
-}
-func historyCursorBinding(c historyCursor) []string {
-	binding := []string{"webhook-history-cursor", c.Kind, c.User, c.OwnerKind, c.OwnerID, c.Endpoint}
-	if c.Delivery != "" {
-		binding = append(binding, c.Delivery)
-	}
-	return binding
 }
 func (s *Service) encodeHistoryCursor(c historyCursor) (string, error) {
 	b, err := json.Marshal(c)
 	if err != nil {
 		return "", err
 	}
-	encrypted, err := s.encrypt(b, historyCursorBinding(c))
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(encrypted), nil
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 func cursorBase(kind string, p model.Principal, o Owner, endpoint, delivery, filter, view string) historyCursor {
 	return historyCursor{Version: 1, Kind: kind, User: p.UserID, OwnerKind: o.Kind, OwnerID: o.ID, Endpoint: endpoint, Delivery: delivery, Filter: filter, View: view}
@@ -237,12 +221,7 @@ func (s *Service) makeDeliveryView(ctx context.Context, sc store.WebhookReadScop
 		}
 		display = d.DestinationOrigin + "/…"
 		if manage {
-			e := structEndpoint(d)
-			plain, e2 := s.decrypt(d.DestinationCiphertext, binding(e, "delivery-destination", d.ID))
-			if e2 != nil {
-				return nil, false, e2
-			}
-			destination, e2 := decodeDestination(plain)
+			destination, e2 := decodeDeliveryDestination(d)
 			if e2 != nil {
 				return nil, false, e2
 			}
@@ -255,9 +234,6 @@ func (s *Service) makeDeliveryView(ctx context.Context, sc store.WebhookReadScop
 	return v, full, nil
 }
 
-func structEndpoint(d store.WebhookDelivery) wm.Endpoint {
-	return wm.Endpoint{ID: d.EndpointID, Owner: d.Owner}
-}
 func (s *Service) deliveryViewInSnapshot(ctx context.Context, sc store.WebhookReadScope, p model.Principal, o Owner, endpoint, id string) (any, error) {
 	manage, err := historyEndpoint(ctx, sc, p, o, endpoint)
 	if err != nil {
@@ -341,7 +317,7 @@ func (s *Service) ListDeliveries(ctx context.Context, p model.Principal, o Owner
 		}
 		var issued historyDisclosure
 		if q.Cursor != nil {
-			if json.Unmarshal([]byte(c.View), &issued) != nil || issued.At.IsZero() || issued.State == "" {
+			if decodeCursor([]byte(c.View), &issued) != nil || issued.At.IsZero() || issued.State == "" {
 				return fault("invalid_input", "Invalid cursor.")
 			}
 		} else {

@@ -24,7 +24,7 @@ func TestRedeliveryRejectsMissingOriginalFactBeforeCommit(t *testing.T) {
 	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_events SET fact_bytes=NULL,fact_removed_at=now() WHERE id=(SELECT event_id FROM webhook_deliveries WHERE id=$1)`, id); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, DispatchEnabled: true}
+	svc := &webhook.Service{DB: f.db, DispatchEnabled: true}
 	intent := webhook.Redelivery{OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: 1, IfGeneration: 1, RequestSHA256: strings.Repeat("a", 64)}
 	if _, err := svc.Redeliver(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, endpoint, id, intent); err == nil {
 		t.Fatal("missing fact was accepted")

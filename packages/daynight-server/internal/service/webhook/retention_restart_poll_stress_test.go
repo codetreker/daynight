@@ -108,7 +108,7 @@ func TestRetentionLargeAttemptRestartStress(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func TestRetentionIndependentPollingStress(t *testing.T) {
 		ageRetention(t, f, id, 40*24*time.Hour)
 		db := &pollObservation{Store: f.db, starts: make(chan time.Time, 10)}
 		maintenance := webhook.NewRetention(db)
-		svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+		svc := &webhook.Service{DB: f.db}
 		disabled := webhook.NewRunner(f.db, svc, false)
 		if err := disabled.Start(context.Background()); err != nil {
 			t.Fatal(err)

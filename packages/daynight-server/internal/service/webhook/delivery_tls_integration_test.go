@@ -35,7 +35,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/httpoutbound"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -64,15 +63,11 @@ func TestDeliveryRealCaptureTLSAndSignature(t *testing.T) {
 	f := newCaptureFixture(t, 1)
 	var endpoint, keyID string
 	var version int64
-	var env secretbox.Envelope
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT e.id::text,e.config_version,k.id::text,k.envelope_version,k.master_key_id,k.nonce,k.ciphertext FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id`).Scan(&endpoint, &version, &keyID, &env.Version, &env.MasterKeyID, &env.Nonce, &env.Ciphertext); err != nil {
+	var key []byte
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT e.id::text,e.config_version,k.id::text,k.secret FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id`).Scan(&endpoint, &version, &keyID, &key); err != nil {
 		t.Fatal(err)
 	}
-	key, err := f.capture.Keys.Open(env, []string{"personal", f.principal.UserID, endpoint, "signing-key", keyID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL + "/hook"}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
@@ -160,7 +155,7 @@ func TestDeliveryAttemptInsertFailureNeverSends(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
@@ -220,7 +215,7 @@ func TestDeliveryOldDestinationDoesNotRevive(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	for _, destination := range []string{receiver.URL, "https://receiver.example/hook"} {
 		m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: destination}}
 		if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
@@ -297,16 +292,12 @@ func TestDeliveryRetryAfterPreservesBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var keyID string
-	var env secretbox.Envelope
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT k.id::text,k.envelope_version,k.master_key_id,k.nonce,k.ciphertext FROM webhook_signing_keys k JOIN webhook_endpoints e ON e.active_key_id=k.id WHERE e.id=$1`, endpoint).Scan(&keyID, &env.Version, &env.MasterKeyID, &env.Nonce, &env.Ciphertext); err != nil {
-		t.Fatal(err)
-	}
-	key, err := f.capture.Keys.Open(env, []string{"personal", f.principal.UserID, endpoint, "signing-key", keyID})
-	if err != nil {
+	var key []byte
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT k.id::text,k.secret FROM webhook_signing_keys k JOIN webhook_endpoints e ON e.active_key_id=k.id WHERE e.id=$1`, endpoint).Scan(&keyID, &key); err != nil {
 		t.Fatal(err)
 	}
 
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
@@ -470,7 +461,7 @@ func TestDeliveryRevocationWinsAdmission(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("removal did not hold source lock")
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys}
+	svc := &webhook.Service{DB: f.db}
 	runner := webhook.NewRunner(f.db, svc, true)
 	if err := runner.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -570,7 +561,7 @@ func TestDeliveryAdmissionBeforeRevocationPreservesAcknowledgement(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
@@ -645,7 +636,7 @@ func TestDeliveryTaskAndStepDeletionAnchors(t *testing.T) {
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: receiver.URL}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
@@ -737,7 +728,7 @@ func TestDeliveryOriginalProofContinuity(t *testing.T) {
 			}))
 			defer receiver.Close()
 			f := newCaptureFixture(t, 2)
-			svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+			svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 			var endpoint string
 			var version int64
 			if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
@@ -834,7 +825,7 @@ func TestDeliveryRunsAfterSourceHTTPContextCancelled(t *testing.T) {
 	}))
 	defer receiver.Close()
 	f := newCaptureFixture(t, 1)
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	var endpoint string
 	var version int64
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&endpoint, &version); err != nil {
@@ -934,7 +925,7 @@ func TestDeliveryRegrantDoesNotReviveOriginalEpoch(t *testing.T) {
 	if _, err = teams.AcceptInvitation(f.ctx, f.principal, invitation.Secret, f.principal.UserID); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), ConfirmProjectIDs: []string{f.project}}
 	if _, err = svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)

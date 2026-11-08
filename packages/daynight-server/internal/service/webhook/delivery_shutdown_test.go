@@ -2,14 +2,12 @@ package webhook
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 )
 
 type claimStopStore struct {
@@ -46,19 +44,14 @@ func (s *claimStopStore) WriteWebhookDelivery(ctx context.Context, f func(store.
 }
 
 func TestRootCancellationStopsClaimsBeforeWorkCancellation(t *testing.T) {
-	encoded := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"primary","keys":{"primary":"` + encoded + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var cancelled atomic.Int64
 	db := &claimStopStore{entered: make(chan struct{}, deliveryWorkers*2), cancelled: &cancelled}
-	runner := NewRunner(db, &Service{Keys: keys}, true)
+	runner := NewRunner(db, &Service{}, true)
 	work, stopWork := context.WithCancel(context.Background())
 	defer stopWork()
 	root, stopRoot := context.WithCancel(context.Background())
 	defer stopRoot()
-	if err = runner.StartWithClaimContext(work, root); err != nil {
+	if err := runner.StartWithClaimContext(work, root); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -94,7 +87,7 @@ func TestRootCancellationStopsClaimsBeforeWorkCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err = runner.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	if err := runner.Stop(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 }

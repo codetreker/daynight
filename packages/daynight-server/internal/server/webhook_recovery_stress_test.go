@@ -7,9 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,10 +24,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/httpoutbound"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -109,20 +105,15 @@ type recoveryDeliveryFacts struct {
 	Target                                string
 }
 
-func readRecoveryFacts(t *testing.T, ctx context.Context, db *postgres.Store, id, user, endpoint string, keys *secretbox.Keyring) recoveryDeliveryFacts {
+func readRecoveryFacts(t *testing.T, ctx context.Context, db *postgres.Store, id string) recoveryDeliveryFacts {
 	t.Helper()
 	var f recoveryDeliveryFacts
-	var envelope secretbox.Envelope
-	err := db.Pool.QueryRow(ctx, `SELECT d.id::text,d.event_id::text,d.state,d.body,d.body_sha256,d.policy_version,d.destination_revision,d.generation,d.automatic_schedule_at,d.automatic_expires_at,d.payload_expires_at,d.automatic_attempt_count,d.manual_operation_count,d.attempt_sequence,(SELECT max(finished_at) FROM webhook_attempts WHERE delivery_id=d.id AND outcome='acknowledged'),d.destination_envelope_version,d.destination_master_key_id,d.destination_nonce,d.destination_ciphertext FROM webhook_deliveries d WHERE d.id=$1`, id).Scan(&f.ID, &f.EventID, &f.State, &f.Body, &f.Hash, &f.Policy, &f.Revision, &f.Generation, &f.Schedule, &f.AutomaticExpiry, &f.PayloadExpiry, &f.AutomaticCount, &f.ManualCount, &f.Attempts, &f.Acknowledged, &envelope.Version, &envelope.MasterKeyID, &envelope.Nonce, &envelope.Ciphertext)
+	var destination []byte
+	err := db.Pool.QueryRow(ctx, `SELECT d.id::text,d.event_id::text,d.state,d.body,d.body_sha256,d.policy_version,d.destination_revision,d.generation,d.automatic_schedule_at,d.automatic_expires_at,d.payload_expires_at,d.automatic_attempt_count,d.manual_operation_count,d.attempt_sequence,(SELECT max(finished_at) FROM webhook_attempts WHERE delivery_id=d.id AND outcome='acknowledged'),d.destination_configuration FROM webhook_deliveries d WHERE d.id=$1`, id).Scan(&f.ID, &f.EventID, &f.State, &f.Body, &f.Hash, &f.Policy, &f.Revision, &f.Generation, &f.Schedule, &f.AutomaticExpiry, &f.PayloadExpiry, &f.AutomaticCount, &f.ManualCount, &f.Attempts, &f.Acknowledged, &destination)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := keys.Open(envelope, []string{"personal", user, endpoint, "delivery-destination", id})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.Target = string(plain)
-	clear(plain)
+	f.Target = string(destination)
 	digest := sha256.Sum256(f.Body)
 	if !bytes.Equal(digest[:], f.Hash) {
 		t.Fatal("body hash mismatch")
@@ -130,8 +121,9 @@ func readRecoveryFacts(t *testing.T, ctx context.Context, db *postgres.Store, id
 	return f
 }
 
-// Real application, real PostgreSQL archive/restore and key rewrap. Only the
-// receiver's loopback address policy and CA are injected by webhooktest.
+// Real application and PostgreSQL archive/restore preserve plaintext targets,
+// signing secrets and delivery state. Only the receiver's loopback address
+// policy and CA are injected by webhooktest.
 func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -189,30 +181,7 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	oldRaw, newRaw := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)), base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
-	oldJSON := fmt.Sprintf(`{"activeKeyId":"old","keys":{"old":%q}}`, oldRaw)
-	bothJSON := fmt.Sprintf(`{"activeKeyId":"new","keys":{"old":%q,"new":%q}}`, oldRaw, newRaw)
-	newJSON := fmt.Sprintf(`{"activeKeyId":"new","keys":{"new":%q}}`, newRaw)
-	oldKeys, err := secretbox.Parse([]byte(oldJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
-	bothKeys, err := secretbox.Parse([]byte(bothJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
-	newKeys, err := secretbox.Parse([]byte(newJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDir := testStorageRoot(t)
-	oldPath, newPath := filepath.Join(keyDir, "old.json"), filepath.Join(keyDir, "new.json")
-	if err = os.WriteFile(oldPath, []byte(oldJSON), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(newPath, []byte(newJSON), 0600); err != nil {
-		t.Fatal(err)
-	}
+	storageDir := testStorageRoot(t)
 	arrivals := make(chan []byte, 4)
 	receiver := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, e := io.ReadAll(r.Body)
@@ -225,10 +194,9 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 	defer receiver.Close()
 	c := configuredTestConfig()
 	c.DatabaseURL = sourceURL
-	c.StorageRoot = filepath.Join(keyDir, "source-storage")
+	c.StorageRoot = filepath.Join(storageDir, "source-storage")
 	c.ShutdownTimeout = 5 * time.Second
 	c.WebhookEnabled = true
-	c.WebhookKeyringFile = oldPath
 	f := &webhookApplicationFixture{t: t, cfg: c, user: user, token: token}
 	t.Cleanup(f.stop)
 	startRecoveryApplication(t, f, receiver.Certificate())
@@ -241,6 +209,10 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 	}
 	if err = json.Unmarshal(result, &ep); err != nil || ep.Endpoint.ID == "" {
 		t.Fatalf("endpoint: %s %v", result, err)
+	}
+	var sourceDestination, sourceSecret []byte
+	if err = source.Pool.QueryRow(ctx, `SELECT e.destination_configuration,k.secret FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id WHERE e.id=$1`, ep.Endpoint.ID).Scan(&sourceDestination, &sourceSecret); err != nil || len(sourceSecret) != 32 {
+		t.Fatalf("source plaintext configuration: secret_bytes=%d err=%v", len(sourceSecret), err)
 	}
 	path := "/api/v1/projects/" + project + "/tasks"
 	f.expect("POST", path, `{"title":"confirmed before backup"}`, 201)
@@ -261,7 +233,7 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	confirmedBefore := readRecoveryFacts(t, ctx, source, confirmed, user, ep.Endpoint.ID, oldKeys)
+	confirmedBefore := readRecoveryFacts(t, ctx, source, confirmed)
 	if confirmedBefore.Acknowledged == nil || confirmedBefore.Attempts != 1 || !strings.Contains(confirmedBefore.Target, receiver.URL+"/hook") {
 		t.Fatal("source confirmation or target absent")
 	}
@@ -274,16 +246,16 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 	if err = source.Pool.QueryRow(ctx, `SELECT id::text FROM webhook_deliveries WHERE state='pending'`).Scan(&pending); err != nil {
 		t.Fatal(err)
 	}
-	pendingBefore := readRecoveryFacts(t, ctx, source, pending, user, ep.Endpoint.ID, oldKeys)
+	pendingBefore := readRecoveryFacts(t, ctx, source, pending)
 	f.stop()
-	dump := exec.CommandContext(ctx, "docker", "run", "--rm", "--network", "host", "postgres:18.6", "pg_dump", "--format=custom", "--no-owner", "--no-acl", sourceURL)
+	dump := exec.CommandContext(ctx, "docker", "run", "--rm", "--network", "host", "postgres:18.6-bookworm", "pg_dump", "--format=custom", "--no-owner", "--no-acl", sourceURL)
 	var dumpErr bytes.Buffer
 	dump.Stderr = &dumpErr
 	archive, err := dump.Output()
 	if err != nil {
 		t.Fatalf("pg_dump: %v %s", err, dumpErr.String())
 	}
-	restore := exec.CommandContext(ctx, "docker", "run", "--rm", "-i", "--network", "host", "postgres:18.6", "pg_restore", "--exit-on-error", "--no-owner", "--no-acl", "--dbname", restoreURL)
+	restore := exec.CommandContext(ctx, "docker", "run", "--rm", "-i", "--network", "host", "postgres:18.6-bookworm", "pg_restore", "--exit-on-error", "--no-owner", "--no-acl", "--dbname", restoreURL)
 	restore.Stdin = bytes.NewReader(archive)
 	if out, e := restore.CombinedOutput(); e != nil {
 		t.Fatalf("pg_restore: %v %s", e, out)
@@ -293,24 +265,14 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restored.Close()
+	var restoredDestination, restoredSecret []byte
+	if err = restored.Pool.QueryRow(ctx, `SELECT e.destination_configuration,k.secret FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id WHERE e.id=$1`, ep.Endpoint.ID).Scan(&restoredDestination, &restoredSecret); err != nil || !bytes.Equal(sourceDestination, restoredDestination) || !bytes.Equal(sourceSecret, restoredSecret) {
+		t.Fatalf("restored plaintext configuration differs: %v", err)
+	}
 	f.cfg.DatabaseURL = restoreURL
-	f.cfg.StorageRoot = filepath.Join(keyDir, "restored-storage")
-	f.cfg.WebhookKeyringFile = newPath
-	if app, e := service.OpenApp(ctx, f.cfg); !errors.Is(e, secretbox.ErrMissingKey) || app != nil {
-		if app != nil {
-			_ = app.Close(ctx)
-		}
-		t.Fatalf("restored database missing-key error: %v", e)
-	}
-	resultRewrap, err := (webhook.KeyMaintenance{DB: restored, Keys: bothKeys}).RewrapPass(ctx, "old", 500)
-	if err != nil || resultRewrap.Rewrapped != 4 || resultRewrap.Conflicts != 0 {
-		t.Fatalf("rewrap=%+v err=%v", resultRewrap, err)
-	}
-	if compared, e := webhook.VerifyKeyRecovery(ctx, source, restored, oldKeys, newKeys, "old"); e != nil || compared != 4 {
-		t.Fatalf("verify restored ciphertexts=%d err=%v", compared, e)
-	}
-	confirmedAfter := readRecoveryFacts(t, ctx, restored, confirmed, user, ep.Endpoint.ID, newKeys)
-	pendingAfter := readRecoveryFacts(t, ctx, restored, pending, user, ep.Endpoint.ID, newKeys)
+	f.cfg.StorageRoot = filepath.Join(storageDir, "restored-storage")
+	confirmedAfter := readRecoveryFacts(t, ctx, restored, confirmed)
+	pendingAfter := readRecoveryFacts(t, ctx, restored, pending)
 	if !reflect.DeepEqual(confirmedBefore, confirmedAfter) || !reflect.DeepEqual(pendingBefore, pendingAfter) {
 		t.Fatal("restored immutable facts or acknowledged history changed")
 	}
@@ -343,5 +305,5 @@ func TestWebhookFullApplicationPhysicalRecoveryStress(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	f.stop()
-	t.Logf("physical archive bytes=%d distinct_masters=true rewrapped=%d confirmed=%s pending=%s recovered_http=1 old_key_missing_failed=true", len(archive), resultRewrap.Rewrapped, confirmed, pending)
+	t.Logf("physical archive bytes=%d plaintext_configuration_preserved=true confirmed=%s pending=%s recovered_http=1", len(archive), confirmed, pending)
 }

@@ -26,7 +26,7 @@ func setupDeliveryReceiver(t *testing.T, server *httptest.Server) (*captureFixtu
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT id::text,config_version FROM webhook_endpoints`).Scan(&id, &version); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: id, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: server.URL}}
 	if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)
@@ -138,15 +138,15 @@ func TestDeliveryRetryAfterHTTPDateAndFailures(t *testing.T) {
 }
 
 func TestDeliveryUnavailableKeyNeverSends(t *testing.T) {
-	for _, mode := range []string{"missing", "bad_tag"} {
+	for _, mode := range []string{"missing", "invalid_current"} {
 		t.Run(mode, func(t *testing.T) {
 			var requests atomic.Int32
 			receiver := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { requests.Add(1); w.WriteHeader(202) }))
 			defer receiver.Close()
 			f, svc, _ := setupDeliveryReceiver(t, receiver)
 			query := `DELETE FROM webhook_signing_keys WHERE slot='current'`
-			if mode == "bad_tag" {
-				query = `UPDATE webhook_signing_keys SET ciphertext=set_byte(ciphertext,0,get_byte(ciphertext,0) # 1) WHERE slot='current'`
+			if mode == "invalid_current" {
+				query = `UPDATE webhook_signing_keys SET id=gen_random_uuid() WHERE slot='current'`
 			}
 			if _, err := f.db.Pool.Exec(f.ctx, query); err != nil {
 				t.Fatal(err)

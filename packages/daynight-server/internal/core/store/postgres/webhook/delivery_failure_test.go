@@ -61,11 +61,11 @@ func newDeliveryFailureFixture(t *testing.T) deliveryFailureFixture {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	owner := model.Owner{Kind: "personal", ID: user}
 	endpoint, key, sub, binding, delivery := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	ep := model.Endpoint{ID: endpoint, Owner: owner, Name: "receiver", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationCiphertext: sampleEnvelope(t), ActiveKeyID: key, CreatedAt: now, UpdatedAt: now}
+	ep := model.Endpoint{ID: endpoint, Owner: owner, Name: "receiver", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationConfiguration: sampleDestination(), ActiveKeyID: key, CreatedAt: now, UpdatedAt: now}
 	if err = d.PutEndpoint(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
-	if err = d.PutSigningKey(ctx, model.SigningKey{ID: key, EndpointID: endpoint, Slot: "current", Ciphertext: sampleEnvelope(t), CreatedAt: now}); err != nil {
+	if err = d.PutSigningKey(ctx, model.SigningKey{ID: key, EndpointID: endpoint, Slot: "current", Secret: sampleSecret(), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err = d.PutSubscription(ctx, model.Subscription{ID: sub, EndpointID: endpoint, ProjectID: project, Owner: owner, AuthorizationState: "active", AuthorizationEpoch: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -82,7 +82,7 @@ func newDeliveryFailureFixture(t *testing.T) deliveryFailureFixture {
 	for i := range schedule {
 		schedule[i] = now.Add(time.Duration(i) * time.Minute)
 	}
-	v := store.WebhookCapturedDelivery{ID: delivery, EndpointID: endpoint, Owner: owner, OriginalMatchSHA256: make([]byte, 32), PolicyVersion: 1, DestinationRevision: 1, AdapterVersion: 1, DestinationKind: "http", DestinationOrigin: ep.Origin, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationCiphertext: ep.DestinationCiphertext, RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte(`[]`), Body: body, BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: now.Add(72 * time.Hour), PayloadExpiresAt: now.Add(168 * time.Hour), LastActivityAt: now, MetadataExpiresAt: now.Add(30 * 24 * time.Hour), Matches: []store.WebhookCapturedMatch{{SubscriptionID: sub, BindingID: binding, ProjectID: project, EventType: "task.created", AuthorizationEpoch: 1}}}
+	v := store.WebhookCapturedDelivery{ID: delivery, EndpointID: endpoint, Owner: owner, OriginalMatchSHA256: make([]byte, 32), PolicyVersion: 1, DestinationRevision: 1, AdapterVersion: 1, DestinationKind: "http", DestinationOrigin: ep.Origin, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationConfiguration: ep.DestinationConfiguration, RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte(`[]`), Body: body, BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: now.Add(72 * time.Hour), PayloadExpiresAt: now.Add(168 * time.Hour), LastActivityAt: now, MetadataExpiresAt: now.Add(30 * 24 * time.Hour), Matches: []store.WebhookCapturedMatch{{SubscriptionID: sub, BindingID: binding, ProjectID: project, EventType: "task.created", AuthorizationEpoch: 1}}}
 	if err = d.SaveCapture(ctx, event, []store.WebhookCapturedDelivery{v}); err != nil {
 		t.Fatal(err)
 	}

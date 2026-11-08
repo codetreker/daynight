@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +26,6 @@ import (
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -70,13 +68,8 @@ func newCaptureFixtureForProject(t *testing.T, subscriptions int, project string
 			t.Fatal(err)
 		}
 	}
-	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"primary","keys":{"primary":"` + key + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
-	svc := &webhook.Service{DB: db, Keys: keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: db, ConfigurationExpansionAvailable: true}
 	name, enabled := "Receiver", true
 	m := webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: user, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/hook"}, HasSubscriptions: true}
 	for i := 0; i < subscriptions; i++ {
@@ -85,7 +78,7 @@ func newCaptureFixtureForProject(t *testing.T, subscriptions int, project string
 	if _, err = svc.Mutate(ctx, principal, webhook.Owner{Kind: "personal", ID: user}, m); err != nil {
 		t.Fatal(err)
 	}
-	return &captureFixture{ctx: ctx, db: db, principal: principal, project: project, capture: &webhook.Capturer{Keys: keys}}
+	return &captureFixture{ctx: ctx, db: db, principal: principal, project: project, capture: &webhook.Capturer{}}
 }
 
 func TestCaptureRealTaskSourcesAndOriginalProof(t *testing.T) {
@@ -492,7 +485,7 @@ func TestCaptureNoAudienceAndPausedTransitions(t *testing.T) {
 			t.Fatal(err)
 		}
 		enabled := false
-		svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+		svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 		m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: 1, RequestSHA256: strings.Repeat("d", 64), Enabled: &enabled}
 		if _, err := svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 			t.Fatal(err)
@@ -573,7 +566,7 @@ func TestCaptureRetainsOriginalSubscriptionAndBindingIdentity(t *testing.T) {
 	if err = f.db.Pool.QueryRow(f.ctx, `SELECT d.endpoint_id::text,m.subscription_id::text,m.binding_id::text,d.id::text,d.original_match_sha256,d.body FROM webhook_events e JOIN webhook_deliveries d ON d.event_id=e.id JOIN webhook_delivery_matches m ON m.delivery_id=d.id WHERE e.task_id=$1`, first.ID).Scan(&endpoint, &oldSub, &oldBinding, &delivery, &oldHash, &oldBody); err != nil {
 		t.Fatal(err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	base := func(version int64) webhook.Mutation {
 		return webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: version, RequestSHA256: strings.Repeat("a", 64), HasSubscriptions: true}
 	}
@@ -749,7 +742,7 @@ func TestCaptureRetainsOriginalEpochAfterRevocationAndRegrant(t *testing.T) {
 	if err = f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_events WHERE task_id=$1`, without.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("unconfirmed capture %d: %v", count, err)
 	}
-	svc := &webhook.Service{DB: f.db, Keys: f.capture.Keys, ConfigurationExpansionAvailable: true}
+	svc := &webhook.Service{DB: f.db, ConfigurationExpansionAvailable: true}
 	m := webhook.Mutation{Kind: "endpoint.update", EndpointID: endpoint, OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: f.principal.UserID, IfVersion: 1, RequestSHA256: strings.Repeat("a", 64), ConfirmProjectIDs: []string{f.project}}
 	if _, err = svc.Mutate(f.ctx, f.principal, webhook.Owner{Kind: "personal", ID: f.principal.UserID}, m); err != nil {
 		t.Fatal(err)

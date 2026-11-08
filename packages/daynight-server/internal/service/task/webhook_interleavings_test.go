@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,7 +24,6 @@ import (
 	corewebhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -68,17 +66,12 @@ func newCaptureInterleavingFixture(t *testing.T) *captureInterleavingFixture {
 			t.Fatal(err)
 		}
 	}
-	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"primary","keys":{"primary":"` + key + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
 	target, err := NewTasks(db).Create(ctx, principal, project, taskcore.CreateTask{Title: "source"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := &webhook.Service{DB: db, Keys: keys, ConfigurationExpansionAvailable: true}
+	config := &webhook.Service{DB: db, ConfigurationExpansionAvailable: true}
 	name, enabled := "Receiver", true
 	create := webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: user, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/old"}, HasSubscriptions: true, Subscriptions: []corewebhook.SubscriptionInput{{ProjectID: project, EventTypes: append([]string(nil), corewebhook.EventTypes[:]...)}}}
 	result, err := config.Mutate(ctx, principal, webhook.Owner{Kind: "personal", ID: user}, create)
@@ -97,7 +90,7 @@ func newCaptureInterleavingFixture(t *testing.T) *captureInterleavingFixture {
 	if !ok {
 		t.Fatalf("unexpected receipt %+v", receipt)
 	}
-	return &captureInterleavingFixture{ctx: ctx, db: db, principal: principal, project: project, endpoint: endpoint, capture: &webhook.Capturer{Keys: keys}, config: config, task: target}
+	return &captureInterleavingFixture{ctx: ctx, db: db, principal: principal, project: project, endpoint: endpoint, capture: &webhook.Capturer{}, config: config, task: target}
 }
 
 type frozenGate struct {
@@ -157,24 +150,8 @@ func TestWebhookFrozenThreadAudienceSurvivesDestinationChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	var oldRevision, currentRevision int64
-	var encrypted []byte
-	var id string
-	var ver int
-	var key string
-	var nonce, cipher []byte
-	if err = f.db.Pool.QueryRow(f.ctx, `SELECT d.id::text,d.destination_revision,e.destination_revision,d.destination_envelope_version,d.destination_master_key_id,d.destination_nonce,d.destination_ciphertext FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint_id WHERE d.endpoint_id=$1`, f.endpoint).Scan(&id, &oldRevision, &currentRevision, &ver, &key, &nonce, &cipher); err != nil {
-		t.Fatal(err)
-	}
-	encrypted, err = (secretbox.Envelope{Version: ver, MasterKeyID: key, Nonce: nonce, Ciphertext: cipher}).MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := secretbox.ParseEnvelope(encrypted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plain, err := f.capture.Keys.Open(env, []string{"personal", f.principal.UserID, f.endpoint, "delivery-destination", id})
-	if err != nil {
+	var plain []byte
+	if err = f.db.Pool.QueryRow(f.ctx, `SELECT d.destination_revision,e.destination_revision,d.destination_configuration FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint_id WHERE d.endpoint_id=$1`, f.endpoint).Scan(&oldRevision, &currentRevision, &plain); err != nil {
 		t.Fatal(err)
 	}
 	if oldRevision != 1 || currentRevision != 2 || !strings.Contains(string(plain), "/old") || strings.Contains(string(plain), "/new") {
@@ -521,17 +498,12 @@ func TestWebhookCaptureSurvivesProcessExit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		key := base64.StdEncoding.EncodeToString(make([]byte, 32))
-		keys, err := secretbox.Parse([]byte(`{"activeKeyId":"primary","keys":{"primary":"` + key + `"}}`))
-		if err != nil {
-			t.Fatal(err)
-		}
 		version, err := strconv.ParseInt(os.Getenv("DAYNIGHT_WEBHOOK_EXIT_VERSION"), 10, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
 		principal := model.Principal{Kind: model.SessionCredential, UserID: os.Getenv("DAYNIGHT_WEBHOOK_EXIT_USER"), CredentialID: os.Getenv("DAYNIGHT_WEBHOOK_EXIT_SESSION")}
-		_, err = NewTasks(db, &webhook.Capturer{Keys: keys}).SetStatus(ctx, principal, os.Getenv("DAYNIGHT_WEBHOOK_EXIT_PROJECT"), os.Getenv("DAYNIGHT_WEBHOOK_EXIT_TASK"), taskcore.SetTaskStatus{Version: version, Status: model.TaskInProgress})
+		_, err = NewTasks(db, &webhook.Capturer{}).SetStatus(ctx, principal, os.Getenv("DAYNIGHT_WEBHOOK_EXIT_PROJECT"), os.Getenv("DAYNIGHT_WEBHOOK_EXIT_TASK"), taskcore.SetTaskStatus{Version: version, Status: model.TaskInProgress})
 		if err != nil {
 			t.Fatal(err)
 		}

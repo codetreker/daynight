@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"os"
@@ -96,7 +97,7 @@ func TestDeliveryClaimFIFOAndWait(t *testing.T) {
 	project, task := uuid.NewString(), uuid.NewString()
 	var ids, endpointIDs []string
 	for i := 0; i < 5; i++ {
-		endpoint := model.Endpoint{ID: uuid.NewString(), Owner: owner, Name: "endpoint", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationCiphertext: sampleEnvelope(t), ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
+		endpoint := model.Endpoint{ID: uuid.NewString(), Owner: owner, Name: "endpoint", Enabled: true, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: "http", AdapterVersion: "1", Origin: "https://example.test", DestinationConfiguration: sampleDestination(), ActiveKeyID: uuid.NewString(), CreatedAt: now, UpdatedAt: now}
 		if err = d.PutEndpoint(ctx, endpoint); err != nil {
 			t.Fatal(err)
 		}
@@ -111,7 +112,7 @@ func TestDeliveryClaimFIFOAndWait(t *testing.T) {
 		for j := range schedule {
 			schedule[j] = occurred.Add(time.Duration(j) * time.Minute)
 		}
-		v := store.WebhookCapturedDelivery{ID: deliveryID, EndpointID: endpoint.ID, Owner: owner, OriginalMatchSHA256: make([]byte, 32), PolicyVersion: 1, DestinationRevision: 1, AdapterVersion: 1, DestinationKind: "http", DestinationOrigin: endpoint.Origin, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationCiphertext: endpoint.DestinationCiphertext, RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte(`[]`), Body: body, BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: occurred.Add(72 * time.Hour), PayloadExpiresAt: occurred.Add(168 * time.Hour), LastActivityAt: now, MetadataExpiresAt: now.Add(30 * 24 * time.Hour), Matches: []store.WebhookCapturedMatch{{SubscriptionID: uuid.NewString(), BindingID: uuid.NewString(), ProjectID: project, EventType: "task.created", AuthorizationEpoch: 1}}}
+		v := store.WebhookCapturedDelivery{ID: deliveryID, EndpointID: endpoint.ID, Owner: owner, OriginalMatchSHA256: make([]byte, 32), PolicyVersion: 1, DestinationRevision: 1, AdapterVersion: 1, DestinationKind: "http", DestinationOrigin: endpoint.Origin, RenderVersion: 1, ConfigurationSchemaVersion: 1, DestinationConfiguration: endpoint.DestinationConfiguration, RequestMethod: "POST", RequestMediaType: "application/cloudevents+json", DeterministicHeadersJSON: []byte(`[]`), Body: body, BodySHA256: bodyHash[:], AutomaticScheduleAt: schedule, AutomaticExpiresAt: occurred.Add(72 * time.Hour), PayloadExpiresAt: occurred.Add(168 * time.Hour), LastActivityAt: now, MetadataExpiresAt: now.Add(30 * 24 * time.Hour), Matches: []store.WebhookCapturedMatch{{SubscriptionID: uuid.NewString(), BindingID: uuid.NewString(), ProjectID: project, EventType: "task.created", AuthorizationEpoch: 1}}}
 		if err = d.SaveCapture(ctx, event, []store.WebhookCapturedDelivery{v}); err != nil {
 			t.Fatal(err)
 		}
@@ -249,9 +250,16 @@ func TestDeliveryClaimFIFOAndWait(t *testing.T) {
 	if err = d.InsertAttempt(ctx, attempt); err != nil {
 		t.Fatal(err)
 	}
+	configuration, body, proof := bytes.Clone(active.DestinationConfiguration), bytes.Clone(active.Body), bytes.Clone(active.OriginalMatchSHA256)
+	active.DestinationConfiguration = []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://replacement.example/hook"}}`)
+	active.Body, active.OriginalMatchSHA256 = []byte(`{"replaced":true}`), bytes.Repeat([]byte{1}, 32)
 	active.AttemptSequence, active.AutomaticAttemptCount, active.LeasePlanSlot, active.CurrentAttemptID = 1, 1, &slot, &attempt.ID
 	if err = d.UpdateDelivery(ctx, active); err != nil {
 		t.Fatal(err)
+	}
+	stored, err := d.LockDelivery(ctx, active.ID)
+	if err != nil || !bytes.Equal(stored.DestinationConfiguration, configuration) || !bytes.Equal(stored.Body, body) || !bytes.Equal(stored.OriginalMatchSHA256, proof) || stored.AttemptSequence != 1 {
+		t.Fatalf("control update changed immutable capture data: %+v, %v", stored, err)
 	}
 	attempts, err := d.LockAttempts(ctx, active.ID)
 	if err != nil || len(attempts) != 1 || attempts[0].ID != attempt.ID || len(attempts[0].SigningKeyIDs) != 1 {

@@ -19,7 +19,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -50,20 +49,7 @@ func newFixture(t *testing.T, singleConnection bool) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
-	keys := keyring(t, "old")
-	return &fixture{ctx: ctx, db: db, svc: &Service{DB: db, Keys: keys, ConfigurationExpansionAvailable: true}}
-}
-
-func keyring(t *testing.T, active string) *secretbox.Keyring {
-	t.Helper()
-	old := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-	newKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
-	data := `{"activeKeyId":"` + active + `","keys":{"old":"` + old + `","new":"` + newKey + `"}}`
-	keys, err := secretbox.Parse([]byte(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return keys
+	return &fixture{ctx: ctx, db: db, svc: &Service{DB: db, ConfigurationExpansionAvailable: true}}
 }
 
 func (f *fixture) principal(t *testing.T) model.Principal {
@@ -116,31 +102,14 @@ func expectFault(t *testing.T, err error, code string) {
 		t.Fatalf("expected %s, got %v", code, err)
 	}
 }
-func (f *fixture) ciphertext(t *testing.T, id string) ([]byte, []byte, time.Time) {
+func (f *fixture) configuration(t *testing.T, id string) ([]byte, []byte, time.Time) {
 	t.Helper()
-	var d, k secretbox.Envelope
+	var destination, secret []byte
 	var updated time.Time
-	err := f.db.Pool.QueryRow(f.ctx, `SELECT e.destination_envelope_version,e.destination_master_key_id,e.destination_nonce,e.destination_ciphertext,k.envelope_version,k.master_key_id,k.nonce,k.ciphertext,e.updated_at FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.endpoint_id=e.id AND k.id=e.active_key_id WHERE e.id=$1`, id).Scan(&d.Version, &d.MasterKeyID, &d.Nonce, &d.Ciphertext, &k.Version, &k.MasterKeyID, &k.Nonce, &k.Ciphertext, &updated)
-	if err != nil {
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT e.destination_configuration,k.secret,e.updated_at FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.endpoint_id=e.id AND k.id=e.active_key_id WHERE e.id=$1`, id).Scan(&destination, &secret, &updated); err != nil {
 		t.Fatal(err)
 	}
-	dest, err := d.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := k.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dest, key, updated
-}
-func masterID(t *testing.T, b []byte) string {
-	t.Helper()
-	e, err := secretbox.ParseEnvelope(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return e.MasterKeyID
+	return destination, secret, updated
 }
 
 // A02/A05/A08/A09: actual PostgreSQL operation receipts, full int64 versions,
@@ -172,9 +141,12 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	if !strings.HasPrefix(secret, "whsec_") {
 		t.Fatal("wrong secret format")
 	}
-	oldDest, oldKey, oldUpdated := f.ciphertext(t, id)
-	if masterID(t, oldDest) != "old" || masterID(t, oldKey) != "old" {
-		t.Fatal("initial master mismatch")
+	oldDest, oldKey, oldUpdated := f.configuration(t, id)
+	if secret != "whsec_"+base64.StdEncoding.EncodeToString(oldKey) {
+		t.Fatal("secret response differs from stored signing key")
+	}
+	if destination, err := decodeDestination(oldDest); err != nil || destination.URL != target || len(oldKey) != 32 {
+		t.Fatalf("stored configuration mismatch: %v", err)
 	}
 	m.RequestSHA256 = strings.Repeat("b", 64)
 	replay, err := f.svc.Mutate(f.ctx, p, owner, m)
@@ -185,7 +157,6 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	if !replay.Replay || ep["id"] != id || op["requestSha256"] != strings.Repeat("a", 64) {
 		t.Fatalf("replay lost original receipt: %#v", replay)
 	}
-	f.svc.Keys = keyring(t, "new")
 	changed := mutation(p, "endpoint.update", id, 1)
 	name := "Renamed"
 	changed.Name = &name
@@ -197,17 +168,17 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	if ep["configVersion"] != "2" || ep["destinationRevision"] != "1" {
 		t.Fatalf("name update: %#v", ep)
 	}
-	newDest, newKey, _ := f.ciphertext(t, id)
-	if masterID(t, newDest) != "new" || masterID(t, newKey) != "new" || bytes.Equal(oldDest, newDest) || bytes.Equal(oldKey, newKey) {
-		t.Fatal("changed configuration did not rewrap both ciphertexts")
+	newDest, newKey, _ := f.configuration(t, id)
+	if !bytes.Equal(oldDest, newDest) || !bytes.Equal(oldKey, newKey) {
+		t.Fatal("name update changed destination or signing secret")
 	}
 	newSecret, err := f.svc.Secret(f.ctx, p, owner, id)
 	if err != nil || newSecret.(map[string]any)["secret"] != secret {
-		t.Fatalf("rewrap changed secret: %v", err)
+		t.Fatalf("name update changed secret: %v", err)
 	}
 	noop := mutation(p, "endpoint.update", id, 2)
 	noop.Name = &name
-	_, _, beforeNoop := f.ciphertext(t, id)
+	_, _, beforeNoop := f.configuration(t, id)
 	res, err = f.svc.Mutate(f.ctx, p, owner, noop)
 	if err != nil {
 		t.Fatal(err)
@@ -216,9 +187,9 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	if op["effect"] != "unchanged" || ep["configVersion"] != "2" {
 		t.Fatalf("no-op: %#v", res)
 	}
-	noDest, noKey, noUpdated := f.ciphertext(t, id)
+	noDest, noKey, noUpdated := f.configuration(t, id)
 	if !bytes.Equal(newDest, noDest) || !bytes.Equal(newKey, noKey) || !noUpdated.Equal(beforeNoop) || oldUpdated.After(beforeNoop) {
-		t.Fatal("no-op changed ciphertext or timestamp")
+		t.Fatal("no-op changed stored bytes or timestamp")
 	}
 	stale := mutation(p, "endpoint.update", id, 1)
 	stale.Name = &name
@@ -229,6 +200,14 @@ func TestPostgresPersonalLifecycleAndReplay(t *testing.T) {
 	rotation, err := f.svc.Mutate(f.ctx, p, owner, rot)
 	if err != nil {
 		t.Fatal(err)
+	}
+	rotationDest, rotationKey, _ := f.configuration(t, id)
+	var overlapSecret []byte
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT secret FROM webhook_signing_keys WHERE endpoint_id=$1 AND slot='overlap'`, id).Scan(&overlapSecret); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rotationDest, oldDest) || bytes.Equal(rotationKey, oldKey) || !bytes.Equal(overlapSecret, oldKey) {
+		t.Fatal("rotation changed target or failed to preserve overlap secret")
 	}
 	rb := rotation.Body.(map[string]any)
 	originalSigning := rb["signing"].(map[string]any)
@@ -345,9 +324,9 @@ func TestPostgresTeamDemotionAndMemberVisibility(t *testing.T) {
 	}
 }
 
-// A09: missing keys, failed entropy and tampered ciphertext leave no new
-// effect or receipt; deletion does not require decrypting damaged content.
-func TestPostgresCryptoFailuresRollback(t *testing.T) {
+// Failed ID or signing entropy leaves no configuration effect or receipt.
+// Malformed destination data is visible and can still be deleted.
+func TestPostgresEntropyAndDestinationFailuresRollback(t *testing.T) {
 	f := newFixture(t, true)
 	p := f.principal(t)
 	owner := Owner{Kind: "personal", ID: p.UserID}
@@ -357,69 +336,56 @@ func TestPostgresCryptoFailuresRollback(t *testing.T) {
 	}
 	_, ep := body(t, created)
 	id := ep["id"].(string)
-	dest, key, updated := f.ciphertext(t, id)
-	f.svc.Keys = nil
-	if _, err := f.svc.Get(f.ctx, p, owner, id); !errors.Is(err, secretbox.ErrMissingKey) {
-		t.Fatalf("nil keyring read: %v", err)
+	dest, key, updated := f.configuration(t, id)
+	for _, kind := range []string{"create", "rotate"} {
+		for _, boundary := range []string{"ID", "secret"} {
+			m := createMutation(p, "failed", "https://example.test/")
+			idBytes := 32
+			if kind == "rotate" {
+				m = mutation(p, "signing.rotate", id, 1)
+				m.Mode = "immediate"
+				idBytes = 16
+			}
+			if boundary == "ID" {
+				idBytes = 0
+			}
+			f.svc.Random = bytes.NewReader(bytes.Repeat([]byte{1}, idBytes))
+			if _, err = f.svc.Mutate(f.ctx, p, owner, m); !errors.Is(err, io.EOF) {
+				t.Fatalf("%s %s entropy cause: %v", kind, boundary, err)
+			}
+		}
 	}
-	if _, err := f.svc.Mutate(f.ctx, p, owner, createMutation(p, "unavailable", "https://example.test/")); !errors.Is(err, secretbox.ErrMissingKey) {
-		t.Fatalf("nil keyring write: %v", err)
-	}
-	name := "changed"
-	change := mutation(p, "endpoint.update", id, 1)
-	change.Name = &name
-	newKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
-	missing, err := secretbox.Parse([]byte(`{"activeKeyId":"new","keys":{"new":"` + newKey + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.svc.Keys = missing
-	_, err = f.svc.Mutate(f.ctx, p, owner, change)
-	if !errors.Is(err, secretbox.ErrMissingKey) {
-		t.Fatalf("missing master cause: %v", err)
-	}
-	f.svc.Keys = keyring(t, "new")
-	f.svc.Random = bytes.NewReader(nil)
-	change.OperationID = uuid.NewString()
-	_, err = f.svc.Mutate(f.ctx, p, owner, change)
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("failed entropy cause: %v", err)
-	}
-	f.svc.Random = nil
-	afterDest, afterKey, afterUpdated := f.ciphertext(t, id)
+	afterDest, afterKey, afterUpdated := f.configuration(t, id)
 	var receipts int
 	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_id=$1`, p.UserID).Scan(&receipts); err != nil || receipts != 1 || !bytes.Equal(dest, afterDest) || !bytes.Equal(key, afterKey) || !updated.Equal(afterUpdated) {
 		t.Fatalf("failure left effects: receipts=%d err=%v", receipts, err)
 	}
-	envelope, err := secretbox.ParseEnvelope(dest)
-	if err != nil {
-		t.Fatal(err)
+	name := "changed"
+	change := mutation(p, "endpoint.update", id, 1)
+	change.Name = &name
+	if _, err := f.svc.Mutate(f.ctx, p, owner, change); err != nil {
+		t.Fatalf("name update depended on entropy: %v", err)
 	}
-	envelope.Ciphertext[0] ^= 1
-	corrupt := envelope.Ciphertext
-	_, err = envelope.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
+	unchangedDestination, unchangedSecret, _ := f.configuration(t, id)
+	if !bytes.Equal(dest, unchangedDestination) || !bytes.Equal(key, unchangedSecret) {
+		t.Fatal("name update changed target or signing secret")
 	}
-	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET destination_ciphertext=$2 WHERE id=$1`, id, corrupt); err != nil {
-		t.Fatal(err)
-	}
-	change.OperationID = uuid.NewString()
-	_, err = f.svc.Mutate(f.ctx, p, owner, change)
-	if !errors.Is(err, secretbox.ErrAuthentication) {
-		t.Fatalf("tampered ciphertext cause: %v", err)
-	}
-	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_id=$1`, p.UserID).Scan(&receipts); err != nil || receipts != 1 {
-		t.Fatalf("tamper left receipt: %d %v", receipts, err)
-	}
-	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET destination_ciphertext=$2 WHERE id=$1`, id, bytes.Repeat([]byte{1}, 16)); err != nil {
+	f.svc.Random = nil
+	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET destination_configuration=$2 WHERE id=$1`, id, []byte("malformed configuration")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.Get(f.ctx, p, owner, id); err == nil {
-		t.Fatal("malformed envelope was accepted")
+		t.Fatal("malformed destination was accepted")
 	}
-	deleteRequest := mutation(p, "endpoint.delete", id, 1)
-	if _, err := f.svc.Mutate(f.ctx, p, owner, deleteRequest); err != nil {
+	change = mutation(p, "endpoint.update", id, 2)
+	change.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/new"}
+	if _, err := f.svc.Mutate(f.ctx, p, owner, change); err == nil {
+		t.Fatal("malformed stored destination accepted by destination update")
+	}
+	if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_id=$1`, p.UserID).Scan(&receipts); err != nil || receipts != 2 {
+		t.Fatalf("malformed target left receipt: %d %v", receipts, err)
+	}
+	if _, err := f.svc.Mutate(f.ctx, p, owner, mutation(p, "endpoint.delete", id, 2)); err != nil {
 		t.Fatalf("delete damaged state: %v", err)
 	}
 }
@@ -563,7 +529,7 @@ func TestPostgresReplayAfterDemotionAndURLChangeWhileFenced(t *testing.T) {
 	if _, err := aux.Exec(f.ctx, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, team, admin.UserID); err != nil {
 		t.Fatal(err)
 	}
-	second := &Service{DB: &postgres.Store{Pool: aux}, Keys: f.svc.Keys, ConfigurationExpansionAvailable: true}
+	second := &Service{DB: &postgres.Store{Pool: aux}, ConfigurationExpansionAvailable: true}
 	update := mutation(replacement, "endpoint.update", id, 1)
 	update.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/new-secret?key=private"}
 	if _, err := second.Mutate(f.ctx, replacement, owner, update); err != nil {
@@ -599,7 +565,7 @@ func TestPostgresWaitingWriteRevocationAndExpiry(t *testing.T) {
 			_, ep := body(t, created)
 			id := ep["id"].(string)
 			before := f.receiptFacts(t, owner)
-			dest, key, updated := f.ciphertext(t, id)
+			dest, key, updated := f.configuration(t, id)
 			aux := f.auxiliaryPool(t)
 			lock, err := aux.Begin(f.ctx)
 			if err != nil {
@@ -645,7 +611,7 @@ func TestPostgresWaitingWriteRevocationAndExpiry(t *testing.T) {
 			} else {
 				expectFault(t, finished.err, "unauthenticated")
 			}
-			afterDest, afterKey, afterUpdated := f.ciphertext(t, id)
+			afterDest, afterKey, afterUpdated := f.configuration(t, id)
 			var receipts int
 			if err := f.db.Pool.QueryRow(f.ctx, `SELECT count(*) FROM webhook_operations WHERE owner_kind=$1 AND owner_id=$2`, owner.Kind, owner.ID).Scan(&receipts); err != nil {
 				t.Fatal(err)
@@ -886,24 +852,7 @@ func TestPostgresVersionExhaustionRollsBack(t *testing.T) {
 	}
 	change = mutation(p, "endpoint.update", id, 1)
 	change.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/changed"}
-	// The old destination's AAD must match the database revision for the test
-	// to reach version overflow, so re-encrypt it against that revision.
-	ciphertext, _, _ := f.ciphertext(t, id)
-	plain, err := f.svc.decrypt(ciphertext, []string{owner.Kind, owner.ID, id, "endpoint-current", "1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rebound, err := f.svc.encrypt(plain, []string{owner.Kind, owner.ID, id, "endpoint-current", "9223372036854775807"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reboundEnvelope, err := secretbox.ParseEnvelope(rebound)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Pool.Exec(f.ctx, `UPDATE webhook_endpoints SET destination_envelope_version=$2,destination_master_key_id=$3,destination_nonce=$4,destination_ciphertext=$5 WHERE id=$1`, id, reboundEnvelope.Version, reboundEnvelope.MasterKeyID, reboundEnvelope.Nonce, reboundEnvelope.Ciphertext); err != nil {
-		t.Fatal(err)
-	}
+
 	_, err = f.svc.Mutate(f.ctx, p, owner, change)
 	expectFault(t, err, "version_exhausted")
 	var receipts int

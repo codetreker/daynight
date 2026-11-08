@@ -3,7 +3,6 @@ package webhook_test
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -21,7 +20,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -54,11 +52,6 @@ func TestHTTPCredentialExpiresWhileWaitingForCredentialLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	master := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
-	keys, err := secretbox.Parse([]byte(`{"activeKeyId":"main","keys":{"main":"` + master + `"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	const origin = "http://127.0.0.1:8787"
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	authenticator, err := auth.NewAuthentication(identity.New(db, nil, origin+"/auth/callback"), config.AuthSettings{PublicOrigin: origin, AllowHTTPTestOrigin: true}, logger)
@@ -66,7 +59,7 @@ func TestHTTPCredentialExpiresWhileWaitingForCredentialLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	httpwebhook.NewRoutes(&webhook.Service{DB: db, Keys: keys, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
+	httpwebhook.NewRoutes(&webhook.Service{DB: db, ConfigurationExpansionAvailable: true}, authenticator, logger).RegisterRoutes(mux)
 	server := httptest.NewServer(mux)
 	defer func() { cancel(); server.Close() }()
 	requestBody, err := json.Marshal(map[string]any{

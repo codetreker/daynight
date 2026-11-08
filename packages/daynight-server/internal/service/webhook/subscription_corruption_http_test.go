@@ -1,9 +1,7 @@
 package webhook_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,7 +21,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -55,12 +52,7 @@ func TestHTTPWebhookCorruptEligibilityReturnsError(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			master := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
-			keys, err := secretbox.Parse([]byte(`{"activeKeyId":"main","keys":{"main":"` + master + `"}}`))
-			if err != nil {
-				t.Fatal(err)
-			}
-			svc := &webhook.Service{DB: db, Keys: keys, ConfigurationExpansionAvailable: true}
+			svc := &webhook.Service{DB: db, ConfigurationExpansionAvailable: true}
 			principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
 			name, enabled := "Endpoint", true
 			result, err := svc.Mutate(ctx, principal, webhook.Owner{Kind: "personal", ID: user}, webhook.Mutation{Kind: "endpoint.create", OperationID: uuid.NewString(), IssuedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedUserID: user, RequestSHA256: strings.Repeat("a", 64), Name: &name, Enabled: &enabled, Destination: &webhook.Destination{Kind: "http", AdapterVersion: "1", URL: "https://example.test/hook"}, HasSubscriptions: true, Subscriptions: []webhookcore.SubscriptionInput{{ProjectID: project, EventTypes: []string{"task.created"}}}})
