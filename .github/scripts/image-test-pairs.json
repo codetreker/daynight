@@ -21,6 +21,27 @@
       "allowPaths": [
         "packages/daynight/test/ci/image-test-pair-input.test.ts"
       ]
+    },
+    {
+      "base": "51fd1a13cea3bdf5c49a9108ba795d18a3d21e13",
+      "implementation": {
+        "pr": 860,
+        "sha": "0f295f608c9aab1e7d1d4078c19b6ba2a99f9106",
+        "reviews": [
+          5818795765
+        ]
+      },
+      "tests": {
+        "pr": 861,
+        "sha": "cb206086969153bb14f049f987efba0f1668777e",
+        "reviews": [
+          5818799782
+        ]
+      },
+      "productionTree": "761237d4a8da14720fc10ea257aa5cf0b09f15a4",
+      "allowPaths": [
+        "packages/daynight/test/ci/image-test-pair-input.test.ts"
+      ]
     }
   ]
 }
