@@ -1,13 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BotCreationUnknown, createBot, getBot, getBotDefaults, listBots, parseBot, parseBotDefaults } from '../src/api/bots';
+import * as botsApi from '../src/api/bots';
 import { invalidateAuthRequests } from '../src/api/client';
 import { BOT_USER, botDefaults, botDefinition, botError, botId, botResponse, botWorkerDefaults } from './helpers/bots';
 
 const admission = () => ({ userId: BOT_USER, onPrincipalMismatch: vi.fn() });
 const signal = () => new AbortController().signal;
+const deleteInput = () => ({ ifVersion: '9007199254740993', deletionId: botId(50) });
+const deletedBot = (state: 'pending' | 'failed' | 'completed' = 'pending') => ({
+  id: botId(), workerId: botId(20), version: '9007199254740994',
+  deletion: { deletionId: botId(50), requestedVersion: '9007199254740993', workerCleanup: { state, code: state === 'failed' ? 'process_stop_unconfirmed' : null }, serverCleanup: { state: state === 'completed' ? 'completed' : 'pending', code: null } },
+});
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Bot response contracts', () => {
+  it('preserves frozen native selections and permits resolved defaults to differ from provider defaults', () => {
+    const config = { ...botDefinition().resolvedConfiguration, model: 'chosen', reasoningEffort: 'none', selection: { schemaVersion: 1, modelSource: 'preference', reasoningEffortSource: 'explicit', configurationGeneration: 'a'.repeat(64), catalogGeneration: botId(60) } };
+    const value = { ...botDefinition(), requestedOverrides: { reasoningEffort: 'none' }, resolvedConfiguration: config };
+    expect(parseBot(value, BOT_USER)).toEqual(value);
+    const defaults = { ...botDefaults(), configuration: config, workers: [{ ...botWorkerDefaults(), configuration: config }] };
+    expect(parseBotDefaults(defaults)).toEqual(defaults);
+    expect(() => parseBot({ ...value, resolvedConfiguration: { ...config, reasoningEffort: 'high' } }, BOT_USER)).toThrow();
+    expect(() => parseBot({ ...value, resolvedConfiguration: { ...config, selection: { ...config.selection, modelSource: 'unknown' } } }, BOT_USER)).toThrow();
+    expect(() => parseBot({ ...value, resolvedConfiguration: { ...config, selection: { ...config.selection, reasoningEffortSource: 'cloud' } } }, BOT_USER)).toThrow();
+    expect(() => parseBot({ ...value, requestedOverrides: { model: 'chosen' }, resolvedConfiguration: config }, BOT_USER)).toThrow();
+  });
   it('preserves exact int64 versions and real startup states', () => {
     const pending = { ...botDefinition(), version: '9223372036854775807', creationOrder: '9007199254740993' };
     expect(parseBot(pending, BOT_USER)).toEqual(pending);
@@ -64,7 +81,96 @@ describe('Bot response contracts', () => {
   });
 });
 
+describe('Bot deletion API', () => {
+  it.each(['pending', 'failed', 'completed'] as const)('returns the actual %s cleanup state with the original exact deletion identity', async state => {
+    expect(botsApi.deleteBot).toBeTypeOf('function');
+    const bot = deletedBot(state), fetch = vi.fn().mockResolvedValue(botResponse(bot)); vi.stubGlobal('fetch', fetch);
+    expect(await botsApi.deleteBot(botId().toUpperCase(), deleteInput(), signal(), admission())).toEqual(bot);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]![0]).toBe(`/api/v1/me/bots/${botId()}`);
+    expect(fetch.mock.calls[0]![1].method).toBe('DELETE');
+    expect(JSON.parse(String(fetch.mock.calls[0]![1].body))).toEqual(deleteInput());
+  });
+  it('checks a replay against requestedVersion even after cleanup advances the Bot version', async () => {
+    const bot = { ...deletedBot('completed'), version: '9007199254740998' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(botResponse(bot)));
+    expect(await botsApi.deleteBot(botId(), deleteInput(), signal(), admission())).toEqual(bot);
+  });
+  it.each([
+    () => Promise.reject(new TypeError('response lost')),
+    () => Promise.resolve(botError(500, 'internal_error')),
+    () => Promise.resolve(botResponse(deletedBot(), BOT_USER, 201)),
+    () => Promise.resolve(botResponse(botDefinition())),
+    () => Promise.resolve(botResponse({ ...deletedBot(), id: botId(2) })),
+    () => Promise.resolve(botResponse({ ...deletedBot(), deletion: { ...deletedBot().deletion, deletionId: botId(51) } })),
+    () => Promise.resolve(botResponse({ ...deletedBot(), deletion: { ...deletedBot().deletion, requestedVersion: '1' } })),
+  ])('retains the frozen request for observation after an unknown deletion outcome %#', async response => {
+    const fetch = vi.fn(response); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), deleteInput(), signal(), admission())).rejects.toMatchObject({ name: 'BotDeletionUnknown', id: botId(), input: deleteInput() });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each(['version_conflict', 'resource_conflict'])('preserves a definite %s rejection without retrying', async code => {
+    const fetch = vi.fn().mockResolvedValue(botError(409, code)); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), deleteInput(), signal(), admission())).rejects.toMatchObject({ kind: 'server', status: 409, code });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('does not dispatch malformed IDs or inexact versions', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    for (const input of [{ ...deleteInput(), ifVersion: '01' }, { ...deleteInput(), ifVersion: '0' }, { ...deleteInput(), ifVersion: '9223372036854775808' }, { ...deleteInput(), deletionId: 'bad' }]) {
+      await expect(botsApi.deleteBot(botId(), input, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    }
+    await expect(botsApi.deleteBot('bad', deleteInput(), signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('treats missing or changed response principals as unknown and invalidates the changed identity', async () => {
+    const gate = admission(), fetch = vi.fn().mockResolvedValueOnce(botResponse(deletedBot(), null)).mockResolvedValueOnce(botResponse(deletedBot(), botId(40)));
+    vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), deleteInput(), signal(), gate)).rejects.toMatchObject({ name: 'BotDeletionUnknown', cause: { kind: 'protocol' } });
+    await expect(botsApi.deleteBot(botId(), deleteInput(), signal(), gate)).rejects.toMatchObject({ name: 'BotDeletionUnknown', cause: { code: 'principal_mismatch' } });
+    expect(gate.onPrincipalMismatch).toHaveBeenCalledOnce();
+  });
+  it('retains dispatched aborts without classifying a pre-dispatch abort as unknown', async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn(async () => { controller.abort(); throw new DOMException('Aborted', 'AbortError'); }); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), deleteInput(), controller.signal, admission())).rejects.toMatchObject({ name: 'BotDeletionUnknown', id: botId(), input: deleteInput() });
+    await expect(botsApi.deleteBot(botId(), deleteInput(), controller.signal, admission())).rejects.not.toBeInstanceOf(botsApi.BotDeletionUnknown);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('does not let caller mutation replace the identity of a dispatched deletion', async () => {
+    const original = deleteInput(), fetch = vi.fn(async (_url: unknown, _options: RequestInit) => { original.ifVersion = '3'; original.deletionId = botId(51); throw new TypeError('lost'); }); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), original, signal(), admission())).rejects.toMatchObject({ name: 'BotDeletionUnknown', input: deleteInput() });
+    expect(JSON.parse(String(fetch.mock.calls[0]![1].body))).toEqual(deleteInput());
+  });
+});
+
 describe('Bot account API', () => {
+  it.each([{}, { model: 'chosen' }, { reasoningEffort: 'none' }, { model: 'chosen', reasoningEffort: 'none' }])('sends only explicit native overrides %j', async native => {
+    const overrides = { workerId: botId(20), ...native };
+    const config = { ...botDefinition().resolvedConfiguration, model: native.model ?? null, reasoningEffort: native.reasoningEffort ?? null, selection: { schemaVersion: 1, modelSource: native.model ? 'explicit' : 'native', reasoningEffortSource: native.reasoningEffort ? 'explicit' : 'native' } };
+    const value = { ...botDefinition(), requestedOverrides: overrides, resolvedConfiguration: config };
+    const fetch = vi.fn().mockResolvedValue(botResponse(value)); vi.stubGlobal('fetch', fetch);
+    expect(await createBot({ id: botId(), name: 'Assistant 1', overrides }, signal(), admission())).toEqual(value);
+    expect(JSON.parse(fetch.mock.calls[0]![1].body)).toEqual({ id: botId(), name: 'Assistant 1', overrides });
+  });
+  it('queries native overrides without mutating them or submitting creation', async () => {
+    const fetch = vi.fn().mockResolvedValue(botResponse(botDefaults())); vi.stubGlobal('fetch', fetch);
+    await getBotDefaults(botId(20), signal(), admission(), { cwd: '/ordinary/directory', provider: 'codex', model: 'native/model', reasoningEffort: 'none' });
+    expect(fetch.mock.calls[0]![0]).toBe(`/api/v1/me/bots/defaults?workerId=${botId(20)}&cwd=%2Fordinary%2Fdirectory&provider=codex&model=native%2Fmodel&reasoningEffort=none`);
+    expect(fetch.mock.calls[0]![1].method).not.toBe('POST');
+  });
+  it.each([{ model: null }, { model: '' }, { model: '汉'.repeat(86) }, { reasoningEffort: null }, { reasoningEffort: '' }, { reasoningEffort: 'high\n' }, { reasoningEffort: '汉'.repeat(22) }])('rejects malformed native overrides without dispatch %#', async overrides => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    await expect(createBot({ id: botId(), name: 'Assistant 1', overrides } as unknown as Parameters<typeof createBot>[0], signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('retains native overrides and original ID after a lost creation response', async () => {
+    const overrides = { workerId: botId(20), model: 'chosen', reasoningEffort: 'none' };
+    const value = { ...botDefinition(), requestedOverrides: overrides, resolvedConfiguration: { ...botDefinition().resolvedConfiguration, model: 'chosen', reasoningEffort: 'none', selection: { schemaVersion: 1, modelSource: 'explicit', reasoningEffortSource: 'explicit' } } };
+    const fetch = vi.fn().mockRejectedValueOnce(new TypeError('lost')).mockResolvedValueOnce(botResponse(value)); vi.stubGlobal('fetch', fetch);
+    await expect(createBot({ id: botId(), name: 'Assistant 1', overrides }, signal(), admission())).rejects.toMatchObject({ name: 'BotCreationUnknown', id: botId() });
+    expect(await getBot(botId(), signal(), admission())).toEqual(value);
+    expect(fetch.mock.calls.map(([, options]) => options.method)).toEqual(['POST', undefined]);
+  });
   it('reads authenticated pages, original identities and Worker-specific defaults', async () => {
     const page = { items: [botDefinition()], nextCursor: null };
     const fetch = vi.fn().mockResolvedValueOnce(botResponse(page)).mockResolvedValueOnce(botResponse(botDefinition())).mockResolvedValueOnce(botResponse(botDefaults()));

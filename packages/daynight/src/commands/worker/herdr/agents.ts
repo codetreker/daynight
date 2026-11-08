@@ -368,7 +368,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
       return result;
     },
-    prepareWorkspace: async (context: HerdrExecutionContext, title: string, operation: Operation): Promise<HerdrTaskBinding> => {
+    prepareWorkspace: async (context: HerdrExecutionContext, title: string, operation: Operation, startup?: { shellNonce: string }): Promise<HerdrTaskBinding> => {
+      if (startup !== undefined && canonicalId(startup.shellNonce) !== startup.shellNonce) throw new TypeError("The managed shell startup nonce must be a canonical UUID.");
       let createPossible = false;
       try {
         const label = herdrExecutionLabel(context, title);
@@ -385,7 +386,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           return binding;
         }
         createPossible = true;
-        const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment, ...nativeAgentPermissionEnvironment(context.agent) } }, "workspace_created", operation);
+        const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment, ...nativeAgentPermissionEnvironment(context.agent), ...(startup === undefined ? {} : { DAYNIGHT_HERDR_SHELL_NONCE: startup.shellNonce }) } }, "workspace_created", operation);
         const workspace = object(result.workspace, "Created workspace");
         const pane = object(result.root_pane, "Created task pane");
         const binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };

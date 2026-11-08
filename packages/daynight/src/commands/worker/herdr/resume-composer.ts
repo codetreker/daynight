@@ -63,5 +63,6 @@ export const hasEmptyResumeComposer = (provider: "codex" | "claude", visible: st
   const before = lines.slice(0, prompt).findLastIndex(divider);
   const after = lines.slice(prompt + 1).findIndex(divider);
   if (before < 0 || after < 0 || lines.slice(before + 1, prompt).some(line => line.trim() !== "") || lines.slice(prompt + 1, prompt + 1 + after).some(line => line.trim() !== "")) return false;
-  return lines.slice(prompt + 2 + after).some(line => /^\s*(?:\? for shortcuts|shift\+tab to|esc to interrupt)(?:\s|$)/i.test(line));
+  const permissionFooter = /^\s*⏵⏵ bypass permissions on \(shift\+tab to cycle\)(?:\s+·\s+PR #[1-9][0-9]*)?(?:\s+·\s+← for agents)?\s*$/;
+  return lines.slice(prompt + 2 + after).some(line => /^\s*(?:\? for shortcuts|shift\+tab to|esc to interrupt)(?:\s|$)/i.test(line) || permissionFooter.test(line));
 };

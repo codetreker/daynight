@@ -4,13 +4,17 @@ import type { ReactNode } from 'react';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { useConfigurationProjects } from '../src/features/workers/configuration/useConfigurationProjects';
 import type { Project } from '../src/api/types';
+import type { CacheEvent } from '../src/features/task-cache/project-cache';
+import { TaskCacheError } from '../src/features/task-cache/database';
 import { configurationError } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
 const scopes: TaskCacheScope[] = [];
 const makeScope = (userId = WORKER_USER, onIdentityMismatch = vi.fn()) => {
-  const scope = createTaskCacheScope({ userId, onIdentityMismatch }); scopes.push(scope); return scope;
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch });
+  vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map());
+  scopes.push(scope); return scope;
 };
 const wrapper = (scope: TaskCacheScope) => ({ children }: { readonly children: ReactNode }) => <TaskCacheProvider scope={scope}>{children}</TaskCacheProvider>;
 const flush = () => act(async () => { for (let n = 0; n < 50; n++) await Promise.resolve(); });
@@ -20,6 +24,62 @@ const page = (items: readonly Project[], nextCursor: string | null = null, userI
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); });
 
 describe('configuration Project choices', () => {
+  it.each(['offline', 'page failure'] as const)('keeps healthy metadata and the error when a withdrawal refresh has %s', async failure => {
+    const scope = makeScope(), target = project(3), healthy = project(4), retry = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(page([target, healthy]));
+    if (failure === 'offline') fetch.mockRejectedValueOnce(new Error('offline'));
+    else fetch.mockResolvedValueOnce(page([project(5)], 'next')).mockResolvedValueOnce(configurationError(403, 'forbidden'));
+    fetch.mockImplementationOnce(() => retry.promise); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useConfigurationProjects(true), { wrapper: wrapper(scope) }); await flush();
+    act(() => scope.suspendProject(target.id)); await flush();
+    expect(result.current.items).toEqual([healthy]); expect(result.current.loading).toBe(false); expect(result.current.error).not.toBeNull();
+    act(() => result.current.refresh()); await flush();
+    expect(result.current.items).toEqual([healthy]); expect(result.current.loading).toBe(false);
+    retry.resolve(page([healthy])); await flush(); expect(result.current.items).toEqual([healthy]); expect(result.current.error).toBeNull();
+  });
+  it('removes suspended metadata immediately and restores it only after a new authorized read', async () => {
+    const scope = makeScope(), target = project(3), healthy = project(4), old = deferred<Response>(), suspended = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(page([target, healthy])).mockImplementationOnce(() => old.promise)
+      .mockResolvedValueOnce(page([target, healthy])).mockImplementationOnce(() => suspended.promise).mockResolvedValueOnce(page([target, healthy])); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useConfigurationProjects(true), { wrapper: wrapper(scope) }); await flush();
+    act(() => result.current.refresh()); await flush(); act(() => scope.suspendProject(target.id)); await flush();
+    expect(result.current.items).toEqual([healthy]); expect(result.current.loading).toBe(false);
+    old.resolve(page([target, healthy])); await flush(); expect(result.current.items).toEqual([healthy]);
+    act(() => result.current.refresh()); await flush();
+    act(() => scope.resumeProject(target.id)); await flush(); expect(result.current.items).toEqual([target, healthy]);
+    suspended.resolve(page([target, healthy])); await flush(); expect(result.current.items).toEqual([target, healthy]); expect(fetch).toHaveBeenCalledTimes(5);
+  });
+  it('withdraws metadata during pagination, ignores older generations, and permits fresh authorization', async () => {
+    const scope = makeScope(), target = project(3), healthy = project(4), old = deferred<Response>(), fresh = deferred<Response>();
+    let publish!: (event: CacheEvent) => void;
+    vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
+    vi.mocked(scope.prepareProjection).mockResolvedValue(new Map([[target.id, 'generation-a']]));
+    const fetch = vi.fn().mockResolvedValueOnce(page([target, healthy])).mockImplementationOnce(() => old.promise).mockImplementationOnce(() => fresh.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useConfigurationProjects(true), { wrapper: wrapper(scope) });
+    await flush(); act(() => result.current.refresh()); await flush();
+    act(() => publish({ projectId: target.id, accessRevoked: true, revokedGeneration: 'generation-a' })); await flush();
+    expect(result.current.items).toEqual([healthy]);
+    old.resolve(page([target, healthy])); await flush(); expect(result.current.items).toEqual([healthy]);
+    fresh.resolve(page([healthy])); await flush(); expect(result.current.items).toEqual([healthy]);
+    vi.mocked(scope.prepareProjection).mockResolvedValue(new Map([[target.id, 'generation-b']]));
+    fetch.mockResolvedValueOnce(page([target, healthy])); act(() => result.current.refresh()); await flush();
+    act(() => publish({ projectId: target.id, accessRevoked: true, revokedGeneration: 'generation-a' }));
+    expect(result.current.items).toEqual([target, healthy]);
+  });
+  it('keeps failed cleanup visible and excludes only the denied Project on fresh reads', async () => {
+    const scope = makeScope(), target = project(3), healthy = project(4), failure = new TaskCacheError('storage');
+    let publish!: (event: CacheEvent) => void, denied = true;
+    vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
+    vi.spyOn(scope, 'isProjectionDenied').mockImplementation(id => denied && id === target.id);
+    vi.stubGlobal('fetch', vi.fn(async () => page([target, healthy])));
+    const { result } = renderHook(() => useConfigurationProjects(true), { wrapper: wrapper(scope) }); await flush();
+    act(() => publish({ projectId: target.id, accessRevoked: true, error: failure }));
+    expect(result.current.error).toBe(failure); expect(result.current.items).toEqual([healthy]);
+    vi.mocked(scope.prepareProjection).mockImplementation(async () => { if (denied) publish({ projectId: target.id, accessRevoked: true, error: failure }); return new Map(); });
+    act(() => result.current.refresh()); await flush(); expect(result.current.error).toBe(failure); expect(result.current.items).toEqual([healthy]);
+    denied = false; act(() => result.current.refresh()); await flush(); expect(result.current.error).toBeNull(); expect(result.current.items).toEqual([target, healthy]);
+  });
   it('publishes the complete accessible Project set only after every page succeeds', async () => {
     const second = deferred<Response>(), fetch = vi.fn().mockResolvedValueOnce(page([project(3)], 'next/+'))
       .mockImplementationOnce(() => second.promise);
@@ -30,13 +90,24 @@ describe('configuration Project choices', () => {
     second.resolve(page([project(4)])); await flush();
     expect(result.current.items).toEqual([project(3), project(4)]); expect(result.current.loading).toBe(false); expect(result.current.error).toBeNull();
   });
-  it('drops cached metadata after permission/read failure without publishing a partial refresh', async () => {
+  it.each([{ items: [] as Project[] }, { items: [project(3), project(4)] }])('retains a fully loaded candidate set during a background read, including an empty set', async ({ items }) => {
+    const next = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(page(items)).mockImplementationOnce(() => next.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ enabled }) => useConfigurationProjects(enabled), { initialProps: { enabled: true }, wrapper: wrapper(makeScope()) });
+    await flush(); expect(result.current.loading).toBe(false); expect(result.current.items).toEqual(items);
+    rerender({ enabled: false }); rerender({ enabled: true }); await flush();
+    expect(result.current.loading).toBe(false); expect(result.current.items).toEqual(items);
+    next.resolve(page(items.map(item => ({ ...item })))); await flush();
+    expect(result.current.loading).toBe(false); expect(result.current.items).toEqual(items);
+  });
+  it('retains the last complete metadata after a page failure without publishing a partial refresh', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(page([project(3)]))
       .mockResolvedValueOnce(page([project(4)], 'next')).mockResolvedValueOnce(configurationError(403, 'forbidden'));
     vi.stubGlobal('fetch', fetch);
     const { result } = renderHook(() => useConfigurationProjects(true), { wrapper: wrapper(makeScope()) });
     await flush(); expect(result.current.items).toEqual([project(3)]);
-    act(() => result.current.refresh()); await flush(); expect(result.current.items).toEqual([]); expect(result.current.error).toMatchObject({ status: 403 });
+    act(() => result.current.refresh()); await flush(); expect(result.current.items).toEqual([project(3)]); expect(result.current.error).toMatchObject({ status: 403 });
   });
   it('rejects repeated pagination cursors and recovers from the first page', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(page([project(3)], 'repeated')).mockResolvedValueOnce(page([project(4)], 'repeated'))

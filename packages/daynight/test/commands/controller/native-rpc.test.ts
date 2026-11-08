@@ -1,6 +1,6 @@
 import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { NativeRpc, NativeRpcError } from "../../../src/commands/controller/providers/native-rpc.js";
 
 test("private native RPC separates notifications, approval requests and exact response IDs", async () => {
@@ -35,9 +35,19 @@ test("native rejection is distinguishable from uncertain transport loss and all 
 });
 
 
-test("initialization timeout retains an explicitly unknown typed outcome", async () => {
+test("the default initialization deadline remains pending until 30000 ms then retains an unknown typed outcome", async () => {
+  vi.useFakeTimers();
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough() });
-  const rpc = new NativeRpc(child, () => {}, 5);
-  try { await expect(rpc.request("initialize", {})).rejects.toMatchObject({ name: "NativeRpcTimeoutError", method: "initialize" }); }
-  finally { rpc.dispose(); }
+  const rpc = new NativeRpc(child, () => {});
+  let settled = false;
+  const result = rpc.request("initialize", {}).finally(() => { settled = true; });
+  const rejected = expect(result).rejects.toMatchObject({ name: "NativeRpcTimeoutError", method: "initialize" });
+  try {
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(settled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { rpc.dispose(); vi.useRealTimers(); }
 });

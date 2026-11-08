@@ -10,7 +10,7 @@ const userId = "30000000-0000-0000-0000-000000000001";
 const epoch = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:34:56.123456789Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { assignedTo: null, id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const task = { assignedTo: null, id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, tasks: [task] };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200, principal: string | null = userId) => wireResponse(value, { status, headers: principal === null ? {} : { "Daynight-User-ID": principal } });
@@ -122,4 +122,17 @@ it("retains complete generic properties and ordinary nested version fields in sy
   expect(result.tasks[0]!.properties.future).toMatchObject({ version: 42 });
   expect(result.tasks[0]!.version).toBe(9_007_199_254_740_993n);
   expect(parseTaskSummary({ ...task, properties: {} }).properties).toEqual({});
+});
+
+
+it("rejects malformed worker claims at the summary decoding boundary", () => {
+  expect(() => parseTaskSummary({ ...task, properties: { worker: null } })).toThrow("invalid response");
+  expect(() => parseTaskSummary({ ...task, properties: { worker: { machine: { name: "host" } } } })).toThrow("invalid response");
+});
+
+it("requires cancellation time and rejects invalid status/time combinations", () => {
+  for (const change of [{ cancelledAt: undefined }, { status: "cancelled", cancelledAt: null }, { cancelledAt: time }, { status: "cancelled", cancelledAt: "invalid" }]) {
+    expect(() => parseTaskSummary({ ...task, ...change })).toThrow("invalid response");
+  }
+  expect(parseTaskSummary({ ...task, status: "cancelled", cancelledAt: time, completedAt: time })).toMatchObject({ status: "cancelled", cancelledAt: time, completedAt: time });
 });

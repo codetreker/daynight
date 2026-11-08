@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
@@ -80,12 +82,12 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	config.PublicOrigin, config.UniAuthURL = origin, ready.Origin
 	config.UniAuthAppID, config.UniAuthAppSecret, config.UniAuthCallbackURL = ready.AppID, ready.AppSecret, callback
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
-	handler, err := New(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	requests := &identityCLIRequests{}
-	server.Config.Handler = RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+	server.Config.Handler = httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		observed := request.URL.Path == "/api/v1/projects"
 		bearer := strings.HasPrefix(request.Header.Get("Authorization"), "Bearer ")
 		if observed {
@@ -96,12 +98,12 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 				requests.anonymous.Add(1)
 			}
 		}
-		response := &responseRecorder{ResponseWriter: w}
+		response := &httpx.ResponseRecorder{ResponseWriter: w}
 		handler.ServeHTTP(response, request)
-		if observed && response.status == http.StatusUnauthorized {
+		if observed && response.Status == http.StatusUnauthorized {
 			requests.unauthorized.Add(1)
 		}
-		if observed && bearer && response.status >= 200 && response.status < 300 {
+		if observed && bearer && response.Status >= 200 && response.Status < 300 {
 			requests.authenticatedPAT.Add(1)
 		}
 	}))
@@ -158,7 +160,11 @@ func identityDecode[T any](t *testing.T, data []byte) T {
 
 func (integration *identityIntegration) start(t *testing.T, browser *http.Client) *url.URL {
 	t.Helper()
-	response, _ := identityRequest(t, browser, http.MethodGet, integration.server.URL+"/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks", "", nil, http.StatusSeeOther)
+	loginURL := integration.server.URL + "/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks"
+	response, _ := identityRequest(t, browser, http.MethodGet, loginURL, "", nil, http.StatusSeeOther)
+	if response.Header.Get("Location") == "/api/v1/auth/login?provider=github&returnPath=%2Fprojects%3Fview%3Dtasks" {
+		response, _ = identityRequest(t, browser, http.MethodGet, loginURL, "", nil, http.StatusSeeOther)
+	}
 	authorization, err := response.Location()
 	if err != nil || authorization.Scheme+"://"+authorization.Host != integration.gateway {
 		t.Fatal("Daynight did not redirect to its real UniAuth gateway")

@@ -1,6 +1,6 @@
 # Task 预定义属性设计
 
-状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)。
+状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-rows.md)保存存储取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)；[Task 数据归属决策](../../.agents/notes/implemented/architecture/2026-11-05-task-data-ownership.md)记录值、写策略与编码的分工。
 
 ## 职责与数据流
 
@@ -19,7 +19,7 @@ flowchart LR
   Read --> Client
 ~~~
 
-core 使用通用 TaskProperties map。internal/taskproperties 依赖 core 并拥有静态注册表、值 codec、规范化与 typed business accessors；core 不反向依赖 codec。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
+core 使用通用 TaskProperties map。internal/core/model/taskproperty 拥有静态注册表、值 codec、规范化与 typed reader；internal/core/task/properties 使用同一注册表执行公开写权限与 Worker/sessionStartup 关联规则。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
 
 定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused、worker 与 sessionStartup。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
 
@@ -31,7 +31,7 @@ properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组�
 
 JSON 对象的重复键与未知字段在普通 unmarshal 前被拒绝。PR 字符串只使用原有 JSON 字符串解码，不复用标题、仓库 URL 或 Worker 文本限制；空值、控制字符、NUL、顺序和重复项均保留。规范化只统一值的 JSON 表示，保留旧系统已经解码的字符串语义，包括错误 surrogate 的既有替换行为。
 
-存储读取同样通过定义的 native decoder/normalizer，语义比较和 DTO 输出使用规范值。不能把旧 JSON 原始片段直接透传，从而改变客户端看到的字符。属性名和结构非法产生可识别的属性校验错误；数据库故障保持原错误链。
+写入先按定义执行结构规范化，再对每个完整值独立执行 8 KiB 准入；PR 的 url/title 和 worker 自由文本另有各自字节上限。公共与生命周期写入使用相同策略，但不改变只读权限。存储读取同样通过定义的 native decoder/normalizer，语义比较和 DTO 输出使用规范值；读取不执行写入额度或截断旧值。不能把旧 JSON 原始片段直接透传，从而改变客户端看到的字符。属性名和结构非法产生可识别的属性校验错误；数据库故障保持原错误链。
 
 TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更值，不原地修改当前任务或共享快照。属性 map 的存在键参与比较，缺失与 [] 不相等；对象键序、缩进和等价转义不构成值变化，有序数组仍按顺序比较。
 
@@ -104,9 +104,9 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
 
-CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/implemented/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
+CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/archived/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 
-Web PR 卡、分页、链接策略及焦点保持不变，缺失与空 PR 都显示已有空态。PR 引用按全局下标保留独立条目，不能以 URL 去重或作为吞掉重复项的唯一键。一次合法写入可包含数万条短引用，因此每页最多挂载 100 行，为 DOM/accessibility tree 提供独立上限；完整数组仍留存，原生前后页与页码控件使全部项可访问，不依赖可变行高或额外请求。
+Web PR 卡、分页、链接策略及焦点保持不变，缺失与空 PR 都显示已有空态。PR 引用按全局下标保留独立条目，不能以 URL 去重或作为吞掉重复项的唯一键。新写入的完整规范化数组受 8 KiB 属性值上限约束；历史数组不因写入额度在读取时截断，完整响应仍受输出预算约束。Web 对返回的完整数组每页最多挂载 100 行，为 DOM/accessibility tree 提供独立上限；原生前后页与页码控件使返回的全部项可访问，不依赖可变行高或额外请求。
 
 task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一只读快照中取得完整 properties。每条摘要携带当前完整对象，按任务 version 替换；缺失键自然删除，无独立属性水位或 tombstone。Web 以通用 JSON 比较覆盖全部属性，schema 2→3 及直接 1→3 重建项目/摘要/详情、轮换 user fence 并清掉旧水位，避免把旧摘要缺字段解释为 {}。
 

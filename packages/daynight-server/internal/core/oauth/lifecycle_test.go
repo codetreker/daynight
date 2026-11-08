@@ -1,0 +1,351 @@
+package oauth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	"github.com/google/uuid"
+)
+
+type lifecycleFake struct {
+	store.GrantLifecycleDAO
+	now         time.Time
+	failures    map[string]error
+	calls       map[string]int
+	grant       store.OAuthGrant
+	refresh     store.OAuthRefresh
+	accessGrant string
+	outcome     store.TransactionOutcome
+	pruneCounts []int
+	pruneLimits []int
+}
+
+type skewedOwnerWriter struct {
+	*lifecycleFake
+	databaseTime time.Time
+}
+
+func (w skewedOwnerWriter) WriteGrantLifecycle(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error) {
+	err := fn(skewedOwnerDAO{GrantLifecycleDAO: w.lifecycleFake, databaseTime: w.databaseTime})
+	if err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
+
+type skewedOwnerDAO struct {
+	store.GrantLifecycleDAO
+	databaseTime time.Time
+}
+
+func (d skewedOwnerDAO) FreshTime(_ context.Context, caller time.Time) (time.Time, error) {
+	if caller.After(d.databaseTime) {
+		return caller, nil
+	}
+	return d.databaseTime, nil
+}
+
+func (d skewedOwnerDAO) LockOwnerSession(context.Context, model.Principal, time.Time) error {
+	return nil
+}
+
+func TestSessionGrantListReturnsDatabaseObservationTime(t *testing.T) {
+	f := newLifecycleFake()
+	databaseTime := time.Now().UTC().Add(2 * time.Hour)
+	f.grant.ExpiresAt = databaseTime.Add(-time.Hour)
+	s := NewGrantLifecycle(skewedOwnerWriter{lifecycleFake: f, databaseTime: databaseTime})
+	s.now = func() time.Time { return databaseTime.Add(-3 * time.Hour) }
+	p := model.Principal{Kind: model.SessionCredential, UserID: f.grant.UserID, CredentialID: uuid.NewString()}
+	items, observed, err := s.ListSessionGrants(t.Context(), p)
+	if err != nil || len(items) != 1 || !observed.Equal(databaseTime) || items[0].ExpiresAt.After(observed) {
+		t.Fatalf("database observation: %+v %v %v", items, observed, err)
+	}
+}
+
+func (f *lifecycleFake) failure(name string) error {
+	f.calls[name]++
+	return f.failures[fmt.Sprintf("%s:%d", name, f.calls[name])]
+}
+func (f *lifecycleFake) WriteGrantLifecycle(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error) {
+	if e := f.failure("transaction"); e != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, e
+	}
+	err := fn(f)
+	if err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	if f.outcome != "" {
+		return store.Completion{Outcome: f.outcome}, nil
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
+func (f *lifecycleFake) Refresh(_ context.Context, _ []byte, _ bool) (store.OAuthRefresh, error) {
+	return f.refresh, f.failure("refresh")
+}
+func (f *lifecycleFake) InspectGrant(_ context.Context, _ string, _ bool) (store.OAuthGrant, error) {
+	return f.grant, f.failure("grant")
+}
+func (f *lifecycleFake) AccessGrant(_ context.Context, _ []byte) (string, error) {
+	return f.accessGrant, f.failure("access")
+}
+func (f *lifecycleFake) FreshTime(_ context.Context, _ time.Time) (time.Time, error) {
+	return f.now, f.failure("time")
+}
+func (f *lifecycleFake) LockOwnerSession(_ context.Context, _ model.Principal, _ time.Time) error {
+	return f.failure("session")
+}
+func (f *lifecycleFake) RevokeFamily(_ context.Context, _ string, _ time.Time) (bool, error) {
+	return true, f.failure("revoke")
+}
+func (f *lifecycleFake) RotateRefresh(_ context.Context, _ store.OAuthRotation) error {
+	return f.failure("rotate")
+}
+func (f *lifecycleFake) OwnerGrants(_ context.Context, _ string) ([]store.OAuthGrant, error) {
+	return []store.OAuthGrant{f.grant}, f.failure("list")
+}
+func (f *lifecycleFake) PruneCredentials(_ context.Context, _ time.Time, limit int) (int, error) {
+	f.pruneLimits = append(f.pruneLimits, limit)
+	err := f.failure("prune")
+	if len(f.pruneCounts) == 0 {
+		return 0, err
+	}
+	n := f.pruneCounts[0]
+	f.pruneCounts = f.pruneCounts[1:]
+	return n, err
+}
+func newLifecycleFake() *lifecycleFake {
+	now := time.Now().UTC()
+	id := uuid.NewString()
+	return &lifecycleFake{now: now, failures: map[string]error{}, calls: map[string]int{}, grant: store.OAuthGrant{ID: id, UserID: uuid.NewString(), ClientID: "client", Resource: "https://example.test/mcp", Scope: Scope, ExpiresAt: now.Add(time.Hour)}, refresh: store.OAuthRefresh{GrantID: id, ClientID: "client", ExpiresAt: now.Add(time.Hour)}, accessGrant: id}
+}
+
+func TestSessionGrantOwnershipAndFailures(t *testing.T) {
+	f := newLifecycleFake()
+	p := model.Principal{Kind: model.SessionCredential, UserID: f.grant.UserID, CredentialID: uuid.NewString()}
+	s := NewGrantLifecycle(f)
+	items, observed, err := s.ListSessionGrants(t.Context(), p)
+	if err != nil || len(items) != 1 || items[0].ID != f.grant.ID || !observed.Equal(f.now) {
+		t.Fatalf("session list: %+v %v %v", items, observed, err)
+	}
+	changed, err := s.RevokeSessionGrant(t.Context(), p, f.grant.ID)
+	if err != nil || !changed {
+		t.Fatalf("session revoke: %v %v", changed, err)
+	}
+	changed, err = s.RevokeOwnerGrant(t.Context(), p.UserID, f.grant.ID)
+	if err != nil || !changed {
+		t.Fatalf("owner revoke: %v %v", changed, err)
+	}
+	for _, invalid := range []model.Principal{{}, {Kind: model.PATCredential, UserID: p.UserID, CredentialID: p.CredentialID}, {Kind: model.SessionCredential, UserID: p.UserID, CredentialID: "bad"}} {
+		if _, _, err := s.ListSessionGrants(t.Context(), invalid); err == nil {
+			t.Fatalf("invalid list principal: %+v", invalid)
+		}
+		if _, err := s.RevokeSessionGrant(t.Context(), invalid, f.grant.ID); err == nil {
+			t.Fatalf("invalid revoke principal: %+v", invalid)
+		}
+	}
+	if _, err := s.RevokeSessionGrant(t.Context(), p, "bad"); err == nil {
+		t.Fatal("invalid grant ID")
+	}
+	if _, err := s.RevokeSessionGrant(t.Context(), model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: p.CredentialID}, f.grant.ID); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("foreign grant: %v", err)
+	}
+	boom := errors.New("failed operation")
+	for _, op := range []struct {
+		name string
+		list bool
+	}{{"time:1", true}, {"session:1", true}, {"list:1", true}, {"time:2", true}, {"session:2", true}, {"grant:1", false}, {"time:1", false}, {"session:1", false}, {"time:2", false}, {"revoke:1", false}, {"time:3", false}, {"session:2", false}} {
+		t.Run(fmt.Sprintf("%s/list=%v", op.name, op.list), func(t *testing.T) {
+			f := newLifecycleFake()
+			p := model.Principal{Kind: model.SessionCredential, UserID: f.grant.UserID, CredentialID: uuid.NewString()}
+			f.failures[op.name] = boom
+			s := NewGrantLifecycle(f)
+			if op.list {
+				items, observed, err := s.ListSessionGrants(t.Context(), p)
+				if !errors.Is(err, boom) || items != nil || !observed.IsZero() {
+					t.Fatalf("list failure: %+v %v %v", items, observed, err)
+				}
+			} else {
+				changed, err := s.RevokeSessionGrant(t.Context(), p, f.grant.ID)
+				if !errors.Is(err, boom) || changed {
+					t.Fatalf("revoke failure: %v %v", changed, err)
+				}
+			}
+		})
+	}
+	for _, list := range []bool{false, true} {
+		f := newLifecycleFake()
+		p := model.Principal{Kind: model.SessionCredential, UserID: f.grant.UserID, CredentialID: uuid.NewString()}
+		f.failures["session:1"] = model.ErrNotFound
+		s := NewGrantLifecycle(f)
+		var err error
+		if list {
+			_, _, err = s.ListSessionGrants(t.Context(), p)
+		} else {
+			_, err = s.RevokeSessionGrant(t.Context(), p, f.grant.ID)
+		}
+		var fault *model.Fault
+		if !errors.As(err, &fault) || fault.Code != "unauthenticated" {
+			t.Fatalf("missing session: %v", err)
+		}
+	}
+	for _, list := range []bool{false, true} {
+		f := newLifecycleFake()
+		p := model.Principal{Kind: model.SessionCredential, UserID: f.grant.UserID, CredentialID: uuid.NewString()}
+		f.outcome = store.TransactionUnknown
+		s := NewGrantLifecycle(f)
+		var err error
+		if list {
+			_, _, err = s.ListSessionGrants(t.Context(), p)
+		} else {
+			_, err = s.RevokeSessionGrant(t.Context(), p, f.grant.ID)
+		}
+		if !errors.Is(err, ErrAuthorizationUnknown) {
+			t.Fatalf("unknown outcome: %v", err)
+		}
+	}
+}
+func TestRotationFailuresDoNotReleaseSecrets(t *testing.T) {
+	boom := errors.New("injected failure")
+	token := secret.Random(RefreshPrefix)
+	for _, step := range []string{"refresh:1", "grant:1", "refresh:2", "grant:2", "refresh:3", "time:1", "rotate:1"} {
+		t.Run(step, func(t *testing.T) {
+			f := newLifecycleFake()
+			f.failures[step] = boom
+			result, err := NewGrantLifecycle(f).Rotate(t.Context(), token, "client", f.grant.Resource, func(context.Context, string) error { return nil })
+			if !errors.Is(err, boom) || result.AccessToken != "" || result.RefreshToken != "" {
+				t.Fatalf("failure leaked token: %+v %v", result, err)
+			}
+		})
+	}
+	for _, step := range []string{"refresh:1", "grant:1", "refresh:2", "grant:2", "refresh:3"} {
+		t.Run("missing "+step, func(t *testing.T) {
+			f := newLifecycleFake()
+			f.failures[step] = model.ErrNotFound
+			_, err := NewGrantLifecycle(f).Rotate(t.Context(), token, "client", f.grant.Resource, func(context.Context, string) error { return nil })
+			if !errors.Is(err, ErrInvalidGrant) {
+				t.Fatalf("missing: %v", err)
+			}
+		})
+	}
+	f := newLifecycleFake()
+	f.outcome = store.TransactionUnknown
+	if result, err := NewGrantLifecycle(f).Rotate(t.Context(), token, "client", f.grant.Resource, func(context.Context, string) error { return nil }); !errors.Is(err, ErrAuthorizationUnknown) || result.AccessToken != "" {
+		t.Fatalf("unknown read: %+v %v", result, err)
+	}
+	f = newLifecycleFake()
+	used := f.now
+	f.refresh.ConsumedAt = &used
+	f.failures["revoke:1"] = boom
+	if _, err := NewGrantLifecycle(f).Rotate(t.Context(), token, "client", f.grant.Resource, func(context.Context, string) error { return nil }); !errors.Is(err, boom) {
+		t.Fatalf("replay failure: %v", err)
+	}
+	if _, err := NewGrantLifecycle(f).Rotate(t.Context(), "invalid", "client", f.grant.Resource, nil); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatal(err)
+	}
+	f = newLifecycleFake()
+	f.grant.RevokedAt = &used
+	if _, err := NewGrantLifecycle(f).Rotate(t.Context(), token, "client", f.grant.Resource, func(context.Context, string) error { return nil }); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatal(err)
+	}
+}
+func TestPublicRevocationFailuresAndUnknownTokens(t *testing.T) {
+	boom := errors.New("injected failure")
+	for _, tc := range []struct{ token, step string }{
+		{secret.Random(RefreshPrefix), "refresh:1"}, {secret.Random(RefreshPrefix), "grant:1"}, {secret.Random(RefreshPrefix), "refresh:2"}, {secret.Random(RefreshPrefix), "time:1"}, {secret.Random(RefreshPrefix), "revoke:1"},
+		{secret.Random(model.OAuthAccessPrefix), "access:1"}, {secret.Random(model.OAuthAccessPrefix), "access:2"},
+	} {
+		f := newLifecycleFake()
+		f.failures[tc.step] = boom
+		if err := NewGrantLifecycle(f).RevokePublic(t.Context(), tc.token, "client"); !errors.Is(err, boom) {
+			t.Fatalf("%s: %v", tc.step, err)
+		}
+	}
+	for _, tc := range []struct{ token, step string }{{secret.Random(RefreshPrefix), "refresh:1"}, {secret.Random(RefreshPrefix), "grant:1"}, {secret.Random(RefreshPrefix), "refresh:2"}, {secret.Random(model.OAuthAccessPrefix), "access:1"}, {secret.Random(model.OAuthAccessPrefix), "access:2"}} {
+		f := newLifecycleFake()
+		f.failures[tc.step] = model.ErrNotFound
+		if err := NewGrantLifecycle(f).RevokePublic(t.Context(), tc.token, "client"); err != nil {
+			t.Fatalf("unknown %s: %v", tc.step, err)
+		}
+	}
+	f := newLifecycleFake()
+	f.accessGrant = uuid.NewString()
+	if err := NewGrantLifecycle(f).RevokePublic(t.Context(), secret.Random(model.OAuthAccessPrefix), "client"); err != nil || f.calls["revoke"] != 0 {
+		t.Fatalf("changed binding: %v", err)
+	}
+	f = newLifecycleFake()
+	f.refresh.ClientID = "other"
+	if err := NewGrantLifecycle(f).RevokePublic(t.Context(), secret.Random(RefreshPrefix), "client"); err != nil || f.calls["revoke"] != 0 {
+		t.Fatalf("changed binding: %v", err)
+	}
+	if err := NewGrantLifecycle(f).RevokePublic(t.Context(), "malformed", "client"); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestLifecycleOwnerAndMaintenanceFailures(t *testing.T) {
+	boom := errors.New("injected failure")
+	f := newLifecycleFake()
+	lifecycle := NewGrantLifecycle(f)
+	if _, err := lifecycle.ListOwnerGrants(t.Context(), "bad"); err == nil {
+		t.Fatal("invalid owner accepted")
+	}
+	f.failures["list:1"] = boom
+	if _, err := lifecycle.ListOwnerGrants(t.Context(), f.grant.UserID); !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	if _, err := lifecycle.RevokeOwnerGrant(t.Context(), "bad", f.grant.ID); err == nil {
+		t.Fatal("invalid owner accepted")
+	}
+	f.failures["grant:1"] = boom
+	if _, err := lifecycle.RevokeOwnerGrant(t.Context(), f.grant.UserID, f.grant.ID); !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	f = newLifecycleFake()
+	f.failures["time:1"] = boom
+	if _, err := NewGrantLifecycle(f).RevokeOwnerGrant(t.Context(), f.grant.UserID, f.grant.ID); !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	f = newLifecycleFake()
+	f.failures["revoke:1"] = boom
+	if _, err := NewGrantLifecycle(f).RevokeOwnerGrant(t.Context(), f.grant.UserID, f.grant.ID); !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	f = newLifecycleFake()
+	f.failures["prune:1"] = boom
+	if _, err := NewGrantLifecycle(f).PruneCredentials(t.Context(), 100); !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	if _, err := NewGrantLifecycle(f).PruneCredentials(t.Context(), -1); err == nil {
+		t.Fatal("invalid budget accepted")
+	}
+	now := time.Now()
+	if minTime(now, now.Add(time.Second)) != now || minTime(now.Add(time.Second), now) != now {
+		t.Fatal("minimum time mismatch")
+	}
+}
+
+func TestCredentialPruneBatchAndLimit(t *testing.T) {
+	f := newLifecycleFake()
+	f.pruneCounts = []int{100, 10}
+	n, err := NewGrantLifecycle(f).PruneCredentials(t.Context(), 200)
+	if err != nil || n != 110 || len(f.pruneLimits) != 2 || f.pruneLimits[0] != 100 || f.pruneLimits[1] != 100 {
+		t.Fatalf("batch: %d %v %v", n, f.pruneLimits, err)
+	}
+	f = newLifecycleFake()
+	f.pruneCounts = make([]int, 20)
+	for i := range f.pruneCounts {
+		f.pruneCounts[i] = 100
+	}
+	n, err = NewGrantLifecycle(f).PruneCredentials(t.Context(), 5000)
+	if err != nil || n != 2000 || len(f.pruneLimits) != 20 {
+		t.Fatalf("bounded: %d calls=%d %v", n, len(f.pruneLimits), err)
+	}
+	if n, err = NewGrantLifecycle(newLifecycleFake()).PruneCredentials(t.Context(), 0); err != nil || n != 0 {
+		t.Fatalf("zero budget: %d %v", n, err)
+	}
+}

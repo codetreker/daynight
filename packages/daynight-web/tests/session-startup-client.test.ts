@@ -20,7 +20,7 @@ function fixture() {
     current: vi.fn(async () => current), timeline: vi.fn(async () => page), archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused',
     channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; disconnect = onClose; return { close: vi.fn() }; }),
   };
-  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn() });
+  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId: userId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn() });
   clients.push(client);
   return { s, page, api, client, disconnect: (error?: unknown) => disconnect(error), current: (value: CurrentSessionResponse) => { current = value; }, receive: (snapshot: TaskSessionSnapshot) => receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot, cursor: 'zero' }), event: (snapshot: TaskSessionSnapshot, eventSeq: string) => receive({ protocol: s.protocol, type: 'event', cursor: eventSeq, event: { protocol: s.protocol, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: snapshot.executionGeneration, connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq, kind: 'snapshot', payload: snapshot } }) };
 }
@@ -58,15 +58,21 @@ describe('startup observations and live history admission', () => {
 
   it('updates blocked observations over a healthy browser channel and resumes only after a newer report permits history', async () => {
     vi.useFakeTimers();
-    const f = fixture(), blocked = report(f.s);
+    const f = fixture(), blocked: SessionStartupReport = { ...report(f.s), startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'blocked', reasonCode: 'recovery_limit' } };
     f.current({ status: 'registered', session: f.s, startupReport: blocked });
     await f.client.start(); f.receive(f.s);
+    f.client.setDraft('retain input while the Worker reconciles its report');
     expect(f.api.timeline).not.toHaveBeenCalled();
+    await expect(f.client.send('connected does not bypass a recovery block')).rejects.toThrow();
     f.current({ status: 'registered', session: f.s, startupReport: { ...blocked, revision: '2', startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'none', reasonCode: null } } });
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(f.client.snapshot()).toMatchObject({ connected: true, startupReport: { revision: '2', recovery: { state: 'none' } } });
+    expect(f.client.snapshot()).toMatchObject({ connected: true, startupReport: { revision: '2', recovery: { state: 'none' } }, draft: { text: 'retain input while the Worker reconciles its report' } });
     expect(f.api.timeline).toHaveBeenCalledOnce();
     expect(f.api.channel).toHaveBeenCalledOnce();
+    f.current({ status: 'registered', session: f.s, startupReport: blocked });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.client.snapshot()).toMatchObject({ connected: true, startupReport: { revision: '2', recovery: { state: 'none' } } });
+    expect(f.api.command).not.toHaveBeenCalled();
   });
 
   it('does not regress a newer report revision or retry the same offline history refusal', async () => {

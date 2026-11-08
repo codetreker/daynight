@@ -1,0 +1,68 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "1",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "generation_ledger",
+  "payload": {
+    "runs": [
+      {
+        "executionGeneration": "1",
+        "owner": {
+          "projectId": "00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-000000000002",
+          "workerId": "00000000-0000-4000-8000-000000000003",
+          "worktreeId": "00000000-0000-4000-8000-000000000004",
+          "ownerUserId": "00000000-0000-4000-8000-000000000005",
+          "serverOrigin": "https://daynight.cc",
+          "provider": "codex"
+        },
+        "binding": {
+          "instanceId": "private_herdr_1",
+          "sessionId": "daynight-worker",
+          "workspaceId": "workspace_1",
+          "paneId": "pane_1",
+          "terminalId": "term_641e9a1f10001",
+          "nativeSessionId": null
+        },
+        "startedAt": "2026-11-03T10:00:00Z",
+        "stoppedAt": "2026-11-03T10:00:10Z",
+        "stopProof": {
+          "recordId": "00000000-0000-4000-8000-000000000008",
+          "executionGeneration": "1",
+          "binding": {
+            "instanceId": "private_herdr_1",
+            "sessionId": "daynight-worker",
+            "workspaceId": "workspace_1",
+            "paneId": "pane_1",
+            "terminalId": "term_641e9a1f10001",
+            "nativeSessionId": null
+          },
+          "bootId": "boot-original",
+          "stoppedAt": "2026-11-03T10:00:10Z",
+          "method": "instances_exited",
+          "terminalStopped": true,
+          "processes": [
+            {
+              "role": "shell",
+              "pid": 100,
+              "birthToken": "start:1",
+              "bootId": "boot-original"
+            }
+          ],
+          "daemon": {
+            "pid": 99,
+            "birthToken": "start:0",
+            "bootId": "boot-original"
+          }
+        },
+        "segmentIds": []
+      }
+    ],
+    "finalizationId": "00000000-0000-4000-8000-000000000014"
+  }
+}

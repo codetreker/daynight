@@ -1,6 +1,8 @@
 import path from "node:path";
+import type { BotDeletionStop } from "./session-api.js";
+import type { BotDeletionTarget } from "./delete-files.js";
 import { randomUUID } from "node:crypto";
-import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
+import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import { workerStoreFormat } from "../store-format.js";
@@ -12,7 +14,7 @@ const key = (owner: BotOwner, botId: string) => ({ ...parseBotOwner(owner), botI
 const predicate = "server_origin = @serverOrigin AND owner_user_id = @ownerUserId AND worker_id = @workerId";
 
 /** The caller holds the Worker instance lock throughout inventory and execution access. */
-export const openBotStore = (databaseFile: string, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
+export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
   const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowCreate: true,
     ...(options.busyTimeoutMs === undefined ? {} : { timeoutMs: options.busyTimeoutMs }),
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
@@ -38,6 +40,25 @@ export const openBotStore = (databaseFile: string, options: { busyTimeoutMs?: nu
       if (!Number.isSafeInteger(intent.recoveryLimit) || intent.recoveryLimit < 0) throw new Error("Stored Bot recovery limit is invalid.");
       if (intent.roleConfiguration !== null) parseBotRole(intent.roleConfiguration);
     }
+    if (record.cleanup !== undefined) {
+      const cleanup = record.cleanup, deletion = record.observed.deletion;
+      if (deletion === null || cleanup.deletionId !== deletion.deletionId || cleanup.requestedVersion !== deletion.requestedVersion
+        || typeof cleanup.localCompleted !== "boolean" || !Array.isArray(cleanup.targets)
+        || new Set(cleanup.targets.map(target => target.path)).size !== cleanup.targets.length) throw new Error("Stored Bot deletion responsibility is inconsistent.");
+      if (cleanup.localCompleted && (cleanup.targets.length !== 0 || record.intent !== null || record.definition !== null)) throw new Error("Completed Bot cleanup must retain only minimal deletion responsibility.");
+      for (const target of cleanup.targets) {
+        if (!path.isAbsolute(target.path) || !path.isAbsolute(target.root) || path.dirname(target.path) !== target.root
+          || !["file", "socket", "directory"].includes(target.kind) || typeof target.completed !== "boolean"
+          || ![target.identity, target.rootIdentity].every(value => value === null || typeof value === "string" && /^[0-9]+:[0-9]+$/.test(value))) throw new Error("Stored Bot cleanup file identity is invalid.");
+      }
+      if (cleanup.stop !== null) {
+        const stop = cleanup.stop;
+        for (const id of [stop.sessionId, stop.testExecutionId, stop.controllerId, stop.controllerInstanceId, stop.stopProof.recordId, stop.stopProof.previousControllerInstanceId]) botUUID(id, "Bot deletion stop identity");
+        botVersion(stop.executionGeneration);
+        if (stop.protocol !== "daynight.session.v1" || stop.controllerInstanceId !== stop.stopProof.previousControllerInstanceId
+          || !Number.isFinite(Date.parse(stop.stopProof.stoppedAt)) || stop.stopProof.kind !== undefined && stop.stopProof.kind !== "never_started") throw new Error("Stored Bot deletion stop proof is invalid.");
+      }
+    }
     return record;
   };
   const get = (owner: BotOwner, botId: string): BotRecord | null => read(() => {
@@ -57,7 +78,41 @@ export const openBotStore = (databaseFile: string, options: { busyTimeoutMs?: nu
     if (record === null) throw new Error("Bot has not been observed in this Worker inventory.");
     return record;
   };
+  const deleting = (input: BotRecord): BotRecord => {
+    const record = required(input.owner, input.botId), deletion = record.observed.deletion;
+    if (deletion === null || input.observed.deletion === null
+      || deletion.deletionId !== input.observed.deletion.deletionId || deletion.requestedVersion !== input.observed.deletion.requestedVersion
+      || !same(record.intent, input.intent)) throw new Error("Bot cleanup requires the original deletion identity and current intent.");
+    return record;
+  };
   return {
+    /** The caller holds the per-Bot execution serializer and has proved the writer stopped. */
+    prepareDeletion: (input: BotRecord, stop: BotDeletionStop | null, targets: BotDeletionTarget[]): BotRecord => atomic(() => {
+      const record = deleting(input), deletion = record.observed.deletion!;
+      if (record.cleanup !== undefined) throw new Error("Bot cleanup responsibility has already been prepared.");
+      const intent = record.intent;
+      if (stop !== null && (intent === null || stop.sessionId !== intent.sessionId || stop.testExecutionId !== intent.executionId
+        || stop.executionGeneration !== intent.executionGeneration || stop.controllerId !== intent.registration.controllerId
+        || stop.controllerInstanceId !== intent.controllerInstanceId)) throw new Error("Bot cleanup stop differs from the original execution intent.");
+      if (stop === null && (intent !== null || record.definition?.sessionId != null)) throw new Error("A bound Bot requires an exact execution stop proof.");
+      record.cleanup = { deletionId: deletion.deletionId, requestedVersion: deletion.requestedVersion, stop, targets, localCompleted: false };
+      return put(record);
+    }),
+    completeDeletionTarget: (input: BotRecord, file: string): BotRecord => atomic(() => {
+      const record = deleting(input), target = record.cleanup?.targets.find(value => value.path === file);
+      if (target === undefined || record.cleanup?.localCompleted) throw new Error("Bot cleanup file is outside the original remaining responsibility.");
+      target.completed = true;
+      return put(record);
+    }),
+    /** Commit logical erasure and its receipt together; no journal is needed for subsequent retries. */
+    finishDeletion: (input: BotRecord): BotRecord => atomic(() => {
+      const record = deleting(input), cleanup = record.cleanup;
+      if (cleanup === undefined || cleanup.targets.some(target => !target.completed)) throw new Error("Bot private cleanup is incomplete; remaining paths retain their responsibility.");
+      record.cleanup = { ...cleanup, targets: [], localCompleted: true };
+      record.definition = null; record.intent = null;
+      db.prepare(`DELETE FROM bot_executions WHERE ${predicate} AND bot_id = @botId`).run(key(record.owner, record.botId));
+      return put(record);
+    }),
     close: (): void => closeSqliteDatabase(db, { file: databaseFile, format: workerStoreFormat }),
     get,
     list: (owner: BotOwner): BotRecord[] => read(() => {
@@ -87,7 +142,7 @@ export const openBotStore = (databaseFile: string, options: { busyTimeoutMs?: nu
         if (observed.sessionId !== null) intent.sessionId = observed.sessionId;
         if (observed.roleConfiguration !== null) intent.roleConfiguration = observed.roleConfiguration;
       }
-      return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt });
+      return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt, ...(previous?.cleanup === undefined ? {} : { cleanup: previous.cleanup }) });
     }),
     /** Persist the first registration identity before any register, ticket write or spawn. */
     prepare: (owner: BotOwner, botId: string, input: { homeDirectory: string; recoveryLimit: number }): BotLaunchIntent => atomic(() => {

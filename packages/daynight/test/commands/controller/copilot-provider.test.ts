@@ -33,6 +33,12 @@ function setup() {
 }
 beforeEach(() => { vi.clearAllMocks(); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
+test("new Copilot selection cannot pass startup after the native catalog is unavailable", async () => {
+  const result = await openCopilotProvider({ ...fixture.options, model: "requested", validateNativeSelection: true }).then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
+  try { expect(result.error).toBeInstanceOf(Error); expect(fixture.native.send).not.toHaveBeenCalled(); }
+  finally { await result.provider?.close(); }
+  expect(fixture.child.signalCode).toBe("SIGTERM");
+});
 
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
 test.each([-32099, -32098, -32097, -32096])("Copilot SDK local transport error %s remains unknown", async code => {
@@ -276,6 +282,97 @@ test("Copilot live todo updates preserve known state and expose unmappable rows"
   expect(fixture.entries.find(e => e.kind === "todo")).toMatchObject({ items: [{ id: "a", text: "ready", status: "pending" }] });
   expect(fixture.entries.some(e => e.kind === "error" && e.code === "unsupported_native_todo")).toBe(true);
   await provider.close();
+});
+
+test("Copilot leaves a new session without a todo entry until native todos exist", async () => {
+  const provider = await openCopilotProvider(fixture.options);
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    expect(fixture.entries).toEqual([]);
+    fixture.emit(event("session.todos_changed"));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(fixture.entries).toEqual([]);
+    expect(fixture.states.at(-1)).toMatchObject({ activity: "idle", nativeSessionId: provider.nativeSessionId });
+    expect(fixture.native.send).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
+test("Copilot retains the same todo entry when a populated list is cleared and refilled", async () => {
+  fixture.native.rpc.plan.readSqlTodos.mockResolvedValue({ rows: [{ id: "a", title: "First", status: "pending" }] });
+  const provider = await openCopilotProvider(fixture.options);
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    fixture.native.rpc.plan.readSqlTodos.mockResolvedValue({ rows: [] });
+    fixture.emit(event("session.todos_changed"));
+    await new Promise(resolve => setImmediate(resolve));
+    fixture.native.rpc.plan.readSqlTodos.mockResolvedValue({ rows: [{ id: "a", description: "Finished", status: "done" }] });
+    fixture.emit(event("session.todos_changed"));
+    await new Promise(resolve => setImmediate(resolve));
+    const todos = fixture.entries.filter(entry => entry.kind === "todo");
+    expect(todos.map(entry => entry.items)).toEqual([[{ id: "a", text: "First", status: "pending" }], [], [{ id: "a", text: "Finished", status: "completed" }]]);
+    expect(new Set(todos.map(entry => entry.entryId)).size).toBe(1);
+  } finally { await provider.close(); }
+});
+
+test("Copilot resume publishes an empty current list to clear its previously projected todo identity", async () => {
+  fixture.native.rpc.plan.readSqlTodos.mockResolvedValue({ rows: [{ id: "a", title: "Before resume", status: "in_progress" }] });
+  const first = await openCopilotProvider(fixture.options);
+  await new Promise(resolve => setImmediate(resolve));
+  const previous = fixture.entries.find(entry => entry.kind === "todo")!;
+  await first.close();
+  fixture = setup();
+  const resumed = await openCopilotProvider({ ...fixture.options, resumeNativeSessionId: first.nativeSessionId });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    expect(fixture.entries.filter(entry => entry.kind === "todo")).toEqual([{ ...previous, items: [] }]);
+    expect(fixture.client.createSession).not.toHaveBeenCalled();
+  } finally { await resumed.close(); }
+});
+
+test("Copilot failed todo reads neither invent an empty entry nor discard a later clear", async () => {
+  const diagnostic = vi.fn();
+  fixture.native.rpc.plan.readSqlTodos.mockRejectedValueOnce(new Error("Unavailable"));
+  const provider = await openCopilotProvider({ ...fixture.options, onDiagnostic: diagnostic });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    expect(diagnostic).toHaveBeenCalledWith("Copilot todo state is unavailable.");
+    expect(fixture.entries).toEqual([]);
+    fixture.emit(event("session.todos_changed"));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(fixture.entries).toEqual([]);
+    fixture.native.rpc.plan.readSqlTodos.mockResolvedValueOnce({ rows: [{ id: "a", title: "Retained", status: "pending" }] });
+    fixture.emit(event("session.todos_changed"));
+    await new Promise(resolve => setImmediate(resolve));
+    fixture.native.rpc.plan.readSqlTodos.mockRejectedValueOnce(new Error("Unavailable again"));
+    fixture.emit(event("session.todos_changed"));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(fixture.entries.filter(entry => entry.kind === "todo")).toHaveLength(1);
+    fixture.emit(event("session.todos_changed"));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(fixture.entries.filter(entry => entry.kind === "todo").map(entry => entry.items)).toEqual([[{ id: "a", text: "Retained", status: "pending" }], []]);
+    expect(diagnostic).toHaveBeenCalledTimes(2);
+  } finally { await provider.close(); }
+});
+
+test("Copilot serializes concurrent todo refreshes so a clear follows its populated read", async () => {
+  type Rows = Awaited<ReturnType<typeof fixture.native.rpc.plan.readSqlTodos>>;
+  const settle: ((value: Rows) => void)[] = [];
+  fixture.native.rpc.plan.readSqlTodos.mockImplementation(() => new Promise(resolve => settle.push(resolve)));
+  const provider = await openCopilotProvider(fixture.options);
+  try {
+    fixture.emit(event("session.todos_changed"));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(settle).toHaveLength(1);
+    settle[0]!({ rows: [{ id: "a", title: "Queued", status: "pending" }] });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(settle).toHaveLength(2);
+    expect(fixture.entries.filter(entry => entry.kind === "todo").map(entry => entry.items)).toEqual([[{ id: "a", text: "Queued", status: "pending" }]]);
+    settle[1]!({ rows: [] });
+    await new Promise(resolve => setImmediate(resolve));
+    const todos = fixture.entries.filter(entry => entry.kind === "todo");
+    expect(todos.map(entry => entry.items)).toEqual([[{ id: "a", text: "Queued", status: "pending" }], []]);
+    expect(todos[0]!.entryId).toBe(todos[1]!.entryId);
+  } finally { await provider.close(); }
 });
 
 test("Copilot waits for a complete startup line before accepting a split TCP port", async () => {

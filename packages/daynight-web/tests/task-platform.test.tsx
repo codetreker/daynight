@@ -11,7 +11,7 @@ import type { TaskMutationState } from '../src/features/task-detail/TaskDetailSe
 import { buildGraphIndex } from '../src/features/task-graph/model';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }; });
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: () => <section><input aria-label="Attachment draft" defaultValue="" /></section> }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 const projectId = '10000000-0000-4000-8000-000000000001';
@@ -19,16 +19,16 @@ const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Platform tasks', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const detail: TaskDetail = { assignedTo: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, requiredPlatform: null, status: 'todo', version: 9007199254740993n,
-  dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, properties: { pullRequests: [] }, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+  dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, properties: { pullRequests: [] }, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const graphTask = (value: TaskDetail): GraphTask => ({ assignedTo: value.assignedTo, id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
   requiredPlatform: value.requiredPlatform, allowAgents: value.allowAgents, dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
-  startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt });
+  startedAt: value.startedAt, completedAt: value.completedAt, cancelledAt: value.cancelledAt, createdAt: value.createdAt, updatedAt: value.updatedAt });
 let world: ReturnType<typeof createTaskSessionWorld>;
 const snapshotDetails = new WeakMap<object, readonly TaskDetail[]>();
 const snapshot = (value: TaskDetail, revision = 1) => {
   const graph: TaskGraph = { observedAt: time, project, tasks: [graphTask(value)], summary: { total: 1,
-    todo: value.status === 'todo' ? 1 : 0, inProgress: value.status === 'in_progress' ? 1 : 0, done: value.status === 'done' ? 1 : 0, ready: value.ready ? 1 : 0, blocked: value.status === 'todo' && !value.ready ? 1 : 0 } };
-  const result = { observedAt: time, graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+    todo: value.status === 'todo' ? 1 : 0, inProgress: value.status === 'in_progress' ? 1 : 0, done: value.status === 'done' ? 1 : 0, cancelled: 0, ready: value.ready ? 1 : 0, blocked: value.status === 'todo' && !value.ready ? 1 : 0 } };
+  const result = { observedAt: time, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
   snapshotDetails.set(result, [value]);
   return result;
 };
@@ -40,10 +40,10 @@ afterEach(() => { cleanup(); world.dispose(); root.remove(); });
 const open = async (value = detail, locale: 'en' | 'zh-CN' = 'en') => {
   vi.mocked(getTask).mockResolvedValue(value);
   const props: TaskDetailDialogProps = { projectId, taskId: value.id, snapshot: snapshot(value), onClose: vi.fn(), onSelectTask: vi.fn(), onRestoreFocus: vi.fn(), onRefreshGraph: vi.fn() };
-  await world.sync(snapshotDetails.get(props.snapshot)!);
+  await world.sync(snapshotDetails.get(props.snapshot!)!);
   const view = renderWithLocale(<TaskDetailDialog {...props} />, { locale, container: root, taskCache: { scope: world.scope } });
   await screen.findByRole('heading', { name: value.title });
-  return { ...view, props, sync: async (value: TaskDetail) => { vi.mocked(getTask).mockResolvedValue(value); await world.sync([value]); view.rerender(<TaskDetailDialog {...props} snapshot={snapshot(value, 2)} />); }, rerender: async (ui: React.ReactElement<TaskDetailDialogProps>) => { await world.sync(snapshotDetails.get(ui.props.snapshot)!); view.rerender(ui); } };
+  return { ...view, props, sync: async (value: TaskDetail) => { vi.mocked(getTask).mockResolvedValue(value); await world.sync([value]); view.rerender(<TaskDetailDialog {...props} snapshot={snapshot(value, 2)} />); }, rerender: async (ui: React.ReactElement<TaskDetailDialogProps>) => { await world.sync(snapshotDetails.get(ui.props.snapshot!)!); view.rerender(ui); } };
 };
 const select = () => screen.getByRole('combobox', { name: 'Execution platform' });
 const confirmation = () => screen.getByRole('alertdialog', { name: 'Change execution platform?' });

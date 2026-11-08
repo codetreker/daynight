@@ -44,7 +44,9 @@ For PR delivery, sustain the following workflow:
 1. Commit, push, and create or update focused PRs promptly under repository conventions; use the default Git identity and omit AI co-author attribution.
    Integrate necessary mainline updates, resolve conflicts, and verify in that workspace.
 2. Actively monitor remote HEAD, CI, reviews, and conflicts.
-   Diagnose failures; rerun an unchanged failure only after confirming a transient infrastructure cause.
+   Inspect failure logs first; each failed check on the same commit may be rerun at most twice beyond its initial run, without first proving a transient infrastructure cause.
+   Count retries across sessions, restarts and workflow reruns. If both retries fail, diagnose and repair the cause before further validation.
+   A passing retry does not establish the root cause or relax required checks and acceptance criteria; report retries and observed results.
    Refresh checks and reviews after every push.
    Fix Critical/Major issues in the current change and defects that would make delivery incorrect; defer smaller or unrelated improvements under project rules, without creating tasks on your own.
    Respond in each thread with the fix, deferral, or reason for not adopting the finding, identify the agent, and resolve threads under repository rules.

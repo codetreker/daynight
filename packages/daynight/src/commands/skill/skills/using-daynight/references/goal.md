@@ -10,7 +10,7 @@ This file covers only stage progression and Goal-specific requirements.
 | --- | --- | --- |
 | Requirements discussion | Known problem, expected outcome, scope, constraints, open questions, and completion conditions | A complete uploaded and read-back `spec.md` and applicable interactive prototypes; the user explicitly confirms the current spec and directs progression to solution discussion; the required solution task has been registered and verified. |
 | Solution discussion | The confirmed requirements task’s `spec.md` and applicable prototypes, design questions, and completion conditions | Architecture, key decisions, and breakdown; the user confirms the solution, and actual delivery tasks have been registered and read back. |
-| Delivery tasks | Defined responsibilities, required designs and prototypes, contracts, and acceptance criteria | Actual results meeting the [shared delivery conditions](task-execution.md#completion-conditions). |
+| Delivery tasks | A task-specific objective, scope, implementation approach and acceptance, with required designs, prototypes and contracts | Actual results meeting the [shared delivery conditions](task-execution.md#completion-conditions). |
 | Final acceptance | Complete confirmed requirements, actual combined results, and acceptance criteria | A conclusion for the whole Goal under [final acceptance](final-acceptance.md). |
 
 Discussions remain `in_progress` without user confirmation; completed prose, agent confidence, successful reviews, and passing CI cannot replace confirmation.
@@ -62,8 +62,36 @@ After the user confirms the solution, perform the registration checks below befo
 
 ## Register the delivery breakdown
 
-The breakdown must collectively cover the confirmed Goal, with independent responsibilities, inputs, deliverables, and observable acceptance criteria for each task.
-Include acceptance in the breakdown when it has an independent result; do not substitute vague placeholders or session execution steps for actual work.
+Prepare each proposed delivery task under the brief and boundary rules below, then review the breakdown as a whole before requesting solution confirmation.
+
+### Delivery task brief
+
+Each Goal delivery task has one independently assessable outcome. Keep changes necessary for that outcome together and separate independently valuable goals. Every proposed and registered delivery task must provide four task-specific parts:
+
+| Part | Required content |
+| --- | --- |
+| Objective | The confirmed Goal requirement or outcome this task serves and its concrete contribution to that outcome. |
+| Scope | The behavior and changes it owns, with relevant exclusions and producer/consumer boundaries. |
+| Implementation approach | How it realizes its assigned part of the solution: the substantive method and, where needed, affected components, contracts, sequencing and integration, so the task can proceed without inventing undecided architecture. |
+| Acceptance | Observable success, failure and boundary checks that demonstrate this task's contribution to the Goal. |
+
+Judge task boundaries by purpose and reviewability. File boundaries, technical layers or routine execution steps alone do not justify separate tasks; foundations, migrations and independent acceptance can be tasks when each has a defined result. Do not impose fixed task, file, line or time limits or a mandatory slicing pattern.
+
+These parts may be inline or supplied through precise readable references, without fixed headings or a separate plan file.
+The description must explain this task's contribution and boundary and directly identify the source sections supplying any remaining brief content; a generic whole-Goal or architecture pointer or a copied document packet is insufficient.
+Keep shared detail with its owner. An implementation approach must explain the actual method for this task; "follow the architecture" alone is insufficient.
+For an acceptance task, the approach describes how to check the requirements against the combined delivery. This approach is durable task design, distinct from the session's command schedule, tool activity or debugging plan. Requirements and solution discussions still produce their own designs; those future outputs are not prerequisites for starting the producing stage.
+
+### Check the whole breakdown
+
+Check each brief's objective, scope, implementation approach and acceptance against the confirmed Goal and the solution being reviewed, so no task introduces unrelated work or departs from its assigned contribution.
+
+- Cover the confirmed Goal's required behavior and acceptance, with explicit responsibility for integration and whole-Goal verification. Include a separate acceptance task when it has an independent result.
+- Give each responsibility a clear owner. Resolve omitted work and overlapping or conflicting assignments; keep each task's boundary understandable and reviewable.
+- Reconcile producer and consumer deliverables, interfaces, failure behavior, and acceptance, and identify the actual prerequisite paths needed to combine their results. Assign future outputs to their producing tasks without treating them as existing inputs.
+
+Vague implementation placeholders, routine execution steps, and a collection of individually complete descriptions do not establish a complete breakdown.
+Keep the reviewable breakdown in the solution task's material; substantive revisions to a confirmed solution require renewed confirmation.
 
 Every root delivery task without another ordinary implementation prerequisite must directly depend on the solution task through an ordinary dependency, so all delivery paths inherit the confirmed design's completion conditions.
 Verify cross-chain dependencies and follow [classification and reduction](task-management.md#dependency-classification); external prerequisites cannot replace ordinary design prerequisites.
@@ -76,7 +104,7 @@ Read actual sources under the content standard; do not invent attachments or cop
 For example, in `architecture -> A -> B`, B declares only A as a direct dependency and inherits the architecture prerequisite through A, but B's description still directly lists the required architecture sources.
 Source indexes do not create additional execution dependencies.
 
-Read back every delivery task and its required inputs, checking responsibility coverage, architecture indexes, and source readability.
+Read back every delivery task and its required inputs, verifying all four brief parts remain consistent with the confirmed Goal, its scope and the accepted solution. Recheck task boundaries, whole-breakdown coverage and handovers, architecture indexes, and source readability.
 Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
 Keep the solution task in progress while gaps remain; recover partial registration under [write safety](write-safety.md).
 Registration and solution completion do not start delivery or enable automatic-execution permission.
@@ -85,6 +113,11 @@ Registration and solution completion do not start delivery or enable automatic-e
 
 Complete each task through the selected execution workflow; reading the Goal protocol does not change the return boundaries of ordinary or managed workflows.
 A single done task, an empty ready page, completed requirements, or a completed solution does not mean the whole Goal has been delivered.
+Done and cancelled are both scheduling terminal states. A Goal whose members are
+all terminal has ended, but cancelled members do not establish successful delivery.
+Cancellation cannot replace a required stage result, source artifact, user
+confirmation or whole-Goal acceptance; judge delivery against the current confirmed
+scope and actual results.
 
 Before reporting the whole Goal complete, verify the full confirmed scope, every delivery result, and the actual merge status of all required PRs, and perform final acceptance on the combined results.
 Discussion confirmation, registration, and prerequisite completion do not automatically select successor work.

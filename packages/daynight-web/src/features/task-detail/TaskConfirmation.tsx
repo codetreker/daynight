@@ -1,9 +1,10 @@
 import { useId, useLayoutEffect, useRef, type RefObject, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { acquireInert } from '../../app/inert';
 import { dialogFocusables } from './focus';
 import '../../styles/auth.css';
 
-export const TaskConfirmation = ({ title, question, explanation, content, taskTitle, confirmLabel, cancelLabel, closeLabel, destructive = false, owner, fallbackFocus, onCancel, onConfirm }: {
+export const TaskConfirmation = ({ title, question, explanation, content, taskTitle, confirmLabel, cancelLabel, closeLabel, destructive = false, confirmDisabled = false, owner, fallbackFocus, onRestoreFocus, onCancel, onConfirm }: {
   readonly title: string;
   readonly question: string;
   readonly explanation: string;
@@ -13,8 +14,10 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
   readonly cancelLabel: string;
   readonly closeLabel: string;
   readonly destructive?: boolean;
+  readonly confirmDisabled?: boolean;
   readonly owner: RefObject<HTMLElement | null>;
   readonly fallbackFocus: RefObject<HTMLElement | null>;
+  readonly onRestoreFocus?: () => void;
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
 }) => {
@@ -23,13 +26,15 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
   const dialog = useRef<HTMLElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const restoreOpener = useRef(true);
-  const callbacks = useRef({ onCancel });
-  callbacks.current = { onCancel };
+  const callbacks = useRef({ onCancel, onRestoreFocus });
+  callbacks.current = { onCancel, onRestoreFocus };
   useLayoutEffect(() => {
     const parent = owner.current!;
     const opener = document.activeElement;
     const wasInert = parent.hasAttribute('inert');
     parent.setAttribute('inert', '');
+    const results = parent.closest('.standalone-task-route')?.querySelector<HTMLElement>('.standalone-deletion-slot');
+    const releaseResults = results == null ? undefined : acquireInert(results);
     cancel.current!.focus();
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -48,15 +53,22 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
     return () => {
       document.removeEventListener('keydown', keydown, true);
       if (!wasInert) parent.removeAttribute('inert');
-      if (restoreOpener.current && opener instanceof HTMLElement && opener.isConnected && !opener.matches(':disabled, [inert] *')) opener.focus();
-      else fallbackFocus.current?.focus();
+      releaseResults?.();
+      const restore = () => {
+        if (callbacks.current.onRestoreFocus !== undefined) callbacks.current.onRestoreFocus();
+        else if (restoreOpener.current && opener instanceof HTMLElement && opener.isConnected && !opener.matches(':disabled, [hidden] *, [inert] *')) opener.focus();
+        else fallbackFocus.current?.focus();
+      };
+      // Session fullscreen releases its overlapping inert lease in its observer.
+      if (opener instanceof HTMLElement && results?.contains(opener) && results.hasAttribute('inert')) queueMicrotask(restore);
+      else restore();
     };
   }, [owner, fallbackFocus]);
   return createPortal(<div className="auth-modal-backdrop task-confirmation-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
     <section className="auth-dialog task-confirmation" ref={dialog} role="alertdialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId}>
       <header className="dialog-header"><h2 id={titleId}>{title}</h2><button className="close-button" type="button" aria-label={closeLabel} onClick={onCancel}>×</button></header>
       <div className="dialog-body" id={descriptionId} tabIndex={0}><p>{question}</p><p className="task-confirmation-task">{taskTitle}</p>{content === undefined ? <p>{explanation}</p> : content}</div>
-      <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{cancelLabel}</button><button className={`button ${destructive ? 'danger' : 'primary'}`} type="button" onClick={() => { restoreOpener.current = false; onConfirm(); }}>{confirmLabel}</button></footer>
+      <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{cancelLabel}</button><button className={`button ${destructive ? 'danger' : 'primary'}`} type="button" aria-disabled={confirmDisabled} onClick={() => { if (!confirmDisabled) { restoreOpener.current = false; onConfirm(); } }}>{confirmLabel}</button></footer>
     </section>
   </div>, document.body);
 };

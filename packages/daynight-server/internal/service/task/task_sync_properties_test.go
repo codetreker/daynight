@@ -1,0 +1,82 @@
+package task_test
+
+import (
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+
+	"context"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+)
+
+func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
+	tasks, database, project, databaseURL, principal := taskService(t)
+	ctx := context.Background()
+	target := createTask(t, tasks, principal, project.ID, "Atomic property snapshot")
+	before, err := tasks.SetProperty(ctx, principal, project.ID, target.ID, "pullRequests", `[{"url":"before\u0000中文","title":"same"},{"url":"before\u0000中文","title":"same"}]`, target.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after model.Task
+	writes := 0
+	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool {
+		return strings.Contains(sql, "SELECT substring(value FROM")
+	}, start: func() {
+		writes++
+		var writeErr error
+		after, writeErr = tasks.SetProperty(ctx, principal, project.ID, target.ID, "pullRequests", `[]`, before.Version)
+		if writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}})
+	old, err := taskservice.NewTaskSync(traced.store, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch})
+	if err != nil || writes != 1 || len(old.Tasks) != 1 || old.Epoch != baseline.Epoch || old.Tasks[0].Version != before.Version || !taskproperties.Equal(old.Tasks[0].Properties, before.Properties) {
+		t.Fatalf("mixed task/property snapshot: %#v %v writes=%d", old, err, writes)
+	}
+	fresh, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &before.UpdatedAt})
+	if err != nil || fresh.Mode != "delta" || fresh.Epoch != baseline.Epoch || len(fresh.Tasks) != 1 || fresh.Tasks[0].Version != after.Version || !taskproperties.Equal(fresh.Tasks[0].Properties, after.Properties) {
+		t.Fatalf("new property state missing: %#v %v", fresh, err)
+	}
+	removed, err := tasks.RemoveProperty(ctx, principal, project.ID, target.ID, "pullRequests", after.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err = taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &after.UpdatedAt})
+	if err != nil || len(fresh.Tasks) != 1 || fresh.Tasks[0].Version != removed.Version || fresh.Tasks[0].Properties == nil || len(fresh.Tasks[0].Properties) != 0 || fresh.Epoch != baseline.Epoch {
+		t.Fatalf("removed property returned a default or rotated epoch: %#v %v", fresh, err)
+	}
+}
+
+func TestTaskSyncWindowOnlyValidatesReturnedProperties(t *testing.T) {
+	tasks, database, project, _, principal := taskService(t)
+	ctx := context.Background()
+	old := createTask(t, tasks, principal, project.ID, "Outside delta")
+	recent := createTask(t, tasks, principal, project.ID, "Inside delta")
+	baseline, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET updated_at=$2 WHERE id=$1`, old.ID, recent.UpdatedAt.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'unknown-property',$2)`, old.ID, `[]`); err != nil {
+		t.Fatal(err)
+	}
+	delta, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{Epoch: baseline.Epoch, Since: &recent.UpdatedAt})
+	if err != nil || len(delta.Tasks) != 1 || delta.Tasks[0].ID != recent.ID || delta.Tasks[0].Properties == nil || len(delta.Tasks[0].Properties) != 0 {
+		t.Fatalf("window scanned or synthesized unrelated properties: %#v %v", delta, err)
+	}
+	snapshot, err := taskservice.NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
+	requireFault(t, err, "invalid_input")
+	if !reflect.DeepEqual(snapshot, model.TaskSync{}) {
+		t.Fatalf("snapshot accepted corrupt sibling or returned partial state: %#v", snapshot)
+	}
+}

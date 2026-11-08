@@ -1,10 +1,10 @@
 # Web 语言运行时与界面接入设计
 
-状态：生产 `main.tsx`、公开页面、`AuthenticatedApp` 与现有全部第一方组件接入 `packages/daynight-web/src/i18n/`，提供英语与简体中文界面，包括居中 `TaskDetailDialog`。语言运行时、功能接入及定向验收场景已实现。[语言需求](../spec/daynight-web-i18n.md)拥有完整 L1–L10 条件，[看板架构](daynight-web.md)继续拥有业务数据、图和生命周期。
+状态：生产 `main.tsx`、公开页面、`AuthenticatedApp` 与现有全部第一方组件接入 `packages/daynight-web/src/i18n/`，提供英语与简体中文界面，包括居中 `TaskDetailDialog`。语言运行时与功能接入已实现；原定向生产浏览器场景及其执行入口已移除。[语言需求](../spec/daynight-web-i18n.md)拥有完整 L1–L10 条件，[看板架构](daynight-web.md)继续拥有业务数据、图和生命周期。
 
 ## 运行时结构
 
-语言目录、React Context 和原生 `Intl` 共同提供展示能力，两个目录随 Web 构建一同发布。运行时没有翻译服务、语言资源请求、模板字符串解析器或通用状态框架。选型的比较、成本及重审条件见[决策记录](../../.agents/notes/implemented/architecture/2026-10-22-web-locale-runtime.md)。
+语言目录、React Context 和原生 `Intl` 共同提供展示能力，两个目录随 Web 构建一同发布。运行时没有翻译服务、语言资源请求、模板字符串解析器或通用状态框架。选型的比较、成本及重审条件见[决策记录](../../.agents/notes/archived/architecture/2026-10-22-web-locale-runtime.md)。
 
 ```text
 packages/daynight-web/
@@ -32,7 +32,7 @@ packages/daynight-web/
 messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称；其中 messages.workers.configuration 拥有配置字段、覆盖方式、目标与实际结果、逐项诊断、草稿校验、保存冲突和未知结果核对文案。
 入口在绘制前设置当前语言及与路径对应的推广页、指南或鉴权加载标题；后续页面元数据、
 路由与会话状态按当前目录更新。
-身份变化释放用户内容，但不重建语言 Provider。真实 UniAuth 生产验收保留对应源码与浏览器环境的证据。
+身份变化释放用户内容，但不重建语言 Provider。先前真实 UniAuth 生产验收证据只属于其对应源码与浏览器环境，不能证明当前版本。
 
 ## 初始语言与偏好
 
@@ -89,11 +89,11 @@ Session 的指定操作和活动标签从已有英语目录导出只读子集，
 
 生产入口在 `createRoot()` 前执行初始解析，再把常驻 Provider 放在应用根部。首屏 HTML `lang` 和标题使用解析结果，后续导航与切换同步更新。Provider 不以 locale 作为 `key`，领域组件也不使用 locale 重置实例。
 
-导航、图浮层标题栏和独立 `TaskDetailPage` 共用 `LanguageSelector`。居中 `TaskDetailDialog` 通过同一个 `LocaleProvider` 订阅应用当前语言，其顶栏保留任务标题、全屏、“…”菜单和关闭入口，新标签链接位于“…”菜单；当前状态菜单与平台切换位于标题下的公共状态行。详情打开时底层页面继续处于 `inert`，模态入口使用既有焦点圈定、Escape 分层和关闭后恢复机制；独立完整详情页保留普通浏览器键盘行为，内部确认窗仍各自拥有模态交互。图浮层标题、关闭、全屏及图控件使用同一目录，语言变化保留当前打开状态、同一图实例和焦点。
+主界面导航与独立 `TaskDetailPage` 共用 `LanguageSelector`。共享 `ManagementDialog` 和 `CreateProjectDialog` 继承当前语言，不渲染选择器或其偏好提示与重试；页面入口继续拥有偏好反馈。普通和全屏图浮层均不渲染自己的选择器或偏好反馈。居中 `TaskDetailDialog` 通过同一个 `LocaleProvider` 订阅应用当前语言，其顶栏保留任务标题、全屏、“…”菜单和关闭入口，新标签链接位于“…”菜单；当前状态菜单与平台切换位于标题下的公共状态行。详情打开时底层页面继续处于 `inert`，模态入口使用既有焦点圈定、Escape 分层和关闭后恢复机制；独立完整详情页保留普通浏览器键盘行为，内部确认窗仍各自拥有模态交互。图浮层标题、关闭、全屏及图控件使用同一目录，语言变化保留当前打开状态、同一图实例和焦点。
 
 Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻译字符串。语言变化更新资源、版本、时间和 last-confirmed 文案，不改变 Worker ID、hook 的读取依赖、冻结状态或单调锚点，不额外发起请求。普通任务状态和 phase 复用已有目录；机器名、路径和实际版本原样显示。
 
-项目摘要与附件请求继续由资源 ID、调度和原有操作触发，详情按摘要业务版本、打开及恢复需要读取；时钟 receipt 不单独重读未变化正文。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。
+项目摘要与附件请求继续由资源 ID、调度和原有操作触发，详情按摘要业务版本、打开及恢复需要读取；时钟 receipt 不单独重读未变化正文。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。附件删除确认订阅共享语言状态，但不复制语言选择器或偏好提示；页面的既有入口和反馈保留。
 
 图结构与几何继续只依赖 `index/rootId` 和原有布局输入。memoized 的 `TaskNode`、`ChainRow` 和 `DependencyEdges` 在内部订阅展示 Context，更新文案与 ARIA，同时保留节点数据、边路径、视口和初始定位机制。依赖边的昂贵绘制分解以 geometry 为 memo 依赖，语言变化更新可访问文本，同时保留 canonical 路线坐标与绘制片段。React Flow 的无障碍配置由当前消息生成；英文文案必须适配现有节点尺寸。
 
@@ -108,20 +108,23 @@ Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻�
 
 ## 验证与证据归属
 
-基础测试提供显式 `renderWithLocale` helper、可控 storage 和隔离组件 fixture，覆盖浏览器匹配、显式选择优先、自动检测不保存、读写故障、无效值、成功清除错误、多个选择器共享状态、缺少 Provider 失败、完整目录与格式化。使用 `pnpm web:typecheck`、`pnpm web:test` 与 `pnpm web:build` 保持所有产品源码的严格语句覆盖率门槛。
+基础测试提供显式 `renderWithLocale` helper、可控 storage 和隔离组件 fixture，覆盖浏览器匹配、显式选择优先、自动检测不保存、读写故障、无效值、成功清除错误、多个选择器共享状态、缺少 Provider 失败、完整目录与格式化。`pnpm web:typecheck`、`pnpm web:test` 与 `pnpm web:build` 执行模块检查，覆盖率门槛由 `pnpm web:test` 检查；`pnpm web:test:browser` 单独运行模块浏览器配置。
 
-组件测试验证领域文案、已显示错误重翻译、待完成附件操作期间切换、DOM/预览身份和浏览状态保持。现有组件测试与 standalone 入口显式使用 Provider。生产浏览器增加三个场景：
+组件测试验证领域文案、已显示错误重翻译、待完成附件操作期间切换、DOM/预览身份和浏览状态保持。现有组件测试与 standalone 入口显式使用 Provider。受控浏览器 fixture 验证两种语言的键盘操作、窄屏布局及实际焦点、选区和视口；真实服务连接由独立产品组合验证承担。测试结果绑定实际源码和环境，模拟响应与本地浏览器结果不能证明真实服务或部署行为。
 
-| 场景 | 验证内容 |
+原生产浏览器入口及下列三个场景已移除；其方法和结果仅作为对应源码的历史证据，不代表当前自动化：
+
+| 历史场景 | 验证内容 |
 |---|---|
 | `language-startup-preferences` | 浏览器语言、显式保存、重载与路由、标题和 HTML `lang`，以及用户原始数据。 |
-| `language-state-preservation` | 图节点/边/视口、全屏与模态焦点、PR 页码、附件输入/iframe 身份及内容；待完成上传、覆盖和删除期间切换，每项写入只执行一次。 |
-| `language-errors-and-narrow` | 读/无效值/写入故障与重试、真实隔离数据库故障下错误重译及相同 request ID，两种语言的 1440px/320px 图、对话框与附件布局。 |
+| `language-state-preservation` | 检查图节点/边/视口、选择及全屏切换；检查全屏与模态焦点，并验证详情页签往返保留 PR 页码、附件输入和 iframe 身份及内容；分别挂起上传、覆盖和删除，验证待完成状态和每项写入次数。 |
+| `language-errors-and-narrow` | 读/无效值/写入故障与重试、真实隔离数据库故障下错误重译及相同 request ID，两种语言的 1440px/320px 图、对话框与附件布局；图的普通和全屏模式无局部语言入口及占位，长标题、关闭和图操作保持可访问。 |
 
-三个场景使用现有受监控页面与场景级 `en-US` 浏览器 locale，继续由单一 Playwright project 执行一次、零 retry。需要精确比较语言切换前后业务请求数量的隔离阶段控制浏览器时钟，排除独立项目定时器触发；真实周期刷新由 `refresh-staleness` 单独验证。滚动恢复读取实际 `scrollTop`，以测试进程单调时钟观察其连续稳定状态，不依赖受控浏览器定时器。functional inventory、报告聚合与严格预期测试使用相同 annotation；
-常规验收与 CI 当前要求原生、容器各 29 个功能场景，共 58 个；显式本地压力验收另有
-五个原生容量/超限场景，共 63 个。三状态使用 task-status、
-task-status-conflicts、task-status-recovery、task-status-transitions，状态浏览器写入只允许登记资源的
-精确 PUT status。严格覆盖率与清理规则保持；容量及其性能预算由显式本地压力入口拥有，当前所选模式的精确 inventory 由生产验收脚本验证。
+原场景使用受监控页面与场景级 `en-US` 浏览器 locale，由单一 Playwright project 执行
+一次、零 retry。需要精确比较语言切换前后业务请求数量的隔离阶段控制浏览器时钟，
+排除独立项目定时器触发；原 `refresh-staleness` 单独验证周期刷新。滚动恢复以测试
+进程的单调时钟观察实际 `scrollTop` 的连续稳定状态。原 native/container inventory、
+容量入口与聚合器均已移除，其固定场景、运行结果和清理回执只属于原源码；当前仓库
+不提供原 `pnpm web:acceptance` 一键入口。
 
-组合验收核对相同源码的真实嵌入式服务与生产容器回执，验证完整 L1–L10，包括首屏、持久保存、键盘操作、两种语言的 1440px/320px 视觉、错误恢复、业务请求数量和资源清理。原型、隔离组件、JSDOM 与本地浏览器各有其证据范围，不能替代真实服务和对应源码的生产验收。
+完整生产验收仍须核对相同源码的真实嵌入式服务与生产容器证据，验证 L1–L10，包括首屏、持久保存、键盘操作、两种语言的 1440px/320px 视觉、错误恢复、业务请求数量和资源清理。当前模块测试和受控浏览器 fixture 不提供该完整入口或结果。原型、隔离组件、JSDOM 与本地浏览器各有其证据范围，不能替代真实服务和对应源码的生产验收；缺少实际证据时不能宣称完整通过。

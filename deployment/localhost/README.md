@@ -70,9 +70,12 @@ The default is `https://registry.npmjs.org/`. A host `.npmrc` does not configure
 Docker build steps. The same variable is supported by `deployment/dev-ci/run.sh`.
 
 The script requires the `.env` file and works from any working directory when
-invoked with its path. It builds the frontend with Node.js 24 and pnpm 11.28.6,
-embeds its generated assets in the Go 1.27.2 binary, recreates all three service
-containers while preserving the PostgreSQL and attachment volumes, and waits up
+invoked with its path. It builds the frontend with Node.js 24 and pnpm 11.28.6.
+The production TypeScript configuration checks application sources and the Vite
+configuration; tests and acceptance tooling use the separate full-workspace
+`pnpm web:typecheck` command. The image includes the CLI source tree required by
+shared protocols and their transitive imports. The script embeds generated assets
+in the Go 1.27.2 binary, recreates all three service containers while preserving the PostgreSQL and attachment volumes, and waits up
 to 120 seconds for their health checks. Build time is separate from that
 readiness timeout. The final nonroot runtime image contains the server binary
 and does not need Node.js. It prepares the required writable
@@ -237,11 +240,15 @@ Two Compose-managed named volumes hold application data:
 
 | Volume | Container path | Content |
 |---|---|---|
-| `postgres-data` | `/var/lib/postgresql` | PostgreSQL data, including users, sessions, project membership and attachment metadata |
-| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` |
+| `postgres-data` | `/var/lib/postgresql` | PostgreSQL data, including users, sessions, project membership, attachment metadata and Session archive metadata/receipts |
+| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` and new Session archive bodies under the project/user and Session UUID shards described in the [Session design](../../docs/design/task-session-protocol.md#服务端归档布局) |
 
 Names are scoped to the Compose project. Server startup applies its embedded
-migrations. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
+migrations. Before upgrading to the login scope schema, stop old servers from
+starting new logins while allowing existing callbacks to complete, or wait for
+pending logins to expire (10 minutes). The migration fails without deleting
+valid pending transactions; retry after they are consumed or expired. Do not run
+old login writers after migration. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
 Normal task writes, stop, restart, `up --build --force-recreate`, and `down` preserve
 the epoch and both volumes. Retain the private deployment configuration and the
 corresponding UniAuth application registration separately from the application
@@ -252,7 +259,7 @@ docker compose down
 ```
 
 To deliberately delete projects, tasks, authentication records, attachment
-metadata and attachment files, remove both volumes:
+metadata/files and Session archive metadata/bodies, remove both volumes:
 
 ```bash
 docker compose down --volumes

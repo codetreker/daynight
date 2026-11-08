@@ -77,7 +77,7 @@ export const reconcileDeletedHerdrResource = (store: WorkerStore, resource: Herd
 /** Delete one explicitly selected source after the caller records authorization.
  * Handles and inode checks fence the original tree; no recursive rm follows paths.
  */
-export const removeHerdrSourceDirectory = async (rootDirectory: string, sourceDirectory: string, operation?: Operation): Promise<void> => {
+export const removeHerdrSourceDirectory = async (rootDirectory: string, sourceDirectory: string, operation?: Operation, expected?: { rootIdentity: string; sourceIdentity: string }): Promise<void> => {
   const root = path.resolve(rootDirectory), source = path.resolve(sourceDirectory);
   if (!path.isAbsolute(rootDirectory) || !path.isAbsolute(sourceDirectory) || path.dirname(source) !== root) throw new Error("Source deletion requires one original directory directly under the recording root.");
   const local = operation ?? createOperation({ limits: { totalMs: 300_000 } });
@@ -89,6 +89,7 @@ export const removeHerdrSourceDirectory = async (rootDirectory: string, sourceDi
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
     if (!target.isDirectory() || await realpath(source) !== source) throw new Error("Recording source must be a physical directory without symbolic links.");
     const id = (entry: { dev: bigint; ino: bigint }) => `${entry.dev}:${entry.ino}`;
+    if (expected !== undefined && (id(parent) !== expected.rootIdentity || id(target) !== expected.sourceIdentity)) throw new Error("Recording source directory identity changed after capture.");
     const verify = async (): Promise<void> => {
       local.check();
       const p = await lstat(root, { bigint: true }), t = await lstat(source, { bigint: true });

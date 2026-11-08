@@ -1,5 +1,4 @@
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
-import path from "node:path";
+import { createMemoryDatabase } from "../../../helpers/sqlite.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createBotInventory } from "../../../../src/commands/worker/bots/inventory.js";
 import { openBotStore } from "../../../../src/commands/worker/bots/store.js";
@@ -16,10 +15,7 @@ const bot = (value = 3, version = "1"): Bot => ({
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const fixture = async () => {
-  await mkdir(".tmp", { recursive: true });
-  const directory = await mkdtemp(path.resolve(".tmp/t11-inventory-"));
-  cleanups.push(() => rm(directory, { recursive: true, force: true }));
-  const store = openBotStore(path.join(directory, "state.sqlite"));
+  const store = openBotStore(createMemoryDatabase());
   cleanups.push(() => store.close());
   return store;
 };

@@ -27,6 +27,6 @@ export const TaskDiscussion = ({ projectId, taskId, active, owner, onDetailsOpen
   return <section className="task-discussion" aria-label={messages.title}>
     <DiscussionTimeline controller={controller} view={view} active={active} identity={`${account.user.id}/${projectId}/${taskId}`} timelineRef={timeline} inputRef={input} messages={messages} />
     {!view.retired && <DiscussionComposer controller={controller} view={view} account={account} active={active} inputRef={input} messages={messages} />}
-    {view.detailsMessage !== null && active && !view.authPaused && <ThreadMessageDetails message={view.detailsMessage} messages={messages} owner={owner} fallbackFocus={timeline} onClose={controller.closeDetails} onOpenChange={onDetailsOpenChange} canRestoreFocus={() => current.current.active && !current.current.account.admissionBlocked && !controller.snapshot().retired && !current.current.view.authPaused && document.visibilityState === 'visible'} />}
+    {view.detailsMessage !== null && active && <ThreadMessageDetails message={view.detailsMessage} messages={messages} owner={owner} fallbackFocus={timeline} onClose={controller.closeDetails} onOpenChange={onDetailsOpenChange} canRestoreFocus={() => current.current.active && !current.current.account.admissionBlocked && !controller.snapshot().retired && !current.current.view.authPaused && document.visibilityState === 'visible'} />}
   </section>;
 };

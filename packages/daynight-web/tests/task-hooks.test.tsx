@@ -30,7 +30,7 @@ let detailWorld: ReturnType<typeof createTaskSessionWorld> | null = null;
 const renderHook = <Result, Props,>(render: (props: Props) => Result, options?: RenderHookOptions<Props>) =>
   renderHookWithoutSession(render, { ...options, wrapper: ({ children }) => <TestTaskCacheBoundary {...(detailWorld === null ? {} : { scope: detailWorld.scope })}><TaskDetailSessionBoundary>{children}</TaskDetailSessionBoundary></TestTaskCacheBoundary> });
 
-vi.mock("../src/api/client", async (original) => ({ ...await original<typeof import("../src/api/client")>(), setTaskStatus: vi.fn(), getTask: vi.fn(), getTaskSync: vi.fn() }));
+vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, setTaskStatus: vi.fn(), getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const detailRequest = vi.mocked(getTask);
 const projectId = "10000000-0000-0000-0000-000000000001";
@@ -38,11 +38,11 @@ const otherProject = "10000000-0000-0000-0000-000000000002";
 const taskId = "20000000-0000-0000-0000-000000000001";
 const otherTask = "20000000-0000-0000-0000-000000000002";
 const time = "2026-10-20T12:00:00.123456Z";
-const node: GraphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, titlePreview: "任务一", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
-const detail: TaskDetail = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
+const node: GraphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, id: taskId, titlePreview: "任务一", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
+const detail: TaskDetail = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
 const graph = (id = projectId): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time },
-  tasks: [node], summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
+  tasks: [node], summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 },
 });
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -85,9 +85,9 @@ describe("task graph snapshots", () => {
   it("publishes marker-only changes as task data while clock-only samples preserve the new graph and index", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     const initial: TaskGraph = { ...graph(), tasks: [
-      { ...node, id: otherTask, titlePreview: "Prerequisite", status: "done", ready: false, startedAt: time, completedAt: time, createdAt: "2026-10-20T12:00:00.123455Z" },
+      { ...node, id: otherTask, titlePreview: "Prerequisite", status: "done", ready: false, startedAt: time, completedAt: time, cancelledAt: null, createdAt: "2026-10-20T12:00:00.123455Z" },
       { ...node, dependsOn: [otherTask] },
-    ], summary: { total: 2, todo: 1, inProgress: 0, done: 1, ready: 1, blocked: 0 } };
+    ], summary: { total: 2, todo: 1, inProgress: 0, done: 1, cancelled: 0, ready: 1, blocked: 0 } };
     const classified: TaskGraph = { ...initial, tasks: initial.tasks.map((task) => task.id === taskId
       ? { ...task, externalDependsOn: [otherTask] } : task) };
     const later = { ...classified, observedAt: "2026-10-20T12:00:10.123456Z" };
@@ -279,7 +279,7 @@ describe("task graph snapshots", () => {
   it("publishes status and readiness changes even with unchanged task timestamps", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     const reviewed: TaskGraph = { ...graph(), tasks: [{ ...node, status: "done", ready: false }],
-      summary: { total: 1, todo: 0, inProgress: 0, done: 1, ready: 0, blocked: 0 } };
+      summary: { total: 1, todo: 0, inProgress: 0, done: 1, cancelled: 0, ready: 0, blocked: 0 } };
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(reviewed);
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -307,8 +307,9 @@ describe("task graph snapshots", () => {
 
   it("retains a same-project snapshot through refresh and failure, then replaces it whole on success", async () => {
     const update = deferred<TaskGraph>();
-    graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(update.promise).mockResolvedValueOnce(resetSnapshot({ ...graph(), tasks: [],
-      summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }));
+    const replacement = resetSnapshot({ ...graph(), tasks: [],
+      summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } });
+    graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(update.promise).mockResolvedValue(replacement);
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const first = result.current.snapshot;
@@ -439,7 +440,7 @@ describe("task details", () => {
     let predecessor: GraphTask = { ...node, id: otherTask, titlePreview: "Prerequisite" };
     graphRequest.mockImplementation(async () => ({ ...graph(), tasks: [{ ...node, dependsOn: [otherTask], blockedBy: predecessor.status === "done" ? [] : [otherTask], ready: predecessor.status === "done" }, predecessor], summary: {
       total: 2, todo: predecessor.status === "todo" ? 2 : 1, inProgress: 0,
-      done: predecessor.status === "done" ? 1 : 0, ready: 1, blocked: predecessor.status === "done" ? 0 : 1,
+      done: predecessor.status === "done" ? 1 : 0, cancelled: 0, ready: 1, blocked: predecessor.status === "done" ? 0 : 1,
     } }));
     let active = 0;
     let maximumActive = 0;
@@ -773,4 +774,36 @@ describe("detail freshness", () => {
     const title = "😀".repeat(161);
     expect(isTaskStale({ ...node, titlePreview: "😀".repeat(160), titleTruncated: true }, { ...detail, title })).toBe(false);
   });
+});
+
+it('publishes the matching claim through sync, removes it on later updates, and fences old project responses', async () => {
+  const claim = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: '00000000-0000-4000-8000-000000000101', state, userId: '00000000-0000-4000-8000-000000000102', workerId: '00000000-0000-4000-8000-000000000103', machine: { id: '00000000-0000-4000-8000-000000000104', name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000105', phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
+  let properties: TaskDetail['properties'] = {};
+  const fixture = createGraphSyncFixture({ propertiesForTask: (_task, project) => project === projectId ? properties : {} });
+  vi.mocked(getTaskSync).mockImplementation(async (id, query) => fixture.toSync(graph(id), query));
+  const { result, rerender } = renderHook(({ id }) => useTaskGraph(id), { initialProps: { id: projectId } });
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.size).toBe(0));
+  expect(getTaskSync).toHaveBeenCalledTimes(1); expect(detailRequest).not.toHaveBeenCalled();
+  properties = { worker: claim('first machine', 'active') };
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.get(taskId)?.machine.name).toBe('first machine'));
+  properties = { worker: claim('finished machine', 'completed') };
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.get(taskId)).toMatchObject({ state: 'completed', machine: { name: 'finished machine' } }));
+  properties = {};
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.has(taskId)).toBe(false));
+  expect(getTaskSync).toHaveBeenCalledTimes(4); expect(detailRequest).not.toHaveBeenCalled();
+  const old = deferred<ReturnType<typeof fixture.toSync>>();
+  vi.mocked(getTaskSync).mockReturnValueOnce(old.promise);
+  act(() => result.current.refresh());
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(5));
+  rerender({ id: otherProject });
+  await waitFor(() => expect(result.current.snapshot?.graph.project.id).toBe(otherProject));
+  expect(result.current.snapshot?.workerMachines.size).toBe(0);
+  properties = { worker: claim('late private machine', 'active') };
+  await act(async () => { old.resolve(fixture.toSync(graph(), {})); });
+  expect(result.current.snapshot?.graph.project.id).toBe(otherProject);
+  expect(result.current.snapshot?.workerMachines.size).toBe(0);
+  expect(detailRequest).not.toHaveBeenCalled();
 });

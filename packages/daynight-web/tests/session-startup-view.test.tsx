@@ -14,7 +14,7 @@ async function mount(locale: 'en' | 'zh-CN', failed = false) {
   const snapshot = s();
   const report: SessionStartupReport = { schemaVersion: 1, source: 'worker', sessionId: snapshot.sessionId, claimId: snapshot.claimId, executionGeneration: snapshot.executionGeneration, controllerInstanceId: snapshot.identity.controllerInstanceId, revision: '1', observedAt: new Date().toISOString(), startup: failed ? { state: 'failed', reasonCode: 'native_rejected' } : { state: 'unknown', reasonCode: 'native_timeout' }, recovery: { state: 'blocked', reasonCode: 'native_identity_missing' } };
   const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: snapshot, startupReport: report })), channel: vi.fn(() => ({ close: vi.fn() })), timeline: vi.fn(), archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused' };
-  const client = new TaskSessionClient({ api, userId: '00000009-1111-4111-8111-111111111111', projectId: snapshot.identity.projectId, taskId: snapshot.identity.taskId, claimId: snapshot.claimId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage: null }); clients.push(client);
+  const client = new TaskSessionClient({ api, userId: '00000009-1111-4111-8111-111111111111', projectId: snapshot.identity.projectId, taskId: snapshot.identity.taskId, claimId: snapshot.claimId, ownerUserId: '00000009-1111-4111-8111-111111111111', isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage: null }); clients.push(client);
   await act(() => client.start());
   const view = renderWithLocale(<SessionView client={client} userId="viewer" active current />, { locale });
   return { api, client, ...view };

@@ -25,9 +25,11 @@ Visible pages poll independent list, defaults and detail resources every five
 seconds. Complete pagination is published atomically so search covers the whole
 list and partial failures do not remove previously observed assistants. Only the
 selected authoritative detail can supply the Session binding. Startup readiness
-and current Worker availability remain separate observations.
+and current Worker availability remain separate observations. The
+[background-check decision](../bug-fix/2026-11-05-bot-background-check-display.md)
+separates retained presentation from temporary request admission.
 
-The routes reuse the Session shell's viewport height constraint. The Bot grid
+The routes reuse the Session shell's viewport height constraint. The Bot workspace
 and conversation can shrink within it; the list and shared timeline own separate
 scroll regions. Timeline pagination and retained reading positions therefore use
 the actual visible conversation viewport.
@@ -54,7 +56,9 @@ these existing contracts intact without adding a separate scrolling mechanism.
 
 ## Consequences
 
-The route can be integrated without advertising an incomplete assistant product.
+The route was delivered separately from hosting to avoid advertising an incomplete
+assistant product. The [assistant composition](2026-11-05-assistant-composition.md)
+connects navigation and hosting without replacing the page identity model.
 Details and deletion controls can consume the same selection and cache. Polling
 all pages costs more for large inventories and should be reconsidered with a
 server search or change-feed contract. Unavailable browser storage cannot promise

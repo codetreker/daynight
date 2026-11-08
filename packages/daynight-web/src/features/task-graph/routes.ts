@@ -1,5 +1,5 @@
 import { DEPENDENCY_DASH_PERIOD, type DashPiece } from './dashes';
-import type { CanvasPoint } from './layout';
+import type { CanvasPoint, GraphDirection } from './layout';
 
 type Line = { readonly kind: 'line'; readonly from: CanvasPoint; readonly to: CanvasPoint };
 type Cubic = { readonly kind: 'cubic'; readonly from: CanvasPoint; readonly first: CanvasPoint; readonly second: CanvasPoint; readonly to: CanvasPoint };
@@ -139,7 +139,11 @@ const dashedPieces = (segments: readonly Segment[]): readonly DashPiece[] => {
   return pieces;
 };
 
-export const compileDependencyRoute = (points: readonly CanvasPoint[], dashed: boolean): DependencyRoute => {
-  const segments = segmentsFor(points);
+export const compileDependencyRoute = (points: readonly CanvasPoint[], dashed: boolean, direction: GraphDirection = 'horizontal'): DependencyRoute => {
+  const transpose = ({ x, y }: CanvasPoint): CanvasPoint => ({ x: y, y: x });
+  const planned = segmentsFor(direction === 'vertical' ? points.map(transpose) : points);
+  const segments = direction === 'horizontal' ? planned : planned.map((segment): Segment => segment.kind === 'line'
+    ? { kind: 'line', from: transpose(segment.from), to: transpose(segment.to) }
+    : { kind: 'cubic', from: transpose(segment.from), first: transpose(segment.first), second: transpose(segment.second), to: transpose(segment.to) });
   return { d: path(segments), pieces: dashed ? dashedPieces(segments) : [] };
 };

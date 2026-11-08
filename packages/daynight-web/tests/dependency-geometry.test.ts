@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureStableDependencyGeometry, expectedDependencyTopology, inspectDependencySnapshot, parseCurve, referenceLength, summarizeGeometryFailures, type DependencySnapshot, type GeometryExpectation } from './e2e/dependency-geometry';
+import { captureStableDependencyGeometry, expectedDependencyTopology, inspectDependencySnapshot, parseCurve, referenceLength, summarizeGeometryFailures, type DependencySnapshot, type GeometryExpectation } from './helpers/dependency-geometry';
 import { color, d, expected, snapshot } from './dependency-geometry-fixture';
 
 const compilerInputs = [{ id: 'source->target', points: [{ x: 100, y: 50 }, { x: 200, y: 50 }, { x: 200, y: 100 }, { x: 250, y: 100 }, { x: 250, y: 50 }, { x: 300, y: 50 }] }];
@@ -30,14 +30,14 @@ describe('independent production dependency geometry oracle', () => {
     value.nodes[0]!.bottom = 96;
     expect(inspectDependencySnapshot(value, expected)).toContain('source->target: wrong fixed left-to-right ports');
   });
-  it('derives projection identities only from API dependencies, including complete upstream context', () => {
+  it('derives projection identities only from ordinary membership and direct external prerequisites', () => {
     expect(expectedDependencyTopology([
       { id: 'A', dependsOn: [], externalDependsOn: [] }, { id: 'C', dependsOn: ['A', 'X'], externalDependsOn: ['X'] }, { id: 'P', dependsOn: [], externalDependsOn: [] },
       { id: 'X', dependsOn: ['P'], externalDependsOn: [] }, { id: 'Y', dependsOn: ['X'], externalDependsOn: [] }, { id: 'Z', dependsOn: [], externalDependsOn: [] },
     ], 'A')).toEqual({
       memberIds: ['A', 'C'],
-      nodes: [{ id: 'A' }, { id: 'C' }, { id: 'P' }, { id: 'X' }],
-      edges: [{ id: 'A->C', source: 'A', target: 'C', external: false }, { id: 'X->C', source: 'X', target: 'C', external: true }, { id: 'P->X', source: 'P', target: 'X', external: false }],
+      nodes: [{ id: 'A' }, { id: 'C' }, { id: 'X' }],
+      edges: [{ id: 'A->C', source: 'A', target: 'C', external: false }, { id: 'X->C', source: 'X', target: 'C', external: true }],
     });
   });
   it('checks actual quadratic bounds without any declared compiler input', () => {
@@ -137,6 +137,22 @@ describe('independent production dependency geometry oracle', () => {
     expect(inspectDependencySnapshot(wrongControl, expected)).toContain('source->target: cubic leaves its horizontal-tangent rank-gap passage');
     const collision = structuredClone(value); collision.nodes.push({ id: 'obstacle', left: 190, top: 90, right: 210, bottom: 110 });
     expect(inspectDependencySnapshot(collision, { ...expected, nodes: [...expected.nodes, { id: 'obstacle' }] })).toContain('source->target: curve passes through node obstacle');
+  });
+  it('independently checks vertical ports, tangents, card overlap and curve clearance', () => {
+    const value = snapshot();
+    value.nodes = [{ id: 'source', left: 0, top: 0, right: 100, bottom: 100 }, { id: 'target', left: 100, top: 300, right: 200, bottom: 400 }];
+    const route = 'M50,100 C50,200 150,200 150,300';
+    value.edges[0]!.d = route; value.edges[0]!.pieces[0]!.d = route;
+    const inputs = [{ id: 'source->target', points: [{ x: 50, y: 100 }, { x: 150, y: 300 }] }];
+    expect(inspectDependencySnapshot(value, expected, inputs, 'vertical')).toEqual([]);
+    const wrongPort = structuredClone(value); wrongPort.edges[0]!.d = route.replace('M50,100', 'M51,100');
+    expect(inspectDependencySnapshot(wrongPort, expected, undefined, 'vertical')).toContain('source->target: wrong fixed top-to-bottom ports');
+    const wrongTangent = structuredClone(value); wrongTangent.edges[0]!.d = route.replace('C50,200', 'C51,200');
+    expect(inspectDependencySnapshot(wrongTangent, expected, undefined, 'vertical').some((failure) => failure.includes('endpoint direction is not vertical'))).toBe(true);
+    const collision = structuredClone(value); collision.nodes.push({ id: 'obstacle', left: 90, top: 190, right: 110, bottom: 210 });
+    expect(inspectDependencySnapshot(collision, { ...expected, nodes: [...expected.nodes, { id: 'obstacle' }] }, undefined, 'vertical')).toContain('source->target: curve passes through node obstacle');
+    const overlap = structuredClone(value); overlap.nodes[1] = { id: 'target', left: 50, top: 50, right: 150, bottom: 150 };
+    expect(inspectDependencySnapshot(overlap, expected, undefined, 'vertical').some((failure) => failure.includes('overlaps'))).toBe(true);
   });
   it('checks exact cubic dash subcurves and true-arclength gap seams', () => {
     const halfLength = referenceLength(parseCurve('M0,0 C100,0 100,100 200,100')[0]!) / 2;

@@ -45,7 +45,7 @@ scope 仅为 `(userId,projectId,taskId)`。任务 version、当前 claim、图 r
 
 `createThreadController`构造`ThreadController`，通过不可变`ThreadView`与subscribe/snapshot供`useSyncExternalStore`订阅。setActive、setDocumentVisible和setAdmissionBlocked控制准入，setFollowing/setReadingAnchor表达阅读意图；refresh、loadOlder、loadWindowNewer、revealIncoming、showReference/openDetails、send和retire分别拥有其操作。状态包括可见消息窗口、已缓冲新增、连续位置、历史两侧标志、草稿及其 revision、回复及其 revision、发送阶段、引用缓存和独立读取错误。Thread 不调用 TaskCache 数据读写、IndexedDB、BroadcastChannel、task-sync 或图刷新；仅复用账号 scope 的 ready、signal、principalMismatch 和项目撤权订阅。
 
-首次激活读取最新页；页面可见且该页签活动时，成功结束后 5 秒安排下一次增量读取。积压按页立即追赶，正向读取串行。隐藏页签、隐藏 document 或认证暂停时停止计时器并取消 GET；恢复可见立即刷新。读取失败保留数据与位置，显示所属操作的错误和重试入口，明确重试后恢复轮询。
+首次激活读取最新页；页面可见且该页签活动时，成功结束后 5 秒安排下一次增量读取。积压按页立即追赶，正向读取串行。隐藏页签、隐藏 document 或认证暂停时停止计时器并取消 GET；恢复可见立即刷新。document 隐藏和临时认证准入阻塞不清除详情、消息、引用、草稿、回复、阅读锚点或分页；已加载页面仍允许本地编辑草稿，新读取、发言和结果发布仍受准入限制，失效 ticket 的响应不能发布。读取失败保留数据与位置，显示所属操作的错误和重试入口，明确重试后恢复轮询。
 
 已 dispatch 的 POST 不因页签隐藏取消。账号变化、任务页面释放、scope abort 或可信撤权会同步退休 controller，清空消息、草稿、引用和详情，关闭子 dialog 并取消请求。退休后的成功响应也不能恢复数据或清理其他任务的草稿。
 
@@ -97,7 +97,7 @@ Discussion沿用任务详情公共页头和操作。宽屏横向留白按讨论�
 
 Markdown 使用共享安全聊天 renderer，保留 GFM、软换行和隔离的 footnote ID，不接收 raw HTML。外链仅 http/https/mailto，使用 noopener noreferrer；图片呈现替代内容，不加载附件或原生资源。滚动复用阅读意图与文本锚点；向上阅读停止跟随，历史 prepend 和 composer 变高保留锚点，明确查看新消息才恢复底部跟随。
 
-原生消息详情 dialog 拥有 capture 阶段的 Escape/Tab、父 owner inert 及关闭后焦点恢复，同时报告子层占用给 Surface 键盘、焦点回收和遮罩处理。子层 Escape 只关闭详情，不能退出任务全屏或关闭父任务。任务/账号失效时禁止向旧 opener 恢复焦点。
+原生消息详情 dialog 拥有 capture 阶段的 Escape/Tab、父 owner inert 及关闭后焦点恢复，同时报告子层占用给 Surface 键盘、焦点回收和遮罩处理。临时检查保持同一 dialog 挂载，不重复调用 showModal 或释放父 owner 的 inert；隐藏页面、准入阻塞和任务/账号失效时禁止向旧 opener 恢复焦点。子层 Escape 只关闭详情，不能退出任务全屏或关闭父任务。
 
 读取与发送错误通过`ThreadErrorDetails`按需展开已验证code/requestId，不显示原始响应或上游错误文字。controller的私有`reportFailure()`使用console.warn输出局部结构化事件，包含component=task_thread_web、projectId/taskId、phase、读取direction、受限code、HTTP status、验证后的requestId、固定cause类别与outcome。confirmed后的准入失败保留outcome=confirmed；未知结果不能计为已失败回滚。事件不包含正文、名称、草稿、凭据或原始Error对象，不建立持久遥测队列或新的请求/提交身份。
 
@@ -105,4 +105,4 @@ Markdown 使用共享安全聊天 renderer，保留 GFM、软换行和隔离的 
 
 功能验证覆盖来源 decoder、A/B/C 连续性、初始空后积压、独立历史及引用、容量双边界、连续自己发言的回执替换、认证暂停及迟到响应、明确/未知/确认结果、确认后准入失败、正文与 revision、page/modal/fullscreen 焦点和窄屏滚动。真实服务与浏览器互操作证据与单元中的可控传输区分；常规 CI 不运行压力负载。完整命令由 [Web 指南](../../packages/daynight-web/README.md#validation-and-build)拥有。
 
-[决策记录](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-web.md)保存职责划分、复用和有界内存的取舍。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)保存职责划分、复用和有界内存的取舍。

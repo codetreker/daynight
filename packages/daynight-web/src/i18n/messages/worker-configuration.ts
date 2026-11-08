@@ -2,6 +2,8 @@ export type WorkerConfigurationMessages = {
   readonly overview: string;
   readonly configuration: string;
   readonly sections: string;
+  readonly leaveQuestion: string;
+  readonly leaveExplanation: string;
   readonly loading: string;
   readonly unavailable: string;
   readonly uninitialized: string;

@@ -7,7 +7,7 @@ import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), setTaskAssignedTo: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn(), withdrawWorkerClaim: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskAssignedTo: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn(), withdrawWorkerClaim: vi.fn() }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const task = '20000000-0000-4000-8000-000000000001';
 const person = '30000000-0000-4000-8000-000000000001';
@@ -31,8 +31,8 @@ afterEach(() => { for (const [sessions, world] of worlds) { sessions.dispose(); 
 
 describe('assignment mutation ownership', () => {
   it.each([{ previous: initial, target: person }, { previous: { ...initial, assignedTo: person }, target: null }, { previous: initial, target: null }, { previous: { ...initial, assignedTo: person }, target: person }])('confirms exact changed or equal assignment %#', async ({ previous, target }) => {
-    const sessions = createSessions(); await open(sessions, previous); const saved = assigned(previous, target); writes.mockResolvedValueOnce(saved);
-    sessions.setAssignedTo(project, task, target, previous.version); await synchronize(sessions, saved);
+    const sessions = createSessions(); await open(sessions, previous); const saved = assigned(previous, target); const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise);
+    sessions.setAssignedTo(project, task, target, previous.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await synchronize(sessions, saved); pending.resolve(saved);
     await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
     expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, target, previous.version, expect.any(AbortSignal), expect.objectContaining({ userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
     expect(sessions.snapshot(project, task).detail).toEqual(saved); expect(saved.version - previous.version).toBe(previous.assignedTo === target ? 0n : 1n);
@@ -57,13 +57,37 @@ describe('assignment mutation ownership', () => {
     expect(writes.mock.calls[0]![4].aborted).toBe(false); expect(reads).toHaveBeenCalledOnce(); const saved = assigned(); await synchronize(sessions, saved); pending.resolve(saved);
     await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed')); expect(writes).toHaveBeenCalledOnce();
   });
+  it('reads a 409 conflict without replay and uses the newly reviewed version for another assignment', async () => {
+    const sessions = createSessions(); await open(sessions);
+    const current = assigned(initial, otherPerson); const saved = assigned(current, person);
+    const error = new ApiError('server', 409, 'version_conflict', 'assignment-conflict');
+    const response = deferred<TaskDetail>(); const readback = deferred<TaskDetail>(); const second = deferred<TaskDetail>();
+    writes.mockReturnValueOnce(response.promise).mockReturnValueOnce(second.promise); reads.mockReturnValueOnce(readback.promise);
+    sessions.setAssignedTo(project, task, person, initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
+    response.reject(error);
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: 'conflict', error, reconciling: true }));
+    await waitFor(() => expect(reads).toHaveBeenCalledTimes(2));
+    expect(sessions.snapshot(project, task).detail).toEqual(initial);
+    expect(writes).toHaveBeenCalledOnce();
+    sessions.setAssignedTo(project, task, person, initial.version); expect(writes).toHaveBeenCalledOnce();
+    await synchronize(sessions, current); readback.resolve(current);
+    await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ detail: current, mutation: { phase: 'conflict', error, reconciling: false, reconciliationError: null } }));
+    sessions.setAssignedTo(project, task, person, initial.version); expect(writes).toHaveBeenCalledOnce();
+    sessions.setAssignedTo(project, task, person, current.version); await waitFor(() => expect(writes).toHaveBeenCalledTimes(2));
+    expect(writes.mock.calls[1]![3]).toBe(current.version);
+    await synchronize(sessions, saved); second.resolve(saved);
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
+    expect(writes).toHaveBeenCalledTimes(2); expect(writes.mock.calls[1]![3]).toBe(current.version);
+    expect(sessions.snapshot(project, task).detail).toEqual(saved);
+  });
   it.each([
     { version: initial.version }, { version: initial.version + 2n }, { allowAgents: true }, { status: 'done' as const }, { requiredPlatform: 'macos' as const },
     { startedAt: stamp }, { completedAt: stamp }, { title: 'Unreviewed title' }, { description: 'Unreviewed content' }, { createdAt: nextStamp },
     { dependsOn: [task] }, { externalDependsOn: [task] }, { properties: { pullRequests: [] } }, { properties: { ...initial.properties, future: { enabled: false } } },
   ])('rejects a response that cannot prove the one assignment change %#', async (fields) => {
     const sessions = createSessions(); await open(sessions); const saved = assigned(); reads.mockResolvedValueOnce(saved); writes.mockResolvedValueOnce({ ...saved, ...fields });
-    sessions.setAssignedTo(project, task, person, initial.version); await synchronize(sessions, saved); await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'));
+    sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await synchronize(sessions, saved); await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'));
     expect(sessions.snapshot(project, task).mutation.error).toMatchObject({ kind: 'protocol' }); expect(sessions.snapshot(project, task).detail).toEqual(saved); expect(writes).toHaveBeenCalledOnce();
   });
   it.each([{ version: initial.version + 1n }, { updatedAt: nextStamp }, { allowAgents: false }])('rejects a same-assignment response that changes persisted values %#', async (fields) => {
@@ -107,6 +131,8 @@ describe('assignment mutation ownership', () => {
     else if (action === 'permission') { vi.mocked(setTaskAgentPermission).mockResolvedValueOnce(result); sessions.setAgentPermission(project, task, false, previous.version); }
     else if (action === 'platform') { vi.mocked(setTaskRequiredPlatform).mockResolvedValueOnce(result); sessions.setRequiredPlatform(project, task, 'macos', previous.version); }
     else { vi.mocked(withdrawWorkerClaim).mockResolvedValueOnce(result); sessions.withdrawClaim(project, task, worker.claimId, previous.version); }
+    const dispatched = action === 'status' ? setTaskStatus : action === 'permission' ? setTaskAgentPermission : action === 'platform' ? setTaskRequiredPlatform : withdrawWorkerClaim;
+    await waitFor(() => expect(dispatched).toHaveBeenCalledOnce());
     await synchronize(sessions, saved); await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled')); expect(sessions.snapshot(project, task).mutation.error).toMatchObject({ kind: 'protocol' }); expect(sessions.snapshot(project, task).detail?.assignedTo).toBe(person);
   });
 });
@@ -131,13 +157,14 @@ describe('assignment admission through authentication and project histories', ()
     if (submitted) await waitFor(() => expect(writes).toHaveBeenCalledOnce()); const world = worlds.get(sessions)!; void world.scope.invalidateScope(); resume?.(); pending.resolve(assigned()); await flush();
     expect(world.scope.isInvalidated).toBe(true); expect(writes).toHaveBeenCalledTimes(submitted ? 1 : 0); expect(reads).toHaveBeenCalledOnce(); expect(sessions.snapshot(project, task).detail?.assignedTo).not.toBe(person);
   });
-  it('revokes project access for a trusted assignment 404 before paused identity admission resumes', async () => {
+  it('withdraws the assignment detail immediately and requests access revalidation after admission resumes', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const result = deferred<Response>(); const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client');
+    sessions.subscribe(project, task, () => {}); const notices: string[] = []; world.scope.subscribe((event) => { if (event.taskNotFound) notices.push(event.projectId); });
     vi.stubGlobal('fetch', vi.fn().mockReturnValueOnce(result.promise)); writes.mockImplementationOnce(actual.setTaskAssignedTo); sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     const resume = pause(); const revoke = vi.spyOn(world.scope, 'revokeProject');
     result.resolve(new Response(JSON.stringify({ error: { code: 'not_found', message: 'Project access withdrawn', requestId: 'assignment-denied' } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) }));
-    await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull()); expect(revoke).toHaveBeenCalledOnce(); expect(sessions.snapshot(project, task).error).toMatchObject({ status: 404, code: 'not_found', requestId: 'assignment-denied' }); expect(reads).toHaveBeenCalledOnce();
-    resume(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(writes).toHaveBeenCalledOnce();
+    await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull()); expect(revoke).not.toHaveBeenCalled(); expect(sessions.snapshot(project, task).error).toMatchObject({ status: 404, code: 'not_found', requestId: 'assignment-denied' }); expect(reads).toHaveBeenCalledOnce();
+    expect(notices).toEqual([]); resume(); await waitFor(() => expect(notices).toEqual([project])); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce();
   });
   it('does not let an old history assignment 404 revoke its replacement project', async () => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise); sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce());

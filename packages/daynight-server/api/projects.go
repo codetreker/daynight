@@ -45,6 +45,10 @@ type ProjectPage struct {
 }
 
 type ErrorDetails struct {
+	WriteOutcome    *string  `json:"writeOutcome,omitempty"`
+	Reason          *string  `json:"reason,omitempty"`
+	Position        *int     `json:"position,omitempty"`
+	Length          *int     `json:"length,omitempty"`
 	EncodedBytes    *int64   `json:"encodedBytes,omitempty"`
 	MaxEncodedBytes *int64   `json:"maxEncodedBytes,omitempty"`
 	TaskIDs         []string `json:"taskIds,omitempty"`

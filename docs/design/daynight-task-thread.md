@@ -2,9 +2,9 @@
 
 ## 所有者与调用方向
 
-[需求](../spec/daynight-task-thread.md)拥有服务端行为及消费者义务，[CLI设计](task-thread-cli.md)拥有终端解析、展示、预算与确认生命周期，[Web设计](task-thread-web.md)拥有Discussion面板、临时内存与连续读取。`api/task_threads.go`定义公开DTO；`internal/core/task_thread.go`定义消息、不可变作者、内部位置和页面；`internal/core/store/task_thread_*.go`拥有PostgreSQL消息读写，`internal/core/store/project_access.go`拥有共同项目准入及强准入；`internal/service/task_thread.go`编排授权、来源、容量及错误；`internal/server/task_threads.go`注册路由、严格解码和输出。
+[需求](../spec/daynight-task-thread.md)拥有服务端行为及消费者义务，[CLI设计](task-thread-cli.md)拥有终端解析、展示、预算与确认生命周期，[Web设计](task-thread-web.md)拥有Discussion面板、临时内存与连续读取。`api/task_threads.go`定义公开DTO；`internal/core/model/task_thread.go`定义消息、不可变作者、内部位置和页面；`internal/core/store/postgres/task/`拥有PostgreSQL消息读写，`internal/core/store/postgres/internal/project_access.go`拥有共同项目准入及强准入；`internal/core/task/thread` 拥有消息准入、来源及容量规则；`internal/service/task/task_thread.go` 编排授权和事务完成，`internal/server/task/task_threads.go` 注册路由、严格解码和输出。
 
-`internal/taskthreadjson` 是纯编码所有者，将 core 映射到 API 并生成实际响应字节。service 的消息/页文档同时携带 core 值和已验证 JSON；server 直接写入该缓冲，不再经过 Encoder 或追加 LF。createdAt 通过显式 UTC `2006-01-02T15:04:05.000Z` 格式化。store 不依赖 HTTP 或 API DTO。
+`internal/core/task/codec` 拥有纯响应类型与编码，将 model 映射到响应并生成实际字节；API 通过类型别名复用这些类型。service 的消息/页文档同时携带 core 值和已验证 JSON；server 直接写入该缓冲，不再经过 Encoder 或追加 LF。createdAt 通过显式 UTC `2006-01-02T15:04:05.000Z` 格式化。store 不依赖 HTTP 或 API DTO。
 
 `server.New` 复用现有 Store 构造 `NewTaskThreads`，不新建 pool 或后台服务。Task 资源解析与既有任务 handler 共用 canonical project/task 和 logger 字段。Thread 不挂进 Tasks.versionedWrite，不调用 Session 冻结或 worker 控制。
 
@@ -16,11 +16,11 @@ created_at 与 head 时间为 timestamptz(3)，INSERT 使用 `date_trunc('millis
 
 ## 专用写事务
 
-`Store.WriteThread` 使用 ReadCommitted，局部 ThreadTx 仅为本任务串行化：
+`WriteThread(ctx, func(ThreadScope) error) (Completion, error)` 使用 ReadCommitted；作用域的 DAO 仅在回调期间有效，并为当前任务串行化：
 
 1. 按 project/task 锁父 Task `FOR SHARE`，保留 missing/deleted 信息。
-2. 锁当前 credential `FOR SHARE`，再通过 `ThreadTx.LockProjectAuthorization` 调用 canonical `store.LockProjectAuthorization`，依次锁真实 ownership、当前 owner Team member 和 direct grant `FOR SHARE`。验证认证身份与访问权后才分类任务存在性。
-3. 查询作者名称；仅提供 claimId 时读取当前 worker，复用 activeWorker 校验，另验 worker.UserID 与 principal 一致。
+2. 锁当前 credential `FOR SHARE`，再通过 `ThreadScope.ProjectDAO().LockProjectAuthorization` 调用 canonical `store.LockProjectAuthorization`，依次锁真实 ownership、当前 owner Team member 和 direct grant `FOR SHARE`。验证认证身份与访问权后才分类任务存在性。
+3. 查询作者名称；仅提供 claimId 时读取当前 worker，复用 core/task 的 ActiveWorker 校验，另验 worker.UserID 与 principal 一致。
 4. 先独立执行 lazy head INSERT ON CONFLICT DO NOTHING，再独立 SELECT FOR UPDATE。不能合成 CTE，否则 ReadCommitted 并发首写可看不到冲突赢家。
 5. 校验同任务 reply，INSERT 省略 message_id，以 RETURNING 获取一次生成的 UUID 和实际数据库毫秒时间。
 6. 准备前进位置，分别编码默认/详细资源并校验 64 KiB，最后用数据库实际时钟检查 credential expiry，再更新 head。
@@ -62,4 +62,4 @@ List 使用现有只读 Repeatable Read，在同一快照重验 credential、Req
 
 HTTP 日志使用既有 requestId，追加 project_id、task_id、message_id 和经过验证的有限执行来源。component=task_thread；失败保留 phase、安全 cause/code，未知提交记录 thread_error_code=message_outcome_unknown 与 write_outcome=unknown。正文、名称、token、DSN、SQL 和原始上游错误不进入日志。
 
-[决策记录](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-storage.md)保存真实替代方案与范围成本。命令和完整 gate 由[服务端指南](../../packages/daynight-server/README.md#validate)拥有。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-storage.md)保存真实替代方案与范围成本。命令和完整 gate 由[服务端指南](../../packages/daynight-server/README.md#validate)拥有。

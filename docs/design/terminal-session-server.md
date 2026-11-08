@@ -28,7 +28,10 @@ Web producer 和既有 v1 archive 继续使用原协议与读取路径。
 Web 与 Herdr 共用 [Session 项目准入](task-session-protocol.md#relay-与恢复)，
 在原事务中读取 canonical `ProjectAccess`，不长期锁定授权来源。
 Herdr 的状态、历史、归档、capability 与派发沿用此入口；浏览器 channel 每 250ms
-重验。项目角色不替代原 owner、当前 claim、控制租约或 connection epoch 检查。
+重验读取资格。其他有项目访问权的成员和管理员只读；人工输入和控制请求必须由
+持久 Session owner 提交。项目或 Team 角色不替代原 owner、当前 claim、控制租约
+或 connection epoch 检查。非 owner 状态投影清空 `control.availableActions`，保留
+画面、历史和控制归属。
 
 | 方法与相对路径 | 输入与结果 |
 |---|---|
@@ -36,7 +39,7 @@ Herdr 的状态、历史、归档、capability 与派发沿用此入口；浏览
 | `GET /current` | 当前 claim 的 registered/not_registered/not_applicable 状态 |
 | `GET /?cursor=...&limit=50` | task 历史列表，1–200 条，`nextCursor` 分页，包含 Web/Herdr |
 | `GET /{sessionId}/state` | 固定 Session 状态，包含 owner、binding、connectionEpoch、capabilities、control、snapshot、ledger、recording、archive |
-| `POST /{sessionId}/commands` | operation 或 control_request；HTTP 202 返回 operation_result，仅表示已受理 |
+| `POST /{sessionId}/commands` | 原 Session owner 的 operation 或 control_request；其他项目读者 forbidden；HTTP 202 返回 operation_result，仅表示已受理 |
 | `GET /{sessionId}/operations/{operationId}` | 原操作的持久结果，不重新派发 |
 | `POST /{sessionId}/worker-messages` | generation_ledger、recording_responsibility/evidence、finalization、snapshot、control_state/ack、operation_result |
 | `GET /{sessionId}/worker-channel` | Worker WebSocket，首条为 registration/reconnect；随后传入 Worker 消息并接收 control_dispatch/operation |
@@ -104,10 +107,18 @@ ready 包必须与冻结运行账本完全相符，每代文件数量、来源�
 运行启用录制时，合法零帧原因是 ended_before_first_sample；全部未启用时才是
 recording_not_enabled。每代证据独立核对。
 
-服务端向 `session-archives` 写原始字节，重新打开并核对大小和 SHA-256 后持久
-保存 receipt；下载再次校验文件和身份，并直接发送原始存储字节，不重新编码 JSON。ready/unavailable 的不同正文、原因或
-finalizationId 不能覆盖已有终态。failed 不产生允许清理的回执。正文 SHA-256、
-来源摘要、日志摘要与 dispositionDigest 各自具有明确对象，不能互相替代。
+服务端通过共享 `sessionarchive.Namespace` 将 Task Herdr 正文写入
+`session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`。
+该地址与 Web Task 归档共用归属及分片规则；独立 Test/Bot 归档使用用户分组。
+新写入使用此布局，既有文件与元数据保持原状。读取继续打开持久 `object_path`，
+上传重试和回执沿用原语义，不根据目录布局增加拒绝条件。
+[共享归档设计](task-session-protocol.md#服务端归档布局)拥有物理地址规则。 [归档操作占用](task-session-protocol.md#归档操作占用)覆盖上传、内部读回及原始正文发送。
+
+写入保留原始字节，重新打开并核对大小和 SHA-256 后持久保存 receipt；下载再次
+校验文件和身份，并直接发送原始存储字节，不重新编码 JSON。ready/unavailable
+的不同正文、原因或 finalizationId 不能覆盖已有终态。failed 不产生允许清理的
+回执。正文 SHA-256、来源摘要、日志摘要与 dispositionDigest 各自具有明确对象，
+不能互相替代。
 
 普通附件的替换/删除只能操作 task-attachments，不能改变权威归档。历史分页按
 created_at/id 稳定排序，不依赖当前 claim。成员撤销后拒绝读取；任务删除后拒绝
@@ -115,11 +126,14 @@ created_at/id 稳定排序，不依赖当前 claim。成员撤销后拒绝读取
 
 ## 控制与不确定结果
 
-控制要求当前执行、有效连接、完整 Worker 能力、已初始化录制责任和 Worker
-控制状态。服务端持久保存请求摘要、原 fence、actor 和 pending 结果，再转发
+控制要求原 actor 等于持久 Session owner，且当前凭据和项目访问仍有效，同时
+满足当前执行、有效连接、完整 Worker 能力、已初始化录制责任和 Worker 控制状态。
+服务端持久保存请求摘要、原 fence、actor 和 pending 结果，再转发
 control_dispatch。只有匹配请求摘要和 operationId 的 durable control_ack，且
 holder、browser、epoch、到期时间和动作转换均有效，才使 lease 对浏览器可用。
-单纯转发成功或未关联的 control_state 不能授予、续约或恢复自动执行。
+单纯转发成功或未关联的 control_state 不能授予、续约或恢复自动执行。派发、
+有效租约重检和 ACK 授租均重新验证原 actor 的 owner 资格；旧非 owner 租约
+失效，已排队请求和迟到 ACK 不能借管理员权限继续执行。
 
 lease TTL 为 30 秒，客户端每 10 秒以 renew_control 请求续约。释放、断线、
 撤权、过期和停止使控制进入 suspended/closed，不能自动恢复 prompt。服务端失效会推进 controlEpoch 下限；Worker 必须持久确认
@@ -142,6 +156,8 @@ generation 和 connection epoch 匹配的数据，不清除新连接或仍有效
 
 验证分别覆盖共享字节契约、真实隔离数据库中的事务/权限/去重、文件存储读写和
 HTTP/WebSocket 路由。并发测试检查新 generation 与 finalization 不可同时成功；
-撤权和连接替换测试检查旧输入失效；归档测试覆盖 closed 证据、缺文件、hash、
+权限矩阵检查 owner 保留交互、其他 admin/member 与 Team 继承读者可读但不能
+提交输入或控制；撤权、旧非 owner 操作/租约、迟到 ACK 和连接替换测试检查旧输入
+失效；归档测试覆盖 closed 证据、缺文件、hash、
 不可变回执、重领历史和删除边界。Go 完整 gate 与 CLI 测试采用仓库标准命令。
 测试 Worker 不证明真实 Herdr 采集、输入或进程停止，组合验收需实际后继实现。

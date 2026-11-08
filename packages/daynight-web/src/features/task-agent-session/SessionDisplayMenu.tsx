@@ -29,16 +29,22 @@ export function SessionDisplayMenu({ mode, issue, onModeChange, onRetrySave, ope
     if (!open) return;
     const element = menu.current!;
     const owner = trigger.current!.closest('.task-agent-session');
+    const viewport = window.visualViewport;
     const position = () => {
       const anchor = trigger.current!.getBoundingClientRect();
       const ownerBox = owner?.getBoundingClientRect();
-      const left = Math.max(0, ownerBox?.left ?? 0);
-      const right = Math.min(window.innerWidth, ownerBox?.right ?? window.innerWidth);
+      const top = viewport?.offsetTop ?? 0;
+      const bottom = top + (viewport?.height ?? window.innerHeight);
+      const viewportLeft = viewport?.offsetLeft ?? 0;
+      const left = Math.max(viewportLeft, ownerBox?.left ?? viewportLeft);
+      const right = Math.min(viewportLeft + (viewport?.width ?? window.innerWidth), ownerBox?.right ?? Infinity);
       // Top-layer placement avoids clipping, but the menu still belongs to this Session's width.
       element.style.maxWidth = `${Math.max(0, right - left - 16)}px`;
+      element.style.maxHeight = `${Math.max(0, bottom - top - 16)}px`;
       const box = element.getBoundingClientRect();
       element.style.left = `${Math.max(left + 8, Math.min(anchor.right - box.width, right - box.width - 8))}px`;
-      element.style.top = `${anchor.bottom + box.height + 8 <= window.innerHeight ? anchor.bottom + 4 : Math.max(8, anchor.top - box.height - 4)}px`;
+      const preferredTop = anchor.bottom + box.height + 8 <= bottom ? anchor.bottom + 4 : anchor.top - box.height - 4;
+      element.style.top = `${Math.max(top + 8, Math.min(preferredTop, bottom - box.height - 8))}px`;
     };
     const toggled = (event: ToggleEvent) => { if (event.newState === 'closed') latest.current.onOpenChange(false); };
     element.addEventListener('toggle', toggled);
@@ -51,10 +57,14 @@ export function SessionDisplayMenu({ mode, issue, onModeChange, onRetrySave, ope
     resize?.observe(element);
     if (owner !== null) resize?.observe(owner);
     window.addEventListener('resize', position);
+    viewport?.addEventListener('resize', position);
+    viewport?.addEventListener('scroll', position);
     document.addEventListener('scroll', position, true);
     return () => {
       element.removeEventListener('toggle', toggled);
       window.removeEventListener('resize', position);
+      viewport?.removeEventListener('resize', position);
+      viewport?.removeEventListener('scroll', position);
       document.removeEventListener('scroll', position, true);
       resize?.disconnect();
       element.hidePopover();

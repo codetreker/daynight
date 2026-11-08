@@ -2,6 +2,7 @@ import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { MembersPanel } from '../src/features/management/MembersPanel';
+import { pauseAuthRequests } from '../src/api/client';
 import { ProjectSettingsPanel } from '../src/features/management/ProjectSettingsPanel';
 import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { useTaskGraph } from '../src/features/projects/useTaskGraph';
@@ -29,13 +30,13 @@ const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', v
 const json = (body: unknown, status = 200) => wireResponse(body, { status, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
 const failure = (status: number) => json({ error: { code: status === 404 ? 'not_found' : 'internal_error', message: 'Failure', requestId: 'management-access' } }, status);
 const mount = (kind: 'members' | 'settings', handler: (url: string, init?: RequestInit) => Response | Promise<Response>) => {
-  const fetcher = vi.fn(async (url: string, init?: RequestInit) => handler(url, init));
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => kind === "members" && url === root ? json(project) : handler(url, init));
   vi.stubGlobal('fetch', fetcher);
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   let access!: ProjectAccessSession;
   const CaptureAccess = () => { access = useProjectAccess(projectId).session; return null; };
   const view = renderWithLocale(<ProjectAccessBoundary projectId={projectId}><CaptureAccess />{kind === 'members'
-    ? <MembersPanel projectId={projectId} projectName="Private directory" user={user} onRemoved={vi.fn()} onUnavailable={vi.fn()} />
+    ? <MembersPanel projectId={projectId} user={user} onRemoved={vi.fn()} onUnavailable={vi.fn()} />
     : <ProjectSettingsPanel projectId={projectId} user={user} />}</ProjectAccessBoundary>, { locale: 'en', taskCache: { scope } });
   return { view, scope, fetcher, access: () => access };
 };
@@ -89,12 +90,12 @@ it.each([
       await screen.findByRole('alert');
       await focus(mounted.access());
     }
-    expect(resourceReads).toBe(1);
+    expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
     if (kind === 'settings') expect(await screen.findByLabelText('Alert threshold')).toHaveValue(60);
     else await screen.findByText(oldEmail);
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     if (kind === 'members' && role === 'admin') await waitFor(() => expect(invitationReads).toBeGreaterThan(0));
-    else expect(resourceReads).toBe(1);
+    else expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });
 
@@ -212,8 +213,8 @@ it.each([false, true])('keeps an acknowledged invitation and its full catalogue 
     if (url === `${root}/invitations` && init?.method === 'POST') { writes++; writeSignal = init.signal as AbortSignal; return heldWrite.promise; }
     if (url === `${root}/invitations`) {
       invitationReads++;
-      if (invitationReads === 2) return heldInvitations.promise;
-      if (invitationReads === 3 && postAckReadFails) return failure(503);
+      if (invitationReads === 3) return heldInvitations.promise;
+      if (invitationReads === 4 && postAckReadFails) return failure(503);
       return json({ items: committed ? [created, existing] : [existing] });
     }
     throw new Error(`Unexpected request ${url}`);
@@ -229,15 +230,14 @@ it.each([false, true])('keeps an acknowledged invitation and its full catalogue 
     await focus(mounted.access());
     allowed = true;
     await focus(mounted.access());
-    await waitFor(() => expect(invitationReads).toBe(2));
+    await waitFor(() => expect(invitationReads).toBe(3));
     committed = true;
     await act(async () => { heldWrite.resolve(json({ ...created, link }, 201)); await nextEventLoopTurn(); });
     expect(await screen.findByLabelText('One-time invitation link')).toHaveValue(link);
     await act(async () => { heldInvitations.resolve(json({ items: [existing] })); await nextEventLoopTurn(); });
     fireEvent.click(screen.getByRole('button', { name: 'I have saved it, close' }));
     if (postAckReadFails) {
-      await screen.findByRole('alert');
-      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
     }
     await screen.findByRole('button', { name: `Revoke invitation ${created.id}` });
     expect(screen.getByRole('button', { name: `Revoke invitation ${existing.id}` })).toBeVisible();
@@ -307,7 +307,7 @@ it('marks a superseded grant reconciliation observed only after the replacement 
   let rosterReads = 0;
   const mounted = mount('members', (url, init) => {
     if (url === `${root}/access`) return json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
-    if (url === `${root}/members`) return ++rosterReads === 2 ? held.promise : json(roster(freshEmail, 'admin'));
+    if (url === `${root}/members`) return ++rosterReads === 3 ? held.promise : json(roster(freshEmail, 'admin'));
     if (url === `${root}/invitations`) return json({ items: [] });
     if (url === `${root}/grants/${otherId}` && init?.method === 'PUT') return failure(500);
     throw new Error(`Unexpected request ${url}`);
@@ -321,10 +321,10 @@ it('marks a superseded grant reconciliation observed only after the replacement 
     fireEvent.click(confirm);
     const read = await screen.findByRole('button', { name: 'Read current members' });
     fireEvent.click(read);
-    await waitFor(() => expect(rosterReads).toBe(2));
+    await waitFor(() => expect(rosterReads).toBe(3));
     await focus(mounted.access());
     await act(async () => { held.resolve(json(roster(oldEmail, 'admin'))); await nextEventLoopTurn(); });
-    await waitFor(() => expect(rosterReads).toBe(3));
+    await waitFor(() => expect(rosterReads).toBe(4));
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Direct grant for Collaborator' })).not.toBeDisabled());
     expect(screen.queryByText(oldEmail)).toBeNull();
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
@@ -524,5 +524,32 @@ it('keeps the successful receipt and exposes cleanup failure and retry after rem
     } finally { db.close(); }
     expect(screen.getByText('Direct grant for Alice removed.')).toBeVisible();
     expect(writes).toBe(1);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
+
+
+it('does not publish an initial settings resource or allow a save before replacement access is confirmed', async () => {
+  const old = Promise.withResolvers<Response>(), fresh = Promise.withResolvers<Response>();
+  let accessReads = 0, writes = 0;
+  const mounted = mount('settings', (url, init) => {
+    if (url === `${root}/access`) return ++accessReads === 1 ? old.promise : fresh.promise;
+    if (url === root) return json(project);
+    if (url === `${root}/settings` && init?.method === 'PATCH') { writes++; return json(project); }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  try {
+    await waitFor(() => expect(accessReads).toBe(1));
+    const resume = pauseAuthRequests();
+    fireEvent(window, new Event('focus'));
+    await act(async () => old.resolve(json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'))));
+    expect(screen.queryByLabelText('Alert threshold')).toBeNull();
+    resume();
+    await waitFor(() => expect(accessReads).toBe(2));
+    expect(screen.queryByLabelText('Alert threshold')).toBeNull();
+    expect(writes).toBe(0);
+    await act(async () => fresh.resolve(json(directAccessFixture(projectId, TEST_VIEWER_ID, 'member'))));
+    const field = await screen.findByLabelText('Alert threshold');
+    expect(field).toBeDisabled(); expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull();
+    expect(writes).toBe(0);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });

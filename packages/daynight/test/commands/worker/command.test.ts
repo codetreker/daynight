@@ -49,7 +49,7 @@ describe("worker command", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("passes startup context without repository discovery or interactive preparation", async () => {
+  it("passes startup context without adding an interactive project selection callback", async () => {
     const { cli, errors } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
     cli.workingDirectory = vi.fn(() => path.resolve("startup-directory"));
@@ -59,7 +59,6 @@ describe("worker command", () => {
     expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, version: cli.version, workingDirectory: path.resolve("startup-directory"), log: expect.any(Function) });
     expect(cli.workingDirectory).toHaveBeenCalledOnce();
     expect(errors).toEqual(["worker started\n"]);
-
   });
 
   it("requires explicit original identities and confirmation before resource disposal", async () => {
@@ -111,7 +110,7 @@ describe("worker command", () => {
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'show' 'setup' 'run' 'attach' 'repo' 'resources' 'retry' 'release' 'resume')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
-    expect(renderZshCompletion(commandTree)).toContain("repo:Manage repositories selected from existing Daynight Projects");
+    expect(renderZshCompletion(commandTree)).toContain("repo:Prepare local repository selections before cloud management");
     expect(renderBashCompletion(commandTree)).not.toContain("--target-agent");
     expect(renderZshCompletion(commandTree)).not.toContain("--target-agent");
     expect(renderBashCompletion(commandTree)).not.toContain("migrate-workspaces");
@@ -125,6 +124,19 @@ describe("worker command", () => {
     for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
+  it("preserves a foreground runtime failure without starting an interactive setup", async () => {
+    const { cli } = context();
+    cli.homeDirectory = () => path.resolve("worker-home");
+    cli.workingDirectory = () => path.resolve("startup-directory");
+    const deps = dependencies();
+    const failure = new Error("Cloud configuration could not be read.");
+    deps.run.mockRejectedValueOnce(failure);
+    await expect(runWorkerCommand(["run"], cli, deps)).rejects.toBe(failure);
+    expect(deps.run).toHaveBeenCalledOnce();
+    expect(deps.setup).not.toHaveBeenCalled();
+    expect(deps.repository).not.toHaveBeenCalled();
+    expect(deps.manage).not.toHaveBeenCalled();
+  });
 
   it.each([
     { args: ["repo", "list"], request: { kind: "list", json: false } },

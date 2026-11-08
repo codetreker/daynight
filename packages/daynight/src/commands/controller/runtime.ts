@@ -259,6 +259,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
       ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
+      ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true as const } : {}),
       onDiagnostic: diagnostic,
       onFatalError: error => {
         if (providerFailure) return;
@@ -279,6 +280,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
         const receipt = journal.recordOperation(operationId, "confirmed", { disposition: "handled" });
         publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
       }),
+      hasTimelineEntry: entryId => journal.hasTimelineEntry(entryId),
       onTimeline: entry => nativeEvent(() => {
         journal.projectTimeline(providerDisplayEntry(entry));
         if (entry.kind === "interaction") {

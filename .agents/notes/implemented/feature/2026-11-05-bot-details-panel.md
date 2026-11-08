@@ -18,7 +18,9 @@ visibility outside Session cache and client identity. The name button opens a
 panel beside the existing conversation subtree. Both consume the same selected
 Bot read; changing that resource clears the previous details while retaining the
 open intent. The panel displays only name, observed status, Worker, frozen cwd
-and Agent. Startup success remains distinct from current availability.
+and Agent. Startup success remains distinct from current availability. The
+[background-check decision](../bug-fix/2026-11-05-bot-background-check-display.md)
+preserves the open panel while admission is temporarily paused.
 
 The same dialog element participates in the desktop layout as a nonmodal
 complementary region and uses native `showModal()` at widths up to 1000px. Native
@@ -28,7 +30,7 @@ scroll lock prevents background scrolling. Explicit close restores the current
 name button when it remains connected and available. Crossing the breakpoint
 closes the old dialog mode before entering the new one.
 
-The [shared fullscreen hook](2026-11-04-session-fullscreen.md) accepts an optional
+The [shared fullscreen hook](../../archived/feature/2026-11-04-session-fullscreen.md) accepts an optional
 ancestor boundary through `BotSessionHost` and `SessionView`. The Bot conversation
 boundary includes its title, original Session subtree and details. Fullscreen
 registration, isolation, viewport variables and focus use that root without

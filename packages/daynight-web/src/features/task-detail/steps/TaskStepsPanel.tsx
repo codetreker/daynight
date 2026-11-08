@@ -1,5 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { ApiError } from "../../../api/client";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { ApiError, authRequestsPaused } from "../../../api/client";
 import type { StepStatus, TaskStep } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
 import { useDirtyTaskDraft, useDraftNavigationDecision } from "../TaskDraftNavigation";
@@ -66,6 +66,31 @@ const editText = (history: TextHistory, source: string, value: string, selection
   return { value: result, blocked: false };
 };
 
+const StepRow = memo(({ step, index, total, bodyId, open, canDisplayStatus, selectionBlocked, authPaused, canMove, canAdd, canEdit, statusBusy, moveBusy, version, editor, renderMarkdown, onToggle, onStatus, onMove, onEdit }: {
+  readonly step: TaskStep; readonly index: number; readonly total: number; readonly bodyId: string; readonly open: boolean;
+  readonly canDisplayStatus: boolean; readonly selectionBlocked: boolean; readonly authPaused: boolean; readonly canMove: boolean; readonly canAdd: boolean; readonly canEdit: boolean;
+  readonly statusBusy: boolean; readonly moveBusy: boolean; readonly version: bigint;
+  readonly editor: ReactNode; readonly renderMarkdown: (text: string) => ReactNode;
+  readonly onToggle: (stepId: string) => void; readonly onStatus: (stepId: string, status: StepStatus, version: bigint) => void;
+  readonly onMove: (stepId: string, index: number, action: MoveAction) => void; readonly onEdit: (stepId: string) => void;
+}) => {
+  const { messages: { inspection: { steps: m } }, format } = useI18n();
+  return <li className="step-row" data-step-id={step.id}>
+    <div className="step-summary">
+      <button type="button" className="step-disclosure" aria-expanded={open} aria-controls={bodyId} onClick={() => onToggle(step.id)}>
+        <span className="step-chevron" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m6 3 5 5-5 5" /></svg></span>
+        <span className="step-number" aria-hidden="true">{format.number(index + 1)}</span><span className="step-title">{step.title}</span>
+      </button>
+      <div className="step-controls"><StepStatusMenu step={step} available={canDisplayStatus} selectionBlocked={selectionBlocked || authPaused} busy={statusBusy} onSelect={(status) => onStatus(step.id, status, version)} /><code className="step-id">{step.id}</code><StepMoveMenu step={step} index={index} total={total} available={canMove} canAdd={canAdd} canEdit={canEdit} busy={moveBusy} onSelect={(action) => onMove(step.id, index, action)} /></div>
+    </div>
+    <div id={bodyId} className="step-detail" hidden={!open}>
+      {open && <>{editor !== null ? editor : <><button className="button" type="button" onClick={() => onEdit(step.id)}>{m.editStep}</button>{step.description === "" ? <p className="step-detail-empty">{m.noDescription}</p> : renderMarkdown(step.description)}
+        <dl className="step-metadata"><div><dt>{m.created}</dt><dd><time dateTime={step.createdAt}>{format.dateTime(step.createdAt)}</time></dd></div><div><dt>{m.updated}</dt><dd><time dateTime={step.updatedAt}>{format.dateTime(step.updatedAt)}</time></dd></div></dl></>}
+      </>}
+    </div>
+  </li>;
+});
+
 export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, confirmationOwner, confirmationFallback, onConfirmationChange, available = true }: {
   readonly projectId: string; readonly taskId: string; readonly active: boolean;
   readonly renderMarkdown: (text: string) => ReactNode;
@@ -83,7 +108,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const draftKey = useRef(0);
   const [deleting, setDeleting] = useState<{ step: TaskStep; version: bigint } | null>(null);
   const [deleteChanged, setDeleteChanged] = useState(false);
-  const [submittedDelete, setSubmittedDelete] = useState<{ requestId: string; stepId: string; version: bigint; draftKey: number | null; next: readonly Pick<TaskStep, "id" | "createdAt">[]; previous: readonly Pick<TaskStep, "id" | "createdAt">[]; confirmed: boolean } | null>(null);
+  const [submittedDelete, setSubmittedDelete] = useState<{ requestId: string; stepId: string; version: bigint; draftKey: number | null; next: readonly Pick<TaskStep, "id" | "createdAt">[]; previous: readonly Pick<TaskStep, "id" | "createdAt">[] } | null>(null);
   const [preview, setPreview] = useState(false);
   const [discard, setDiscard] = useState(false);
   const [switchTarget, setSwitchTarget] = useState<string | null>(null);
@@ -119,10 +144,6 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   useLayoutEffect(() => { if (!available) { setDiscard(false); onConfirmationChange?.(false); } }, [available, onConfirmationChange]);
   useLayoutEffect(() => sessions.subscribe(projectId, taskId, () => {
     const mutation = sessions.snapshot(projectId, taskId).mutation;
-    if (mutation.phase === "confirmed" && mutation.operation?.action === "stepDelete") {
-      const requestId = mutation.operation.requestId;
-      setSubmittedDelete((current) => current?.requestId === requestId && !current.confirmed ? { ...current, confirmed: true } : current);
-    }
     if ((mutation.phase === "confirmed" && !mutation.reconciling && mutation.reconciliationError === null || mutation.phase === "unknown") && (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit")) {
       const requestId = mutation.operation.requestId;
       setDraft((current) => current !== null && current.requestId === requestId ? { ...current, confirmed: current.confirmed || mutation.phase === "confirmed", uncertain: current.uncertain || mutation.phase === "unknown" } : current);
@@ -159,12 +180,12 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   };
   const start = (currentPage - 1) * PAGE_SIZE;
   const busy = state.status === "loading" || state.refreshing;
-  const toggle = (stepId: string) => setExpanded((previous) => {
+  const toggle = useCallback((stepId: string) => setExpanded((previous) => {
     const next = new Set(previous);
     if (next.has(stepId)) next.delete(stepId);
     else next.add(stepId);
     return next;
-  });
+  }), []);
   const error = state.error;
   const explanation = error instanceof ApiError ? error.kind === "network" ? m.networkError
     : error.kind === "protocol" ? m.protocolError : error.status === 404 ? m.unavailable
@@ -204,11 +225,13 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   }, [active, available, resource, deleting, onConfirmationChange]);
   useEffect(() => {
     if (submittedDelete === null) return;
-    if (!submittedDelete.confirmed) {
-      if (mutation.operation?.action === "stepDelete" && mutation.operation.requestId === submittedDelete.requestId && ["refused", "conflict", "reconciled"].includes(mutation.phase)) setSubmittedDelete(null);
+    const current = mutation.operation?.action === "stepDelete" && mutation.operation.requestId === submittedDelete.requestId;
+    if (!current || mutation.phase !== "confirmed") {
+      if (current && ["refused", "conflict", "reconciled"].includes(mutation.phase)) setSubmittedDelete(null);
       return;
     }
-    if (resource === null || resource.version <= submittedDelete.version || state.stale || state.error !== null) return;
+    // A replacement cache history can retract a validated receipt while admission is pending.
+    if (mutation.reconciling || mutation.reconciliationError !== null || resource === null || resource.version <= submittedDelete.version || state.stale || state.error !== null) return;
     const matchingDraft = draft !== null && draft.key === submittedDelete.draftKey;
     const editingOther = draft !== null && !matchingDraft && document.activeElement instanceof HTMLElement && document.activeElement.closest(".step-add-form") !== null;
     if (matchingDraft) closeDraft();
@@ -247,30 +270,22 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     const button = row?.querySelector<HTMLButtonElement>(".step-more");
     if (button) { button.focus(); button.scrollIntoView?.({ block: "nearest" }); focusMove.current = null; }
   });
-  const submitMove = (stepId: string, placement: { position: "first" | "last" } | { before: string } | { after: string }) => {
+  const submitMove = useCallback((stepId: string, placement: { position: "first" | "last" } | { before: string } | { after: string }) => {
     if (resource === null || !state.canMove) return;
     submittedMove.current = stepId;
     state.move(stepId, placement, resource.version);
-  };
-  const startAdd = (placement: StepDraft["placement"], anchorId: string | null) => {
-    if (draft !== null) return;
+  }, [resource, state.canMove, state.move]);
+  const hasDraft = draft !== null;
+  const startAdd = useCallback((placement: StepDraft["placement"], anchorId: string | null) => {
+    if (hasDraft) return;
     if (placement === "last") setPage(pages);
     setPreview(false); setInvalidTitle(false); setInvalidDescription(false); setAddedMissing(false);
     setAnchorNeedsDecision(false);
     titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setUndoUnavailable(false);
     const anchorCreatedAt = resource?.steps.find((step) => step.id === anchorId)?.createdAt ?? null;
     setDraft({ key: ++draftKey.current, kind: "add", id: crypto.randomUUID().slice(0, 8), title: "", description: "", status: "todo", originalTitle: "", originalDescription: "", originalCreatedAt: null, retired: false, placement, anchorId, anchorCreatedAt, initialPlacement: placement, initialAnchorId: anchorId, initialAnchorCreatedAt: anchorCreatedAt, requestId: null, confirmed: false, uncertain: false });
-  };
-  const move = (stepId: string, index: number, action: MoveAction) => {
-    if (resource === null) return;
-    if (action === "addBefore" || action === "addAfter") { startAdd(action === "addBefore" ? "before" : "after", stepId); return; }
-    if (action === "edit") { selectEdit(stepId); return; }
-    if (action === "delete") { const target = resource.steps.find((step) => step.id === stepId); if (target) { setDeleteChanged(false); setDeleting({ step: target, version: resource.version }); onConfirmationChange?.(true); } return; }
-    if (action === "relative") { setMovingId(stepId); return; }
-    if (action === "first" || action === "last") submitMove(stepId, { position: action });
-    else if (action === "up" && index > 0) submitMove(stepId, { before: resource.steps[index - 1]!.id });
-    else if (action === "down" && index + 1 < resource.steps.length) submitMove(stepId, { after: resource.steps[index + 1]!.id });
-  };
+  }, [hasDraft, pages, resource]);
+  const authPaused = authRequestsPaused();
   const pendingStepId = mutation.operation?.action === "stepStatus" && mutation.phase === "pending" ? mutation.operation.stepId : null;
   const pendingMoveId = (isPosition || isDelete) && mutation.phase === "pending" ? mutation.operation.stepId : null;
   const unresolved = stepMutation?.phase === "unknown" || stepMutation?.phase === "conflict" || stepMutation?.reconciliationError != null || (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit") && (mutation.phase === "unknown" || mutation.phase === "conflict" || mutation.reconciliationError !== null);
@@ -292,19 +307,33 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       setDraft((current) => current === draft ? { ...current, retired: true, confirmed: false } : current);
     }
   }, [draft, resource, state.stale, state.error, editTargetAvailable]);
-  const beginEdit = (stepId: string) => {
+  const beginEdit = useCallback((stepId: string) => {
     const step = resource?.steps.find((item) => item.id === stepId);
     if (!step) return;
     titleHistory.current = newHistory(step.title); descriptionHistory.current = newHistory(step.description); setUndoUnavailable(false);
     setDraft({ key: ++draftKey.current, kind: "edit", id: step.id, title: step.title, description: step.description, status: step.status, originalTitle: step.title, originalDescription: step.description, originalCreatedAt: step.createdAt, retired: false, placement: "last", anchorId: null, anchorCreatedAt: null, initialPlacement: "last", initialAnchorId: null, initialAnchorCreatedAt: null, requestId: null, confirmed: false, uncertain: false });
     setExpanded((previous) => new Set(previous).add(step.id));
     setPreview(false); setInvalidTitle(false); setInvalidDescription(false); setAddedMissing(false);
-  };
-  const selectEdit = (stepId: string) => {
-    if (draft?.id === stepId && draft.kind === "edit" && !draft.retired && currentDraftStep?.createdAt === draft.originalCreatedAt) { titleInput.current?.focus(); return; }
+  }, [resource]);
+  const editDraftId = draft?.kind === "edit" ? draft.id : null;
+  const editDraftRetired = draft?.kind === "edit" ? draft.retired : false;
+  const editDraftCreatedAt = draft?.kind === "edit" ? draft.originalCreatedAt : null;
+  const currentDraftCreatedAt = currentDraftStep?.createdAt;
+  const selectEdit = useCallback((stepId: string) => {
+    if (editDraftId === stepId && !editDraftRetired && currentDraftCreatedAt === editDraftCreatedAt) { titleInput.current?.focus(); return; }
     if (dirty) { setSwitchTarget(stepId); setDiscard(true); onConfirmationChange?.(true); }
     else beginEdit(stepId);
-  };
+  }, [editDraftId, editDraftRetired, currentDraftCreatedAt, editDraftCreatedAt, dirty, beginEdit, onConfirmationChange]);
+  const move = useCallback((stepId: string, index: number, action: MoveAction) => {
+    if (resource === null) return;
+    if (action === "addBefore" || action === "addAfter") { startAdd(action === "addBefore" ? "before" : "after", stepId); return; }
+    if (action === "edit") { selectEdit(stepId); return; }
+    if (action === "delete") { const target = resource.steps.find((step) => step.id === stepId); if (target) { setDeleteChanged(false); setDeleting({ step: target, version: resource.version }); onConfirmationChange?.(true); } return; }
+    if (action === "relative") { setMovingId(stepId); return; }
+    if (action === "first" || action === "last") submitMove(stepId, { position: action });
+    else if (action === "up" && index > 0) submitMove(stepId, { before: resource.steps[index - 1]!.id });
+    else if (action === "down" && index + 1 < resource.steps.length) submitMove(stepId, { after: resource.steps[index + 1]!.id });
+  }, [resource, startAdd, selectEdit, submitMove, onConfirmationChange]);
   const editor = draft !== null && <form className={draft.kind === "edit" ? "step-add-form step-edit-form" : "step-add-form"} onSubmit={(event) => {
       event.preventDefault();
       if (!/[^\p{White_Space}]/u.test(draft.title) || invalidText(draft.title)) { setInvalidTitle(true); titleInput.current?.focus(); return; }
@@ -387,36 +416,24 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       </div>
     </nav>}
     {resource !== null && total > 0 && <ol className="steps-list" start={start + 1}>
-      {resource.steps.slice(start, start + PAGE_SIZE).map((step, index) => {
-        const open = expanded.has(step.id);
-        const bodyId = `${id}-${step.id}`;
-        return <li className="step-row" key={step.id} data-step-id={step.id}>
-          <div className="step-summary">
-            <button type="button" className="step-disclosure" aria-expanded={open} aria-controls={bodyId} onClick={() => toggle(step.id)}>
-              <span className="step-chevron" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m6 3 5 5-5 5" /></svg></span>
-              <span className="step-number" aria-hidden="true">{format.number(start + index + 1)}</span><span className="step-title">{step.title}</span>
-            </button>
-            <div className="step-controls"><StepStatusMenu step={step} available={state.canSetStatus} busy={pendingStepId === step.id} onSelect={(status) => state.setStatus(step.id, status, resource.version)} /><code className="step-id">{step.id}</code><StepMoveMenu step={step} index={start + index} total={total} available={state.canMove} canAdd={active && draft === null} canEdit={active} busy={pendingMoveId === step.id} onSelect={(action) => move(step.id, start + index, action)} /></div>
-          </div>
-          <div id={bodyId} className="step-detail" hidden={!open}>
-            {open && <>{draft?.kind === "edit" && draft.id === step.id && editTargetAvailable ? editor : <><button className="button" type="button" onClick={() => selectEdit(step.id)}>{m.editStep}</button>{step.description === "" ? <p className="step-detail-empty">{m.noDescription}</p> : renderMarkdown(step.description)}
-              <dl className="step-metadata"><div><dt>{m.created}</dt><dd><time dateTime={step.createdAt}>{format.dateTime(step.createdAt)}</time></dd></div><div><dt>{m.updated}</dt><dd><time dateTime={step.updatedAt}>{format.dateTime(step.updatedAt)}</time></dd></div></dl></>}
-            </>}
-          </div>
-        </li>;
-      })}
+      {resource.steps.slice(start, start + PAGE_SIZE).map((step, index) => <StepRow key={step.id} step={step} index={start + index} total={total}
+        bodyId={`${id}-${step.id}`} open={expanded.has(step.id)} canDisplayStatus={state.canDisplayStatus} selectionBlocked={!state.canSetStatus} authPaused={authPaused} canMove={state.canMove}
+        canAdd={active && draft === null} canEdit={active} statusBusy={pendingStepId === step.id} moveBusy={pendingMoveId === step.id}
+        version={resource.version} editor={draft?.kind === "edit" && draft.id === step.id && editTargetAvailable ? editor : null}
+        renderMarkdown={renderMarkdown} onToggle={toggle} onStatus={state.setStatus} onMove={move} onEdit={selectEdit} />)}
     </ol>}
     {draft !== null && (draft.kind === "add" || resource !== null && !editTargetAvailable) && editor}
     {discard && available && navigationDecision === null && <TaskConfirmation title={m.discardTitle} question={draft?.kind === "edit" ? m.discardEditQuestion : m.discardQuestion} explanation={m.discardExplanation} taskTitle={draft?.title ?? ""} confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.cancel} destructive owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} onCancel={() => { setDiscard(false); setSwitchTarget(null); onConfirmationChange?.(false); }} onConfirm={() => { const target = switchTarget; const previous = draft?.kind === "edit" ? draft.id : ""; closeDraft(); if (target !== null) beginEdit(target); else setFocusStep(previous); }} />}
-    {navigationDecision === null && available && deleting !== null && <TaskConfirmation title={m.deleteTitle} question={m.deleteQuestion} explanation={m.deleteExplanation} taskTitle={`${deleting.step.title} (${deleting.step.id})`} content={<><p>{m.deleteExplanation}</p>{draft?.kind === "edit" && draft.id === deleting.step.id && dirty && <p>{m.deleteDraft}</p>}</>} confirmLabel={m.deleteStep} cancelLabel={m.cancel} closeLabel={m.cancel} destructive owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} onCancel={() => { setDeleting(null); onConfirmationChange?.(false); }} onConfirm={() => {
+    {navigationDecision === null && available && deleting !== null && <TaskConfirmation title={m.deleteTitle} question={m.deleteQuestion} explanation={m.deleteExplanation} taskTitle={`${deleting.step.title} (${deleting.step.id})`} content={<><p>{m.deleteExplanation}</p>{draft?.kind === "edit" && draft.id === deleting.step.id && dirty && <p>{m.deleteDraft}</p>}</>} confirmLabel={m.deleteStep} cancelLabel={m.cancel} closeLabel={m.cancel} destructive confirmDisabled={!state.canDelete || authRequestsPaused()} owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} onCancel={() => { setDeleting(null); onConfirmationChange?.(false); }} onConfirm={() => {
+      if (!state.canDelete || authRequestsPaused()) return;
       setDeleting(null); onConfirmationChange?.(false);
       if (resource === null || !state.canDelete || resource.version !== deleting.version || !resource.steps.some((step) => step.id === deleting.step.id && step.createdAt === deleting.step.createdAt)) { setDeleteChanged(true); return; }
       const index = resource.steps.findIndex((step) => step.id === deleting.step.id);
       const requestId = state.remove(deleting.step.id, deleting.version);
-      if (requestId !== null) setSubmittedDelete({ requestId, stepId: deleting.step.id, version: resource.version, draftKey: draft?.kind === "edit" && draft.id === deleting.step.id && draft.originalCreatedAt === deleting.step.createdAt ? draft.key : null, next: resource.steps.slice(index + 1).map(({ id, createdAt }) => ({ id, createdAt })), previous: resource.steps.slice(0, index).reverse().map(({ id, createdAt }) => ({ id, createdAt })), confirmed: false });
+      if (requestId !== null) setSubmittedDelete({ requestId, stepId: deleting.step.id, version: resource.version, draftKey: draft?.kind === "edit" && draft.id === deleting.step.id && draft.originalCreatedAt === deleting.step.createdAt ? draft.key : null, next: resource.steps.slice(index + 1).map(({ id, createdAt }) => ({ id, createdAt })), previous: resource.steps.slice(0, index).reverse().map(({ id, createdAt }) => ({ id, createdAt })) });
       else setDeleteChanged(true);
     }} />}
-    {navigationDecision === null && moving !== null && resource !== null && <StepMoveDialog step={moving} steps={resource.steps} available={state.canMove} onCancel={() => { setMovingId(null); requestAnimationFrame(() => workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${moving.id}"] .step-more`)?.focus()); }} onConfirm={(target, placement) => { setMovingId(null); submitMove(moving.id, placement === "before" ? { before: target } : { after: target }); }} />}
+    {navigationDecision === null && moving !== null && resource !== null && <StepMoveDialog step={moving} steps={resource.steps} available={state.canMove} onCancel={() => { setMovingId(null); requestAnimationFrame(() => workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${moving.id}"] .step-more`)?.focus()); }} onConfirm={(target, placement) => { if (!state.canMove || authRequestsPaused()) return; setMovingId(null); submitMove(moving.id, placement === "before" ? { before: target } : { after: target }); }} />}
     {navigationDecision === null && choosingTarget && draft !== null && resource !== null && <StepAddTargetDialog steps={resource.steps} selectedId={draft.anchorId} onCancel={() => { setChoosingTarget(false); requestAnimationFrame(() => chooseTarget.current?.focus()); }} onConfirm={(target) => { const selected = resource.steps.find((step) => step.id === target); if (!selected) return; setDraft({ ...draft, anchorId: target, anchorCreatedAt: selected.createdAt }); setAnchorNeedsDecision(false); setChoosingTarget(false); requestAnimationFrame(() => chooseTarget.current?.focus()); }} />}
   </section>;
 };

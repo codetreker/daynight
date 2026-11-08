@@ -1,24 +1,11 @@
 package api
 
-import "time"
+import (
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
+	"time"
+)
 
-type TaskViewRecord struct {
-	Properties        TaskProperties `json:"properties"`
-	ID                string         `json:"id"`
-	TitlePreview      string         `json:"titlePreview"`
-	TitleTruncated    bool           `json:"titleTruncated"`
-	Status            string         `json:"status"`
-	Version           string         `json:"version"`
-	DependsOn         []string       `json:"dependsOn"`
-	ExternalDependsOn []string       `json:"externalDependsOn"`
-	RequiredPlatform  *string        `json:"requiredPlatform"`
-	AssignedTo        *string        `json:"assignedTo"`
-	AllowAgents       bool           `json:"allowAgents"`
-	CreatedAt         time.Time      `json:"createdAt"`
-	UpdatedAt         time.Time      `json:"updatedAt"`
-	StartedAt         *time.Time     `json:"startedAt"`
-	CompletedAt       *time.Time     `json:"completedAt"`
-}
+type TaskViewRecord = taskprotocol.SyncRecord
 
 type TaskSync struct {
 	Mode             string                `json:"mode"`

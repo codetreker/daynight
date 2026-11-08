@@ -110,7 +110,7 @@ if (import.meta.main) {
     const packageDirectory = fileURLToPath(new URL('../', import.meta.url));
     const count = await publishAssets({
       source: join(packageDirectory, 'dist'),
-      destination: resolve(packageDirectory, '../daynight-server/internal/webui/dist'),
+      destination: resolve(packageDirectory, '../daynight-server/internal/service/webui/dist'),
       temporaryRoot: resolve(packageDirectory, '../../.tmp'),
     });
     console.log(`Published ${count} frontend files for the Go server.`);

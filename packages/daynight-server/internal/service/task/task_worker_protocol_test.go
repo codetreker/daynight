@@ -1,0 +1,110 @@
+package task_test
+
+import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+
+	"context"
+	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+)
+
+func TestLegacyWorkerProtocolPreservesSupportedLifecycle(t *testing.T) {
+	tasks, _, project, _, principal := taskService(t)
+	ctx := taskcore.WithLegacyWorkerProtocol(context.Background())
+	manual := createTask(t, tasks, principal, project.ID, "Manual task")
+	manual, err := tasks.Update(ctx, principal, project.ID, manual.ID, taskcore.UpdateTask{Version: manual.Version, Title: pointer("Updated manual task")})
+	if err != nil || manual.Title != "Updated manual task" {
+		t.Fatalf("legacy manual update: %#v, %v", manual, err)
+	}
+	manual, err = tasks.SetStatus(ctx, principal, project.ID, manual.ID, taskcore.SetTaskStatus{Version: manual.Version, Status: model.TaskInProgress})
+	if err != nil || testWorker(t, manual.Properties) != nil || manual.Status != model.TaskInProgress {
+		t.Fatalf("legacy manual lifecycle: %#v, %v", manual, err)
+	}
+	for _, agent := range []model.WorkerAgent{model.AgentCodex, model.AgentCopilot} {
+		t.Run(string(agent), func(t *testing.T) {
+			candidate := claimableTask(t, tasks, principal, project.ID)
+			descriptor := workerDescriptor()
+			descriptor.Agent = agent
+			claimed, err := tasks.ClaimWorker(ctx, principal, project.ID, candidate.ID, taskcore.ClaimWorker{Version: candidate.Version, WorkerDescriptor: descriptor})
+			if err != nil || testWorker(t, claimed.Properties) == nil || testWorker(t, claimed.Properties).AgentControlMode != model.AgentControlModeHerdr {
+				t.Fatalf("legacy claim must retain default Herdr: %#v, %v", claimed, err)
+			}
+			updated, err := tasks.Update(ctx, principal, project.ID, claimed.ID, taskcore.UpdateTask{Version: claimed.Version, Title: pointer("Updated worker task")})
+			if err != nil || updated.Title != "Updated worker task" || testWorker(t, updated.Properties).ClaimID != descriptor.ClaimID {
+				t.Fatalf("legacy metadata update: %#v, %v", updated, err)
+			}
+			completed, err := tasks.SetStatus(ctx, principal, project.ID, updated.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
+			if err != nil || testWorker(t, completed.Properties).State != model.WorkerCompleted {
+				t.Fatalf("legacy completion: %#v, %v", completed, err)
+			}
+		})
+	}
+}
+
+func TestLegacyWorkerProtocolRefusesUnsupportedExecutionsWithoutWrites(t *testing.T) {
+	for _, entry := range []struct {
+		mode  model.WorkerAgentControlMode
+		agent model.WorkerAgent
+	}{
+		{model.AgentControlModeWeb, model.AgentCodex},
+		{model.AgentControlModeWeb, model.AgentCopilot},
+		{model.AgentControlModeWeb, model.AgentClaude},
+		{model.AgentControlModeHerdr, model.AgentClaude},
+	} {
+		t.Run(string(entry.mode)+"/"+string(entry.agent), func(t *testing.T) {
+			tasks, _, project, _, principal := taskService(t)
+			ctx := taskcore.WithLegacyWorkerProtocol(context.Background())
+			candidate := claimableTask(t, tasks, principal, project.ID)
+			descriptor := workerDescriptor()
+			descriptor.Agent, descriptor.AgentControlMode = entry.agent, entry.mode
+			_, err := tasks.ClaimWorker(ctx, principal, project.ID, candidate.ID, taskcore.ClaimWorker{Version: candidate.Version, WorkerDescriptor: descriptor})
+			requireFault(t, err, "invalid_transition")
+			assertTaskUnchanged(t, tasks, principal, candidate)
+
+			claimed := claimWorkerTask(t, tasks, principal, candidate, descriptor)
+			for _, version := range []int64{claimed.Version - 1, claimed.Version} {
+				want := "invalid_transition"
+				if version != claimed.Version {
+					want = "version_conflict"
+				}
+				_, err = tasks.Update(ctx, principal, project.ID, claimed.ID, taskcore.UpdateTask{Version: version, Title: pointer("Must not change")})
+				requireFault(t, err, want)
+				_, err = tasks.SetStatus(ctx, principal, project.ID, claimed.ID, taskcore.SetTaskStatus{Version: version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
+				requireFault(t, err, want)
+				_, err = tasks.ReleaseWorker(ctx, principal, project.ID, claimed.ID, taskcore.ReleaseWorker{Version: version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
+				requireFault(t, err, want)
+				assertTaskUnchanged(t, tasks, principal, claimed)
+			}
+			_, err = tasks.ReleaseWorker(ctx, principal, project.ID, claimed.ID, taskcore.ReleaseWorker{Version: claimed.Version - 1, ClaimID: "invalid", StoppedConfirmed: true})
+			requireFault(t, err, "invalid_input")
+			assertTaskUnchanged(t, tasks, principal, claimed)
+
+			released, err := tasks.ReleaseWorker(context.Background(), principal, project.ID, claimed.ID, taskcore.ReleaseWorker{Version: claimed.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = tasks.Delete(ctx, principal, project.ID, released.ID, taskcore.DeleteTask{Version: released.Version})
+			requireFault(t, err, "invalid_transition")
+			for _, next := range []taskcore.WorkerDescriptor{descriptor, workerDescriptor()} {
+				_, err = tasks.ResumeWorker(ctx, principal, project.ID, released.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
+				requireFault(t, err, "invalid_transition")
+				assertTaskUnchanged(t, tasks, principal, released)
+			}
+		})
+	}
+}
+
+func TestLegacyWorkerCompatibilityPreservesHistoricalMode(t *testing.T) {
+	if !taskcore.LegacyWorkerCompatible(nil) {
+		t.Fatal("manual tasks must remain compatible")
+	}
+	for _, agent := range []model.WorkerAgent{model.AgentCodex, model.AgentCopilot, model.AgentClaude, "unknown"} {
+		for _, mode := range []model.WorkerAgentControlMode{"", model.AgentControlModeHerdr, model.AgentControlModeWeb, "unknown"} {
+			want := (mode == "" || mode == model.AgentControlModeHerdr) && (agent == model.AgentCodex || agent == model.AgentCopilot)
+			if got := taskcore.LegacyWorkerCompatible(&model.WorkerClaim{Agent: agent, AgentControlMode: mode}); got != want {
+				t.Errorf("compatibility for %q/%q = %t, want %t", mode, agent, got, want)
+			}
+		}
+	}
+}

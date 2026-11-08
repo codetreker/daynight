@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ChainProjection } from '../src/features/task-graph/model';
 import { layoutGraph, TASK_NODE_COMPACT_HEIGHT, TASK_NODE_EXPANDABLE_HEIGHT, TASK_NODE_WIDTH, type CanvasLayout } from '../src/features/task-graph/layout';
+import { compileDependencyRoute } from '../src/features/task-graph/routes';
+import { entersRectangle, parseRoute, tangent } from './route-geometry';
 
 const projection = (
   mainIds: readonly string[],
@@ -73,7 +75,7 @@ describe('horizontal task graph layout', () => {
   });
 
   it('returns an explicit empty layout without non-finite Dagre bounds', () => {
-    expect(layoutGraph(projection([], []))).toEqual({ nodes: [], edges: [], width: 0, height: 0 });
+    expect(layoutGraph(projection([], []))).toEqual({ nodes: [], edges: [], width: 0, height: 0, direction: 'horizontal' });
   });
 
   it('routes mixed-height cards to their actual boundaries without overlapping cards', () => {
@@ -154,5 +156,40 @@ describe('horizontal task graph layout', () => {
     expect(first.nodes).not.toBe(second.nodes);
     expect(first.nodes[0]!.position).not.toBe(second.nodes[0]!.position);
     expect(first.edges[0]!.points).not.toBe(second.edges[0]!.points);
+  });
+});
+
+describe('vertical task graph layout', () => {
+  it('routes complete mixed-height branching and cross-rank dependencies around every card', () => {
+    const input = projection(['A', 'B', 'C', 'D', 'E'],
+      [['A', 'B'], ['A', 'C'], ['B', 'D'], ['C', 'D'], ['A', 'D'], ['D', 'E'], ['X', 'E']], ['X'], [['X', 'E']]);
+    const heights = new Map([['A', 96], ['B', 136], ['C', 96], ['D', 136], ['E', 96], ['X', 136]]);
+    const result = layoutGraph(input, heights, 'vertical');
+    expect(result.direction).toBe('vertical');
+    expect(result.edges).toHaveLength(input.edges.length);
+    const nodes = new Map(result.nodes.map((node) => [node.id, node]));
+    for (const [index, node] of result.nodes.entries()) {
+      expect(node.height).toBe(heights.get(node.id));
+      for (const other of result.nodes.slice(index + 1)) {
+        expect(node.position.x + node.width <= other.position.x || other.position.x + other.width <= node.position.x ||
+          node.position.y + node.height <= other.position.y || other.position.y + other.height <= node.position.y).toBe(true);
+      }
+    }
+    for (const edge of result.edges) {
+      const source = nodes.get(edge.source)!; const target = nodes.get(edge.target)!;
+      expect(edge.points[0]).toEqual({ x: source.position.x + source.width / 2, y: source.position.y + source.height });
+      expect(edge.points.at(-1)).toEqual({ x: target.position.x + target.width / 2, y: target.position.y });
+      expect(source.position.y + source.height).toBeLessThan(target.position.y);
+      const compiled = compileDependencyRoute(edge.points, edge.external, 'vertical');
+      if (edge.external) expect(compiled.pieces.length).toBeGreaterThan(0);
+      const curves = parseRoute(compiled.d);
+      const start = tangent(curves[0]!, 0); const end = tangent(curves.at(-1)!, 1);
+      expect(start.x).toBeCloseTo(0); expect(start.y).toBeGreaterThan(0);
+      expect(end.x).toBeCloseTo(0); expect(end.y).toBeGreaterThan(0);
+      for (const curve of curves) for (const node of result.nodes) {
+        expect(entersRectangle(curve, { left: node.position.x, top: node.position.y,
+          right: node.position.x + node.width, bottom: node.position.y + node.height })).toBe(false);
+      }
+    }
   });
 });

@@ -16,13 +16,14 @@ import { BotEnvironmentCleanupError, prepareBotEnvironment, type PreparedBotEnvi
 import { selectBotRole } from "./instructions.js";
 import type { BotExecutionStore } from "./execution-store.js";
 import type { BotStore } from "./store.js";
-import type { BotSessionApi } from "./session-api.js";
+import type { BotDeletionStop, BotSessionApi } from "./session-api.js";
 import type { BotRecord } from "./types.js";
+import { botNativeConfiguration } from "./configuration.js";
 
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
-  sessionApi: BotSessionApi; recoveryLimit: number; now?: () => number;
+  sessionApi: BotSessionApi; recoveryLimit: number | (() => number); now?: () => number;
   dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; confirmStopped?: typeof confirmControllerProcessesStopped; stopProcesses?: typeof stopControllerProcesses; recordStopped?: typeof recordStoppedControllerGeneration; request?: typeof requestController };
 }) => {
   const now = options.now ?? Date.now, serialize = createControllerExecutionSerializer();
@@ -43,14 +44,18 @@ export const createBotProcess = (options: {
   const checkedTicket = async (record: BotRecord): Promise<ControllerLaunchTicket> => {
     const intent = record.intent;
     if (intent === null || intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot launch intent is incomplete.");
-    const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId), config = record.definition!.resolvedConfiguration;
+    const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
+    if (config.selection !== undefined) {
+      const requiresSelection = native.model !== null || parseProviderArguments(config.provider, native.args, true).effort !== undefined;
+      if ((ticket.configuration.validateNativeSelection === true) !== requiresSelection) throw new Error("Bot ticket selection validation conflicts with its frozen configuration.");
+    }
     if (ticket.testExecutionId !== intent.executionId || ticket.executionId !== intent.executionId || ticket.sessionId !== intent.sessionId
       || ticket.controllerId !== intent.registration.controllerId || ticket.controllerInstanceId !== intent.controllerInstanceId
       || ticket.executionGeneration !== intent.executionGeneration || ticket.ownerUserId !== record.owner.ownerUserId || ticket.serverOrigin !== record.owner.serverOrigin
       || ticket.provider !== config.provider || ticket.cwd !== config.cwd || ticket.initialInput !== "none" || ticket.initialPrompt !== ""
       || ticket.resumeNativeSessionId !== intent.nativeSessionId
       || ticket.initialOperationId !== intent.initialOperationId || ticket.instructions !== intent.roleConfiguration.instructions || ticket.credentialFile !== intent.credentialFile
-      || controllerPayloadHash(ticket.configuration) !== controllerPayloadHash({ agent: config.provider, agentControlMode: "web", model: config.model, args: config.args, recoveryLimit: intent.recoveryLimit })) throw new Error("Bot ticket conflicts with the original frozen execution intent.");
+      || controllerPayloadHash(ticket.configuration) !== controllerPayloadHash({ agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit, ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true } : {}) })) throw new Error("Bot ticket conflicts with the original frozen execution intent.");
     return ticket;
   };
   const sessionRecord = (record: BotRecord): BotRecord => {
@@ -59,7 +64,7 @@ export const createBotProcess = (options: {
     return record.intent === null ? record : { ...record, intent: { ...record.intent, nativeSessionId } };
   };
   const remember = (input: BotRecord, snapshot: ControllerSnapshot): ControllerSnapshot => {
-    options.executions.update(current(input), { launchSubmission: "acknowledged", snapshot, ...(snapshot.startup === undefined ? {} : { startup: snapshot.startup }), lastError: snapshot.error });
+    options.executions.update(current(input, true), { launchSubmission: "acknowledged", snapshot, ...(snapshot.startup === undefined ? {} : { startup: snapshot.startup }), lastError: snapshot.error });
     return snapshot;
   };
   const prepareEnvironment = async (record: BotRecord, signal: AbortSignal): Promise<PreparedBotEnvironment> => {
@@ -68,7 +73,7 @@ export const createBotProcess = (options: {
     const retained = environments.get(record.botId);
     if (retained !== undefined) return retained;
     const config = record.definition!.resolvedConfiguration;
-    parseProviderArguments(config.provider, config.args);
+    parseProviderArguments(config.provider, botNativeConfiguration(config).args, config.selection !== undefined);
     try {
       const prepared = await environment({ homeDirectory: options.homeDirectory, cwd: config.cwd, workerPaths: resolveConfigurationPaths(options.homeDirectory), serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId, signal });
       environments.set(record.botId, prepared);
@@ -121,7 +126,7 @@ export const createBotProcess = (options: {
     // registration only once the initial environment is known to be usable.
     const prepared = await prepareEnvironment(record, signal);
     try {
-      if (record.intent === null) options.store.prepare(record.owner, record.botId, { homeDirectory: options.homeDirectory, recoveryLimit: options.recoveryLimit });
+      if (record.intent === null) options.store.prepare(record.owner, record.botId, { homeDirectory: options.homeDirectory, recoveryLimit: typeof options.recoveryLimit === "function" ? options.recoveryLimit() : options.recoveryLimit });
       record = current(record);
       options.store.freezeRole(record.owner, record.botId, selectBotRole({ serverRole: record.definition!.roleConfiguration, preparedRole: record.intent!.roleConfiguration }));
       record = current(record);
@@ -136,7 +141,7 @@ export const createBotProcess = (options: {
       try { ticket = await checkedTicket(record); }
       catch (error) {
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-        const intent = record.intent!, config = record.definition!.resolvedConfiguration;
+        const intent = record.intent!, config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
         if (intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot registration did not establish its frozen role and Session.");
         await mkdir(controllerExecutionDirectory(options.homeDirectory, intent.executionId), { recursive: true, mode: 0o700 });
         const previous = options.executions.get(record)!.previous;
@@ -147,7 +152,8 @@ export const createBotProcess = (options: {
         ticket = { schemaVersion: 1, launchId: intent.launchId, executionId: intent.executionId, testExecutionId: intent.executionId,
           controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, sessionId: intent.sessionId,
           executionGeneration: intent.executionGeneration, serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId,
-          provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: config.model, args: config.args, recoveryLimit: intent.recoveryLimit },
+          provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
+            ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
           credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
         await writeLaunchTicket(options.homeDirectory, ticket);
@@ -155,15 +161,16 @@ export const createBotProcess = (options: {
       const previous = options.executions.get(current(record))!.previous;
       const stopProof = previous === null ? undefined : { generation: previous.generation, instanceId: previous.instanceId, recordId: previous.recordId, stoppedAt: previous.stoppedAt };
       const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal, stopProof);
+      current(record); signal.throwIfAborted();
       await writeControllerCredential(ticket.credentialFile, grant);
       record = current(record);
       return await launch({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, env: prepared.environment, signal,
         onSubmitting: () => { options.executions.update(current(record), { launchSubmission: "unknown" }); },
-        onSpawned: proof => { options.executions.update(current(record), { controllerProcess: proof }); },
+        onSpawned: proof => { options.executions.update(current(record, true), { controllerProcess: proof }); },
         onObserved: snapshot => { remember(record, snapshot); },
       });
     } catch (error) {
-      record = current(record);
+      record = current(record, true);
       const execution = record.intent === null ? null : options.executions.get(record);
       if (execution !== null) options.executions.update(record, {
         lastError: error instanceof Error ? error.message : "Bot launch outcome is unknown.",
@@ -219,7 +226,68 @@ export const createBotProcess = (options: {
     options.executions.update(record, { snapshot: stopped });
     environments.delete(record.botId);
   };
+  const deletionRecord = (input: BotRecord): BotRecord => {
+    const record = options.store.get(input.owner, input.botId);
+    if (record === null || input.observed.deletion === null || record.observed.deletion === null
+      || input.observed.deletion.deletionId !== record.observed.deletion.deletionId
+      || input.observed.deletion.requestedVersion !== record.observed.deletion.requestedVersion
+      || controllerPayloadHash(input.intent) !== controllerPayloadHash(record.intent)) {
+      throw new Error("Bot deletion identity differs from its original durable responsibility.");
+    }
+    return record;
+  };
+  const stopForDeletion = async (input: BotRecord, signal: AbortSignal): Promise<BotDeletionStop | null> => {
+    signal.throwIfAborted();
+    let record = deletionRecord(input);
+    const preparation = pendingCleanup.get(record.botId);
+    if (preparation !== undefined) { await preparation.retryCleanup(); pendingCleanup.delete(record.botId); }
+    record = deletionRecord(input);
+    const intent = record.intent;
+    if (intent === null) {
+      if (record.definition?.sessionId != null) throw new Error("Bot deletion lost the original execution evidence for its registered Session.");
+      // Preflight can own aliases before launch intent exists. A failed release
+      // retains this handle; registered execution aliases use the durable plan.
+      const prepared = environments.get(record.botId);
+      if (prepared !== undefined) { await prepared.release(); environments.delete(record.botId); }
+      signal.throwIfAborted(); deletionRecord(input);
+      return null;
+    }
+    const execution = options.executions.get(record);
+    const unsubmitted = execution === null || execution.launchSubmission === "not-submitted";
+    const rejected = execution?.startup?.state === "failed" && execution.startup.reasonCode === "controller_launch_failed"
+      && execution.controllerProcess === null && execution.snapshot === null;
+    if (unsubmitted || rejected) {
+      // A prepared recovery may have advanced the remote fence even when its
+      // grant response was lost. Never guess which generation owns deletion.
+      if (intent.executionGeneration !== "1") throw new Error("Bot deletion server generation is unconfirmed after recovery preparation; original evidence is retained.");
+      if (intent.sessionId === null) throw new Error("Bot deletion registration outcome is unconfirmed; the original registration identity is retained.");
+      return { protocol: "daynight.session.v1", sessionId: intent.sessionId, testExecutionId: intent.executionId,
+        executionGeneration: intent.executionGeneration, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
+        stopProof: { kind: "never_started", recordId: intent.launchId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: new Date(now()).toISOString() } };
+    }
+    await shutdown(record, signal);
+    record = deletionRecord(input);
+    const stopped = options.executions.get(record)?.snapshot;
+    if (stopped?.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.controllerProcess === null || intent.sessionId === null) {
+      throw new Error("Bot deletion requires complete original writer stop evidence.");
+    }
+    return { protocol: "daynight.session.v1", sessionId: intent.sessionId, testExecutionId: intent.executionId,
+      executionGeneration: intent.executionGeneration, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
+      stopProof: { recordId: intent.launchId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: stopped.stoppedAt } };
+  };
   return {
+    /** Join launch/renewal, then retain the same lock through stop and private cleanup.
+     * A persisted deletion receipt lets the caller skip stop after journal removal.
+     */
+    withDeletion: <T>(record: BotRecord, signal: AbortSignal, action: (stop: () => Promise<BotDeletionStop | null>) => Promise<T>): Promise<T> => serialize(record.botId, async () => {
+      signal.throwIfAborted(); deletionRecord(record);
+      let active = true;
+      try { return await action(() => {
+        if (!active) return Promise.reject(new Error("Bot deletion stop must remain inside its serialized cleanup."));
+        return stopForDeletion(record, signal);
+      }); }
+      finally { active = false; }
+    }),
     shutdown: (record: BotRecord, signal: AbortSignal) => serialize(record.botId, () => shutdown(record, signal)),
     advance: (record: BotRecord, signal: AbortSignal) => serialize(record.botId, async () => {
       try { return await advance(record, signal); }

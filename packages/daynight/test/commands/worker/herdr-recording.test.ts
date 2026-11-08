@@ -49,6 +49,29 @@ describe("bounded terminal styled text", () => {
 });
 
 describe("durable Herdr recording", () => {
+  it("accounts for empty-generation boundaries before admitting another run or segment", () => {
+    const f = fixture(), maximum = SESSION_V2_LIMITS.maxGaps;
+    f.store.sample(segment.segmentId, screen("first"), at(0));
+    f.store.endSegment(segment.segmentId, { endedAt: at(1000).capturedAt, durationMs: "1000" }); f.store.closeRun("1");
+    try {
+      Object.assign(SESSION_V2_LIMITS, { maxGaps: 3 });
+      f.store.registerRun("2"); f.store.closeRun("2");
+      expect(f.store.metadata().gaps).toHaveLength(1); expect(f.store.canOpenSegment()).toBe(true);
+      f.store.registerRun("3"); f.store.closeRun("3");
+      expect(f.store.metadata().gaps).toHaveLength(2); expect(f.store.canOpenSegment()).toBe(false);
+      f.store.registerRun("4"); f.store.closeRun("4");
+      const recovered = openHerdrRecordingStore(f.options);
+      expect(recovered.metadata().gaps).toHaveLength(3);
+      expect(() => recovered.registerRun("5")).toThrow();
+      expect(recovered.snapshot().runs).toHaveLength(4); expect(recovered.snapshot().gaps).toHaveLength(3);
+    } finally { Object.assign(SESSION_V2_LIMITS, { maxGaps: maximum }); }
+  });
+  it("rejects a restart link that disagrees with its original preceding segment", () => {
+    const f = fixture(); f.store.endSegment(segment.segmentId, { endedAt: start, durationMs: "0" }); f.store.closeRun("1");
+    f.store.registerRun("2"); f.store.closeRun("2"); f.store.registerRun("3");
+    expect(() => f.store.openSegment({ ...segment, segmentId: id(9), executionGeneration: "3", segmentOrdinal: "2", gap: { kind: "boundary", reason: "restart", from: { executionGeneration: "2", segmentId: segment.segmentId }, to: { executionGeneration: "3", segmentId: id(9) } } })).toThrow();
+    expect(() => openHerdrRecordingStore(f.options)).toThrow();
+  });
   it("writes full frame bytes before exposing a registered frame and deduplicates until the five-second checkpoint", () => {
     const f = fixture();
     expect(f.store.sample(segment.segmentId, screen("first"), at(0))).toMatchObject({ recorded: true, changed: true });

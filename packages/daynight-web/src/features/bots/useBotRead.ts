@@ -29,11 +29,12 @@ export function useBotRead<T>(key: string, enabled: boolean, load: (scope: TaskC
     };
     const cancel = () => {
       controller?.abort(); controller = null;
-      setState(old => ({ ...(old.scope === scope && old.key === key ? old : empty()), busy: false, stale: true }));
+      setState(old => ({ ...(old.scope === scope && old.key === key ? old : empty()), busy: false }));
     };
     const visibility = () => { cancel(); void run(); };
     const invalidate = () => { cancel(); setState(empty()); };
     action.current = () => { void run(); };
+    if (!allowed()) cancel();
     void run();
     const timer = setInterval(() => { if (!allowed()) cancel(); else void run(); }, 5_000);
     document.addEventListener('visibilitychange', visibility);
@@ -41,5 +42,5 @@ export function useBotRead<T>(key: string, enabled: boolean, load: (scope: TaskC
     return () => { live = false; controller?.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); action.current = () => {}; };
   }, [scope, key, enabled, load]);
   const current = state.scope === scope && state.key === key && !scope.isInvalidated ? state : empty();
-  return { ...current, stale: current.stale || !enabled || authRequestsPaused(), refresh };
+  return { ...current, refresh };
 }

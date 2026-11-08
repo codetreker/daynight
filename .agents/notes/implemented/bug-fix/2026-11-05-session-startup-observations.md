@@ -40,9 +40,9 @@ The report contains fixed reason codes; safe text is derived from a fixed map,
 while private raw diagnostics remain local. Observation timestamps describe
 historical evidence, not current transport health.
 
-The [persistent recovery pause decision](2026-11-04-web-recovery-pause.md)
-continues to own recovery budgets, explicit retry, original identity and stop
-proof. Its original implementation deliberately reported only phase and native
+The [persistent recovery pause decision](../../archived/bug-fix/2026-11-04-web-recovery-pause.md)
+records the rationale for recovery budgets, explicit retry, original identity
+and stop proof. Its original implementation deliberately reported only phase and native
 identity; the independent report adds visibility without changing those gates.
 
 ## Alternatives
@@ -76,6 +76,10 @@ with the same task authorization and CAS used for Worker updates. Session fencin
 and report revisions reject obsolete observations, including after grant rotation
 that does not advance the task version. Reconciliation failures preserve local
 facts and native recovery budgets.
+
+The [orchestration block decision](2026-11-05-worker-orchestration-blocks.md)
+keeps ordinary worktree failures out of native recovery reports and defines the
+verified correction of legacy misclassification.
 
 The report is not a heartbeat or an authority to retry. UI presentation remains a
 separate consumer of the contract. Old local records remain readable as unknown;

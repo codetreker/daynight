@@ -1,0 +1,74 @@
+package task_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+)
+
+func requireFault(t *testing.T, err error, code string) *model.Fault {
+	t.Helper()
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" || err.Error() != fault.Message {
+		t.Fatalf("expected %s fault, got %#v", code, err)
+	}
+	return fault
+}
+
+type entropyFailure struct{ err error }
+
+func propertyPatch(items ...model.PullRequestProperty) model.TaskPropertiesPatch {
+	values := make([]map[string]string, len(items))
+	for index, item := range items {
+		values[index] = map[string]string{"url": item.URL, "title": item.Title}
+	}
+	return model.TaskPropertiesPatch{"pullRequests": propertyJSON(values)}
+}
+
+func writeProjectForTest(s *postgres.Store, ctx context.Context, id string, operation func(store.ProjectWriteScope) error) error {
+	_, err := s.WriteProject(ctx, id, operation)
+	return err
+}
+
+func propertyJSON(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+func testWorker(t *testing.T, properties model.TaskProperties) *model.WorkerClaim {
+	t.Helper()
+	value, err := taskproperties.Worker(properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func testPRs(t *testing.T, properties model.TaskProperties) []model.PullRequestProperty {
+	t.Helper()
+	value, err := taskproperties.PullRequests(properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+func testWithWorker(t *testing.T, properties model.TaskProperties, worker *model.WorkerClaim) model.TaskProperties {
+	t.Helper()
+	values, err := taskprops.WithWorker(properties, worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return values
+}
+
+func (failure entropyFailure) Read([]byte) (int, error) { return 0, failure.err }

@@ -135,7 +135,7 @@ export type AuthMessages = {
     readonly loading: string; readonly unavailableDetail: string; readonly invited: string; readonly alreadyMember: string;
     readonly invitedDetail: string; readonly alreadyMemberDetail: string; readonly memberRole: string;
     readonly currentRole: string; readonly joined: string; readonly alreadyJoined: string; readonly teamId: string;
-    readonly acceptUnknown: string; readonly checkInvitation: string;
+    readonly acceptUnknown: string; readonly checkInvitation: string; readonly open: string;
   };
   readonly createProject: {
     readonly open: string;
@@ -190,6 +190,27 @@ export type AuthMessages = {
       readonly sessionTitle: string;
       readonly sessionDescription: string;
       readonly signOut: string;
+      readonly grantsTitle: string;
+      readonly grantsDescription: string;
+      readonly grantsNotice: string;
+      readonly grantsLoading: string;
+      readonly grantsEmpty: string;
+      readonly grantsRefresh: string;
+      readonly grantClient: string;
+      readonly grantResource: string;
+      readonly grantScope: string;
+      readonly grantActive: string;
+      readonly grantExpired: string;
+      readonly grantRevoked: string;
+      readonly grantRevoke: (args: { readonly name: string }) => string;
+      readonly grantRevokeTitle: string;
+      readonly grantRevokeEffect: string;
+      readonly grantRevokeConfirm: string;
+      readonly grantStorage: string;
+      readonly grantUnknown: string;
+      readonly grantReadCurrent: string;
+      readonly grantObserved: string;
+      readonly grantSaved: string;
       readonly tokensTitle: string;
       readonly tokensDescription: string;
       readonly createToken: string;
@@ -237,6 +258,7 @@ export type AuthMessages = {
       readonly loading: string;
       readonly memberNotice: string;
       readonly invitationUnknown: string;
+      readonly invitationUnreadable: string;
     readonly invitationObserved: string;
     readonly readCurrentInvitations: string;
     readonly grantUnknown: string;
@@ -300,6 +322,10 @@ export type AuthMessages = {
       readonly save: string;
       readonly busy: string;
       readonly unsaved: string;
+      readonly draftConflict: string;
+      readonly currentSaved: string;
+      readonly conflictPending: string;
+      readonly permissionPending: string;
       readonly memberNotice: string;
       readonly loading: string;
       readonly uncertain: string;

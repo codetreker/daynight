@@ -41,3 +41,21 @@ it('checks response principal before decoding access and rejects a grant for ano
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(wireResponse({ ...access, directGrant: { ...access.directGrant, userId: otherId } }, { headers: { 'Daynight-User-ID': TEST_VIEWER_ID } })));
   await expect(getProjectAccess(projectId, signal(), admission())).rejects.toBeInstanceOf(ApiError);
 });
+
+
+it.each([
+  { principal: TEST_VIEWER_ID, kind: 'server', code: 'not_found', mismatch: false },
+  { principal: null, kind: 'protocol', code: 'protocol', mismatch: false },
+  { principal: 'malformed', kind: 'protocol', code: 'protocol', mismatch: false },
+  { principal: otherId, kind: 'protocol', code: 'principal_mismatch', mismatch: true },
+] as const)('accepts a 404 denial only from the verified principal: $principal', async ({ principal, kind, code, mismatch }) => {
+  const owner = admission();
+  const response = wireResponse({ error: { code: 'not_found', message: 'Unavailable', requestId: 'safe' } }, {
+    status: 404, ...(principal === null ? {} : { headers: { 'Daynight-User-ID': principal } }),
+  });
+  const read = vi.spyOn(response, 'text');
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+  await expect(getProjectAccess(projectId, signal(), owner)).rejects.toMatchObject({ kind, code });
+  expect(owner.onPrincipalMismatch).toHaveBeenCalledTimes(mismatch ? 1 : 0);
+  expect(read).toHaveBeenCalledTimes(kind === 'server' ? 1 : 0);
+});

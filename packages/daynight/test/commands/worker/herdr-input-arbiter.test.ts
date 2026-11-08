@@ -1,42 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { createHerdrInputArbiter } from "../../../src/commands/worker/herdr/input-arbiter.js";
-import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
-import type { HerdrInputBatch, HerdrInputTarget, HerdrInputWriteContext } from "../../../src/commands/worker/herdr/input-types.js";
 import { canonicalSessionJson, SessionV2Error } from "../../../src/session/v2/values.js";
-import type { SessionV2Message, SessionV2Payloads } from "../../../src/session/v2/types.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
-const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const root = fileURLToPath(new URL("../../../../../.tmp/herdr-input/", import.meta.url));
-const cleanups: (() => void)[] = [];
-afterEach(() => { vi.useRealTimers(); cleanups.splice(0).reverse().forEach(fn => fn()); });
-const fixture = () => {
-  mkdirSync(root, { recursive: true }); const dir = mkdtempSync(path.join(root, "test-"));
-  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const filename = path.join(dir, "input.sqlite"); const store = openHerdrInputStore(filename, { onMigration: () => {} }); let closed = false; const close = () => { if (!closed) { store.close(); closed = true; } }; cleanups.push(close);
-  const target: HerdrInputTarget = { sessionId: id(1), claimId: id(2), executionGeneration: "1", connectionEpoch: "1", segmentId: id(3), binding: { instanceId: id(4), sessionId: "w", workspaceId: "workspace", paneId: "pane", terminalId: "terminal", nativeSessionId: null } };
-  store.bind(target); let time = 1000, wall = 1_800_000_000_000;
-  const writes: HerdrInputBatch[] = [];
-  let execute = async (batch: HerdrInputBatch, context: HerdrInputWriteContext) => { await context.beforeWrite(); context.markWritten(); writes.push(batch); };
-  let verify = async () => {};
-  const arbiter = createHerdrInputArbiter({ store, sessionId: target.sessionId, now: () => wall, monotonic: () => time, execute: (batch, context) => execute(batch, context), verify: async () => verify() });
-  const envelope = () => ({ protocol: "daynight.session.v2" as const, schemaVersion: 2 as const, projectionVersion: 1 as const, agentControlMode: "herdr" as const, contentKind: "terminal_recording" as const, sessionId: target.sessionId, claimId: target.claimId, executionGeneration: target.executionGeneration });
-  let sequence = 20;
-  const control = (action: SessionV2Payloads["control_request"]["action"], overrides: Partial<SessionV2Payloads["control_request"]> = {}): Extract<SessionV2Message, { type: "control_dispatch" }> => {
-    const state = arbiter.state();
-    const request: SessionV2Payloads["control_request"] = { operationId: id(sequence++), connectionEpoch: target.connectionEpoch, controlEpoch: state.controlEpoch, browserClientId: id(9), action, leaseId: state.lease?.leaseId ?? null, draftHandled: action === "resume_automation", initialUnknownDisposition: null, ...overrides };
-    const actorUserId = id(8), requestDigest = createHash("sha256").update(canonicalSessionJson({ actorUserId, request })).digest("hex");
-    return { ...envelope(), type: "control_dispatch", payload: { actorUserId, requestDigest, request } };
-  };
-  const input = (text = "人工草稿\n第二行"): Extract<SessionV2Message, { type: "operation" }> => ({ ...envelope(), type: "operation", payload: { operationId: id(sequence++), connectionEpoch: target.connectionEpoch, segmentId: target.segmentId, binding: target.binding, controlEpoch: arbiter.state().controlEpoch, leaseId: arbiter.state().lease!.leaseId, leaseSeq: "1", kind: "paste", payload: { text } } });
-  const initial = () => arbiter.submit({ operationId: arbiter.record().initialOperationId, source: "initial", text: "original assignment" });
-  return { store, filename, close, target, arbiter, writes, initial, control, input, advance: (ms: number) => { time += ms; wall += ms; }, execute: (fn: typeof execute) => { execute = fn; }, verify: (fn: typeof verify) => { verify = fn; } };
-};
-describe("durable Herdr input arbitration", () => {
-  it("persists known-menu no-write refusals while allowing a fresh initial attempt after dismissal", async () => {
+import { createHerdrInputArbiterFixtures } from "./herdr-input-arbiter.fixtures.js";
+
+const { id, fixture } = createHerdrInputArbiterFixtures("memory");
+
+it("persists known-menu no-write refusals while allowing a fresh initial attempt after dismissal", async () => {
     const f = fixture(); const blocked = new HerdrInputBlockedError("menu");
     f.verify(async () => { throw blocked; });
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -53,7 +23,7 @@ describe("durable Herdr input arbitration", () => {
     expect(f.writes[0]?.payload).toMatchObject({ text: "original assignment" });
   });
 
-  it("keeps a blocker discovered after native writing unknown without replay", async () => {
+it("keeps a blocker discovered after native writing unknown without replay", async () => {
     const f = fixture(); const blocked = new HerdrInputBlockedError("menu");
     f.execute(async (batch, ctx) => { ctx.markWritten(); f.writes.push(batch); throw blocked; });
     expect((await f.initial()).state).toBe("unknown");
@@ -62,7 +32,7 @@ describe("durable Herdr input arbitration", () => {
     expect(f.writes).toHaveLength(1);
   });
 
-  it("retains manual control across paste and Detach and suppresses automatic continuation", async () => {
+it("retains manual control across paste and Detach and suppresses automatic continuation", async () => {
     const f = fixture(); await f.initial();
     expect((await f.arbiter.control(f.control("acquire_control"))).result.state).toBe("transport_completed");
     expect((await f.arbiter.input(f.input())).state).toBe("transport_completed");
@@ -71,7 +41,8 @@ describe("durable Herdr input arbitration", () => {
     await f.arbiter.control(f.control("release_control"));
     expect(f.arbiter.state().state).toBe("suspended"); expect(f.writes).toHaveLength(2);
   });
-  it("returns busy immediately when lease acquisition races the initial dispatch", async () => {
+
+it("returns busy immediately when lease acquisition races the initial dispatch", async () => {
     const f = fixture(); let release!: () => void;
     f.execute(async (batch, ctx) => { await new Promise<void>(resolve => { release = resolve; }); await ctx.beforeWrite(); ctx.markWritten(); f.writes.push(batch); });
     const initial = f.initial(); await Promise.resolve(); await Promise.resolve();
@@ -79,33 +50,42 @@ describe("durable Herdr input arbitration", () => {
     expect(ack.result).toMatchObject({ state: "rejected", errorCode: "input_busy" });
     release(); expect((await initial).state).toBe("transport_completed");
   });
-  it("does not replay a duplicate operation and rejects a different body under its ID", async () => {
+
+it("does not replay a duplicate operation and rejects a different body under its ID", async () => {
     const f = fixture(); await f.initial(); await f.arbiter.control(f.control("acquire_control"));
     const input = f.input(); await f.arbiter.input(input); await f.arbiter.input(input);
     const changed = structuredClone(input); if (changed.payload.kind === "paste") changed.payload.payload.text = "different";
     await expect(f.arbiter.input(changed)).rejects.toThrow(/different|digest/i); expect(f.writes).toHaveLength(2);
   });
-  it("recovers dispatching as unknown without replay and records human disposition separately", async () => {
-    const f = fixture();
-    f.store.update(f.arbiter.record(), draft => {
-      draft.initialOutcome = "dispatching";
-      draft.operations.push({ operationId: draft.initialOperationId, source: "initial", digest: "a".repeat(64), target: draft.target, controlEpoch: draft.controlEpoch, leaseId: null, leaseSeq: null, result: { operationId: draft.initialOperationId, state: "dispatching", errorCode: null }, controlAck: null });
-    });
-    f.arbiter.recover(); expect(f.arbiter.record().initialOutcome).toBe("unknown"); expect(f.arbiter.state().state).toBe("suspended");
-    const denied = await f.arbiter.control(f.control("resume_automation")); expect(denied.result.state).toBe("rejected");
-    const ack = await f.arbiter.control(f.control("resume_automation", { initialUnknownDisposition: "delivered_continue" }));
-    expect(ack.result.state).toBe("transport_completed"); expect(f.arbiter.record().initialOutcome).toBe("unknown");
-    expect(f.arbiter.record().initialDisposition).toMatchObject({ actorUserId: id(8), disposition: "delivered_continue" });
-    expect(f.arbiter.state()).toMatchObject({ state: "automation", initialAssignment: "transport_completed" });
-    expect(f.arbiter.record().operations[0]!.result.state).toBe("unknown"); expect(f.writes).toHaveLength(0);
-  });
-  it("expires a lease on monotonic time and requires explicit handback", async () => {
+
+it("expires a lease on monotonic time and requires explicit handback", async () => {
     const f = fixture(); await f.initial(); await f.arbiter.control(f.control("acquire_control")); const input = f.input();
     f.advance(30_000); expect(f.arbiter.state().state).toBe("suspended");
     expect((await f.arbiter.input(input)).state).toBe("rejected");
     expect((await f.arbiter.control(f.control("resume_automation"))).result.state).toBe("transport_completed");
   });
-  it("revoke wins before native write and an already written batch stays unknown", async () => {
+
+it("refuses initial disposition outside an unresolved suspended execution", async () => {
+    const f = fixture();
+    const resolve = () => f.control("resolve_initial_assignment", { initialUnknownDisposition: "delivered_continue" });
+    expect((await f.arbiter.control(resolve())).result.state).toBe("rejected");
+    f.store.update(f.arbiter.record(), draft => { draft.state = "suspended"; draft.initialOutcome = "unconfirmed"; draft.unknownInput = true; });
+    const stale = resolve();
+    await f.arbiter.control(f.control("acquire_control"));
+    expect(f.arbiter.state().availableActions).not.toContain("resolve_initial_assignment");
+    await expect(f.arbiter.control(resolve())).rejects.toThrow();
+    await f.arbiter.control(f.control("release_control"));
+    expect((await f.arbiter.control(stale)).result).toMatchObject({ state: "rejected", errorCode: "stale_fence" });
+    const ack = await f.arbiter.control(resolve());
+    expect(ack.controlState).toMatchObject({ state: "suspended", initialAssignment: "transport_completed" });
+    expect(f.arbiter.record()).toMatchObject({ initialOutcome: "unconfirmed", unknownInput: true });
+    expect((await f.arbiter.control(resolve())).result.state).toBe("rejected");
+    f.arbiter.beginClosing();
+    expect((await f.arbiter.control(resolve())).result.state).toBe("rejected");
+    expect(f.writes).toEqual([]);
+  });
+
+it("revoke wins before native write and an already written batch stays unknown", async () => {
     for (const written of [false, true]) {
       const f = fixture(); let release!: () => void, entered!: () => void; const ready = new Promise<void>(resolve => { entered = resolve; });
       f.execute(async (_batch, ctx) => { if (written) { await ctx.beforeWrite(); ctx.markWritten(); } await new Promise<void>(resolve => { release = resolve; entered(); }); await ctx.beforeWrite(); });
@@ -114,7 +94,8 @@ describe("durable Herdr input arbitration", () => {
       expect((await pending).state).toBe(written ? "unknown" : "rejected"); expect(f.arbiter.state().state).toBe("closing");
     }
   });
-  it.each(["suspend", "beginClosing"] as const)("aborts native input and closes admission when %s cannot persist revocation", async action => {
+
+it.each(["suspend", "beginClosing"] as const)("aborts native input and closes admission when %s cannot persist revocation", async action => {
     for (const written of [false, true]) {
       const f = fixture(); let release!: () => void, entered!: () => void, signal!: AbortSignal;
       const ready = new Promise<void>(resolve => { entered = resolve; });
@@ -138,7 +119,8 @@ describe("durable Herdr input arbitration", () => {
       expect(() => f.arbiter.state()).toThrow(/journal/i);
     }
   });
-  it("never sends cleanup text after manual draft and sends a clean notification at most once", async () => {
+
+it("never sends cleanup text after manual draft and sends a clean notification at most once", async () => {
     const dirty = fixture(); await dirty.initial(); await dirty.arbiter.control(dirty.control("acquire_control"));
     expect(dirty.arbiter.beginClosing().canNotify).toBe(false);
     expect((await dirty.arbiter.submit({ operationId: dirty.arbiter.record().cleanupOperationId, source: "cleanup", text: "cleanup" })).state).toBe("rejected");
@@ -146,7 +128,8 @@ describe("durable Herdr input arbitration", () => {
     const request = { operationId: clean.arbiter.record().cleanupOperationId, source: "cleanup" as const, text: "cleanup" };
     await clean.arbiter.submit(request); await clean.arbiter.submit(request); expect(clean.writes).toHaveLength(2);
   });
-  it("keeps rejected initial attempts immutable while permitting a new definitely unsent attempt", async () => {
+
+it("keeps rejected initial attempts immutable while permitting a new definitely unsent attempt", async () => {
     const f = fixture(); f.verify(async () => { throw new Error("Trust menu requires interaction"); });
     const rejected = await f.initial(); expect(rejected.state).toBe("rejected"); expect(f.arbiter.record().initialOutcome).toBe("pending");
     f.verify(async () => {}); const delivered = await f.initial();
@@ -155,20 +138,23 @@ describe("durable Herdr input arbitration", () => {
     expect(f.writes).toHaveLength(1);
     expect(() => f.arbiter.submit({ operationId: f.arbiter.record().initialOperationId, source: "initial", text: "changed assignment" })).toThrow(/digest/);
   });
-  it("preserves clean automatic reconnects but never revives a manual lease", async () => {
+
+it("preserves clean automatic reconnects but never revives a manual lease", async () => {
     const f = fixture(); await f.initial(); const originalId = f.arbiter.record().initialOperationId;
     f.arbiter.recover(); f.arbiter.bind({ ...f.target, connectionEpoch: "2", segmentId: id(90) });
     expect(f.arbiter.state().state).toBe("automation"); expect(f.arbiter.record().initialOperationId).toBe(originalId);
     const g = fixture(); await g.initial(); await g.arbiter.control(g.control("acquire_control")); g.arbiter.recover();
     expect(g.arbiter.state()).toMatchObject({ state: "suspended", lease: null });
   });
-  it("reopens only a clean confirmed replacement generation and retains old operation receipts", async () => {
+
+it("reopens only a clean confirmed replacement generation and retains old operation receipts", async () => {
     const f = fixture(); await f.initial(); f.arbiter.bind({ ...f.target, binding: { ...f.target.binding, nativeSessionId: "native-original" } }); f.arbiter.beginClosing(); const previous = f.arbiter.record();
     f.arbiter.bind({ ...f.target, executionGeneration: "2", segmentId: id(90), binding: { ...f.target.binding, instanceId: id(91), terminalId: "replacement", nativeSessionId: "native-original" } }, { allowRecovery: true });
     expect(f.arbiter.state().state).toBe("automation"); expect(f.arbiter.record().cleanupOperationId).not.toBe(previous.cleanupOperationId);
     expect(f.arbiter.record().operations).toEqual(previous.operations); expect(f.arbiter.record().initialOperationId).toBe(previous.initialOperationId);
   });
-  it("retains control acknowledgements across duplicate requests and rejects stale input sequences", async () => {
+
+it("retains control acknowledgements across duplicate requests and rejects stale input sequences", async () => {
     const f = fixture(); await f.initial(); const request = f.control("acquire_control"); const ack = await f.arbiter.control(request);
     expect(await f.arbiter.control(request)).toEqual(ack);
     const first = f.input(); await f.arbiter.input(first); const next = f.input("second");
@@ -176,7 +162,7 @@ describe("durable Herdr input arbitration", () => {
     expect((await f.arbiter.input(next)).state).toBe("transport_completed"); expect(f.writes).toHaveLength(3);
   });
 
-  it("bounds a noncooperative native adapter and distinguishes write attempts at timeout", async () => {
+it("bounds a noncooperative native adapter and distinguishes write attempts at timeout", async () => {
     vi.useFakeTimers();
     for (const written of [false, true]) {
       const f = fixture(); let entered!: () => void; const ready = new Promise<void>(resolve => { entered = resolve; });
@@ -186,25 +172,29 @@ describe("durable Herdr input arbitration", () => {
       expect(f.arbiter.record().initialOutcome).toBe(written ? "unknown" : "pending");
     }
   });
-  it("cancels lease acquisition before a slow identity check can grant control", async () => {
+
+it("cancels lease acquisition before a slow identity check can grant control", async () => {
     const f = fixture(); let release!: () => void, entered!: () => void; const ready = new Promise<void>(resolve => { entered = resolve; });
     f.verify(async () => { entered(); await new Promise<void>(resolve => { release = resolve; }); });
     const pending = f.arbiter.control(f.control("acquire_control")); await ready; f.arbiter.beginClosing();
     expect((await pending).result.state).toBe("rejected"); release(); await Promise.resolve();
     expect(f.arbiter.state()).toMatchObject({ state: "closing", lease: null });
   });
-  it("preserves precise authority failures and refuses a false native success", async () => {
+
+it("preserves precise authority failures and refuses a false native success", async () => {
     const f = fixture(); f.verify(async () => { throw new SessionV2Error("permission_denied"); });
     expect(await f.initial()).toMatchObject({ state: "rejected", errorCode: "permission_denied" });
     f.verify(async () => {}); f.execute(async () => {}); expect((await f.initial()).state).toBe("rejected");
   });
-  it("enforces SQLite compare-and-swap and immutable initial and operation evidence", async () => {
+
+it("enforces SQLite compare-and-swap and immutable initial and operation evidence", async () => {
     const f = fixture(), stale = f.arbiter.record(); await f.initial();
     expect(() => f.store.update(stale, draft => { draft.controlEpoch = "99"; })).toThrow(/version/);
     expect(() => f.store.update(f.arbiter.record(), draft => { draft.initialOutcome = "pending"; })).toThrow(/outcome/);
     expect(() => f.store.update(f.arbiter.record(), draft => { draft.operations[0]!.digest = "0".repeat(64); })).toThrow(/identity/);
   });
-  it("preserves unknown control receipts on crash recovery without applying the action", async () => {
+
+it("preserves unknown control receipts on crash recovery without applying the action", async () => {
     const f = fixture(), request = f.control("acquire_control");
     f.store.update(f.arbiter.record(), draft => { draft.operations.push({ operationId: request.payload.request.operationId, source: "control", digest: createHash("sha256").update(canonicalSessionJson(request)).digest("hex"), target: draft.target, controlEpoch: draft.controlEpoch, leaseId: null, leaseSeq: null, result: { operationId: request.payload.request.operationId, state: "dispatching", errorCode: null }, controlAck: null }); });
     f.arbiter.recover(); const ack = await f.arbiter.control(request);
@@ -212,7 +202,7 @@ describe("durable Herdr input arbitration", () => {
     expect(await f.arbiter.control(request)).toEqual(ack);
   });
 
-  it("keeps pending assignment paused through manual menu handling until explicit handback", async () => {
+it("keeps pending assignment paused through manual menu handling until explicit handback", async () => {
     const f = fixture(); await f.arbiter.control(f.control("acquire_control"));
     expect((await f.initial()).state).toBe("rejected"); expect(f.arbiter.record().initialOutcome).toBe("pending");
     await f.arbiter.input(f.input("menu choice")); await f.arbiter.control(f.control("release_control"));
@@ -220,14 +210,15 @@ describe("durable Herdr input arbitration", () => {
     await f.arbiter.control(f.control("resume_automation")); expect((await f.initial()).state).toBe("transport_completed");
     expect(f.writes.map(batch => batch.source)).toEqual(["web", "initial"]);
   });
-  it("retains the original lease fence even for a refused stale request", async () => {
+
+it("retains the original lease fence even for a refused stale request", async () => {
     const f = fixture(); await f.initial(); await f.arbiter.control(f.control("acquire_control"));
     const request = f.input(); const oldEpoch = request.payload.controlEpoch, oldLease = request.payload.leaseId;
     await f.arbiter.control(f.control("release_control")); expect((await f.arbiter.input(request)).state).toBe("rejected");
     expect(f.arbiter.record().operations.at(-1)).toMatchObject({ controlEpoch: oldEpoch, leaseId: oldLease, leaseSeq: "1" });
   });
 
-  it("permits manual control of a recovered generation without handing automation back", async () => {
+it("permits manual control of a recovered generation without handing automation back", async () => {
     const f = fixture(); await f.initial(); await f.arbiter.control(f.control("acquire_control"));
     f.arbiter.bind({ ...f.target, binding: { ...f.target.binding, nativeSessionId: "native-original" } });
     f.arbiter.beginClosing();
@@ -235,15 +226,3 @@ describe("durable Herdr input arbitration", () => {
     expect(f.arbiter.state()).toMatchObject({ state: "suspended", lease: null });
     expect(f.arbiter.state().availableActions).toContain("acquire_control");
   });
-
-  it("retains clean shutdown admission after actually reopening the SQLite journal", async () => {
-    const f = fixture(); await f.initial();
-    f.arbiter.bind({ ...f.target, binding: { ...f.target.binding, nativeSessionId: "native-original" } });
-    f.arbiter.beginClosing(); f.close();
-    const reopened = openHerdrInputStore(f.filename, { onMigration: () => {} }); cleanups.push(() => reopened.close());
-    const recovered = reopened.recover(f.target.sessionId);
-    const next = reopened.bind({ ...f.target, executionGeneration: "2", segmentId: id(95), binding: { ...f.target.binding, instanceId: id(96), terminalId: "replacement", nativeSessionId: "native-original" } }, recovered.initialOutcome, recovered.controlEpoch, { allowRecovery: true });
-    expect(next.state).toBe("automation"); expect(next.lease).toBeNull();
-  });
-
-});

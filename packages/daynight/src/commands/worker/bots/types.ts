@@ -6,14 +6,16 @@ import { isNonemptyText } from "../../../platform/text.js";
 import type { WorkerAgent } from "../../../api/types.js";
 
 export type BotOwner = { serverOrigin: string; ownerUserId: string; workerId: string };
-export type BotConfiguration = { workerId: string; cwd: string; provider: WorkerAgent; model: string | null; args: string[] };
+export type BotSelectionSource = "explicit" | "preference" | "local" | "cloud" | "native" | "unknown";
+export type BotSelection = { schemaVersion: 1; modelSource: BotSelectionSource; reasoningEffortSource: BotSelectionSource; configurationGeneration?: string; catalogGeneration?: string };
+export type BotConfiguration = { workerId: string; cwd: string; provider: WorkerAgent; model: string | null; args: string[]; reasoningEffort?: string | null; selection?: BotSelection };
 export type BotRoleConfiguration = { instructions: string; revision: string; digest: string };
 export type BotResult = { state: string; code: string | null };
 export type BotDeletion = { deletionId: string; requestedVersion: string; workerCleanup: BotResult; serverCleanup: BotResult };
 type BotCommon = { id: string; workerId: string; version: string };
 export type BotDefinition = BotCommon & {
   deletion: null; ownerUserId: string; name: string; creationOrder: string;
-  requestedOverrides: { workerId?: string; cwd?: string; provider?: WorkerAgent };
+  requestedOverrides: { workerId?: string; cwd?: string; provider?: WorkerAgent; model?: string; reasoningEffort?: string };
   resolvedConfiguration: BotConfiguration; roleConfiguration: BotRoleConfiguration | null;
   sessionId: string | null; testExecutionId: string | null; startupResult: BotResult;
   createdAt: string; updatedAt: string;
@@ -28,9 +30,15 @@ export type BotLaunchIntent = {
   ticketPath: string; journalPath: string; credentialFile: string;
   recoveryLimit: number; roleConfiguration: BotRoleConfiguration | null;
 };
+export type BotCleanup = {
+  deletionId: string; requestedVersion: string;
+  stop: import("./session-api.js").BotDeletionStop | null;
+  targets: import("./delete-files.js").BotDeletionTarget[];
+  localCompleted: boolean;
+};
 export type BotRecord = {
   owner: BotOwner; botId: string; observed: Bot; definition: BotDefinition | null;
-  observedAt: number; intent: BotLaunchIntent | null;
+  observedAt: number; intent: BotLaunchIntent | null; cleanup?: BotCleanup;
 };
 
 export const botUUID = (value: unknown, field: string): string => {
@@ -66,6 +74,22 @@ export const parseBotRole = (value: unknown): BotRoleConfiguration => {
   if (data.digest !== digest) throw new TypeError("Bot role digest does not match instructions.");
   return { instructions, revision, digest };
 };
+const selectionText = (value: unknown, field: string, limit: number): string => {
+  const parsed = text(value, field);
+  if (parsed.trim() === "" || /\p{Cc}/u.test(parsed) || Buffer.byteLength(parsed) > limit) throw new TypeError(`${field} is invalid or exceeds its byte limit.`);
+  return parsed;
+};
+const selectionMetadata = (value: unknown): BotSelection => {
+  const data = object(value, "Bot selection");
+  const sources = ["explicit", "preference", "local", "cloud", "native", "unknown"];
+  if (Object.keys(data).some(key => !["schemaVersion", "modelSource", "reasoningEffortSource", "configurationGeneration", "catalogGeneration"].includes(key))
+    || data.schemaVersion !== 1 || typeof data.modelSource !== "string" || !sources.includes(data.modelSource) || typeof data.reasoningEffortSource !== "string" || !sources.includes(data.reasoningEffortSource)) throw new TypeError("Bot selection metadata is invalid.");
+  if (Object.hasOwn(data, "configurationGeneration") && (typeof data.configurationGeneration !== "string" || !/^[a-f0-9]{64}$/.test(data.configurationGeneration))) throw new TypeError("Bot selection configuration generation is invalid.");
+  const catalogGeneration = Object.hasOwn(data, "catalogGeneration") ? botUUID(data.catalogGeneration, "Bot selection catalog generation") : undefined;
+  return { schemaVersion: 1, modelSource: data.modelSource as BotSelectionSource, reasoningEffortSource: data.reasoningEffortSource as BotSelectionSource,
+    ...(data.configurationGeneration === undefined ? {} : { configurationGeneration: data.configurationGeneration as string }),
+    ...(catalogGeneration === undefined ? {} : { catalogGeneration }) };
+};
 const result = (value: unknown, states: readonly string[]): BotResult => {
   const data = object(value, "Bot result");
   if (typeof data.state !== "string" || !states.includes(data.state)) throw new TypeError("Bot result state is invalid.");
@@ -88,11 +112,25 @@ export const parseBot = (value: unknown, owner: BotOwner): Bot => {
   if (!path.isAbsolute(cwd) || /[\r\n]/.test(cwd)) throw new Error("Bot cwd must be an absolute path.");
   if (!Array.isArray(config.args) || config.args.some(arg => typeof arg !== "string" || !arg.isWellFormed() || /[\0\r\n]/.test(arg))) throw new Error("Bot configuration arguments are invalid.");
   const configuration: BotConfiguration = { workerId: owner.workerId, cwd, provider: provider(config.provider), model: config.model === null ? null : text(config.model, "Bot model"), args: [...config.args] as string[] };
+  if (Object.hasOwn(config, "selection") !== Object.hasOwn(config, "reasoningEffort")) throw new TypeError("Bot selection and reasoning effort must be supplied together.");
+  if (Object.hasOwn(config, "selection")) {
+    configuration.selection = selectionMetadata(config.selection);
+    if (configuration.model !== null) selectionText(configuration.model, "Bot model", 256);
+    configuration.reasoningEffort = config.reasoningEffort === null ? null : selectionText(config.reasoningEffort, "Bot reasoning effort", 64);
+    for (const [value, source] of [[configuration.model, configuration.selection.modelSource], [configuration.reasoningEffort, configuration.selection.reasoningEffortSource]] as const) {
+      if (source === "unknown" && value !== null || !["native", "unknown"].includes(source) && value === null) throw new TypeError("Bot selection source contradicts its frozen value.");
+    }
+  }
   const overrides = object(data.requestedOverrides, "Bot overrides");
   const requestedOverrides: BotDefinition["requestedOverrides"] = {};
   if (overrides.workerId !== undefined) requestedOverrides.workerId = botUUID(overrides.workerId, "Bot override worker");
   if (overrides.cwd !== undefined) requestedOverrides.cwd = text(overrides.cwd, "Bot override cwd");
   if (overrides.provider !== undefined) requestedOverrides.provider = provider(overrides.provider);
+  if (overrides.model !== undefined) requestedOverrides.model = selectionText(overrides.model, "Bot override model", 256);
+  if (overrides.reasoningEffort !== undefined) requestedOverrides.reasoningEffort = selectionText(overrides.reasoningEffort, "Bot override reasoning effort", 64);
+  if ((requestedOverrides.model !== undefined || requestedOverrides.reasoningEffort !== undefined) && configuration.selection === undefined) throw new TypeError("Bot explicit model selection requires its frozen selection metadata.");
+  if (requestedOverrides.model !== undefined && (requestedOverrides.model !== configuration.model || configuration.selection?.modelSource !== "explicit")
+    || requestedOverrides.reasoningEffort !== undefined && (requestedOverrides.reasoningEffort !== configuration.reasoningEffort || configuration.selection?.reasoningEffortSource !== "explicit")) throw new TypeError("Bot explicit selection differs from its frozen configuration.");
   const sessionId = data.sessionId === null ? null : botUUID(data.sessionId, "Bot session ID");
   const testExecutionId = data.testExecutionId === null ? null : botUUID(data.testExecutionId, "Bot execution ID");
   if ((sessionId === null) !== (testExecutionId === null)) throw new Error("Bot session binding is incomplete.");

@@ -23,8 +23,9 @@ fallback discards only the departed Team's pending selection and writes Personal
 only when the stored choice still names that Team. The existing save retry retains
 this condition after a storage read or write failure, so a subsequent choice is
 preserved. Unknown writes stay unknown and offer a read without replay. The
-[Team membership decision](../architecture/2026-11-04-team-membership-management.md)
-owns the server's authorization and transactional rules.
+[Team membership decision](../../archived/architecture/2026-11-04-team-membership-management.md) records the rationale for the server's authorization and transactional rules.
+The [role alignment decision](../bug-fix/2026-11-05-team-member-role-alignment.md)
+owns roster layout and select spacing.
 
 ## Alternatives
 
@@ -42,9 +43,10 @@ and the user retries after choosing B.
 ## Consequences
 
 Members can review nullable profiles and manage relationships within the Team's
-actual scope. Independent Project grants survive these operations. Invitation
-creation and global user discovery remain outside this page; adding them later
-does not require treating Project access as Team membership.
+actual scope. Independent Project grants survive these operations. The
+[invitation management decision](2026-11-05-web-scoped-invitations.md) adds
+scoped invitations without treating Project access as Team membership. Global
+user discovery remains outside this page.
 
 The next default workspace restores a newer saved Team, and a missing preference
 remains missing. This protection compares the current stored value on each

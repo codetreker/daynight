@@ -15,7 +15,7 @@ const render = createLocaleRender('zh-CN', { taskCache: true });
 const time = '2026-10-20T12:00:00Z';
 const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status, dependsOn, externalDependsOn, blockedBy: [], ready: false,
-  requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
+  requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });
 const seeds = [
   task('Goal', 'done'), task('Other root', 'done'), task('Implementation', 'in_progress', ['Goal', 'Other root']),
@@ -32,15 +32,15 @@ const indexOf = (items = seeds): GraphIndex => {
     tasks,
     summary: {
       total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
-      inProgress: tasks.filter((item) => item.status === 'in_progress').length, done: tasks.filter((item) => item.status === 'done').length,
+      inProgress: tasks.filter((item) => item.status === 'in_progress').length, done: tasks.filter((item) => item.status === 'done').length, cancelled: 0,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length,
     },
   };
   return buildGraphIndex(graph);
 };
 const noop = () => {};
-const list = (index: GraphIndex, onOpenTask = noop) => <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
-  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
+const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
@@ -150,9 +150,9 @@ describe('Goal task lists', () => {
     const index = indexOf();
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
-      return <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
         openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)}
-        onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
+        onOpenTask={onOpenTask} />;
     };
     render(<Wrapper />);
     const graph = screen.getByRole('button', { name: 'Goal，查看依赖关系' });

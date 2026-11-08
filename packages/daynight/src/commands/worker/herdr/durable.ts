@@ -2,13 +2,13 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, lstatSync, readdirSync } from "node:fs";
 import { ApiError } from "../../../api/client.js";
-import { setTimeout as delay } from "node:timers/promises";
 import { canonicalId } from "../../../api/parse.js";
 import { readWorkerClaim, readTaskPaused } from "../../../api/task-properties.js";
 import { createOperation, type Operation } from "../../../api/operation.js";
 import type { Task } from "../../../api/types.js";
 import { canonicalSessionJson, SessionV2Error, SESSION_V2_PROTOCOL } from "../../../session/v2/values.js";
-import type { SessionV2Message, SessionV2Payloads, TerminalBinding } from "../../../session/v2/types.js";
+import { isPreparedSessionV2StopProof } from "../../../session/v2/protocol.js";
+import type { SessionV2Message, SessionV2Payloads, SessionV2NativeStopProof, TerminalBinding } from "../../../session/v2/types.js";
 import { createWorkerHerdr, HerdrAgentActionError } from "../herdr.js";
 import type { WorkerHerdrAdapter } from "../herdr.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrExecutionOwner, HerdrPromptReceipt, HerdrTaskBinding } from "./agents.js";
@@ -34,6 +34,7 @@ import { createHerdrArchiveApi, ensureHerdrRecordingResponsibility, type HerdrAr
 import { hasConfirmedHerdrResourceDeletion } from "../resource-disposal.js";
 import { createHerdrRecordingArchive } from "./recording-archive.js";
 import { createHerdrRecordingResources } from "./recording-resources.js";
+import { createNativeSelectionVerifier, type NativeSelectionVerifier } from "../native-selection.js";
 
 type BaseOptions = Parameters<typeof createWorkerHerdr>[0];
 type Identity = HerdrExecutionOwner;
@@ -73,6 +74,26 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   readRecording?: (record: HerdrLifecycleRecord, signal: AbortSignal) => Promise<HerdrRecordingScreen>;
   currentUserId?: (signal: AbortSignal) => Promise<string>;
 }) : WorkerHerdrAdapter => {
+  const selectionOwner = options.selectionVerifier ?? createNativeSelectionVerifier();
+  // A newer queued probe invalidates an older cleanup result. The synchronous
+  // resource views must retain ownership until that newer generation settles.
+  let selectionEpoch = 0, settledSelectionEpoch = 0;
+  const settleSelection = async (): Promise<void> => {
+    const epoch = selectionEpoch;
+    settledSelectionEpoch = -1;
+    await selectionOwner.settle();
+    if (selectionEpoch !== epoch) throw new Error("Native selection changed during cleanup; original resources must be retained.");
+    settledSelectionEpoch = epoch;
+  };
+  const selectionVerifier: NativeSelectionVerifier = {
+    verify: async (input, operation) => {
+      const epoch = ++selectionEpoch;
+      await selectionOwner.verify(input, operation);
+      if (selectionEpoch === epoch) settledSelectionEpoch = epoch;
+    },
+    settle: settleSelection,
+    close: () => selectionOwner.close(),
+  };
   mkdirSync(options.paths.workerDirectory, { recursive: true, mode: 0o700 });
   const store = openHerdrLifecycleStore(path.join(options.paths.workerDirectory, "herdr-executions.sqlite"));
   const inheritedSessions = new Set(store.list().map(record => record.sessionId));
@@ -99,7 +120,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const connected = new Set<string>();
   const attachedRuns = new Set<string>();
   const locks = new Map<string, Promise<void>>();
-  const legacy = createAdapter(options);
+  const legacy = createAdapter({ ...options, selectionVerifier });
   const need = (owner: Identity): HerdrLifecycleRecord => {
     if (store.retired(owner)) throw new Error("The original never-started claim is retired; execution cannot resume.");
     const record = store.get(owner);
@@ -127,7 +148,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     let value = adapters.get(directory);
     if (!value) {
       const owner = identity(record);
-      value = createAdapter({ ...options, paths: { ...options.paths, herdrDirectory: directory, logsDirectory: path.join(directory, "logs") },
+      value = createAdapter({ ...options, selectionVerifier, paths: { ...options.paths, herdrDirectory: directory, logsDirectory: path.join(directory, "logs") },
         retainOnStartupFailure: true, isolatedRun: true,
         onDaemonSpawn: async pid => {
           const daemon = await native.capture(pid, "daemon");
@@ -276,7 +297,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const record = need(owner), input = arbiters.get(record.sessionId);
       if (input) input.suspend();
       else disconnectedBeforeInput.add(record.sessionId);
-      connected.delete(record.sessionId);
+      // Revoking a browser lease suspends input while the relay remains live.
+      // Only channel closure invalidates the confirmed connection registration.
+      if (!inputSession.connected(record.sessionId)) connected.delete(record.sessionId);
     },
   });
   const recordingRoot = path.join(options.paths.workerDirectory, "herdr-recordings");
@@ -326,11 +349,21 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     } catch (error) { recordingFailed(record, error); return; }
     if (commitBoundary && recovered.length) update(owner, draft => { for (const value of recovered) { const segment = draft.segments.find(s => s.segmentId === value.segmentId)!; segment.endedAt = value.boundary.endedAt; segment.durationMs = value.boundary.durationMs; } });
   };
-  const resources = createHerdrRecordingResources({ directory: recordingRoot, archive, list: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && !store.retired(identity(record))),
+  const recordingResources = createHerdrRecordingResources({ directory: recordingRoot, archive, list: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && !store.retired(identity(record))),
     get: need, source: record => { if (recordingFailures.has(record.sessionId)) throw recordingFailures.get(record.sessionId); return recording.source(record).snapshot(); },
     publishStopped: async (record, operation) => { await finishStop(identity(record), operation); }, readTask: options.readTask,
     currentUserId: options.currentUserId ?? (async () => { throw new Error("The original resource owner cannot be authenticated."); }),
   });
+  const resources: typeof recordingResources = {
+    resources: () => recordingResources.resources().map(resource => ({ ...resource, stopped: resource.stopped && selectionEpoch === settledSelectionEpoch })),
+    advance: async (...args) => { await settleSelection(); return recordingResources.advance(...args); },
+    retry: async (...args) => { await settleSelection(); return recordingResources.retry(...args); },
+    dispose: async (...args) => { await settleSelection(); return recordingResources.dispose(...args); },
+    cleaned: owner => {
+      if (selectionEpoch !== settledSelectionEpoch) throw new Error("Native selection probe cleanup is unconfirmed; original resources must be retained.");
+      recordingResources.cleaned(owner);
+    },
+  };
   // The same durable deletion decision retires both resource ownership and
   // pending stop publication. Disposal does not fabricate a remote ledger ACK.
   const retainedResources = () => resources.resources().filter(resource => !hasConfirmedHerdrResourceDeletion(resource));
@@ -349,9 +382,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   };
   const publishObservedLedger = async (owner: Identity, operation: Operation): Promise<void> => {
     const record = need(owner);
+    const disconnected = !connected.has(record.sessionId);
+    if (current(record).phase === "active" && disconnected) {
+      // Reconnect the original live target even when its identity and frame have
+      // not changed. Registration cannot restore its suspended input authority.
+      await verifyClaim(owner, operation, false);
+      await verifyRuntime(record);
+    }
     // Native identity can appear after the first input. A later unchanged
     // observation must also reconcile an earlier publication's unknown outcome.
-    if (current(record).phase === "active" && (record.registrationRequest !== null || record.ledgerRequest !== null || record.publishedLedgerHash !== herdrLedgerHash(record))) await publish(owner, operation);
+    if (current(record).phase === "active" && (disconnected || record.registrationRequest !== null || record.ledgerRequest !== null || record.publishedLedgerHash !== herdrLedgerHash(record))) await publish(owner, operation);
   };
   const publishObservedIdentity = async (owner: Identity, observed: HerdrAgentObservation, operation: Operation): Promise<void> => {
     enrich(owner, observed);
@@ -387,6 +427,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     return receipt;
   };
   const finishStop = async (owner: Identity, operation: Operation): Promise<void> => {
+    await settleSelection();
     await stopRecording(owner);
     // Each segment ends at its own run boundary, including after interrupted closure.
     update(owner, draft => {
@@ -434,7 +475,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const record = need(owner), run = current(record), input = inputStore.get(record.sessionId);
     if (!input || run.run.executionGeneration === "1") return;
     const priorRun = record.runs.at(-2), entry = input.recoveries.find(value => value.prepare.executionGeneration === priorRun?.run.executionGeneration);
-    if (!entry || priorRun?.stopReason !== "shutdown" || priorRun.phase !== "stopped_confirmed" || priorRun.run.stopProof?.recordId !== entry.prepare.payload.stopOperationId || priorRun.run.binding.nativeSessionId !== run.run.binding.nativeSessionId || run.run.binding.nativeSessionId !== entry.prepare.payload.binding.nativeSessionId || input.state !== "automation" || input.unknownInput || input.draftRisk || recoveryInitialAssignment(record) !== "transport_completed") {
+    if (!entry || priorRun?.stopReason !== "shutdown" || priorRun.phase !== "stopped_confirmed" || priorRun.run.stopProof === null || isPreparedSessionV2StopProof(priorRun.run.stopProof) || priorRun.run.stopProof.recordId !== entry.prepare.payload.stopOperationId || priorRun.run.binding.nativeSessionId !== run.run.binding.nativeSessionId || run.run.binding.nativeSessionId !== entry.prepare.payload.binding.nativeSessionId || input.state !== "automation" || input.unknownInput || input.draftRisk || recoveryInitialAssignment(record) !== "transport_completed") {
       getInput(owner).suspend(); return;
     }
     const release = options.sessionApi ? () => {} : inputSession.holdRecovery(record.sessionId, entry.prepare);
@@ -483,15 +524,20 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       bridgeRegistrations.delete(before.sessionId);
     };
     try { await serialize(owner, async () => {
+    // Probe cleanup gates resource release, but cannot delay or suppress an
+    // independent attempt to stop this claim's original native processes.
+    const results = await Promise.allSettled([settleSelection(), (async () => {
     let record = need(owner);
-    if (record.runs.length === 0 && record.preparation === null) return;
+    if (record.runs.length === 0 && record.preparation === null) return false;
     let run = current(record);
     if (run.phase !== "stopped_confirmed") {
       if (run.stopOperationId === null && run.daemon !== null && await native.observe(run.daemon) !== "same" && await native.bootIdentity() === run.daemon.bootId) {
         update(owner, draft => { current(draft).phase = "stop_unknown"; current(draft).error = "The original daemon disappeared without a durable stop intent."; });
         throw new Error("Herdr stop_unknown: absence without a durable stop intent cannot prove controlled resource shutdown.");
       }
-      try { record = update(owner, draft => { const r = current(draft); r.phase = "stop_intent"; r.stopReason ??= reason; r.stopOperationId ??= randomUUID(); r.admission = null; draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n); if (draft.initialAssignment === "dispatching") draft.initialAssignment = "unknown"; }); }
+      // A recovered close request already owns the stop intent and control fence.
+      // Preserve that boundary while rechecking its original process identities.
+      if (run.phase !== "close_requested") try { record = update(owner, draft => { const r = current(draft); r.phase = "stop_intent"; r.stopReason ??= reason; r.stopOperationId ??= randomUUID(); r.admission = null; draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n); if (draft.initialAssignment === "dispatching") draft.initialAssignment = "unknown"; }); }
       catch (journalError) {
         // A failed journal cannot authorize a durable stop conclusion, even if emergency signaling succeeds.
         if (run.daemon !== null) await native.stopExclusiveRun({ daemon: run.daemon, processes: run.processes }, operation);
@@ -518,16 +564,28 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         throw new Error("Herdr close journal could not commit; emergency stop remains unconfirmed.", { cause: journalError });
       }
       const outcome = await native.stopExclusiveRun({ daemon: run.daemon, processes: run.processes, onDiscovered: async proof => { update(owner, draft => { current(draft).processes.push(proof); }); } }, operation);
-      if (outcome.state !== "stopped_confirmed" || !run.processes.some(p => p.role === "shell") || !run.processes.some(p => p.role === "agent")) {
+      // Stop discovery may append original descendants; commit only the current durable evidence.
+      run = current(need(owner));
+      const preparedStop = run.nativeLaunch === "not_submitted" && run.processes.length === 1 && run.processes[0]!.role === "shell" && run.run.segmentIds.length === 0;
+      const nativeStop = run.nativeLaunch === "observed" && run.processes.some(p => p.role === "shell") && run.processes.some(p => p.role === "agent");
+      if (outcome.state !== "stopped_confirmed" || !preparedStop && !nativeStop) {
         update(owner, draft => { current(draft).phase = "stop_unknown"; current(draft).error = outcome.reason ?? "The original shell/native resource evidence is incomplete."; });
         throw new Error(`Herdr stop_unknown: ${outcome.reason ?? "original resource proof is incomplete"}`);
       }
       const stoppedAt = new Date().toISOString();
       record = update(owner, draft => { const r = current(draft); r.phase = "stopped_confirmed"; r.error = null; r.run.stoppedAt = stoppedAt;
-        r.run.stopProof = { recordId: r.stopOperationId!, executionGeneration: r.run.executionGeneration, binding: { ...r.run.binding }, bootId: r.daemon!.bootId, stoppedAt,
+        const proof: SessionV2NativeStopProof = { recordId: r.stopOperationId!, executionGeneration: r.run.executionGeneration, binding: { ...r.run.binding }, bootId: r.daemon!.bootId, stoppedAt,
           method: outcome.method ?? "instances_exited", terminalStopped: true, processes: r.processes.map(p => ({ role: p.role === "shell" ? "shell" : "agent", pid: p.pid, birthToken: p.birthToken, bootId: p.bootId })) };
+        const shell = r.processes[0]!, daemon = r.daemon!;
+        r.run.stopProof = preparedStop ? { ...proof, nativeLaunch: "not_submitted", daemon: { pid: daemon.pid, birthToken: daemon.birthToken, bootId: daemon.bootId }, processes: [{ role: "shell", pid: shell.pid, birthToken: shell.birthToken, bootId: shell.bootId }] } : proof;
       });
     }
+    return true;
+    })()]);
+    const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Herdr native stopping and probe cleanup both failed.");
+    if (results[1].status !== "fulfilled" || !results[1].value) return;
     // Segment closure is a separate recoverable boundary after the stop proof commits.
     await finishStop(owner, operation);
     if (reason === "terminal" && input && !inputJournalError) input.close();
@@ -592,6 +650,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       if (record.runs.length > 0 && current(record).phase === "stopped_confirmed") {
         await finishStop(context, operation);
         record = need(context);
+        if (isPreparedSessionV2StopProof(current(record).run.stopProof!)) throw new Error("A stopped prepared runtime cannot grant native recovery or a replacement generation.");
       }
       if (record.runs.length > 0) await connect(context, operation);
       if (record.runs.length > 0 && (!inputStore.get(record.sessionId) || inputStore.get(record.sessionId)!.unknownInput)) throw new Error("The original input journal is missing or unknown; automatic runtime recovery requires explicit resolution.");
@@ -608,19 +667,13 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const peer = await native.peer(local.paths.apiEndpoint);
       record = need(context);
       if (!record.preparation?.daemon || JSON.stringify(record.preparation.daemon.auditToken) !== JSON.stringify(peer.auditToken)) throw new Error("The prepared Herdr endpoint does not belong to its original daemon.");
-      const binding = await local.tasks.prepareWorkspace(context, title, operation);
+      const startup = local.createShellStartup();
+      const binding = await local.tasks.prepareWorkspace(context, title, operation, startup === undefined ? undefined : { shellNonce: startup.nonce });
       const processInfo = await local.tasks.processInfo(context, binding, operation);
-      let shell = await native.capture(processInfo.shellPid, "shell");
-      for (;;) {
-        await delay(50, undefined, { signal: operation.signal }); operation.check();
-        const sampled = await native.capture(processInfo.shellPid, "shell");
-        if (sampled.birthToken !== shell.birthToken || sampled.bootId !== shell.bootId) throw new Error("The prepared shell was replaced before identity registration.");
-        if (JSON.stringify(sampled.auditToken) === JSON.stringify(shell.auditToken)) break;
-        shell = sampled;
-      }
+      const shell = await native.capture(processInfo.shellPid, "shell", startup === undefined ? undefined : { executable: startup.executable, operation, ready: () => startup.isReady(processInfo.shellPid) });
       const generation = String(record.runs.length + 1), startedAt = new Date().toISOString();
       const terminal: TerminalBinding = { instanceId, sessionId: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId, terminalId: binding.terminalId, nativeSessionId: record.runs.at(-1)?.run.binding.nativeSessionId ?? null };
-      record = update(context, draft => { draft.runs.push({ run: { executionGeneration: generation, owner: draft.owner, binding: terminal, startedAt, stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", instanceDirectory, daemon: draft.preparation!.daemon, processes: [shell], stopOperationId: null, stopReason: null, error: null, admission: null }); draft.preparation = null; });
+      record = update(context, draft => { draft.runs.push({ run: { executionGeneration: generation, owner: draft.owner, binding: terminal, startedAt, stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory, daemon: draft.preparation!.daemon, processes: [shell], stopOperationId: null, stopReason: null, error: null, admission: null }); draft.preparation = null; });
       recording.prepare(need(context));
       await publish(context, operation);
       await prepareRecording(context, operation);
@@ -628,7 +681,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     }),
     start: (context, binding, input, operation) => serialize(context, async () => {
       let record = need(context), run = current(record);
-      if (run.phase !== "prepared" || JSON.stringify(bindingFor(run)) !== JSON.stringify(binding)) throw new Error("Native launch requires the original prepared Herdr run.");
+      if (run.phase !== "prepared" || run.nativeLaunch !== "not_submitted" || JSON.stringify(bindingFor(run)) !== JSON.stringify(binding)) throw new Error("Native launch requires the original prepared Herdr run.");
       const beforeStart = async (active: Operation): Promise<void> => {
         const fresh = need(context), target = current(fresh), shell = run.processes.find(proof => proof.role === "shell");
         if (target.run.executionGeneration !== run.run.executionGeneration || !["prepared", "launch_requested"].includes(target.phase)) throw new Error("The original native launch no longer owns its prepared run.");
@@ -641,14 +694,14 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await beforeStart(operation);
       await publish(context, operation);
       await prepareRecording(context, operation);
-      record = update(context, draft => { current(draft).phase = "launch_requested"; if (draft.initialAssignment === "pending") draft.initialPrompt = input.prompt; });
+      record = update(context, draft => { current(draft).phase = "launch_requested"; current(draft).nativeLaunch = "requested"; if (draft.initialAssignment === "pending") draft.initialPrompt = input.prompt; });
       const manager = adapter(record).tasks;
       const observed = await manager.launch(context, binding, { configuration: input.configuration, beforeStart, ...(run.run.binding.nativeSessionId === null ? {} : { resumeSessionId: run.run.binding.nativeSessionId }) }, operation);
       const info = await manager.processInfo(context, binding, operation);
       if (info.shellPid !== run.processes.find(p => p.role === "shell")?.pid) throw new Error("The original shell changed while launching the native agent.");
       const agents = await Promise.all(info.foregroundPids.filter(pid => pid !== info.shellPid).map(pid => native.capture(pid, "agent")));
       if (agents.length === 0) throw new Error("The original native agent has no identifiable foreground process; input remains closed.");
-      update(context, draft => { current(draft).processes.push(...agents); current(draft).phase = "active"; });
+      update(context, draft => { current(draft).processes.push(...agents); current(draft).phase = "active"; current(draft).nativeLaunch = "observed"; });
       enrich(context, observed);
       update(context, draft => {
         const r = current(draft), segmentId = randomUUID(), previous = draft.segments.at(-1);
@@ -691,6 +744,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         candidates: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId && !store.retired(identity(record)) && isHerdrNeverStarted(record)).map(identity),
         retired: () => store.listRetired().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId).map(record => ({ owner: identity(record), cwd: record.cwd, agent: record.owner.provider })),
         retire: (owner, operation, verifyWorktreeAbsent) => serialize(owner, async () => {
+          await settleSelection();
           const record = need(owner);
           if (!isHerdrNeverStarted(record)) throw new Error("The original claim has execution evidence; never-started retirement is prohibited.");
           if (!options.currentUserId || await options.currentUserId(operation.signal) !== record.owner.ownerUserId) throw new Error("Never-started retirement requires the original authenticated owner.");
@@ -728,11 +782,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         if (previous !== null) { need(context); return; }
         store.create({ owner: { projectId: context.projectId, taskId: context.taskId, workerId: options.workerId, worktreeId: context.worktreeId, ownerUserId, serverOrigin: options.serverOrigin, provider: context.agent }, claimId: context.claimId, cwd: context.cwd });
       },
-      assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.phase === "active" || run.phase === "prepared") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
+      assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.run.stopProof !== null && isPreparedSessionV2StopProof(run.run.stopProof)) throw new Error("A stopped prepared runtime cannot grant native recovery or a replacement generation."); if (run.phase === "active" || run.phase === "prepared" && run.nativeLaunch === "not_submitted") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
       archive: resources,
       responsibilities: () => retainedResources().map(resource => resource.owner),
       hasPreparedRun: owner => { const record = store.get(owner); return record !== null && record.preparation === null && record.runs.at(-1)?.phase === "prepared"; },
-      isStopped: owner => { const record = store.get(owner); return record !== null && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) && record.segments.every(segment => segment.endedAt !== null); },
+      isStopped: owner => { const record = store.get(owner); return selectionEpoch === settledSelectionEpoch && record !== null && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) && record.segments.every(segment => segment.endedAt !== null); },
       cleanup: async (owner, prompt, operation) => {
         let notified = false;
         const record = need(owner);

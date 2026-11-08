@@ -3,9 +3,12 @@ import { array, boolean, executionPlatform, id, malformed, record, string, times
 import type { ExecutionPlatform, WorkerAgent } from './types';
 import type { WorkerAssistantHost, WorkerMachine, WorkerReadAdmission } from './workers';
 
-export type BotConfiguration = { readonly workerId: string; readonly cwd: string; readonly provider: WorkerAgent; readonly model: string | null; readonly args: readonly string[] };
-export type BotOverrides = { readonly workerId?: string; readonly cwd?: string; readonly provider?: WorkerAgent };
+export type BotSelectionSource = 'explicit' | 'preference' | 'local' | 'cloud' | 'native' | 'unknown';
+export type BotSelection = { readonly schemaVersion: 1; readonly modelSource: BotSelectionSource; readonly reasoningEffortSource: BotSelectionSource; readonly configurationGeneration?: string; readonly catalogGeneration?: string };
+export type BotConfiguration = { readonly workerId: string; readonly cwd: string; readonly provider: WorkerAgent; readonly model: string | null; readonly args: readonly string[]; readonly reasoningEffort?: string | null; readonly selection?: BotSelection };
+export type BotOverrides = { readonly workerId?: string; readonly cwd?: string; readonly provider?: WorkerAgent; readonly model?: string; readonly reasoningEffort?: string };
 export type CreateBotInput = { readonly id: string; readonly name: string; readonly overrides?: BotOverrides };
+export type DeleteBotInput = { readonly ifVersion: string; readonly deletionId: string };
 export type BotStartupResult = { readonly state: 'pending' | 'ready' | 'failed'; readonly code: string | null };
 export type BotCleanupResult = { readonly state: 'pending' | 'completed' | 'failed'; readonly code: string | null };
 type BotIdentity = { readonly id: string; readonly workerId: string; readonly version: string };
@@ -59,19 +62,34 @@ const argument = (value: unknown): string => {
   return result.isWellFormed() && !result.includes('\0') ? result : malformed();
 };
 const configuration = (value: unknown): BotConfiguration => {
-  const data = fields(value, ['workerId', 'cwd', 'provider', 'model', 'args']);
-  return { workerId: id(data.workerId), cwd: absolutePath(data.cwd), provider: provider(data.provider), model: data.model === null ? null : text(data.model), args: array(data.args, argument) };
+  const data = fields(value, ['workerId', 'cwd', 'provider', 'model', 'args'], ['reasoningEffort', 'selection']);
+  const model = data.model === null ? null : data.selection === undefined ? text(data.model) : boundedText(data.model, 256);
+  const reasoningEffort = data.reasoningEffort === undefined ? undefined : data.reasoningEffort === null ? null : boundedText(data.reasoningEffort, 64);
+  if ((data.selection === undefined) !== (reasoningEffort === undefined)) return malformed();
+  return { workerId: id(data.workerId), cwd: absolutePath(data.cwd), provider: provider(data.provider), model, args: array(data.args, argument), ...(reasoningEffort === undefined ? {} : { reasoningEffort, selection: selection(data.selection, model, reasoningEffort) }) };
+};
+const selection = (value: unknown, model: string | null, effort: string | null): BotSelection => {
+  const data = fields(value, ['schemaVersion', 'modelSource', 'reasoningEffortSource'], ['configurationGeneration', 'catalogGeneration']);
+  if (data.schemaVersion !== 1) return malformed();
+  const source = (value: unknown, selected: string | null): BotSelectionSource => {
+    const parsed = choice(value, ['explicit', 'preference', 'local', 'cloud', 'native', 'unknown']);
+    if (parsed === 'unknown' && selected !== null || parsed !== 'native' && parsed !== 'unknown' && selected === null) return malformed();
+    return parsed;
+  };
+  const configurationGeneration = data.configurationGeneration === undefined ? undefined : string(data.configurationGeneration);
+  if (configurationGeneration !== undefined && !/^[a-f0-9]{64}$/.test(configurationGeneration)) return malformed();
+  return { schemaVersion: 1, modelSource: source(data.modelSource, model), reasoningEffortSource: source(data.reasoningEffortSource, effort), ...(configurationGeneration === undefined ? {} : { configurationGeneration }), ...(data.catalogGeneration === undefined ? {} : { catalogGeneration: id(data.catalogGeneration) }) };
 };
 const overrides = (value: unknown): BotOverrides => {
-  const data = fields(value, [], ['workerId', 'cwd', 'provider']);
-  return { ...(Object.hasOwn(data, 'workerId') ? { workerId: id(data.workerId) } : {}), ...(Object.hasOwn(data, 'cwd') ? { cwd: absolutePath(data.cwd) } : {}), ...(Object.hasOwn(data, 'provider') ? { provider: provider(data.provider) } : {}) };
+  const data = fields(value, [], ['workerId', 'cwd', 'provider', 'model', 'reasoningEffort']);
+  return { ...(Object.hasOwn(data, 'workerId') ? { workerId: id(data.workerId) } : {}), ...(Object.hasOwn(data, 'cwd') ? { cwd: absolutePath(data.cwd) } : {}), ...(Object.hasOwn(data, 'provider') ? { provider: provider(data.provider) } : {}), ...(Object.hasOwn(data, 'model') ? { model: boundedText(data.model, 256) } : {}), ...(Object.hasOwn(data, 'reasoningEffort') ? { reasoningEffort: boundedText(data.reasoningEffort, 64) } : {}) };
 };
 const result = <T extends string>(value: unknown, states: readonly T[]): { readonly state: T; readonly code: string | null } => {
   const data = fields(value, ['state', 'code']), state = choice(data.state, states), code = optionalText(data.code);
   if ((state === 'failed') !== (code !== null)) return malformed();
   return { state, code };
 };
-const sameConfiguration = (left: BotConfiguration, right: BotConfiguration): boolean => left.workerId === right.workerId && left.cwd === right.cwd && left.provider === right.provider && left.model === right.model && left.args.length === right.args.length && left.args.every((arg, index) => arg === right.args[index]);
+const sameConfiguration = (left: BotConfiguration, right: BotConfiguration): boolean => left.workerId === right.workerId && left.cwd === right.cwd && left.provider === right.provider && left.model === right.model && left.reasoningEffort === right.reasoningEffort && JSON.stringify(left.selection) === JSON.stringify(right.selection) && left.args.length === right.args.length && left.args.every((arg, index) => arg === right.args[index]);
 
 export const parseBot = (value: unknown, userId: string, expectedId?: string): Bot => {
   const data = record(value), identity = { id: id(data.id), workerId: id(data.workerId), version: decimal(data.version) };
@@ -96,6 +114,7 @@ export const parseBot = (value: unknown, userId: string, expectedId?: string): B
   }
   if (ownerUserId !== requestId(userId) || identity.workerId !== resolvedConfiguration.workerId || (sessionId === null) !== (testExecutionId === null) || (sessionId === null) !== (roleConfiguration === null) || startupResult.state === 'ready' && sessionId === null) return malformed();
   if (Object.entries(requestedOverrides).some(([key, value]) => resolvedConfiguration[key as keyof BotOverrides] !== value)) return malformed();
+  if (requestedOverrides.model !== undefined && resolvedConfiguration.selection?.modelSource !== 'explicit' || requestedOverrides.reasoningEffort !== undefined && resolvedConfiguration.selection?.reasoningEffortSource !== 'explicit') return malformed();
   return { ...identity, deletion: null, ownerUserId, name: botName(data.name), creationOrder: decimal(data.creationOrder), requestedOverrides, resolvedConfiguration, roleConfiguration, sessionId, testExecutionId, startupResult, createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
 };
 
@@ -117,7 +136,7 @@ const workerDefaults = (value: unknown): BotWorkerDefaults => {
     const cwd = boundedText(config.cwd, 4096), windowsPath = cwd.replaceAll('\\', '/'), unc = windowsPath.startsWith('//') ? windowsPath.slice(2).split('/') : [];
     if (!(platform === 'windows' ? /^[a-z]:\//i.test(windowsPath) || unc.length >= 2 && !!unc[0] && unc[0] !== '.' && unc[0] !== '?' && !!unc[1] : cwd.startsWith('/'))) return malformed();
     const selected = providers.find(p => p.provider === config.provider);
-    if (!selected?.available || selected.model !== config.model || selected.args.length !== config.args.length || selected.args.some((arg, index) => arg !== config.args[index])) return malformed();
+    if (!selected?.available || config.selection === undefined && selected.model !== config.model || selected.args.length !== config.args.length || selected.args.some((arg, index) => arg !== config.args[index])) return malformed();
   }
   return { workerId, machine: { id: id(machine.id), name: text(machine.name) }, platform, state, reason, configuration: config, providers };
 };
@@ -166,9 +185,16 @@ export async function getBot(botId: string, signal: AbortSignal, admission: Work
   const target = requestId(botId);
   return readBot(`/api/v1/me/bots/${target}`, signal, admission, value => parseBot(value, admission.userId, target));
 }
-export async function getBotDefaults(workerId: string | null, signal: AbortSignal, admission: WorkerReadAdmission): Promise<BotDefaults> {
+export async function getBotDefaults(workerId: string | null, signal: AbortSignal, admission: WorkerReadAdmission, choices?: Omit<BotOverrides, 'workerId'>): Promise<BotDefaults> {
   const target = workerId === null ? null : requestId(workerId);
-  return readBot(`/api/v1/me/bots/defaults${target === null ? '' : `?workerId=${target}`}`, signal, admission, value => parseBotDefaults(value, target));
+  const query = new URLSearchParams(target === null ? undefined : { workerId: target });
+  if (choices !== undefined) {
+    let parsed: BotOverrides;
+    try { parsed = overrides(choices); if (parsed.workerId !== undefined) throw new ApiError('protocol'); }
+    catch { throw new ApiError('protocol'); }
+    for (const [key, value] of Object.entries(parsed)) query.set(key, value);
+  }
+  return readBot(`/api/v1/me/bots/defaults${query.size === 0 ? '' : `?${query}`}`, signal, admission, value => parseBotDefaults(value, target));
 }
 export class BotCreationUnknown extends Error {
   constructor(readonly id: string, cause: unknown) { super('The Bot creation outcome is unknown.', { cause }); this.name = 'BotCreationUnknown'; }
@@ -194,6 +220,34 @@ export async function createBot(input: CreateBotInput, signal: AbortSignal, admi
     // A dispatched write is observed by its original ID, including malformed
     // responses and aborted reads; neither error proves that creation rolled back.
     if (dispatched && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500)) throw new BotCreationUnknown(target, error);
+    throw error;
+  }
+}
+
+export class BotDeletionUnknown extends Error {
+  constructor(readonly id: string, readonly input: DeleteBotInput, cause: unknown) { super('The Bot deletion outcome is unknown.', { cause }); this.name = 'BotDeletionUnknown'; }
+}
+
+/** Submit one exact deletion request; callers observe the Bot before deciding whether to retry it. */
+export async function deleteBot(botId: string, input: DeleteBotInput, signal: AbortSignal, admission: WorkerReadAdmission): Promise<DeletedBot> {
+  const expected = requestId(admission.userId), target = requestId(botId);
+  let original: DeleteBotInput;
+  try { original = Object.freeze({ ifVersion: decimal(input.ifVersion), deletionId: requestId(input.deletionId) }); }
+  catch { throw new ApiError('protocol'); }
+  let dispatched = false;
+  try {
+    const response = await request(`/api/v1/me/bots/${target}`, signal, { method: 'DELETE', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(original) }, () => { dispatched = true; });
+    assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
+    return await json(response, signal, value => {
+      if (response.status !== 200) throw new ApiError('protocol', response.status);
+      const bot = parseBot(value, expected, target);
+      if (bot.deletion === null || bot.deletion.deletionId !== original.deletionId || bot.deletion.requestedVersion !== original.ifVersion) return malformed();
+      return bot;
+    });
+  } catch (error) {
+    // A later GET may precede a still-running DELETE commit. Preserve its
+    // original identity until observation resolves the result; never replay here.
+    if (dispatched && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500)) throw new BotDeletionUnknown(target, original, error);
     throw error;
   }
 }

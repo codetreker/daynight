@@ -1,5 +1,6 @@
 export type BrowserLocation = { readonly pathname: string; readonly search: string; readonly hash: string };
-export type DraftScope = { readonly identity: object; readonly projectId: string; readonly taskId: string };
+export type WorkerConfigurationDraftScope = { readonly kind: 'worker-configuration'; readonly identity: object; readonly workerId: string };
+export type DraftScope = { readonly kind?: 'task'; readonly identity: object; readonly projectId: string; readonly taskId: string } | WorkerConfigurationDraftScope;
 export type DirtyDraft = {
   readonly scope: DraftScope;
   readonly isDirty: () => boolean;
@@ -11,7 +12,9 @@ type Entry = { readonly url: URL; readonly index: number | null };
 type Decision = { readonly kind: 'action'; readonly run: () => void; readonly drafts: readonly DirtyDraft[] }
   | { readonly kind: 'history'; readonly drafts: readonly DirtyDraft[] };
 const namespace = '__daynightNavigation';
-const sameScope = (a: DraftScope, b: DraftScope) => a.identity === b.identity && a.projectId === b.projectId && a.taskId === b.taskId;
+const sameScope = (a: DraftScope, b: DraftScope) => a.identity === b.identity && (a.kind === 'worker-configuration'
+  ? b.kind === 'worker-configuration' && a.workerId === b.workerId
+  : b.kind !== 'worker-configuration' && a.projectId === b.projectId && a.taskId === b.taskId);
 
 /** Owns admitted locations for one window. Raw popstate must never mount routes directly. */
 export class BrowserNavigation {

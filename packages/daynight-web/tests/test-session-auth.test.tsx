@@ -58,7 +58,8 @@ it('renders the shared session after authentication and removes it on sign-out',
   window.sessionStorage.setItem(closedDraft, 'private draft from another page');
   const otherDraft = 'daynight:session-draft:another-principal:closed-session';
   window.sessionStorage.setItem(otherDraft, 'other principal');
-  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Account menu:/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
   await waitFor(() => expect(screen.queryByText('Private test conversation')).toBeNull());
   expect(Object.keys(window.sessionStorage).filter(key => key.includes(sessionId))).toEqual([]);
   expect(window.sessionStorage.getItem(closedDraft)).toBeNull();

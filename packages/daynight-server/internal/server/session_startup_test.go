@@ -1,23 +1,18 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
@@ -63,6 +58,52 @@ func TestStartupReportBeforeHelloPersistsAndNegotiatesCurrent(t *testing.T) {
 	if _, exists := legacy["startupReport"]; exists || len(legacy) != 2 {
 		t.Fatal("legacy current response changed shape")
 	}
+}
+
+func TestFailedStartupReportHTTPReadback(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	report := startupBody(f)
+	report["startup"] = map[string]any{"state": "failed", "reasonCode": "native_rejected"}
+	body := jsonBody(t, map[string]any{
+		"version": f.task.Version, "claimId": f.snapshot.ClaimID, "phase": "waiting",
+		"nativeSessionId": nil, "herdr": nil, "startupReport": report,
+	})
+	updated := decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusOK)
+	worker := apiWorker(t, updated.Properties)
+	if worker.ClaimID != f.snapshot.ClaimID || worker.UserID != f.handler.principal.UserID || worker.Phase != "waiting" || worker.NativeSessionID != nil || worker.Herdr != nil {
+		t.Fatalf("worker update lost its identity or waiting state: %+v", worker)
+	}
+
+	read := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodGet, taskPath(f.task), ""), http.StatusOK)
+	readWorker := apiWorker(t, read.Properties)
+	if read.Version != updated.Version || !reflect.DeepEqual(readWorker, worker) || !reflect.DeepEqual(read.Properties["sessionStartup"], updated.Properties["sessionStartup"]) {
+		t.Fatal("worker and startup report did not survive task readback")
+	}
+
+	response := startupRequest(f, http.MethodGet, f.base+"/current", "")
+	current := decodeResponse[struct {
+		Status        string          `json:"status"`
+		Session       sp.Snapshot     `json:"session"`
+		StartupReport json.RawMessage `json:"startupReport"`
+	}](t, response, http.StatusOK)
+	var expected map[string]any
+	var actual map[string]any
+	if err := json.Unmarshal([]byte(jsonBody(t, report)), &expected); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(current.StartupReport, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != "registered" || current.Session.SessionID != f.snapshot.SessionID || current.Session.ClaimID != f.snapshot.ClaimID || current.Session.Identity.NativeSessionID != nil || !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("current session lost failed startup evidence or identity: %+v, report=%s", current.Session, current.StartupReport)
+	}
+
+	unauthenticated := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, f.base+"/current", nil)
+	request.Header.Set("X-Daynight-Startup-Version", "1")
+	request.Header.Set("X-Request-ID", "project-test")
+	f.handler.ServeHTTP(unauthenticated, request)
+	assertProjectError(t, unauthenticated, http.StatusUnauthorized, "unauthenticated")
 }
 
 func sendStartup(t *testing.T, f *sessionHTTPFixture, report map[string]any) api.Task {
@@ -113,7 +154,7 @@ func TestStartupReportGenerationSwitchFiltersOldEvidence(t *testing.T) {
 	previous := "1"
 	nextInstance := uuid.NewString()
 	grant := sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: nextInstance, ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
-	decodeResponse[sessionrelay.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, grant)), http.StatusOK)
+	decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, grant)), http.StatusOK)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] != nil {
 		t.Fatal("new generation displays previous startup evidence")
@@ -203,7 +244,7 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 		reported <- startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", reportBody)
 	}()
 	close(start)
-	decodeResponse[sessionrelay.GrantResult](t, <-granted, http.StatusOK)
+	decodeResponse[sessioncore.GrantResult](t, <-granted, http.StatusOK)
 	result := <-reported
 	if result.Code != http.StatusOK && result.Code != http.StatusConflict {
 		t.Fatalf("unexpected report result: %d %s", result.Code, result.Body)
@@ -211,43 +252,5 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] != nil {
 		t.Fatal("racing old report crossed generation boundary")
-	}
-}
-
-func TestStartupReportNativeObservationThroughTypeScriptWorkerClient(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	worker := apiWorker(t, f.task.Properties)
-	input := map[string]any{
-		"serverOrigin": f.server.URL, "token": f.handler.token, "projectId": f.task.ProjectID, "taskId": f.task.ID,
-		"claimId": worker.ClaimID, "version": fmt.Sprint(f.task.Version), "sessionId": f.snapshot.SessionID,
-		"executionGeneration": f.snapshot.ExecutionGeneration, "controllerInstanceId": f.registration.ControllerInstanceID,
-		"workerId": worker.WorkerID, "worktreeId": worker.WorktreeID, "userId": worker.UserID, "controllerId": f.registration.ControllerID,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, "node", filepath.Join("..", "..", "..", "daynight", "test", "acceptance", "startup-client.mjs"))
-	command.Stdin = strings.NewReader(jsonBody(t, input))
-	output, err := command.Output()
-	if err != nil {
-		var failed *exec.ExitError
-		if errors.As(err, &failed) {
-			t.Fatalf("TypeScript startup client failed: %v\n%s", err, bytes.ReplaceAll(failed.Stderr, []byte(f.handler.token), []byte("[redacted]")))
-		}
-		t.Fatalf("TypeScript startup client failed: %v", err)
-	}
-	var result struct {
-		StartupReport json.RawMessage `json:"startupReport"`
-	}
-	if err = json.Unmarshal(output, &result); err != nil {
-		t.Fatal("TypeScript startup client returned invalid JSON", err)
-	}
-	report, err := sp.DecodeStartupReport(result.StartupReport)
-	if err != nil || report.Startup.State != "failed" || report.Startup.ReasonCode != "native_rejected" {
-		t.Fatalf("native rejection evidence mismatch: %+v %v", report, err)
-	}
-	current := decodeResponse[map[string]json.RawMessage](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
-	read, err := sp.DecodeStartupReport(current["startupReport"])
-	if err != nil || !reflect.DeepEqual(read, report) {
-		t.Fatalf("real Worker report did not survive service readback: %+v %v", read, err)
 	}
 }

@@ -1,6 +1,9 @@
 package service
 
 import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+
 	"context"
 	"errors"
 	"reflect"
@@ -9,15 +12,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func createClassifiedTask(t *testing.T, tasks *Tasks, principal core.Principal, projectID, title string, dependencies, external []string) core.Task {
+func createClassifiedTask(t *testing.T, tasks *taskservice.Tasks, principal model.Principal, projectID, title string, dependencies, external []string) model.Task {
 	t.Helper()
-	task, err := tasks.Create(context.Background(), principal, projectID, CreateTask{Title: title, DependsOn: dependencies, ExternalDependsOn: external})
+	task, err := tasks.Create(context.Background(), principal, projectID, taskcore.CreateTask{Title: title, DependsOn: dependencies, ExternalDependsOn: external})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +39,7 @@ func TestExternalDependencyWriteCandidateMatrix(t *testing.T) {
 			c := createTask(t, tasks, principal, project.ID, "C")
 			target := createClassifiedTask(t, tasks, principal, project.ID, "Target", []string{b.ID, strings.ToUpper(a.ID)}, []string{strings.ToUpper(b.ID)})
 			wantDependencies, wantExternal := []string{a.ID, b.ID}, []string{b.ID}
-			input := UpdateTask{}
+			input := taskcore.UpdateTask{}
 			switch name {
 			case "neither":
 				input.Title = pointer("Renamed")
@@ -81,27 +87,27 @@ func TestExternalDependencyFlagsOnlyKeepExecutionIntervalsAndVersionOrder(t *tes
 	a := finishTask(t, tasks, principal, startTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "A")))
 	b := finishTask(t, tasks, principal, startTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "B")))
 	target := createClassifiedTask(t, tasks, principal, project.ID, "Target", []string{a.ID, b.ID}, nil)
-	target = updateTask(t, tasks, principal, target, UpdateTask{AllowAgents: pointer(true)})
+	target = updateTask(t, tasks, principal, target, taskcore.UpdateTask{AllowAgents: pointer(true)})
 	target = startTask(t, tasks, principal, target)
 	for _, external := range [][]string{{a.ID}, {b.ID}} {
 		before := target
-		target = updateTask(t, tasks, principal, target, UpdateTask{ExternalDependsOn: &external})
+		target = updateTask(t, tasks, principal, target, taskcore.UpdateTask{ExternalDependsOn: &external})
 		preserved := target
 		preserved.ExternalDependsOn, preserved.Version, preserved.UpdatedAt = before.ExternalDependsOn, before.Version, before.UpdatedAt
 		if target.Version != before.Version+1 || !target.UpdatedAt.After(before.UpdatedAt) || !reflect.DeepEqual(preserved, before) {
 			t.Fatalf("flags-only mutation changed execution or unrelated fields: before=%#v after=%#v", before, target)
 		}
-		_, err := tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: before.Version, ExternalDependsOn: &external})
+		_, err := tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: before.Version, ExternalDependsOn: &external})
 		requireFault(t, err, "version_conflict")
-		noop := updateTask(t, tasks, principal, target, UpdateTask{ExternalDependsOn: &external})
+		noop := updateTask(t, tasks, principal, target, taskcore.UpdateTask{ExternalDependsOn: &external})
 		if !reflect.DeepEqual(noop, target) {
 			t.Fatal("same classification advanced metadata")
 		}
-		if target.Status == core.TaskInProgress {
+		if target.Status == model.TaskInProgress {
 			target = finishTask(t, tasks, principal, target)
 		}
 	}
-	_, err := tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version - 1, ExternalDependsOn: pointer([]string{uuid.NewString()})})
+	_, err := tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version - 1, ExternalDependsOn: pointer([]string{uuid.NewString()})})
 	requireFault(t, err, "version_conflict")
 	assertTaskUnchanged(t, tasks, principal, target)
 }
@@ -111,13 +117,13 @@ func TestExternalDependencyWritesRejectInvalidCandidatesAndAllEdgeCycles(t *test
 	ctx := context.Background()
 	a := createTask(t, tasks, principal, project.ID, "A")
 	b := createTask(t, tasks, principal, project.ID, "B")
-	foreignProject, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Foreign", RepoURL: "https://example.com/foreign"})
+	foreignProject, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Foreign", RepoURL: "https://example.com/foreign"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	foreign := createTask(t, tasks, principal, foreignProject.ID, "Foreign prerequisite")
 	target := createClassifiedTask(t, tasks, principal, project.ID, "Target", []string{a.ID}, []string{a.ID})
-	for _, input := range []CreateTask{
+	for _, input := range []taskcore.CreateTask{
 		{Title: "Invalid", ExternalDependsOn: []string{a.ID}},
 		{Title: "Invalid", DependsOn: []string{a.ID}, ExternalDependsOn: []string{"bad"}},
 		{Title: "Invalid", DependsOn: []string{a.ID}, ExternalDependsOn: []string{a.ID, strings.ToUpper(a.ID)}},
@@ -128,7 +134,7 @@ func TestExternalDependencyWritesRejectInvalidCandidatesAndAllEdgeCycles(t *test
 		_, err := tasks.Create(ctx, principal, project.ID, input)
 		requireFault(t, err, "invalid_input")
 	}
-	for _, input := range []UpdateTask{
+	for _, input := range []taskcore.UpdateTask{
 		{ExternalDependsOn: pointer([]string{"bad"})},
 		{ExternalDependsOn: pointer([]string{a.ID, strings.ToUpper(a.ID)})},
 		{ExternalDependsOn: pointer([]string{target.ID})},
@@ -143,12 +149,12 @@ func TestExternalDependencyWritesRejectInvalidCandidatesAndAllEdgeCycles(t *test
 		assertTaskUnchanged(t, tasks, principal, target)
 	}
 	for _, external := range [][]string{nil, {target.ID}} {
-		_, err := tasks.Update(ctx, principal, project.ID, a.ID, UpdateTask{Version: a.Version, DependsOn: pointer([]string{target.ID}), ExternalDependsOn: &external})
+		_, err := tasks.Update(ctx, principal, project.ID, a.ID, taskcore.UpdateTask{Version: a.Version, DependsOn: pointer([]string{target.ID}), ExternalDependsOn: &external})
 		requireFault(t, err, "dependency_cycle")
 		assertTaskUnchanged(t, tasks, principal, a)
 	}
 
-	_, err = tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: core.TaskInProgress})
+	_, err = tasks.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskInProgress})
 	requireFault(t, err, "dependency_unsatisfied")
 	assertTaskUnchanged(t, tasks, principal, target)
 }
@@ -160,11 +166,11 @@ func TestExternalDependencyWriteRacesAndPartialFailures(t *testing.T) {
 	b := createTask(t, tasks, principal, project.ID, "B")
 	target := createClassifiedTask(t, tasks, principal, project.ID, "Target", []string{a.ID, b.ID}, nil)
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
-			return tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID})})
+		func(ctx context.Context) (model.Task, error) {
+			return tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID})})
 		},
-		func(ctx context.Context) (core.Task, error) {
-			return tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{b.ID})})
+		func(ctx context.Context) (model.Task, error) {
+			return tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{b.ID})})
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
 	target, err := tasks.Get(ctx, principal, project.ID, target.ID)
@@ -176,7 +182,7 @@ func TestExternalDependencyWriteRacesAndPartialFailures(t *testing.T) {
 			queryContext, cancel := context.WithCancel(ctx)
 			defer cancel()
 			traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }, end: cancel})
-			_, err := traced.Update(queryContext, principal, project.ID, target.ID, UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID, b.ID})})
+			_, err := traced.Update(queryContext, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID, b.ID})})
 			assertOperational(t, err)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("classification cancellation lost its cause: %v", err)
@@ -188,7 +194,7 @@ func TestExternalDependencyWriteRacesAndPartialFailures(t *testing.T) {
 		CREATE TRIGGER reject_external_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_external_edge()`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID, b.ID})})
+	_, err = tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID, b.ID})})
 	var cause *pgconn.PgError
 	if !errors.As(err, &cause) || cause.Code != "P0001" || strings.Contains(err.Error(), "private external") {
 		t.Fatalf("classification failure lost or exposed its native cause: %v", err)
@@ -201,19 +207,19 @@ func TestExternalDependencyWriteChecksMembershipAfterProjectLock(t *testing.T) {
 	admin, member := f.user(t), f.user(t)
 	project := f.project(t, admin, "Classification authorization")
 	f.join(t, admin, member, project.ID)
-	tasks := NewTasks(f.database)
+	tasks := taskservice.NewTasks(f.database)
 	a := createTask(t, tasks, admin, project.ID, "A")
 	target := createClassifiedTask(t, tasks, admin, project.ID, "Target", []string{a.ID}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := make(chan taskResult, 1)
-	if err := f.database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
+	if _, err := f.database.WriteProject(ctx, project.ID, func(tx store.ProjectWriteScope) error {
 		go func() {
-			task, err := tasks.Update(ctx, member, project.ID, target.ID, UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID})})
+			task, err := tasks.Update(ctx, member, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID})})
 			result <- taskResult{task: task, err: err}
 		}()
 		waitForTaskWriters(t, ctx, f.database, 1)
-		return tx.RemoveMember(ctx, member.UserID)
+		return tx.ProjectDAO().RemoveMember(ctx, member.UserID)
 	}); err != nil {
 		t.Fatal(err)
 	}

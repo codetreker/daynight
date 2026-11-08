@@ -43,8 +43,8 @@ export const ProjectsPage = ({ onCreate, title, subtitle, emptyDetail }: { reado
 
   return (
     <>
-      <div className="page-heading">
-        <div>
+      <div className="page-heading project-list-heading">
+        <div className="project-list-information">
           <p className="eyebrow">{app.workspace}</p>
           <h1 id="page-title" tabIndex={-1}>{title ?? app.projects}</h1>
           <p className="subtitle">{subtitle ?? m.subtitle}</p>
@@ -80,6 +80,13 @@ export const ProjectsPage = ({ onCreate, title, subtitle, emptyDetail }: { reado
           <h2>{m.empty}</h2>
           <p>{emptyDetail ?? (onCreate === undefined ? m.emptyDetail : createProject.emptyDetail)}</p>{onCreate !== undefined && <button className="button primary" type="button" onClick={onCreate}>{createProject.createFirst}</button>}
         </section>
+      )}
+
+      {projects.status === 'ready' && projects.error !== null && (
+        <div className="continuation-error" role="alert">
+          <ErrorDetail error={projects.error} />
+          <button className="button" type="button" onClick={projects.refresh}>{m.retry}</button>
+        </div>
       )}
 
       {projects.status === 'ready' && projects.items.length > 0 && (

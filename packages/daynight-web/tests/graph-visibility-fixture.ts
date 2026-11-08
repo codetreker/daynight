@@ -7,7 +7,7 @@ export const indexOf = (seeds: readonly Seed[], defaultStatus: TaskStatus = 'tod
   const tasks: GraphTask[] = seeds.map(({ id, dependsOn = [], externalDependsOn = [] }) => {
     const status = statuses.get(id)!;
     const blockedBy = dependsOn.filter((source) => statuses.get(source) !== 'done');
-    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
+    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null, cancelledAt: null,
       id, dependsOn, blockedBy, ready: status === 'todo' && blockedBy.length === 0, status,
       titlePreview: id, titleTruncated: false, createdAt: '2026-10-22T00:00:00Z', updatedAt: '2026-10-22T00:00:00Z',
     };
@@ -15,7 +15,7 @@ export const indexOf = (seeds: readonly Seed[], defaultStatus: TaskStatus = 'tod
   const count = (status: TaskStatus) => tasks.filter((task) => task.status === status).length;
   const graph: TaskGraph = { observedAt: "2026-10-20T12:00:00Z",
     project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: 'Project', repoUrl: '', createdAt: '2026-10-22T00:00:00Z', updatedAt: '2026-10-22T00:00:00Z' }, tasks,
-    summary: { total: tasks.length, todo: count('todo'), inProgress: count('in_progress'), done: count('done'),
+    summary: { total: tasks.length, todo: count('todo'), inProgress: count('in_progress'), done: count('done'), cancelled: 0,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === 'todo' && task.blockedBy.length > 0).length },
   };
   return buildGraphIndex(graph);

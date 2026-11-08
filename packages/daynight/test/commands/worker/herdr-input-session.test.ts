@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { afterEach, expect, test, vi } from "vitest";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -27,7 +28,7 @@ const setup = async (configure?: (registration: Message<"registration">, record:
   registration.payload.capabilities = { observe: false, control: false, archive: false };
   const segmentId = "00000000-0000-4000-8000-000000000009";
   const record: HerdrLifecycleRecord = { owner: registration.payload.owner, claimId: registration.claimId, cwd: "/isolated", sessionId: registration.sessionId, registrationId: registration.payload.registrationId, connectionEpoch: null, registrationRequest: registration, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending", initialPrompt: "assignment", automationBlocked: false, preparation: null, version: 1,
-    runs: [{ run: { executionGeneration: "1", owner: registration.payload.owner, binding: registration.payload.binding, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [segmentId] }, phase: "active", instanceDirectory: "/isolated/herdr", daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }],
+    runs: [{ run: { executionGeneration: "1", owner: registration.payload.owner, binding: registration.payload.binding, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [segmentId] }, phase: "active", nativeLaunch: "observed", instanceDirectory: "/isolated/herdr", daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }],
     segments: [{ segmentId, segmentOrdinal: "1", executionGeneration: "1", binding: registration.payload.binding, startedAt: "2026-11-04T00:00:00.000Z", endedAt: null, durationMs: null, gap: null }] };
   configure?.(registration, record);
   const connectionEpoch = String(BigInt(registration.payload.connectionEpoch ?? "0") + 1n);
@@ -271,7 +272,7 @@ test.each(["readiness", "cancel", "written"] as const)("publishes the durable in
   mkdirSync(root, { recursive: true });
   const directory = mkdtempSync(path.join(root, "publication-"));
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
-  const store = openHerdrInputStore(path.join(directory, "input.sqlite"), { onMigration: () => {} });
+  const store = openHerdrInputStore(createMemoryDatabase(), { onMigration: () => {} });
   cleanup.push(() => store.close());
   const target = { sessionId: f.record.sessionId, claimId: f.record.claimId, executionGeneration: "1", connectionEpoch: "1", segmentId: f.record.segments[0]!.segmentId, binding: f.registration.payload.binding };
   store.bind(target);

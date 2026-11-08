@@ -15,15 +15,18 @@ type AccessState = {
 export class ProjectAccessSession {
   private state: AccessState = { access: null, status: 'loading', refreshing: false, error: null };
   private readonly listeners = new Set<() => void>();
+  private readonly activityWaiters = new Set<() => void>();
   private readonly lifetime = new AbortController();
   private read: Promise<ProjectAccess | null> | null = null;
   private readAbort: AbortController | null = null;
+  private protectedRead = false;
+  private refreshAfterRead = false;
   private sequence = 0;
   private accepted = 0;
   private barrier = 0;
   private lastObservation = performance.now();
   private timer: ReturnType<typeof setTimeout> | null = null;
-  constructor(readonly projectId: string, readonly scope: TaskCacheScope) {}
+  constructor(readonly projectId: string, readonly scope: TaskCacheScope, private active = true) {}
   snapshot = (): AccessState => this.state;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private live = (): boolean => !this.lifetime.signal.aborted && !this.scope.isInvalidated;
@@ -52,12 +55,36 @@ export class ProjectAccessSession {
   private schedule = (): void => {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
-    if (!this.live() || document.visibilityState === 'hidden' || this.read !== null) return;
+    if (!this.live() || !this.active || document.visibilityState === 'hidden' || this.read !== null) return;
     this.timer = setTimeout(() => { this.timer = null; void this.revalidate(); }, Math.max(0, this.lastObservation + 30_000 - performance.now()));
   };
-  revalidate = (): Promise<ProjectAccess | null> => {
+  revalidate = (): Promise<ProjectAccess | null> => this.readAccess(false);
+  waitForFreshAccess = async (signal: AbortSignal, requireActive = false): Promise<ProjectAccess | null> => {
+    while (this.live()) {
+      await this.scope.ready(signal);
+      if (!this.live()) return null;
+      if (requireActive && !this.active) {
+        const lifetime = AbortSignal.any([signal, this.lifetime.signal, this.scope.signal]);
+        lifetime.throwIfAborted();
+        await new Promise<void>((resolve, reject) => {
+          const cleanup = () => { this.activityWaiters.delete(resume); lifetime.removeEventListener('abort', abort); };
+          const resume = () => { cleanup(); resolve(); };
+          const abort = () => { cleanup(); reject(lifetime.reason); };
+          this.activityWaiters.add(resume);
+          lifetime.addEventListener('abort', abort, { once: true });
+        });
+        continue;
+      }
+      const current = this.read;
+      if (current !== null) { await current; continue; }
+      return this.state.status === 'ready' && !this.state.refreshing ? this.state.access : null;
+    }
+    return null;
+  };
+  private readAccess = (protectedRead: boolean): Promise<ProjectAccess | null> => {
     if (this.read !== null) return this.read;
     if (!this.live()) return Promise.resolve(null);
+    this.protectedRead = protectedRead;
     this.barrier = this.beginObservation();
     this.update({ ...this.state, refreshing: true });
     const readAbort = new AbortController();
@@ -83,29 +110,47 @@ export class ProjectAccessSession {
         if (!this.live() || signal.aborted || isAbortError(error) || ticket < this.barrier) return null;
         if (ticket < this.accepted) return this.state.access;
         const denied = error instanceof ApiError && error.kind === 'server' && error.status === 404 && error.code === 'not_found';
+        // A principal-bound denial withdraws its matching cache generation immediately;
+        // the scope keeps persistent cleanup behind identity admission.
+        const currentDenial = denied && cacheTicket !== null && this.scope.canRevokeProject(cacheTicket);
+        if (!currentDenial) {
+          try { await this.scope.ready(signal); } catch { return null; }
+          if (!this.live() || signal.aborted || ticket < this.barrier) return null;
+          if (ticket < this.accepted) return this.state.access;
+        }
         if (denied && (cacheTicket !== null ? !this.scope.canRevokeProject(cacheTicket) : this.scope.getAuthorizedProject(this.projectId) !== null)) {
           this.update({ ...this.state, status: 'loading', error: null });
           return null;
         }
         this.barrier = this.beginObservation();
         this.lastObservation = performance.now();
-        this.update({ access: denied ? null : this.state.access, status: denied ? 'unavailable' : 'error', refreshing: false, error });
         if (denied && cacheTicket !== null) {
-          const cleanup = this.scope.revokeProject(cacheTicket, signal, true, error as ApiError);
+          const denialBarrier = this.barrier;
+          const cleanup = this.scope.revokeProject(cacheTicket, this.scope.signal, true, error as ApiError);
+          // Scope listeners normally publish the withdrawal; avoid overwriting a newer observation.
+          if (this.barrier === denialBarrier) this.update({ access: null, status: 'unavailable', refreshing: false, error });
           const cleanupBarrier = this.barrier;
           try { await cleanup; }
           catch (failure) {
-            if (this.live() && !isAbortError(failure) && this.barrier === cleanupBarrier) this.update({ ...this.state, status: 'error', error: failure });
+            if (!this.live() || isAbortError(failure)) return null;
+            try { await this.scope.ready(signal); } catch { return null; }
+            if (this.live() && !signal.aborted && this.barrier === cleanupBarrier) this.update({ ...this.state, status: 'error', error: failure });
           }
-        }
+        } else this.update({ access: denied ? null : this.state.access, status: denied ? 'unavailable' : 'error', refreshing: false, error });
         return null;
       } finally {
         if (this.read === pending) {
           this.read = null;
           if (this.readAbort === readAbort) this.readAbort = null;
+          this.protectedRead = false;
+          const refresh = this.refreshAfterRead && this.active && document.visibilityState !== 'hidden';
+          this.refreshAfterRead = false;
           if (ticket >= this.barrier) this.lastObservation = performance.now();
-          if (ticket >= this.barrier || this.accepted >= this.barrier) this.update({ ...this.state, refreshing: false });
-          this.schedule();
+          if (refresh) void this.revalidate();
+          else {
+            if (ticket >= this.barrier || this.accepted >= this.barrier) this.update({ ...this.state, refreshing: false });
+            this.schedule();
+          }
         }
       }
     });
@@ -116,21 +161,55 @@ export class ProjectAccessSession {
     this.readAbort?.abort();
     this.readAbort = null;
     this.read = null;
-    return this.revalidate();
+    this.refreshAfterRead = false;
+    return this.readAccess(true);
+  };
+  setActive = (active: boolean): void => {
+    if (this.active === active) return;
+    this.active = active;
+    if (!active) {
+      if (this.timer !== null) clearTimeout(this.timer);
+      this.timer = null;
+      this.refreshAfterRead = false;
+      if (!this.protectedRead) {
+        this.barrier = this.beginObservation();
+        this.readAbort?.abort();
+        this.readAbort = null;
+        this.read = null;
+        this.update({ ...this.state, refreshing: false });
+      }
+    } else {
+      if (document.visibilityState !== 'hidden') this.refreshVisible();
+      for (const resume of this.activityWaiters) resume();
+    }
+  };
+  private refreshVisible = (): void => {
+    if (this.read !== null && this.protectedRead) { this.refreshAfterRead = true; return; }
+    if (this.read !== null) {
+      // A foreground return must observe access after the preceding background read.
+      this.barrier = this.beginObservation();
+      this.readAbort?.abort();
+      this.readAbort = null;
+      this.read = null;
+    }
+    void this.revalidate();
   };
   start = (initialRead: boolean): (() => void) => {
-    const refresh = () => { if (document.visibilityState !== 'hidden') void this.revalidate(); else this.schedule(); };
+    const refresh = () => { if (!this.active) return; if (document.visibilityState !== 'hidden') this.refreshVisible(); else this.schedule(); };
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
     const unsubscribe = this.scope.subscribe((event) => {
-      if (event.projectId !== this.projectId || !event.accessRevoked) return;
+      if (event.projectId !== this.projectId) return;
+      if (event.accessRestored) { this.refreshVisible(); return; }
+      if (event.taskNotFound) { void this.revalidateAfterMutation(); return; }
+      if (!event.accessRevoked) return;
       this.barrier = this.beginObservation();
       const previous = this.state.error;
       const knownDenial = event.error instanceof ApiError && event.error.kind === 'server' && event.error.status === 404 && event.error.code === 'not_found';
       const priorFailure = previous !== null && !(previous instanceof ApiError && previous.kind === 'server' && previous.status === 404 && previous.code === 'not_found');
       this.update({ access: null, status: 'unavailable', refreshing: false, error: knownDenial && priorFailure ? previous : event.error });
     });
-    if ((initialRead || this.scope.isProjectSuspended(this.projectId)) && document.visibilityState !== 'hidden') void this.revalidate();
+    if (this.active && (initialRead || this.scope.isProjectSuspended(this.projectId)) && document.visibilityState !== 'hidden') void this.revalidate();
     else this.schedule();
     return () => {
       this.lifetime.abort();
@@ -143,17 +222,18 @@ export class ProjectAccessSession {
 }
 
 const Context = createContext<ProjectAccessSession | null>(null);
-const Provider = ({ projectId, initialRead, children }: { readonly projectId: string; readonly initialRead: boolean; readonly children: ReactNode }) => {
+const Provider = ({ projectId, initialRead, active, children }: { readonly projectId: string; readonly initialRead: boolean; readonly active: boolean; readonly children: ReactNode }) => {
   const scope = useTaskCacheScope();
-  const session = useMemo(() => new ProjectAccessSession(projectId, scope), [projectId, scope]);
+  const session = useMemo(() => new ProjectAccessSession(projectId, scope, active), [projectId, scope]);
   useEffect(() => session.start(initialRead), [session, initialRead]);
+  useEffect(() => { session.setActive(active); }, [session, active]);
   return <Context.Provider value={session}>{children}</Context.Provider>;
 };
 
-export const ProjectAccessBoundary = ({ projectId, initialRead = false, children }: { readonly projectId: string; readonly initialRead?: boolean; readonly children: ReactNode }) => {
+export const ProjectAccessBoundary = ({ projectId, initialRead = false, active = true, children }: { readonly projectId: string; readonly initialRead?: boolean; readonly active?: boolean; readonly children: ReactNode }) => {
   const current = useContext(Context);
   const scope = useTaskCacheScope();
-  return current?.projectId === projectId && current.scope === scope ? children : <Provider key={`${projectId}:${initialRead}`} projectId={projectId} initialRead={initialRead}>{children}</Provider>;
+  return current?.projectId === projectId && current.scope === scope ? children : <Provider key={`${projectId}:${initialRead}`} projectId={projectId} initialRead={initialRead} active={active}>{children}</Provider>;
 };
 
 export const useProjectAccess = (projectId: string) => {

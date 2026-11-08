@@ -20,6 +20,8 @@ macOS Worker 将输入仲裁与[持续录制及归档](herdr-recording.md)组合
 
 共享 blocker 将 Codex Session picker 的完整 Resume/Fork 标题、标题与 footer 之间的原生搜索或选中会话行、单独的 resume/fork/restore 主动作组合为菜单证据。原生 footer 会按优先级裁去次级控件，不能要求它们始终存在；搜索行覆盖空列表，选中行（含展开态的 `⌄` 标记）覆盖搜索位置被 inline error 替代的情况，包括视图密度保存失败。后续正常 prompt 排除历史菜单，单独的标题或正文中的动作说明不足以拒绝。其余菜单和禁用输入规则由同一 blocker 保留。
 
+首次启动的已知引导页也属于菜单：Codex 的 welcome 标题、选中的认证方式与继续提示，以及 Claude 的 welcome 标题配合主题选项/控件或安全说明/继续提示，均阻止自动输入与 cleanup。后续正常 prompt 排除历史引导内容。结构化 readiness 在这些页面仍可能为 true，不能据此把任务文本交给引导控件；人工持有者仍可操作菜单，原 pending 输入和 unknown 不重放规则保持不变。
+
 Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 source/format、字符串正文及未截断事实；读取失败或目标/几何变化不授予输入。读取后重新核对目标、结构化状态和适用的最终 claim/paused 授权。一个批次已经写入 paste 后，后续帧仍核验原目标、权限和 fence，不把该批次自己的正文当作新的人工草稿而拒绝。
 
 ## 持久状态与操作身份
@@ -40,13 +42,15 @@ Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 sourc
 
 首次 assignment 有跨运行不变的身份和正文摘要。一次确定未写的失败保留其 rejected receipt；只有 pending 且自动准入再次有效时才生成新的持久尝试 ID。服务端接受原受校验 Worker 的 `dispatching → pending` 状态投影，使零写入拒绝之后的 heartbeat 保持通道可用；零写入证明由输入 journal 的 rejected receipt 承担。服务端不能把 `unknown`、`unconfirmed` 或 `transport_completed` 退回 `pending`，这项投影也不能将 suspended 恢复为 automation。未知尝试不会轮转 ID，也不因 idle、重启或释放 lease 重发。其他操作重复 ID 仅返回原结果；同 ID 异正文拒绝。
 
-旧生命周期存在但输入 journal 缺失时按 `unconfirmed` 接入，不推断可继续自动输入。生命周期中的原始首次结果继续保留；人工选择 `delivered_continue` 单独记录 actor、operation 和时间，不修改 unknown 操作结果。现有 v2 `control_state.initialAssignment=transport_completed` 在这项处置后投影为可继续的进度；它不是对原 unknown 操作的 provider ACK。
+旧生命周期存在但输入 journal 缺失时按 `unconfirmed` 接入，不推断可继续自动输入。生命周期中的原始首次结果继续保留；人工通过 `resolve_initial_assignment` 选择 `delivered_continue`，单独记录 actor、operation 和时间，不修改 unknown 操作结果。该动作只允许无 lease 的 suspended 状态，增加 controlEpoch 后仍保持 suspended，保留草稿和未知输入风险。v2 `control_state.initialAssignment=transport_completed` 在这项处置后投影为允许另行交还的进度；它不是对原 unknown 操作的 provider ACK。持久处置后的重启和重复请求都不会自行恢复自动执行。
 
 ## 人工控制与交还
 
 获取 lease 只做原身份、任务权限和可用原生状态的读取，不 attach。批次进行中返回 `input_busy`，不会排队等到首次输入完成再悄悄授予。租约 TTL 为 30 秒，调用方每 10 秒续约；Worker 使用本进程单调时限，重启撤销旧 lease。普通释放、失联、隐藏页签的服务端撤权和超时均保持 suspended。
 
-交还要求当前 fence/controlEpoch、无在途批次、明确 `draftHandled`、原生 readiness 和 `resume` 用途的输入检查。resume 使用保留 ANSI 属性的可见读取。Codex 需要当前非 DIM 的正常 prompt glyph、renderer DIM 的精确空占位符、下一空输入行及正常键盘 footer；允许一个不要求特定内容的状态行。占位文案本身不足以证明为空，相同字面的普通样式草稿、多行草稿、未知控制或样式均拒绝。RGB/indexed color 的参数值不能被当成 DIM。Claude 只接受真实空白的 bordered prompt field 及正常 footer，含 Try 文本的歧义字段拒绝。不要求 model、cwd 或状态栏；未知界面与草稿不能因自动输入布局限制已移除而被当成空字段。这是受限样式与字段几何观察，不是通用 ANSI 终端框架。Copilot 没有可用的通用空 composer 证明，记录为 unavailable；其人工草稿责任必须由显式交还承担，native idle 不会自动解除 manual/suspended。系统不擅自发送清空草稿快捷键。
+交还要求当前 fence/controlEpoch、无在途批次、明确 `draftHandled`、原生 readiness 和 `resume` 用途的输入检查。resume 使用保留 ANSI 属性的可见读取。Codex 需要当前非 DIM 的正常 prompt glyph、renderer DIM 的精确空占位符、下一空输入行及正常键盘 footer；允许一个不要求特定内容的状态行。占位文案本身不足以证明为空，相同字面的普通样式草稿、多行草稿、未知控制或样式均拒绝。RGB/indexed color 的参数值不能被当成 DIM。Claude 只接受真实空白的 bordered prompt field 及正常 footer，含 Try 文本的歧义字段拒绝。已支持的 footer 包含原快捷键提示，以及精确的 `⏵⏵ bypass permissions on (shift+tab to cycle)` 权限提示；后者可带原生 `PR #数字` 和 `← for agents` 附加项。权限提示只用于识别已知字段布局，不改变权限，不替代空白边框、当前 prompt 与无草稿检查；未知提示或任意附加文字仍拒绝。不要求 model、cwd 或状态栏；未知界面与草稿不能因自动输入布局限制已移除而被当成空字段。这是受限样式与字段几何观察，不是通用 ANSI 终端框架。Copilot 没有可用的通用空 composer 证明，记录为 unavailable；其人工草稿责任必须由显式交还承担，native idle 不会自动解除 manual/suspended。系统不擅自发送清空草稿快捷键。
+
+`resolve_initial_assignment` 要求 `draftHandled=false` 和明确 `initialUnknownDisposition=delivered_continue`；`resume_automation` 要求 `draftHandled=true`、`initialUnknownDisposition=null`，且未知首次结果已单独处置。两者 `leaseId=null`，不能借恢复动作同时作出处置。Worker 只在 unresolved 的 suspended 状态公布处置动作，处置完成后才公布恢复动作；旧 Worker 缺少独立动作时浏览器禁用处置。服务端对尚未处置的 unknown/unconfirmed 独立拒绝恢复，即使旧 Worker 仍公布该动作。
 
 服务端控制请求包含原 actor 与请求摘要，Worker 持久提交状态和关联 ACK 后才回传。每次实际写入前再读取服务端 Session 状态、任务权限和原进程证明，已撤 lease、旧连接或控制代次不能借轮询间隔迟到写入。
 
@@ -58,7 +62,7 @@ Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 sourc
 
 paste 使用独立、完整的 bracketed-paste Input frame；Enter 为另一帧，每帧之前重新核对准入。仅支持 Session v2 的有限按键白名单，不接收任意转义字节、mouse 或 resize。单批 paste 最多 16 KiB UTF-8，总时限 10 秒。自动 prompt 同样受此上限限制，超限不截断。
 
-API layout 或观察帧不能证明实际 PTY 尺寸。Worker 从原 pane 的 `process_info` 获取 shell PID/TTY；本机缺失 TTY 字段时，通过原 shell 的 `ps -o tty=` 读取，再只读执行 `stty -f <tty> size`。原进程出生身份与 API/client 两个 socket peer 在读取和写入准入时再次核对，尺寸或 TTY 变化拒绝。实际 attach 仍可能重应用尺寸或恢复 pending agent，因此 launchPending、未知 native 状态与非受管 foreground 禁止输入。拒绝结果只说明没有写 Input，不代表 attach 没有副作用；Detach 也不保证恢复旧尺寸。
+API layout 或观察帧不能证明实际 PTY 尺寸。Worker 从原 pane 的 `process_info` 获取 shell PID/TTY；本机缺失 TTY 字段时，macOS 通过 `proc_pidinfo(PROC_PIDTBSDINFO)` 读取原 shell 的控制终端设备号，再用 `devname_r` 解析为受支持的 `/dev/ttys数字` 路径；短读、PID 不符、无控制终端或不支持的名称均拒绝。尺寸查询以只读、`O_NOCTTY`、`O_NONBLOCK`、`O_NOFOLLOW` 打开该路径，核对 fd 为字符设备，仅调用 `TIOCGWINSZ` 读取 rows/columns，并在 finally 关闭。查询前后检查原操作取消；没有 `ps`/`stty` 子进程，不 attach、不设置尺寸或 termios，读不到实际值时不猜测或缓存替代。机制与替代代价见[直接几何查询决策](../../.agents/notes/implemented/bug-fix/2026-11-05-herdr-native-input-geometry.md)。原进程出生身份与 API/client 两个 socket peer 在读取和写入准入时再次核对，尺寸或 TTY 变化拒绝。实际 attach 仍可能重应用尺寸或恢复 pending agent，因此 launchPending、未知 native 状态与非受管 foreground 禁止输入。拒绝结果只说明没有写 Input，不代表 attach 没有副作用；Detach 也不保证恢复旧尺寸。
 
 ## 连接与停止
 

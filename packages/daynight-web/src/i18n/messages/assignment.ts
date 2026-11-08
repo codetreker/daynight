@@ -12,7 +12,6 @@ export type AssignmentMessages = {
   readonly me: string;
   readonly filter: string;
   readonly noMatches: string;
-  readonly matchingChildren: (args: { count: number }) => string;
   readonly uncertain: string;
   readonly checking: string;
   readonly checkState: string;

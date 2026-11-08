@@ -5,6 +5,7 @@ import type { Operation } from "../../api/operation.js";
 import { createHerdrAgentManager } from "./herdr/agents.js";
 import { createHerdrInstance, createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrPreflight } from "./herdr/preflight.js";
+import type { NativeSelectionVerifier } from "./native-selection.js";
 
 export type {
   HerdrExecutionContext,
@@ -33,10 +34,11 @@ export const createWorkerHerdr = (options: {
   onDaemonSpawn?: (pid: number) => Promise<void>;
   retainOnStartupFailure?: boolean;
   isolatedRun?: boolean;
+  selectionVerifier?: NativeSelectionVerifier;
 }) => {
   const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
   const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
-  const nativeEnvironment = createHerdrNativeEnvironment(options.paths, inheritedEnvironment);
+  const nativeEnvironment = { ...createHerdrNativeEnvironment(options.paths, inheritedEnvironment), ...options.agentEnvironment };
   const workspaceEnvironment: { -readonly [K in keyof HerdrWorkspaceEnvironment]: HerdrWorkspaceEnvironment[K] } = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", ...options.agentEnvironment };
   for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const) {
     const value = inheritedEnvironment[key];
@@ -49,6 +51,7 @@ export const createWorkerHerdr = (options: {
     assertIntegrationEnvironment: instance.assertIntegrationEnvironment,
     environment: nativeEnvironment,
     homeDirectory: options.homeDirectory,
+    ...(options.selectionVerifier === undefined ? {} : { selectionVerifier: options.selectionVerifier }),
   });
   const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight: {
     verifyStart: (input, operation) => {
@@ -56,8 +59,14 @@ export const createWorkerHerdr = (options: {
     },
   }, workspaceEnvironment, readCodexConfig: (args, cwd, operation) => readCodexConfiguration({ args, cwd, environment: { ...nativeEnvironment, ...workspaceEnvironment } }, operation) });
   return {
+    createShellStartup: instance.createShellStartup,
     ensureInstance: instance.ensure,
-    stopInstance: instance.stop,
+    stopInstance: async (operation: Operation) => {
+      const results = await Promise.allSettled([instance.stop(operation), preflight.close()]);
+      const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+      if (failures.length) throw new AggregateError(failures, "Herdr instance or selection probe shutdown failed.");
+      return (results[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof instance.stop>>>).value;
+    },
     attachment: instance.attachment,
     paths: instance.paths,
     tasks,

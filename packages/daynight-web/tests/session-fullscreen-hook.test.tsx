@@ -1,8 +1,10 @@
 import { useRef, useState, type RefObject } from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { useBodyScrollLock } from '../src/app/useBodyScrollLock';
 import { SessionFullscreenContext, useSessionFullscreen, type SessionFullscreenRegistration } from '../src/features/task-agent-session/useSessionFullscreen';
+import { TaskConfirmation } from '../src/features/task-detail/TaskConfirmation';
+import { renderWithLocale } from './helpers/renderWithLocale';
 
 const client = {};
 function View({ active = true, identity = 'session-1', userId = 'user-1', owner = client, fullscreenBoundary }: {
@@ -18,6 +20,31 @@ function View({ active = true, identity = 'session-1', userId = 'user-1', owner 
 const toggle = () => fireEvent.click(screen.getByText('Toggle'));
 
 describe('Session fullscreen ownership', () => {
+  it('includes only its own standalone result slot in the fullscreen focus cycle and isolates it for a modal', async () => {
+    function Host() {
+      const boundary = useRef<HTMLDivElement>(null), fallback = useRef<HTMLButtonElement>(null);
+      const [modal, setModal] = useState(false);
+      return <><div className="standalone-task-route"><div ref={boundary}><View fullscreenBoundary={boundary} /></div>
+        <div className="standalone-deletion-slot" data-testid="own-slot"><button ref={fallback} onClick={() => setModal(true)}>Result action</button></div>
+        {modal && <TaskConfirmation owner={boundary} fallbackFocus={fallback} title="Confirm" question="Continue?" explanation="Explanation" taskTitle="Task" confirmLabel="Confirm" cancelLabel="Cancel" closeLabel="Close" onCancel={() => setModal(false)} onConfirm={() => setModal(false)} />}
+      </div><div className="standalone-task-route"><div className="standalone-deletion-slot" data-testid="other-slot"><button>Other result</button></div></div></>;
+    }
+    renderWithLocale(<Host />, { locale: 'en' }); toggle();
+    const slot = screen.getByTestId('own-slot'), other = screen.getByTestId('other-slot');
+    expect(slot).not.toHaveAttribute('inert'); expect(other.closest('[inert]')).not.toBeNull();
+    const first = screen.getByText('Toggle'), last = screen.getByText('Result action');
+    act(() => last.focus()); fireEvent.keyDown(last, { key: 'Tab' }); expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true }); expect(last).toHaveFocus();
+    fireEvent.click(last);
+    expect(slot).toHaveAttribute('inert'); expect(screen.getByRole('alertdialog')).toBeVisible();
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(slot).not.toHaveAttribute('inert'));
+    expect(last).toHaveFocus(); fireEvent.keyDown(last, { key: 'Escape' });
+    expect(screen.getByTestId('session')).toHaveAttribute('data-fullscreen', 'false');
+    expect(first).toHaveFocus(); expect(other.closest('[inert]')).toBeNull();
+  });
+
   it('includes external chrome in a stable fullscreen boundary and restores its owned presentation', () => {
     function Host() {
       const boundary = useRef<HTMLDivElement>(null);
@@ -190,6 +217,49 @@ describe('Session fullscreen ownership', () => {
       act(() => viewport.dispatchEvent(new Event('scroll')));
       expect(section.style.getPropertyValue('--session-viewport-left')).toBe('12px');
       toggle(); expect(section.style.getPropertyValue('--session-viewport-height')).toBe('');
+    } finally { if (descriptor) Object.defineProperty(window, 'visualViewport', descriptor); else Reflect.deleteProperty(window, 'visualViewport'); }
+  });
+
+  it.each([
+    { sameRoot: false, retired: 'first' }, { sameRoot: false, retired: 'second' },
+    { sameRoot: true, retired: 'first' }, { sameRoot: true, retired: 'second' },
+  ] as const)('restores overlapping viewport owners (shared root=$sameRoot, retired=$retired)', ({ sameRoot, retired }) => {
+    function Host() {
+      const [first, setFirst] = useState(true);
+      const [second, setSecond] = useState(true);
+      const boundary = useRef<HTMLDivElement>(null);
+      return <div className="standalone-task-route" data-testid="route">
+        <div ref={boundary} data-testid="boundary">
+          {first && <div data-testid="first"><View identity="first" {...(sameRoot ? { fullscreenBoundary: boundary } : {})} /></div>}
+          {second && <div data-testid="second"><View identity="second" {...(sameRoot ? { fullscreenBoundary: boundary } : {})} /></div>}
+        </div>
+        <div className="standalone-deletion-slot"><button>Result</button></div>
+        <button onClick={() => setFirst(false)}>Retire first</button>
+        <button onClick={() => setSecond(false)}>Retire second</button>
+      </div>;
+    }
+    const viewport = Object.assign(new EventTarget(), { width: 390, height: 300, offsetTop: 40, offsetLeft: 5 });
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+    try {
+      render(<Host />); const route = screen.getByTestId('route'), root = screen.getByTestId('boundary');
+      route.style.setProperty('--standalone-session-viewport-top', '17px');
+      if (sameRoot) { root.style.setProperty('--session-viewport-top', '29px'); root.setAttribute('data-session-fullscreen', 'previous'); }
+      fireEvent.click(within(screen.getByTestId('first')).getByText('Toggle'));
+      viewport.offsetTop = 90; viewport.width = 280;
+      fireEvent.click(within(screen.getByTestId('second')).getByText('Toggle'));
+      expect(route.style.getPropertyValue('--standalone-session-viewport-top')).toBe('90px');
+      fireEvent.click(screen.getByText(`Retire ${retired}`));
+      expect(route.style.getPropertyValue('--standalone-session-viewport-top')).toBe('90px');
+      expect(route.style.getPropertyValue('--standalone-session-viewport-width')).toBe('280px');
+      if (sameRoot) { expect(root).toHaveAttribute('data-session-fullscreen', 'true'); expect(root.style.getPropertyValue('--session-viewport-top')).toBe('90px'); }
+      viewport.offsetTop = 130; act(() => viewport.dispatchEvent(new Event('scroll')));
+      expect(route.style.getPropertyValue('--standalone-session-viewport-top')).toBe('130px');
+      if (sameRoot) expect(root.style.getPropertyValue('--session-viewport-top')).toBe('130px');
+      fireEvent.click(screen.getByText(`Retire ${retired === 'first' ? 'second' : 'first'}`));
+      expect(route.style.getPropertyValue('--standalone-session-viewport-top')).toBe('17px');
+      expect(route.style.getPropertyValue('--standalone-session-viewport-width')).toBe('');
+      if (sameRoot) { expect(root).toHaveAttribute('data-session-fullscreen', 'previous'); expect(root.style.getPropertyValue('--session-viewport-top')).toBe('29px'); }
     } finally { if (descriptor) Object.defineProperty(window, 'visualViewport', descriptor); else Reflect.deleteProperty(window, 'visualViewport'); }
   });
 });

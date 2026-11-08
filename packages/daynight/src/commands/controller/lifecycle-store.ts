@@ -3,7 +3,7 @@ import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
 import { openPendingContent, reconcilePendingContent } from "./pending-content.js";
-import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journal-format.js";
@@ -45,17 +45,18 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
   if (failed) throw failure;
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
-export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter } = {}) => {
+/** The store owns a supplied connection; file identifies its separate pending-content archive. */
+export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database } = {}) => {
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
   let pendingContent!: ReturnType<typeof openPendingContent>;
-  const db = openSqliteDatabase({ file, format: controllerJournalFormat, allowCreate: true,
+  const db = openSqliteDatabase({ file: options.database ?? file, format: controllerJournalFormat, allowCreate: true,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
     assertMigrationAllowed: assertJournalMigrationAllowed,
     onReady: (db) => {
-      chmodSync(file, 0o600);
+      if (!db.memory) chmodSync(file, 0o600);
     const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
     if (existing === undefined) db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(ticket), process.pid, JSON.stringify(initial));
     else {
@@ -164,6 +165,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     }),
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
+    hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.entries.has(entryId)),
     projectTimeline: (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
       const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
       void ignored; void ignoredSequence;
@@ -213,7 +215,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     }),
     close: (): void => {
       if (closed) return;
-      try { closeJournal(db, file, () => { runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid); }); }); }
+      try { closeJournal(db, db.name, () => { runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid); }); }); }
       finally { closed = !db.open; }
     },
   };
@@ -221,7 +223,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
 export type ControllerLifecycleStore = ReturnType<typeof openControllerLifecycleStore>;
 
 /** Recovery reads may upgrade the format without acquiring a native writer. */
-export const readControllerSnapshot = (file: string): ControllerSnapshot | null => readSqliteDatabase({
+export const readControllerSnapshot = (file: SqliteDatabaseSource): ControllerSnapshot | null => readSqliteDatabase({
   file, format: controllerJournalFormat, onMissing: () => null, assertMigrationAllowed: assertJournalMigrationAllowed,
 }, db => {
   const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
@@ -247,7 +249,7 @@ export const recordStoppedControllerGeneration = async (file: string, ticket: Co
   });
   return stopped!;
 };
-export const readControllerOperation = (file: string, operationId: string): ControllerOperation | null => readSqliteDatabase({
+export const readControllerOperation = (file: SqliteDatabaseSource, operationId: string): ControllerOperation | null => readSqliteDatabase({
   file, format: controllerJournalFormat,
   onMissing: (): ControllerOperation | null => { throw new Error("The controller journal does not exist."); },
   assertMigrationAllowed: assertJournalMigrationAllowed,
