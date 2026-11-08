@@ -134,6 +134,7 @@ const safeInvitationFailure = (error: unknown, context: Context): ApiError => {
 };
 
 export type ApiClient = {
+  webhookRequest<T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T>;
   listBots(): Promise<readonly Bot[]>;
   getBot(botId: string): Promise<Bot>;
   createBot(input: CreateBotInput): Promise<Bot>;
@@ -258,7 +259,7 @@ export const createApiClient = (options: {
   type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly requirePrincipalOnUnauthorized?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -375,7 +376,7 @@ export const createApiClient = (options: {
         void reader.closed.catch((error: unknown) => { bodyFailure = error; });
       }
       const expectsPrincipal = expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true;
-      if (success && expectsPrincipal || !success && mode.kind === "json" && (status !== 401 && mode.checkFailurePrincipal === true || expectsPrincipal && (context.workerConfiguration === true && status === 404 || response.headers.has("Daynight-User-ID") && mode.checkPrincipalOnError === true))) {
+      if (success && expectsPrincipal || !success && mode.kind === "json" && ((status !== 401 || mode.requirePrincipalOnUnauthorized === true) && mode.checkFailurePrincipal === true || expectsPrincipal && (context.workerConfiguration === true && status === 404 || response.headers.has("Daynight-User-ID") && mode.checkPrincipalOnError === true))) {
         phase = "protocol";
         const principal = response.headers.get("Daynight-User-ID");
         if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal) throw new ProtocolError("The authenticated response principal does not match the expected user.");
@@ -653,6 +654,26 @@ export const createApiClient = (options: {
   };
 
   return {
+    webhookRequest: async <T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T> => {
+      const user = resourceId(input.userId);
+      if (user !== input.userId || !/^\/(?:webhook-event-types|me\/webhooks|teams\/[0-9a-f-]{36}\/webhooks)(?:[/?]|$)/.test(input.path)) throw new Error("Invalid webhook request scope.");
+      const context = { operation: "webhook.request" };
+      try {
+        return await exchange(context, input.path, input.method, {
+          kind: "json", requirePrincipal: true, checkFailurePrincipal: true, requirePrincipalOnUnauthorized: true, checkPrincipalOnError: true, responseBytes: 1_048_576,
+          onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+          decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+          parse: (value) => input.parse(value),
+          ...(input.confirmedOperationId === undefined ? {} : { confirmMutation: () => input.confirmedOperationId! }),
+        }, input.statuses ?? [200], input.body === undefined ? undefined : { kind: "json", value: input.body, maxBytes: 262_144 }, true);
+      } catch (error) {
+        if (!(error instanceof ApiError)) throw new ApiError(context, "protocol", { cause: safeInvitationCause(error) });
+        const code = error.code;
+        const allowed = ["invalid_input", "invalid_cursor", "invalid_operation_time", "unauthenticated", "forbidden", "permission_denied", "not_found", "identity_mismatch", "version_conflict", "operation_conflict", "version_exhausted", "destination_unsupported", "generation_conflict", "delivery_busy", "target_changed", "delivery_stopped", "operation_expired", "payload_expired", "content_too_large", "webhooks_unavailable", "dependency_unavailable", "write_outcome_unknown", "internal_error"];
+        const serverError = code !== undefined && allowed.includes(code) ? { code, message: "Webhook request failed.", requestId: error.requestId !== undefined && error.requestId === error.responseRequestId && validRequestId(error.requestId) ? error.requestId : "unavailable" } : undefined;
+        throw new ApiError(context, error.phase, { cause: safeInvitationCause(error.cause), ...(error.status === undefined ? {} : { status: error.status }), ...(serverError === undefined ? {} : { serverError }), confirmedRefusal: error.confirmedRefusal, outcomeUnconfirmed: error.outcomeUnconfirmed, ...(error.confirmedMutationId === undefined ? {} : { confirmedMutationId: error.confirmedMutationId }) });
+      }
+    },
     listBots: () => {
       const principal = accountPrincipal();
       return list({ operation: "bot.list" }, "/me/bots", (value, metadata) => {
