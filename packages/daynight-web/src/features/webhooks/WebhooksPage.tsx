@@ -162,7 +162,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     }
     if (outcome.phase === "confirmed") {
       if (outcome.result?.endpoint !== undefined && !data.accept(outcome.result.endpoint, fence)) controller.forgetCurrentProjection();
-      data.refresh(); directories.refresh();
+      data.refreshCurrent(); directories.refresh();
     }
     return outcome;
   };
@@ -171,7 +171,7 @@ export const WebhooksPage = ({ user, admission, active, route, catalog }: {
     const requestedOwner = owner, authorizationKey = directories.getAuthorization(owner).readKey;
     const outcome = await controller.reconcile();
     observeDenial(outcome.error, requestedOwner, authorizationKey, false);
-    if (outcome.phase === "confirmed") { data.refresh(); directories.refresh(); }
+    if (outcome.phase === "confirmed") { data.refreshCurrent(); directories.refresh(); }
   };
   const patch = (body: WebhookIntentInput["body"]) => { if (endpoint !== null && manage) void submit({ kind: "endpoint.patch", endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body }).catch(setLocalError); };
   const reveal = async () => {

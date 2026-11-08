@@ -27,8 +27,12 @@ issued time, actor, versions and SHA-256 at submission. Unknown results reconcil
 only through the original receipt GET. Session storage contains minimal prepared
 metadata without the body, URL, credentials, secret or payload; reloaded records
 support GET recovery only. Confirmed historical effects and the current resource
-projection remain distinct. Confirmed receipts reject later contradictory
-results. Configuration forms preserve explicit field edits independently of the
+projection remain distinct. Confirmed submission and receipt reconciliation
+refresh the current owner, endpoint and filter through the live route reference.
+Creation confirmation selects the new endpoint; a callback captured before its
+navigation cannot restart a read for the old selection. Read generations still
+exclude late responses, and the original operation remains fixed. Confirmed
+receipts reject later contradictory results. Configuration forms preserve explicit field edits independently of the
 CAS baseline: review refreshes untouched values, and concurrent dirty-field
 changes require a deliberate resolution before a new submission. The shared
 receipt rules are owned by the
@@ -70,6 +74,12 @@ and its [requirements](../../../../docs/spec/webhook-web.md) own visible behavio
 **Reuse the CLI wire module in the browser.** Its Node cryptography and Buffer
 imports are runtime dependencies unsuitable for the browser bundle. The Web
 client instead uses the existing browser request stack and Web Crypto.
+
+**Refresh the route captured by the submitting callback.** Creation confirmation
+changes the selected endpoint before the callback finishes. Restarting the old
+selection advances the same owner read generation and can cancel the new detail
+load. The existing live-route refresh keeps the current view independent of the
+fixed original operation.
 
 **Persist full requests for recovery.** This retains sensitive configuration
 outside the active page. Minimal identity and hash metadata support safe GET
