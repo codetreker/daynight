@@ -10,7 +10,7 @@
 
 `api/webhooks.ts`复用现有同源request、取消、401清理与requestId机制。成功及非401错误响应先校验当前主体，成功再验证严格DTO和请求资源；浏览器使用Web Crypto，不导入CLI的Node依赖。配置版本、destinationRevision和generation为规范int64字符串，nullable和数组必须真实存在。历史参数、顺序、重复ID与cursor严格验证；UTC筛选按服务端纳秒精度比较，Attempt代次使用BigInt。
 
-读取按service/principal/owner/endpoint/查询代次发布；旧请求、低版本和错主体不能覆盖新视图。Endpoint读取和辅助请求共用owner发布围栏；Team归属的已确认membership role/version另约束配置、列表、秘密、管理控件及弹窗。团队目录确认降权或关系失效时，撤下旧管理员资料并失效其读取依据，迟到响应和返回该归属的缓存不能恢复旧权限；较新的限制性Endpoint或列表摘要投影也立即推进归属权限观察，不等待后续页或详情。
+读取按service/principal/owner/endpoint/查询代次发布；旧请求、低版本和错主体不能覆盖新视图。提交及原回执核对确认后使用`useWebhookData.refreshCurrent`，从当前路由引用取得owner、endpoint与筛选；创建确认引发的导航不被await前捕获的旧选择再次刷新覆盖。原操作确认和当前视图刷新各自保持原有身份与发布围栏。Endpoint读取和辅助请求共用owner发布围栏；Team归属的已确认membership role/version另约束配置、列表、秘密、管理控件及弹窗。团队目录确认降权或关系失效时，撤下旧管理员资料并失效其读取依据，迟到响应和返回该归属的缓存不能恢复旧权限；较新的限制性Endpoint或列表摘要投影也立即推进归属权限观察，不等待后续页或详情。
 
 只有主体、媒体和错误DTO均验证成立的server forbidden403才推进拒绝观察：配置及原回执读取拒绝撤销该归属全部私有投影；秘密读取或管理写入拒绝仅撤销管理员资料与能力、关闭编辑器、清除秘密、失效旧读取围栏并刷新权威Team目录，保留成员脱敏读取准入。辅助请求拒绝绑定发起时的owner与authorizationKey，切换归属或新权限代次后不发布旧拒绝。server not_found404只表示对应资源当前不可用；带403/404状态的协议损坏不构成授权或资源不存在事实，保留合法数据和草稿并允许恢复读取。未变化的旧管理员目录不能恢复已被否定的管理权，新的membership身份或版本提供复权依据。[管理拒绝决策](../../.agents/notes/implemented/bug-fix/2026-11-08-webhook-management-denial.md)记录该区分。
 

@@ -301,6 +301,56 @@ describe("Webhook configuration page", () => {
     submitForm(); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull()); expect(view.writes).toHaveLength(1); expect(view.writes[0]!.body.subscriptions).toEqual([]); expect(view.writes[0]!.body.expectedUserId).toBe(userId); expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it.each([
+    ["personal", false, "response"], ["personal", true, "response"],
+    ["team", false, "response"], ["team", true, "response"],
+    ["personal", false, "receipt"], ["personal", true, "receipt"],
+    ["team", false, "receipt"], ["team", true, "receipt"],
+  ] as const)("reads the newly created %s endpoint from a populated=%s view after %s confirmation", async (ownerKind, populated, confirmation) => {
+    const original = { ...endpoint(), owner: { kind: ownerKind, id: ownerKind === "team" ? teamId : userId } };
+    const view = await mount({ initial: populated ? [original] : [] });
+    if (ownerKind === "team") {
+      if (populated) await selectTeamEndpoint(view, original);
+      else {
+        fireEvent.click(screen.getByRole("button", { name: "Team shared" }));
+        await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" });
+        fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } });
+        await waitForState(() => expect(screen.getAllByRole("button", { name: "New webhook" })[0]).toBeEnabled());
+      }
+    }
+    const prefix = ownerKind === "team" ? `/api/v1/teams/${teamId}/webhooks` : "/api/v1/me/webhooks";
+    const oldRead = barrier<Response>(); let oldRequested = false, receiptAvailable = confirmation === "response";
+    view.intercept((url, init) => {
+      if (populated && url === `${prefix}/${original.id}` && (init.method === undefined || init.method === "GET")) {
+        oldRequested = true; return oldRead.promise.then(value => value.clone());
+      }
+      return !receiptAvailable && url.includes("/operations/") ? Promise.resolve(failure(404, "not_found")) : null;
+    });
+    if (populated) { fireEvent.focus(window); await waitForState(() => expect(oldRequested).toBe(true)); }
+    fireEvent.click(screen.getAllByRole("button", { name: "New webhook" })[0]!);
+    const name = `Created ${ownerKind} ${confirmation}`; setName(name);
+    fireEvent.change(screen.getByRole("textbox", { name: "Endpoint URL" }), { target: { value: "https://receiver.example/new" } });
+    if (confirmation === "receipt") view.loseNextWrite(); else view.holdNextWrite();
+    submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1));
+    if (confirmation === "receipt") {
+      await waitForState(() => expect(screen.getByRole("dialog")).toHaveTextContent("operation result is unknown"));
+      receiptAvailable = true; fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Check operation" }));
+    } else await act(async () => { view.releaseWrite(); });
+    const created = [...view.resources.values()].find(value => value.lifecycle === "active" && value.name === name)!;
+    await screen.findByRole("heading", { name, level: 2 });
+    expect(new URL(location.href).searchParams.get("endpointId")).toBe(created.id);
+    expect(new URL(location.href).searchParams.get("owner")).toBe(ownerKind);
+    expect(new URL(location.href).searchParams.get("teamId")).toBe(ownerKind === "team" ? teamId : null);
+    expect(view.fetch.mock.calls.some(([url, init]) => url === `${prefix}/${created.id}` && (init.method === undefined || init.method === "GET"))).toBe(true);
+    expect(screen.getByRole("button", { name: `Edit ${name}` })).toBeEnabled();
+    if (populated) {
+      await act(async () => { oldRead.resolve(response(original)); });
+      expect(screen.getByRole("heading", { name, level: 2 })).toBeVisible();
+      expect(screen.queryByRole("heading", { name: original.name, level: 2 })).toBeNull();
+    }
+    expect(view.writes).toHaveLength(1); expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("replaces a changed subscription project with id:null in one complete CAS array", async () => {
     const view = await mount(); await act(async () => { fireEvent.click(screen.getByRole("tab", { name: /Subscriptions/ })); }); fireEvent.click(screen.getByRole("button", { name: "Edit subscription Project one" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: secondProjectId } }); submitForm(); await waitForState(() => expect(view.writes).toHaveLength(1)); await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
