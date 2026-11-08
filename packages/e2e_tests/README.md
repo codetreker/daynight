@@ -99,8 +99,10 @@ identities, Playwright result, failure screenshots/traces and runtime logs.
 Setup and execution have deadlines, readiness detects early service exit, and
 failures propagate to the command exit status. Cleanup runs after success,
 failure or cancellation, removes only the current run's containers, data volume,
-networks and runtime image, and verifies their absence. After product processes stop, runtime repairs ownership of its private mounted
-directories so the host can remove nonempty attachment trees. Private credentials,
+networks and runtime image, and verifies their absence. After product processes stop, parent cleanup uses a tracked helper container
+with no network to restore private mount ownership. This also works when the
+application was forcibly terminated, so the host can remove nonempty attachment
+trees. Private credentials,
 auth SQLite data, attachment storage, certificates and copied build artifacts
 are removed. A cleanup failure makes the run fail rather than producing a
 successful result.

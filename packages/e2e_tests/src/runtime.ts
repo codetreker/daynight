@@ -6,7 +6,7 @@ import { runCommand, startCommand, type ManagedCommand } from './command.ts';
 import { createLifecycle } from './lifecycle.ts';
 import { providerClientId, providerClientSecret, startProvider } from './provider.ts';
 
-type RuntimeConfiguration = { serverPort: number; authPort: number; proxyPort: number; databaseURL: string; ownerUid: number; ownerGid: number };
+type RuntimeConfiguration = { serverPort: number; authPort: number; proxyPort: number; databaseURL: string };
 type ServerConfiguration = { appId: string; appSecret: string };
 const runDirectory = '/run';
 const artifacts = '/opt/e2e';
@@ -14,7 +14,6 @@ const signalController = new AbortController();
 const lifecycle = createLifecycle();
 let shutdown = false;
 let failure: unknown;
-let owner: { uid: number; gid: number } | undefined;
 let wake: () => void = () => {};
 const ended = new Promise<void>((resolve) => { wake = resolve; });
 
@@ -125,10 +124,6 @@ const removeDefaultRoutes = async (): Promise<void> => {
 
 const main = async (): Promise<void> => {
   const configuration = JSON.parse(await readFile(path.join(runDirectory, 'private', 'runtime.json'), 'utf8')) as RuntimeConfiguration;
-  for (const id of [configuration.ownerUid, configuration.ownerGid]) {
-    if (!Number.isInteger(id) || id < 0) throw new Error('Runtime host ownership is invalid.');
-  }
-  owner = { uid: configuration.ownerUid, gid: configuration.ownerGid };
   for (const port of [configuration.serverPort, configuration.authPort, configuration.proxyPort]) {
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Runtime public ports are invalid.');
   }
@@ -191,11 +186,6 @@ finally {
   shutdown = true;
   try { await lifecycle.close(); }
   catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], 'Runtime and cleanup failed.', { cause: failure }); }
-  if (owner !== undefined) {
-    try {
-      await runCommand('chown', ['--recursive', '--no-dereference', '--', `${owner.uid}:${owner.gid}`, path.join(runDirectory, 'private'), path.join(runDirectory, 'logs')], { cwd: artifacts, env: { PATH: process.env.PATH }, timeoutMs: 10_000 });
-    } catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], 'Runtime cleanup and ownership repair failed.', { cause: failure }); }
-  }
   process.removeListener('SIGINT', stop);
   process.removeListener('SIGTERM', stop);
 }

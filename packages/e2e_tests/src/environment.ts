@@ -16,6 +16,7 @@ export type ResourceIdentity = {
   ingressNetwork: string;
   postgresContainer: string;
   applicationContainer: string;
+  ownershipContainer: string;
   postgresVolume: string;
   runtimeImage: string;
 };
@@ -88,6 +89,7 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
     ingressNetwork: `${name}-ingress`,
     postgresContainer: `${name}-postgres`,
     applicationContainer: `${name}-application`,
+    ownershipContainer: `${name}-ownership`,
     postgresVolume: `${name}-postgres-data`,
     runtimeImage: `daynight-e2e-runtime:${runId}`,
   };
@@ -149,7 +151,7 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
   };
   await writeReceipt({ resourceIdentity: resources, state: 'pending', verified: false, resourcesAbsent: false, remaining: [], verificationErrors: [], cleanupErrors: [] });
   const resourceEntries: readonly ['container' | 'network' | 'volume' | 'image', string][] = [
-    ['container', resources.applicationContainer], ['container', resources.postgresContainer],
+    ['container', resources.applicationContainer], ['container', resources.ownershipContainer], ['container', resources.postgresContainer],
     ['volume', resources.postgresVolume], ['network', resources.network], ['network', resources.ingressNetwork], ['image', resources.runtimeImage],
   ];
   let closing: Promise<void> | undefined;
@@ -190,7 +192,7 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
     const password = randomBytes(24).toString('hex');
     const databaseURL = `postgres://daynight:${password}@postgres:5432/daynight?sslmode=disable`;
     const owner = await stat(options.runDirectory);
-    await writeFile(path.join(options.runDirectory, 'private', 'runtime.json'), `${JSON.stringify({ serverPort, authPort, proxyPort, databaseURL, ownerUid: owner.uid, ownerGid: owner.gid })}\n`, { mode: 0o600 });
+    await writeFile(path.join(options.runDirectory, 'private', 'runtime.json'), `${JSON.stringify({ serverPort, authPort, proxyPort, databaseURL })}\n`, { mode: 0o600 });
     const postgresEnvironment = path.join(options.runDirectory, 'private', 'postgres.env');
     await writeFile(postgresEnvironment, `POSTGRES_USER=daynight\nPOSTGRES_PASSWORD=${password}\nPOSTGRES_DB=daynight\n`, { mode: 0o600 });
     lifecycle.defer(async () => remove('container', resources.postgresContainer));
@@ -219,6 +221,17 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
       await writeFile(path.join(options.runDirectory, 'logs', 'runtime.stderr.log'), logs.stderr);
       if (logs.exitCode !== 0) throw new Error(`Could not collect application diagnostics: ${logs.stderr}`);
     };
+    lifecycle.defer(async () => runCleanupSteps([
+      async () => {
+        await docker(['create', '--name', resources.ownershipContainer, '--label', `daynight.e2e.run=${runId}`, '--network', 'none',
+          '--mount', `type=bind,src=${path.resolve(options.runDirectory)},dst=/run`, '--entrypoint', 'chown', resources.runtimeImage,
+          '--recursive', '--no-dereference', '--', `${owner.uid}:${owner.gid}`, '/run/private', '/run/logs'], undefined, 30_000);
+        await docker(['start', '--attach', resources.ownershipContainer], undefined, 30_000);
+        const result = await dockerResult(['container', 'inspect', '--format', '{{.State.Running}} {{.State.ExitCode}}', resources.ownershipContainer]);
+        if (result.exitCode !== 0 || result.stdout.trim() !== 'false 0') throw new Error(`Private data ownership repair failed: ${result.stderr || result.stdout}`);
+      },
+      async () => remove('container', resources.ownershipContainer),
+    ]));
     let applicationStarted = false;
     lifecycle.defer(async () => cleanupApplication({
       captureDiagnostics,

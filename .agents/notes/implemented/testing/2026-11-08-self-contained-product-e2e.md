@@ -23,9 +23,10 @@ credentials and storage. Public addresses are
 loopback-only ports. Inside the application container, local forwarders preserve
 those same public origin identities while production services retain their
 loopback listeners. The host browser and compiled CLI use those public origins. After product
-processes stop, the runtime restores private mount ownership to the host
-run-directory owner; otherwise root-owned nonempty attachment directories cannot
-be removed by the host cleanup process.
+processes stop, parent cleanup uses a tracked network-free helper container to
+restore private mount ownership to the host run-directory owner. This remains
+available after forced runtime termination; otherwise root-owned nonempty
+attachment directories cannot be removed by the host cleanup process.
 
 The pinned UniAuth GitHub provider uses fixed HTTPS endpoints. A local allowlisted
 CONNECT proxy serves their OAuth protocol with per-run TLS trust and a verified
