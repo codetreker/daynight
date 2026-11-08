@@ -11,14 +11,20 @@ import (
 )
 
 type threadSourceStore struct {
-	store.SnapshotReader
 	t    *testing.T
+	ctx  context.Context
 	work func(context.Context, func(store.ThreadScope) error) (store.Completion, error)
+}
+
+func (s threadSourceStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
+	s.t.Helper()
+	s.t.Error("thread source unexpectedly entered a separate snapshot")
+	panic("unexpected thread source snapshot")
 }
 
 func (s threadSourceStore) WriteThread(ctx context.Context, callback func(store.ThreadScope) error) (store.Completion, error) {
 	s.t.Helper()
-	if s.work == nil {
+	if s.work == nil || ctx.Value(sourceContextKey{}) != s.ctx.Value(sourceContextKey{}) || callback == nil {
 		s.t.Fatal("invalid thread input entered its source transaction")
 	}
 	return s.work(ctx, callback)
@@ -124,7 +130,7 @@ func TestThreadSourceRefusalsDoNotInvokeCapture(t *testing.T) {
 			marker := &sourceCaptureDAO{}
 			record := &sourceCapture{t: t, dao: marker, trace: &calls}
 			ctx := context.WithValue(t.Context(), sourceContextKey{}, record)
-			database := threadSourceStore{t: t}
+			database := threadSourceStore{t: t, ctx: ctx}
 			input := CreateThreadMessage{}
 			if mode == "missing reply" {
 				input.Body = "Reply"

@@ -265,16 +265,22 @@ func (s sourceWriteScope) SessionDAO() store.ProjectSessionDAO { return s.sessio
 func (s sourceWriteScope) CaptureDAO() store.WebhookCaptureDAO { return s.capture }
 
 type sourceWriteStore struct {
-	store.SnapshotReader
 	t     *testing.T
+	ctx   context.Context
 	scope sourceWriteScope
 	calls int
 }
 
+func (d *sourceWriteStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
+	d.t.Helper()
+	d.t.Error("source write unexpectedly entered a separate snapshot")
+	panic("unexpected source snapshot")
+}
+
 func (d *sourceWriteStore) WriteProject(ctx context.Context, project string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
 	d.t.Helper()
-	if project != sourceProjectID {
-		d.t.Fatalf("unexpected source Project: %s", project)
+	if ctx != d.ctx || project != sourceProjectID || work == nil || d.calls != 0 {
+		d.t.Fatalf("unexpected source Project scope: %s", project)
 	}
 	d.calls++
 	if err := work(d.scope); err != nil {
@@ -298,8 +304,9 @@ func newSourceWrite(t *testing.T, current, updated model.Task) (*sourceWriteStor
 	marker := &sourceCaptureDAO{}
 	record := &sourceCapture{t: t, dao: marker, trace: &calls}
 	dao := &sourceTaskDAO{t: t, current: current, updated: updated, clock: current.UpdatedAt.Add(time.Second), calls: &calls}
-	database := &sourceWriteStore{t: t, scope: sourceWriteScope{tasks: dao, projects: sourceProjectDAO{t: t, calls: &calls}, sessions: sourceSessionDAO{t: t, calls: &calls}, capture: marker}}
-	return database, record, context.WithValue(t.Context(), sourceContextKey{}, record), &calls
+	ctx := context.WithValue(t.Context(), sourceContextKey{}, record)
+	database := &sourceWriteStore{t: t, ctx: ctx, scope: sourceWriteScope{tasks: dao, projects: sourceProjectDAO{t: t, calls: &calls}, sessions: sourceSessionDAO{t: t, calls: &calls}, capture: marker}}
+	return database, record, ctx, &calls
 }
 
 func assertSourceFact(t *testing.T, record *sourceCapture, current model.Task, kind string) protocol.Fact {
@@ -472,6 +479,24 @@ func TestWorkerSourcePublishesOnlyLogicalTaskTransitions(t *testing.T) {
 				t.Fatalf("worker source status: %#v", f)
 			}
 		})
+	}
+}
+
+func TestWebhookWorkerLocalPauseDoesNotPublishTaskPause(t *testing.T) {
+	current := sourceTask(model.TaskInProgress)
+	current.AssignedTo, current.AllowAgents = sourcePointer(sourceUserID), true
+	current.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
+	updated := current
+	updated.Version, updated.UpdatedAt = 8, current.UpdatedAt.Add(time.Second)
+	updated.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPaused, current.CreatedAt)
+	database, record, ctx, calls := newSourceWrite(t, current, updated)
+	result, err := NewTasks(database, record).UpdateWorker(ctx, sourcePrincipal(), sourceProjectID, sourceTaskID, taskcore.UpdateWorker{Version: current.Version, ClaimID: sourceClaimID, Phase: sourcePointer(model.WorkerPaused)})
+	if err != nil || len(database.scope.tasks.writes) != 1 {
+		t.Fatalf("worker pause write: %#v %v", result, err)
+	}
+	worker, err := taskproperty.Worker(result.Properties)
+	if err != nil || worker == nil || worker.Phase != model.WorkerPaused || len(record.facts) != 0 || len(record.calls) != 0 || !reflect.DeepEqual(*calls, []string{"update", "drain", "receipts"}) {
+		t.Fatalf("Worker-local pause became a Task source fact: worker=%#v facts=%#v calls=%v err=%v", worker, record.facts, *calls, err)
 	}
 }
 

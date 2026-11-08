@@ -447,6 +447,10 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 		if err != nil || len(items) != 1 || items[0].ID != first.ID {
 			t.Fatalf("snapshot messages changed: %#v %v", items, err)
 		}
+		before, after, err := snapshot.TaskDAO().ThreadSides(ctx, task.ID, first.Position(), first.Position())
+		if err != nil || before || after {
+			t.Fatalf("snapshot sides changed with concurrent append: before=%v after=%v error=%v", before, after, err)
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)

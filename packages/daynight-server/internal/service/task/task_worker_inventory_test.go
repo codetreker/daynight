@@ -1,232 +1,287 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/google/uuid"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	workerID := uuid.NewString()
-	add := func(principal model.Principal, id string) model.Task {
-		descriptor := workerDescriptor()
-		descriptor.WorkerID = id
-		return claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), descriptor)
+func workerInventoryFixture(t *testing.T, principal model.Principal, projectID string) (*taskservice.Tasks, *taskReaderMock, *projectReaderMock) {
+	t.Helper()
+	base := newTaskMockBase(t, "inventory")
+	reader := &taskReaderMock{taskMockBase: base.withLabel("task")}
+	projects := &projectReaderMock{taskMockBase: base.withLabel("project")}
+	snapshot := &taskSnapshotScopeMock{taskMockBase: base.withLabel("snapshot"),
+		ProjectDAOFn: func() store.ProjectReader { return projects },
+		TaskDAOFn:    func() store.TaskReader { return reader },
 	}
+	database := &taskStoreMock{taskMockBase: base.withLabel("store")}
+	projects.ProjectAccessFn = func(ctx context.Context, actual model.Principal, id string) (model.ProjectAccess, error) {
+		if ctx != t.Context() || !reflect.DeepEqual(actual, principal) || id != projectID {
+			t.Fatal("inventory authorization changed context, principal or Project")
+		}
+		return model.ProjectAccess{ProjectID: projectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
+	}
+	database.ReadSnapshotFn = func(ctx context.Context, work func(store.SnapshotScope) error) error {
+		if ctx != t.Context() || work == nil {
+			t.Fatal("inventory changed snapshot context")
+		}
+		return work(snapshot)
+	}
+	return taskservice.NewTasks(database), reader, projects
+}
 
-	createTask(t, tasks, admin, project.ID, "Unclaimed first")
-	add(owner, uuid.NewString())
-	add(other, workerID)
-	released := add(owner, workerID)
-	var err error
-	released, err = tasks.ReleaseWorker(ctx, owner, project.ID, released.ID, taskcore.ReleaseWorker{Version: released.Version, ClaimID: testWorker(t, released.Properties).ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	completed := add(owner, workerID)
-	_, err = tasks.SetStatus(ctx, owner, project.ID, completed.ID, taskcore.SetTaskStatus{Version: completed.Version, Status: model.TaskDone, ClaimID: &testWorker(t, completed.Properties).ClaimID})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	first := add(owner, workerID)
-	add(other, workerID)
-	second := add(owner, workerID)
-	manual := add(owner, workerID)
-	previous := *testWorker(t, manual.Properties)
-	manual, err = tasks.ReleaseWorker(ctx, owner, project.ID, manual.ID, taskcore.ReleaseWorker{Version: manual.Version, ClaimID: previous.ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	manual = updateTask(t, tasks, admin, manual, taskcore.UpdateTask{AllowAgents: pointer(false), RequiredPlatform: platformChange(pointer(model.PlatformWindows))})
+func workerInventoryTask(t *testing.T, principal model.Principal, workerID string, ordinal int) model.Task {
+	t.Helper()
+	task := workerServiceTask(t, principal)
+	task.ID = fmt.Sprintf("21000000-0000-4000-8000-%012x", ordinal)
+	task.CreatedAt = task.CreatedAt.Add(time.Duration(ordinal) * time.Second)
+	task.UpdatedAt, task.Status, task.Ready = task.CreatedAt, model.TaskInProgress, false
 	descriptor := workerDescriptor()
-	descriptor.WorkerID = workerID
-	manual, err = tasks.ResumeWorker(ctx, owner, project.ID, manual.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: manual.Version, WorkerDescriptor: descriptor}, PreviousClaimID: previous.ClaimID})
-	if err != nil {
-		t.Fatal(err)
+	worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, WorkerID: workerID, UserID: principal.UserID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: task.CreatedAt}
+	task.Properties = testWithWorker(t, task.Properties, worker)
+	return task
+}
+
+func workerInventoryQuery(principal model.Principal, workerID string) store.TaskQuery {
+	return store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: principal.UserID, WorkerID: workerID}, BoundedText: true, LegacyProjection: true}
+}
+
+func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T) {
+	owner := workerServicePrincipal()
+	other := owner
+	other.UserID = "20000000-0000-4000-8000-000000000005"
+	workerID := "20000000-0000-4000-8000-000000000006"
+	first, second, manual := workerInventoryTask(t, owner, workerID, 1), workerInventoryTask(t, owner, workerID, 2), workerInventoryTask(t, owner, workerID, 3)
+	manual.AllowAgents, manual.RequiredPlatform = false, pointer(model.PlatformWindows)
+	tasks, reader, _ := workerInventoryFixture(t, owner, first.ProjectID)
+	expected := workerInventoryQuery(owner, workerID)
+	response := store.TaskPage{}
+	reads := 0
+	reader.TasksFn = func(ctx context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
+		reads++
+		if ctx != t.Context() || id != first.ProjectID || !reflect.DeepEqual(q, expected) {
+			t.Fatalf("worker inventory query: got %#v, want %#v", q, expected)
+		}
+		return response, nil
 	}
-	want := []string{first.ID, second.ID, manual.ID}
 	uppercase := strings.ToUpper(workerID)
 	request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &uppercase}
 	var got []string
-	for {
-		page, err := tasks.List(ctx, owner, project.ID, request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(page.Items) != 1 {
-			t.Fatalf("filtered page contains %d tasks", len(page.Items))
+	for index, current := range []model.Task{first, second, manual} {
+		response = store.TaskPage{Items: []model.Task{current}, HasMore: index < 2}
+		before := reads
+		page, err := tasks.List(t.Context(), owner, first.ProjectID, request)
+		if err != nil || len(page.Items) != 1 || reads != before+1 {
+			t.Fatalf("filtered page: %#v %v", page, err)
 		}
 		got = append(got, page.Items[0].ID)
-		if page.NextCursor == nil {
+		if index == 2 {
+			if page.NextCursor != nil {
+				t.Fatal("final page returned cursor")
+			}
 			break
 		}
-		for _, changed := range []*string{nil, pointer(uuid.NewString())} {
+		if page.NextCursor == nil {
+			t.Fatal("filtered page lost next cursor")
+		}
+		for _, changed := range []*string{nil, pointer("20000000-0000-4000-8000-000000000007")} {
 			invalid := request
 			invalid.Cursor, invalid.WorkerID = page.NextCursor, changed
-			_, err := tasks.List(ctx, owner, project.ID, invalid)
+			_, err := tasks.List(t.Context(), owner, first.ProjectID, invalid)
 			requireFault(t, err, "invalid_input")
 		}
 		invalid := request
 		invalid.Cursor = page.NextCursor
-		_, err = tasks.List(ctx, other, project.ID, invalid)
+		_, err = tasks.List(t.Context(), other, first.ProjectID, invalid)
 		requireFault(t, err, "invalid_input")
+		if reads != before+1 {
+			t.Fatal("invalid bound cursor accessed the DAO")
+		}
 		request.Cursor, request.WorkerID = page.NextCursor, &workerID
+		expected.Page.After = &store.Position{CreatedAt: current.CreatedAt, ID: current.ID}
 	}
+	want := []string{first.ID, second.ID, manual.ID}
 	if !slices.Equal(got, want) {
-		t.Fatalf("worker filtering hid owned tasks or included history: got %v want %v", got, want)
+		t.Fatalf("inventory: got %v want %v", got, want)
 	}
-
-	for _, test := range []struct {
+	for _, tc := range []struct {
 		request taskservice.TaskListRequest
-		want    []string
+		items   []model.Task
 	}{
-		{taskservice.TaskListRequest{Ready: pointer(false)}, want},
+		{taskservice.TaskListRequest{Ready: pointer(false)}, []model.Task{first, second, manual}},
 		{taskservice.TaskListRequest{Ready: pointer(true)}, nil},
-		{taskservice.TaskListRequest{AllowAgents: pointer(true)}, want[:2]},
-		{taskservice.TaskListRequest{AllowAgents: pointer(false)}, want[2:]},
-		{taskservice.TaskListRequest{CompatiblePlatform: pointer(model.PlatformLinux)}, want[:2]},
-		{taskservice.TaskListRequest{Status: pointer(model.TaskInProgress)}, want},
+		{taskservice.TaskListRequest{AllowAgents: pointer(true)}, []model.Task{first, second}},
+		{taskservice.TaskListRequest{AllowAgents: pointer(false)}, []model.Task{manual}},
+		{taskservice.TaskListRequest{CompatiblePlatform: pointer(model.PlatformLinux)}, []model.Task{first, second}},
+		{taskservice.TaskListRequest{Status: pointer(model.TaskInProgress)}, []model.Task{first, second, manual}},
 		{taskservice.TaskListRequest{Status: pointer(model.TaskTodo)}, nil},
 	} {
-		test.request.PageRequest, test.request.WorkerID = model.PageRequest{Limit: 100}, &workerID
-		page, err := tasks.List(ctx, owner, project.ID, test.request)
-		if err != nil {
-			t.Fatal(err)
+		tc.request.PageRequest, tc.request.WorkerID = model.PageRequest{Limit: 100}, &workerID
+		expected = workerInventoryQuery(owner, workerID)
+		expected.Ready, expected.AllowAgents, expected.CompatiblePlatform, expected.Status = tc.request.Ready, tc.request.AllowAgents, tc.request.CompatiblePlatform, tc.request.Status
+		calls := 0
+		reader.TasksFn = func(ctx context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
+			if ctx != t.Context() || id != first.ProjectID || !reflect.DeepEqual(q, expected) {
+				t.Fatalf("combined query: got %#v want %#v", q, expected)
+			}
+			if len(tc.items) == 0 {
+				calls++
+				if calls != 1 {
+					t.Fatal("empty inventory read more than once")
+				}
+				return store.TaskPage{Items: []model.Task{}}, nil
+			}
+			if calls >= len(tc.items) {
+				t.Fatal("inventory projected beyond supplied filtered results")
+			}
+			item := tc.items[calls]
+			calls++
+			expected.Page.After = &store.Position{CreatedAt: item.CreatedAt, ID: item.ID}
+			return store.TaskPage{Items: []model.Task{item}, HasMore: calls < len(tc.items)}, nil
 		}
-		var ids []string
-		for _, task := range page.Items {
-			ids = append(ids, task.ID)
+		page, err := tasks.List(t.Context(), owner, first.ProjectID, tc.request)
+		var ids, wantIDs []string
+		for _, item := range page.Items {
+			ids = append(ids, item.ID)
 		}
-		if !slices.Equal(ids, test.want) || page.NextCursor != nil {
-			t.Fatalf("combined filters: got %v want %v, cursor %v", ids, test.want, page.NextCursor)
+		for _, item := range tc.items {
+			wantIDs = append(wantIDs, item.ID)
+		}
+		if err != nil || !slices.Equal(ids, wantIDs) || page.NextCursor != nil {
+			t.Fatalf("combined inventory: got %v want %v err %v", ids, wantIDs, err)
 		}
 	}
 }
 
 func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	owner := workerMember(t, database, project.ID)
-	descriptor := workerDescriptor()
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	inventory := func(principal model.Principal, wantClaim string) {
-		t.Helper()
-		page, err := tasks.List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, WorkerID: &descriptor.WorkerID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if wantClaim == "" {
-			if len(page.Items) != 0 || page.NextCursor != nil {
-				t.Fatalf("old ownership remains in inventory: %#v", page)
+	owner := workerServicePrincipal()
+	workerID := "20000000-0000-4000-8000-000000000006"
+	current := workerInventoryTask(t, owner, workerID, 1)
+	original := testWorker(t, current.Properties).ClaimID
+	for _, stage := range []struct {
+		name   string
+		claim  string
+		active bool
+	}{
+		{"claimed", original, true}, {"released", original, false}, {"resumed", "22000000-0000-4000-8000-000000000001", true},
+		{"withdrawn", "", false}, {"reclaimed", "22000000-0000-4000-8000-000000000002", true}, {"completed", "22000000-0000-4000-8000-000000000002", false},
+		{"reopened and claimed", "22000000-0000-4000-8000-000000000003", true},
+	} {
+		t.Run(stage.name, func(t *testing.T) {
+			tasks, reader, _ := workerInventoryFixture(t, owner, current.ProjectID)
+			expected := workerInventoryQuery(owner, workerID)
+			calls := 0
+			returned := current
+			worker := *testWorker(t, returned.Properties)
+			worker.ClaimID = stage.claim
+			if stage.active {
+				returned.Properties = testWithWorker(t, returned.Properties, &worker)
 			}
-		} else if len(page.Items) != 1 || page.Items[0].ID != task.ID || testWorker(t, page.Items[0].Properties).ClaimID != wantClaim || page.NextCursor != nil {
-			t.Fatalf("wrong current claim: %#v", page)
-		}
+			reader.TasksFn = func(ctx context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
+				calls++
+				if ctx != t.Context() || id != current.ProjectID || calls != 1 || !reflect.DeepEqual(q, expected) {
+					t.Fatal("ownership inventory lost current caller/worker filter")
+				}
+				if !stage.active {
+					return store.TaskPage{Items: []model.Task{}}, nil
+				}
+				return store.TaskPage{Items: []model.Task{returned}}, nil
+			}
+			page, err := tasks.List(t.Context(), owner, current.ProjectID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, WorkerID: &workerID})
+			if err != nil || calls != 1 || page.NextCursor != nil {
+				t.Fatalf("ownership inventory: %#v %v", page, err)
+			}
+			if !stage.active {
+				if len(page.Items) != 0 {
+					t.Fatal("historical ownership exposed as active inventory")
+				}
+				return
+			}
+			if len(page.Items) != 1 || page.Items[0].ID != current.ID || testWorker(t, page.Items[0].Properties).ClaimID != stage.claim {
+				t.Fatalf("wrong current claim: %#v", page)
+			}
+		})
 	}
-	inventory(owner, descriptor.ClaimID)
-	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inventory(owner, "")
-	next := descriptor
-	next.ClaimID, next.WorktreeID = uuid.NewString(), uuid.NewString()
-	task, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inventory(owner, next.ClaimID)
-	task, err = tasks.WithdrawWorker(ctx, admin, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: next.ClaimID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inventory(owner, "")
-	if testWorker(t, task.Properties) != nil || task.AllowAgents {
-		t.Fatal("withdrawn claim remained eligible or retained ownership")
-	}
-	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{AllowAgents: pointer(true)})
-	next.ClaimID, next.WorktreeID = uuid.NewString(), uuid.NewString()
-	task = claimWorkerTask(t, tasks, owner, task, next)
-	inventory(owner, next.ClaimID)
-	task, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: &next.ClaimID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inventory(owner, "")
-	task = setStatusTask(t, tasks, admin, task, model.TaskTodo)
-	fresh := workerDescriptor()
-	fresh.WorkerID = descriptor.WorkerID
-	task = claimWorkerTask(t, tasks, owner, task, fresh)
-	inventory(owner, fresh.ClaimID)
 }
 
 func TestTaskWorkerInventoryRejectsInvalidFilterAndPreservesReadFailures(t *testing.T) {
-	tasks, database, project, _, owner := taskService(t)
-	ctx := context.Background()
+	owner := workerServicePrincipal()
+	project := workerServiceTask(t, owner).ProjectID
+	tasks, reader, projects := workerInventoryFixture(t, owner, project)
 	for _, workerID := range []string{"", "invalid", "00000000000000000000000000000000"} {
-		_, err := tasks.List(ctx, owner, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
+		_, err := tasks.List(t.Context(), owner, project, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
 		requireFault(t, err, "invalid_input")
 	}
-	workerID := uuid.NewString()
-	_, err := tasks.List(ctx, servicePrincipal(t, database), project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
-	requireFault(t, err, "not_found")
-	task := createTask(t, tasks, owner, project.ID, "Invalid stored worker")
-	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','{}')`, task.ID); err != nil {
-		t.Fatal(err)
+	workerID := "20000000-0000-4000-8000-000000000006"
+	projects.ProjectAccessFn = func(ctx context.Context, actual model.Principal, id string) (model.ProjectAccess, error) {
+		if ctx != t.Context() || actual != owner || id != project {
+			t.Fatal("inventory denial scope mismatch")
+		}
+		return model.ProjectAccess{}, model.ErrNotFound
 	}
-	_, err = tasks.List(ctx, owner, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
+	_, err := tasks.List(t.Context(), owner, project, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
+	requireFault(t, err, "not_found")
+	tasks, reader, _ = workerInventoryFixture(t, owner, project)
+	cause := &taskproperty.ValidationError{Path: "worker", Rule: "invalid stored worker"}
+	failure := &store.Error{Phase: "decode worker", Cause: cause}
+	calls := 0
+	reader.TasksFn = func(ctx context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
+		calls++
+		if ctx != t.Context() || id != project || !reflect.DeepEqual(q, workerInventoryQuery(owner, workerID)) {
+			t.Fatal("invalid stored worker query mismatch")
+		}
+		return store.TaskPage{}, failure
+	}
+	page, err := tasks.List(t.Context(), owner, project, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
 	requireFault(t, err, "invalid_input")
 	var stored *store.Error
-	if !errors.As(err, &stored) || errors.Unwrap(err) == nil {
-		t.Fatalf("invalid stored ownership became a successful empty inventory: %v", err)
+	if calls != 1 || !errors.As(err, &stored) || stored != failure || !errors.Is(err, cause) || page.Items != nil || page.NextCursor != nil {
+		t.Fatalf("invalid stored ownership lost original read failure: %#v %v", page, err)
 	}
 }
 
 func TestWorkerInventorySkipsOversizedUnrelatedClaim(t *testing.T) {
-	tasks, database, project, _, owner := taskService(t)
-	workerID := uuid.NewString()
-	add := func(id string) model.Task {
-		descriptor := workerDescriptor()
-		descriptor.WorkerID = id
-		return claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	}
-	first := add(workerID)
-	unrelated := add(uuid.NewString())
-	second := add(workerID)
-	var worker map[string]any
-	if err := json.Unmarshal(unrelated.Properties["worker"], &worker); err != nil {
-		t.Fatal(err)
-	}
-	worker["machine"].(map[string]any)["name"] = strings.Repeat("w", 5<<20)
-	raw, err := json.Marshal(worker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_properties SET value=$2 WHERE task_id=$1 AND name='worker'`, unrelated.ID, string(raw)); err != nil {
-		t.Fatal(err)
+	owner := workerServicePrincipal()
+	workerID := "20000000-0000-4000-8000-000000000006"
+	first, second := workerInventoryTask(t, owner, workerID, 1), workerInventoryTask(t, owner, workerID, 2)
+	tasks, reader, _ := workerInventoryFixture(t, owner, first.ProjectID)
+	expected := workerInventoryQuery(owner, workerID)
+	calls := 0
+	reader.TasksFn = func(ctx context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
+		calls++
+		if ctx != t.Context() || id != first.ProjectID || !reflect.DeepEqual(q, expected) {
+			t.Fatalf("bounded inventory lost worker filter: %#v", q)
+		}
+		switch calls {
+		case 1:
+			return store.TaskPage{Items: []model.Task{first}, HasMore: true}, nil
+		case 2:
+			return store.TaskPage{Items: []model.Task{second}}, nil
+		default:
+			t.Fatal("inventory read beyond supplied filtered candidates")
+			return store.TaskPage{}, nil
+		}
 	}
 	request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID}
-	page, err := tasks.List(context.Background(), owner, project.ID, request)
+	page, err := tasks.List(t.Context(), owner, first.ProjectID, request)
 	if err != nil || len(page.Items) != 1 || page.Items[0].ID != first.ID || page.NextCursor == nil {
-		t.Fatalf("first page: %+v %v", page.NextCursor, err)
+		t.Fatalf("first inventory page: %#v %v", page, err)
 	}
+	expected.Page.After = &store.Position{CreatedAt: first.CreatedAt, ID: first.ID}
 	request.Cursor = page.NextCursor
-	page, err = tasks.List(context.Background(), owner, project.ID, request)
-	if err != nil || len(page.Items) != 1 || page.Items[0].ID != second.ID || page.NextCursor != nil {
-		t.Fatalf("second page: %+v %v", page.NextCursor, err)
+	page, err = tasks.List(t.Context(), owner, first.ProjectID, request)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != second.ID || page.NextCursor != nil || calls != 2 {
+		t.Fatalf("second inventory page: %#v %v", page, err)
 	}
 }

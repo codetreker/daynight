@@ -4,158 +4,291 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
-
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
+func stepMockHeader(version int64) model.TaskHeader {
+	project, target, _ := taskMockModels()
+	return model.TaskHeader{ID: target.ID, ProjectID: project.ID, Version: version}
+}
+
+type stepsReadFixture struct {
+	T             *testing.T
+	Ctx           context.Context
+	Header        model.TaskHeader
+	Project       model.Project
+	Principal     model.Principal
+	Reader        *taskReaderMock
+	ProjectReader *projectReaderMock
+	Snapshot      *taskSnapshotScopeMock
+	Store         *taskStoreMock
+	Steps         *taskservice.TaskSteps
+}
+
+func newStepsReadFixture(t *testing.T, header model.TaskHeader) *stepsReadFixture {
+	t.Helper()
+	project, _, principal := taskMockModels()
+	project.ID = header.ProjectID
+	base := newTaskMockBase(t, "steps")
+	f := &stepsReadFixture{T: t, Ctx: t.Context(), Header: header, Project: project, Principal: principal}
+	f.Reader = &taskReaderMock{taskMockBase: base.withLabel("steps.reader")}
+	f.ProjectReader = &projectReaderMock{taskMockBase: base.withLabel("steps.project")}
+	f.ProjectReader.ProjectAccessFn = func(ctx context.Context, actual model.Principal, projectID string) (model.ProjectAccess, error) {
+		if ctx != f.Ctx || actual != f.Principal || projectID != f.Header.ProjectID {
+			t.Fatal("Step read changed the access context, principal or Project identity")
+		}
+		return taskMockAccess(f.Project, f.Principal), nil
+	}
+	f.Reader.TaskHeaderFn = func(ctx context.Context, projectID, taskID string) (model.TaskHeader, error) {
+		if ctx != f.Ctx || projectID != f.Header.ProjectID || taskID != f.Header.ID {
+			t.Fatal("Step read changed the header context or scoped Task identity")
+		}
+		return f.Header, nil
+	}
+	f.Snapshot = &taskSnapshotScopeMock{taskMockBase: base.withLabel("steps.snapshot"), ProjectDAOFn: func() store.ProjectReader { return f.ProjectReader }, TaskDAOFn: func() store.TaskReader { return f.Reader }}
+	f.Store = &taskStoreMock{taskMockBase: base.withLabel("steps.store"), ReadSnapshotFn: func(ctx context.Context, read func(store.SnapshotScope) error) error {
+		if ctx != f.Ctx || read == nil {
+			t.Fatal("Step read changed the snapshot context or callback")
+		}
+		return read(f.Snapshot)
+	}}
+	f.Steps = taskservice.NewTaskSteps(f.Store)
+	return f
+}
+
+func (f *stepsReadFixture) expectRows(rows []model.TaskStep) {
+	f.T.Helper()
+	f.Reader.TaskStepsFn = func(ctx context.Context, taskID string) ([]model.TaskStep, error) {
+		if ctx != f.Ctx || taskID != f.Header.ID {
+			f.T.Fatal("Step collection changed context or Task identity")
+		}
+		return slices.Clone(rows), nil
+	}
+}
+
+func stepProjection(id string, position int64, description string) store.TaskStepProjection {
+	step := taskMockStep(id, position)
+	step.Description = description
+	return store.TaskStepProjection{Step: step}
+}
+
 func TestTaskStepsReadWithoutHydratingTaskPolicyAndPreserveParent(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	task := createTask(t, tasks, principal, project.ID, "Parent")
-	steps := taskservice.NewTaskSteps(database)
-	ctx := context.Background()
-	empty, err := steps.List(ctx, principal, project.ID, task.ID)
+	f := newStepsReadFixture(t, stepMockHeader(1))
+	f.expectRows([]model.TaskStep{})
+	empty, err := f.Steps.List(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID)
 	if err != nil || empty.Resource.Steps == nil || len(empty.Resource.Steps) != 0 {
 		t.Fatalf("empty: %+v %v", empty, err)
 	}
-	for _, query := range []string{
-		`INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','invalid JSON')`,
-		`INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,'00abcdef',0,E'  \ufeff  ','# Markdown','skipped','2026-11-03T10:11:12.123456Z','2026-11-03T10:12:13Z')`,
-		`UPDATE tasks SET status='done',version=9007199254740993 WHERE id=$1`,
-	} {
-		if _, err := database.Pool.Exec(ctx, query, task.ID); err != nil {
-			t.Fatal(err)
+	f.Header.Version = 9007199254740993
+	step := taskMockStep("00abcdef", 0)
+	step.Title, step.Description, step.Status = "  \ufeff  ", "# Markdown", model.TaskStepSkipped
+	step.CreatedAt, step.UpdatedAt = time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC), time.Date(2026, 11, 3, 10, 12, 13, 0, time.UTC)
+	f.expectRows([]model.TaskStep{step})
+	f.Reader.TaskStepFn = func(ctx context.Context, taskID, id string) (model.TaskStep, error) {
+		if ctx != f.Ctx || taskID != f.Header.ID || id != "00abcdef" {
+			t.Fatal("Step identity was not canonicalized")
 		}
+		return step, nil
 	}
-
-	var before, after string
-	if err := database.Pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, task.ID).Scan(&before); err != nil {
-		t.Fatal(err)
+	f.Reader.TaskStepSummaryFn = func(ctx context.Context, taskID, id string) (store.TaskStepProjection, error) {
+		if ctx != f.Ctx || taskID != f.Header.ID || id != "00abcdef" {
+			t.Fatal("Step summary identity changed")
+		}
+		return store.TaskStepProjection{Step: step}, nil
 	}
-	result, err := steps.List(ctx, principal, strings.ToUpper(project.ID), strings.ToUpper(task.ID))
+	before := f.Header
+	result, err := f.Steps.List(f.Ctx, f.Principal, strings.ToUpper(f.Header.ProjectID), strings.ToUpper(f.Header.ID))
 	if err != nil || result.Resource.Version != 9007199254740993 || len(result.Resource.Steps) != 1 || result.Resource.Steps[0].ID != "00abcdef" {
 		t.Fatalf("independent read: %+v %v", result.Resource, err)
 	}
-	single, err := steps.Get(ctx, principal, project.ID, task.ID, "00ABCDEF")
-	if err != nil || single.Resource.Step != result.Resource.Steps[0] || single.Resource.Version != result.Resource.Version {
-		t.Fatalf("single: %+v %v", single, err)
+	single, err := f.Steps.Get(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00ABCDEF")
+	if err != nil || single.Resource.Step != result.Resource.Steps[0] || single.Resource.Version != result.Resource.Version || f.Header != before {
+		t.Fatalf("single/header: %+v %v", single, err)
 	}
-	if err := database.Pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, task.ID).Scan(&after); err != nil || before != after {
-		t.Fatalf("read changed parent: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE task_steps SET title=E'\u0085' WHERE task_id=$1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := steps.List(ctx, principal, project.ID, task.ID); err == nil {
-		t.Fatal("corrupt title became an empty/successful read")
-	}
-	if _, err := steps.Get(ctx, principal, project.ID, task.ID, "00abcdef"); err == nil {
-		t.Fatal("corrupt item became successful")
-	}
-	if _, err := steps.GetSummary(ctx, principal, project.ID, task.ID, "00abcdef"); err == nil {
-		t.Fatal("corrupt item became a successful summary")
+	step.Title = "\u0085"
+	f.expectRows([]model.TaskStep{step})
+	for _, read := range []func() error{
+		func() error { _, err := f.Steps.List(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID); return err },
+		func() error {
+			_, err := f.Steps.Get(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00abcdef")
+			return err
+		},
+		func() error {
+			_, err := f.Steps.GetSummary(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00abcdef")
+			return err
+		},
+	} {
+		if err := read(); err == nil {
+			t.Fatal("corrupt Step became a successful read")
+		}
 	}
 }
 
 func TestTaskStepsBoundedPagesAndVersionFence(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	parent := createTask(t, tasks, principal, project.ID, "Parent")
-	steps := taskservice.NewTaskSteps(database)
-	ctx := context.Background()
-	longTitle := strings.Repeat("界", 600)
-	for i, title := range []string{"First", longTitle, "Last"} {
-		_, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,$2,$3,$4,$5,'todo',clock_timestamp(),clock_timestamp())`, parent.ID, fmt.Sprintf("%08x", i), i, title, strings.Repeat("x", 10000))
-		if err != nil {
-			t.Fatal(err)
+	f := newStepsReadFixture(t, stepMockHeader(1))
+	first := stepProjection("00000000", 0, "")
+	long := stepProjection("00000001", 1, "")
+	long.Step.Title = strings.Repeat("界", 512)
+	long.TitleTruncated = true
+	last := stepProjection("00000002", 2, strings.Repeat("x", 10000))
+	lastSummary := last
+	lastSummary.Step.Description = ""
+	f.Reader.TaskStepPageFn = func(ctx context.Context, id string, after int64, limit int, summary bool) ([]store.TaskStepProjection, error) {
+		if ctx != f.Ctx || id != f.Header.ID || limit != 3 {
+			t.Fatal("page query changed bounds or scope")
 		}
+		switch after {
+		case -1:
+			if !summary {
+				t.Fatal("summary projection was not requested")
+			}
+			return []store.TaskStepProjection{first, long, lastSummary}, nil
+		case 1:
+			if summary {
+				t.Fatal("full projection was not requested")
+			}
+			return []store.TaskStepProjection{last}, nil
+		}
+		t.Fatal("unexpected page position")
+		return nil, nil
 	}
-	page, err := steps.ListPage(ctx, principal, project.ID, parent.ID, -1, 2, nil, true)
-	if err != nil || len(page.Items) != 2 || !page.HasMore || page.Header.Version != parent.Version {
+	page, err := f.Steps.ListPage(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 2, nil, true)
+	if err != nil || len(page.Items) != 2 || !page.HasMore || page.Header.Version != 1 {
 		t.Fatalf("first page: %+v %v", page, err)
 	}
 	if page.Items[0].Step.Description != "" || page.Items[0].TitleTruncated || !page.Items[1].TitleTruncated || utf8.RuneCountInString(page.Items[1].Step.Title) != 512 || page.Items[1].Step.Description != "" {
-		t.Fatalf("summary projection was not bounded: %+v", page.Items)
+		t.Fatalf("summary forwarding: %+v", page.Items)
 	}
 	version := page.Header.Version
-	next, err := steps.ListPage(ctx, principal, project.ID, parent.ID, page.Items[1].Step.Position, 2, &version, false)
+	next, err := f.Steps.ListPage(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, 1, 2, &version, false)
 	if err != nil || len(next.Items) != 1 || next.HasMore || next.Items[0].Step.ID != "00000002" || len(next.Items[0].Step.Description) != 10000 {
-		t.Fatalf("full next page: %+v %v", next, err)
+		t.Fatalf("next: %+v %v", next, err)
 	}
-	single, err := steps.GetSummary(ctx, principal, project.ID, parent.ID, "00000001")
+	f.Reader.TaskStepSummaryFn = func(ctx context.Context, id, stepID string) (store.TaskStepProjection, error) {
+		if ctx != f.Ctx || id != f.Header.ID {
+			t.Fatal("summary scope changed")
+		}
+		if stepID == "ffffffff" {
+			return store.TaskStepProjection{}, model.ErrNotFound
+		}
+		if stepID != "00000001" {
+			t.Fatal("summary Step changed")
+		}
+		return long, nil
+	}
+	single, err := f.Steps.GetSummary(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000001")
 	if err != nil || single.Header.Version != version || !single.Item.TitleTruncated || single.Item.Step.Position != 1 || single.Item.Step.Description != "" {
-		t.Fatalf("single summary: %+v %v", single, err)
+		t.Fatalf("summary: %+v %v", single, err)
 	}
-	_, err = steps.GetSummary(ctx, principal, project.ID, parent.ID, "ffffffff")
+	_, err = f.Steps.GetSummary(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "ffffffff")
 	var absence *tasksteps.StepAbsence
 	if !errors.As(err, &absence) || absence.Version != version {
-		t.Fatalf("missing step version: %v", err)
+		t.Fatalf("missing Step version: %v", err)
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET version=version+1 WHERE id=$1`, parent.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = steps.ListPage(ctx, principal, project.ID, parent.ID, 1, 2, &version, true)
+	f.Header.Version++
+	f.Reader.TaskStepPageFn = nil
+	_, err = f.Steps.ListPage(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, 1, 2, &version, true)
 	requireThreadFault(t, err, "version_conflict")
 	for _, bounds := range [][2]int64{{-2, 1}, {-1, 0}, {-1, 101}} {
-		_, err := steps.ListPage(ctx, principal, project.ID, parent.ID, bounds[0], int(bounds[1]), nil, true)
+		_, err := f.Steps.ListPage(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, bounds[0], int(bounds[1]), nil, true)
 		requireThreadFault(t, err, "invalid_input")
 	}
 }
 
 func TestTaskStepsAdmittedPageBoundsHistoricalProjection(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	parent := createTask(t, tasks, principal, project.ID, "Parent")
-	steps := taskservice.NewTaskSteps(database)
-	ctx := context.Background()
-	for i, description := range []string{"first", strings.Repeat("x", 4<<20), "last"} {
-		_, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,$2,$3,'step',$4,'todo',clock_timestamp(),clock_timestamp())`, parent.ID, fmt.Sprintf("%08x", i), i, description)
-		if err != nil {
-			t.Fatal(err)
+	f := newStepsReadFixture(t, stepMockHeader(1))
+	first := stepProjection("00000000", 0, "first")
+	oversized := stepProjection("00000001", 1, "")
+	oversized.Step.Title = ""
+	oversized.Oversized = true
+	last := stepProjection("00000002", 2, "last")
+	f.Reader.TaskStepPageFn = func(ctx context.Context, id string, after int64, limit int, summary bool) ([]store.TaskStepProjection, error) {
+		if ctx != f.Ctx || id != f.Header.ID || limit != 2 || summary {
+			t.Fatal("admitted page scope or two-row lookahead changed")
 		}
+		switch after {
+		case -1:
+			return []store.TaskStepProjection{first, oversized}, nil
+		case 0:
+			return []store.TaskStepProjection{oversized, last}, nil
+		}
+		t.Fatal("unexpected page after")
+		return nil, nil
 	}
-	ordinary, err := steps.ListPage(ctx, principal, project.ID, parent.ID, -1, 1, nil, false)
+	ordinary, err := f.Steps.ListPage(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 1, nil, false)
 	if err != nil || len(ordinary.Items) != 1 || !ordinary.HasMore {
-		t.Fatalf("ordinary page lost oversized lookahead: %+v %v", ordinary, err)
+		t.Fatalf("ordinary page lost lookahead: %+v %v", ordinary, err)
 	}
-	_, err = steps.ListPage(ctx, principal, project.ID, parent.ID, 0, 1, nil, false)
+	_, err = f.Steps.ListPage(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, 0, 1, nil, false)
 	requireThreadFault(t, err, "resource_limit_exceeded")
-	first, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
-	if err != nil || len(first.Items) != 1 || !first.HasMore {
-		t.Fatalf("oversized lookahead should remain reachable: %+v %v", first, err)
+	firstPage, err := f.Steps.ListPageAdmitted(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+	if err != nil || len(firstPage.Items) != 1 || !firstPage.HasMore {
+		t.Fatalf("lookahead inaccessible: %+v %v", firstPage, err)
 	}
 	var seen []string
-	page, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 3, nil, false, func(_ model.TaskHeader, item store.TaskStepProjection, more bool) (bool, error) {
+	page, err := f.Steps.ListPageAdmitted(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 3, nil, false, func(header model.TaskHeader, item store.TaskStepProjection, more bool) (bool, error) {
+		if header != f.Header || !more {
+			t.Fatal("admission lost header or continuation")
+		}
 		seen = append(seen, item.Step.ID)
 		if item.Oversized {
 			if item.Step.Title != "" || item.Step.Description != "" {
-				t.Fatal("oversized text crossed database boundary")
+				t.Fatal("withheld text leaked")
 			}
 			return false, nil
 		}
 		return true, nil
 	})
-	if err != nil || len(page.Items) != 1 || !page.HasMore || len(seen) != 2 || seen[1] != "00000001" {
+	if err != nil || len(page.Items) != 1 || !page.HasMore || !slices.Equal(seen, []string{"00000000", "00000001"}) {
 		t.Fatalf("page: %+v seen=%v err=%v", page, seen, err)
 	}
-	version := page.Header.Version
-	_, err = steps.GetBounded(ctx, principal, project.ID, parent.ID, "00000001")
+	f.Reader.TaskStepSummaryFn = func(ctx context.Context, id, stepID string) (store.TaskStepProjection, error) {
+		if ctx != f.Ctx || id != f.Header.ID {
+			t.Fatal("bounded summary scope changed")
+		}
+		switch stepID {
+		case "00000001":
+			return oversized, nil
+		case "00000002":
+			return last, nil
+		}
+		t.Fatal("unexpected bounded Step")
+		return store.TaskStepProjection{}, nil
+	}
+	f.Reader.TaskStepPageFn = func(ctx context.Context, id string, after int64, limit int, summary bool) ([]store.TaskStepProjection, error) {
+		if ctx != f.Ctx || id != f.Header.ID || limit != 1 || summary {
+			t.Fatal("bounded full query changed")
+		}
+		if after == 0 {
+			return []store.TaskStepProjection{oversized}, nil
+		}
+		if after == 1 {
+			return []store.TaskStepProjection{last}, nil
+		}
+		t.Fatal("unexpected bounded position")
+		return nil, nil
+	}
+	_, err = f.Steps.GetBounded(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000001")
 	requireThreadFault(t, err, "resource_limit_exceeded")
-	last, err := steps.GetBounded(ctx, principal, project.ID, parent.ID, "00000002")
-	if err != nil || last.Resource.Step.Description != "last" || last.Resource.Version != version {
-		t.Fatalf("last: %+v %v", last, err)
+	resource, err := f.Steps.GetBounded(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000002")
+	if err != nil || resource.Resource.Step.Description != "last" || resource.Resource.Version != f.Header.Version {
+		t.Fatalf("last: %+v %v", resource, err)
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET version=version+1 WHERE id=$1`, parent.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, 0, 3, &version, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) {
+	version := f.Header.Version
+	f.Header.Version++
+	f.Reader.TaskStepPageFn = nil
+	_, err = f.Steps.ListPageAdmitted(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, 0, 3, &version, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) {
 		t.Fatal("stale cursor reached admission")
 		return false, nil
 	})
@@ -163,150 +296,195 @@ func TestTaskStepsAdmittedPageBoundsHistoricalProjection(t *testing.T) {
 }
 
 func TestTaskStepsAdmittedPageRejectsCorruptLookahead(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	parent := createTask(t, tasks, principal, project.ID, "Parent")
-	steps := taskservice.NewTaskSteps(database)
-	ctx := context.Background()
-	for i, title := range []string{"valid", "   "} {
-		_, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,$2,$3,$4,'body','todo',clock_timestamp(),clock_timestamp())`, parent.ID, fmt.Sprintf("%08x", i), i, title)
-		if err != nil {
-			t.Fatal(err)
+	f := newStepsReadFixture(t, stepMockHeader(1))
+	first := stepProjection("00000000", 0, "body")
+	bad := stepProjection("00000001", 1, "body")
+	bad.Step.Title = "   "
+	f.Reader.TaskStepPageFn = func(ctx context.Context, id string, after int64, limit int, summary bool) ([]store.TaskStepProjection, error) {
+		if ctx != f.Ctx || id != f.Header.ID || after != -1 || limit != 2 {
+			t.Fatal("lookahead bounds changed")
 		}
+		return []store.TaskStepProjection{first, bad}, nil
 	}
 	for _, summary := range []bool{false, true} {
-		page, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+		page, err := f.Steps.ListPageAdmitted(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) {
+			t.Fatal("corrupt lookahead reached admission")
+			return false, nil
+		})
 		if err == nil || len(page.Items) != 0 {
-			t.Fatalf("corrupt lookahead became a successful prefix: %+v %v", page, err)
+			t.Fatalf("corrupt lookahead became successful prefix: %+v %v", page, err)
 		}
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE task_steps SET title='valid',position=2 WHERE task_id=$1 AND id='00000001'`, parent.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+	bad.Step.Title = "valid"
+	bad.Step.Position = 2
+	_, err := f.Steps.ListPageAdmitted(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) {
+		t.Fatal("position gap reached admission")
+		return false, nil
+	})
 	if err == nil {
-		t.Fatal("position gap in lookahead was accepted")
+		t.Fatal("position gap was accepted")
 	}
 }
 
 func TestTaskStepGetBoundedRejectsInvalidAndMissingInputs(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	parent := createTask(t, tasks, principal, project.ID, "Parent")
-	steps := taskservice.NewTaskSteps(database)
-	ctx := context.Background()
-	if _, err := steps.GetBounded(ctx, model.Principal{}, project.ID, parent.ID, "00000000"); err == nil {
-		t.Fatal("unauthenticated Step read succeeded")
+	f := newStepsReadFixture(t, stepMockHeader(1))
+	for _, read := range []func() error{func() error {
+		_, err := f.Steps.GetBounded(f.Ctx, model.Principal{}, f.Header.ProjectID, f.Header.ID, "00000000")
+		return err
+	}, func() error {
+		_, err := f.Steps.GetBounded(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "invalid")
+		return err
+	}} {
+		if err := read(); err == nil {
+			t.Fatal("invalid bounded Step input succeeded")
+		}
 	}
-	if _, err := steps.GetBounded(ctx, principal, project.ID, parent.ID, "invalid"); err == nil {
-		t.Fatal("invalid Step ID was accepted")
+	f.Reader.TaskStepSummaryFn = func(context.Context, string, string) (store.TaskStepProjection, error) {
+		return store.TaskStepProjection{}, model.ErrNotFound
 	}
-	_, err := steps.GetBounded(ctx, principal, project.ID, parent.ID, "00000000")
+	_, err := f.Steps.GetBounded(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000")
 	requireThreadFault(t, err, "not_found")
-	if _, err := database.Pool.Exec(ctx, `DROP TABLE task_steps`); err != nil {
-		t.Fatal(err)
+	failure := errors.New("Step DAO failure")
+	f.Reader.TaskStepSummaryFn = func(context.Context, string, string) (store.TaskStepProjection, error) {
+		return store.TaskStepProjection{}, failure
 	}
-	if _, err := steps.GetBounded(ctx, principal, project.ID, parent.ID, "00000000"); err == nil || errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("storage failure was hidden as missing Step: %v", err)
+	_, err = f.Steps.GetBounded(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000")
+	if !errors.Is(err, failure) || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("DAO failure became missing Step: %v", err)
 	}
 }
 
 func TestTaskStepsOversizedTextDoesNotHideInvalidTitle(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	parent := createTask(t, tasks, principal, project.ID, "Parent")
-	steps := taskservice.NewTaskSteps(database)
-	ctx := context.Background()
-	space := "\u0009\u000a\u000b\u000c\u000d\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
-	_, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,'00000000',0,$2,repeat('x',4194304),'todo',clock_timestamp(),clock_timestamp())`, parent.ID, space)
-	if err != nil {
-		t.Fatal(err)
+	f := newStepsReadFixture(t, stepMockHeader(1))
+	first := stepProjection("00000000", 0, "")
+	bad := stepProjection("00000001", 1, "")
+	bad.Oversized, bad.InvalidTitle = true, true
+	bad.Step.Title = ""
+	items := []store.TaskStepProjection{bad}
+	items[0].Step.Position = 0
+	f.Reader.TaskStepPageFn = func(ctx context.Context, id string, after int64, limit int, summary bool) ([]store.TaskStepProjection, error) {
+		if ctx != f.Ctx || id != f.Header.ID || after != -1 || limit != 2 {
+			t.Fatal("oversized page query changed")
+		}
+		return slices.Clone(items), nil
 	}
 	for _, summary := range []bool{false, true} {
-		_, err = steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+		_, err := f.Steps.ListPageAdmitted(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) {
+			t.Fatal("invalid first title reached admission")
+			return false, nil
+		})
 		if err == nil {
-			t.Fatal("oversized description hid an invalid first title")
+			t.Fatal("withheld description hid invalid first title")
 		}
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE task_steps SET position=1,id='00000001' WHERE task_id=$1`, parent.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,'00000000',0,'valid','','todo',clock_timestamp(),clock_timestamp())`, parent.ID); err != nil {
-		t.Fatal(err)
-	}
+	items = []store.TaskStepProjection{first, bad}
 	for _, summary := range []bool{false, true} {
-		_, err = steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+		_, err := f.Steps.ListPageAdmitted(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 1, nil, summary, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) {
+			t.Fatal("invalid lookahead title reached admission")
+			return false, nil
+		})
 		if err == nil {
-			t.Fatal("oversized description hid an invalid lookahead title")
+			t.Fatal("withheld description hid invalid lookahead title")
 		}
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE task_steps SET title=$2 WHERE task_id=$1 AND id='00000001'`, parent.ID, space+"\ufeff"+space); err != nil {
-		t.Fatal(err)
-	}
-	page, err := steps.ListPageAdmitted(ctx, principal, project.ID, parent.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
+	items[1].InvalidTitle = false
+	page, err := f.Steps.ListPageAdmitted(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, -1, 1, nil, false, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error) { return true, nil })
 	if err != nil || len(page.Items) != 1 || !page.HasMore {
-		t.Fatalf("non-whitespace title did not retain continuation: %+v %v", page, err)
+		t.Fatalf("non-whitespace withheld title lost continuation: %+v %v", page, err)
 	}
 }
 
 func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	task := createTask(t, tasks, principal, project.ID, "Parent")
-	steps := taskservice.NewTaskSteps(database)
-	ctx := context.Background()
 	for _, tc := range []struct {
-		principal model.Principal
-		projectID string
-		taskID    string
-		code      string
+		name                    string
+		principal               bool
+		projectID, taskID, code string
 	}{
-		{model.Principal{}, project.ID, task.ID, "unauthenticated"},
-		{principal, "bad", task.ID, "invalid_input"},
-		{principal, project.ID, "bad", "invalid_input"},
-		{principal, uuid.NewString(), task.ID, "not_found"},
-		{principal, project.ID, uuid.NewString(), "not_found"},
-		{servicePrincipal(t, database), project.ID, task.ID, "not_found"},
+		{name: "unauthenticated", code: "unauthenticated"}, {name: "project syntax", principal: true, projectID: "bad", code: "invalid_input"}, {name: "task syntax", principal: true, taskID: "bad", code: "invalid_input"},
+		{name: "missing project", principal: true, projectID: uuid.NewString(), code: "not_found"}, {name: "missing task", principal: true, taskID: uuid.NewString(), code: "not_found"}, {name: "access denied", principal: true, code: "not_found"},
 	} {
-		_, err := steps.List(ctx, tc.principal, tc.projectID, tc.taskID)
-		requireThreadFault(t, err, tc.code)
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStepsReadFixture(t, stepMockHeader(1))
+			principal := model.Principal{}
+			if tc.principal {
+				principal = f.Principal
+			}
+			projectID, taskID := f.Header.ProjectID, f.Header.ID
+			if tc.projectID != "" {
+				projectID = tc.projectID
+			}
+			if tc.taskID != "" {
+				taskID = tc.taskID
+			}
+			switch tc.name {
+			case "missing project", "access denied":
+				f.ProjectReader.ProjectAccessFn = func(context.Context, model.Principal, string) (model.ProjectAccess, error) {
+					return model.ProjectAccess{}, model.ErrNotFound
+				}
+			case "missing task":
+				f.Reader.TaskHeaderFn = func(context.Context, string, string) (model.TaskHeader, error) {
+					return model.TaskHeader{}, model.ErrNotFound
+				}
+			default:
+				f.Store.ReadSnapshotFn = nil
+			}
+			_, err := f.Steps.List(f.Ctx, principal, projectID, taskID)
+			requireThreadFault(t, err, tc.code)
+		})
 	}
-	_, err := steps.Get(ctx, model.Principal{}, project.ID, task.ID, "00000000")
-	requireThreadFault(t, err, "unauthenticated")
-	_, err = steps.GetSummary(ctx, model.Principal{}, project.ID, task.ID, "00000000")
-	requireThreadFault(t, err, "unauthenticated")
+	f := newStepsReadFixture(t, stepMockHeader(1))
+	for _, read := range []func() error{func() error {
+		_, err := f.Steps.Get(f.Ctx, model.Principal{}, f.Header.ProjectID, f.Header.ID, "00000000")
+		return err
+	}, func() error {
+		_, err := f.Steps.GetSummary(f.Ctx, model.Principal{}, f.Header.ProjectID, f.Header.ID, "00000000")
+		return err
+	}} {
+		requireThreadFault(t, read(), "unauthenticated")
+	}
 	for _, id := range []string{"bad", "00000000-0000-4000-8000-000000000001"} {
-		_, err := steps.Get(ctx, principal, project.ID, task.ID, id)
+		_, err := f.Steps.Get(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, id)
 		requireThreadFault(t, err, "invalid_input")
-		_, err = steps.GetSummary(ctx, principal, project.ID, task.ID, id)
+		_, err = f.Steps.GetSummary(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, id)
 		requireThreadFault(t, err, "invalid_input")
 	}
-	_, err = steps.Get(ctx, principal, project.ID, task.ID, "00000000")
+	f.Reader.TaskStepFn = func(context.Context, string, string) (model.TaskStep, error) {
+		return model.TaskStep{}, model.ErrNotFound
+	}
+	_, err := f.Steps.Get(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000")
 	requireThreadFault(t, err, "not_found")
-	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, err = steps.List(ctx, principal, project.ID, task.ID)
+	deleted := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	f.Header.DeletedAt = &deleted
+	_, err = f.Steps.List(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID)
 	requireThreadFault(t, err, "task_deleted")
-	_, err = steps.GetSummary(ctx, principal, project.ID, task.ID, "00000000")
+	_, err = f.Steps.GetSummary(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000")
 	requireThreadFault(t, err, "task_deleted")
-	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=NULL WHERE id=$1`, task.ID); err != nil {
-		t.Fatal(err)
+	f.Header.DeletedAt = nil
+	failure := errors.New("Step query failed")
+	f.Reader.TaskStepFn = func(context.Context, string, string) (model.TaskStep, error) { return model.TaskStep{}, failure }
+	f.Reader.TaskStepSummaryFn = func(context.Context, string, string) (store.TaskStepProjection, error) {
+		return store.TaskStepProjection{}, failure
 	}
-	if _, err := database.Pool.Exec(ctx, `DROP TABLE task_steps`); err != nil {
-		t.Fatal(err)
+	f.Reader.TaskStepsFn = func(context.Context, string) ([]model.TaskStep, error) { return nil, failure }
+	for _, read := range []func() error{func() error {
+		_, err := f.Steps.Get(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000")
+		return err
+	}, func() error {
+		_, err := f.Steps.GetSummary(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID, "00000000")
+		return err
+	}, func() error { _, err := f.Steps.List(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID); return err }} {
+		if err := read(); !errors.Is(err, failure) {
+			t.Fatalf("query failure concealed: %v", err)
+		}
 	}
-	if _, err := steps.Get(ctx, principal, project.ID, task.ID, "00000000"); err == nil {
-		t.Fatal("storage failure concealed")
+	snapshotFailure := errors.New("snapshot failed")
+	f.Store.ReadSnapshotFn = func(context.Context, func(store.SnapshotScope) error) error { return snapshotFailure }
+	_, err = f.Steps.List(f.Ctx, f.Principal, f.Header.ProjectID, f.Header.ID)
+	if !errors.Is(err, snapshotFailure) {
+		t.Fatalf("snapshot failure concealed: %v", err)
 	}
-	if _, err := steps.GetSummary(ctx, principal, project.ID, task.ID, "00000000"); err == nil {
-		t.Fatal("summary storage failure concealed")
-	}
-	if _, err := steps.List(ctx, principal, project.ID, task.ID); err == nil {
-		t.Fatal("collection storage failure concealed")
-	}
-	database.Close()
-	if _, err := steps.List(ctx, principal, project.ID, task.ID); err == nil {
-		t.Fatal("snapshot failure concealed")
+	if !reflect.DeepEqual(f.Header, stepMockHeader(1)) {
+		t.Fatal("read changed synthetic parent")
 	}
 }
 
@@ -317,12 +495,12 @@ func TestTaskStepsFaultDoesNotHideCleanupFailure(t *testing.T) {
 		t.Fatal("pure refusal lost")
 	}
 	if actual, ok := taskservice.TaskStepsFault(fmt.Errorf("snapshot: %w", errors.Join(model.ErrNotFound, wrapped))); !ok || actual != refusal {
-		t.Fatal("store not-found marker hid a pure refusal")
+		t.Fatal("store marker hid pure refusal")
 	}
 	cleanup := errors.New("cleanup failed")
 	for _, err := range []error{nil, cleanup, model.ErrNotFound, fmt.Errorf("read: %w", errors.Join(refusal, cleanup))} {
 		if _, ok := taskservice.TaskStepsFault(err); ok {
-			t.Fatal("internal cleanup error downgraded")
+			t.Fatal("cleanup error downgraded")
 		}
 	}
 	joined := errors.Join(refusal, cleanup)
