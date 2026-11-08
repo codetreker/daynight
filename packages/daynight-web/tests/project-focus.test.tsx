@@ -1,4 +1,4 @@
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -60,7 +60,7 @@ beforeEach(() => {
     const sync = syncFixture.toSync(value, query, replacementEpochs.get(value));
     servedGraphs.set(projectId, value);
     for (const task of sync.tasks) servedVersions.set(`${projectId}/${task.id}`, task.version);
-    return sync;
+    return taskSyncReadFixture(sync);
   });
 });
 

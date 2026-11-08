@@ -43,7 +43,9 @@ archive data, change controller/report behavior or grant content access.
 
 The [TaskSync requirements](../../../../docs/spec/daynight-task-sync.md) and
 [design](../../../../docs/design/daynight-task-sync.md) own the wire and read
-mechanisms. The [original annotation decision](../../archived/feature/2026-11-04-task-session-status.md)
+mechanisms. The [list admission decision](2026-11-08-task-sync-session-list.md)
+owns the page producer, request bindings and receipt lifetime used by the Web
+consumer. The [original annotation decision](../../archived/feature/2026-11-04-task-session-status.md)
 established page-local annotations, complete ordinary chain membership and
 reliable execution binding. Its per-Task Current read was reasonable when that
 endpoint supplied the necessary authoritative observation; this decision

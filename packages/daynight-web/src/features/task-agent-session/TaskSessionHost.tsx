@@ -4,6 +4,7 @@ import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { createTerminalSessionApi, type SessionHistoryItem, type SessionRecordingReference, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
+import type { SyncTicket } from '../task-cache/project-cache';
 import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
 import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryOwnership, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, completeSessionHistoryPagination } from './session-history-cache';
 import { useCompletedTaskSession } from './automatic-task-session';
@@ -115,7 +116,7 @@ function useRecords(projectId: string, taskId: string, active: boolean, automati
     const requestInvalidation = invalidationSequence.current;
     const authorized = scope.getAuthorizedProject(projectId);
     if (authorized) guard.current.generation = authorized.manifest.cacheGeneration;
-    let ticket: Awaited<ReturnType<typeof scope.beginSync>> | null = null;
+    let ticket: SyncTicket | null = null;
     let admitted = false;
     let readSequence = 0;
     let proofRefreshRequested = false;

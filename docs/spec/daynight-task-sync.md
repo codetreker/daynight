@@ -61,7 +61,7 @@ Project 内在字段含必填 ownership，同一 epoch 的 delta 中设置与归
 
 每次实际成功同步都取得新 observedAt 与当前 Project；只用于本页显示计时和设置。持久缓存不恢复 performance.now 锚点，重复响应不重建图布局。仅本地摘要的页面不显示最近成功刷新时间、运行中耗时或可能卡住提醒；已完成任务仍可使用持久起止时间显示耗时。概览的近期分类按浏览器本地时区的自然日计算；暂时当前时刻使用本机时间，成功同步后切换为服务端样本与单调时间，分类口径由[Web 需求](daynight-web.md#项目整体进度)拥有。项目设置通过已有 settings.version 合并，迟到响应不得回退设置。
 
-### 服务端轻量 Session 集合
+### 轻量 Session 集合与列表读取
 
 每个成功 snapshot 和 delta 都包含必填且非 null 的 `sessions` 对象，即使 `tasks=[]` 也重新返回全项目当前适用会话的完整集合。键为 Task ID，值只允许 `working`、`notice`、`warning`、`pending`；无贡献时返回 `{}`。集合不受任务 `since` 窗口限制，不传 claim、Worker、Worktree 或 Session ID，也不传目录、能力、操作、启动报告、原始活动或连接字段，不增加 Session hash、cursor 或版本。
 
@@ -70,6 +70,14 @@ Project 内在字段含必填 ownership，同一 epoch 的 delta 中设置与归
 非 active 生命周期或 disconnected 为 `warning`；已连接且同步的 waiting_input 为 `notice`，idle/stopped 为 `warning`，working 为 `working`。初始化或同步中的可靠会话为 `pending`，表示无角标但仍保留可用的 Session 入口。active 且未断线的 unknown 活动不提供可靠贡献，应省略键。缺少本机 live 状态或 live fence 不匹配时沿用 disconnected、未同步、unknown 的既有归一化，最终为 `warning`；不能把该情况解释为会话不存在。持久 LastSeen 缺席或距今严格超过 30 秒，以及已到 DrainUntil 的生命周期规则保持。
 
 Task、Worker 和持久 Session 的读取共享既有只读数据库快照；live 活动仅从应用共享 Engine 的已提交状态取得。轻量读取不写生命周期，不推进归档、不读取完整 Current，也不改变 Worker 启动、报告、WebSocket、目录、操作、Test/Bot 或 Session 内容访问规则。查询、存储校验、Engine admission、取消及事务完成失败使整个 task-sync 失败，不能变成 `pending` 或成功空集合。状态的最小集合及其判断机制由[同步架构](../design/daynight-task-sync.md#服务端-session-状态投影)拥有；现有列表呈现与入口由[Session 状态设计](../design/task-session-status.md)拥有。
+
+列表仅使用现有 15 秒 task-sync 更新 Session 状态，不另建逐 Task Current 或 status 请求。初始化或同步期间的 pending 入口、全部普通链成员及根任务、折叠与负责人筛选隐藏成员、warning > notice > working 优先级以及原有导航和可访问性必须保留；外部前置链不贡献当前链摘要。完整 Current 内容和操作权限继续由详情客户端核验，列表状态不能成为该授权来源。
+
+状态有效期为 30 秒，从成功响应 body 读取完成的本地单调时间起算；捕获必须早于 JSON 解码、source scan 和合同校验。历史、IDB、渲染和普通缓存通知不得续期；处理到发布前已过期的观察不能短暂安装。正常同步等待保留尚有效贡献，当前失败、身份暂停、项目准入失效和执行变化撤销对应贡献，恢复后通过现有同步取得新观察。旧或被取代的响应不得撤销较新观察；身份暂停后恢复也不能让暂停前的响应重新发布已撤销的 Session 贡献。
+
+同一次请求的 Task 观察基线与 epoch、水位从原有同一 IDB 事务取得。snapshot 的执行观察来自实际响应 Tasks；delta 以该基线覆盖实际响应 Tasks。状态值和键缺席均只对 observed/current Task 执行绑定完全匹配的项生效；不能使用最终缓存保留的较新 Task 给旧状态改绑。Task ID 相同但 claim、Worker、Worktree、Worker state、模式或适用状态变化时，旧值及旧缺席均不能新增、替换、删除或续期较新执行。
+
+Session 列表状态仅驻留当前账户和项目的页面内存，由页面同步所有者独立发布给其消费者。其它标签页或缓存来源只可使失效 Task 绑定撤销，不发布或续期本页 Session 状态。状态变化不写 Task properties、version、updatedAt 或 IndexedDB，不进入 BroadcastChannel，不增加普通 Task 通知、正文读取或额外任务图构建；task-sync 原有 Task 应用仍保留。Session 记录目录保持独立持久合同。Web 严格要求必填四态 map 和规范 Task UUID，最多 1,000 项；缺字段、null、非法形状、键或值为协议错误。服务端支持先于新 Web 消费，回退服务端前先回退该 Web consumer。
 
 ## R8：身份与失效
 
@@ -99,7 +107,7 @@ direct 来源不要求项目 manifest、图或 SyncTicket；当前身份、项�
 
 完整属性随摘要传输和持久化，不截断、不静默丢键。1,000 节点/5,000 边不限制属性总字节；完整同步响应含 `sessions` 的编码上限为 64 MiB，超限返回 409 `resource_limit_exceeded`，不发布部分结果。详情的 8 MiB 缓存预算不覆盖摘要。测量实际样本、接近写请求上限的 PR 值和较大属性的多任务样本的响应字节、解析与 IDB 提交时间；不承诺所有合法属性总量都能满足浏览器配额。网络或配额失败保留旧有效缓存和水位。
 
-Session 集合验证覆盖空 delta、无贡献 `{}`、窗口外活动 Task、所有既有状态判断、身份不匹配、缺失 live 和 fence 不匹配、同快照读取、失败传播以及总响应字节限制。轻量读取不能取得完整 Session 内容、目录或操作。
+Session 集合验证覆盖空 delta、无贡献 `{}`、窗口外活动 Task、所有既有状态判断、身份不匹配、缺失 live 和 fence 不匹配、同快照读取、失败传播以及总响应字节限制。轻量读取不能取得完整 Session 内容、目录或操作。Web 验证同时覆盖 body receipt 的真实顺序、同事务请求基线、snapshot/delta 观察、旧值与旧缺席、30 秒期限、失败与恢复、全部角标/入口及 memory-only 边界。列表/Overview 在多个同步周期内没有完整 current；Session-only 变化不增加 Task 缓存写入、正文失效、普通通知或图计算。
 
 本合同不新增分页、流式 staging、项目属性字节预算或遥测上传。
 

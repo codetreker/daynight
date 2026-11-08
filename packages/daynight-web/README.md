@@ -688,7 +688,10 @@ zero task/edge counts; it cannot retain a usable incremental baseline. The share
 details store and guarded transaction interface support intrinsic content reuse,
 bounded LRU and business-version-driven detail reads.
 
-`beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
+`beginSync` reads the epoch, greatest exact accepted summary `updatedAt` and slim
+Task execution bindings in its existing transaction. Its `TaskSyncTicket` keeps
+that immutable request baseline in memory; snapshot observations use only
+returned Tasks, while delta observations overlay returned Tasks on the baseline.
 `applySync` validates the transaction's complete durable set and atomically saves
 changed summaries with that watermark. Every snapshot/delta record contains its
 required nullable assignedTo/cancelledAt and complete current properties from the task row's
@@ -1111,13 +1114,15 @@ time for provisional recent-completion classification, then switches to the live
 server sample. This provisional time never establishes execution time or sync
 coverage.
 
-`useTaskGraph` captures `receivedMonotonic` immediately after decoding task-sync,
-before IDB application or index work, and pairs it with that response's database
-`observedAt`. `receivedAt` remains the local-wall-clock refreshed label. A stable
+The successful task-sync API reader captures `receivedMonotonic` immediately
+after `response.text()` completes, before JSON decoding, source scanning or
+validation. `getTaskSync` returns local `TaskSyncRead {sync, receivedMonotonic}`;
+`useTaskGraph` carries that receipt through history, IDB and index work and pairs
+it with the response's database `observedAt`. `receivedAt` remains the local-wall-clock refreshed label. A stable
 `TaskExecutionClockProvider` per loaded project advances the server sample with
 `performance.now()` elapsed time and publishes saved threshold changes in the
 same layout effect. Its estimate includes post-receipt render/commit delay but
-does not compensate for network or parsing delay before that receipt; client
+does not compensate for network delay before that receipt; client
 `Date.now()` does not determine duration or warnings.
 
 Only mounted running tasks with a known start subscribe to one visible-page
@@ -1489,12 +1494,34 @@ choices. No disclosure state is stored in browser preferences. The [Goal-list
 decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) records the rationale for this interaction.
 
 In-progress Goal children can open their current accessible Session directly.
-Small working, notice and warning text annotations share a bounded current-session
-summary with each visible chain header. Collapsed chains include every ordinary
-member, including the root; external chains do not contribute. The chain status
-control only expands members. Failed, stale or mismatched observations disappear
-without changing task state. The [Session status design](../../docs/design/task-session-status.md)
-owns precedence, visibility, refresh limits and stable annotation geometry.
+Small working, notice and warning text annotations share the complete `sessions`
+map from the existing fifteen-second task-sync. Reliable pending Sessions retain
+the same shortcut without an annotation. Child status controls open that Task's
+Session tab; titles still open Overview, and chain status controls only expand
+members. Collapsed chains and assignee-filtered chains include every ordinary
+member, including the root; external chains do not contribute.
+
+`useTaskGraph` owns one page-local summary store and is its only producer, passing
+it through ProjectPage, ProjectTaskWorkspace and the presentation Provider. List
+visibility and disclosure issue no Current requests. Each state and omission
+requires the response's observed execution binding to match the current accepted
+Task; final cache merging cannot attach an old observation to a newer claim.
+The thirty-second lifetime starts at the API body receipt and survives decoding
+or storage waits. Publication and visibility restoration recheck that deadline;
+ordinary polling waits retain unexpired states, while current failures, auth pause
+and binding/scope loss retract them. The existing auth pause revision captured
+before HTTP must still match after cache waits; resuming admission cannot let a
+pre-pause response republish retracted contributions. This Session gate preserves
+the normal Task graph pipeline and authentication shell. Other cache producers and tabs can invalidate
+old bindings but cannot publish or renew this page's Session observations.
+
+Session state remains in memory and never changes Task properties, business
+versions, timestamps, IndexedDB or BroadcastChannel. Its notifications reach only
+its consumers, without detail invalidation, ordinary Task notifications or extra
+graph work. The [Session status design](../../docs/design/task-session-status.md)
+owns admission, precedence, expiry, visibility and stable annotation geometry;
+the [TaskSync design](../../docs/design/daynight-task-sync.md) owns request and
+cache responsibilities.
 
 The explicit View dependencies / 查看依赖关系 action opens one centered
 dependency-graph dialog at a time without changing any disclosure state.
