@@ -970,6 +970,26 @@ own the complete resource lifecycle and the remaining write architecture.
 
 ## Session display
 
+Task detail current reads require the selected Session tab and a visible document.
+Native readers begin with reading disabled; tab commits and document visibility
+changes update a gate separate from execution ownership and authentication. Hidden
+panels cancel or defer complete current reads and their timers while retaining
+healthy native channels, content, drafts and reading positions. Reopening a healthy
+panel resumes its existing three-second startup/report observation rather than
+reconnecting. Visible discovery, retry, explicit refresh and recovery retain their
+existing behavior.
+
+Each Task current flight retains its slot until transport and admission waiting
+settle, including cancelled requests. Archive-ready final identity checks defer
+until visible and still verify the original execution and archive content.
+Completed current discovery rechecks tab, document and request identity after
+`scope.ready` and every subsequent wait. Herdr keeps its existing hidden-channel
+and lease-release policy; independent Test/Bot authority observation is unchanged.
+The [Task Session requirements](../../docs/spec/task-sessions.md#task-详情的完整-current-读取)
+and [current-read design](../../docs/design/task-session-protocol.md#task-current-的读取可见性)
+own these boundaries.
+
+
 Native timeline Task, Test and readable archived Sessions share the Display menu beside Refresh.
 Conversation is the default and keeps messages, plans, interactions and real
 errors; Standard preserves the complete activity view. The authenticated account

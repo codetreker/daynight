@@ -321,6 +321,16 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 安全原因使用稳定 reasonCode 的中英文固定映射，通过原生 details/summary 控件按需展开。真实权限或协议错误不会被状态归并吞掉。时间、HTTP 轮询与 UI 状态都不能授权原生重启、重新发送 assignment 或创建替代会话。决策和取舍见[启动状态呈现](../../.agents/notes/implemented/bug-fix/2026-11-05-session-startup-presentation.md)。
 
+## Task Current 的读取可见性
+
+`TaskAgentSession` 在首次 availability 同步前，将 `activeRef.current && document.visibilityState !== 'hidden'` 传给 `TaskSessionClient.setCurrentReadVisible`。Task client 的读取可见性初始为 false；页签提交后的 layout effect 和 document `visibilitychange` 同步实际状态，现有 250 ms availability 检查继续复核准入。读取可见性独立于 `owned`、`live`、`isCurrent` 和身份暂停，不把隐藏解释成执行失效。
+
+完整 current 的三个调用点共用 Task-only flight：`start` 在 disconnect 前和发 HTTP 前检查；`observeCurrent` 在 timer 和 HTTP 前检查；归档 ready 后的最终绑定由 `bindReadyArchive` 检查。每个 flight 持有读取用途、连接代次和专属 AbortController；所有等待结束后复验请求所有者、取消、可见性及既有账号和执行身份。隐藏取消 current 及 auth-queued current，停止或延后对应 timer，flight 保留到 Promise settle。快速重开只登记恢复意图，不越过取消中请求的名额。
+
+尚未发现、断线或中断的 Task 读取在可见和准入恢复后续接一次原发现或重连。健康 native channel 保留内容、草稿和阅读位置；重开恢复现有 3 秒 startup/report 观察，不先 disconnect。未注册重试、错误退避、WebSocket、历史与操作逻辑仍使用原策略。AuthenticatedApp 的隐藏/离焦身份暂停及 native 60 秒 suspension 保持，Task 读取门禁不扩展到独立 Test/Bot authority observation。
+
+归档状态读取沿用原流程；ready 但 tab 已隐藏时，最终 current 绑定保留原 snapshot 与代次，延后到可见。恢复仍验证当前 fence 和归档正文身份，不以 ready receipt 替代已校验的内容。completed automatic hook 同时订阅文档可见性，等待 `scope.ready` 后在发 current 前复验，并在响应和后续准入等待后再次检查。取消中 flight 未 settle 时重开不启动第二次读取；旧 owner 的完成不能发布到新 claim，settle 后可恢复新 owner 的发现。详细取舍见[Task Current 可见性决策](../../.agents/notes/implemented/architecture/2026-11-08-task-current-read-visibility.md)。
+
 ## Session View 的阅读与输入状态
 
 `SessionInteractionCard` 在交互为 `resolved` / `expired` 或本地回答成功后，保留标题与状态，并使用默认关闭的原生 `details` / `summary` 展示原请求。只读区域只从 `SessionInteraction` 读取审批 `detail`、问题与选项、表单字段名，不读取回答表单的局部 `values`，因此不会泄漏敏感自定义输入或把请求状态解释成批准/拒绝结果。该区域限高、允许长字符串换行，并以具名可聚焦区域支持键盘阅读。展开不调用响应接口、不修改条目或滚动意图；布局变化由既有时间线观察器处理。在线与归档复用同一组件，权限门控继续独立约束回答。取舍见[历史请求展示决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-interaction-request-history.md)。

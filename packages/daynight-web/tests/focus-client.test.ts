@@ -19,6 +19,7 @@ function fixture() {
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _cursor, receive, disconnect) => { const channel = { receive, disconnect, close: vi.fn() }; channels.push(channel); return channel; }) };
   const mismatch = vi.fn();
   const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId: userId, isCurrent: () => current, isPaused: () => paused, onPrincipalMismatch: mismatch, storage: window.sessionStorage });
+  client.setCurrentReadVisible(true);
   clients.push(client);
   const snapshot = (): BrowserMessage => ({ protocol: s.protocol, type: 'snapshot', userId, snapshot: s, cursor: 'zero' });
   const event = (seq: number, text = `entry ${seq}`): BrowserMessage => ({ protocol: s.protocol, type: 'event', cursor: String(seq), event: { protocol: s.protocol, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: '1', connectionEpoch: '1', historyEpoch: s.historyEpoch, eventSeq: String(seq), kind: 'timeline_upsert', payload: { kind: 'assistant_message', entryId: `entry-${seq}`, entrySeq: String(seq), revision: '1', content: [{ type: 'text', text }] } } });

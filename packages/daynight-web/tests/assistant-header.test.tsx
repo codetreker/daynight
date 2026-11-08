@@ -32,6 +32,7 @@ function fixture(consumer: Consumer = 'assistant') {
   } else {
     client = new TaskSessionClient({ ...options, testSessionId: session.binding.sessionId, ...(consumer === 'assistant' ? { bot: session.binding } : {}) });
   }
+  client.setCurrentReadVisible(true);
   clients.push(client);
   const bot = { ...botDefinition(), id: session.binding.botId, ownerUserId: botOwner, sessionId: session.binding.sessionId, testExecutionId: session.binding.testExecutionId, startupResult: { state: 'ready' as const, code: null } };
   const target: BotConversationTarget = { bot, name: bot.name, worker: botWorkerDefaults(), stale: false, detailsId: 'current-assistant-details', detailsOpen: false, detailsOpener: createRef(), onDetails: vi.fn(), follow: vi.fn(event => event.preventDefault()) };

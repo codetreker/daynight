@@ -12,6 +12,14 @@
 
 历史存在与归档 ready 是不同条件，pending、failed、unavailable 记录也保留入口。附件中的记录选择使用原阅读区打开只读记录，不能借普通附件操作覆盖、删除或重命名权威归档。两类内容共用阅读区的可用高度，避免短窗口中的正文被额外记录区域挤空。普通附件预览在回放时保持挂载并隐藏、禁用交互，上传草稿与 iframe 状态保留；选择普通文件、上传成功或导航到附件时退出受管记录选择。
 
+## Task Current 的实际读取时机
+
+Task 详情仅在所选 Session tab 且文档可见时发起完整 current，涵盖活动 claim 与 completed/released claim 的原会话发现。未选中的 native reader 保持挂载但不抢先读取；其健康 channel 在隐藏期间保留，重新可见恢复既有 current 观察。读取可见性不替代当前执行、访问权限或身份准入；原生 60 秒身份 suspension 与应用的隐藏/离焦暂停仍保持。
+
+completed automatic 的原 claim 发现，在 `scope.ready` 后、发 HTTP 前和每次等待结束后检查实际可见性及请求归属。隐藏取消读取，未 settle 的请求保留名额；重开或 claim 更换等其 settle 后恢复原有发现，迟到结果不能发布到新 owner。归档内容仍由固定原 Session 阅读器校验，准备期间仅在可见 tab 内延续原 current 观察。无 claim 时用于确定入口存在性的历史目录读取保持其独立规则。
+
+Herdr 继续采用下面的 channel/control lease 生命周期，不套用 native 的健康连接保留策略。其完整 current 发现已有同一 tab/document 门禁；终端画面、控制、回执和归档业务保持。具体读取职责见[Task Current 设计](task-session-protocol.md#task-current-的读取可见性)。
+
 ## 实时连接与人工输入
 
 终端客户端的订阅由页签可见性、文档可见性、当前任务和访问权限共同决定。隐藏页签和离开页面关闭该浏览器的 channel；服务端撤销相同 browserClientId 的租约或尚未完成的取得控制请求。录制由 Worker 独立负责，不依赖浏览器是否订阅。
