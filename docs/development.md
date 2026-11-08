@@ -11,6 +11,7 @@ working directory is specified.
 - [Local server deployment](#local-server-deployment)
 - [Server development](#server-development)
 - [Web development](#web-development)
+- [Product E2E](#product-e2e)
 - [Package versions](#package-versions)
 - [npm publication](#npm-publication)
 - [CI selection](#ci-selection)
@@ -613,6 +614,32 @@ containers, volume, network and image tag after completion, failure or cancellat
 The [independent browser checks](../packages/daynight-web/README.md#independent-browser-checks)
 include Project withdrawal against controlled API responses and real browser
 storage; they do not establish live-service behavior.
+
+## Product E2E
+
+`packages/e2e_tests` owns the complete-product Linux runner. It compiles the CLI,
+production Web and full Go Server from the current checkout, builds the pinned
+unmodified UniAuth command and Console, and starts a dedicated PostgreSQL
+instance and auth runtime on dedicated networks. The database network is internal;
+a private ingress bridge publishes loopback ports, and the application removes
+its default route before starting services.
+
+```bash
+pnpm --filter @codetreker/daynight-e2e typecheck
+pnpm e2e:test:harness
+pnpm e2e:test
+```
+
+The product entry performs normal browser/CLI login and same-data task workflows.
+Module tests and the current CI jobs do not implicitly execute it. Installed CLI
+checks retain packaging and platform responsibilities. Framework self-tests own
+setup, timeout, cancellation and cleanup failures; business fault and concurrency
+matrices remain in their modules.
+
+The [Product E2E guide](../packages/e2e_tests/README.md) owns exact prerequisites,
+optional pinned-source reuse, local OAuth provider behavior, source/artifact
+receipts and resource cleanup. Preparation can fetch dependencies; the running
+system does not require an external database, auth deployment or GitHub account.
 
 ## Local stress validation
 

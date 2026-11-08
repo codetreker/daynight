@@ -325,6 +325,7 @@ upload HTML you trust with that authority.
 | [`packages/daynight/`](packages/daynight/) | TypeScript CLI, task-management skill and Copilot review coordinator | [CLI manual](packages/daynight/README.md) |
 | [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md), [organization rules](docs/daynight-server.md) |
 | [`packages/daynight-web/`](packages/daynight-web/) | React/TypeScript browser workspace embedded in the service | [Web guide](packages/daynight-web/README.md) |
+| [`packages/e2e_tests/`](packages/e2e_tests/) | Isolated normal workflows across compiled CLI, production Web, Server and auth | [Product E2E guide](packages/e2e_tests/README.md) |
 | [`deployment/localhost/`](deployment/localhost/) | Persistent Docker Compose deployment | [Deployment guide](deployment/localhost/README.md) |
 | [`deployment/dev-ci/`](deployment/dev-ci/) | Disposable full-stack verification environment | [Dev-CI guide](deployment/dev-ci/README.md) |
 
@@ -355,7 +356,9 @@ Web checks use `pnpm web:typecheck`,
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
 `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
 [development guide](docs/development.md) for prerequisites, native diagnostics,
-module and complete validation commands.
+module validation commands. `pnpm e2e:test` separately builds and runs the complete
+product with isolated PostgreSQL and full UniAuth; the [Product E2E guide](packages/e2e_tests/README.md)
+owns its Linux prerequisites, authentication topology and cleanup.
 
 ## Package versions
 
