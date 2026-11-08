@@ -27,15 +27,19 @@ const mount = async (tab: "configuration" | "subscriptions") => {
   const lifetime = new AbortController();
   const admission = { userId, signal: lifetime.signal, ready: async (signal: AbortSignal) => signal.throwIfAborted(), isInvalidated: false, principalMismatch: vi.fn() } as unknown as TaskCacheScope;
   const denied = barrier<Response>(), directory = barrier<Response>();
-  let current = endpoint, holdDirectory = false, directoryReads = 0, endpointReads = 0;
+  let current = endpoint, holdDirectory = false, directoryReads = 0, endpointReads = 0, projectReads = 0, movedProjectTeamId = teamId;
   const writes: Record<string, unknown>[] = [];
   const fetch = vi.fn((url: string, init: RequestInit = {}) => {
-    const path = new URL(url, location.origin).pathname;
+    const requestUrl = new URL(url, location.origin), path = requestUrl.pathname;
     if (path === "/api/v1/teams") {
       directoryReads++;
       return holdDirectory ? directory.promise : Promise.resolve(response({ items: [{ id: teamId, kind: "ordinary", name: "Engineering", version: 1, createdAt: now, updatedAt: now, membership: { teamId, userId, role: "admin", version: 1, createdAt: now, updatedAt: now } }], nextCursor: null }));
     }
-    if (path === "/api/v1/projects") return Promise.resolve(response({ items: [movedProject, eligibleProject].map((project, index) => ({ id: project, name: index === 0 ? "Moved project" : "Eligible project", ownership: { teamId, version: 1 }, repoUrl: "https://example.test/repo.git", settings: { version: 1, executionWarningMinutes: 60 }, createdAt: now, updatedAt: now })), nextCursor: null }));
+    if (path === "/api/v1/projects") {
+      projectReads++;
+      expect(requestUrl.searchParams.get("teamId")).toBe(teamId);
+      return Promise.resolve(response({ items: [movedProject, eligibleProject].map((project, index) => ({ id: project, name: index === 0 ? "Moved project" : "Eligible project", ownership: { teamId: index === 0 ? movedProjectTeamId : teamId, version: 1 }, repoUrl: "https://example.test/repo.git", settings: { version: 1, executionWarningMinutes: 60 }, createdAt: now, updatedAt: now })).filter(project => project.ownership.teamId === teamId), nextCursor: null }));
+    }
     if (path.endsWith("/signing-secret")) return Promise.resolve(response({ endpointId, configVersion: "1", keyId, scheme: "standard-webhooks-v1", secret: `whsec_${Buffer.alloc(32, 7).toString("base64")}` }));
     if ((init.method ?? "GET") === "GET") {
       if (path === `${base}/${current.id}`) { endpointReads++; return Promise.resolve(response(current)); }
@@ -54,7 +58,7 @@ const mount = async (tab: "configuration" | "subscriptions") => {
   const View = () => { const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search); return route.kind === "webhooks" ? <WebhooksPage user={user} admission={admission} active route={route} catalog={catalog}/> : null; };
   renderWithLocale(<View/>, { locale: "en" });
   await screen.findByRole("heading", { name: "Existing endpoint", level: 2 });
-  return { writes, deny: (code: string) => denied.resolve(refusal(code)), endpointReads: () => endpointReads, directoryReads: () => directoryReads, holdDirectory: () => { holdDirectory = true; }, redact: () => { current = { ...current, destination: { ...current.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } }; } };
+  return { writes, deny: (code: string) => denied.resolve(refusal(code)), endpointReads: () => endpointReads, directoryReads: () => directoryReads, projectReads: () => projectReads, moveProject: () => { movedProjectTeamId = id(20); }, holdDirectory: () => { holdDirectory = true; }, redact: () => { current = { ...current, destination: { ...current.destination, url: null, displayUrl: "https://receiver.example/…" }, capabilities: { manage: false, readSecret: false, redeliver: false } }; } };
 };
 
 describe("Webhook Project eligibility refusal", () => {
@@ -80,10 +84,14 @@ describe("Webhook Project eligibility refusal", () => {
     expect(within(dialog).getByRole("button", { name: kind === "create" ? "Create webhook" : "Save" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "New webhook" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Edit Existing endpoint" })).toBeEnabled();
-    const reads = view.endpointReads(), teamReads = view.directoryReads();
+    const reads = view.endpointReads(), teamReads = view.directoryReads(), projectReads = view.projectReads();
+    view.moveProject();
     fireEvent.focus(window);
     await waitFor(() => expect(view.endpointReads()).toBeGreaterThan(reads));
     await waitFor(() => expect(view.directoryReads()).toBeGreaterThan(teamReads));
+    await waitFor(() => expect(view.projectReads()).toBeGreaterThan(projectReads));
+    await waitFor(() => expect(within(dialog).queryByRole(kind === "create" ? "checkbox" : "option", { name: /^Moved project/ })).toBeNull());
+    expect(within(dialog).getByRole(kind === "create" ? "checkbox" : "option", { name: movedProject })).toBeVisible();
     expect(screen.getByRole("dialog")).toBe(dialog);
     expect(document.body.textContent).toContain("private=synthetic");
     expect(screen.queryByText("Member · Read only")).toBeNull();
@@ -92,7 +100,10 @@ describe("Webhook Project eligibility refusal", () => {
     if (kind === "create") {
       expect(within(dialog).getByRole("textbox", { name: "Name" })).toHaveValue("Retained draft");
       expect(within(dialog).getByRole("textbox", { name: "Endpoint URL" })).toHaveValue("https://receiver.example/new");
-      fireEvent.click(within(dialog).getByRole("checkbox", { name: /^Moved project/ }));
+      const unavailable = within(dialog).getByRole("checkbox", { name: movedProject });
+      expect(unavailable).toBeChecked();
+      fireEvent.click(unavailable);
+      expect(within(dialog).queryByRole("checkbox", { name: movedProject })).toBeNull();
       fireEvent.click(within(dialog).getByRole("checkbox", { name: /^Eligible project/ }));
     } else fireEvent.change(within(dialog).getByRole("combobox", { name: "Project" }), { target: { value: eligibleProject } });
     fireEvent.submit(dialog.querySelector("form")!);

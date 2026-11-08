@@ -18,6 +18,13 @@ maps it to 403 and publishes only the code, generic status text and request ID.
 The browser retains a rejected draft and its current owner authority, allowing
 an explicit new decision without replaying the refused request.
 
+If an authoritative Project-directory refresh removes a selected Project, the
+create dialog retains a checked, removable option displaying only its original
+ID, matching the subscription selector's unavailable-Project fallback. It keeps
+the user's selection until explicitly removed without retaining the old Project
+name or owner label. Name, URL and event choices remain intact; a corrected
+submission omits the removed ID and prepares a new operation ID.
+
 The [management denial decision](2026-11-08-webhook-management-denial.md) still
 requires immediate privileged-data cleanup for validated `403 forbidden` errors.
 That decision addressed confirmed administrator authority loss between directory
