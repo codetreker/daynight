@@ -394,3 +394,20 @@ describe('unified Session and managed records', () => {
   });
 
 });
+
+
+it.each(['web', 'herdr'] as const)('does not resolve a hidden completed %s Session until its panel opens', async mode => {
+  const api = fixture();
+  const current = vi.fn(async () => ({ status: 'registered', session: { sessionId: record.sessionId, claimId, executionGeneration: '1', lifecycle: 'archived', identity: { projectId, taskId } } }));
+  vi.mocked(createSessionApi).mockReturnValue({ current } as never);
+  api.current.mockResolvedValue({ status: 'registered', ...record });
+  Object.assign(api, { nativeArchive: vi.fn(async () => ({ status: { state: 'failed' }, archive: null })) });
+  const content = (active: boolean) => <TaskSessionHost ownerUserId={TEST_VIEWER_ID} projectId={projectId} taskId={taskId} claimId={claimId} mode={mode} active={active} current completed />;
+  const view = render(content(false)); await act(async () => {});
+  expect(current).not.toHaveBeenCalled(); expect(api.current).not.toHaveBeenCalled();
+  view.rerender(content(true));
+  await waitFor(() => expect(mode === 'web' ? current : api.current).toHaveBeenCalledOnce());
+  const reads = mode === 'web' ? current : api.current;
+  view.rerender(content(false)); await act(async () => {});
+  expect(reads).toHaveBeenCalledOnce();
+});

@@ -1,10 +1,12 @@
-import { fireEvent, within } from '@testing-library/react';
+import { act, fireEvent, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { Project, TaskSummary, WorkerClaim } from '../src/api/types';
 import { projectSummaries } from '../src/features/task-cache/projection';
 import { ProjectTaskWorkspace } from '../src/features/projects/ProjectTaskWorkspace';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { renderWithLocale } from './helpers/renderWithLocale';
+import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
+import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const time = '2026-11-04T00:00:00Z';
@@ -23,6 +25,42 @@ const workspace = (value: GraphSnapshot, onOpenTask = noop) => <ProjectTaskWorks
 const row = (n: number) => document.getElementById(`chain-task-${root.id}-${id(n)}`)!;
 
 describe('chain worker machine presentation', () => {
+  it('keeps visible and expanded Task chains independent of Session HTTP reads', async () => {
+    const tasks = [root, child(2, { status: 'in_progress', properties: { worker: claim('live host', 'active') } })];
+    const value = snapshot(tasks);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const signal = new AbortController().signal;
+    const ticket = await scope.beginSync(project.id, signal);
+    await scope.applySync(ticket, taskSyncFromGraph(value.graph, {
+      versionForTask: node => tasks.find(item => item.id === node.id)!.version,
+      propertiesForTask: node => tasks.find(item => item.id === node.id)!.properties,
+    }), signal);
+    const fetch = vi.fn(async () => { throw new Error('Task chains must not read Session projections.'); });
+    vi.stubGlobal('fetch', fetch);
+    class VisibleObserver {
+      constructor(private readonly callback: IntersectionObserverCallback) {}
+      observe(element: Element) { this.callback([{ target: element, isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver); }
+      disconnect() {}
+    }
+    vi.stubGlobal('IntersectionObserver', VisibleObserver);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'] });
+    const view = renderWithLocale(workspace(value), { locale: 'en', taskCache: { scope } });
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+      expect(fetch).not.toHaveBeenCalled();
+      fireEvent.click(document.getElementById(`task-root-${root.id}`)!);
+      expect(row(2)).toHaveAccessibleName(/In progress/);
+      expect(row(2)).toHaveTextContent('Claim machine: live host');
+      expect(document.querySelector('[data-session-indicator]')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+      expect(fetch).not.toHaveBeenCalled();
+      fireEvent.click(row(2));
+      expect(document.getElementById(`task-root-${root.id}`)).toHaveAttribute('aria-expanded', 'true');
+    } finally {
+      view.unmount(); scope.dispose(); vi.useRealTimers();
+    }
+  });
+
   it('projects every claim state and mode strictly without adding properties to graph tasks', () => {
     const value = snapshot([root, child(2), child(3, { properties: { worker: claim('active host', 'active') } }), child(4, { properties: { worker: claim('released host', 'released', 'herdr') } }), child(5, { properties: { worker: claim('completed host', 'completed') } })]);
     expect([...value.workerMachines].map(([key, entry]) => [key, entry.state, entry.machine.name])).toEqual([[id(3), 'active', 'active host'], [id(4), 'released', 'released host'], [id(5), 'completed', 'completed host']]);

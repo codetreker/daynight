@@ -18,10 +18,9 @@ const render: typeof localeRender = (ui, options) => localeRender(ui, { ...optio
 
 vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
 vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
-vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession }: {
-  index: GraphIndex; representativeIds: readonly string[]; openChainId: string | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void;
+vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask }: {
+  index: GraphIndex; representativeIds: readonly string[]; openChainId: string | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
-  <button onClick={(event) => onOpenSession?.(root, event.currentTarget)}>进入会话 {root}</button>
   <button id={`task-root-${root}`} aria-haspopup="dialog" onClick={(event) => onOpenChain(root, event.currentTarget)}>{index.nodes.get(root)!.titlePreview}</button>
   {openChainId === root && <div role="dialog" id={`task-graph-${root}`} data-testid={`chain-${root}`}>
     <button className="task-chain-close" onClick={onCloseChain}>关闭依赖图</button>
@@ -226,14 +225,6 @@ describe("project dashboard", () => {
     expect([input.selectionStart, input.selectionEnd]).toEqual([0, 0]);
   });
 
-  it("routes session shortcuts directly to the selected task session tab", async () => {
-    graphRequest.mockResolvedValue(graph());
-    render(<ProjectPage projectId={projectId} />); selectTasks();
-    fireEvent.click(await findListButton(`进入会话 ${A}`));
-    expect(window.location.pathname).toBe(`/projects/${projectId}/tasks/${A}`);
-    expect(window.location.search).toBe('?tab=session');
-    expect(screen.queryByLabelText('详情测试外壳')).toBeNull();
-  });
 
   beforeEach(() => { window.localStorage.setItem(`daynight:completed-chains:${projectId}`, "true"); });
   beforeEach(() => { rememberRoot(A); });

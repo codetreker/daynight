@@ -53,6 +53,7 @@ type Options = { readonly api: SessionApi; readonly userId: string; readonly isC
 const errorCode = (error: unknown): string => error instanceof ApiError ? error.code : 'unknown';
 const sameExecution = (left: SessionSnapshot, right: SessionSnapshot): boolean => sessionFenceKey(left) === sessionFenceKey(right) && left.identity.controllerInstanceId === right.identity.controllerInstanceId;
 const historyIdentity = (s: SessionSnapshot): string => `${sessionFenceKey(s)}:${s.historyEpoch}:${s.connectionEpoch}:${s.sessionRevision}`;
+const reportIdentity = (report: SessionStartupReport): string => `${report.sessionId}:${report.claimId}:${report.executionGeneration}:${report.controllerInstanceId}`;
 const reportMatches = (report: SessionStartupReport, s: SessionSnapshot): boolean => report.sessionId === s.sessionId && report.claimId === s.claimId && report.executionGeneration === s.executionGeneration && report.controllerInstanceId === s.identity.controllerInstanceId;
 const message = (error: unknown): string => error instanceof Error ? error.message : 'Session request failed.';
 const terminalFailure = (operation: SessionOperation) => ['failed', 'rejected', 'expired'].includes(operation.state);
@@ -70,6 +71,11 @@ export class TaskSessionClient {
   private connectionGeneration = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private availabilityRunning = false;
+  private visible = true;
+  private discoveryRequest: AbortController | null = null;
+  private taskStartupReport: SessionStartupReport | undefined;
+  private taskReportReadKey: string | null = null;
+  private taskReportReadPending = false;
   private observationTimer: ReturnType<typeof setTimeout> | null = null;
   private observationRequest: AbortController | null = null;
   private lastStartupReport: SessionStartupReport | null = null;
@@ -116,9 +122,67 @@ export class TaskSessionClient {
       for (const value of queued) this.receive(value, generation);
       for (const resume of [...this.admissionWaiters]) resume();
       this.reconcile();
+      this.synchronizeTaskReport();
     }
-    if (!this.availabilityRunning) void this.start();
+    if (!this.visible || this.discoveryRequest !== null) return;
+    if (!this.availabilityRunning || this.taskReportReadPending) void this.start();
   };
+  /** Hide discovery work while retaining an established stream and its drafts. */
+  setVisible = (visible: boolean): void => {
+    if (this.visible === visible) return;
+    this.visible = visible;
+    if (!visible) {
+      if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; this.availabilityRunning = false; }
+      if (this.discoveryRequest !== null) {
+        this.discoveryRequest.abort(); this.availabilityRunning = false;
+        this.taskReportReadKey = null;
+      }
+      return;
+    }
+    if (this.connection === null) this.availabilityRunning = false;
+    this.synchronizeTaskReport();
+    this.syncAvailability();
+    const snapshot = this.view.state.snapshot;
+    if (snapshot !== null) this.reconcileObservation(snapshot, this.connectionGeneration);
+  };
+  /** Apply the already-authorized Task observation without reading the full Session projection. */
+  observeTaskStartupReport = (report: SessionStartupReport | undefined): void => {
+    if (this.options.testSessionId !== undefined) throw new Error('Independent Sessions do not consume Task startup reports.');
+    if (!this.owned() || report === undefined || report.claimId !== this.options.claimId) return;
+    const snapshot = this.view.state.snapshot;
+    if (snapshot !== null && report.sessionId === snapshot.sessionId && BigInt(report.executionGeneration) < BigInt(snapshot.executionGeneration)) return;
+    const previous = this.taskStartupReport;
+    if (previous !== undefined && reportIdentity(previous) === reportIdentity(report)) {
+      if (BigInt(report.revision) < BigInt(previous.revision)) return;
+      if (report.revision === previous.revision) {
+        if (!sameStartupReport(previous, report)) this.rejectTaskReport(new ApiError('protocol'));
+        return;
+      }
+    }
+    this.taskStartupReport = report;
+    this.synchronizeTaskReport();
+    if (this.availabilityRunning || this.view.state.snapshot !== null) this.syncAvailability();
+  };
+  private synchronizeTaskReport(): void {
+    const report = this.taskStartupReport, snapshot = this.view.state.snapshot;
+    if (this.options.testSessionId !== undefined || report === undefined || !this.live()) return;
+    if (snapshot !== null && reportMatches(report, snapshot)) {
+      this.taskReportReadPending = false;
+      try {
+        this.acceptStartupReport(snapshot, report);
+        this.currentReadFailure = null;
+        if (this.currentErrorVisible) { this.publish({ error: null, status: 'ready' }); this.restoreHistoryFailure(snapshot); }
+        this.reconcileObservation(snapshot, this.connectionGeneration);
+      } catch (error) { this.rejectTaskReport(error); }
+      return;
+    }
+    if (snapshot !== null && report.sessionId === snapshot.sessionId && BigInt(report.executionGeneration) < BigInt(snapshot.executionGeneration)) return;
+    this.taskReportReadPending = reportIdentity(report) !== this.taskReportReadKey;
+  }
+  private rejectTaskReport(error: unknown): void {
+    this.currentReadFailure = { message: message(error), code: errorCode(error) };
+    this.publish({ startupReport: null, connected: false, status: 'error', error: message(error), errorCode: errorCode(error) }, 'current');
+  }
   private clearSuspensionTimer() {
     if (this.suspensionTimer !== null) clearTimeout(this.suspensionTimer);
     this.suspensionTimer = null;
@@ -278,18 +342,21 @@ export class TaskSessionClient {
     } catch { /* Corrupt local metadata cannot create an operation. */ }
   }
   async start(): Promise<void> {
-    if (!this.live()) return;
+    if (!this.live() || !this.visible) return;
     this.disconnect();
     this.availabilityRunning = true;
+    this.taskReportReadPending = false;
+    if (this.taskStartupReport !== undefined) this.taskReportReadKey = reportIdentity(this.taskStartupReport);
+    const request = new AbortController(); this.discoveryRequest = request;
     const generation = this.connectionGeneration;
     this.currentReadFailure = null;
     this.publish({ connected: false, error: null, loadingOlder: false });
     try {
-      let current = await this.options.api.current(this.lifetime.signal);
-      if (!(this.paused() ? await this.admit() : this.admitted()) || generation !== this.connectionGeneration) return;
+      let current = await this.options.api.current(AbortSignal.any([request.signal, this.lifetime.signal]));
+      if (request.signal.aborted || !this.visible || !(this.paused() ? await this.admit(request.signal) : this.admitted()) || generation !== this.connectionGeneration) return;
       if (current.status !== 'registered') {
         this.publish({ startupReport: null, status: current.status === 'not_registered' && current.claimId === this.options.claimId ? 'not_registered' : 'unavailable' });
-        if (this.view.status === 'not_registered') this.schedule(3000);
+        if (this.view.status === 'not_registered' && this.options.testSessionId !== undefined) this.schedule(3000);
         return;
       }
       if (!this.matches(current.session)) { this.invalidate(); return; }
@@ -303,10 +370,11 @@ export class TaskSessionClient {
       }
       this.publish({ state: { ...this.view.state, snapshot: current.session }, status: 'ready' });
       this.acceptStartupReport(current.session, current.startupReport);
+      this.synchronizeTaskReport();
       this.restoreHistoryFailure(current.session);
       if (current.session.lifecycle !== 'active') { await this.loadArchive(current.session, generation); return; }
       this.archive = null; this.publish({ archiveState: null });
-      this.scheduleObservation(generation);
+      this.scheduleIndependentObservation(generation);
       this.connection = this.options.api.channel(current.session.sessionId, this.hydrated ? this.cursor : null, (value) => this.receive(value, generation), (error) => {
         if (generation !== this.connectionGeneration || !this.owned()) return;
         if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
@@ -318,10 +386,16 @@ export class TaskSessionClient {
         this.schedule();
       });
     } catch (error) {
-      if (generation !== this.connectionGeneration || !this.owned() || isAbortError(error)) return;
+      if (request.signal.aborted || generation !== this.connectionGeneration || !this.owned() || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
       if (!(this.paused() ? await this.admit() : this.admitted()) || generation !== this.connectionGeneration) return;
       this.publish({ startupReport: null, connected: false, status: 'error', error: message(error), errorCode: errorCode(error) }); this.schedule();
+    } finally {
+      if (this.discoveryRequest === request) {
+        this.discoveryRequest = null;
+        this.synchronizeTaskReport();
+        if (!this.availabilityRunning || this.taskReportReadPending) this.syncAvailability();
+      }
     }
   }
   private restoreHistoryFailure(snapshot: SessionSnapshot): void {
@@ -335,21 +409,24 @@ export class TaskSessionClient {
     const previous = this.lastStartupReport;
     if (report && previous && reportMatches(previous, snapshot)) {
       if (BigInt(report.revision) < BigInt(previous.revision)) { this.publish({ startupReport: previous }); return; }
-      if (report.revision === previous.revision && !sameStartupReport(previous, report)) throw new ApiError('protocol');
+      if (report.revision === previous.revision) {
+        if (!sameStartupReport(previous, report)) throw new ApiError('protocol');
+        return;
+      }
     }
     this.lastStartupReport = report ?? null;
     this.publish({ startupReport: report ?? null });
     if (!this.historyAllowed(snapshot)) { this.cancelOlder(); this.publish({ connected: false, loadingOlder: false }); }
   }
-  private scheduleObservation(generation: number): void {
+  private scheduleIndependentObservation(generation: number): void {
     if (this.observationTimer !== null) clearTimeout(this.observationTimer);
-    if (!this.owned() || !this.view.state.snapshot || this.options.testSessionId === undefined && this.view.state.snapshot.lifecycle !== 'active') return;
-    this.observationTimer = setTimeout(() => { this.observationTimer = null; void this.observeCurrent(generation); }, 3000);
+    if (this.options.testSessionId === undefined || !this.owned() || !this.view.state.snapshot) return;
+    this.observationTimer = setTimeout(() => { this.observationTimer = null; void this.observeIndependentCurrent(generation); }, 3000);
   }
-  private async observeCurrent(generation: number): Promise<void> {
+  private async observeIndependentCurrent(generation: number): Promise<void> {
     const snapshot = this.view.state.snapshot;
     if (!snapshot || generation !== this.connectionGeneration || !this.owned()) return;
-    if (this.paused()) { this.scheduleObservation(generation); return; }
+    if (this.paused()) { this.scheduleIndependentObservation(generation); return; }
     const request = new AbortController(); this.observationRequest = request;
     const currentRequest = () => this.owned() && this.observationRequest === request && generation === this.connectionGeneration && this.view.state.snapshot !== null && sameExecution(snapshot, this.view.state.snapshot);
     try {
@@ -375,9 +452,7 @@ export class TaskSessionClient {
         if (this.options.testSessionId !== undefined && this.archive !== null) return;
         this.beginArchive(selected); return;
       }
-      if (!this.historyAllowed(selected)) { this.cancelOlder(); this.publish({ connected: false, loadingOlder: false }); }
-      else if (this.channelAuthenticated && !this.hydrating && !this.hydrated) this.startHydration(selected, generation);
-      else if (this.channelAuthenticated && this.hydrated && !this.hydrating && !this.view.state.recoveryRequired && BigInt(this.view.state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: true });
+      this.reconcileObservation(selected, generation);
     } catch (error) {
       if (!currentRequest() || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
@@ -386,15 +461,21 @@ export class TaskSessionClient {
       this.currentReadFailure = { message: message(error), code: errorCode(error) };
       this.publish({ startupReport: null, connected: false, status: 'error', ...(replaceError ? { error: message(error), errorCode: errorCode(error) } : {}) }, 'current');
     } finally {
-      if (this.observationRequest === request) { this.observationRequest = null; if (generation === this.connectionGeneration) this.scheduleObservation(generation); }
+      if (this.observationRequest === request) { this.observationRequest = null; if (generation === this.connectionGeneration) this.scheduleIndependentObservation(generation); }
     }
   }
+  private reconcileObservation(snapshot: SessionSnapshot, generation: number): void {
+    if (!this.historyAllowed(snapshot)) { this.cancelOlder(); this.publish({ connected: false, loadingOlder: false }); }
+    else if (this.channelAuthenticated && !this.hydrating && !this.hydrated) this.startHydration(snapshot, generation);
+    else if (this.channelAuthenticated && this.hydrated && !this.hydrating && !this.view.state.recoveryRequired && BigInt(this.view.state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: true });
+  }
   private startHydration(snapshot: SessionSnapshot, generation: number): void {
-    if (this.hydrating || !this.historyAllowed(snapshot)) return;
+    if (!this.visible || this.hydrating || !this.historyAllowed(snapshot)) return;
     this.hydrating = true; this.buffer = []; void this.hydrate(snapshot, generation);
   }
   private schedule(delay = Math.min(1000 * 2 ** this.retries++, 15_000)) {
     if (this.timer !== null) clearTimeout(this.timer);
+    if (!this.visible) { this.timer = null; this.availabilityRunning = false; return; }
     this.timer = setTimeout(() => { this.timer = null; this.availabilityRunning = false; void this.start(); }, delay);
   }
   private receive(value: BrowserMessage, generation: number) {
@@ -428,6 +509,7 @@ export class TaskSessionClient {
         this.publish({ connected: false, state: sameExecution ? { ...this.view.state, recoveryRequired: true } : emptySessionState() });
       }
       this.publish({ state: { ...this.view.state, snapshot: s }, status: 'ready' });
+      this.synchronizeTaskReport();
       if (s.lifecycle !== 'active') { this.beginArchive(s); return; }
       this.channelAuthenticated = true;
       this.cursor = value.cursor; if (BigInt(s.lastEventSeq) > BigInt(this.replayThrough)) this.replayThrough = s.lastEventSeq;
@@ -467,10 +549,11 @@ export class TaskSessionClient {
     void this.loadArchive(snapshot, this.connectionGeneration);
   }
   private async loadArchive(snapshot: SessionSnapshot, generation: number): Promise<void> {
+    if (!this.visible) return;
     this.publish({ connected: false, hasOlder: false, loadingOlder: false, archiveState: 'loading', error: null });
     try {
       const status = await this.options.api.archive(snapshot.sessionId, this.lifetime.signal);
-      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
+      if (!this.visible || !(await this.admit()) || generation !== this.connectionGeneration) return;
       this.publish({ archiveState: status.state });
       if (status.state === 'pending' || status.state === 'unavailable' && snapshot.lifecycle === 'draining') { this.schedule(3000); return; }
       if (status.state !== 'ready') return;
@@ -480,12 +563,12 @@ export class TaskSessionClient {
       // Finalization can establish an ID whose live state was never delivered.
       // Bind the ready archive to a fresh authenticated terminal snapshot.
       const current = await this.options.api.current(this.lifetime.signal);
-      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
+      if (!this.visible || !(await this.admit()) || generation !== this.connectionGeneration) return;
       if (current.status !== 'registered' || !this.matches(current.session)) { this.invalidate(); return; }
       if (sessionFenceKey(current.session) !== sessionFenceKey(snapshot) || current.session.lifecycle === 'active') { void this.start(); return; }
       const finalSnapshot = current.session;
       const archive = await this.options.api.archiveContent(snapshot.sessionId, this.lifetime.signal);
-      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
+      if (!this.visible || !(await this.admit()) || generation !== this.connectionGeneration) return;
       assertSessionFence(archive, sessionFence(finalSnapshot));
       if (archive.provider !== finalSnapshot.identity.provider || archive.controllerId !== finalSnapshot.identity.controllerId || archive.controllerInstanceId !== finalSnapshot.identity.controllerInstanceId || archive.nativeSessionId !== finalSnapshot.identity.nativeSessionId) throw new ApiError('protocol');
       this.archive = archive;
@@ -495,10 +578,10 @@ export class TaskSessionClient {
     } catch (error) {
       if (!this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
-      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
+      if (!this.visible || !(await this.admit()) || generation !== this.connectionGeneration) return;
       this.publish({ archiveState: 'failed', error: message(error), errorCode: errorCode(error), connected: false });
     } finally {
-      if (this.options.testSessionId !== undefined && this.owned() && generation === this.connectionGeneration && this.timer === null) this.scheduleObservation(generation);
+      if (this.options.testSessionId !== undefined && this.owned() && generation === this.connectionGeneration && this.timer === null) this.scheduleIndependentObservation(generation);
     }
   }
   private validatePage(page: TimelinePage, snapshot: SessionSnapshot) {
@@ -721,6 +804,7 @@ export class TaskSessionClient {
   };
   private disconnect() {
     this.cancelHydration();
+    this.discoveryRequest?.abort(); this.discoveryRequest = null;
     this.observationRequest?.abort(); this.observationRequest = null;
     if (this.observationTimer !== null) clearTimeout(this.observationTimer);
     this.observationTimer = null; this.channelAuthenticated = false;

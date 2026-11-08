@@ -29,14 +29,14 @@ function report(s: TaskSessionSnapshot, revision = '1'): SessionStartupReport {
 }
 
 describe('startup observations and live history admission', () => {
-  it('does not request offline history while continuing to observe the current startup report', async () => {
+  it('does not poll complete snapshots or request offline history while the report is unchanged', async () => {
     vi.useFakeTimers();
     const f = fixture(), offline = { ...f.s, connectionState: 'disconnected' as const, synchronized: false, activity: 'initializing' as const };
     f.current({ status: 'registered', session: offline, startupReport: report(offline) });
     await f.client.start(); f.receive(offline);
     await vi.advanceTimersByTimeAsync(15_000);
     expect(f.api.timeline).not.toHaveBeenCalled();
-    expect(vi.mocked(f.api.current).mock.calls.length).toBeGreaterThan(1);
+    expect(f.api.current).toHaveBeenCalledOnce();
     expect(f.api.channel).toHaveBeenCalledOnce();
     expect(f.client.snapshot()).toMatchObject({ startupReport: { startup: { state: 'unknown' }, recovery: { state: 'blocked' } }, connected: false });
     await expect(f.client.send('no accidental input')).rejects.toThrow();
@@ -64,12 +64,12 @@ describe('startup observations and live history admission', () => {
     f.client.setDraft('retain input while the Worker reconciles its report');
     expect(f.api.timeline).not.toHaveBeenCalled();
     await expect(f.client.send('connected does not bypass a recovery block')).rejects.toThrow();
-    f.current({ status: 'registered', session: f.s, startupReport: { ...blocked, revision: '2', startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'none', reasonCode: null } } });
+    f.client.observeTaskStartupReport({ ...blocked, revision: '2', startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'none', reasonCode: null } });
     await vi.advanceTimersByTimeAsync(5_000);
     expect(f.client.snapshot()).toMatchObject({ connected: true, startupReport: { revision: '2', recovery: { state: 'none' } }, draft: { text: 'retain input while the Worker reconciles its report' } });
     expect(f.api.timeline).toHaveBeenCalledOnce();
     expect(f.api.channel).toHaveBeenCalledOnce();
-    f.current({ status: 'registered', session: f.s, startupReport: blocked });
+    f.client.observeTaskStartupReport(blocked);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(f.client.snapshot()).toMatchObject({ connected: true, startupReport: { revision: '2', recovery: { state: 'none' } } });
     expect(f.api.command).not.toHaveBeenCalled();
@@ -81,18 +81,18 @@ describe('startup observations and live history admission', () => {
     f.current({ status: 'registered', session: f.s, startupReport: healthy });
     vi.mocked(f.api.timeline).mockRejectedValue(new ApiError('server', 503, 'controller_offline'));
     await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
-    f.current({ status: 'registered', session: f.s, startupReport: report(f.s, '2') });
+    f.client.observeTaskStartupReport(report(f.s, '2'));
     await vi.advanceTimersByTimeAsync(15_000);
     expect(f.api.timeline).toHaveBeenCalledOnce();
     expect(f.client.snapshot()).toMatchObject({ errorCode: 'controller_offline', startupReport: { revision: '3' } });
     expect(f.api.channel).toHaveBeenCalledOnce();
   });
 
-  it('rejects a polling permission revocation and clears execution content', async () => {
+  it('clears execution content after the Task authority is revoked', async () => {
     vi.useFakeTimers();
     const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
     f.client.setDraft('private text');
-    vi.mocked(f.api.current).mockRejectedValue(new ApiError('server', 403, 'forbidden'));
+    f.client.invalidate(new ApiError('server', 403, 'forbidden'));
     await vi.advanceTimersByTimeAsync(5_000);
     expect(f.client.snapshot()).toMatchObject({ status: 'unavailable', connected: false, state: { snapshot: null }, draft: { text: '' } });
   });
@@ -111,28 +111,23 @@ it('remembers a connection only within the observed execution and controller ide
 it('keeps safe permission failures visible after removing private execution data', async () => {
   vi.useFakeTimers();
   const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
-  vi.mocked(f.api.current).mockRejectedValue(new ApiError('server', 403, 'forbidden'));
+  f.client.invalidate(new ApiError('server', 403, 'forbidden'));
   await vi.advanceTimersByTimeAsync(3000);
   expect(f.client.snapshot()).toMatchObject({ status: 'unavailable', errorCode: 'forbidden', error: 'You do not have permission to perform this action.', state: { snapshot: null } });
 });
 
-it('does not publish an old current response after a streamed generation replacement', async () => {
-  vi.useFakeTimers();
+it('does not publish an old Task report after a streamed generation replacement', async () => {
   const f = fixture(), oldReport = report(f.s);
   f.current({ status: 'registered', session: f.s, startupReport: oldReport });
   await f.client.start(); f.receive(f.s);
-  let finish!: (value: CurrentSessionResponse) => void;
-  vi.mocked(f.api.current).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-  await vi.advanceTimersByTimeAsync(3000);
   const replacement = { ...f.s, executionGeneration: '2', connectionState: 'disconnected' as const, synchronized: false, identity: { ...f.s.identity, controllerInstanceId: '00000010-1111-4111-8111-111111111111' } };
   f.receive(replacement);
-  finish({ status: 'registered', session: f.s, startupReport: oldReport });
-  await vi.advanceTimersByTimeAsync(0);
+  f.client.observeTaskStartupReport(oldReport);
   expect(f.client.snapshot()).toMatchObject({ startupReport: null, environmentConnected: false, state: { snapshot: { executionGeneration: '2' } } });
-  expect(f.api.channel).toHaveBeenCalledOnce();
+  expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.api.current).toHaveBeenCalledOnce();
 });
 
-it('keeps history corruption visible across successful startup report polls', async () => {
+it('keeps history corruption visible across unchanged Task startup observations', async () => {
   vi.useFakeTimers();
   const f = fixture();
   vi.mocked(f.api.timeline).mockResolvedValue({ ...f.page, hasMoreBefore: true, beforeCursor: null });
@@ -143,12 +138,12 @@ it('keeps history corruption visible across successful startup report polls', as
   expect(f.api.timeline).toHaveBeenCalledOnce();
 });
 
-it('keeps sending disabled when a polled snapshot is ahead of the materialized event watermark', async () => {
+it('keeps sending disabled when a streamed snapshot is ahead of the materialized event watermark', async () => {
   vi.useFakeTimers();
   const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
   const newer = { ...f.s, sessionRevision: '13', lastEventSeq: '1' };
-  f.current({ status: 'registered', session: newer });
-  await vi.advanceTimersByTimeAsync(3000);
+  f.receive(newer);
+  await vi.advanceTimersByTimeAsync(0);
   expect(f.client.snapshot().connected).toBe(false);
   await expect(f.client.send('not before replay')).rejects.toThrow();
   f.event(newer, '1');
@@ -161,44 +156,44 @@ it('restarts an unfinished history read after the observed connection epoch chan
   vi.mocked(f.api.timeline).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   await f.client.start(); f.receive(f.s);
   const newer = { ...f.s, sessionRevision: '13', connectionEpoch: '2' };
-  f.current({ status: 'registered', session: newer });
-  await vi.advanceTimersByTimeAsync(3000);
+  f.receive(newer);
+  await vi.advanceTimersByTimeAsync(0);
   finish(f.page); await vi.advanceTimersByTimeAsync(0);
   f.receive(newer); await vi.advanceTimersByTimeAsync(0);
   expect(f.api.timeline).toHaveBeenCalledTimes(2);
   expect(f.client.snapshot().connected).toBe(true);
 });
 
-it('does not replace a newer polled disconnection with an older unfinished tail snapshot', async () => {
+it('does not replace a newer streamed disconnection with an older unfinished tail snapshot', async () => {
   vi.useFakeTimers();
   const f = fixture(); let finish!: (page: TimelinePage) => void;
   vi.mocked(f.api.timeline).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   await f.client.start(); f.receive(f.s);
-  f.current({ status: 'registered', session: { ...f.s, sessionRevision: '13', connectionState: 'disconnected', synchronized: false } });
-  await vi.advanceTimersByTimeAsync(3000);
+  f.receive({ ...f.s, sessionRevision: '13', connectionState: 'disconnected', synchronized: false });
+  await vi.advanceTimersByTimeAsync(0);
   finish(f.page); await vi.advanceTimersByTimeAsync(0);
   expect(f.client.snapshot()).toMatchObject({ connected: false, state: { snapshot: { sessionRevision: '13', connectionState: 'disconnected' } } });
   await expect(f.client.send('do not send')).rejects.toThrow();
 });
 
-it('does not hide a protocol read failure behind an earlier offline-history notice', async () => {
-  vi.useFakeTimers();
-  const f = fixture();
+it('keeps a contradictory Task report visible ahead of an offline-history notice', async () => {
+  const f = fixture(), healthy: SessionStartupReport = { ...report(f.s), startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'none', reasonCode: null } };
+  f.client.observeTaskStartupReport(healthy);
   vi.mocked(f.api.timeline).mockRejectedValue(new ApiError('server', 503, 'controller_offline'));
-  await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
-  vi.mocked(f.api.current).mockRejectedValueOnce(new ApiError('protocol'));
-  await vi.advanceTimersByTimeAsync(3000);
-  expect(f.client.snapshot()).toMatchObject({ errorCode: 'protocol', error: 'The server returned an invalid response. Please try again.' });
-  await vi.advanceTimersByTimeAsync(3000);
+  await f.client.start(); f.receive(f.s);
+  await vi.waitFor(() => expect(f.client.snapshot().errorCode).toBe('controller_offline'));
+  f.client.observeTaskStartupReport({ ...healthy, startup: { state: 'unknown', reasonCode: 'native_timeout' } });
+  expect(f.client.snapshot()).toMatchObject({ errorCode: 'protocol', connected: false });
+  f.client.observeTaskStartupReport({ ...healthy, revision: '2' });
   expect(f.client.snapshot()).toMatchObject({ errorCode: 'controller_offline', connected: false });
   expect(f.api.timeline).toHaveBeenCalledOnce();
 });
 
-it('does not replace a newer polled disconnection with the delayed initial channel snapshot', async () => {
+it('does not replace a newer streamed disconnection with the delayed initial channel snapshot', async () => {
   vi.useFakeTimers();
   const f = fixture(); await f.client.start();
-  f.current({ status: 'registered', session: { ...f.s, sessionRevision: '13', connectionState: 'disconnected', synchronized: false, lastEventSeq: '1' } });
-  await vi.advanceTimersByTimeAsync(3000);
+  f.receive({ ...f.s, sessionRevision: '13', connectionState: 'disconnected', synchronized: false, lastEventSeq: '1' });
+  await vi.advanceTimersByTimeAsync(0);
   f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
   expect(f.client.snapshot()).toMatchObject({ connected: false, state: { snapshot: { sessionRevision: '13', connectionState: 'disconnected' } } });
   expect(f.api.timeline).not.toHaveBeenCalled();
@@ -247,56 +242,123 @@ it('withdraws an old public report when an explicit current refresh fails', asyn
   expect(f.client.snapshot()).toMatchObject({ status: 'error', startupReport: null, errorCode: 'network' });
 });
 
-it('clears consecutive current-read failures after success without requiring another channel event', async () => {
+it('restores a healthy report without another complete snapshot or channel event', async () => {
+  const f = fixture(), healthy: SessionStartupReport = { ...report(f.s), startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'none', reasonCode: null } };
+  f.client.observeTaskStartupReport(healthy);
+  await f.client.start(); f.receive(f.s);
+  await vi.waitFor(() => expect(f.client.snapshot().historyReady).toBe(true));
+  f.client.setDraft('preserve the idle draft');
+  f.client.observeTaskStartupReport({ ...healthy, startup: { state: 'unknown', reasonCode: 'native_timeout' } });
+  expect(f.client.snapshot()).toMatchObject({ connected: false, status: 'error', errorCode: 'protocol' });
+  f.client.observeTaskStartupReport({ ...healthy, revision: '2' });
+  expect(f.client.snapshot()).toMatchObject({ connected: true, status: 'ready', historyReady: true, error: null, draft: { text: 'preserve the idle draft' } });
+  expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.api.timeline).toHaveBeenCalledOnce();
+});
+
+it('retains a history failure when a valid Task report replaces a contradictory observation', async () => {
+  const f = fixture(), healthy: SessionStartupReport = { ...report(f.s), startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'none', reasonCode: null } };
+  f.client.observeTaskStartupReport(healthy);
+  vi.mocked(f.api.timeline).mockResolvedValue({ ...f.page, hasMoreBefore: true, beforeCursor: null });
+  await f.client.start(); f.receive(f.s);
+  await vi.waitFor(() => expect(f.client.snapshot().error).toContain('empty pagination cursor'));
+  const historyError = f.client.snapshot().error;
+  f.client.observeTaskStartupReport({ ...healthy, startup: { state: 'unknown', reasonCode: 'native_timeout' } });
+  f.client.observeTaskStartupReport({ ...healthy, revision: '2' });
+  expect(f.client.snapshot()).toMatchObject({ connected: false, status: 'error', historyReady: false, error: historyError });
+  expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.timeline).toHaveBeenCalledOnce(); expect(f.api.command).not.toHaveBeenCalled();
+});
+
+
+it('defers initial discovery until visible and retains a healthy channel while hidden', async () => {
+  vi.useFakeTimers();
+  const f = fixture(); f.client.setVisible(false);
+  await f.client.start(); await vi.advanceTimersByTimeAsync(15_000);
+  expect(f.api.current).not.toHaveBeenCalled();
+  f.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+  expect(f.api.current).toHaveBeenCalledOnce(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
+  f.client.setDraft('retained draft');
+  const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
+  f.client.setVisible(false); await vi.advanceTimersByTimeAsync(15_000);
+  f.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+  expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.channel).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
+  expect(f.client.snapshot()).toMatchObject({ connected: true, draft: { text: 'retained draft' } });
+});
+
+it('discovers later registration and a newer execution once from Task reports', async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  f.current({ status: 'not_registered', claimId: f.s.claimId, agentControlMode: 'web' });
+  await f.client.start(); await vi.advanceTimersByTimeAsync(15_000);
+  expect(f.api.current).toHaveBeenCalledOnce();
+  const first = report(f.s);
+  f.current({ status: 'registered', session: f.s, startupReport: first });
+  f.client.observeTaskStartupReport(first); await vi.advanceTimersByTimeAsync(0);
+  expect(f.api.current).toHaveBeenCalledTimes(2); expect(f.api.channel).toHaveBeenCalledOnce();
+  f.client.observeTaskStartupReport({ ...first }); await vi.advanceTimersByTimeAsync(15_000);
+  expect(f.api.current).toHaveBeenCalledTimes(2);
+  const next = { ...f.s, executionGeneration: '2', identity: { ...f.s.identity, controllerInstanceId: '00000010-1111-4111-8111-111111111111' } };
+  const replacement = report(next);
+  f.client.setVisible(false); f.client.observeTaskStartupReport(replacement);
+  f.current({ status: 'registered', session: next, startupReport: replacement });
+  await vi.advanceTimersByTimeAsync(15_000); expect(f.api.current).toHaveBeenCalledTimes(2);
+  f.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+  expect(f.api.current).toHaveBeenCalledTimes(3); expect(f.client.snapshot().state.snapshot?.executionGeneration).toBe('2');
+  f.client.observeTaskStartupReport({ ...replacement, revision: '2' });
+  f.client.observeTaskStartupReport(first); await vi.advanceTimersByTimeAsync(15_000);
+  expect(f.api.current).toHaveBeenCalledTimes(3); expect(f.client.snapshot().startupReport?.executionGeneration).toBe('2');
+});
+
+it('serializes a report-triggered discovery behind a pending initial read', async () => {
+  vi.useFakeTimers();
+  const f = fixture(); let finish!: (result: CurrentSessionResponse) => void;
+  vi.mocked(f.api.current).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const pending = f.client.start();
+  const observed = report(f.s); f.client.observeTaskStartupReport(observed);
+  expect(f.api.current).toHaveBeenCalledOnce();
+  f.current({ status: 'registered', session: f.s, startupReport: observed });
+  finish({ status: 'not_registered', claimId: f.s.claimId, agentControlMode: 'web' });
+  await pending; await vi.advanceTimersByTimeAsync(0);
+  expect(f.api.current).toHaveBeenCalledTimes(2); expect(f.api.channel).toHaveBeenCalledOnce();
+  f.client.observeTaskStartupReport({ ...observed }); await vi.advanceTimersByTimeAsync(15_000);
+  expect(f.api.current).toHaveBeenCalledTimes(2);
+});
+
+it('cancels a hidden discovery and excludes its late response after reopening', async () => {
+  vi.useFakeTimers();
+  const f = fixture(); let finish!: (result: CurrentSessionResponse) => void;
+  vi.mocked(f.api.current).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const pending = f.client.start(); const signal = vi.mocked(f.api.current).mock.calls[0]![0];
+  f.client.setVisible(false); expect(signal.aborted).toBe(true);
+  f.client.setVisible(true); expect(f.api.current).toHaveBeenCalledOnce();
+  expect(f.api.channel).not.toHaveBeenCalled();
+  finish({ status: 'registered', session: f.s }); await pending;
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.api.current).toHaveBeenCalledTimes(2); expect(f.api.channel).toHaveBeenCalledOnce();
+});
+
+
+it('applies the latest same-execution Task report when the initial current response arrives', async () => {
+  const f = fixture(); let finish!: (result: CurrentSessionResponse) => void;
+  vi.mocked(f.api.current).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const pending = f.client.start();
+  const ready: SessionStartupReport = { ...report(f.s, '2'), startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'none', reasonCode: null } };
+  f.client.observeTaskStartupReport(ready);
+  finish({ status: 'registered', session: f.s, startupReport: report(f.s) }); await pending;
+  f.receive(f.s); await vi.waitFor(() => expect(f.client.snapshot().connected).toBe(true));
+  expect(f.client.snapshot().startupReport?.revision).toBe('2');
+  expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.channel).toHaveBeenCalledOnce();
+});
+
+
+it('defers archive preparation discovered by a hidden stream until the panel opens', async () => {
   vi.useFakeTimers();
   const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
-  expect(f.client.snapshot().historyReady).toBe(true);
-  f.client.setDraft('preserve the idle draft');
-  vi.mocked(f.api.current).mockRejectedValueOnce(new ApiError('network')).mockRejectedValueOnce(new ApiError('server', 500));
-  await vi.advanceTimersByTimeAsync(3000);
-  expect(f.client.snapshot()).toMatchObject({ connected: false, status: 'error', errorCode: 'network' });
-  await vi.advanceTimersByTimeAsync(3000);
-  expect(f.client.snapshot().connected).toBe(false);
-  await vi.advanceTimersByTimeAsync(3000);
-  expect(f.client.snapshot()).toMatchObject({ connected: true, status: 'ready', historyReady: true, error: null, errorCode: null, draft: { text: 'preserve the idle draft' } });
-  expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.api.timeline).toHaveBeenCalledOnce(); expect(f.api.command).not.toHaveBeenCalled();
-});
-
-it('retains an independent history failure through consecutive current-read failures and recovery', async () => {
-  vi.useFakeTimers();
-  const f = fixture();
-  vi.mocked(f.api.timeline).mockResolvedValue({ ...f.page, hasMoreBefore: true, beforeCursor: null });
-  await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
-  const historyError = f.client.snapshot().error;
-  expect(historyError).toContain('empty pagination cursor');
-  vi.mocked(f.api.current).mockRejectedValueOnce(new ApiError('network')).mockRejectedValueOnce(new ApiError('server', 500));
-  await vi.advanceTimersByTimeAsync(9000);
-  expect(f.client.snapshot()).toMatchObject({ connected: false, status: 'error', historyReady: false, error: historyError });
-  expect(f.api.timeline).toHaveBeenCalledOnce(); expect(f.api.command).not.toHaveBeenCalled();
-});
-
-
-it('keeps current-read error ownership when an offline fallback finishes before current recovers', async () => {
-  vi.useFakeTimers();
-  const f = fixture();
-  let finish!: (page: TimelinePage) => void;
-  vi.mocked(f.api.timeline)
-    .mockRejectedValueOnce(new ApiError('network'))
-    .mockRejectedValueOnce(new ApiError('network'))
-    .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-  await f.client.start(); f.disconnect(); await vi.advanceTimersByTimeAsync(0);
-  await vi.advanceTimersByTimeAsync(2000);
-  expect(f.api.channel).toHaveBeenCalledTimes(2);
-  f.disconnect(); await vi.advanceTimersByTimeAsync(0);
-  await vi.advanceTimersByTimeAsync(8000);
-  expect(f.api.channel).toHaveBeenCalledTimes(3);
-  f.disconnect();
-  vi.mocked(f.api.current).mockRejectedValueOnce(new ApiError('network'));
-  await vi.advanceTimersByTimeAsync(3000);
-  expect(f.client.snapshot()).toMatchObject({ errorCode: 'network', connected: false });
-  finish(f.page); await vi.advanceTimersByTimeAsync(0);
-  expect(f.client.snapshot().errorCode).toBe('network');
-  await vi.advanceTimersByTimeAsync(3000);
-  expect(f.client.snapshot()).toMatchObject({ error: null, errorCode: null, status: 'ready', connected: false });
-  expect(f.api.channel).toHaveBeenCalledTimes(3); expect(f.api.timeline).toHaveBeenCalledTimes(3); expect(f.api.command).not.toHaveBeenCalled();
+  f.client.setVisible(false);
+  const draining = { ...f.s, lifecycle: 'draining' as const, connectionState: 'disconnected' as const, sessionRevision: '13' };
+  f.receive(draining); await vi.advanceTimersByTimeAsync(15_000);
+  expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.archive).not.toHaveBeenCalled();
+  f.current({ status: 'registered', session: { ...draining, lifecycle: 'archived', sessionRevision: '14' } });
+  vi.mocked(f.api.archive).mockResolvedValue({ state: 'failed', sha256: null, byteLength: null, errorCode: 'archive_failed' });
+  f.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+  expect(f.api.current).toHaveBeenCalledTimes(2); expect(f.api.archive).toHaveBeenCalledOnce();
 });

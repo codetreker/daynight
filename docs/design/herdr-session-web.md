@@ -2,7 +2,7 @@
 
 ## 页面与身份
 
-`TaskSessionHost` 按任务生命周期承接共同入口，不保存执行记录选择，也不渲染记录选择器和列表刷新行。活动 claim 继续使用 `TaskAgentSession` 或 `TerminalSessionView`，由各自 current 读取和连接逻辑核验原 claim；历史目录出现同一 Session 不再产生第二个主入口。完成或已释放的 claim 通过对应协议的 current GET 解析真实 Session，再交给固定归档阅读器；该读取只确定身份，不创建 native conversation、提交 assignment 或恢复输入。任务完成信号立即撤下写界面，归档是否可读仍取决于真实状态和内容校验。
+`TaskSessionHost` 按任务生命周期承接共同入口，不保存执行记录选择，也不渲染记录选择器和列表刷新行。活动 claim 使用 `TaskAgentSession` 或 `TerminalSessionView`；实际打开 Session 页签时，各自按需读取 current 并建立原 claim 的实时连接，列表和隐藏详情页签不持续读取完整快照。Web 的 Worker 启动／恢复报告复用已授权 Task 观察，原生快照和内容通过已有 channel 更新；具体身份和可见性规则由[Task Session 设计](task-session-protocol.md#session-view-的启动状态选择)拥有。历史目录出现同一 Session 不再产生第二个主入口。完成或已释放的 claim 通过对应协议的 current GET 解析真实 Session，再交给固定归档阅读器；该读取只确定身份，不创建 native conversation、提交 assignment 或恢复输入。任务完成信号立即撤下写界面，归档是否可读仍取决于真实状态和内容校验。
 
 服务端 `task_sessions` 对 project/task/claim 保持唯一约束，Web 与 Herdr 使用同一 Session 命名空间。两种 current 均按 Worker claim 查询，completed 和 released Worker 仍保留身份；没有 Worker 时 current 为 not_applicable。无 claim 的主入口使用历史 API 中按创建时间和 Session ID 降序排列的首个实际条目，作为只读历史。当前 claim 尚未注册时不向旧历史回退。无 claim 的目录发现随可用任务详情读取，不依赖先打开尚未确定是否存在的 Session 页签；空页仍有 cursor 时继续读取，直到找到实际记录或确认完整为空。首次读取、失败与拒绝均保留可恢复状态；仅完整确认无 Session 时隐藏页签。
 

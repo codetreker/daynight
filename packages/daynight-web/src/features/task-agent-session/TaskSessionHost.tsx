@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { SessionStartupReport } from '../../../../daynight/src/session/startup';
 import type { SessionArchive } from '../../../../daynight/src/session/archive';
 import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types';
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
@@ -422,7 +423,7 @@ export function useTaskSessionRecords(projectId: string, taskId: string, active:
   return direct ? observed : summary;
 }
 type SessionHostProps = ScopeProps & {
-  readonly current: boolean; readonly completed?: boolean;
+  readonly current: boolean; readonly completed?: boolean; readonly startupReport?: SessionStartupReport;
   readonly records?: ReturnType<typeof useTaskSessionRecords>;
 } & ({ readonly claimId: string; readonly ownerUserId: string; readonly mode: 'web' | 'herdr' } | { readonly claimId?: never; readonly ownerUserId?: never; readonly mode?: never });
 export function TaskSessionHost(props: SessionHostProps) {
@@ -438,14 +439,14 @@ function SummarySessionHost(props: SessionHostProps) {
   const localRecords = useRecords(props.projectId, props.taskId, props.records === undefined && props.claimId === undefined && props.active && props.current, true);
   return <SessionHostContent {...props} history={props.records ?? localRecords} presentationCurrent={props.current} />;
 }
-function SessionHostContent({ projectId, taskId, claimId, ownerUserId, mode, active, current, completed = false, direct = false, history, presentationCurrent }: SessionHostProps & { readonly history: Records; readonly presentationCurrent: boolean }) {
+function SessionHostContent({ projectId, taskId, claimId, ownerUserId, mode, active, current, startupReport, completed = false, direct = false, history, presentationCurrent }: SessionHostProps & { readonly history: Records; readonly presentationCurrent: boolean }) {
   const m = useTerminalHostMessages();
   useLayoutEffect(() => {
     try { sessionStorage.removeItem(`daynight:recording:${history.scope.userId}:${projectId}:${taskId}`); } catch { /* Storage is optional. */ }
   }, [history.scope, projectId, taskId]);
   const sessionKey = `${history.scope.userId}/${projectId}/${taskId}/${claimId}`;
   if (claimId !== undefined && mode !== undefined && !completed) return <div className="task-session-host"><div className="task-session-current">
-    {mode === 'web' ? <TaskAgentSession key={sessionKey} projectId={projectId} taskId={taskId} claimId={claimId} ownerUserId={ownerUserId} active={active} current={current} /> : <TerminalSessionView key={sessionKey} projectId={projectId} api={history.api} claimId={claimId} active={active} current={current} />}
+    {mode === 'web' ? <TaskAgentSession key={sessionKey} projectId={projectId} taskId={taskId} claimId={claimId} ownerUserId={ownerUserId} {...(startupReport === undefined ? {} : { startupReport })} active={active} current={current} /> : <TerminalSessionView key={sessionKey} projectId={projectId} api={history.api} claimId={claimId} active={active} current={current} />}
   </div></div>;
   if (history.denied && (direct || claimId === undefined)) return <div className="task-session-host"><p className="session-error" role="alert">{recordingError(history.error ?? new ApiError('server', 403), m)} <button className="button" disabled={history.loading || !current} onClick={history.refresh}>{m.refresh}</button></p></div>;
   if (claimId !== undefined) return <CompletedSessionContent projectId={projectId} taskId={taskId} claimId={claimId} mode={mode} active={active} current={current} presentationCurrent={presentationCurrent} history={history} />;

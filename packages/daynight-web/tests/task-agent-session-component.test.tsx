@@ -1,3 +1,4 @@
+import type { SessionStartupReport } from '../../daynight/src/session/startup';
 import { pauseAuthRequests } from '../src/api/client';
 import { sessionBinding } from '../../daynight/src/session/protocol';
 import type { TaskSessionSnapshot } from './helpers/session';
@@ -21,7 +22,7 @@ function fixture(snapshot = initial(), ownerUserId = userId) {
   let receive!: (message: BrowserMessage) => void;
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: snapshot })), timeline: vi.fn(async () => ({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' })), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _after, onMessage) => { receive = onMessage; return { close: vi.fn() }; }) };
   vi.mocked(createSessionApi).mockReturnValue(api);
-  const element = (current = true) => <TaskCacheProvider scope={scope}><TaskAgentSession ownerUserId={ownerUserId} projectId={snapshot.identity.projectId} taskId={snapshot.identity.taskId} claimId={snapshot.claimId} active current={current} /></TaskCacheProvider>;
+  const element = (current = true, active = true, startupReport?: SessionStartupReport) => <TaskCacheProvider scope={scope}><TaskAgentSession ownerUserId={ownerUserId} projectId={snapshot.identity.projectId} taskId={snapshot.identity.taskId} claimId={snapshot.claimId} active={active} current={current} {...(startupReport === undefined ? {} : { startupReport })} /></TaskCacheProvider>;
   return { scope, api, element, receive: (message: BrowserMessage) => act(() => receive(message)), snapshot };
 }
 describe('production task session panel', () => {
@@ -176,4 +177,37 @@ it('shows live messages and disabled pending approval controls to another projec
   await waitFor(() => expect(f.api.current).toHaveBeenCalledTimes(2));
   expect(f.api.command).not.toHaveBeenCalled();
   expect(screen.getByText('Shared live output')).toBeVisible();
+});
+
+
+it('does not discover a hidden production panel and retains its channel after a visible visit', async () => {
+  const f = fixture(); const view = render(f.element(true, false));
+  await act(async () => {});
+  expect(f.api.current).not.toHaveBeenCalled(); expect(f.api.channel).not.toHaveBeenCalled();
+  view.rerender(f.element(true, true));
+  await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+  f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
+  await screen.findByText('Ready', { exact: true });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'retain on hide' } });
+  const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
+  view.rerender(f.element(true, false)); view.rerender(f.element(true, true));
+  expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.channel).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
+  expect(screen.getByRole('textbox')).toHaveValue('retain on hide');
+});
+
+
+it('applies updated Task report props over the same channel without another current read', async () => {
+  const f = fixture();
+  const blocked: SessionStartupReport = { schemaVersion: 1, source: 'worker', sessionId: f.snapshot.sessionId, claimId: f.snapshot.claimId, executionGeneration: f.snapshot.executionGeneration, controllerInstanceId: f.snapshot.identity.controllerInstanceId, revision: '1', observedAt: new Date().toISOString(), startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'blocked', reasonCode: 'recovery_limit' } };
+  const view = render(f.element(true, true, blocked));
+  await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+  f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'retained while blocked' } });
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  expect(f.api.timeline).not.toHaveBeenCalled();
+  const ready: SessionStartupReport = { ...blocked, revision: '2', recovery: { state: 'none', reasonCode: null } };
+  view.rerender(f.element(true, true, ready));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+  view.rerender(f.element(true, true, { ...ready }));
+  expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.api.timeline).toHaveBeenCalledOnce();
 });

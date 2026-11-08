@@ -14,8 +14,10 @@ had been removed could lose the main Session entry despite retaining history.
 ## Decision
 
 The main entry follows the actual task lifecycle. Active claims retain their
-existing Web or Herdr reader. Completed and released claims resolve their original Session
-with the corresponding read-only current API and use the fixed archive reader.
+existing Web or Herdr reader. Claim-bound current discovery waits until its Session
+tab is active, according to the [on-demand read decision](2026-11-08-on-demand-task-session-reads.md).
+Completed and released claims resolve their original Session with the corresponding
+read-only current API and use the fixed archive reader.
 A missing current registration remains a recoverable state, never a reason to
 substitute another claim's history. With no claim, the latest actual catalogue
 entry is read-only history. Only a complete empty observation permits hiding the
@@ -27,9 +29,9 @@ recovery stays within the existing provider and Worker mechanisms; page opening,
 refresh and reconnect do not launch or replay anything. Task completion withdraws
 write controls independently of archive preparation and verification. A Web
 Session still active or draining can have no archive row yet; unavailable
-records in that preparation interval continue read-only observation until the
-current lifecycle confirms archival, instead of treating the temporary absence
-as a final result.
+records in that preparation interval continue read-only observation while viewed
+until the current lifecycle confirms archival, instead of treating the temporary
+absence as a final result.
 
 The host removes the execution selector and ignores its former persisted
 selection. Cleanup addresses only its user/project/task recording key. Older

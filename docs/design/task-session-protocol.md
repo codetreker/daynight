@@ -315,7 +315,11 @@ Provider 增量缓存保留未经此次转义的累计值，因此一个孤立�
 
 共享 `presentation.ts` 在同一输入中组合当前快照、身份匹配的 startupReport、浏览器同步情况及请求错误。终态优先使用归档；无法验证当前状态的请求错误保留自身说明；恢复受阻组合保留原始启动分类，明确失败与 unknown 不互相覆盖。starting 的 90 秒新鲜度只影响呈现，界面在期限到达时重新计算，不将计时结果转为失败或恢复操作。正常原生活动保留英文标签，启动与连接诊断按 locale 显示。
 
-Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共享严格解析器校验四项身份。独立观察定时器读取报告，保留同代最高 revision，不借更新报告重建健康 WebSocket。请求完成前再次验证账号、连接代次与执行身份；旧执行迟到的结果不能更新新执行。报告新鲜度不是在线证明；客户端只记录本页面亲见的同代连接，不以跨代不归零的 connectionEpoch 推断连接历史。Test 与 Bot 的共享视图允许没有 Worker 报告的健康快照。
+`TaskDetailSurface` 从已经授权的 Task 详情读取 `properties.sessionStartup`，经 `TaskSessionHost` 传给 Task client。初次实际打开 Session 页签时按当前 claim 读取完整 current，仍协商 `X-Daynight-Startup-Version: 1`；之后已有 WebSocket 提供快照、原生控制目录、事件与生命周期，任务观察提供 Worker 启动和恢复报告，不用周期性完整 current 读取报告。
+
+共享严格解析器验证报告的 Session、claim、executionGeneration 和 controllerInstanceId。客户端保留同代最高 revision，同 revision 不同内容属于协议错误；现有任务观察和执行归属仍获准时，同执行的报告更新只重新计算启动与历史门禁，保持健康 WebSocket。尚未注册后出现匹配报告，或报告表明 Session／运行代次／Controller 身份变化时，序列化核验对应 current；报告观察器不以任意 Task version 变化触发完整读取。报告领先于当前快照时等待身份核验，旧执行报告和迟到读取不能覆盖新执行。隐藏 Session 页签保留待核验的报告变化，在再次可见时完成必要读取。
+
+Session 可见性与执行归属分别判断。摘要来源详情仍要求正文满足当前摘要业务版本；新版本到达后正文尚未完成读取时，既有 `requiresFreshRead` 门禁可以使 Session 暂时失去准入，恢复后重新核验。direct 详情沿自身有效实时观察保持准入，普通成功后台刷新不单独使其失效；这些规则由[Task 同步设计](daynight-task-sync.md#6-投影时钟与详情)拥有。隐藏页签不启动发现、重连或完整 current 请求，仍获准的健康连接、已读内容和草稿保持原归属；显式刷新、实际断线或协议要求的重新同步仍可在可见时读取。请求完成前再次验证账号、连接代次与执行身份。报告新鲜度不是在线证明；客户端只记录本页面亲见的同代连接，不以跨代不归零的 connectionEpoch 推断连接历史。独立 Test 与 Bot 的共享视图允许没有 Worker 报告的健康快照，保留其现有 current 权限复核策略。
 
 历史请求使用 `liveHistoryAllowed`，要求 active、Controller connected 与 synchronized，且当前报告没有明确失败或恢复阻断。它不要求 startup=ready，因为原生初始化可能等待 timeline 内的合法审批。live tail 遭遇 controller_offline 时保留已读内容，并记住快照与历史身份，阻止同一证据下的重复请求；新证据或显式刷新才允许再核对。恢复可用后继续尾页和分页，归档始终使用原有独立路径。页头主状态、Composer 动作和空态使用相同选择结果；输入仍叠加原有发送、响应、设置和取消门禁。
 

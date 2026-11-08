@@ -989,12 +989,19 @@ Unknown initial submission disposition and resuming automatic input require
 separate decisions. Unknown manual input is never automatically resent.
 
 The main Session tab automatically follows the task's actual claim and lifecycle,
-without an execution-record selector or catalogue refresh row. Active claims keep
-their existing Web or Herdr reader; a claim waiting for registration never borrows
-an older Session. Completed and released claims resolve their original Session through a
-read-only current request and display fixed history without input or control
-operations. Task completion does not imply archive readiness: pending, failed and
-unavailable archives retain their status and recovery action. Opening, refreshing
+without an execution-record selector or catalogue refresh row. Current discovery
+waits until the Session tab is active. Web task reports reuse the authorized Task
+detail observation, and the established channel supplies native snapshots and
+content without periodic complete current reads while Task observation and
+execution ownership admission remain valid. Hiding a native tab stops new
+HTTP discovery while retaining its healthy channel, content and draft; terminal
+viewers retain their separate visibility and lease policy. A claim waiting for
+registration never borrows an older Session. Report identity changes, explicit
+refresh and necessary reconnection trigger controlled reads while visible.
+Completed and released claims resolve their original Session through a read-only
+current request and display fixed history without input or control operations.
+Task completion does not imply archive readiness: pending, failed and unavailable
+archives retain their status and recovery action while viewed. Opening, refreshing
 or reconnecting the page does not launch a native conversation or resend input.
 
 With no claim, the tab may show the latest actual Session as read-only history.
@@ -1472,13 +1479,14 @@ Outer Overview switching retains the visited task subtree and its disclosure
 choices. No disclosure state is stored in browser preferences. The [Goal-list
 decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) records the rationale for this interaction.
 
-In-progress Goal children can open their current accessible Session directly.
-Small working, notice and warning text annotations share a bounded current-session
-summary with each visible chain header. Collapsed chains include every ordinary
-member, including the root; external chains do not contribute. The chain status
-control only expands members. Failed, stale or mismatched observations disappear
-without changing task state. The [Session status design](../../docs/design/task-session-status.md)
-owns precedence, visibility, refresh limits and stable annotation geometry.
+Chain headers and Goal children display ordinary Task status alongside progress
+and execution metadata. Titles open Task detail, where the Session tab provides
+the current claim's conversation or recording. The chain list reads Task summaries;
+it does not discover or refresh Sessions for collapsed or expanded members.
+Current Session discovery begins when its detail tab is active. Task startup and
+recovery reports reuse the authorized Task observation, while an established
+Session channel supplies live snapshots and content. The [Session design](../../docs/design/task-session-protocol.md#session-view-的启动状态选择)
+owns report identity and refresh behavior.
 
 The explicit View dependencies / 查看依赖关系 action opens one centered
 dependency-graph dialog at a time without changing any disclosure state.

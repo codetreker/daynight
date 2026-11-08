@@ -2,7 +2,7 @@ import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { GraphTask, Project, TaskStatus } from "../../api/types";
-import { navigate, taskDetailUrl } from "../../app/router";
+import { navigate } from "../../app/router";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
@@ -170,9 +170,6 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     setNotice(null);
     setDetailSelection({ id, source: "direct" });
   }, []);
-  const onOpenSession = useCallback((id: string) => {
-    navigate(taskDetailUrl(projectId, id, { tab: "session", path: null }));
-  }, [projectId]);
   const onSelectRelation = useCallback((id: string) => {
     setDetailSelection((current) => current?.source === "direct" || snapshot === null ? { id, source: "direct" } : { id, source: "summary", revision: snapshot.revision });
   }, [snapshot]);
@@ -329,11 +326,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
             <div hidden={searchActive} inert={searchActive}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} active={section === "tasks" && !searchActive}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
               unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain, onNavigateExternalTask,
-                onOpenTask, onOpenSession,
+                onOpenTask,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
               standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }} />}

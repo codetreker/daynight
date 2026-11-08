@@ -48,6 +48,7 @@ describe('task session transport lifecycle', () => {
     expect(f.api.current).toHaveBeenCalledOnce();
     expect(f.client.snapshot().status).toBe('not_registered');
     vi.mocked(f.api.current).mockResolvedValue({ status: 'registered', session: f.s, startupReport: null });
+    f.client.refresh();
     await vi.advanceTimersByTimeAsync(250);
     expect(f.api.current).toHaveBeenCalledTimes(2);
     expect(f.client.snapshot()).toMatchObject({ status: 'ready', startupReport: null });
@@ -55,7 +56,7 @@ describe('task session transport lifecycle', () => {
     await vi.advanceTimersByTimeAsync(0);
     f.client.setDraft('preserve this draft');
     for (let i = 0; i < 16; i++) { f.client.syncAvailability(); await vi.advanceTimersByTimeAsync(250); }
-    expect(f.api.current).toHaveBeenCalledTimes(3);
+    expect(f.api.current).toHaveBeenCalledTimes(2);
     expect(f.api.channel).toHaveBeenCalledOnce();
     expect(f.client.snapshot()).toMatchObject({ status: 'ready', connected: true, startupReport: null, draft: { text: 'preserve this draft' } });
   });
@@ -71,7 +72,8 @@ describe('task session transport lifecycle', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(f.client.snapshot().status).toBe('not_registered');
     await vi.advanceTimersByTimeAsync(2999); expect(f.api.current).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(1); expect(f.api.current).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1); expect(f.api.current).toHaveBeenCalledOnce();
+    f.client.refresh(); await vi.advanceTimersByTimeAsync(0); expect(f.api.current).toHaveBeenCalledTimes(2);
   });
   it('keeps a native not-applicable state stable until an explicit refresh', async () => {
     vi.useFakeTimers();

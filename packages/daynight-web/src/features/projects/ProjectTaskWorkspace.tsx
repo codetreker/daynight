@@ -1,4 +1,3 @@
-import { TaskSessionSummaryProvider } from "../task-session-summary/TaskSessionSummaryProvider";
 import { TaskPauseCount, TaskPauseProvider } from "../task-pause/TaskPause";
 import type { ComponentProps, ReactNode } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
@@ -9,9 +8,8 @@ import { StandaloneList } from "./StandaloneList";
 import type { TaskView } from "./useProjectViewPreferences";
 import type { GraphSnapshot } from "./useTaskGraph";
 
-export const ProjectTaskWorkspace = ({ projectId, snapshot, active = true, activeView, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, onViewChange, filter, chains, standalone }: {
+export const ProjectTaskWorkspace = ({ projectId, snapshot, activeView, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, onViewChange, filter, chains, standalone }: {
   readonly projectId: string;
-  readonly active?: boolean;
   readonly filter?: ReactNode;
   readonly snapshot: GraphSnapshot;
   readonly activeView: TaskView;
@@ -30,7 +28,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, active = true, activ
           unfinishedChainTaskCount={unfinishedChainTaskCount} onViewChange={onViewChange} />
         {filter}
         <div role="tabpanel" id="project-task-panel-chains" aria-labelledby="project-task-tab-chains" hidden={activeView !== "chains"}>
-          {activeView === "chains" && <TaskSessionSummaryProvider projectId={projectId} active={active}><section aria-label={m.chains}><ChainList index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section></TaskSessionSummaryProvider>}
+          {activeView === "chains" && <section aria-label={m.chains}><ChainList index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section>}
         </div>
         <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"} tabIndex={-1}>
           {activeView === "standalone" && <StandaloneList index={snapshot.index} {...standalone} />}

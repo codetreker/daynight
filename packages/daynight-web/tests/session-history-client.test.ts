@@ -29,10 +29,12 @@ describe('session history request progress', () => {
     vi.useFakeTimers();
     const f = fixture(); vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, beforeCursor: cursor });
     await f.client.start(); f.receive(); await flush();
-    expect(f.client.snapshot().status).toBe('error'); expect(f.client.snapshot().error).toBeTruthy();
+    const error = f.client.snapshot().error;
+    expect(f.client.snapshot().status).toBe('error'); expect(error).toBeTruthy();
     await f.client.loadOlder(); expect(f.api.timeline).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(f.api.current).toHaveBeenCalledTimes(11); expect(f.api.timeline).toHaveBeenCalledOnce();
+    expect(f.api.current).toHaveBeenCalledOnce(); expect(f.api.timeline).toHaveBeenCalledOnce();
+    expect(f.client.snapshot()).toMatchObject({ status: 'error', error });
   });
   it.each([null, '', 'A'])('rejects a nonadvancing cursor %s without merging the invalid page', async cursor => {
     const f = fixture(); await ready(f);
