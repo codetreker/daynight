@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -452,7 +452,29 @@ test("an already-checked-out T cannot hide transformed assertions behind Git fil
   f.git("checkout", "--detach", f.tests);
   assert.match(readFileSync(join(f.cwd, testPath), "utf8"), /\/\/assert.equal/);
   assert.equal(f.git("status", "--porcelain"), "", "The configured clean filter hides the changed raw assertion bytes.");
+  // Keep the cached file stat outside Git's racy-index window without sleeping.
+  const cachedAt = new Date(statSync(join(f.cwd, testPath)).mtimeMs + 60_000);
+  utimesSync(join(f.cwd, ".git/index"), cachedAt, cachedAt);
   await assert.rejects(f.run({ head: f.tests, pr: 12 }), /clean tracked checkout/);
+});
+
+for (const ordinary of [false, true]) test(`rejects cached filtered production bytes before ${ordinary ? "ordinary" : "paired"} validation`, async (t) => {
+  const f = fixture(t, undefined, (write) => write(".gitattributes", "*.ts filter=production-transform\n"));
+  if (ordinary) { f.manifest.pairs = []; f.saveManifest(); }
+  f.git("config", "filter.production-transform.smudge", "sed 's/value = 2/value = 0/'");
+  f.git("config", "filter.production-transform.clean", "sed 's/value = 0/value = 2/'");
+  const path = join(f.cwd, "packages/daynight/src/value.ts");
+  rmSync(path);
+  f.git("checkout-index", "--force", "--all");
+  assert.equal(readFileSync(path, "utf8"), "export const value = 0;\n");
+  assert.equal(f.git("status", "--porcelain"), "");
+  const cachedAt = new Date(statSync(path).mtimeMs + 60_000);
+  utimesSync(join(f.cwd, ".git/index"), cachedAt, cachedAt);
+  await assert.rejects(f.run(), /clean tracked checkout/);
+  assert.equal(readFileSync(path, "utf8"), "export const value = 0;\n");
+  assert.equal(f.git("rev-parse", "HEAD"), f.implementation);
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
+  assert.equal(existsSync(join(f.cwd, ".tmp/image-test-pairs.json")), false);
 });
 
 test("local composition detaches HEAD without moving the implementation branch", async (t) => {

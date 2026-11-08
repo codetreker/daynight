@@ -145,6 +145,18 @@ const strippedTree = (cwd: string, revision: string, paths: string[], index: str
   git(cwd, ["update-index", "--force-remove", "--", manifestPath, ...paths], { index });
   return gitText(cwd, ["write-tree"], { index });
 };
+const cleanTrackedCheckout = (cwd: string, revision: string): boolean => {
+  if (gitText(cwd, ["status", "--porcelain", "--untracked-files=no"]) !== "") return false;
+  mkdirSync(join(cwd, ".tmp"), { recursive: true });
+  const scratch = mkdtempSync(join(cwd, ".tmp/image-pair-checkout-"));
+  try {
+    // Disabling filters does not invalidate stat entries cached while they were enabled.
+    // A fresh index forces content checks while preserving safe newline conversion.
+    const index = join(scratch, "index");
+    git(cwd, ["read-tree", revision], { index });
+    return gitText(cwd, ["status", "--porcelain", "--untracked-files=no"], { index }) === "";
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+};
 type Entry = { mode: string; oid: string };
 const entries = (cwd: string, revision: string): Map<string, Entry> => {
   const result = new Map<string, Entry>();
@@ -308,7 +320,7 @@ export const validatePairs = async (options: Options): Promise<Evidence> => {
   const cwd = resolve(options.cwd);
   const checkoutCommit = gitText(cwd, ["rev-parse", "HEAD"]);
   if (options.event === "push" && checkoutCommit !== options.head) throw new Error("Main checkout does not match the event HEAD.");
-  if (gitText(cwd, ["status", "--porcelain", "--untracked-files=no"]) !== "") throw new Error("Image pair composition requires a clean tracked checkout.");
+  if (!cleanTrackedCheckout(cwd, checkoutCommit)) throw new Error("Image pair composition requires a clean tracked checkout.");
   const pulls = new Map<number, Promise<ObjectValue>>();
   const getPull: PullReader = (pr) => { if (!pulls.has(pr)) pulls.set(pr, pull(options.source, pr, options.repository)); return pulls.get(pr)!; };
   const getCandidatePull: PullReader = async (pr) => {
@@ -414,7 +426,7 @@ export const validatePairs = async (options: Options): Promise<Evidence> => {
     for (const item of materialize) {
       if (!readFileSync(join(cwd, item.path)).equals(git(cwd, ["cat-file", "blob", item.oid]))) throw new Error(`Materialized test bytes differ from the reviewed blob: ${item.path}.`);
     }
-    if (gitText(cwd, ["status", "--porcelain", "--untracked-files=no"]) !== "" || tree(cwd, "HEAD") !== evidence.combinedTree) throw new Error("Combined checkout is not clean or has the wrong identity.");
+    if (!cleanTrackedCheckout(cwd, evidence.combinedCommit) || tree(cwd, "HEAD") !== evidence.combinedTree) throw new Error("Combined checkout is not clean or has the wrong identity.");
     writeFileSync(join(cwd, ".tmp/image-test-pairs.json"), `${JSON.stringify(evidence, null, 2)}\n`);
     return evidence;
   } finally { rmSync(scratch, { recursive: true, force: true }); }
