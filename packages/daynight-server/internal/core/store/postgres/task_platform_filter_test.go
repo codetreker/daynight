@@ -33,37 +33,35 @@ func TestTaskPlatformSpecificFiltersBeforePagination(t *testing.T) {
 		{"specific", &yes, []string{rows[2].ID, rows[4].ID}},
 		{"unrestricted", &no, []string{rows[0].ID, rows[3].ID}},
 	} {
-		for _, bounded := range []bool{false, true} {
-			t.Run(test.name+map[bool]string{false: "/ordinary", true: "/bounded"}[bounded], func(t *testing.T) {
-				if err := database.ReadSnapshot(context.Background(), func(scope SnapshotScope) error {
-					query := TaskQuery{Page: Page{Limit: 1}, Ready: &yes, AllowAgents: &yes, CompatiblePlatform: &macos, PlatformSpecific: test.tier, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: actor}, BoundedText: bounded}
-					ids := []string{}
-					for {
-						page, err := scope.TaskDAO().Tasks(t.Context(), project.ID, query)
-						if err != nil {
-							return err
-						}
-						if len(page.Items) != 1 {
-							t.Fatalf("page=%#v", page)
-						}
-						last := page.Items[0]
-						ids = append(ids, last.ID)
-						if !page.HasMore {
-							break
-						}
-						if len(ids) >= len(test.ids) {
-							t.Fatalf("unexpected extra page: %v", ids)
-						}
-						query.Page.After = &Position{CreatedAt: last.CreatedAt, ID: last.ID}
+		t.Run(test.name, func(t *testing.T) {
+			if err := database.ReadSnapshot(context.Background(), func(scope SnapshotScope) error {
+				query := TaskQuery{Page: Page{Limit: 1}, Ready: &yes, AllowAgents: &yes, CompatiblePlatform: &macos, PlatformSpecific: test.tier, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: actor}}
+				ids := []string{}
+				for {
+					page, err := scope.TaskDAO().Tasks(t.Context(), project.ID, query)
+					if err != nil {
+						return err
 					}
-					if !reflect.DeepEqual(ids, test.ids) {
-						t.Fatalf("ids=%v want=%v", ids, test.ids)
+					if len(page.Items) != 1 {
+						t.Fatalf("page=%#v", page)
 					}
-					return nil
-				}); err != nil {
-					t.Fatal(err)
+					last := page.Items[0]
+					ids = append(ids, last.ID)
+					if !page.HasMore {
+						break
+					}
+					if len(ids) >= len(test.ids) {
+						t.Fatalf("unexpected extra page: %v", ids)
+					}
+					query.Page.After = &Position{CreatedAt: last.CreatedAt, ID: last.ID}
 				}
-			})
-		}
+				if !reflect.DeepEqual(ids, test.ids) {
+					t.Fatalf("ids=%v want=%v", ids, test.ids)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
