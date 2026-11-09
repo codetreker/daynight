@@ -90,7 +90,9 @@ func (r listTestReader) WorkerSummaries(_ context.Context, _ string, _ time.Time
 func TestWorkerListReadFailuresAndCountPagination(t *testing.T) {
 	principal := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	item := store.WorkerSummary{WorkerID: uuid.NewString(), CreatedAt: now, LastReportedAt: now, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine"}}
+	count := 0
+	item := store.WorkerSummary{WorkerID: uuid.NewString(), CreatedAt: now, LastReportedAt: now, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine"},
+		TaskObservationState: model.WorkerTasksObserved, TaskObservedAt: &now, ActiveTaskCount: &count}
 	sentinel := errors.New("snapshot unavailable")
 	for _, source := range []*listTestStore{{observed: now, readErr: sentinel}, {observed: now, clockErr: sentinel}, {observed: now, summaryErr: sentinel}} {
 		if _, err := NewWorkers(source).List(context.Background(), principal, model.PageRequest{Limit: 2}); !errors.Is(err, sentinel) {
@@ -101,7 +103,8 @@ func TestWorkerListReadFailuresAndCountPagination(t *testing.T) {
 	second.WorkerID = uuid.NewString()
 	second.CreatedAt = now.Add(time.Second)
 	page, err := NewWorkers(&listTestStore{observed: now, items: []store.WorkerSummary{item, second}}).List(context.Background(), principal, model.PageRequest{Limit: 1})
-	if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != item.WorkerID || page.ObservedAt != now || page.NextCursor == nil {
+	if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != item.WorkerID || page.ObservedAt != now || page.NextCursor == nil ||
+		page.Items[0].ActiveTaskCount == nil || *page.Items[0].ActiveTaskCount != 0 || page.Items[0].TaskObservationState != string(model.WorkerTasksObserved) || page.Items[0].TaskObservedAt == nil || !page.Items[0].TaskObservedAt.Equal(now) {
 		t.Fatalf("first page: %+v %v", page, err)
 	}
 	position, err := workercore.ListPage(model.PageRequest{Limit: 1, Cursor: page.NextCursor}, principal.UserID)

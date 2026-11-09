@@ -745,6 +745,47 @@ module validation. The final gate requires actual success for both selected Go
 jobs. Their separate [coverage partitions](#coverage) retain all production code
 and the same numerical thresholds.
 
+### Application service tests
+
+The root `internal/service` suite owns application composition, startup,
+readiness, background supervision, resource retention and close retry. It runs
+the production assembly body through instance-owned resource openers, using a
+controlled persistence backend and real Session Engine, local files and permits.
+The public `OpenAppWithLogger` entry selects native openers; tests select only
+their lower resources rather than constructing a replacement application.
+
+The shared `openPersistence` binding is exercised by both application assembly
+and `OpenPersistence`. Its transaction capabilities, readiness callback and close
+callback refer to the same backend instance. Strict startup and background facts
+reject unconfigured calls, and concurrent work is cancelled and drained before
+its dependencies are released. Supplied metadata and completion facts do not
+simulate a database or establish persistence.
+
+The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_UNIAUTH_FIXTURE`. Run the ordinary suite and the explicitly tagged
+partial-start witness without either fixture:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json ./internal/service
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  -tags=webhooktest -run '^TestWebhookPartialStartRetainsDependenciesUntilRunnerStops$' ./internal/service
+```
+
+Native configuration, UniAuth client, unusable storage, malformed database URL
+and failed database-open paths still execute their real public entry. Identity
+HTTP tests retain their actual local transport and body lifetime. Domain rule
+and completion matrices belong to their core or child service owner; SQL,
+snapshots, locks, rollback and Worker configuration CAS belong to Store tests.
+Successful native application/process composition remains in the independent
+[startup/shutdown check](#startup-and-shutdown-tests). The
+[root service ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-service-test-ownership.md)
+records the proof allocation and the shared-factory rationale. Runtime comparisons
+include receiving packages; removed database preparation is distinct from moved
+physical work.
+
 ### Business rules and DAO mocks
 
 The [test-writing rules](../../docs/writing_tests.md) define the dependency

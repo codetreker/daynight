@@ -34,6 +34,87 @@ func taskSessionTransitionFacts(t *testing.T, database *Store) map[string]string
 	return facts
 }
 
+func TestTaskDeletionSessionFreezeAndCacheEpochAreAtomic(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := t.Context()
+	project := queryProject(t, database, 1)
+	task := queryTask(t, database, project.ID, 2, model.TaskTodo)
+	session, claim, operation := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	snapshot, err := json.Marshal(map[string]any{"lifecycle": "active", "lastTimelineSeq": "4", "controls": []string{"control"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := json.Marshal(map[string]any{"state": "accepted", "error": nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustQueryExec(t, database, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$4,$5,$6,'{}',$7)`, session, project.ID, task.ID, claim, uuid.NewString(), uuid.NewString(), snapshot)
+	mustQueryExec(t, database, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt) VALUES($1,$2,1,'\x01','{}',$3,$4,'pat',$5)`, session, operation, uuid.NewString(), uuid.NewString(), receipt)
+	before := taskSessionTransitionFacts(t, database)
+	var beforeEpoch string
+	if err := database.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&beforeEpoch); err != nil {
+		t.Fatal(err)
+	}
+	remove := func() (Completion, error) {
+		return database.WriteProject(ctx, project.ID, func(scope ProjectWriteScope) error {
+			if _, err := scope.TaskDAO().DeleteTask(ctx, task.ID, false); err != nil {
+				return err
+			}
+			if err := scope.SessionDAO().DrainTaskSessions(ctx, task.ID, TaskSessionDrain{
+				SourceLifecycle: "active", GraceSeconds: 60, TimelineField: "lastTimelineSeq", LifecycleField: "lifecycle",
+				RemoveFields:   []string{"cleanupInteractionIds", "controls", "turnStartedAt", "currentTurnId"},
+				SnapshotValues: map[string]any{"lifecycle": "draining", "synchronized": false, "connectionState": "disconnected", "activity": "unknown"},
+			}); err != nil {
+				return err
+			}
+			if err := scope.SessionDAO().TransitionTaskSessionReceipts(ctx, task.ID, TaskSessionReceiptTransition{
+				LifecycleField: "lifecycle", Lifecycle: "draining", StateField: "state", PreviousState: "accepted", NextState: "rejected", RemoveFields: []string{"error"},
+			}); err != nil {
+				return err
+			}
+			return scope.ProjectDAO().InvalidateTaskCache(ctx)
+		})
+	}
+	for _, failure := range []struct{ table, columns string }{{"task_sessions", ""}, {"projects", " OF task_cache_epoch"}} {
+		t.Run(failure.table, func(t *testing.T) {
+			mustQueryExec(t, database, `CREATE FUNCTION refuse_task_deletion() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'deletion failure'; END $$`)
+			mustQueryExec(t, database, `CREATE TRIGGER refuse_task_deletion BEFORE UPDATE`+failure.columns+` ON `+failure.table+` FOR EACH ROW EXECUTE FUNCTION refuse_task_deletion()`)
+			completion, err := remove()
+			if err == nil || completion.Outcome != TransactionNotCommitted || !reflect.DeepEqual(taskSessionTransitionFacts(t, database), before) {
+				t.Fatalf("failed deletion committed partial Task/Session/receipt state: %+v %v", completion, err)
+			}
+			var epoch string
+			if err := database.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&epoch); err != nil || epoch != beforeEpoch {
+				t.Fatalf("failed deletion rotated cache epoch: %s %v", epoch, err)
+			}
+			mustQueryExec(t, database, `DROP TRIGGER refuse_task_deletion ON `+failure.table)
+			mustQueryExec(t, database, `DROP FUNCTION refuse_task_deletion()`)
+		})
+	}
+	completion, err := remove()
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("delete completion: %+v %v", completion, err)
+	}
+	var deleted bool
+	var version int64
+	var epoch, lifecycle, state string
+	if err := database.Pool.QueryRow(ctx, `SELECT deleted_at IS NOT NULL,version FROM tasks WHERE id=$1`, task.ID).Scan(&deleted, &version); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT snapshot->>'lifecycle' FROM task_sessions WHERE id=$1`, session).Scan(&lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT receipt->>'state' FROM session_operations WHERE operation_id=$1`, operation).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if !deleted || version != task.Version+1 || epoch == beforeEpoch || lifecycle != "draining" || state != "rejected" {
+		t.Fatalf("incomplete committed deletion: %t %d %s %s %s", deleted, version, epoch, lifecycle, state)
+	}
+}
+
 func TestTaskSessionFreezeAndReceiptFailureRollBackTaskTransitions(t *testing.T) {
 	for _, status := range []model.TaskStatus{model.TaskDone, model.TaskCancelled} {
 		t.Run(string(status), func(t *testing.T) {

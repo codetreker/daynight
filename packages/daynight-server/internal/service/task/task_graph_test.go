@@ -43,6 +43,17 @@ func (f *taskReadFixture) graph(root string, presence store.TaskPresence, tasks 
 
 func TestTaskGraphScopedProjectionAndSummary(t *testing.T) {
 	f := newTaskReadFixture(t)
+	f.project.Settings.ExecutionWarningMinutes = 90
+	access := taskMockAccess(f.project, f.principal)
+	access.Role = model.ProjectMemberRole
+	access.DirectGrant = &model.ProjectGrant{ProjectID: f.project.ID, UserID: f.principal.UserID, Role: model.ProjectMemberRole, Version: 1, CreatedAt: f.project.CreatedAt, UpdatedAt: f.project.UpdatedAt}
+	f.projectReader.ProjectAccessFn = func(ctx context.Context, principal model.Principal, id string) (model.ProjectAccess, error) {
+		f.requireProject(ctx, id)
+		if principal != f.principal {
+			t.Fatal("graph member authorization changed principal")
+		}
+		return access, nil
+	}
 	_, err := f.graph(taskReadID(99), store.TaskPresence{}, nil).Graph(f.ctx, f.principal, strings.ToUpper(f.project.ID), taskReadID(99))
 	requireFault(t, err, "not_found")
 	done := taskReadGraphTask(taskReadID(1), "Done", model.TaskDone)

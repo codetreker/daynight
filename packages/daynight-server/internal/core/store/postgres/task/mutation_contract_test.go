@@ -332,28 +332,151 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 
 func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
 	database := writerStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	project, other := writerProject(t, database, 1), writerProject(t, database, 2)
 	root := writerTask(t, database, project.ID, 10, model.TaskDone)
-	target := writerTask(t, database, project.ID, 11, model.TaskTodo, root.ID)
-	source := writerTask(t, database, project.ID, 12, model.TaskTodo, target.ID, root.ID)
-	foreign := writerTask(t, database, other.ID, 13, model.TaskTodo)
+	unrelated := writerTask(t, database, project.ID, 11, model.TaskDone)
+	target := writerTask(t, database, project.ID, 12, model.TaskTodo, root.ID)
 	if err := writerWrite(t, database, project.ID, func(tx store.TaskWriteDAO) error {
-		_, err := tx.DeleteTask(ctx, target.ID, true)
+		values := testutil.TaskWrite(target)
+		values.Description, values.Status = "Preserved body", model.TaskDone
+		values.ExternalDependsOn = []string{root.ID}
+		values.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"PR","title":"Retained evidence"}]`)}
+		var err error
+		target, err = tx.UpdateTask(ctx, target.ID, values)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	current := testutil.SnapshotTask(t, database, project.ID, source.ID)
-	if current.Version != source.Version+1 || !reflect.DeepEqual(current.DependsOn, []string{root.ID}) || !current.Ready {
-		t.Fatalf("source was not changed once: %#v", current)
+	foreign := writerTask(t, database, other.ID, 13, model.TaskTodo)
+	var sources []model.Task
+	for index, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
+		source := writerTask(t, database, project.ID, index+20, model.TaskTodo, target.ID, unrelated.ID)
+		if err := writerWrite(t, database, project.ID, func(tx store.TaskWriteDAO) error {
+			values := testutil.TaskWrite(source)
+			values.Status, values.ExternalDependsOn = status, slices.Clone(source.DependsOn)
+			values.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"Evidence","title":"Preserved"}]`)}
+			var err error
+			source, err = tx.UpdateTask(ctx, source.ID, values)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if status == model.TaskInProgress && source.StartedAt == nil || status == model.TaskDone && source.CompletedAt == nil {
+			t.Fatalf("source fixture lacks its execution history: %+v", source)
+		}
+		sources = append(sources, source)
 	}
-	if current := testutil.SnapshotTask(t, database, other.ID, foreign.ID); !reflect.DeepEqual(current, foreign) {
-		t.Fatal("another project was modified")
+	claim := testutil.WorkerClaim(24, testutil.QueryID(51), testutil.QueryID(52), model.WorkerActive)
+	claimed := writerWorkerTask(t, database, project.ID, 24, claim, true, nil)
+	testutil.MustExec(t, database.Pool, `UPDATE tasks SET started_at=updated_at WHERE id=$1`, claimed.ID)
+	for _, id := range []string{target.ID, unrelated.ID} {
+		testutil.MustExec(t, database.Pool, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project.ID, claimed.ID, id)
 	}
-	var outgoing int
-	if err := database.Pool.QueryRow(ctx, "SELECT count(*) FROM task_dependencies WHERE project_id=$1 AND task_id=$2", project.ID, target.ID).Scan(&outgoing); err != nil || outgoing != 1 {
-		t.Fatalf("target outgoing history removed: %d %v", outgoing, err)
+	sources = append(sources, testutil.SnapshotTask(t, database, project.ID, claimed.ID))
+	historical := writerTask(t, database, project.ID, 25, model.TaskTodo, target.ID, unrelated.ID)
+	if err := writerWrite(t, database, project.ID, func(tx store.TaskWriteDAO) error {
+		_, err := tx.DeleteTask(ctx, historical.ID, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sources = append(sources, historical)
+	attachment, _, err := database.PutAttachment(ctx, model.Attachment{
+		ProjectID: project.ID, TaskID: target.ID, Path: "evidence.txt", ContentType: "text/plain; charset=utf-8", SizeBytes: 14,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type facts struct {
+		material string
+		deleted  *time.Time
+		updated  time.Time
+		version  int64
+	}
+	readFacts := func(task model.Task) facts {
+		t.Helper()
+		var value facts
+		if err := database.Pool.QueryRow(ctx, `SELECT jsonb_build_object(
+ 'task',to_jsonb(t)-ARRAY['deleted_at','updated_at','version'],
+ 'properties',(SELECT jsonb_object_agg(name,value) FROM task_properties WHERE task_id=t.id))::text,
+ deleted_at,updated_at,version FROM tasks t WHERE project_id=$1 AND id=$2`, task.ProjectID, task.ID).
+			Scan(&value.material, &value.deleted, &value.updated, &value.version); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	before := make(map[string]facts)
+	for _, task := range append(slices.Clone(sources), target, root, unrelated, foreign) {
+		before[task.ID] = readFacts(task)
+	}
+	var tombstone model.TaskTombstone
+	if err := writerWrite(t, database, project.ID, func(tx store.TaskWriteDAO) error {
+		var err error
+		tombstone, err = tx.DeleteTask(ctx, target.ID, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range sources {
+		after, old := readFacts(source), before[source.ID]
+		if after.material != old.material || !reflect.DeepEqual(after.deleted, old.deleted) || after.version != old.version+1 || !after.updated.After(old.updated) {
+			t.Fatalf("incoming source %s changed material/history or did not advance once: before=%+v after=%+v", source.ID, old, after)
+		}
+		var dependencies, external []string
+		if err := database.Pool.QueryRow(ctx, `SELECT
+ ARRAY(SELECT depends_on_task_id::text FROM task_dependencies WHERE project_id=$1 AND task_id=$2 ORDER BY depends_on_task_id),
+ ARRAY(SELECT depends_on_task_id::text FROM task_dependencies WHERE project_id=$1 AND task_id=$2 AND external ORDER BY depends_on_task_id)`, project.ID, source.ID).Scan(&dependencies, &external); err != nil || !slices.Equal(dependencies, []string{unrelated.ID}) {
+			t.Fatalf("unrelated source relationships changed: %q %v", dependencies, err)
+		}
+		if len(source.ExternalDependsOn) != 0 && !slices.Equal(external, []string{unrelated.ID}) {
+			t.Fatalf("unrelated external classification changed: %q", external)
+		}
+	}
+	for _, task := range []model.Task{root, unrelated, foreign} {
+		if after := readFacts(task); !reflect.DeepEqual(after, before[task.ID]) {
+			t.Fatalf("unrelated Task changed: %s before=%+v after=%+v", task.ID, before[task.ID], after)
+		}
+	}
+	after := readFacts(target)
+	if after.material != before[target.ID].material || after.deleted == nil || !after.deleted.Equal(after.updated) || after.version != target.Version+1 || tombstone.Version != after.version || !tombstone.DeletedAt.Equal(after.updated) {
+		t.Fatalf("target deletion lost retained material or atomic tombstone: %+v %+v", after, tombstone)
+	}
+	var incoming, outgoing int
+	if err := database.Pool.QueryRow(ctx, `SELECT
+ (SELECT count(*) FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=$2),
+ (SELECT count(*) FROM task_dependencies WHERE project_id=$1 AND task_id=$2)`, project.ID, target.ID).Scan(&incoming, &outgoing); err != nil || incoming != 0 || outgoing != 1 {
+		t.Fatalf("wrong dependency deletion scope: incoming=%d outgoing=%d %v", incoming, outgoing, err)
+	}
+	storedAttachment, err := writerAttachment(t, database, project.ID, target.ID, attachment.Path)
+	if err != nil || !reflect.DeepEqual(storedAttachment, attachment) {
+		t.Fatalf("deletion changed attachment metadata: %+v %v", storedAttachment, err)
+	}
+	if err := writerRead(t, database, func(reader store.TaskReader) error {
+		yes, no := true, false
+		for _, ready := range []*bool{nil, &yes, &no} {
+			page, err := reader.Tasks(ctx, project.ID, store.TaskQuery{Page: store.Page{Limit: 100}, Ready: ready})
+			if err != nil || slices.ContainsFunc(page.Items, func(item model.Task) bool { return item.ID == target.ID || item.ID == historical.ID }) {
+				t.Fatalf("deleted Task appeared in page: %+v %v", page, err)
+			}
+		}
+		graph, err := reader.TaskGraphTasks(ctx, project.ID, root.ID, store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}, 160)
+		if err != nil || len(graph) != 1 || graph[0].ID != root.ID {
+			t.Fatalf("deleted target appeared through retained outgoing history: %+v %v", graph, err)
+		}
+		views, err := reader.TaskSyncTasks(ctx, project.ID, nil, 160)
+		if err != nil || slices.ContainsFunc(views, func(item model.TaskViewRecord) bool { return item.ID == target.ID || item.ID == historical.ID }) {
+			t.Fatalf("deleted Task appeared in sync view: %+v %v", views, err)
+		}
+		for _, source := range sources[:len(sources)-1] {
+			index := slices.IndexFunc(views, func(item model.TaskViewRecord) bool { return item.ID == source.ID })
+			if index < 0 || views[index].Version != before[source.ID].version+1 || !slices.Equal(views[index].DependsOn, []string{unrelated.ID}) {
+				t.Fatalf("sync omitted source revision or retained relationships: %+v", views)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -602,23 +725,72 @@ func TestTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T) {
 	database := writerStore(t)
 	ctx := context.Background()
 	project := writerProject(t, database, 1)
-	task := writerTask(t, database, project.ID, 11, model.TaskTodo)
+	first := writerTask(t, database, project.ID, 9, model.TaskDone)
+	second := writerTask(t, database, project.ID, 10, model.TaskDone)
+	task := writerTask(t, database, project.ID, 11, model.TaskTodo, first.ID, second.ID)
+	current := task
 	write := func(status model.TaskStatus, title string) model.Task {
 		t.Helper()
 		var updated model.Task
 		if err := writerWrite(t, database, project.ID, func(tx store.TaskWriteDAO) error {
 			var err error
-			updated, err = tx.UpdateTask(ctx, task.ID, store.TaskWrite{Title: title, Status: status})
+			values := testutil.TaskWrite(current)
+			values.Title, values.Status = title, status
+			updated, err = tx.UpdateTask(ctx, task.ID, values)
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
+		if !slices.Equal(updated.DependsOn, current.DependsOn) || !slices.Equal(updated.ExternalDependsOn, current.ExternalDependsOn) || updated.Version != current.Version+1 || !updated.UpdatedAt.After(current.UpdatedAt) {
+			t.Fatalf("metadata/status write changed classification or did not advance once: before=%+v after=%+v", current, updated)
+		}
+		if read := testutil.SnapshotTask(t, database, project.ID, task.ID); !reflect.DeepEqual(read, updated) {
+			t.Fatalf("persisted metadata/status result differs: %+v %+v", read, updated)
+		}
+		current = updated
 		return updated
+	}
+	replaceDependencies := func(dependencies, external []string) {
+		t.Helper()
+		before := current
+		if err := writerWrite(t, database, project.ID, func(tx store.TaskWriteDAO) error {
+			values := testutil.TaskWrite(before)
+			values.DependsOn, values.ExternalDependsOn = slices.Clone(dependencies), slices.Clone(external)
+			var err error
+			current, err = tx.UpdateTask(ctx, task.ID, values)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		preserved := current
+		preserved.DependsOn, preserved.ExternalDependsOn, preserved.Version, preserved.UpdatedAt = before.DependsOn, before.ExternalDependsOn, before.Version, before.UpdatedAt
+		if !slices.Equal(current.DependsOn, dependencies) || !slices.Equal(current.ExternalDependsOn, external) || current.Version != before.Version+1 || !current.UpdatedAt.After(before.UpdatedAt) || !reflect.DeepEqual(preserved, before) {
+			t.Fatalf("classification changed execution interval or unrelated facts: before=%+v after=%+v", before, current)
+		}
+		if read := testutil.SnapshotTask(t, database, project.ID, task.ID); !reflect.DeepEqual(read, current) {
+			t.Fatalf("classification was not persisted: %+v %+v", read, current)
+		}
+		if err := writerRead(t, database, func(reader store.TaskReader) error {
+			page, err := reader.Tasks(ctx, project.ID, store.TaskQuery{Page: store.Page{Limit: 10}})
+			index := slices.IndexFunc(page.Items, func(item model.Task) bool { return item.ID == task.ID })
+			if err != nil || index < 0 || !reflect.DeepEqual(page.Items[index], current) {
+				t.Fatalf("inventory lost classification: %+v %v", page, err)
+			}
+			graph, err := reader.TaskGraphTasks(ctx, project.ID, task.ID, store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}, 160)
+			index = slices.IndexFunc(graph, func(item model.GraphTask) bool { return item.ID == task.ID })
+			if err != nil || index < 0 || !slices.Equal(graph[index].ExternalDependsOn, external) {
+				t.Fatalf("graph lost classification: %+v %v", graph, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	started := write(model.TaskInProgress, "Started")
 	if started.StartedAt == nil || started.CompletedAt != nil || !started.StartedAt.Equal(started.UpdatedAt) || started.StartedAt.Location() != time.UTC {
 		t.Fatalf("start was not generated by the status statement: %#v", started)
 	}
+	replaceDependencies(current.DependsOn, []string{first.ID})
 	edited := write(model.TaskInProgress, "Edited while running")
 	if !reflect.DeepEqual(edited.StartedAt, started.StartedAt) || edited.CompletedAt != nil {
 		t.Fatalf("same-state metadata edit reset timing: %#v", edited)
@@ -627,10 +799,13 @@ func TestTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T) {
 	if !reflect.DeepEqual(completed.StartedAt, started.StartedAt) || completed.CompletedAt == nil || !completed.CompletedAt.Equal(completed.UpdatedAt) || completed.CompletedAt.Before(*completed.StartedAt) {
 		t.Fatalf("completion did not freeze the interval: %#v", completed)
 	}
+	replaceDependencies(current.DependsOn, []string{second.ID})
 	finishedEdit := write(model.TaskDone, "Edited after completion")
 	if !reflect.DeepEqual(finishedEdit.StartedAt, completed.StartedAt) || !reflect.DeepEqual(finishedEdit.CompletedAt, completed.CompletedAt) {
 		t.Fatalf("completed metadata edit changed interval: %#v", finishedEdit)
 	}
+	replaceDependencies([]string{}, []string{})
+	replaceDependencies([]string{second.ID}, []string{})
 	reset := write(model.TaskTodo, "New attempt preparation")
 	if reset.StartedAt != nil || reset.CompletedAt != nil {
 		t.Fatalf("leaving a completed interval retained old timing: %#v", reset)

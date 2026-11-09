@@ -221,3 +221,76 @@ func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
 		t.Fatal("deletion modified completed worker properties")
 	}
 }
+
+func TestTaskDeletionCoordinatesSessionFreezeAndEpoch(t *testing.T) {
+	for _, failure := range []string{"session", "epoch", "none"} {
+		t.Run(failure, func(t *testing.T) {
+			completion := store.TransactionCommitted
+			if failure != "none" {
+				completion = store.TransactionNotCommitted
+			}
+			f := newTaskFailureFixture(t, t.Context(), completion)
+			target := f.target
+			f.expectTask(t, target)
+			f.tasks.DependentIDsFn = func(actual context.Context, id string) ([]string, error) {
+				if actual != f.ctx || id != target.ID {
+					t.Fatal("deletion dependency scope changed")
+				}
+				return []string{}, nil
+			}
+			expectTaskDeletion(t, f, target, false)
+			captures := 0
+			if failure == "none" {
+				captures = 1
+			}
+			tasks := taskDeletionService(t, f, target, captures)
+			cause := errors.New(failure + " failed")
+			if failure == "session" {
+				drain := f.sessions.DrainTaskSessionsFn
+				f.sessions.DrainTaskSessionsFn = func(ctx context.Context, id string, plan store.TaskSessionDrain) error {
+					if err := drain(ctx, id, plan); err != nil {
+						return err
+					}
+					return cause
+				}
+			}
+			if failure == "epoch" {
+				invalidate := f.projects.InvalidateTaskCacheFn
+				f.projects.InvalidateTaskCacheFn = func(ctx context.Context) error {
+					if err := invalidate(ctx); err != nil {
+						return err
+					}
+					return cause
+				}
+			}
+			err := tasks.Delete(f.ctx, f.principal, f.project.ID, target.ID, taskcore.DeleteTask{Version: target.Version})
+			if failure == "none" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, cause) || f.callbackError != cause {
+				t.Fatalf("deletion lost coordination failure: %v", err)
+			}
+			calls := f.database.trace.snapshot()
+			for _, method := range []string{"tasks.DeleteTask", "sessions.DrainTaskSessions", "sessions.TransitionTaskSessionReceipts", "projects.InvalidateTaskCache"} {
+				want := 1
+				if failure == "session" && (method == "sessions.TransitionTaskSessionReceipts" || method == "projects.InvalidateTaskCache") {
+					want = 0
+				}
+				if actual := countTaskCoordinationCall(calls, method); actual != want {
+					t.Fatalf("%s calls=%d want=%d in %v", method, actual, want, calls)
+				}
+			}
+		})
+	}
+}
+
+func countTaskCoordinationCall(calls []string, method string) int {
+	count := 0
+	for _, call := range calls {
+		if call == method {
+			count++
+		}
+	}
+	return count
+}

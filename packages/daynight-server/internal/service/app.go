@@ -107,6 +107,23 @@ func OpenApp(ctx context.Context, c config.Config) (*App, error) {
 
 // OpenAppWithLogger uses the server's structured logger for owned background work.
 func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger) (*App, error) {
+	return openApp(ctx, c, logger, appOpeners{
+		files:    func(root string) (appStorage, error) { return local.New(root) },
+		database: openPostgres,
+	})
+}
+
+type appStorage interface {
+	filestorage.Storage
+	Close() error
+}
+
+type appOpeners struct {
+	files    func(string) (appStorage, error)
+	database func(context.Context, string) (persistenceBackend, error)
+}
+
+func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open appOpeners) (*App, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -116,11 +133,11 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	}
 	startup, cancel := context.WithTimeout(ctx, c.StartupTimeout)
 	defer cancel()
-	files, err := local.New(c.StorageRoot)
+	files, err := open.files(c.StorageRoot)
 	if err != nil {
 		return nil, &config.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", Cause: err}
 	}
-	database, err := OpenPersistence(startup, c.DatabaseURL)
+	database, err := openPersistence(startup, c.DatabaseURL, open.database)
 	if err != nil {
 		return nil, errors.Join(err, files.Close())
 	}

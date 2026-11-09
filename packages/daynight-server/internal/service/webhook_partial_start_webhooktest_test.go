@@ -28,10 +28,11 @@ func (s *heldStartDeliveryStore) WriteWebhookDelivery(ctx context.Context, fn fu
 
 func TestWebhookPartialStartRetainsDependenciesUntilRunnerStops(t *testing.T) {
 	cfg := appTestConfig(t)
-	app, err := OpenApp(context.Background(), cfg)
+	app, backend, err := openTestApp(t, context.Background(), cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	backend.blockWebhookRuntime()
 	held := &heldStartDeliveryStore{WebhookDeliveryTransactions: app.webhookRuntime.runner.DB, entered: make(chan struct{}), release: make(chan struct{})}
 	app.webhookRuntime.runner.DB = held
 	if err = app.webhookRuntime.runner.Start(context.Background()); err != nil {

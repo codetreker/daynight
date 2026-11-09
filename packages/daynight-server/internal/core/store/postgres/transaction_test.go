@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,48 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestReadSnapshotCommitCancellationRetainsUnknownOutcome(t *testing.T) {
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	for _, missing := range []bool{false, true} {
+		name := "existing"
+		if missing {
+			name = "missing"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			attempted := false
+			traced := taskMutationTracedStore(t, database, taskMutationTrace{match: func(sql string) bool {
+				if strings.EqualFold(strings.TrimSpace(sql), "commit") {
+					attempted = true
+					return true
+				}
+				return false
+			}, cancel: cancel})
+			callbackDone := false
+			err := traced.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+				id := project.ID
+				if missing {
+					id = queryID(999)
+				}
+				_, err := scope.ProjectDAO().Project(ctx, id)
+				if missing && !errors.Is(err, model.ErrNotFound) || !missing && err != nil {
+					return err
+				}
+				callbackDone = true
+				return nil
+			})
+			var completion *TransactionError
+			var databaseError *Error
+			if !callbackDone || !attempted || !errors.Is(err, context.Canceled) || !errors.As(err, &completion) || !completion.CommitAttempted || completion.Outcome != TransactionUnknown || !errors.As(err, &databaseError) || databaseError.Unwrap() == nil {
+				t.Fatalf("snapshot commit lost typed completion or original cause: callback=%t attempted=%t completion=%+v error=%v", callbackDone, attempted, completion, err)
+			}
+			assertMigrationPoolReusable(t, traced.Pool)
+		})
+	}
+}
 
 // interruptObservedQuery verifies that the request context interrupts an actual
 // database operation, rather than expiring during pool acquisition or BEGIN.

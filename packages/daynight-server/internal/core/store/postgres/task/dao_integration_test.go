@@ -89,7 +89,7 @@ func TestWriterPersistenceDependenciesAndDeletion(t *testing.T) {
 	b := mustTask(t, w, store.TaskWrite{Title: "dependent", Status: model.TaskInProgress, DependsOn: []string{a.ID}, ExternalDependsOn: []string{a.ID}, Properties: model.TaskProperties{"pullRequests": []byte(`[]`)}})
 	got, e := w.Task(ctx, b.ID)
 	mustOK(t, e)
-	if !reflect.DeepEqual(got.DependsOn, []string{a.ID}) || !reflect.DeepEqual(got.ExternalDependsOn, []string{a.ID}) || got.Properties["pullRequests"] == nil {
+	if !reflect.DeepEqual(got.DependsOn, []string{a.ID}) || !reflect.DeepEqual(got.ExternalDependsOn, []string{a.ID}) || !reflect.DeepEqual(got.BlockedBy, []string{a.ID}) || got.Ready || got.Properties["pullRequests"] == nil {
 		t.Fatalf("dependency/property readback: %+v", got)
 	}
 	rows, e := w.TasksByID(ctx, []string{a.ID, b.ID})

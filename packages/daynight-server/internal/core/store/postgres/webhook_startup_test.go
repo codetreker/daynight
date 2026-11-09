@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
@@ -41,12 +42,52 @@ func TestWebhookStartupReferences(t *testing.T) {
 	if err := s.CheckWebhookCurrentReferences(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.Pool.Exec(ctx, `UPDATE webhook_endpoints SET active_key_id=$2 WHERE id=$1`, endpoint, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckWebhookCurrentReferences(ctx); err == nil {
+		t.Fatal("missing current key with a valid wait accepted")
+	}
+	if _, err := s.Pool.Exec(ctx, `UPDATE webhook_endpoints SET active_key_id=$2 WHERE id=$1`, endpoint, key); err != nil {
+		t.Fatal(err)
+	}
 	_, err = s.Pool.Exec(ctx, `UPDATE webhook_endpoint_waits SET owner_id=$1 WHERE endpoint_id=$2`, uuid.NewString(), endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CheckWebhookCurrentReferences(ctx); err == nil {
 		t.Fatal("wrong wait owner accepted")
+	}
+	initial := policies[0]
+	if _, err := s.Pool.Exec(ctx, `CREATE TABLE original_webhook_policies AS SELECT * FROM webhook_policies;
+		DELETE FROM webhook_policies WHERE version=1`); err != nil {
+		t.Fatal(err)
+	}
+	policies, err = s.WebhookStartupPolicies(ctx)
+	if err != nil || len(policies) != 0 {
+		t.Fatalf("empty policy table supplied a default: policies=%+v err=%v", policies, err)
+	}
+	if _, err := s.Pool.Exec(ctx, `INSERT INTO webhook_policies SELECT * FROM original_webhook_policies;
+		ALTER TABLE webhook_policies DISABLE TRIGGER webhook_policy_no_update;
+		UPDATE webhook_policies SET http_timeout_seconds=16 WHERE version=1`); err != nil {
+		t.Fatal(err)
+	}
+	policies, err = s.WebhookStartupPolicies(ctx)
+	if err != nil || len(policies) != 1 || policies[0].HTTPTimeoutSeconds != 16 {
+		t.Fatalf("stored timeout change was hidden: policies=%+v err=%v", policies, err)
+	}
+	if _, err := s.Pool.Exec(ctx, `UPDATE webhook_policies SET http_timeout_seconds=$1 WHERE version=1`, initial.HTTPTimeoutSeconds); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pool.Exec(ctx, `ALTER TABLE webhook_policies ENABLE TRIGGER webhook_policy_no_update;
+		INSERT INTO webhook_policies SELECT 2,max_automatic_attempts,automatic_window_seconds,automatic_offsets_seconds,max_manual_operations,payload_retention_seconds,metadata_retention_seconds,operation_retention_seconds,operation_max_age_seconds,operation_future_skew_seconds,http_timeout_seconds,lease_seconds,minimum_failure_wait_seconds,jitter_basis_points,jitter_max_seconds,key_overlap_default_seconds,key_overlap_max_seconds FROM webhook_policies WHERE version=1`); err != nil {
+		t.Fatal(err)
+	}
+	second := initial
+	second.Version = 2
+	policies, err = s.WebhookStartupPolicies(ctx)
+	if err != nil || len(policies) != 2 || !reflect.DeepEqual(policies[0], initial) || !reflect.DeepEqual(policies[1], second) {
+		t.Fatalf("startup reader filtered or changed stored policy versions: policies=%+v err=%v", policies, err)
 	}
 	_, err = s.Pool.Exec(ctx, `ALTER TABLE webhook_policies RENAME TO missing_webhook_policies`)
 	if err != nil {

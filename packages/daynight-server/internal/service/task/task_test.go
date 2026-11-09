@@ -491,6 +491,8 @@ func TestTaskSetStatusAllPairsAndVersionOrder(t *testing.T) {
 				ctx := t.Context()
 				current := f.target
 				current.Status, current.AllowAgents, current.Description = from, true, "Keep description"
+				current.DependsOn, current.ExternalDependsOn = []string{"a1111111-1111-4111-8111-111111111111"}, []string{"a1111111-1111-4111-8111-111111111111"}
+				current.BlockedBy, current.Ready = []string{}, from == model.TaskTodo
 				if from != model.TaskTodo {
 					current.StartedAt = pointer(current.CreatedAt)
 				}
@@ -522,7 +524,7 @@ func TestTaskSetStatusAllPairsAndVersionOrder(t *testing.T) {
 							return []string{}, nil
 						}
 					}
-					f.update(ctx, current.ID, store.TaskWrite{Title: current.Title, Description: current.Description, AllowAgents: true, Properties: current.Properties, Status: to, DependsOn: []string{}, ExternalDependsOn: []string{}}, expected)
+					f.update(ctx, current.ID, store.TaskWrite{Title: current.Title, Description: current.Description, AllowAgents: true, Properties: current.Properties, Status: to, DependsOn: current.DependsOn, ExternalDependsOn: current.ExternalDependsOn}, expected)
 					f.audience(ctx, "task.status_changed")
 				}
 				got, err := f.tasks.SetStatus(ctx, f.principal, strings.ToUpper(f.project.ID), strings.ToUpper(current.ID), taskcore.SetTaskStatus{Version: current.Version, Status: to})

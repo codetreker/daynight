@@ -24,6 +24,13 @@ transaction and publication work before the engine reports idle. See the
 [server design](../../../../docs/design/daynight-server.md) for the shutdown
 sequence and timeout behavior. The [webhook runtime decision](2026-11-08-webhook-application-runtime.md) replaces the separate cleanup budget with one shared deadline.
 
+Application opening and its tests execute one assembly body with instance-owned
+resource openers. Persistence construction binds transaction capabilities,
+readiness and closure to the same backend instance. The
+[root service test decision](../testing/2026-11-09-root-service-test-ownership.md)
+keeps assembly and resource lifetime observable without substituting a separately
+constructed application or interpreting mock results as persisted state.
+
 ## Alternatives
 
 **Close dependencies when the HTTP grace period expires.** A cancelled handler

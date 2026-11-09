@@ -216,15 +216,23 @@ func assignmentAlias(t *testing.T, canonical string) string {
 func TestTaskAssignmentCreateAndTransitions(t *testing.T) {
 	_, base, actor := assignmentTaskModels()
 	alice, bob := "aaaaaa66-6666-4666-8666-666666666666", "bbbbbb77-7777-4777-8777-777777777777"
-	for _, assigned := range []*string{nil, &alice, pointer(assignmentAlias(t, alice))} {
+	for _, assigned := range []*string{nil, &alice, pointer(assignmentAlias(t, alice)), &actor.UserID} {
 		t.Run("create_"+assignmentName(assigned), func(t *testing.T) {
 			current := base
 			current.AssignedTo = nil
 			f := newAssignmentFixture(t, current, nil)
 			want := assigned
 			if want != nil {
-				want = &alice
-				f.expectTarget(alice, nil)
+				want = pointer(strings.ToLower(*assigned))
+				f.expectTarget(*want, nil)
+				if *want == actor.UserID {
+					f.targetAccess = func(principal model.Principal) (model.ProjectAccess, error) {
+						if principal != (model.Principal{UserID: actor.UserID}) {
+							t.Fatalf("self-assignment principal: %#v", principal)
+						}
+						return taskMockAccess(f.project, actor), nil
+					}
+				}
 			}
 			calls := 0
 			f.writer.CreateTaskFn = func(ctx context.Context, id string, v store.TaskWrite) (model.Task, error) {

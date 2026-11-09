@@ -128,6 +128,14 @@ func TestProjectCursorScopeAndPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(decoded, &fields); err != nil || fields["version"] != float64(2) || fields["kind"] != "scoped-projects" {
+		t.Fatalf("Project cursor version or kind: %#v %v", fields, err)
+	}
 	req := model.PageRequest{Limit: 5, Cursor: &encoded}
 	if _, err := ProjectListPage(req, id, scope); err != nil {
 		t.Fatal(err)

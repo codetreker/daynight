@@ -27,11 +27,17 @@ remaining 99 items through count pagination and current visibility; three page
 reads each execute one summary query. Service tests preserve clock, DAO and
 transaction error chains, cursor identity and final-page termination.
 
-Worker snapshot and configuration scenarios execute in `service/worker` once.
-Its fault helper preserves the root tests' nonempty messages and transaction
-outcome assertions. The concurrent bootstrap test retains paired result/error
-observations and checks the returned desired configuration before reading it.
-Root service tests retain their distinct Task and Project integration cases.
+The initial consolidation moved root Worker snapshot and configuration copies
+to `service/worker`. Its fault helper preserved the root tests' nonempty messages
+and transaction outcome assertions. The concurrent bootstrap test retained
+paired result/error observations and checked the returned desired configuration
+before reading it. That split left distinct Task and Project integration cases
+in the root service suite. Their current domain, completion and physical proof
+owners follow the
+[root service ownership decision](2026-11-09-root-service-test-ownership.md):
+core owns configuration rules, Worker service owns report and transaction
+coordination, Store owns actual configuration CAS, and root service tests retain
+application composition and resource lifetime.
 
 The [Worker boundary decision](../architecture/2026-11-05-server-worker-boundaries.md)
 owns production responsibilities. The

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	pgworker "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/worker"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func workerStorage(t *testing.T) *postgres.Store {
@@ -135,5 +139,97 @@ func TestWorkerConfigurationDAOFailuresRetainCauses(t *testing.T) {
 		return tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{}})
 	}); err == nil {
 		t.Fatal("observation database update failure hidden")
+	}
+}
+
+func TestWorkerConfigurationMaximumRevisionJSONBAndReportRollback(t *testing.T) {
+	database := workerStorage(t)
+	ctx := t.Context()
+	userID, workerID := testutil.QueryID(1), testutil.QueryID(2)
+	worker := testutil.PutWorkerSnapshot(t, database, testutil.WorkerSnapshotFixture(userID, workerID, time.Now().UTC()))
+	value := testutil.WorkerConfiguration()
+	value.MaxConcurrent = 2
+	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: testutil.QueryID(3), NativeOverrides: map[string]json.RawMessage{
+		"args":  json.RawMessage(`["--foo","b\u0061r","quote\"value","\\path","中文"]`),
+		"model": json.RawMessage(`"model/\u006eame"`),
+	}}}
+	high := strconv.FormatInt(math.MaxInt64, 10)
+	observation := model.WorkerConfigurationObservation{BaseRevision: high, DesiredRevision: high, Items: []model.WorkerConfigurationItem{}}
+	var desired model.WorkerDesiredConfiguration
+	if err := testutil.WriteWorker(database, ctx, func(scope WorkerScope) error {
+		var err error
+		desired, err = scope.WorkerDAO().SetWorkerConfiguration(ctx, userID, workerID, math.MaxInt64, value)
+		if err != nil {
+			return err
+		}
+		return scope.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, math.MaxInt64, observation)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var before model.WorkerConfigurationResource
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		var err error
+		before, err = scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if before.Desired == nil || before.Desired.Revision != high || !before.Desired.UpdatedAt.Equal(desired.UpdatedAt) || before.ObservationRevision != high || before.Observation == nil || !reflect.DeepEqual(before.Observation.WorkerConfigurationObservation, observation) {
+		t.Fatalf("maximum revisions did not roundtrip: %+v", before)
+	}
+	var args []string
+	var modelName string
+	if err := json.Unmarshal(before.Desired.Value.Projects[0].NativeOverrides["args"], &args); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(before.Desired.Value.Projects[0].NativeOverrides["model"], &modelName); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(args, []string{"--foo", "bar", "quote\"value", "\\path", "中文"}) || modelName != "model/name" {
+		t.Fatalf("JSONB changed configuration meaning: args=%q model=%q", args, modelName)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET configuration_observation_revision=0;
+CREATE FUNCTION refuse_config_observation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF NEW.configuration_observation_revision <> OLD.configuration_observation_revision THEN
+  RAISE EXCEPTION 'injected configuration observation failure';
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER refuse_config_observation BEFORE UPDATE ON workers FOR EACH ROW EXECUTE FUNCTION refuse_config_observation()`); err != nil {
+		t.Fatal(err)
+	}
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		admission, err := scope.AdmitWorker(ctx, userID, workerID, 120*time.Second)
+		if err != nil {
+			return err
+		}
+		report := worker
+		report.LastReportedAt = admission.ObservedAt
+		report.Telemetry.Machine.Name = "Must roll back"
+		if _, err := scope.WorkerDAO().UpsertWorker(ctx, report); err != nil {
+			return err
+		}
+		if _, err := scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID); err != nil {
+			return err
+		}
+		return scope.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: high, Items: []model.WorkerConfigurationItem{}})
+	})
+	var fault *model.Fault
+	var driver *pgconn.PgError
+	if err == nil || errors.As(err, &fault) || !errors.As(err, &driver) || !strings.Contains(driver.Message, "injected configuration observation failure") || completion.Outcome != TransactionNotCommitted {
+		t.Fatalf("observation failure or rollback lost: %+v %v", completion, err)
+	}
+	after := testutil.ReadWorkerSnapshot(t, database, userID, workerID, worker.LastReportedAt)
+	if !reflect.DeepEqual(after, worker) {
+		t.Fatalf("observation failure committed partial heartbeat: before=%+v after=%+v", worker, after)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		after, err := scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
+		if err == nil && (after.Desired == nil || !reflect.DeepEqual(after.Desired, before.Desired) || after.ObservationRevision != "0" || !reflect.DeepEqual(after.Observation, before.Observation)) {
+			t.Errorf("observation failure changed committed configuration: before=%+v after=%+v", before, after)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
