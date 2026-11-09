@@ -1228,8 +1228,9 @@ the complete definition catalog. Human output prints identifiers, exact version
 and property JSON sorted by name; successful writes return the current property
 resource, including unchanged versions for no-ops. Terminal control characters
 remain safely escaped, and missing keys are not filled. Invalid or read-only
-values and invalid stored properties remain service 400 invalid_input failures;
-database/internal faults remain 500 internal_error.
+write values remain service 400 invalid_input failures. Stored properties are
+read as canonical values without repeated normalization or capacity checks;
+natural decoding, database and internal faults retain their causes.
 
 The version/valueText JSON envelope shares the server's 1 MiB request limit.
 Extra escaping counts toward that limit, so it is not a property-content
@@ -1275,8 +1276,10 @@ timestamp strings. They preserve array order and time spelling without sorting,
 rounding or filling missing values. Malformed or mismatched resources, duplicate
 IDs and read failures remain errors rather than empty collections. Reads retain
 the shared request/operation deadlines, cancellation and response-byte budgets.
-The endpoint body cap is 64 MiB, inclusive, and is combined with the configured
-response budget by taking the smaller bound. Stricter configured limits still
+The client Steps body safety cap is 64 MiB, inclusive, and is combined with the
+configured response budget by taking the smaller bound. Server reads use pure
+field projection and ordinary encoding without repeating write-candidate
+capacity checks. Stricter configured limits still
 win, total-operation bytes remain charged, and shared defaults do not change;
 no partial resource reaches stdout before full validation and rendering. An
 output failure can still leave partial stdout and is reported as a failure.
@@ -1769,9 +1772,10 @@ bounded attempts, cancellation and sanitized diagnostics. Reporting uses the
 existing service credentials and stable worker identity, with no separate
 command or configuration switch.
 
-The cloud target owns concurrency, polling and recovery limits, Project
-selection, and global/per-Project Agent, model and arguments. Repository roots,
-local paths, service credentials, Worker identity, `agentControlMode`, and optional
+The cloud target owns concurrency, polling and recovery limits, platform-specific
+acquisition preference, Project selection, and global/per-Project Agent, model and
+arguments. Repository roots, local paths, service credentials, Worker identity,
+`agentControlMode`, and optional
 `agentModel` / `agentReasoningEffort` overrides stay local. First enrollment imports a candidate from the original local YAML only
 when no cloud target exists. Later starts and heartbeats always use the cloud
 target; legacy local managed fields cannot replace it. Configuration enrollment does not depend
@@ -1952,6 +1956,7 @@ worker:
   maxConcurrent: 1
   pollIntervalMs: 60000
   recoveryLimit: 3
+  preferPlatformSpecificTasks: false
   agentControlMode: herdr
   agent: copilot
   model: null
@@ -2003,8 +2008,13 @@ The Worker stores its target, successful per-item values, errors and observation
 acknowledgments in `worker/configuration.json`, scoped to the service origin,
 authenticated user and Worker ID. One serialized commit owner merges receives,
 application results and acknowledgments, atomically persists the latest state,
-then publishes an immutable effective view. Invalid scope, corrupt data and
-storage errors remain failures. Cached native success history is retained for
+then publishes an immutable effective view. The cache uses schema version 2;
+version 1 is explicitly migrated, adding a false platform preference and pending
+application item for an initialized target while preserving removals, retries,
+failures and observation identity.
+The observation limit of 1025 retains space for the added scalar alongside a full
+previous collection. Current-format missing fields, invalid scope, corrupt data
+and storage errors remain failures. Cached native success history is retained for
 observation. For both global and Project native settings, a new runtime validates
 the current cloud target first and publishes that tuple on success, including
 explicit null model and empty arguments. Only a failed target validation permits
@@ -2027,8 +2037,8 @@ the state and failure guarantees; the
 [configuration decision](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)
 records their original rationale.
 
-The existing coordinator reads current successful concurrency, polling,
-recovery and native values. Lowering concurrency does not stop existing tasks;
+The coordinator reads current successful concurrency, polling, recovery, platform
+preference and native values. Lowering concurrency does not stop existing tasks;
 new starts wait until usage is below the limit. The next post-round polling wait
 uses the applied interval. Running native processes retain their launch
 arguments. Each claim retains its recorded agent type and native session ID;
@@ -2037,6 +2047,16 @@ keeps its existing frozen execution configuration. Settings for another type are
 not applied to it. A running disconnected Worker retains successful values;
 restart checks the cloud before normal scheduling. Task inventory or backend
 preparation failures do not disable configuration exchange.
+
+`preferPlatformSpecificTasks` defaults to false. Enable it separately for selected
+Workers in My Workers; local YAML supplies it only for the first cloud import.
+When enabled, new acquisition first scans all selected, eligible Projects for
+tasks explicitly requiring the actual host platform, then considers unrestricted
+tasks. Each category retains its own Project rotation and creation-time/ID order
+within a Project, across every candidate page. Preferred scans and claims do not
+advance the unrestricted category's rotation. Applied changes affect later acquisition;
+existing claims and pending startup retain their current lifecycle. A confirmed
+false application value means disabled; null means no confirmed application.
 
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker
@@ -2166,9 +2186,10 @@ authorize another launch.
 Each reconciliation round acquires at most one new task across all configured
 Projects, even when more slots remain free or the granted task must stay pending.
 The next acquisition waits until the next round after `pollIntervalMs`, continuing
-Project rotation and preserving server ready order within each Project. Empty
-Projects are skipped. Existing pending rows have startup priority, with stable
-task-ID order inside each Project; they can use multiple free slots in one round,
+the selected category's independent Project rotation and preserving server
+creation-time/ID order within each Project. With the preference disabled, the
+original mixed compatible category shares the unrestricted category's rotation. Empty Projects are skipped. Existing
+pending rows have startup priority, with stable task-ID order inside each Project; they can use multiple free slots in one round,
 rotating Projects after each successful slot allocation.
 
 macOS Herdr recovery uses the original lifecycle journal:

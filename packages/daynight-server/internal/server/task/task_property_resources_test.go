@@ -409,7 +409,7 @@ func TestPausedBlockedTaskRetainsDependencyAndInventory(t *testing.T) {
 	if actual.ProjectID != task.ProjectID || actual.TaskID != task.ID || string(actual.Properties["paused"]) != "true" {
 		t.Fatal("blocked task property response changed")
 	}
-	h.Tasks.ObserveRESTFunc = func(ctx context.Context, p model.Principal, projectID, id string, extended bool) (taskservice.TaskObservation, error) {
+	h.Tasks.ObserveFunc = func(ctx context.Context, p model.Principal, projectID, id string) (taskservice.TaskObservation, error) {
 		requirePropertyCall(t, ctx, p, projectID, id)
 		return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
 	}

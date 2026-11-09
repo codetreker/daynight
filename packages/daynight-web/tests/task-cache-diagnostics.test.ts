@@ -15,7 +15,7 @@ it("classifies cache lifecycle failures precisely and preserves only known cause
 it("does not expose arbitrary exception names, messages, response codes or nested private contents", () => {
   const secret = "cookie=session-token; private task body";
   const arbitrary = new Error(secret, { cause: { Cookie: secret, responseBody: secret } }); arbitrary.name = secret;
-  const failure = new ApiError("server", 500, secret, secret, undefined, new TaskCacheError("storage", arbitrary));
+  const failure = new ApiError("server", 500, secret, secret, new TaskCacheError("storage", arbitrary));
   const diagnostic = taskCacheFailureDiagnostic(failure);
   expect(JSON.stringify(diagnostic)).not.toContain(secret);
   expect(diagnostic).toEqual({ error_category: "server", cause: { name: "ApiError", kind: "server", cause: { name: "TaskCacheError", category: "storage", cause: { name: "Error", cause: { name: "Error" } } } } });

@@ -3,14 +3,12 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -80,17 +78,10 @@ func (w *Writer) ReportTaskSnapshots(ctx context.Context, userID string, invento
 		if err := rows.Scan(&source.Task.ID, &source.Task.ProjectID, &source.Task.Title, &source.Task.Status, &properties, &source.ProjectName); err != nil {
 			return nil, pg.QueryError("read reported task sources", err)
 		}
-		if !source.Task.Status.Valid() {
-			return nil, pg.QueryError("read reported task sources", fmt.Errorf("stored task status is invalid"))
-		}
 		if properties == nil {
 			continue
 		}
-		value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*properties))
-		if err != nil {
-			return nil, pg.QueryError("decode reported task source", err)
-		}
-		source.Task.Properties = model.TaskProperties{"worker": value}
+		source.Task.Properties = model.TaskProperties{"worker": json.RawMessage(*properties)}
 		items = append(items, source)
 	}
 	if err := rows.Err(); err != nil {

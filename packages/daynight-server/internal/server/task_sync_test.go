@@ -48,7 +48,7 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	assertProjectError(t, projectRequest(outsideHandler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
 
 	database := newHTTPTestStore(t)
-	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1, "project": 1, "epoch": 1, "size": 1, "tasks": 1, "assignees": 1, "observed": 1, "sessions": 1})
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1, "project": 1, "epoch": 1, "tasks": 1, "assignees": 1, "observed": 1, "sessions": 1})
 	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync project")}
 	projects.ProjectAccessFn = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		plan.Called("access")
@@ -75,11 +75,6 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 		plan.Called("epoch")
 		requireProject(id)
 		return "cccccc99-9999-4999-8999-999999999999", nil
-	}
-	tasks.TaskGraphSizeFn = func(ctx context.Context, id string) (store.TaskGraphSize, error) {
-		plan.Called("size")
-		requireProject(id)
-		return store.TaskGraphSize{}, nil
 	}
 	tasks.TaskSyncTasksFn = func(ctx context.Context, id string, lower *time.Time, preview int) ([]model.TaskViewRecord, error) {
 		plan.Called("tasks")

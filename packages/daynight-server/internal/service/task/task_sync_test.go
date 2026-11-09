@@ -2,7 +2,6 @@ package task_test
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -26,12 +25,8 @@ func (r taskReadSessionStates) TaskListSessionStates(ctx context.Context, source
 	return map[string]model.SessionListState{}, nil
 }
 
-func (f *taskReadFixture) sync(epoch string, size store.TaskGraphSize, rows func(*time.Time) ([]model.TaskViewRecord, error), people []model.TaskAssigneeFact, overlap time.Duration) *taskservice.TaskSync {
+func (f *taskReadFixture) sync(epoch string, rows func(*time.Time) ([]model.TaskViewRecord, error), people []model.TaskAssigneeFact, overlap time.Duration) *taskservice.TaskSync {
 	f.reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) { f.requireProject(ctx, id); return epoch, nil }
-	f.reader.TaskGraphSizeFn = func(ctx context.Context, id string) (store.TaskGraphSize, error) {
-		f.requireProject(ctx, id)
-		return size, nil
-	}
 	f.reader.TaskSyncTasksFn = nil
 	f.reader.TaskAssigneesFn = nil
 	f.snapshot.SessionDAOFn = nil
@@ -97,7 +92,7 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newTaskReadFixture(t)
-			sync := f.sync(epoch, store.TaskGraphSize{NodeCount: int64(len(test.rows))}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+			sync := f.sync(epoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
 				if !model.EqualOptional(lower, test.lower) {
 					t.Fatalf("lower bound=%v want=%v", lower, test.lower)
 				}
@@ -124,7 +119,7 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 	for _, overlap := range []time.Duration{time.Nanosecond, 500 * time.Nanosecond, time.Microsecond} {
 		f := newTaskReadFixture(t)
 		lower := stamp.Add(overlap).Add(time.Nanosecond)
-		sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 2}, func(got *time.Time) ([]model.TaskViewRecord, error) {
+		sync := f.sync(epoch, func(got *time.Time) ([]model.TaskViewRecord, error) {
 			want := stamp.Add(time.Nanosecond)
 			if got == nil || *got != want {
 				t.Fatalf("submicrosecond lower=%v want=%v", got, want)
@@ -179,65 +174,6 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 	}
 }
 
-func TestTaskSyncFullCapacityBeforeWindowProjection(t *testing.T) {
-	epoch := taskReadID(90)
-	for _, test := range []struct {
-		nodes, edges int
-		refused      bool
-	}{{1000, 5000, false}, {1001, 0, true}, {101, 5001, true}} {
-		t.Run(fmt.Sprintf("%d_%d", test.nodes, test.edges), func(t *testing.T) {
-			for _, windowed := range []bool{false, true} {
-				f := newTaskReadFixture(t)
-				var rowsFn func(*time.Time) ([]model.TaskViewRecord, error)
-				var request taskservice.TaskSyncRequest
-				if windowed {
-					since := f.observed.Add(time.Hour)
-					request = taskservice.TaskSyncRequest{Epoch: epoch, Since: &since}
-				}
-				if !test.refused {
-					rowsFn = func(lower *time.Time) ([]model.TaskViewRecord, error) {
-						if windowed {
-							want := request.Since.Add(-10 * time.Second)
-							if lower == nil || *lower != want {
-								t.Fatalf("future window=%v want=%v", lower, want)
-							}
-							return []model.TaskViewRecord{}, nil
-						}
-						if lower != nil {
-							t.Fatal("full snapshot became a window")
-						}
-						rows := make([]model.TaskViewRecord, test.nodes)
-						for index := range rows {
-							rows[index] = taskReadView(taskReadID(index+1), fmt.Sprintf("Task %d", index+1), 1, f.observed)
-						}
-						return rows, nil
-					}
-				}
-				sync := f.sync(epoch, store.TaskGraphSize{NodeCount: int64(test.nodes), EdgeCount: int64(test.edges)}, rowsFn, []model.TaskAssigneeFact{}, 10*time.Second)
-				result, err := sync.Get(f.ctx, f.principal, f.project.ID, request)
-				if test.refused {
-					fault := requireFault(t, err, "graph_limit_exceeded")
-					want := &model.GraphLimitDetails{NodeCount: int64(test.nodes), EdgeCount: int64(test.edges), MaxNodes: 1000, MaxEdges: 5000}
-					if !reflect.DeepEqual(fault.GraphLimit, want) || !reflect.DeepEqual(result, model.TaskSync{}) {
-						t.Fatalf("capacity refusal changed: %#v %#v", fault, result)
-					}
-				} else {
-					want := 1000
-					if windowed {
-						want = 0
-					}
-					if err != nil || result.Tasks == nil || len(result.Tasks) != want {
-						t.Fatalf("valid capacity/window: %#v %v", result, err)
-					}
-				}
-				if f.reads != 1 {
-					t.Fatalf("capacity check used %d snapshots", f.reads)
-				}
-			}
-		})
-	}
-}
-
 func TestTaskSyncProjectAccessAndRowsUseOneScope(t *testing.T) {
 	f := newTaskReadFixture(t)
 	oldEpoch := taskReadID(90)
@@ -245,7 +181,7 @@ func TestTaskSyncProjectAccessAndRowsUseOneScope(t *testing.T) {
 	dependent := taskReadView(taskReadID(2), "Dependent", 1, f.observed, before.ID)
 	oldProject := f.project
 	oldAccess := taskMockAccess(f.project, f.principal)
-	sync := f.sync(oldEpoch, store.TaskGraphSize{NodeCount: 2, EdgeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+	sync := f.sync(oldEpoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
 		if lower != nil {
 			t.Fatal("complete epoch delta lost all rows")
 		}
@@ -270,7 +206,7 @@ func TestTaskSyncProjectAccessAndRowsUseOneScope(t *testing.T) {
 	after.TitlePreview = "After"
 	after.Status = model.TaskDone
 	after.Version++
-	sync = f.sync(taskReadID(91), store.TaskGraphSize{NodeCount: 2, EdgeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+	sync = f.sync(taskReadID(91), func(lower *time.Time) ([]model.TaskViewRecord, error) {
 		if lower != nil {
 			t.Fatal("rotated epoch failed to request full snapshot")
 		}

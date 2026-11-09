@@ -13,9 +13,10 @@ alone does not bound individual fields.
 Step add and change apply the [shared text policy](2026-11-07-api-input-policy.md)
 to the complete target candidate before encoding the collection and persisting
 the mutation. The [Step contract](../../../../docs/spec/daynight-task-steps.md)
-defines the field and collection limits and their failure behavior. Read-side
-structural validation remains separate; move and delete do not apply the new
-field budget to existing values.
+defines the write field and collection limits and their failure behavior. Reads
+use pure stored-field projection without repeat structural or capacity checks,
+as recorded in the [canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md).
+Move and delete do not apply the target field budget to existing values.
 
 ## Alternatives
 

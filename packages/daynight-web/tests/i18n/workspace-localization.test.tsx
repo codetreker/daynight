@@ -122,7 +122,7 @@ describe("workspace localization", () => {
     [new ApiError("network", null, "network", "network-id"), "Project could not be loaded", "无法连接服务，请检查本地服务后重试。"],
     [new ApiError("protocol", 200, "protocol", "protocol-id"), "Task graph data is incomplete", "任务图数据不完整或不一致，请重试。"],
     [new ApiError("server", 404, "not_found", "missing-id"), "Project not found", "这个项目不存在，请返回项目列表。"],
-    [new ApiError("server", 409, "graph_limit_exceeded", "limit-id", { nodeCount: 1001, edgeCount: 5100, maxNodes: 1000, maxEdges: 5000 }), "Task graph exceeds the display limit", "完整任务图超过当前支持的展示规模。"],
+    [new ApiError("server", 500, "internal_error", "read-id"), "Project could not be loaded", "暂时无法读取任务图，请重试。"],
   ] as const)("retranslates an existing %s error and retains its request ID without retrying", async (error, title, detail) => {
     graphRequest.mockRejectedValueOnce(error);
     window.history.replaceState(null, "", `/projects/${projectId}`);
@@ -136,7 +136,6 @@ describe("workspace localization", () => {
     expect(within(alert).getByText(detail)).toBeVisible();
     expect(screen.getByText(error.requestId!)).toBe(requestId);
     expect(graphRequest).toHaveBeenCalledTimes(1);
-    if (error.graphLimit !== undefined) expect(alert).toHaveTextContent("当前 1,001 个任务、5,100 条依赖；支持最多 1,000 个任务、5,000 条依赖。");
   });
 
   it("retains task tabs, filters, rows and scroll state, and retranslates a semantic removed-task notice", async () => {

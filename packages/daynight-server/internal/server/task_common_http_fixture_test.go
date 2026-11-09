@@ -254,8 +254,8 @@ func (f *taskHTTPFixture) expectList(want []store.TaskQuery, pages []store.TaskP
 func (f *taskHTTPFixture) expectGraph(root string, rows []model.GraphTask) {
 	f.t.Helper()
 	rows = copyTaskHTTPGraphRows(rows)
-	f.expectSnapshot(map[string]int{"project": 1, "presence": 1, "graphSize": 1, "graph": 1, "observed": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
-		selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, IncludeExternalEdges: true, LiveOnly: true}
+	f.expectSnapshot(map[string]int{"project": 1, "presence": 1, "graph": 1, "observed": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+		selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
 		reader.TaskPresenceFn = func(ctx context.Context, projectID, id string) (store.TaskPresence, error) {
 			f.require(ctx, projectID)
 			plan.Called("presence")
@@ -263,14 +263,6 @@ func (f *taskHTTPFixture) expectGraph(root string, rows []model.GraphTask) {
 				unexpectedHTTPCall(f.t, "Graph root identity")
 			}
 			return store.TaskPresence{Found: true}, nil
-		}
-		reader.TaskGraphProjectionSizeFn = func(ctx context.Context, projectID, id string, got store.TaskGraphSelection) (store.TaskGraphSize, error) {
-			f.require(ctx, projectID)
-			plan.Called("graphSize")
-			if id != root || got != selection {
-				unexpectedHTTPCall(f.t, "Graph selection")
-			}
-			return store.TaskGraphSize{NodeCount: int64(len(rows))}, nil
 		}
 		reader.TaskGraphTasksFn = func(ctx context.Context, projectID, id string, got store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
 			f.require(ctx, projectID)
@@ -283,19 +275,14 @@ func (f *taskHTTPFixture) expectGraph(root string, rows []model.GraphTask) {
 	})
 }
 
-func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.TaskAssigneeFact, lower *time.Time, size store.TaskGraphSize) {
+func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, facts []model.TaskAssigneeFact, lower *time.Time) {
 	f.t.Helper()
 	rows, facts, lower = copyTaskHTTPSyncRows(rows), copyTaskHTTPAssigneeFacts(facts), copyTaskHTTPPointer(lower)
-	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "graphSize": 1, "sync": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
 		reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) {
 			f.require(ctx, id)
 			plan.Called("epoch")
 			return taskHTTPEpoch, nil
-		}
-		reader.TaskGraphSizeFn = func(ctx context.Context, id string) (store.TaskGraphSize, error) {
-			f.require(ctx, id)
-			plan.Called("graphSize")
-			return size, nil
 		}
 		reader.TaskSyncTasksFn = func(ctx context.Context, id string, since *time.Time, preview int) ([]model.TaskViewRecord, error) {
 			f.require(ctx, id)

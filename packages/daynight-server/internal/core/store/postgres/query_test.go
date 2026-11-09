@@ -64,37 +64,6 @@ func mustQueryExec(t *testing.T, s *Store, sql string, args ...any) {
 	}
 }
 
-func TestTaskReadersRejectInvalidStoredStatus(t *testing.T) {
-	for _, status := range []string{"proposed", "unknown"} {
-		t.Run(status, func(t *testing.T) {
-			database := isolatedStore(t)
-			ctx := context.Background()
-			project := queryProject(t, database, 1)
-			task := queryTask(t, database, project.ID, 11, model.TaskTodo)
-			mustQueryExec(t, database, `ALTER TABLE tasks DROP CONSTRAINT tasks_status_check`)
-			mustQueryExec(t, database, `UPDATE tasks SET status=$1 WHERE id=$2`, status, task.ID)
-			for _, read := range []func(SnapshotScope) error{
-				func(snapshot SnapshotScope) error {
-					_, err := snapshot.TaskDAO().Task(ctx, project.ID, task.ID)
-					return err
-				},
-				func(snapshot SnapshotScope) error {
-					_, err := snapshot.TaskDAO().Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
-					return err
-				},
-				func(snapshot SnapshotScope) error {
-					_, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, task.ID, testGraphSelection(), 160)
-					return err
-				},
-			} {
-				if err := database.ReadSnapshot(ctx, read); err == nil || errors.Is(err, model.ErrNotFound) {
-					t.Fatalf("invalid persisted status was accepted or hidden: %v", err)
-				}
-			}
-		})
-	}
-}
-
 func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()

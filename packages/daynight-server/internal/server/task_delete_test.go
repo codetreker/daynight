@@ -132,7 +132,7 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 		}
 		assertProjectError(t, projectRequest(handler, call.method, path+call.suffix, call.body), 410, "task_deleted")
 	}
-	f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 1}, BoundedText: true, LegacyProjection: true}}, []store.TaskPage{{Items: []model.Task{}}})
+	f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{}}})
 	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(task.ProjectID), ""), 200)
 	if len(page.Items) != 0 {
 		t.Fatal("deleted Task is still listed")

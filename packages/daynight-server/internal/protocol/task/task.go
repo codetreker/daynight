@@ -259,9 +259,8 @@ func EncodeMCPDataResponse(w io.Writer, data any, requestID, outcome string, rpc
 	return measure.JSON(w, "task", max, response{JSONRPC: "2.0", ID: rpcID, Result: r}, false)
 }
 
-// Admission borrows existing immutable values to avoid copying large historical
-// values before the budgeted encoder runs. Public response projections retain
-// their original independent copies.
+// Admission borrows immutable values. Public response projections retain
+// independent copies.
 func properties(value model.TaskProperties, copyValues bool) map[string]json.RawMessage {
 	if copyValues {
 		return taskproperty.Clone(value)

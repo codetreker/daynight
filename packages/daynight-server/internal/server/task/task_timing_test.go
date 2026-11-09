@@ -44,7 +44,7 @@ func TestTaskHTTPTimingProjectsSuppliedIntervalsAcrossResources(t *testing.T) {
 	end := start.Add(time.Hour)
 	result := created
 	result.Status, result.Version, result.StartedAt, result.CompletedAt, result.UpdatedAt = model.TaskDone, 3, &start, &end, end
-	h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+	h.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
 		return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
 	}
 	h.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {

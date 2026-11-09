@@ -103,10 +103,10 @@ func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
 	}
 }
 
-func TestProjectDeletionRejectsCorruptWorker(t *testing.T) {
+func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
 	s, _, _, project := membershipFixture(t)
 	ctx := context.Background()
-	for _, raw := range []string{"null", "{", "{}"} {
+	for _, raw := range []string{"{", `{"claimId":1}`} {
 		id := uuid.NewString()
 		mustQueryExec(t, s, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'bad')`, id, project.ID)
 		mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, raw)

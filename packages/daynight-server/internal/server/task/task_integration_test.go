@@ -42,9 +42,9 @@ func TestTaskHTTPCreateUpdateReadAndListProjection(t *testing.T) {
 		}
 		return changed, nil
 	}
-	h.Tasks.ObserveRESTFunc = func(ctx context.Context, principal model.Principal, projectID, id string, extended bool) (taskservice.TaskObservation, error) {
-		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID || extended {
-			t.Fatalf("read scope: %+v %s %s extended=%v", principal, projectID, id, extended)
+	h.Tasks.ObserveFunc = func(ctx context.Context, principal model.Principal, projectID, id string) (taskservice.TaskObservation, error) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID {
+			t.Fatalf("read scope: %+v %s %s", principal, projectID, id)
 		}
 		return taskservice.TaskObservation{Task: changed, Epoch: testEpoch}, nil
 	}
@@ -232,7 +232,7 @@ func TestTaskHTTPDependencyErrorsAndDerivedFields(t *testing.T) {
 	h := newHTTPFixture(t, io.Discard)
 	result := testTask("Blocked target")
 	result.DependsOn, result.BlockedBy, result.Ready = dependencies, slices.Clone(dependencies), false
-	h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+	h.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
 		return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
 	}
 	actual := decodeResponse[api.Task](t, projectRequest(h, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, ""), http.StatusOK)
@@ -263,7 +263,7 @@ func TestTaskHTTPScopesIDsAndMethods(t *testing.T) {
 	if h.Tasks.TotalCalls() != 0 {
 		t.Fatalf("invalid route called service %d times", h.Tasks.TotalCalls())
 	}
-	h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+	h.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
 		return taskservice.TaskObservation{Task: testTask("Head resource"), Epoch: testEpoch}, nil
 	}
 	h.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
@@ -284,7 +284,7 @@ func TestTaskHTTPScopesIDsAndMethods(t *testing.T) {
 			t.Run(resource.projectID+"/"+resource.id+"/"+method, func(t *testing.T) {
 				f := newHTTPFixture(t, io.Discard)
 				if method == http.MethodGet {
-					f.Tasks.ObserveRESTFunc = func(_ context.Context, _ model.Principal, projectID, id string, _ bool) (taskservice.TaskObservation, error) {
+					f.Tasks.ObserveFunc = func(_ context.Context, _ model.Principal, projectID, id string) (taskservice.TaskObservation, error) {
 						if projectID != resource.projectID || id != resource.id {
 							t.Fatalf("read scope changed: %s %s", projectID, id)
 						}
@@ -367,7 +367,7 @@ func TestTaskHTTPListFiltersKeysetsAndCursorScopes(t *testing.T) {
 			result.Status = tc.status
 			cursor := "opaque + / cursor"
 			h.Tasks.ListFunc = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
-				if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || input.Status == nil || *input.Status != tc.status || !reflect.DeepEqual(input.Ready, tc.ready) || input.Limit != 50 || input.Cursor != nil || input.ExtendedWorker {
+				if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || input.Status == nil || *input.Status != tc.status || !reflect.DeepEqual(input.Ready, tc.ready) || input.Limit != 50 || input.Cursor != nil {
 					t.Fatalf("list query: %+v", input)
 				}
 				return taskservice.TaskPage{Items: []model.Task{result}, NextCursor: &cursor}, nil
@@ -428,7 +428,7 @@ func TestTaskHTTPOperationalFailuresAndCancellation(t *testing.T) {
 					return taskservice.TaskPage{}, failure
 				}
 			case tc.method == http.MethodGet:
-				h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+				h.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
 					return taskservice.TaskObservation{}, failure
 				}
 			case tc.method == http.MethodPost:

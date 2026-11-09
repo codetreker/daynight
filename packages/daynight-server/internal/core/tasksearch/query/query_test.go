@@ -3,7 +3,6 @@ package query_test
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -247,23 +246,7 @@ func TestIDEvidenceAndProjectedHits(t *testing.T) {
 			if got.Matches != tc.matches || got.ID != tc.id || got.ExactID != tc.exact || got.Title != tc.title || got.Description != tc.description {
 				t.Fatalf("got %+v", got)
 			}
-			hits := map[tasksearch.Atom]query.Hit{}
-			var visit func(*tasksearch.Node)
-			visit = func(n *tasksearch.Node) {
-				if n.Kind != tasksearch.Leaf {
-					visit(n.Left)
-					visit(n.Right)
-					return
-				}
-				f := n.Atom.Field
-				term := n.Atom.Term
-				hits[n.Atom] = query.Hit{ID: f.Includes(tasksearch.IDField) && strings.Contains(text.ID, term), Title: f.Includes(tasksearch.TitleField) && strings.Contains(strings.ToLower(text.Title), term), Description: f.Includes(tasksearch.DescriptionField) && strings.Contains(strings.ToLower(text.Description), term)}
-			}
-			visit(root)
-			projected, err := query.EvaluateHits(context.Background(), root, id, hits)
-			if err != nil || !reflect.DeepEqual(got, projected) {
-				t.Fatalf("raw=%+v projected=%+v err=%v", got, projected, err)
-			}
+
 		})
 	}
 	for _, field := range []tasksearch.Field{tasksearch.AnyField, tasksearch.IDField, tasksearch.TitleField, tasksearch.DescriptionField} {
@@ -275,34 +258,5 @@ func TestIDEvidenceAndProjectedHits(t *testing.T) {
 	}
 	if tasksearch.Field(255).Valid() || tasksearch.AnyField.Includes(tasksearch.AnyField) {
 		t.Fatal("invalid field accepted")
-	}
-}
-
-func TestProjectedHitsRejectInvalidEvidence(t *testing.T) {
-	const id = "05d609a8-50e2-4aaf-a31d-82466dca2a36"
-	root, err := query.Parse("id:05d609a8 AND title:ok")
-	if err != nil {
-		t.Fatal(err)
-	}
-	atomID, atomTitle := root.Left.Atom, root.Right.Atom
-	valid := map[tasksearch.Atom]query.Hit{atomID: {ID: true}, atomTitle: {Title: true}}
-	cases := []struct {
-		name string
-		hits map[tasksearch.Atom]query.Hit
-	}{
-		{"missing", map[tasksearch.Atom]query.Hit{atomID: {ID: true}}},
-		{"extra", map[tasksearch.Atom]query.Hit{atomID: {ID: true}, atomTitle: {Title: true}, {Field: tasksearch.IDField, Term: "other"}: {}}},
-		{"excluded", map[tasksearch.Atom]query.Hit{atomID: {ID: true, Title: true}, atomTitle: {Title: true}}},
-		{"wrong-id", map[tasksearch.Atom]query.Hit{atomID: {}, atomTitle: {Title: true}}},
-	}
-	if _, err := query.EvaluateHits(context.Background(), root, id, valid); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := query.EvaluateHits(context.Background(), root, id, tc.hits); err == nil {
-				t.Fatal("invalid evidence accepted")
-			}
-		})
 	}
 }

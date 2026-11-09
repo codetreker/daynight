@@ -199,7 +199,6 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 	}{
 		{&model.Fault{Code: "version_conflict", Message: "conflict", TaskIDs: []string{"task"}}, `{"taskIds":["task"]}`},
 		{&model.Fault{Code: "steps_limit_exceeded", Message: "limit", StepsLimit: &model.StepsLimitDetails{EncodedBytes: 123, MaxEncodedBytes: 100}}, `{"encodedBytes":123,"maxEncodedBytes":100}`},
-		{&model.Fault{Code: "graph_limit_exceeded", Message: "limit", GraphLimit: &model.GraphLimitDetails{NodeCount: 1, EdgeCount: 2, MaxNodes: 3, MaxEdges: 4}}, `{"nodeCount":1,"edgeCount":2,"maxNodes":3,"maxEdges":4}`},
 	} {
 		w := httptest.NewRecorder()
 		WriteError(w, httptest.NewRequest("GET", "/", nil), quietLogger(), "test", "write", tc.fault)

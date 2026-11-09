@@ -45,15 +45,12 @@ export type WorkspaceMessages = {
     readonly loading: string;
     readonly loadingDetail: string;
     readonly notFound: string;
-    readonly graphLimit: string;
     readonly incomplete: string;
     readonly loadingFailed: string;
     readonly networkError: string;
     readonly protocolError: string;
     readonly notFoundDetail: string;
-    readonly graphLimitDetail: string;
     readonly readError: string;
-    readonly graphLimitCounts: (args: { readonly nodes: number; readonly edges: number; readonly maxNodes: number; readonly maxEdges: number }) => string;
     readonly refreshFailed: string;
     readonly showingSnapshot: string;
     readonly retryRefresh: string;

@@ -642,14 +642,6 @@ func (s *unexpectedTaskReader) ResolveTaskAssignees(context.Context, string, []s
 	s.reject("ResolveTaskAssignees")
 	panic("unreachable")
 }
-func (s *unexpectedTaskReader) TaskGraphSize(context.Context, string) (store.TaskGraphSize, error) {
-	s.reject("TaskGraphSize")
-	panic("unreachable")
-}
-func (s *unexpectedTaskReader) TaskGraphProjectionSize(context.Context, string, string, store.TaskGraphSelection) (store.TaskGraphSize, error) {
-	s.reject("TaskGraphProjectionSize")
-	panic("unreachable")
-}
 func (s *unexpectedTaskReader) TaskGraphTasks(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error) {
 	s.reject("TaskGraphTasks")
 	panic("unreachable")

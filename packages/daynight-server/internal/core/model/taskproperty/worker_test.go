@@ -82,7 +82,7 @@ func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
 	}
 }
 
-func TestWorkerCodecRequiresCompleteStrictReadStructure(t *testing.T) {
+func TestWorkerNormalizationRequiresCompleteStructure(t *testing.T) {
 	for _, field := range []string{"claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"} {
 		t.Run("missing "+field, func(t *testing.T) {
 			worker := workerJSON(t)
@@ -134,7 +134,7 @@ func TestWorkerCodecRequiresCompleteStrictReadStructure(t *testing.T) {
 	}
 	for _, data := range []string{`{"pullRequests":[],"worker":null}`, `{"pullRequests":[],"worker":{}}`, `{"pullRequests":[],"worker":[]}`, `{"pullRequests":[],"worker":true}`} {
 		if _, err := taskproperty.Decode([]byte(data)); err == nil {
-			t.Fatalf("invalid nullable worker read field accepted: %s", data)
+			t.Fatalf("invalid nullable worker input accepted: %s", data)
 		}
 	}
 }

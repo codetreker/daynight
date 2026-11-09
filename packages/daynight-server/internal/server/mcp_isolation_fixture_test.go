@@ -28,7 +28,6 @@ func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, pr
 		delete(want, "task")
 		want["project"] = 1
 		want["presence"] = 1
-		want["size"] = 1
 		want["nodes"] = 1
 		want["clock"] = 1
 	}
@@ -73,13 +72,7 @@ func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, pr
 		mcpAttachmentCheck(t, []string{pid, id}, []string{project.ID, target.ID})
 		return store.TaskPresence{Found: true}, nil
 	}
-	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, IncludeExternalEdges: true, LiveOnly: true}
-	reader.TaskGraphProjectionSizeFn = func(ctx context.Context, pid, id string, q store.TaskGraphSelection) (store.TaskGraphSize, error) {
-		counts.Called("size")
-		mcpAttachmentCheck(t, []string{pid, id}, []string{project.ID, target.ID})
-		mcpAttachmentCheck(t, q, selection)
-		return store.TaskGraphSize{NodeCount: 1}, nil
-	}
+	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
 	reader.TaskGraphTasksFn = func(ctx context.Context, pid, id string, q store.TaskGraphSelection, n int) ([]model.GraphTask, error) {
 		counts.Called("nodes")
 		mcpAttachmentCheck(t, []string{pid, id}, []string{project.ID, target.ID})

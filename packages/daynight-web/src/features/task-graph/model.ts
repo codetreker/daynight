@@ -37,8 +37,8 @@ export type ChainProjection = {
 };
 
 export class GraphDataError extends Error {
-  constructor(reason: "invalid" | "limit" = "invalid") {
-    super(reason === "limit" ? "Task graph exceeds the supported size." : "Task graph data is incomplete or inconsistent.");
+  constructor() {
+    super("Task graph data is incomplete or inconsistent.");
     this.name = "GraphDataError";
   }
 }
@@ -50,22 +50,17 @@ const rejectGraph = (): never => {
 export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
   if (typeof graph !== "object" || graph === null || !Array.isArray(graph.tasks) ||
     typeof graph.summary !== "object" || graph.summary === null) return rejectGraph();
-  if (graph.tasks.length > 1000) throw new GraphDataError("limit");
   const nodes = new Map<string, GraphTask>();
   const successors = new Map<string, string[]>();
-  const executionRoots: string[] = [];
   const ordinaryNeighbors = new Map<string, string[]>();
   const ordinaryIndegrees = new Map<string, number>();
   const order = new Map<string, number>();
-  let edgeCount = 0;
   for (const task of graph.tasks) {
     if (typeof task !== "object" || task === null || typeof task.id !== "string" || task.id === "" || nodes.has(task.id) ||
       !Array.isArray(task.dependsOn) || !Array.isArray(task.externalDependsOn) || !Array.isArray(task.blockedBy) ||
       (task.status !== "todo" && task.status !== "in_progress" && task.status !== "done" && task.status !== "cancelled") || typeof task.ready !== "boolean") {
       return rejectGraph();
     }
-    edgeCount += task.dependsOn.length;
-    if (edgeCount > 5000) throw new GraphDataError("limit");
     const dependencies = new Set<string>(task.dependsOn);
     const external = new Set<string>(task.externalDependsOn);
     if (dependencies.size !== task.dependsOn.length || external.size !== task.externalDependsOn.length ||
@@ -77,7 +72,6 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
     ordinaryNeighbors.set(task.id, []);
     ordinaryIndegrees.set(task.id, task.dependsOn.length - task.externalDependsOn.length);
     successors.set(task.id, []);
-    if (task.dependsOn.length === 0) executionRoots.push(task.id);
   }
 
   const actual: { -readonly [Key in keyof TaskGraphSummary]: number } = {
@@ -110,17 +104,6 @@ export const buildGraphIndex = (graph: TaskGraph): GraphIndex => {
   for (const key of Object.keys(actual) as (keyof TaskGraphSummary)[]) {
     if (graph.summary[key] !== actual[key]) return rejectGraph();
   }
-
-  const degrees = new Map([...nodes.values()].map((task) => [task.id, task.dependsOn.length]));
-  const pending = [...executionRoots];
-  for (let position = 0; position < pending.length; position++) {
-    for (const successor of successors.get(pending[position]!)!) {
-      const degree = degrees.get(successor)! - 1;
-      degrees.set(successor, degree);
-      if (degree === 0) pending.push(successor);
-    }
-  }
-  if (pending.length !== nodes.size) return rejectGraph();
 
   const componentByTask = new Map<string, string>();
   const discovered = new Map<string, TaskComponent>();

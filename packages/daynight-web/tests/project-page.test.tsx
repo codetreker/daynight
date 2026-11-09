@@ -439,14 +439,13 @@ describe("project dashboard", () => {
     await screen.findByRole("heading", { name: "核心项目" });
   });
 
-  it("explains graph limits using actual counts and rejects malformed graph snapshots", async () => {
-    graphRequest.mockRejectedValueOnce(new ApiError("server", 409, "graph_limit_exceeded", "large-graph", { nodeCount: 1001, edgeCount: 5100, maxNodes: 1000, maxEdges: 5000 }))
+  it("shows generic read failures and rejects malformed graph snapshots", async () => {
+    graphRequest.mockRejectedValueOnce(new ApiError("server", 500, "internal_error", "graph-read-failed"))
       .mockResolvedValueOnce({ ...graph(), tasks: graph().tasks.map((task) => task.id === B ? { ...task, dependsOn: [X] } : task) });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     const alert = await screen.findByRole("alert");
-    expect(within(alert).getByRole("heading", { name: "任务图超过展示上限" })).toBeTruthy();
-    expect(alert.textContent).toContain("当前 1,001 个任务、5,100 条依赖；支持最多 1,000 个任务、5,000 条依赖。");
-    expect(alert.textContent).toContain("large-graph");
+    expect(within(alert).getByRole("heading", { name: "项目加载失败" })).toBeTruthy();
+    expect(alert.textContent).toContain("graph-read-failed");
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await screen.findByRole("heading", { name: "任务图数据不完整" });
     expect(screen.queryByText("任务总数")).toBeNull();

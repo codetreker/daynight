@@ -18,7 +18,7 @@ const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = n
 const project = (value: number): Project => ({ id: workerId(value), name: `Project ${value}`, repoUrl: `https://example.test/project-${value}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: workerId(999), version: 1n }, createdAt: WORKER_TIME, updatedAt: WORKER_TIME });
 const projectPage = (items: readonly Project[] = [], nextCursor: string | null = null, userId = WORKER_USER) => wireResponse({ items, nextCursor }, { headers: { 'Daynight-User-ID': userId } });
 const item = (key: WorkerConfigurationKey, appliedValue: WorkerConfigurationOutcome['appliedValue'], targetRevision = '1'): WorkerConfigurationOutcome => ({ key, appliedValue, targetRevision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null });
-const globals = (value: WorkerConfigurationValue, revision = '1') => [item({ kind: 'maxConcurrent' }, value.maxConcurrent, revision), item({ kind: 'pollIntervalMs' }, value.pollIntervalMs, revision), item({ kind: 'recoveryLimit' }, value.recoveryLimit, revision), item({ kind: 'native' }, value.native, revision)];
+const globals = (value: WorkerConfigurationValue, revision = '1') => [item({ kind: 'maxConcurrent' }, value.maxConcurrent, revision), item({ kind: 'pollIntervalMs' }, value.pollIntervalMs, revision), item({ kind: 'recoveryLimit' }, value.recoveryLimit, revision), item({ kind: 'preferPlatformSpecificTasks' }, value.preferPlatformSpecificTasks, revision), item({ kind: 'native' }, value.native, revision)];
 const observed = (revision: string, value: WorkerConfigurationValue, items: readonly WorkerConfigurationOutcome[], observationRevision = '1'): WorkerConfigurationResource => ({ ...configurationResource(revision, value), observationRevision, observation: { baseRevision: String(BigInt(observationRevision) - 1n), desiredRevision: revision, items, reportedAt: WORKER_TIME } });
 const install = (handler: (url: string, init: RequestInit) => Response | Promise<Response>, projects: readonly Project[] = []) => {
   const fetch = vi.fn((url: string, init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? projectPage(projects) : handler(url, init));
@@ -33,6 +33,41 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useRealTimers(); });
 
 describe('Worker configuration form', () => {
+  it('saves the platform preference independently and reports actual false until the Worker applies it', async () => {
+    const value = configurationValue();
+    let resource = observed('1', value, globals(value));
+    const writes: unknown[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { revision: string; value: WorkerConfigurationValue };
+        writes.push(body);
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    const preference = screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' });
+    const feedback = document.getElementById('feedback-preferPlatformSpecificTasks')!;
+    expect(preference).not.toBeChecked(); expect(feedback).toHaveTextContent('Actual: Off');
+    fireEvent.click(preference);
+    expect(preference).toBeChecked(); expect(feedback).toHaveTextContent('Unsaved');
+    save(); await flush();
+    expect(writes).toEqual([{ revision: '1', value: { ...value, preferPlatformSpecificTasks: true } }]);
+    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: Off');
+    const applied = resource.desired!.value;
+    resource = observed('2', applied, globals(applied, '2'), '2'); await advance();
+    expect(feedback).toHaveTextContent('Applied'); expect(feedback).toHaveTextContent('Actual: On');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+  it('discards the platform preference draft without saving it', async () => {
+    const fetch = install(() => configurationResponse(configurationResource()));
+    mount(); await flush();
+    const preference = screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' });
+    fireEvent.click(preference); expect(preference).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(preference).not.toBeChecked(); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+  });
   it('keeps healthy choices editable and reports a failed refresh after withdrawal', () => {
     const apply = vi.fn(), target = workerId(3), healthy = project(4);
     renderWithLocale(<ConfigurationProjectsDialog projects={[healthy]} selected={[target]} loading={false} error={new Error('offline')} refresh={vi.fn()} onClose={vi.fn()} onApply={apply} />, { locale: 'en' });

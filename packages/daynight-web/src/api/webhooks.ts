@@ -337,7 +337,7 @@ const verifyPayload = async (payload: ReturnType<typeof parsePayloadEnvelope>, s
     return { ...payload, text };
   } catch (cause) {
     signal.throwIfAborted();
-    throw new ApiError("protocol", 200, "protocol", null, undefined, cause);
+    throw new ApiError("protocol", 200, "protocol", null, cause);
   }
 };
 export const parseWebhookPayload = async (value: unknown, owner: WebhookOwner, endpointId: string, deliveryId: string, eventId: string, signal: AbortSignal): Promise<WebhookPayload> =>
@@ -379,7 +379,7 @@ export const submitWebhookMutation = (
       if (activeKeyId !== operation.keyId || overlapUntil !== operation.overlapUntil) return malformed();
       return { operation, signing: { activeKeyId, overlapUntil } };
     } catch (cause) {
-      return { operation, currentError: new ApiError("protocol", null, "protocol", null, undefined, cause) };
+      return { operation, currentError: new ApiError("protocol", null, "protocol", null, cause) };
     }
   }, { method, headers: { "Content-Type": "application/json" }, body: serializedBody }, redeliver ? [202] : create ? [200, 201] : [200], onDispatch);
 };

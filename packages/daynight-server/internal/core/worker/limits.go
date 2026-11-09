@@ -26,7 +26,7 @@ const (
 	MaxNativeArgBytes         = 4 << 10
 	MaxProjects               = 128
 	MaxInventoryClaims        = 256
-	MaxObservationItems       = 1024
+	MaxObservationItems       = 1025
 	MaxTelemetryJSONBytes     = 4 << 20
 	MaxConfigurationJSONBytes = 4 << 20
 	MaxWorkerJSONBytes        = 4 << 20
@@ -208,6 +208,11 @@ func AdmitObservation(value model.WorkerConfigurationObservation) error {
 			continue
 		}
 		switch item.Key.Kind {
+		case "preferPlatformSpecificTasks":
+			var enabled bool
+			if err := configurationDecode(item.AppliedValue, &enabled); err != nil {
+				return err
+			}
 		case "native", "projectNative":
 			var native model.WorkerNativeConfiguration
 			if err := json.Unmarshal(item.AppliedValue, &native); err != nil {

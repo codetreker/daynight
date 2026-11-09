@@ -234,19 +234,13 @@ describe("response parsing", () => {
   it("validates error metadata while discarding raw messages and unneeded details", () => {
     expect(parseServerError({ error: { code: "not_found", message: "secret SQL", requestId: "Request_1.2-3", details: { taskIds: [taskId] } } }))
       .toEqual({ code: "not_found", requestId: "Request_1.2-3" });
-    expect(parseServerError({ error: { code: "graph_limit_exceeded", message: "secret", requestId: "r1", details: {
-      nodeCount: 1001, edgeCount: 3, maxNodes: 1000, maxEdges: 5000,
-    } } })).toEqual({ code: "graph_limit_exceeded", requestId: "r1", graphLimit: {
-      nodeCount: 1001, edgeCount: 3, maxNodes: 1000, maxEdges: 5000,
-    } });
+
   });
 
   it.each([
     {}, { error: null }, { error: { code: "Bad Code", message: "x", requestId: "r1" } },
     { error: { code: "not_found", message: "x", requestId: "\nsecret" } },
     { error: { code: "not_found", requestId: "r1" } },
-    { error: { code: "graph_limit_exceeded", message: "x", requestId: "r1" } },
-    { error: { code: "graph_limit_exceeded", message: "x", requestId: "r1", details: { nodeCount: 1, edgeCount: 2, maxNodes: 1000, maxEdges: null } } },
   ])("rejects malformed error envelopes %#", (value) => {
     expect(() => parseServerError(value)).toThrow("invalid response");
   });
@@ -383,11 +377,10 @@ describe("API requests", () => {
     await expect(listProjects({}, signal())).rejects.toMatchObject({ kind: "server", status, code, requestId: "req-1", message });
   });
 
-  it("preserves graph-limit details for a useful refusal", async () => {
-    const graphLimit = { nodeCount: 1001, edgeCount: 5, maxNodes: 1000, maxEdges: 5000 };
-    mockResponse({ error: { code: "graph_limit_exceeded", message: "raw text", requestId: "req2", details: graphLimit } }, 409);
-    await expect(getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).rejects.toMatchObject({ kind: "server", status: 409, graphLimit,
-      message: "This project's task graph exceeds the supported size." });
+  it("keeps unknown sync errors on the generic server-error path", async () => {
+    mockResponse({ error: { code: "unrecognized_code", message: "raw text", requestId: "req2", details: { ignored: true } } }, 409);
+    await expect(getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).rejects.toMatchObject({ kind: "server", status: 409, code: "unrecognized_code", requestId: "req2",
+      message: "Unable to load the requested data. Please try again." });
   });
 
   it("does not fetch for pre-aborted signals, preserving the abort reason", async () => {

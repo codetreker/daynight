@@ -7,14 +7,12 @@ import (
 	"errors"
 	"maps"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	webhookmodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -420,78 +418,6 @@ func TestTaskPausedPropertyPreservesActiveExecutionAndPresence(t *testing.T) {
 			f := newPropertyWriteFixture(t, removed, propertyCommit(t))
 			_, err := f.tasks.SetProperty(f.ctx, f.principal, f.project.ID, removed.ID, "paused", value, removed.Version)
 			requireFault(t, err, "invalid_input")
-		})
-	}
-}
-
-func TestIllegalStoredPropertyErrorsPreventTaskWrites(t *testing.T) {
-	for _, value := range []struct{ name, raw string }{{"pullRequests", "{"}, {"pullRequests", `["private-stored-value"]`}, {"pullRequests", "null"}, {"paused", "null"}, {"worker", "null"}, {"unknown", "[]"}} {
-		t.Run(value.name+"/"+value.raw, func(t *testing.T) {
-			project, target, principal := taskMockModels()
-			_, failure := taskproperties.Normalize(model.TaskProperties{value.name: json.RawMessage(value.raw)})
-			if failure == nil {
-				t.Fatal("invalid stored fixture accepted")
-			}
-			for _, method := range []string{"get", "list", "update", "set", "remove"} {
-				t.Run(method, func(t *testing.T) {
-					var err error
-					if method == "get" || method == "list" {
-						base := newTaskMockBase(t, "property read")
-						reader := &taskReaderMock{taskMockBase: base.withLabel("tasks")}
-						reader.TaskFn = func(ctx context.Context, pid, id string) (model.Task, error) {
-							if ctx != t.Context() || pid != project.ID || id != target.ID {
-								t.Fatal("property read identity changed")
-							}
-							return model.Task{}, failure
-						}
-						reader.TasksFn = func(ctx context.Context, pid string, q store.TaskQuery) (store.TaskPage, error) {
-							if ctx != t.Context() || pid != project.ID || q.Page.Limit != 1 {
-								t.Fatal("property list scope changed")
-							}
-							return store.TaskPage{}, failure
-						}
-						projects := &projectReaderMock{taskMockBase: base.withLabel("projects"), ProjectAccessFn: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
-							if ctx != t.Context() || p != principal || id != project.ID {
-								t.Fatal("property read principal changed")
-							}
-							return taskMockAccess(project, principal), nil
-						}}
-						scope := &taskSnapshotScopeMock{taskMockBase: base.withLabel("scope"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
-						calls := 0
-						database := &taskStoreMock{taskMockBase: base.withLabel("store"), ReadSnapshotFn: func(ctx context.Context, work func(store.SnapshotScope) error) error {
-							calls++
-							if ctx != t.Context() {
-								t.Fatal("read context changed")
-							}
-							return work(scope)
-						}}
-						tasks := taskservice.NewTasks(database)
-						if method == "get" {
-							_, err = tasks.Get(t.Context(), principal, project.ID, target.ID)
-						} else {
-							_, err = tasks.List(t.Context(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
-						}
-						if calls != 1 {
-							t.Fatalf("property read snapshot calls=%d", calls)
-						}
-					} else {
-						f := newPropertyWriteFixture(t, target, propertyCommit(t))
-						f.dao.TaskFn = func(context.Context, string) (model.Task, error) { f.taskReads++; return model.Task{}, failure }
-						switch method {
-						case "update":
-							_, err = f.tasks.Update(f.ctx, f.principal, f.project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed")})
-						case "set":
-							_, err = f.tasks.SetProperty(f.ctx, f.principal, f.project.ID, target.ID, "pullRequests", `[]`, target.Version)
-						case "remove":
-							_, err = f.tasks.RemoveProperty(f.ctx, f.principal, f.project.ID, target.ID, "pullRequests", target.Version)
-						}
-					}
-					fault := requireFault(t, err, "invalid_input")
-					if strings.Contains(fault.Message, "private-stored-value") || !errors.Is(err, failure) {
-						t.Fatalf("stored property diagnostic leaked value or cause: %v", err)
-					}
-				})
-			}
 		})
 	}
 }

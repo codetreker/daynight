@@ -13,7 +13,7 @@ export type PostThreadInput = { readonly body: string; readonly replyTo?: string
 export type ThreadPosition = Pick<ThreadMessage, 'id' | 'createdAt'>;
 
 const encoder = new TextEncoder();
-const protocol = (cause?: unknown): never => { throw new ApiError('protocol', null, 'protocol', null, undefined, cause); };
+const protocol = (cause?: unknown): never => { throw new ApiError('protocol', null, 'protocol', null, cause); };
 export const compareThreadPositions = (left: ThreadPosition, right: ThreadPosition): number =>
   left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 

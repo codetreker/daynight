@@ -32,8 +32,6 @@ it('exposes typed syntax and context errors, enforcing positions, status and JSO
   const error = await read('中文abcde(').catch((e: unknown) => e);
   expect(error).toBeInstanceOf(TaskSearchError); if (!(error instanceof TaskSearchError)) throw error; expect(error.syntax).toEqual({ reason: 'unclosed_group', position: 8, length: 1 });
   expect(searchSelectionRange('😀abc(', { reason: 'unclosed_group', position: 5, length: 1 })).toEqual({ start: 5, end: 6 });
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(fixture('context-limit'), 400)));
-  await expect(read()).rejects.toMatchObject({ contextLimit: { nodeCount: 20001, maxNodes: 20000 } });
   for (const bad of [fixture('invalid-expression').replace('"position":8', '"position":8.0'), fixture('invalid-expression').replace('"position":8', '"position":99')]) {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(bad, 400))); await expect(read('中文abcde(')).rejects.toMatchObject({ kind: 'protocol' });
   }
@@ -56,7 +54,6 @@ it('rejects non-object success and error bodies without scanning them as JSON ob
   for (const body of [
     '{"error":[0]}',
     '{"error":{"code":"invalid_search_expression","message":"bad","requestId":"request","details":[0]}}',
-    '{"error":{"code":"search_context_limit_exceeded","message":"bad","requestId":"request","details":[0]}}',
   ]) {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(body, 400)));
     await expect(read()).rejects.toMatchObject({ kind: 'protocol' });

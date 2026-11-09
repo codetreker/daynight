@@ -12,7 +12,6 @@ type TaskGraphSelection struct {
 	OrdinaryPrerequisites bool
 	OrdinaryDependents    bool
 	DirectExternal        bool
-	IncludeExternalEdges  bool
 	LiveOnly              bool
 }
 
@@ -22,10 +21,6 @@ type TaskGraphSelection struct {
 type TaskStepProjection struct {
 	Step           model.TaskStep
 	TitleTruncated bool
-	// Oversized means the full text was withheld before crossing the database boundary.
-	Oversized bool
-	// InvalidTitle records a title consisting entirely of Unicode whitespace.
-	InvalidTitle bool
 }
 
 type TaskReader interface {
@@ -44,8 +39,6 @@ type TaskReader interface {
 	ThreadSides(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
 	TaskAssignees(context.Context, string) ([]model.TaskAssigneeFact, error)
 	ResolveTaskAssignees(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
-	TaskGraphSize(context.Context, string) (TaskGraphSize, error)
-	TaskGraphProjectionSize(context.Context, string, string, TaskGraphSelection) (TaskGraphSize, error)
 	TaskGraphTasks(context.Context, string, string, TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpoch(context.Context, string) (string, error)
 	TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)

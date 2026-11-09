@@ -25,7 +25,7 @@ func taskAssignmentHTTPQuery(target *string) store.TaskQuery {
 	if target != nil {
 		assigned = model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: *target}
 	}
-	return store.TaskQuery{AssignedTo: assigned, Page: store.Page{Limit: 1}, Status: &status, Ready: &ready, AllowAgents: &allowed, CompatiblePlatform: &platform, BoundedText: true, LegacyProjection: true}
+	return store.TaskQuery{AssignedTo: assigned, Page: store.Page{Limit: 1}, Status: &status, Ready: &ready, AllowAgents: &allowed, CompatiblePlatform: &platform}
 }
 
 func collectAssignmentHTTPPages(t *testing.T, f *taskHTTPFixture, collection, query string, expected *string, rows []model.Task) ([]string, *string) {
@@ -128,7 +128,7 @@ func TestTaskHTTPAssignedToStrictFiltersAndFormerTarget(t *testing.T) {
 	for _, query := range []string{"assignedTo=", "assignedTo=null", "assignedTo=all", "assignedTo=invalid", "assignedTo=Me", "assignedTo=Unassigned", "assignedTo=true", "assignedTo=%xx", "assignedTo=%ff", "assignedTo=%00", "assignedTo=me&assignedTo=me", "assignedTo=me&assignedTo=unassigned", "AssignedTo=me", "assignedTo[]=me", "assignedTo=%20" + former, "assignedTo=" + former + "%20"} {
 		assertProjectError(t, projectRequest(f.handler, http.MethodGet, collection+"?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
-	selected := store.TaskQuery{AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: former}, Page: store.Page{Limit: 1}, BoundedText: true, LegacyProjection: true}
+	selected := store.TaskQuery{AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: former}, Page: store.Page{Limit: 50}}
 	f.expectList([]store.TaskQuery{selected}, []store.TaskPage{{Items: []model.Task{target}}})
 	response := projectRequest(f.handler, http.MethodGet, collection+"?assignedTo="+strings.ToUpper(former), "")
 	page := decodeResponse[api.TaskPage](t, response, http.StatusOK)

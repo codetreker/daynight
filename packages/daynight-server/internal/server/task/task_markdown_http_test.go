@@ -26,7 +26,7 @@ func TestTaskHTTPDescriptionPreservesRawMarkdownAcrossUpdates(t *testing.T) {
 				}
 				return result, nil
 			}
-			h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+			h.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
 				return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
 			}
 			path := taskCollection(testProjectID) + "/" + testTaskID

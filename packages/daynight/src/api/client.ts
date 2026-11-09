@@ -550,6 +550,7 @@ export const createApiClient = (options: {
     if (filters.status !== undefined && !isTaskStatus(filters.status)) throw new Error("Task status must be todo, in_progress, done or cancelled.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
+    if (filters.platformSpecific !== undefined && typeof filters.platformSpecific !== "boolean") throw new Error("Platform-specific filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
     let workerId: string | undefined;
     if (filters.workerId !== undefined) {
@@ -559,7 +560,7 @@ export const createApiClient = (options: {
       workerId = parsed;
     }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
-    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(workerId === undefined ? {} : { workerId }) };
+    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(workerId === undefined ? {} : { workerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
@@ -570,6 +571,7 @@ export const createApiClient = (options: {
       || (filters.ready !== undefined && task.ready !== filters.ready)
       || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents)
       || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)
+      || (filters.platformSpecific !== undefined && (task.requiredPlatform !== null) !== filters.platformSpecific)
       || (filters.workerId !== undefined && (worker === undefined || worker.state !== "active" || worker.workerId !== canonicalId(filters.workerId)))
     ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
@@ -1208,16 +1210,16 @@ export const createApiClient = (options: {
                 if (!/^(?:0|[1-9][0-9]*)$/.test(sources.get("total") ?? "")) throw new ProtocolError("Search total must be an integer.");
               } else {
                 const error = parseServerError(value);
-                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_context_limit_exceeded: 400, search_timeout: 504 };
+                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
                 if (expectedStatus[error.code] !== undefined && expectedStatus[error.code] !== metadata.status) throw new ProtocolError("Search error status is invalid.");
                 // Search-specific refusals originate after authentication. Generic
                 // authentication failures can precede the principal header.
                 if (expectedStatus[error.code] !== undefined && metadata.principalId === undefined) throw new ProtocolError("Search error principal is missing.");
-                if (error.code === "invalid_search_expression" || error.code === "search_context_limit_exceeded") {
+                if (error.code === "invalid_search_expression") {
                   const errorSources = jsonObjectSources(sources.get("error") ?? "");
                   const detailsSources = jsonObjectSources(errorSources.get("details") ?? "");
-                  const integerFields = error.code === "invalid_search_expression" ? ["position", "length"] : ["nodeCount", "edgeCount", "maxNodes", "maxEdges"];
-                  const allowedFields = error.code === "invalid_search_expression" ? ["reason", ...integerFields] : integerFields;
+                  const integerFields = ["position", "length"];
+                  const allowedFields = ["reason", ...integerFields];
                   if (detailsSources.size !== allowedFields.length || [...detailsSources.keys()].some((field) => !allowedFields.includes(field))) throw new ProtocolError("Search error details contain unexpected fields.");
                   if (integerFields.some((field) => !/^(?:0|[1-9][0-9]*)$/.test(detailsSources.get(field) ?? ""))) throw new ProtocolError("Search error details must use integers.");
                 }

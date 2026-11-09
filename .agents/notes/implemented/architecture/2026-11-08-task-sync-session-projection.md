@@ -22,8 +22,11 @@ empty object, and the HTTP converter preserves that result without a fallback.
 
 A narrow read-only SessionReader shares TaskSync's existing database snapshot.
 It reads the relevant in-progress Tasks' Worker binding and current persisted
-Session scalars in one project query, validates their existing codecs and
-budgets, and avoids content, catalogues, operations and mutation capabilities.
+Session scalars in one project query, decodes their canonical fields normally,
+and avoids content, catalogues, operations and mutation capabilities. The
+[canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)
+removes stored-field and capacity revalidation while preserving actual binding
+and Engine fence comparisons.
 TaskSync accepts a consumer-owned single-method `SessionStateReader`, and
 application composition supplies the existing shared Engine. This preserves a
 narrow dependency on state reads rather than the Engine's content and lifecycle
@@ -70,21 +73,22 @@ module validation.
 
 **Push Session deltas or add another versioned feed.** Replay, subscription
 recovery and freshness would require a new protocol and state owner. A complete
-bounded map fits the existing project read without a second incremental history.
+minimal map fits the existing project read without a second incremental history.
 
 ## Consequences
 
-The server can provide every current reliable contribution with one narrow
-project query and bounded scalar live reads. The response adds at most 1,000
-Task keys and approximately 49,001 bytes of compact map JSON, plus the field name
-and existing envelope. This is a structural bound on the new map, not a measured
-resource saving or a bound on the entire TaskSync response.
+The server provides every current reliable contribution with one narrow project
+query and scalar live reads. Map work and bytes grow with relevant Task bindings.
+At the original 1000-Task read limit, the compact map added approximately 49,001
+bytes plus the field name and envelope; that calculation explained the earlier
+bound, without measuring resource savings. Current reads impose no such Task
+count or response-byte admission.
 
 The complete map is re-read on each successful sync even if Tasks do not change.
-Worker validation and live mutex waits remain real work; mutex waits cannot be
+Ordinary Worker decoding and live mutex waits remain real work; mutex waits cannot be
 instantly cancelled. No cross-instance live-state bus is introduced, so missing
 local live state preserves the established disconnected projection. Any query,
-codec, admission or transaction failure fails the complete sync, and the final
-64 MiB response limit includes the map. No partial success or silent empty
-fallback is added. Existing Task properties keep their per-returned-Task bounded
-reads, and full Current remains the content and authorization owner.
+natural decode, Engine admission, encoding or transaction failure fails the
+complete sync. No partial success or silent empty fallback is added. Task
+properties are loaded in one batch, and full Current remains the content and
+authorization owner.

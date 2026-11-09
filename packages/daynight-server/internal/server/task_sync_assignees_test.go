@@ -11,7 +11,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func TestTaskSyncHTTPAssigneeManifestContainsOnlyVersionsAndAccess(t *testing.T) {
@@ -23,7 +22,7 @@ func TestTaskSyncHTTPAssigneeManifestContainsOnlyVersionsAndAccess(t *testing.T)
 		{UserID: f.principal.UserID, ProfileID: &f.principal.UserID, HasProjectAccess: true, Qualified: true},
 		{UserID: member, ProfileID: &member, Name: &name, AvatarURL: &avatar, HasProjectAccess: true, Qualified: true},
 	}
-	f.expectSync([]model.TaskViewRecord{}, facts, nil, store.TaskGraphSize{})
+	f.expectSync([]model.TaskViewRecord{}, facts, nil)
 	response := projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID), "")
 	snapshot := decodeResponse[api.TaskSync](t, response, http.StatusOK)
 	if snapshot.AssigneeVersions == nil || len(snapshot.AssigneeVersions) != 2 || snapshot.Tasks == nil || len(snapshot.Tasks) != 0 {
@@ -58,7 +57,7 @@ func TestTaskSyncHTTPAssigneeManifestContainsOnlyVersionsAndAccess(t *testing.T)
 	}
 	since := time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
 	lower := since.Add(-10 * time.Second)
-	f.expectSync([]model.TaskViewRecord{}, facts, &lower, store.TaskGraphSize{})
+	f.expectSync([]model.TaskViewRecord{}, facts, &lower)
 	delta := decodeResponse[api.TaskSync](t, projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID)+"?epoch="+snapshot.Epoch+"&since=9999-12-31T23:59:59Z", ""), http.StatusOK)
 	if delta.Mode != "delta" || len(delta.Tasks) != 0 || !reflect.DeepEqual(delta.AssigneeVersions, snapshot.AssigneeVersions) {
 		t.Fatalf("empty delta manifest: %#v", delta)

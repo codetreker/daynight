@@ -243,7 +243,6 @@ func TestTaskPriorityListStorageFailures(t *testing.T) {
 	}{
 		{"fence query", `DROP TABLE tasks`, true},
 		{"list query", `DROP TABLE task_dependencies`, false},
-		{"invalid status", `ALTER TABLE tasks DROP CONSTRAINT tasks_status_check; UPDATE tasks SET status='invalid'`, false},
 		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,'bad version'::text AS version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
 		{"iteration", `CREATE FUNCTION fail_priority_title() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private list failure'; END $$;
 			ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,fail_priority_title() AS title,status,version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},

@@ -6,7 +6,7 @@ export const THREAD_ERROR_BYTES = 16_384;
 export const rejectThreadResponse = async (response: Response): Promise<never> => {
   const error = new ApiError('protocol', response.status);
   try { await response.body?.cancel(error); }
-  catch (cause) { throw new ApiError('protocol', response.status, 'protocol', null, undefined, new AggregateError([error, cause], 'The response and its cleanup failed.')); }
+  catch (cause) { throw new ApiError('protocol', response.status, 'protocol', null, new AggregateError([error, cause], 'The response and its cleanup failed.')); }
   throw error;
 };
 
@@ -46,7 +46,7 @@ export const readThreadJsonSource = async (response: Response, signal: AbortSign
     try { await reader.cancel(error); }
     catch (cleanupError) { cause = new AggregateError([error, cleanupError], 'The response and its cleanup failed.'); }
     if (cause instanceof ApiError) throw cause;
-    throw new ApiError('protocol', response.status, 'protocol', null, undefined, cause);
+    throw new ApiError('protocol', response.status, 'protocol', null, cause);
   } finally {
     signal.removeEventListener('abort', cancel);
     reader.releaseLock();

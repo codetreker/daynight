@@ -187,17 +187,7 @@ func (f *externalHTTPFixture) mutation(current *model.Task, values *store.TaskWr
 
 func (f *externalHTTPFixture) page(rows []model.Task, status *model.TaskStatus, ready *bool) {
 	f.noStorage()
-	queries := make([]store.TaskQuery, len(rows))
-	pages := make([]store.TaskPage, len(rows))
-	for index, row := range rows {
-		queries[index] = store.TaskQuery{Page: store.Page{Limit: 1}, Status: status, Ready: ready, BoundedText: true, LegacyProjection: true}
-		if index > 0 {
-			previous := rows[index-1]
-			queries[index].Page.After = &store.Position{CreatedAt: previous.CreatedAt, ID: previous.ID}
-		}
-		pages[index] = store.TaskPage{Items: []model.Task{row}, HasMore: index+1 < len(rows)}
-	}
-	f.expectList(queries, pages)
+	f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}, Status: status, Ready: ready}}, []store.TaskPage{{Items: rows}})
 }
 func (f *externalHTTPFixture) graph(root string, rows []model.Task) {
 	f.noStorage()

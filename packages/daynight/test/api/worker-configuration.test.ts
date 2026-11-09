@@ -13,7 +13,7 @@ import { workerTelemetry } from "../fixtures/worker-telemetry.js";
 
 const workerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", userId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const time = "2026-11-04T00:00:00.123456789Z";
-const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: workerId, nativeOverrides: { model: null, args: [] } }, { projectId: userId, nativeOverrides: {} }] };
+const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: workerId, nativeOverrides: { model: null, args: [] } }, { projectId: userId, nativeOverrides: {} }] };
 const desired: WorkerCloudDesired = { revision: "9223372036854775807", updatedAt: time, value };
 const item: WorkerCloudItem = { key: { kind: "maxConcurrent" }, targetRevision: "1", appliedValue: 2, state: "applied", error: null, lastFailure: null, nextAttemptAt: null };
 const configuration: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [item] } };
@@ -32,7 +32,7 @@ describe("Worker cloud configuration protocol", () => {
   it("enforces byte, scalar, Project and observation limits before producing reports", () => {
     const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
     const projects = Array.from({ length: 129 }, (_, n) => ({ projectId: id(n), nativeOverrides: {} }));
-    const bounded = { ...value, maxConcurrent: 64, pollIntervalMs: 1000, recoveryLimit: 10, native: { ...value.native, model: "界".repeat(85) + "x", args: Array(128).fill("界".repeat(1365) + "x") }, projects: projects.slice(0, 128) };
+    const bounded = { ...value, maxConcurrent: 64, pollIntervalMs: 1000, recoveryLimit: 10, preferPlatformSpecificTasks: false, native: { ...value.native, model: "界".repeat(85) + "x", args: Array(128).fill("界".repeat(1365) + "x") }, projects: projects.slice(0, 128) };
     expect(parseWorkerCloudValue(bounded).projects).toHaveLength(128);
     for (const invalid of [
       { ...bounded, projects }, { ...bounded, maxConcurrent: 65 }, { ...bounded, recoveryLimit: 11 },
@@ -41,14 +41,27 @@ describe("Worker cloud configuration protocol", () => {
       { ...bounded, native: { ...bounded.native, args: [...bounded.native.args, "x"] } },
       { ...bounded, native: { ...bounded.native, args: ["界".repeat(1366)] } },
     ]) expect(() => parseWorkerCloudValue(invalid)).toThrow(ProtocolError);
-    const items = Array.from({ length: 1025 }, (_, n) => ({ ...item, key: { kind: "projectRemoval", projectId: id(n) }, appliedValue: null, state: "pending" }));
-    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: items.slice(0, 1024) }).items).toHaveLength(1024);
+    const items = Array.from({ length: 1026 }, (_, n) => ({ ...item, key: { kind: "projectRemoval", projectId: id(n) }, appliedValue: null, state: "pending" }));
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: items.slice(0, 1025) }).items).toHaveLength(1025);
     expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items })).toThrow(ProtocolError);
     const runtimeProjects = projects.map(project => ({ projectId: project.projectId, native: null }));
     expect(parseWorkerRuntimeConfiguration({ schemaVersion: 1, native: null, projects: runtimeProjects.slice(0, 128) }).projects).toHaveLength(128);
     expect(() => parseWorkerRuntimeConfiguration({ schemaVersion: 1, native: null, projects: runtimeProjects })).toThrow(ProtocolError);
     expect(workerRuntimeConfigurationReport({ native: null, projects: runtimeProjects }, "web", {})).toBeUndefined();
   });
+  it("requires a boolean platform preference and preserves false application results", () => {
+    for (const preference of [true, false]) {
+      expect(parseWorkerCloudValue({ ...value, preferPlatformSpecificTasks: preference }).preferPlatformSpecificTasks).toBe(preference);
+      const applied = { ...item, key: { kind: "preferPlatformSpecificTasks" }, appliedValue: preference };
+      expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [applied] }).items).toEqual([applied]);
+    }
+    const { preferPlatformSpecificTasks: _preference, ...missing } = value;
+    for (const invalid of [missing, { ...value, preferPlatformSpecificTasks: null }, { ...value, preferPlatformSpecificTasks: "false" }]) {
+      expect(() => parseWorkerCloudValue(invalid)).toThrow(ProtocolError);
+    }
+    expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [{ ...item, key: { kind: "preferPlatformSpecificTasks" }, appliedValue: 0 }] })).toThrow(ProtocolError);
+  });
+
   it("preserves inheritance, explicit clears and the full int64 string range", () => {
     expect(parseWorkerCloudResource(resource)).toEqual(resource);
     expect(parseWorkerCloudValue(value).projects.map(project => project.nativeOverrides)).toEqual([{ model: null, args: [] }, {}]);

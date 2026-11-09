@@ -205,7 +205,9 @@ watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
-individually bounded complete-property reads share one repeatable-read snapshot.
+one bulk `task_id = ANY(...)` property query share one repeatable-read snapshot.
+Selected canonical property text is loaded directly into RawMessage maps; reads
+do not repeat normalization, field validation or capacity admission.
 Every snapshot and delta, including an empty delta,
 also returns required top-level `actorAccess` using the access endpoint's DTO and
 complete `assigneeVersions` entries `{userId,version,hasProjectAccess}` for the
@@ -231,18 +233,19 @@ mismatched fence retains the existing disconnected warning; reliable initializin
 or synchronizing Sessions use pending, while unreliable bindings contribute no
 key. Persisted heartbeat and drain deadlines retain their existing rules.
 This read does not advance Session lifecycle or replace content authorization.
-Query, validation, Engine admission and transaction faults fail the whole sync;
-the complete encoded response, including the map, retains its 64 MiB limit.
+Query, natural decoding, Engine admission, encoding and transaction faults fail
+the whole sync. The complete response, including the map, has no domain read-byte
+or graph-size admission.
 The [Session projection decision](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-projection.md)
 records the narrow read and lock ownership. It introduces no PostgreSQL migration.
 
 Browser consumers publish access only
 to the current identity/project memory owner, outside persistent Project and Task
 records. Missing keys propagate removal through whole-summary
-replacement; ordinary property changes preserve the epoch. Invalid stored
-properties fail the complete request with 400 invalid_input. Database and
-transaction-completion faults remain 500 internal_error and take precedence over
-a saved property validation refusal. A stored project epoch invalidates caches after supported
+replacement; ordinary property changes preserve the epoch. Write ingress owns
+property normalization, fields and existing capacity rules. Reads trust the
+stored canonical representation; natural decoding, encoding, database and
+transaction-completion errors retain their causes. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change. Its schema-9 upgrade explicitly rebuilds incompatible task caches for required
 cancelledAt while preserving separate profiles and compatible Session history.
@@ -255,8 +258,8 @@ in the live manifest. Ordinary task epoch replacement can retain matching profil
 content while all publication remains generation-fenced. Missing properties, assignedTo or Project ownership in old records cannot
 receive defaults. Graph nodes omit properties,
 and cached values grant no detail or mutation admission. Complete properties
-increase transport, parsing and summary storage costs: node/edge limits and the
-detail-cache byte budget do not bound total summary bytes. Network, decoding and
+increase transport, parsing and summary storage costs. The detail-cache byte
+budget does not bound total summary bytes. Network, decoding and
 quota failures retain the previous valid cache without partial publication or
 watermark advancement.
 The [task deletion requirements](../../docs/spec/daynight-task-deletion.md) and
@@ -455,7 +458,10 @@ and continuation past that item are not yet available.
 Task list excludes done tasks by default and orders in-progress, ready, blocked
 and done tasks before paging. Its cursor binds the caller, project, filters and
 view to a snapshot fence; `list_changed` requires restarting traversal when
-project task versions change. Graphs retain their node and edge limits.
+project task versions change. Task list pages use item-count continuation, and
+Task graph summary and full views return the complete selected graph. They do
+not apply domain read-byte or graph-size admission; the shared MCP entry retains
+its independent 128 MiB result limit.
 
 `task_ready` returns the first matching ready Tasks ordered by creation time and
 UUID. Its `limit` defaults to 5 and accepts 1 through 20; permission and platform
@@ -882,8 +888,8 @@ and product E2E retain their normal-flow scope under the
 
 Step service tests retain the real 64 MiB codec boundary: 170 escaped descriptions
 fit, 171 exceed the collection limit, and both Add and Update refuse before any
-write. Graph and Sync split physical dataset/query proof from service count
-admission. The [Task test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-task-service-test-ownership.md)
+write. Graph and Sync tests separate physical dataset/query proof from service
+coordination without stored-size admission. The [Task test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-task-service-test-ownership.md)
 records this correction of existing tests and the earlier fixture decisions.
 
 ### Go API integration
@@ -1027,7 +1033,7 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE go test -race
 ```
 
 The suite retains real MCP framing and SDK parsing, schema registration errors,
-exact RPC ID and encoded-response boundaries, HTML escaping, compiled-input
+exact RPC ID and Task write-response boundaries, HTML escaping, compiled-input
 limits, request cancellation, shutdown and input/content admission. The native
 stalled-body test asserts the 15-second production default and uses a
 200-millisecond instance duration through the same logical and socket deadline.
@@ -1128,19 +1134,18 @@ Routine validation needs only the configured PostgreSQL service; it does not
 invoke `pg_dump`. The [snapshot decision](../../.agents/notes/implemented/testing/2026-11-06-postgres-schema-snapshot.md)
 records the equivalence and maintenance requirements.
 
-### Task Graph boundary fixtures
+### Task Graph query validation
 
-Graph boundary regressions retain the 1000-node backbone and 5000 dependency
-references, plus independent node and edge overflow cases. Connected store
-fixtures and the HTTP limit fixture run `ANALYZE tasks, task_dependencies` after
-all links are loaded and before graph queries. These private tables can be queried
-before autovacuum collects statistics; explicit collection gives the planner the
-loaded graph's cardinality without changing its rows or snapshot assertions.
-Preparation failures fail the test. Graph and Sync store seeds generate their
-ordered edge prefix directly while preserving its original topology. Service
-DAO mocks retain independent node/edge limit admission before projection. The
+Store tests use real ordinary graphs to verify complete component selection,
+one-level external context, original dependency arrays, snapshots and
+cancellation. Graph and Sync reads do not query or admit stored node/edge
+capacity. Service DAO mocks retain authorization, projection and error chains.
+CLI and Web tests accept complete graph or sync responses beyond the former
+1000-node and 5000-edge thresholds. The
 [fixture preparation decision](../../.agents/notes/implemented/testing/2026-11-06-task-graph-fixture-statistics.md)
-owns the rationale and proof boundary.
+preserves the original statistics and topology rationale; current read
+responsibilities follow the
+[batch-read decision](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md).
 
 ### Race instrumentation
 
@@ -1813,8 +1818,8 @@ The assignee filter is explicit and does not change automatic worker eligibility
 ## Task-chain graph
 
 `GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}` requires one task UUID.
-The service reads the project, validates the live target, counts the selected
-graph and reads its compact nodes in one read-only repeatable-read transaction.
+The service reads the project, checks target visibility and reads the complete
+selected compact graph in one read-only repeatable-read transaction.
 Missing, empty, repeated or malformed `taskId`, unsupported query parameters and
 invalid URL encoding return 400 `invalid_input`. Responses use
 `Cache-Control: no-store`; there is no project-wide fallback or pagination.
@@ -1852,12 +1857,10 @@ those references rather than interpret the projection as a dependency closure.
 has been read. It shares the clock authority of task execution timestamps without
 changing stored metadata. Its changing value is not graph-content identity.
 
-Selected graphs above 1,000 nodes or 5,000 original dependency edges return 409
-`graph_limit_exceeded` with exact `nodeCount`, `edgeCount`, `maxNodes` and
-`maxEdges` in `error.details`. Counts include context rows and all their original
-outgoing dependencies, including references beyond the projection. Unrelated
-project tasks and edges do not consume these limits. Refusal returns no partial
-graph. Missing projects or tasks return 404; an authorized deleted target returns
+Selected graphs retain all context rows and their original outgoing
+dependencies, including references beyond the projection. Reads do not repeat
+stored node/edge capacity checks or add an aggregate Project write quota.
+Natural query, decode and encoding failures return no partial graph. Missing projects or tasks return 404; an authorized deleted target returns
 410 `task_deleted`. Project authorization precedes target lookup. Operational or
 transaction-completion failures take precedence over domain refusals.
 
@@ -1986,9 +1989,13 @@ with `encodedBytes` and `maxEncodedBytes` details before any data mutation; a
 status string-length increase uses the same check. Shrinking a description
 follows the same full-resource/version rules. Other write refusals are
 `409 version_conflict`, `409 step_id_conflict` for Add and `409 version_exhausted`
-for actual changes. Invalid stored rows, non-dense order, read over-capacity,
-database failures and failed transaction cleanup are internal errors; the service
-never substitutes a partial or empty result.
+for actual changes. Reads use pure `ProjectCollection`/`ProjectItem` projection
+and ordinary JSON encoding without stored-field or collection-capacity checks.
+MCP Step pages use one `limit+1` query and an explicitly compared parent version;
+summary and full views retain the same item-count cursor. The shared MCP entry
+retains its independent result limit. Invalid write candidates, natural decoding
+or encoding errors, database failures and failed transaction cleanup retain
+their causes; the service never substitutes a partial or empty result.
 
 The shared transaction owner preserves operation, commit and cleanup failures
 and their original causes. Confirmed Commit remains `committed` after response
@@ -2047,8 +2054,8 @@ go test -tags=stress ./internal/server/task -run '^TestStressStepsHTTP(ExactCapa
 ```
 
 The read case seeds legitimate bounded individual records, observes complete
-64 MiB HTTP bytes at the maximum int64 version, checks the same content at a
-one-digit version, and refuses an illegally seeded over-capacity collection.
+64 MiB HTTP bytes at the maximum int64 version and checks the same content at a
+one-digit version. Reading does not repeat write-candidate capacity admission.
 The add case checks an exact successful candidate and subsequent complete GET,
 then a one-byte over-limit candidate with no data writes. The change case checks
 an exact PATCH and GET, one-byte over-limit refusal before target UPDATE/touch,
@@ -2293,9 +2300,11 @@ fail, and refusals leave fields, versions and timestamps intact.
 Version conflicts, wrong predecessor states, dependency cycles and unmet
 dependencies return 409 with `version_conflict`, `invalid_transition`,
 `dependency_cycle` or `dependency_unsatisfied`.
-Relevant sorted IDs appear in `error.details.taskIds`. Malformed stored property values return 400 invalid_input with a preserved
-validation cause; database and other operational failures remain 500. No path
-returns partial properties or silently repairs invalid values. Cancelled
+Relevant sorted IDs appear in `error.details.taskIds`. Write input validation
+returns 400 invalid_input with its cause. Stored properties are read as canonical
+RawMessages without normalization or capacity checks; natural decoding, encoding,
+database and other operational failures retain their original causes. No path
+returns partial properties or silently repairs values. Cancelled
 requests write neither response body nor creation
 Location. Parsed project/task IDs and the request ID correlate safe logs; known
 refusals use their domain `error_code` and cause instead of an internal label.

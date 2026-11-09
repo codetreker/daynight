@@ -426,15 +426,15 @@ describe("operation-scoped API access", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("preserves confirmed API refusals, dependency IDs and graph size details", async () => {
+  it("preserves confirmed API refusals, dependency IDs and generic graph read errors", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(jsonResponse(refusal("dependency_unsatisfied", { taskIds: [otherId] }), 409))
-      .mockResolvedValueOnce(jsonResponse(refusal("graph_limit_exceeded", { nodeCount: 1001, edgeCount: 0, maxNodes: 1000, maxEdges: 5000 }), 409));
+      .mockResolvedValueOnce(jsonResponse(refusal("service_unavailable"), 503));
     const api = client(fetch);
     await expect(api.setTaskStatus(projectId, taskId, { version: 1n, status: "done" })).rejects.toMatchObject({
       operation: "task.set-status", phase: "response", projectId, taskId, status: 409, code: "dependency_unsatisfied", requestId: "req-1", details: { taskIds: [otherId] }, confirmedRefusal: true, outcomeUnconfirmed: false, cause: expect.any(Error),
     });
-    await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ code: "graph_limit_exceeded", details: { nodeCount: 1001, edgeCount: 0, maxNodes: 1000, maxEdges: 5000 } });
+    await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ code: "service_unavailable", requestId: "req-1" });
   });
 
   it("never forwards a POST redirect to a second destination", async () => {
@@ -682,7 +682,7 @@ describe("response DTO contract", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each(["missing-root", "missing-member", "missing-external", "reverse-external", "recursive-external", "chain-dangling", "context-known-blocker", "context-cycle"])("rejects a graph with %s", async (failure) => {
+  it.each(["missing-root", "missing-member", "missing-external", "reverse-external", "recursive-external", "chain-dangling", "context-known-blocker"])("rejects a graph with %s", async (failure) => {
     const value = chainProjection();
     let tasks = value.tasks.map((item) => ({ ...item }));
     let seed = otherId;
@@ -693,7 +693,6 @@ describe("response DTO contract", () => {
     if (failure === "recursive-external") tasks.push({ ...tasks[0]!, id: outsideId });
     if (failure === "chain-dangling") tasks[1] = { ...tasks[1]!, dependsOn: [taskId, externalId, outsideId], blockedBy: [taskId, externalId, outsideId] };
     if (failure === "context-known-blocker") tasks[4] = { ...tasks[4]!, dependsOn: [taskId, outsideId], externalDependsOn: [taskId], blockedBy: [outsideId] };
-    if (failure === "context-cycle") tasks[4] = { ...tasks[4]!, dependsOn: [otherId, outsideId], externalDependsOn: [otherId], blockedBy: [otherId, outsideId] };
     const summary = { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, cancelled: 0, ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => !task.ready).length };
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks, summary }))).getTaskGraph(projectId, seed)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
@@ -741,21 +740,10 @@ describe("response DTO contract", () => {
     await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
   });
 
-  it("rejects an all-external cycle and a graph that hides unfinished external blockers", async () => {
-    const value = graph();
-    const cyclic = {
-      ...value,
-      summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 2 },
-      tasks: [
-        { ...value.tasks[0]!, externalDependsOn: [otherId], blockedBy: [otherId], ready: false },
-        { ...value.tasks[1]!, status: "todo", dependsOn: [taskId], externalDependsOn: [taskId], blockedBy: [taskId] },
-      ],
-    };
+  it("rejects a graph that hides unfinished external blockers", async () => {
     const mixed = mixedDependencyGraph();
     const hiddenBlocker = { ...mixed, summary: { ...mixed.summary, ready: 2, blocked: 0 }, tasks: [{ ...mixed.tasks[0]!, blockedBy: [], ready: true }, ...mixed.tasks.slice(1)] };
-    for (const response of [cyclic, hiddenBlocker]) {
-      await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(response))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
-    }
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(hiddenBlocker))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
   });
 
   it.each([1n, 9_007_199_254_740_993n, 9_223_372_036_854_775_807n])("preserves nested settings version %s through create, project, list and graph resources", async (version) => {
@@ -986,8 +974,11 @@ describe("response DTO contract", () => {
       await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(serialized, { headers: { "Content-Type": "application/json" } }))).getTask(projectId, taskId)).rejects.toBeInstanceOf(ApiError);
     }
   });
-  it("returns a complete graph and ignores future additional fields", async () => {
-    const value = graph();
+  it("returns a complete deep graph and ignores future additional fields", async () => {
+    const original = graph();
+    const ids = Array.from({ length: 10001 }, (_, index) => index === 0 ? taskId : `50000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`);
+    const tasks = ids.map((id, index) => ({ ...original.tasks[1]!, id, dependsOn: index + 1 < ids.length ? [ids[index + 1]!] : [] }));
+    const value = { ...original, tasks, summary: { ...original.summary, total: tasks.length, todo: 0, done: tasks.length, ready: 0 } };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, futureField: 42 }));
     expect(await client(fetch).getTaskGraph(projectId, taskId)).toEqual(value);
   });
@@ -1005,13 +996,12 @@ describe("response DTO contract", () => {
     const serialized = JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? Number(item) : item);
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(serialized, { headers: { "Content-Type": "application/json" } }))).getTask(projectId, taskId)).rejects.toBeInstanceOf(ApiError);
   });
-  it.each(["summary", "dangling", "cycle", "blocked", "preview", "duplicate"])("rejects inconsistent graph %s", async (failure) => {
+  it.each(["summary", "dangling", "blocked", "preview", "duplicate"])("rejects inconsistent graph %s", async (failure) => {
     const value = graph();
     const tasks = value.tasks.map((item) => ({ ...item }));
     let summary = value.summary;
     if (failure === "summary") summary = { ...summary, total: 3 };
     if (failure === "dangling") tasks[0] = { ...tasks[0]!, dependsOn: [projectId] };
-    if (failure === "cycle") tasks[1] = { ...tasks[1]!, dependsOn: [taskId], blockedBy: [taskId] };
     if (failure === "blocked") tasks[0] = { ...tasks[0]!, blockedBy: [otherId], ready: false };
     if (failure === "preview") tasks[0] = { ...tasks[0]!, titleTruncated: true };
     if (failure === "duplicate") tasks[1] = { ...tasks[1]!, id: taskId };

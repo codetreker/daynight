@@ -12,7 +12,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -54,10 +53,7 @@ func (tx *ThreadAccess) SourceTask(ctx context.Context, projectID, taskID string
 		return model.Task{}, pg.QueryError("read thread source", err)
 	}
 	if workerValue != nil {
-		result.Properties["worker"], err = taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue))
-		if err != nil {
-			return model.Task{}, pg.QueryError("decode thread source", err)
-		}
+		result.Properties["worker"] = json.RawMessage(*workerValue)
 	}
 	return result, nil
 }

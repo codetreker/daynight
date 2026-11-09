@@ -332,7 +332,7 @@
   },
   {
     "name": "task_graph",
-    "description": "Read the bounded dependency graph or its dependency-only projection. Summary is default; full content is explicit and may be large.",
+    "description": "Read the complete dependency graph or its dependency-only projection.",
     "inputSchema": {
       "type": "object",
       "properties": {

@@ -25,7 +25,10 @@ results, errors and completion facts and verify principals, authority, context,
 addresses, inputs and call counts. They do not model Task persistence or execute
 lower business rules to manufacture HTTP responses.
 
-Task dependency partitioning, version-first admission and response admission
+Task and Step reads use canonical stored-value projection under the
+[canonical read decision](../simplification/2026-11-09-task-canonical-batch-reads.md).
+The protocol fixtures use its current Get and count-page operations. Task
+dependency partitioning, version-first write admission and response admission
 remain in the Task service. Its typed response context exposes request ID, RPC
 ID, protocol, batch and projection facts to both the adapter and the admission
 consumer. Protocol tests observe those exact facts;

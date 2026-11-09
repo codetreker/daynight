@@ -9,14 +9,13 @@ import (
 func TestFaultPreservesMessageDetailsAndCause(t *testing.T) {
 	cause := errors.New("underlying failure")
 	fault := &Fault{
-		Code:       "graph_limit",
-		Message:    "graph limit exceeded",
+		Code:       "steps_limit_exceeded",
+		Message:    "steps limit exceeded",
 		Cause:      cause,
 		TaskIDs:    []string{"task-1"},
-		GraphLimit: &GraphLimitDetails{NodeCount: 2, EdgeCount: 3, MaxNodes: 1, MaxEdges: 4},
 		StepsLimit: &StepsLimitDetails{EncodedBytes: 9, MaxEncodedBytes: 8},
 	}
-	if got := fault.Error(); got != "graph limit exceeded" {
+	if got := fault.Error(); got != "steps limit exceeded" {
 		t.Fatalf("Error() = %q", got)
 	}
 	wrapped := fmt.Errorf("operation failed: %w", fault)
@@ -24,7 +23,7 @@ func TestFaultPreservesMessageDetailsAndCause(t *testing.T) {
 	if !errors.As(wrapped, &found) || found != fault || !errors.Is(wrapped, cause) {
 		t.Fatalf("fault or cause lost from error chain: %v", wrapped)
 	}
-	if found.Code != "graph_limit" || found.TaskIDs[0] != "task-1" || *found.GraphLimit != (GraphLimitDetails{2, 3, 1, 4}) || *found.StepsLimit != (StepsLimitDetails{9, 8}) {
+	if found.Code != "steps_limit_exceeded" || found.TaskIDs[0] != "task-1" || *found.StepsLimit != (StepsLimitDetails{9, 8}) {
 		t.Fatalf("fault details changed: %+v", found)
 	}
 	if errors.Unwrap(&Fault{Message: "no cause"}) != nil {

@@ -22,7 +22,6 @@ import (
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
@@ -194,26 +193,20 @@ func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
 
 func TestTaskGraphOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 	for _, test := range []struct {
-		name, fragment                  string
-		missing, overLimit, cancelAfter bool
+		name, fragment       string
+		missing, cancelAfter bool
 	}{
 		{name: "project query", fragment: "SELECT p.id::text, p.name, p.repo_url"},
-		{name: "count query", fragment: "SELECT count(*) FROM selected"},
 		{name: "projection query", fragment: "left(t.title, $7)"},
 		{name: "clock query", fragment: "SELECT statement_timestamp()"},
 		{name: "clock completion", fragment: "SELECT statement_timestamp()", cancelAfter: true},
 		{name: "missing project completion", fragment: "FROM project_grants", missing: true, cancelAfter: true},
-		{name: "limit refusal completion", fragment: "SELECT count(*) FROM selected", overLimit: true, cancelAfter: true},
-		{name: "success completion", fragment: "left(t.title, $7)", cancelAfter: true},
+		{name: "projection completion", fragment: "left(t.title, $7)", cancelAfter: true},
+		{name: "commit failure", fragment: "commit"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, database, project, databaseURL, principal := taskService(t)
-			rootID := "00000000-0000-4000-8000-000000000099"
-			if test.overLimit {
-				rootID = seedConnectedGraph(t, database, project.ID, 1001, 1000)
-			} else {
-				rootID = createTask(t, taskservice.NewTasks(database), principal, project.ID, "Snapshot root").ID
-			}
+			rootID := createTask(t, taskservice.NewTasks(database), principal, project.ID, "Snapshot root").ID
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			action := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, test.fragment) }}
@@ -229,6 +222,12 @@ func TestTaskGraphOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 			}
 			graph, err := traced.Graph(ctx, principal, id, rootID)
 			assertOperational(t, err)
+			if test.fragment == "commit" {
+				var completion *store.TransactionError
+				if !errors.As(err, &completion) || !completion.CommitAttempted || completion.Outcome != store.TransactionUnknown {
+					t.Fatalf("commit completion facts lost: %+v %v", completion, err)
+				}
+			}
 			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(graph, model.TaskGraph{}) {
 				t.Fatalf("cancellation cause or partial result: %#v, %v", graph, err)
 			}
@@ -254,25 +253,27 @@ func TestTaskGraphOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 
 func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 	for _, test := range []struct {
-		name, fragment           string
-		missing, limit, complete bool
+		name, fragment    string
+		missing, complete bool
 	}{
-		{"project", "SELECT p.id::text, p.name, p.repo_url", false, false, false}, {"epoch", "SELECT task_cache_epoch::text", false, false, false},
-		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"properties", "SELECT CASE WHEN octet_length(name)>64", false, false, false}, {"properties chunk", "SELECT substring(value FROM", false, false, false}, {"people", "FROM candidate_ids candidate", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
-		{"missing completion", "FROM project_grants", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
+		{name: "project", fragment: "SELECT p.id::text, p.name, p.repo_url"},
+		{name: "epoch", fragment: "SELECT task_cache_epoch::text"},
+		{name: "rows", fragment: "left(t.title, $2)"},
+		{name: "properties", fragment: "SELECT task_id::text,name,value FROM task_properties"},
+		{name: "properties completion", fragment: "SELECT task_id::text,name,value FROM task_properties", complete: true},
+		{name: "people", fragment: "FROM candidate_ids candidate"},
+		{name: "clock", fragment: "SELECT statement_timestamp()"},
+		{name: "missing completion", fragment: "FROM project_grants", missing: true, complete: true},
+		{name: "clock completion", fragment: "SELECT statement_timestamp()", complete: true},
+		{name: "commit failure", fragment: "commit"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tasks, database, project, url, principal := taskService(t)
 			if strings.HasPrefix(test.name, "properties") {
 				target := createTask(t, tasks, principal, project.ID, "Property read")
-				if test.name == "properties chunk" {
-					if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests','[]')`, target.ID); err != nil {
-						t.Fatal(err)
-					}
+				if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests','[]')`, target.ID); err != nil {
+					t.Fatal(err)
 				}
-			}
-			if test.limit {
-				seedGraph(t, database, project.ID, 1001, 0)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -289,6 +290,12 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 			}
 			result, err := taskservice.NewTaskSync(traced.store, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, principal, id, taskservice.TaskSyncRequest{})
 			assertOperational(t, err)
+			if test.fragment == "commit" {
+				var completion *store.TransactionError
+				if !errors.As(err, &completion) || !completion.CommitAttempted || completion.Outcome != store.TransactionUnknown {
+					t.Fatalf("commit completion facts lost: %+v %v", completion, err)
+				}
+			}
 			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(result, model.TaskSync{}) {
 				t.Fatalf("completion precedence: %#v %v", result, err)
 			}
@@ -298,56 +305,6 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 	database.Close()
 	_, err := taskservice.NewTaskSync(database, sessioncore.NewEngine(nil), 10*time.Second).Get(context.Background(), principal, project.ID, taskservice.TaskSyncRequest{})
 	assertOperational(t, err)
-}
-
-func TestTaskSyncIllegalPropertiesPreserveTransactionCompletionPriority(t *testing.T) {
-	for _, completeFailure := range []bool{false, true} {
-		name := "validation"
-		if completeFailure {
-			name = "completion cancellation"
-		}
-		t.Run(name, func(t *testing.T) {
-			tasks, database, project, databaseURL, principal := taskService(t)
-			target := createTask(t, tasks, principal, project.ID, "Bad persisted property")
-			if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, target.ID, `[{"url":"private-sync-value"}]`); err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			source := database
-			readChunk, commitAttempted := false, false
-			if completeFailure {
-				traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool {
-					if strings.Contains(sql, "SELECT substring(value FROM") {
-						readChunk = true
-					}
-					if strings.EqualFold(strings.TrimSpace(sql), "commit") {
-						commitAttempted = true
-						return true
-					}
-					return false
-				}, start: cancel})
-				source = traced.store
-			}
-			result, err := taskservice.NewTaskSync(source, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
-			if !reflect.DeepEqual(result, model.TaskSync{}) {
-				t.Fatalf("failed sync returned partial state: %#v", result)
-			}
-			if completeFailure {
-				assertOperational(t, err)
-				var completion *store.TransactionError
-				if !readChunk || !commitAttempted || !errors.Is(err, context.Canceled) || !errors.As(err, &completion) || !completion.CommitAttempted || completion.Outcome != store.TransactionUnknown {
-					t.Fatalf("transaction failure was hidden by invalid stored value: read=%t commit=%t completion=%+v err=%v", readChunk, commitAttempted, completion, err)
-				}
-			} else {
-				fault := requireFault(t, err, "invalid_input")
-				var validation *taskproperties.ValidationError
-				if !errors.As(fault, &validation) || strings.Contains(fault.Error(), "private-sync-value") {
-					t.Fatalf("stored validation lost safe typed cause: %v", fault)
-				}
-			}
-		})
-	}
 }
 
 func TestTaskTransactionCompletionFailureDominatesDomainFault(t *testing.T) {

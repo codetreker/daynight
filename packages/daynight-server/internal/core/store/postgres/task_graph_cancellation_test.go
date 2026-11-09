@@ -68,10 +68,6 @@ func TestTaskGraphSnapshotCancellationReleasesBlockedQuery(t *testing.T) {
 			_, err := snapshot.ProjectDAO().ProjectAccess(ctx, principal, project.ID)
 			return err
 		}},
-		{"graph count", "tasks", func(ctx context.Context, snapshot store.SnapshotScope) error {
-			_, err := snapshot.TaskDAO().TaskGraphProjectionSize(ctx, project.ID, root.ID, testGraphSelection())
-			return err
-		}},
 		{"graph projection", "tasks", func(ctx context.Context, snapshot store.SnapshotScope) error {
 			_, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, root.ID, testGraphSelection(), 160)
 			return err
@@ -145,12 +141,12 @@ func TestTaskGraphSnapshotCancellationReleasesBlockedQuery(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := reader.ReadSnapshot(bounded, func(snapshot store.SnapshotScope) error {
-				size, err := snapshot.TaskDAO().TaskGraphProjectionSize(bounded, project.ID, root.ID, testGraphSelection())
+				tasks, err := snapshot.TaskDAO().TaskGraphTasks(bounded, project.ID, root.ID, testGraphSelection(), 160)
 				if err != nil {
 					return err
 				}
-				if size != (store.TaskGraphSize{NodeCount: 2, EdgeCount: 1}) {
-					return fmt.Errorf("graph read after cancellation: size=%#v", size)
+				if len(tasks) != 2 || tasks[0].ID != root.ID || len(tasks[1].DependsOn) != 1 || tasks[1].DependsOn[0] != root.ID {
+					return fmt.Errorf("graph read after cancellation: tasks=%#v", tasks)
 				}
 				return nil
 			}); err != nil {

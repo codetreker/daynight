@@ -14,9 +14,8 @@ export type TaskSearchItem = {
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type SearchSyntax = { readonly reason: string; readonly position: number; readonly length: number };
-export type SearchContextLimit = { readonly nodeCount: number; readonly edgeCount: number; readonly maxNodes: number; readonly maxEdges: number };
 export class TaskSearchError extends ApiError {
-  constructor(status: number, code: string, requestId: string, readonly syntax?: SearchSyntax, readonly contextLimit?: SearchContextLimit) {
+  constructor(status: number, code: string, requestId: string, readonly syntax?: SearchSyntax) {
     super('server', status, code, requestId);
   }
 }
@@ -58,22 +57,20 @@ export const parseTaskSearchPage = (value: unknown, projectId: string, filters: 
 const integerSource = (sources: ReadonlyMap<string, string>, name: string): void => { if (!/^(?:0|[1-9][0-9]*)$/.test(sources.get(name) ?? '')) malformed(); };
 const searchError = (body: unknown, source: string, httpStatus: number, query: string): TaskSearchError => {
   const parsed = parseServerError(body);
-  const expected: Readonly<Record<string, number>> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_context_limit_exceeded: 400, search_timeout: 504 };
+  const expected: Readonly<Record<string, number>> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
   if (expected[parsed.code] !== undefined && expected[parsed.code] !== httpStatus) return malformed();
-  let syntax: SearchSyntax | undefined, contextLimit: SearchContextLimit | undefined;
-  if (parsed.code === 'invalid_search_expression' || parsed.code === 'search_context_limit_exceeded') {
+  let syntax: SearchSyntax | undefined;
+  if (parsed.code === 'invalid_search_expression') {
     const details = record(record(record(body).error).details);
     const sources = jsonObjectSources(jsonObjectSources(jsonObjectSources(source).get('error')!).get('details')!);
-    const fields = parsed.code === 'invalid_search_expression' ? ['reason', 'position', 'length'] : ['nodeCount', 'edgeCount', 'maxNodes', 'maxEdges'];
+    const fields = ['reason', 'position', 'length'];
     if (Object.keys(details).length !== fields.length || sources.size !== fields.length || fields.some(field => !Object.hasOwn(details, field))) return malformed();
     for (const field of fields.filter(field => field !== 'reason')) integerSource(sources, field);
-    if (parsed.code === 'invalid_search_expression') {
-      const reason = string(details.reason), position = count(details.position), length = count(details.length), size = Array.from(query).length;
-      if (!reasons.has(reason) || position < 1 || position > size + 1 || position - 1 + length > size) return malformed();
-      syntax = { reason, position, length };
-    } else contextLimit = { nodeCount: count(details.nodeCount), edgeCount: count(details.edgeCount), maxNodes: count(details.maxNodes), maxEdges: count(details.maxEdges) };
+    const reason = string(details.reason), position = count(details.position), length = count(details.length), size = Array.from(query).length;
+    if (!reasons.has(reason) || position < 1 || position > size + 1 || position - 1 + length > size) return malformed();
+    syntax = { reason, position, length };
   }
-  return new TaskSearchError(httpStatus, parsed.code, parsed.requestId, syntax, contextLimit);
+  return new TaskSearchError(httpStatus, parsed.code, parsed.requestId, syntax);
 };
 
 export const searchTasks = async (projectId: string, query: string, filters: TaskSearchFilters, cursor: string | null, signal: AbortSignal, admission: TaskResponseAdmission, correlation?: { readonly requestId: string; readonly onResponseId: (requestId: string) => void }): Promise<TaskSearchPage> => {
@@ -97,7 +94,7 @@ export const searchTasks = async (projectId: string, query: string, filters: Tas
   } catch (error) {
     signal.throwIfAborted();
     if (error instanceof ApiError) throw error;
-    throw new ApiError('protocol', response.status, 'protocol', null, undefined, error);
+    throw new ApiError('protocol', response.status, 'protocol', null, error);
   }
 };
 

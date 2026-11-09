@@ -42,10 +42,10 @@ func (operations *inputTaskOperations) Get(arg0 context.Context, arg1 model.Prin
 	return zero, errors.New("unexpected Task Get")
 }
 
-func (operations *inputTaskOperations) ObserveREST(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 bool) (taskservice.TaskObservation, error) {
-	operations.t.Error("unexpected Task ObserveREST")
+func (operations *inputTaskOperations) Observe(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string) (taskservice.TaskObservation, error) {
+	operations.t.Error("unexpected Task Observe")
 	var zero taskservice.TaskObservation
-	return zero, errors.New("unexpected Task ObserveREST")
+	return zero, errors.New("unexpected Task Observe")
 }
 
 func (operations *inputTaskOperations) List(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 taskservice.TaskListRequest) (taskservice.TaskPage, error) {

@@ -96,7 +96,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 		case taskPath(task):
 			f.expectRead(row)
 		case taskCollection(f.project.ID):
-			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 1}, BoundedText: true, LegacyProjection: true}}, []store.TaskPage{{Items: []model.Task{row}}})
+			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{row}}})
 		default:
 			f.expectGraph(row.ID, []model.GraphTask{platformHTTPProjection(row)})
 		}
@@ -136,7 +136,7 @@ func TestTaskHTTPPlatformFilteringAndCursorScopes(t *testing.T) {
 	collection, query, cursor := taskCollection(f.project.ID), "?limit=1&ready=true&allowAgents=true&compatiblePlatform=linux", ""
 	var ids []string
 	for index, row := range selected {
-		expected := store.TaskQuery{Page: store.Page{Limit: 1}, Ready: platformHTTPPointer(true), AllowAgents: platformHTTPPointer(true), CompatiblePlatform: platformHTTPPointer(model.PlatformLinux), BoundedText: true, LegacyProjection: true}
+		expected := store.TaskQuery{Page: store.Page{Limit: 1}, Ready: platformHTTPPointer(true), AllowAgents: platformHTTPPointer(true), CompatiblePlatform: platformHTTPPointer(model.PlatformLinux)}
 		if index > 0 {
 			expected.Page.After = &store.Position{CreatedAt: selected[index-1].CreatedAt, ID: selected[index-1].ID}
 		}

@@ -201,7 +201,7 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	evidence := map[string]any{
 		"tasks": 10000, "people": 100, "scope": "isolated PostgreSQL, actual HTTP resources and traced production SQL",
 		"sourceGitSha": source("rev-parse", "HEAD"), "sourceDirty": source("status", "--porcelain") != "",
-		"measurements": measurements, "limit": "Source-bound sample; no latency threshold or production capacity claim; task graph limits are unchanged.",
+		"measurements": measurements, "limit": "Source-bound sample; no latency threshold or production capacity claim.",
 	}
 	data, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {

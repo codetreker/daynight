@@ -62,17 +62,12 @@ func assignmentGraph(t *testing.T, row model.Task) model.TaskGraph {
 		}
 		return project, nil
 	}}
-	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, IncludeExternalEdges: true, LiveOnly: true}
+	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
 	reader := &taskReaderMock{taskMockBase: base.withLabel("task"), TaskPresenceFn: func(actual context.Context, pid, id string) (store.TaskPresence, error) {
 		if actual != ctx || pid != project.ID || id != row.ID {
 			t.Fatal("graph root scope")
 		}
 		return store.TaskPresence{Found: true}, nil
-	}, TaskGraphProjectionSizeFn: func(actual context.Context, pid, id string, s store.TaskGraphSelection) (store.TaskGraphSize, error) {
-		if actual != ctx || pid != project.ID || id != row.ID || s != selection {
-			t.Fatal("graph count selection")
-		}
-		return store.TaskGraphSize{NodeCount: 1}, nil
 	}, TaskGraphTasksFn: func(actual context.Context, pid, id string, s store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
 		if actual != ctx || pid != project.ID || id != row.ID || s != selection || preview != 160 {
 			t.Fatal("graph projection selection")

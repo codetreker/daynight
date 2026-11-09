@@ -51,18 +51,17 @@ Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据�
 从链成员直接声明的 external 依赖补充一层外部前置；不沿外部节点递归，不包含只在链外
 依赖本链的任务。选择集合在 SQL 中确定，不先加载整个项目的图节点。
 
-同一选择规则先返回精确节点数与依赖引用数，检查 1,000/5,000 上限，成功后才读取轻量
-节点并折叠 summary。计数只覆盖本次返回节点，但每个节点的完整 dependsOn 都计入边数，
-包括指向返回集合外的引用。无关链不使小链查询超限；精确计数仍须遍历目标分量，
+同一选择规则直接批量读取完整轻量节点并折叠 summary，不先执行存储节点或边的容量计数。
+每个节点保留完整 dependsOn，包括指向返回集合外的引用；查询仍须遍历目标分量，
 不承诺常数查询成本。core 的 `GraphTask`、`TaskGraphSummary`、`TaskGraph` 与 HTTP DTO
 保持分离；SQL 直接截取 160 code points 的标题预览，不加载 description 或完整标题，
 并投影可空执行起止、平台和许可。外部节点保留原始完整依赖、阻塞和 ready，不能用输出
 节点的状态重算并删去投影外前置。summary 覆盖全部返回节点。
 
-Project、目标、选择集合、计数、依赖及 ready 都来自同一次 `REPEATABLE READ`。
+Project、目标、选择集合、依赖及 ready 都来自同一次 `REPEATABLE READ`。
 节点与统计读取后，通过同一 snapshot 的 `ObservedAt` 取得数据库
 `statement_timestamp()`，作为顶层 observedAt；不使用事务开始时刻或 HTTP Date。
-缺失、软删除和超限 Fault 在事务成功收尾后才返回，操作或清理失败仍优先。
+缺失和软删除 Fault 在事务成功收尾后才返回，操作或清理失败仍优先。
 HTTP 接受且仅接受一个必填 taskId query，返回 no-store，沿用 requestId、GET/HEAD
 和结构化错误机制。具体响应与拒绝由
 [服务端需求](../spec/daynight-server.md#任务链图查询)拥有；决策取舍见
@@ -76,14 +75,14 @@ HTTP 接受且仅接受一个必填 taskId query，返回 no-store，沿用 requ
 
 `NewTaskSync(store, engine, overlap)` 接收消费方定义的单方法 `SessionStateReader` 及已验证的配置；应用组装注入同一个共享 Session Engine，独立的 `taskSyncRoutes` 与原任务/图路由共同注册。
 服务复用具体 store、项目读授权及 `ReadSnapshot`，在同一快照中取得 Project、
-`task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。已有授权、Project 和 ReadSync 成功且无 refusal 后，同一 SnapshotScope 的只读 SessionReader 查询全项目当前 Task Session source；共享 Engine 只读已提交 live 标量，投影完整最小 `sessions` 集合，不读完整 Current 或持有 live draft。域拒绝在事务成功结束后返回，
+`task_cache_epoch`、窗口摘要与数据库时钟。已有授权、Project 和 ReadSync 成功且无 refusal 后，同一 SnapshotScope 的只读 SessionReader 查询全项目当前 Task Session source；共享 Engine 只读已提交 live 标量，投影完整最小 `sessions` 集合，不读完整 Current 或持有 live draft。域拒绝在事务成功结束后返回，
 操作和清理失败优先，与任务链图查询相同。
 
 store 先投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、assignedTo、时间和两类依赖，
-关闭任务 rows 后逐返回项有预算读取并装配完整属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
+关闭任务 rows 后，以选中 task IDs 的一次 `ANY` 查询批量读取并装配完整规范属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
-[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整属性，普通属性变化不轮换 epoch。服务在快照回调内保存属性校验拒绝，正常完成后才返回 400；数据库和事务完成错误优先，保持 500。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
+[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整属性，普通属性变化不轮换 epoch。读取直接装入 `json.RawMessage`，不调用属性 Normalize/Validate/Admit，也不复查图规模或读取响应字节。正常解码、编码、数据库和事务完成错误沿原链路传播。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
 
 ## 目录与调用方向
 
@@ -189,7 +188,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 `044_project_soft_delete.sql` 为 Project 增加可空删除时间和活跃列表索引，并为 Project 内历史 Task 和 Session 的 UUID 锁扫描建立索引。Project 读取和准入先排除删除标记，再校验活跃 owner Team 的完整性；保留的历史 ownership 因此可以指向后来删除的 Team。Team 非空检查、邀请和 Worker 投影使用同一活跃语义。
 
-Project 删除在 Read Committed 事务内先锁活跃 Project，再按 UUID 锁全部 Task，包括已删除 Task；锁等待后以新语句锁定并复核 owner Team admin、规范解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
+Project 删除在 Read Committed 事务内先锁活跃 Project，再按 UUID 锁全部 Task，包括已删除 Task；锁等待后以新语句锁定并复核 owner Team admin、普通解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
 
 删除预览在同一只读快照验证权限、计数并扫描 Worker 事实；按 Task UUID 分页，并以响应字节预算限制返回内容。Worker 连通性取关联报告时间，不扩展账号级权限。预览不产生删除前提；DELETE 仍以锁内当前状态决定。
 
@@ -390,14 +389,13 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 两个列表接口接受 `limit` 和不透明 `cursor`。`limit` 默认 50，范围为 1 至 100，
 使用 `(createdAt, id)` 升序 keyset 分页；响应为 `items` 和 `nextCursor`，没有
 下一页时后者为 `null`。
-task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
+task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
-普通列表按原 keyset 在同一快照逐项读取并用实际 REST 投影计量，4 MiB 页上限包含外壳、cursor 和换行。指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属；分页和 lookahead 在归属筛选后计算。字节限制提前结束时 cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。
-编码预算与分页的取舍见[响应预算决策](../../.agents/notes/implemented/architecture/2026-11-07-encoded-response-budgets.md)。
+普通列表按原 keyset 和请求条数在同一快照一次读取 `limit+1` 候选，再批量加载选中任务的完整属性。指定 workerId 时，store 用一次关联查询按原 keyset 顺序扫描候选及其唯一 worker 属性，在 Go 中普通解码并匹配 active/userId/workerId；最终分页和 lookahead 在归属筛选后计算。cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。读取不执行结构、字段或容量复查，也不按字节裁页。[批量读取决策](../../.agents/notes/implemented/simplification/2026-11-09-task-canonical-batch-reads.md)记录职责与查询成本。
 
 项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
 
-Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
+Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，platformSpecific 以可空布尔保留省略与 false 的区别，编码省略未提供的条件，排序位置仍是 createdAt、id；workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
 
 cursor 编码最后一项的位置、资源类型、project 路径范围及规范化筛选条件。解码时
 校验格式和范围，拒绝旧版本1任务 cursor、将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。
@@ -419,7 +417,7 @@ service 返回可识别的领域错误；server 负责唯一的 HTTP 映射。�
 
 | 错误码 | HTTP | 情形 |
 |---|---|---|
-| `invalid_input` | `400` | JSON、字段、分页、地址或依赖引用非法，含自身及重复依赖，以及非法存储属性值 |
+| `invalid_input` | `400` | JSON、字段、分页、地址或依赖引用非法，含自身及重复依赖 |
 | `unauthenticated` | `401` | 会话或 PAT 缺失、失效或撤销 |
 | `forbidden` | `403` | 缺少项目管理员角色或 Cookie 会话写请求来源不合法 |
 | `not_found` | `404` | 指定 project 不存在、调用者不是成员或其范围内的 task 不存在 |
