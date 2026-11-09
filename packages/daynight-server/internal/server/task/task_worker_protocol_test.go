@@ -51,11 +51,8 @@ func TestWorkerProtocolLegacyAndExtendedResponses(t *testing.T) {
 		t.Run("read/"+protocol, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
 			returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
-			h.Tasks.ObserveRESTFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, extended bool) (taskservice.TaskObservation, error) {
+			h.Tasks.ObserveFunc = func(ctx context.Context, p model.Principal, projectID, taskID string) (taskservice.TaskObservation, error) {
 				assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-				if extended != (protocol == "2") {
-					t.Fatal("worker negotiation was not passed to bounded observation")
-				}
 				return taskservice.TaskObservation{Task: returned, Epoch: testEpoch}, nil
 			}
 			response := protocolRequest(h, http.MethodGet, strings.TrimSuffix(workerHTTPPath(), "/worker-claim"), "", protocol)
@@ -100,11 +97,8 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 			for _, protocol := range []string{"", "2"} {
 				t.Run("read/"+protocol, func(t *testing.T) {
 					h := newHTTPFixture(t, io.Discard)
-					h.Tasks.ObserveRESTFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, extended bool) (taskservice.TaskObservation, error) {
+					h.Tasks.ObserveFunc = func(ctx context.Context, p model.Principal, projectID, taskID string) (taskservice.TaskObservation, error) {
 						assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-						if extended != (protocol == "2") {
-							t.Fatal("read negotiation flag changed")
-						}
 						return taskservice.TaskObservation{Task: returned, Epoch: testEpoch}, nil
 					}
 					got := decodeResponse[api.Task](t, protocolRequest(h, http.MethodGet, strings.TrimSuffix(workerHTTPPath(), "/worker-claim"), "", protocol), http.StatusOK)
@@ -116,7 +110,7 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 			t.Run("ordinary list", func(t *testing.T) {
 				h := newHTTPFixture(t, io.Discard)
 				h.Tasks.ListFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
-					if projectID != testProjectID || !reflect.DeepEqual(p, testPrincipal()) || input.WorkerID != nil || input.ExtendedWorker {
+					if projectID != testProjectID || !reflect.DeepEqual(p, testPrincipal()) || input.WorkerID != nil {
 						t.Fatalf("ordinary list input: %+v", input)
 					}
 					return taskservice.TaskPage{Items: []model.Task{returned}}, nil
@@ -129,7 +123,7 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 			t.Run("inventory refusal", func(t *testing.T) {
 				h := newHTTPFixture(t, io.Discard)
 				h.Tasks.ListFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
-					if projectID != testProjectID || input.WorkerID == nil || *input.WorkerID != worker.WorkerID || input.ExtendedWorker {
+					if projectID != testProjectID || input.WorkerID == nil || *input.WorkerID != worker.WorkerID {
 						t.Fatalf("inventory input: %+v", input)
 					}
 					return taskservice.TaskPage{Items: []model.Task{returned}}, nil
@@ -267,7 +261,7 @@ func TestWorkerProtocolLegacyCandidatesAdvanceAcrossUnsupportedPages(t *testing.
 			calls := 0
 			h.Tasks.ExpectCalls("List", len(pages))
 			h.Tasks.ListFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
-				if projectID != testProjectID || !reflect.DeepEqual(p, testPrincipal()) || input.Limit != limit || input.Ready == nil || !*input.Ready || input.AllowAgents == nil || !*input.AllowAgents || input.CompatiblePlatform == nil || *input.CompatiblePlatform != model.PlatformLinux || input.ExtendedWorker || !reflect.DeepEqual(input.Cursor, inputs[calls]) {
+				if projectID != testProjectID || !reflect.DeepEqual(p, testPrincipal()) || input.Limit != limit || input.Ready == nil || !*input.Ready || input.AllowAgents == nil || !*input.AllowAgents || input.CompatiblePlatform == nil || *input.CompatiblePlatform != model.PlatformLinux || !reflect.DeepEqual(input.Cursor, inputs[calls]) {
 					t.Fatalf("candidate page input call=%d: %+v", calls, input)
 				}
 				page := pages[calls]
@@ -322,9 +316,6 @@ func TestWorkerProtocolLegacyCandidatesAdvanceAcrossUnsupportedPages(t *testing.
 			h := newHTTPFixture(t, io.Discard)
 			items := []model.Task{unsupported(t, 1), unsupported(t, 2), unsupported(t, 3), first, unsupported(t, 4), second}
 			h.Tasks.ListFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
-				if input.ExtendedWorker != (protocol == "2") {
-					t.Fatal("list protocol flag lost")
-				}
 				return taskservice.TaskPage{Items: items}, nil
 			}
 			path := taskCollection(testProjectID) + "?ready=true&allowAgents=true"
@@ -337,13 +328,13 @@ func TestWorkerProtocolLegacyCandidatesAdvanceAcrossUnsupportedPages(t *testing.
 			}
 		})
 	}
-	t.Run("invalid worker property", func(t *testing.T) {
+	t.Run("worker decoding failure", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
 		bad := testTask("corrupt claim")
-		bad.Properties["worker"] = []byte(`{}`)
+		bad.Properties["worker"] = []byte(`{"agent":3}`)
 		h.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
 			return taskservice.TaskPage{Items: []model.Task{bad}}, nil
 		}
-		assertProjectError(t, protocolRequest(h, http.MethodGet, taskCollection(testProjectID)+"?ready=true&allowAgents=true&compatiblePlatform=linux", "", ""), http.StatusBadRequest, "invalid_input")
+		assertProjectError(t, protocolRequest(h, http.MethodGet, taskCollection(testProjectID)+"?ready=true&allowAgents=true&compatiblePlatform=linux", "", ""), http.StatusInternalServerError, "internal_error")
 	})
 }

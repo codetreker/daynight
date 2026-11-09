@@ -71,10 +71,7 @@ func TestWorkerSourceRowFailuresRemainVisible(t *testing.T) {
 			}
 		})
 	}
-	invalid := &failedWorkerRows{scan: func(values ...any) error { *values[3].(*model.TaskStatus) = "invalid"; return nil }}
-	if _, err := NewWriter(workerFailureTx{rows: invalid}).ReportTaskSnapshots(t.Context(), "user", inventory); err == nil {
-		t.Fatal("invalid stored task status accepted")
-	}
+
 }
 
 func TestWorkerVisibilityAndListRowFailuresRemainVisible(t *testing.T) {

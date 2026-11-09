@@ -229,7 +229,7 @@ func TestMCPStepsProductionLifecycle(t *testing.T) {
 			success("task_step_add", mcpStepsTaskID, map[string]any{"id": "abcdef03", "title": "Third", "after": "abcdef01"}, header(mcpStepsTaskID, 3), []model.TaskStep{second, first}, "insert", third, 0, 0)
 			rows := []model.TaskStep{second, first, third}
 			tx.WriteProjectCall = nil
-			pagePlan := readPlan(principal, header(mcpStepsTaskID, 4), []mcpStepsPageExpectation{{-1, 2, true, mcpStepProjection(second, first)}, {0, 2, true, mcpStepProjection(first, third)}}, "", store.TaskStepProjection{}, nil, nil)
+			pagePlan := readPlan(principal, header(mcpStepsTaskID, 4), []mcpStepsPageExpectation{{-1, 3, true, mcpStepProjection(second, first, third)}}, "", store.TaskStepProjection{}, nil, nil)
 			out, failed := call(alice, "task_step_list", args(mcpStepsTaskID, map[string]any{"limit": 2}))
 			if failed {
 				t.Fatalf("first page: %+v", out)
@@ -244,7 +244,7 @@ func TestMCPStepsProductionLifecycle(t *testing.T) {
 			if !ok || cursor == "" {
 				t.Fatalf("missing cursor: %+v", page)
 			}
-			tailPlan := readPlan(principal, header(mcpStepsTaskID, 4), []mcpStepsPageExpectation{{1, 2, true, mcpStepProjection(third)}}, "", store.TaskStepProjection{}, nil, nil)
+			tailPlan := readPlan(principal, header(mcpStepsTaskID, 4), []mcpStepsPageExpectation{{1, 3, true, mcpStepProjection(third)}}, "", store.TaskStepProjection{}, nil, nil)
 			out, failed = call(alice, "task_step_list", args(mcpStepsTaskID, map[string]any{"limit": 2, "cursor": cursor}))
 			if failed {
 				t.Fatalf("tail: %+v", out)
@@ -254,7 +254,8 @@ func TestMCPStepsProductionLifecycle(t *testing.T) {
 			if len(tail["items"].([]any)) != 1 || obj(tail["items"].([]any)[0])["id"] != "abcdef03" || tail["nextCursor"] != nil {
 				t.Fatalf("tail: %+v", tail)
 			}
-			fullPlan := readPlan(principal, header(mcpStepsTaskID, 4), []mcpStepsPageExpectation{{0, 1, false, mcpStepProjection(first)}}, first.ID, store.TaskStepProjection{Step: first}, nil, nil)
+			fullPlan := &mcpStepsReadPlan{t: t, plan: newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1, "header": 1, "step": 1}), Header: header(mcpStepsTaskID, 4), Principal: principal, SummaryID: first.ID, Summary: store.TaskStepProjection{Step: first}}
+			fullPlan.snapshot(tx)
 			out, failed = call(alice, "task_step_show", args(mcpStepsTaskID, map[string]any{"stepId": "abcdef01", "view": "full"}))
 			if failed {
 				t.Fatalf("full show: %+v", out)
@@ -313,7 +314,7 @@ func TestMCPStepsProductionLifecycle(t *testing.T) {
 			third.Position, second.Position, first.Position = 0, 1, 2
 			rows = []model.TaskStep{third, second, first}
 			tx.WriteProjectCall = nil
-			orderedPlan := readPlan(principal, header(mcpStepsTaskID, version), []mcpStepsPageExpectation{{-1, 2, false, mcpStepProjection(third, second)}, {0, 2, false, mcpStepProjection(second, first)}, {1, 2, false, mcpStepProjection(first)}}, "", store.TaskStepProjection{}, nil, nil)
+			orderedPlan := readPlan(principal, header(mcpStepsTaskID, version), []mcpStepsPageExpectation{{-1, 51, false, mcpStepProjection(third, second, first)}}, "", store.TaskStepProjection{}, nil, nil)
 			out, failed = call(alice, "task_step_list", args(mcpStepsTaskID, map[string]any{"view": "full"}))
 			if failed {
 				t.Fatalf("order: %+v", out)
@@ -340,7 +341,7 @@ func TestMCPStepsProductionLifecycle(t *testing.T) {
 				}
 			}
 			tx.WriteProjectCall = nil
-			emptyPlan := readPlan(principal, header(mcpStepsTaskID, version), []mcpStepsPageExpectation{{-1, 2, true, []store.TaskStepProjection{}}}, "", store.TaskStepProjection{}, nil, nil)
+			emptyPlan := readPlan(principal, header(mcpStepsTaskID, version), []mcpStepsPageExpectation{{-1, 51, true, []store.TaskStepProjection{}}}, "", store.TaskStepProjection{}, nil, nil)
 			out, failed = call(alice, "task_step_list", args(mcpStepsTaskID, nil))
 			if failed {
 				t.Fatalf("empty: %+v", out)

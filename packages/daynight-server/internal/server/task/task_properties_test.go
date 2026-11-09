@@ -181,36 +181,30 @@ func TestTaskHTTPPropertiesRejectInvalidStructure(t *testing.T) {
 	}
 }
 
-func TestTaskHTTPCorruptPropertiesFailWithoutFallback(t *testing.T) {
-	for _, corrupt := range []struct{ name, value string }{
-		{"pullRequests", `not JSON`}, {"pullRequests", `{}`}, {"pullRequests", `null`}, {"pullRequests", `[{"url":"x"}]`}, {"pullRequests", `[{"url":"x","url":"x","title":"y"}]`}, {"unknown", `1`},
-	} {
-		t.Run(corrupt.name+"/"+corrupt.value, func(t *testing.T) {
-			h := newHTTPFixture(t, io.Discard)
-			cause := &model.Fault{Code: "invalid_input", Message: "Stored property is invalid."}
-			h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
-				return taskservice.TaskObservation{}, cause
+func TestTaskHTTPPropertyEncodingFailureDoesNotSendPartialResources(t *testing.T) {
+	for _, target := range []string{propertyTaskPath(testTask("Original")), taskCollection(testProjectID), propertyTaskPath(testTask("Original")) + "/properties"} {
+		t.Run(target, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := newHTTPFixture(t, &logs)
+			task := testTask("Private task")
+			task.Properties = model.TaskProperties{"pullRequests": json.RawMessage(`not JSON`)}
+			switch target {
+			case taskCollection(testProjectID):
+				h.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
+					return taskservice.TaskPage{Items: []model.Task{task}}, nil
+				}
+			case propertyTaskPath(task) + "/properties":
+				h.Tasks.GetFunc = func(context.Context, model.Principal, string, string) (model.Task, error) { return task, nil }
+			default:
+				h.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
+					return taskservice.TaskObservation{Task: task, Epoch: testEpoch}, nil
+				}
 			}
-			h.Tasks.GetFunc = func(context.Context, model.Principal, string, string) (model.Task, error) { return model.Task{}, cause }
-			h.Tasks.ListFunc = func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error) {
-				return taskservice.TaskPage{}, cause
+			response := projectRequest(h, http.MethodGet, target, "")
+			assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+			if strings.Contains(response.Body.String(), `"properties"`) || strings.Contains(logs.String(), "not JSON") || strings.Contains(logs.String(), "Private task") {
+				t.Fatalf("partial resource or values escaped: body=%s logs=%s", response.Body, &logs)
 			}
-			h.Tasks.UpdateFunc = func(context.Context, model.Principal, string, string, taskcore.UpdateTask) (model.Task, error) {
-				return model.Task{}, cause
-			}
-			h.Tasks.SetPropertyFunc = func(context.Context, model.Principal, string, string, string, string, int64) (model.Task, error) {
-				return model.Task{}, cause
-			}
-			h.Tasks.RemovePropertyFunc = func(context.Context, model.Principal, string, string, string, int64) (model.Task, error) {
-				return model.Task{}, cause
-			}
-			path := propertyTaskPath(testTask("Original"))
-			for _, target := range []string{path, taskCollection(testProjectID), path + "/properties"} {
-				assertProjectError(t, projectRequest(h, http.MethodGet, target, ""), http.StatusBadRequest, "invalid_input")
-			}
-			assertProjectError(t, projectRequest(h, http.MethodPatch, path, `{"version":1,"title":"Rejected"}`), http.StatusBadRequest, "invalid_input")
-			assertProjectError(t, projectRequest(h, http.MethodPut, path+"/properties/pullRequests", `{"version":1,"valueText":"[]"}`), http.StatusBadRequest, "invalid_input")
-			assertProjectError(t, projectRequest(h, http.MethodDelete, path+"/properties/pullRequests", `{"version":1}`), http.StatusBadRequest, "invalid_input")
 		})
 	}
 }

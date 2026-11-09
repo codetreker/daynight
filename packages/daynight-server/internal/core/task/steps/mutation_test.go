@@ -52,7 +52,7 @@ func TestMutationAdmissionAndObservedTime(t *testing.T) {
 	}
 }
 
-func TestMutationTextAdmissionAndLegacyReads(t *testing.T) {
+func TestMutationTextAdmission(t *testing.T) {
 	stamp := time.Date(2026, 11, 3, 10, 11, 12, 0, time.UTC)
 	header := model.TaskHeader{ProjectID: "00000000-0000-4000-8000-000000000001", ID: "00000000-0000-4000-8000-000000000002", Version: 3}
 	current := []model.TaskStep{{ID: "00000001", Title: "one", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}}
@@ -78,22 +78,7 @@ func TestMutationTextAdmissionAndLegacyReads(t *testing.T) {
 			}
 		}
 	}
-	legacy := append([]model.TaskStep(nil), current...)
-	legacy[0].Description = strings.Repeat("x", 65537)
-	if _, _, err := codec.EncodeCollection(header, legacy); err != nil {
-		t.Fatalf("legacy read: %v", err)
-	}
-	title := "changed"
-	if _, err := AdmitChange(header, legacy, legacy[0].ID, Changes{Title: &title}); err == nil {
-		t.Fatal("partial change accepted oversized candidate")
-	}
-	if _, err := AdmitDelete(header, legacy, legacy[0].ID); err != nil {
-		t.Fatalf("legacy deletion: %v", err)
-	}
-	last := "last"
-	if _, err := AdmitMove(header, legacy, legacy[0].ID, Placement{Position: &last}); err != nil {
-		t.Fatalf("legacy move: %v", err)
-	}
+
 }
 
 func TestPlacementAndCandidateFailures(t *testing.T) {

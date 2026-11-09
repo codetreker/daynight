@@ -63,7 +63,9 @@ The [Worker design](../../../../docs/design/daynight-worker-snapshots.md) and
 [assistant design](../../../../docs/design/assistant.md#查询与授权) own these read
 paths. This partially supersedes the encoded response decision for Worker/Bot
 domain reads. Its other read budgets and Task write completion/admission
-mechanisms remain. The [Bot fixture decision](../testing/2026-11-08-bot-projection-fixtures.md)
+mechanisms remain. The [Task canonical batch-read decision](2026-11-09-task-canonical-batch-reads.md)
+applies the same write/read responsibility split to Task, property, sync, graph,
+search and Step reads. The [Bot fixture decision](../testing/2026-11-08-bot-projection-fixtures.md)
 preserves the former guard tests' rationale; the
 [Worker test decision](../testing/2026-11-08-worker-test-cost.md) owns the maintained
 summary-result observation.

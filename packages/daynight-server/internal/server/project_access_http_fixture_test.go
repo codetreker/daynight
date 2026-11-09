@@ -36,20 +36,15 @@ func (s accessHTTPSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
 
 type accessHTTPTaskReader struct {
 	store.TaskReader
-	epoch     func(context.Context, string) (string, error)
-	size      func(context.Context, string) (store.TaskGraphSize, error)
-	sync      func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
-	people    func(context.Context, string) ([]model.TaskAssigneeFact, error)
-	presence  func(context.Context, string, string) (store.TaskPresence, error)
-	graphSize func(context.Context, string, string, store.TaskGraphSelection) (store.TaskGraphSize, error)
-	graph     func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
+	epoch    func(context.Context, string) (string, error)
+	sync     func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	people   func(context.Context, string) ([]model.TaskAssigneeFact, error)
+	presence func(context.Context, string, string) (store.TaskPresence, error)
+	graph    func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 }
 
 func (d accessHTTPTaskReader) TaskCacheEpoch(ctx context.Context, id string) (string, error) {
 	return d.epoch(ctx, id)
-}
-func (d accessHTTPTaskReader) TaskGraphSize(ctx context.Context, id string) (store.TaskGraphSize, error) {
-	return d.size(ctx, id)
 }
 func (d accessHTTPTaskReader) TaskSyncTasks(ctx context.Context, id string, lower *time.Time, preview int) ([]model.TaskViewRecord, error) {
 	return d.sync(ctx, id, lower, preview)
@@ -59,9 +54,6 @@ func (d accessHTTPTaskReader) TaskAssignees(ctx context.Context, id string) ([]m
 }
 func (d accessHTTPTaskReader) TaskPresence(ctx context.Context, project, id string) (store.TaskPresence, error) {
 	return d.presence(ctx, project, id)
-}
-func (d accessHTTPTaskReader) TaskGraphProjectionSize(ctx context.Context, project, id string, selection store.TaskGraphSelection) (store.TaskGraphSize, error) {
-	return d.graphSize(ctx, project, id, selection)
 }
 func (d accessHTTPTaskReader) TaskGraphTasks(ctx context.Context, project, id string, selection store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
 	return d.graph(ctx, project, id, selection, preview)
@@ -138,17 +130,12 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 		snapshot.observed = func(context.Context) (time.Time, error) { observed(); return v.UpdatedAt, nil }
 	}
 	if kind == "sync" {
-		epoch, size, sync, people, sources := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+		epoch, sync, people, sources := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
 		snapshot.task = accessHTTPTaskReader{
 			epoch: func(ctx context.Context, id string) (string, error) {
 				epoch()
 				projectHTTPCheck(t, id, v.ID)
 				return "e5555555-5555-4555-8555-555555555555", nil
-			},
-			size: func(ctx context.Context, id string) (store.TaskGraphSize, error) {
-				size()
-				projectHTTPCheck(t, id, v.ID)
-				return store.TaskGraphSize{}, nil
 			},
 			sync: func(ctx context.Context, id string, gotLower *time.Time, preview int) ([]model.TaskViewRecord, error) {
 				sync()
@@ -170,21 +157,14 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 		}}
 	}
 	if kind == "graph" {
-		presence, size, tasks := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-		selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, IncludeExternalEdges: true, LiveOnly: true}
+		presence, tasks := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+		selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
 		snapshot.task = accessHTTPTaskReader{
 			presence: func(ctx context.Context, project, id string) (store.TaskPresence, error) {
 				presence()
 				projectHTTPCheck(t, project, v.ID)
 				projectHTTPCheck(t, id, graphTask.ID)
 				return store.TaskPresence{Found: true}, nil
-			},
-			graphSize: func(ctx context.Context, project, id string, gotSelection store.TaskGraphSelection) (store.TaskGraphSize, error) {
-				size()
-				projectHTTPCheck(t, project, v.ID)
-				projectHTTPCheck(t, id, graphTask.ID)
-				projectHTTPCheck(t, gotSelection, selection)
-				return store.TaskGraphSize{NodeCount: 1}, nil
 			},
 			graph: func(ctx context.Context, project, id string, gotSelection store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
 				tasks()

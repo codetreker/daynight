@@ -17,7 +17,7 @@ type TaskService interface {
 	Delete(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetStatus(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	Get(context.Context, model.Principal, string, string) (model.Task, error)
-	ObserveREST(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error)
+	Observe(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error)
 	List(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error)
 	Graph(context.Context, model.Principal, string, string) (model.TaskGraph, error)
 	Assignees(context.Context, model.Principal, string, taskservice.TaskAssigneesRequest) (model.TaskAssignees, error)

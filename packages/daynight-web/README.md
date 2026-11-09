@@ -710,7 +710,9 @@ properties, assignedTo or Project ownership in old records cannot receive
 defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
-fences/generations and bounded counts for both active and invalidated manifests.
+fences/generations and actual counts for both active and invalidated manifests.
+Complete graph and sync responses are not rejected by stored node, edge or
+Session-map counts; cache quotas remain independent.
 An invalidated manifest has a recognized reason, null epoch/Project/watermark and
 zero task/edge counts; it cannot retain a usable incremental baseline. The shared
 details store and guarded transaction interface support intrinsic content reuse,
@@ -738,11 +740,11 @@ business versions remain bigint. The default ten-second server overlap can
 repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
 invalidate detail records, replace published indexes or broadcast. Network,
 HTTP, decoding, quota and IDB-completion errors preserve the prior valid cache
-and watermark without partial publication. Invalid stored properties fail the
-complete sync request with 400 invalid_input; database and transaction-completion
-faults remain 500 internal_error. Complete properties increase transport, parsing,
-full-set validation and summary storage costs. Graph node/edge limits and the
-detail LRU byte budget do not bound total summary bytes, and arbitrary legal
+and watermark without partial publication. Server reads trust canonical stored
+properties without repeated normalization, field or capacity checks; natural
+decoding, encoding, database and transaction errors remain visible. Complete
+properties increase transport, parsing, full-set client validation and summary
+storage costs. The detail LRU byte budget does not bound total summary bytes, and arbitrary legal
 maximum payloads are not guaranteed to fit every browser quota.
 
 After identity verification, a project publishes its validated local summary

@@ -62,7 +62,7 @@ describe("task search HTTP contract", () => {
   it("decodes the captured empty-query error even though this client rejects blank input locally", () => {
     expect(parseServerError(fixture("syntax-empty_query")).details).toEqual({ reason: "empty_query", position: 1, length: 0 });
   });
-  it.each([["search-changed", 409, "search_changed"], ["context-limit", 400, "search_context_limit_exceeded"], ["timeout", 504, "search_timeout"], ["invalid-input", 400, "invalid_input"]] as const)("exposes captured %s as a read failure", async (name, status, code) => {
+  it.each([["search-changed", 409, "search_changed"], ["timeout", 504, "search_timeout"], ["invalid-input", 400, "invalid_input"]] as const)("exposes captured %s as a read failure", async (name, status, code) => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(fixture(name), status));
     await expect(api(fetch).searchTasks(projectId, { query: "cache" })).rejects.toMatchObject({ status, code, outcomeUnconfirmed: false });
     expect(fetch).toHaveBeenCalledOnce();
@@ -95,13 +95,10 @@ describe("task search HTTP contract", () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(bad, 400));
     await expect(api(fetch).searchTasks(projectId, { query: "缓存 AND (" })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
-  it("rejects extra capacity details and non-integer syntax positions", async () => {
-    const limit = fixture("context-limit"); limit.error.details.extra = 1;
+  it("rejects non-integer syntax positions", async () => {
     const badPosition = JSON.stringify(fixture("invalid-expression")).replace('"position":8', '"position":8.0');
-    for (const response of [json(limit, 400), source(badPosition, 400)]) {
-      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
-      await expect(api(fetch).searchTasks(projectId, { query: "缓存 AND (" })).rejects.toMatchObject({ phase: "protocol" });
-    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(source(badPosition, 400));
+    await expect(api(fetch).searchTasks(projectId, { query: "缓存 AND (" })).rejects.toMatchObject({ phase: "protocol" });
   });
   it.each([
     { ...next, items: [{ ...next.items[0], id: first.items[0].id }] },

@@ -38,12 +38,12 @@ it("derives complete dependency blocking, ordinary chains, all counts and precis
 describe("graph validation", () => {
   it.each([
     [task(1), task(1)], [task(1, { dependsOn: [id(2)] })],
-    [task(1, { dependsOn: [id(1)] })], [task(1, { dependsOn: [id(2)] }), task(2, { dependsOn: [id(1)] })],
+    [task(1, { dependsOn: [id(1)] })],
     [task(1), task(2, { status: "in_progress", dependsOn: [id(1)] })],
     [task(1, { dependsOn: [id(2)], externalDependsOn: [id(3)] }), task(2)],
   ])("rejects incomplete or inconsistent full facts %#", (...tasks) => expect(() => projectSummaries(project, tasks, time)).toThrow(GraphDataError));
-  it("enforces the full node capacity and supports empty projects", () => {
-    expect(() => projectSummaries(project, Array.from({ length: 1001 }, (_, n) => task(n + 1)), time)).toThrow(GraphDataError);
+  it("projects complete task collections and supports empty projects", () => {
+    expect(projectSummaries(project, Array.from({ length: 1001 }, (_, n) => task(n + 1)), time).graph.summary.total).toBe(1001);
     expect(projectSummaries(project, [], time).graph.summary.total).toBe(0);
   });
 });

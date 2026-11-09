@@ -93,7 +93,7 @@ stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代�
 
 真实 worker 修改沿用同一事务的 task.version 与 updatedAt；[时间窗口摘要](daynight-task-sync.md)因此能观察到其业务版本变化，同值 no-op 保持原值。snapshot/delta 都包含完整当前 properties，包括存在的 worker 归属；需要核对执行身份时仍按已知 taskId GET 完整 Task，不以只读缓存替代实时认领核对。现有同步窗口和更新时间索引继续由摘要能力拥有，不增加 worker 查询投影或反向索引。
 
-沿用 invalid_input、认证/forbidden/not_found、version_conflict、dependency_unsatisfied、invalid_transition，并用 claim_conflict 表达非当前归属。非成员读取和写入按现有规则隐藏任务。非法存储属性值以保留错误链的属性校验错误返回 400 invalid_input，数据库及其他内部故障仍返回 500。错误不转换为空候选、局部资源或成功。
+沿用 invalid_input、认证/forbidden/not_found、version_conflict、dependency_unsatisfied、invalid_transition，并用 claim_conflict 表达非当前归属。非成员读取和写入按现有规则隐藏任务。写入入口的属性结构与容量检查继续拒绝非法候选；已保存 Worker 属性仅普通解码后核对当前归属，不重复 Normalize/Validate/Admit。自然解码、数据库及其他内部故障保留原错误链。错误不转换为空候选、局部资源或成功。
 
 归属记录保留期间，服务端拒绝再次使用其 claimId；强制撤回会清除这条服务端记录。调用方 SQLite 保留结束 claim 的索引行。任务版本保护每次写入，新 ID 由调用方按从不复用的规则生成。该模型不建立历史 claim ID 注册表、另一个版本计数器或秘密执行凭据。
 

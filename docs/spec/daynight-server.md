@@ -296,7 +296,7 @@ Task 更新示例：
 
 列表使用 `limit`、`cursor`。`limit` 默认 `50`，允许 `1..100`；按
 `createdAt ASC, id ASC` 稳定排序，返回 `items` 和 `nextCursor`，末页后者为 `null`。
-Team、Project 和 Task 既有分页的完整 JSON 响应最多 4 MiB，包含转义、cursor 与末尾换行。达到字节上限时从最后返回项继续；历史首项无法装入时整体返回 409 `resource_limit_exceeded`。普通 Task 单项响应最多 512 KiB。
+Team 和 Project 既有分页的完整 JSON 响应最多 4 MiB，包含转义、cursor 与末尾换行。达到字节上限时从最后返回项继续；历史首项无法装入时整体返回 409 `resource_limit_exceeded`。Task 单项、属性和列表直接读取保存的规范数据，不重复结构、字段或容量检查，也不设置领域读取响应字节预算；Task 列表按条数续页。普通 Task 写入成功响应在提交前保留 512 KiB 准入。
 Project 列表默认返回当前主体全部可访问项目；单值 `teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥；非成员或不存在的 Team 返回 404，读取失败不能视为空列表。资格筛选先于排序和分页，不返回总数。Project cursor 使用独立 kind 与版本 2，绑定规范主体及 all/team/shared 范围和 Team ID；旧 cursor 和不匹配范围被拒绝。cursor 不需要防篡改，也不授予访问权。
 
 Task 列表支持单个四状态 status、ready/allowAgents 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false，兼容匹配包含 null 或同值要求；省略不筛选。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
@@ -321,11 +321,11 @@ Worker 资源归属来自认证 principal，报告不能提供 userId 或权威�
 无当前请求时间上界、筛选或分页。默认 overlap 为 `10s`，环境配置
 `DAYNIGHT_TASK_SYNC_OVERLAP` 必须为正 Go duration。重复尾窗口是正常结果。
 
-Project、缓存 epoch、完整容量检查、匹配任务和 observedAt 来自一次只读快照；
-即使窗口只命中少量任务，项目超过 1,000/5,000 上限也明确拒绝。摘要的业务 version
+Project、缓存 epoch、匹配任务和 observedAt 来自一次只读快照；
+同步不复查存储图节点、边或响应字节容量。摘要的业务 version
 使用精确十进制字符串，包含 requiredPlatform、明确 nullable 的 assignedTo 与完整 properties，省略 description 及派生 ready/blockedBy。
-任务行及逐返回项有预算读取的完整属性来自同一快照，缺失属性不补默认值。非法存储属性使整个请求返回 400 invalid_input；数据库或事务完成故障仍返回 500 internal_error，且优先于已发现的属性拒绝。
-每个成功响应必含非 null 的 `sessions: Record<TaskId, "working" | "notice" | "warning" | "pending">`，没有贡献时为 `{}`。它是全项目未删除且进行中 Task 的可靠当前 Web Session 状态集合，独立于任务窗口；即使 `tasks=[]` 也完整返回。键用 Task ID，不重复执行或 Session 身份，不含完整 Current 数据，不维护 Session 增量。状态、适用范围与失败规则由[任务缓存需求](daynight-task-sync.md#服务端轻量-session-集合)拥有。Task、Worker 和持久 Session 来自同一只读快照，live 标量取自共享 Engine 的已提交状态；不推进 Session 生命周期。完整 JSON 含状态 map 仍受 64 MiB 上限限制，超限整体返回 `409 resource_limit_exceeded`。
+任务行及批量读取的完整规范属性来自同一快照，缺失属性不补默认值。读取不调用属性 Normalize/Validate/Admit；自然解码、编码、数据库或事务完成故障继续传播，不返回局部成功。
+每个成功响应必含非 null 的 `sessions: Record<TaskId, "working" | "notice" | "warning" | "pending">`，没有贡献时为 `{}`。它是全项目未删除且进行中 Task 的可靠当前 Web Session 状态集合，独立于任务窗口；即使 `tasks=[]` 也完整返回。键用 Task ID，不重复执行或 Session 身份，不含完整 Current 数据，不维护 Session 增量。状态、适用范围与失败规则由[任务缓存需求](daynight-task-sync.md#轻量-session-集合与列表读取)拥有。Task、Worker 和持久 Session 来自同一只读快照，live 标量取自共享 Engine 的已提交状态；不推进 Session 生命周期。完整 JSON 含状态 map 一次返回，不新增领域读取字节预算；正常编码错误仍会传播。
 纳秒下界向上对齐到 PostgreSQL 微秒精度，避免驱动截断造成边界外记录进入结果。
 身份/权限、HEAD、no-store 和错误优先级服从既有合同。完整行为由
 [任务缓存需求](daynight-task-sync.md)拥有；Web 已使用持久摘要及本地完整图投影。
@@ -365,20 +365,17 @@ blocked 只计入前置未全部完成的 todo；查询不改变任务状态、�
 `(createdAt,id)` 排序，前置及阻塞 ID 数组按 ID 排序；空数组为 `[]`，时间使用 UTC。
 `externalDependsOn` 仅保留依赖性质，不减免阻塞或环检测。
 
-一次成功查询最多返回 1,000 节点、5,000 条依赖引用。节点数为本链及一层外部前置的并集
-大小，边数为这些返回节点完整 `dependsOn` 的条目总数，包含指向投影外任务的引用。
-无关任务链不参与本次容量计数。快照内先获取精确数量，超过任一上限返回
-`409 graph_limit_exceeded`，error.details 包含 `nodeCount`、`edgeCount`、`maxNodes`、
-`maxEdges`，不包含 taskIds，不返回部分图。数据库、取消和事务完成失败优先于暂存的
-缺失、已删除或超限结果，不得被降格为 404、410 或 409。计数、节点、依赖、ready 与
-summary 必须来自同一次快照，即使读取期间有并发写入。
+查询完整返回本链及一层外部前置的并集，保留这些节点的完整 `dependsOn`，
+包含指向投影外任务的引用。不复查保存图的节点或边容量，也不以新的项目累计写入配额代替。
+数据库、取消和事务完成失败优先于暂存的缺失或已删除结果，不得被降格为 404 或 410。
+节点、依赖、ready 与 summary 必须来自同一次快照，即使读取期间有并发写入。
 
 错误响应统一包含 `error.code`、`error.message`、`error.requestId`，必要时包含
 `error.details.taskIds` 中按 ID 排序的阻塞 task ID。HTTP 状态与错误分类如下：
 
 | HTTP 状态 | `error.code` | 场景 |
 |---|---|---|
-| `400` | `invalid_input` | 格式、字段、分页参数、依赖引用、自身或重复依赖不合法，以及读取到非法存储属性值 |
+| `400` | `invalid_input` | 格式、字段、分页参数、依赖引用、自身或重复依赖不合法 |
 | `401` | `unauthenticated` | 会话或个人访问令牌缺失、失效或已撤销 |
 | `403` | `forbidden` | 普通成员执行管理员操作，或 Cookie 会话写请求来源不符合要求 |
 | `404` | `not_found` | 路径资源缺失、当前用户不是对应 Team/项目成员或 task 不属于指定 project |
@@ -395,7 +392,6 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform/assignedTo，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |
 | `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则、done 重开存在 active/done 直接后继，或严格删除存在未删除引用者 |
-| `409` | `graph_limit_exceeded` | 任务链查询的返回集合或 task-sync 的全项目集合超过节点或依赖上限，返回精确数量和支持上限 |
 | `410` | `task_deleted` | 授权成员访问已软删除任务；不表示项目访问撤回 |
 | `500` | `internal_error` | 内部、持久化或事务清理操作失败，响应不泄露数据库连接信息或 SQL |
 | `503` | `write_outcome_unknown` | 无法确认 Team 管理、项目创建或项目删除的提交结果，不自动重放写入 |

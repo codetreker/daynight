@@ -148,44 +148,6 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 	}
 }
 
-func TestSearchHTTPEncodesBoundedPagesAndCursor(t *testing.T) {
-	h := newHTTPFixture(t, io.Discard)
-	cursor := "second-page"
-	calls := 0
-	large := "match" + strings.Repeat("\x01", 180000)
-	ids := []string{testTaskID, "55555555-5555-4555-8555-555555555555"}
-	h.ExpectCalls("Search", 3)
-	h.Search = func(ctx context.Context, p model.Principal, pid string, input tasksearch.Request) (tasksearch.Page, error) {
-		calls++
-		if input.Query != "match" || input.Limit != 2 {
-			t.Fatalf("input=%+v", input)
-		}
-		if calls == 3 {
-			return tasksearch.Page{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Search response exceeds its resource limit."}
-		}
-		if (calls == 1 && input.Cursor != nil) || (calls == 2 && (input.Cursor == nil || *input.Cursor != cursor)) {
-			t.Fatalf("cursor input=%+v", input)
-		}
-		page := tasksearch.Page{ProjectID: pid, Total: 2, Items: []tasksearch.Item{{ID: ids[calls-1], ProjectID: pid, Title: large, Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"title"}}}}}
-		if calls == 1 {
-			page.NextCursor = &cursor
-		}
-		return page, nil
-	}
-	path := taskCollection(testProjectID) + "/search"
-	response := projectRequest(h, http.MethodPost, path, `{"query":"match","limit":2}`)
-	first := decodeResponse[api.TaskSearchPage](t, response, 200)
-	if response.Body.Len() > 2<<20 || len(first.Items) != 1 || first.Items[0].ID != ids[0] || first.NextCursor == nil {
-		t.Fatalf("first size=%d page=%+v", response.Body.Len(), first)
-	}
-	response = projectRequest(h, http.MethodPost, path, jsonBody(t, map[string]any{"query": "match", "limit": 2, "cursor": *first.NextCursor}))
-	next := decodeResponse[api.TaskSearchPage](t, response, 200)
-	if response.Body.Len() > 2<<20 || len(next.Items) != 1 || next.Items[0].ID != ids[1] || next.NextCursor != nil {
-		t.Fatalf("next size=%d page=%+v", response.Body.Len(), next)
-	}
-	assertProjectError(t, projectRequest(h, http.MethodPost, path, `{"query":"match","limit":2}`), 409, "resource_limit_exceeded")
-}
-
 func TestTaskSearchIDFixtureContract(t *testing.T) {
 	h := newHTTPFixture(t, io.Discard)
 	id := "05d609a8-50e2-4aaf-a31d-82466dca2a36"

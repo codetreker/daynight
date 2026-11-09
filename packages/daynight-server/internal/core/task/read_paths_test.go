@@ -8,7 +8,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 type readFixture struct {
@@ -24,7 +23,6 @@ func (f readFixture) Tasks(context.Context, string, store.TaskQuery) (store.Task
 
 type projectionFixture struct {
 	err     error
-	size    store.TaskGraphSize
 	facts   []model.TaskAssigneeFact
 	epoch   string
 	records []model.TaskViewRecord
@@ -32,9 +30,6 @@ type projectionFixture struct {
 
 func (f projectionFixture) TaskCacheEpoch(context.Context, string) (string, error) {
 	return f.epoch, f.err
-}
-func (f projectionFixture) TaskGraphSize(context.Context, string) (store.TaskGraphSize, error) {
-	return f.size, f.err
 }
 func (f projectionFixture) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
 	return f.records, f.err
@@ -65,9 +60,8 @@ func TestReadAndListBoundaries(t *testing.T) {
 	if !errors.Is(err, sentinel) || refusal != nil {
 		t.Fatal(refusal, err)
 	}
-	_, bad := properties.Normalize(model.TaskProperties{"worker": []byte("{}")})
-	_, refusal, err = ReadList(ctx, readFixture{err: bad}, id, selection)
-	if err != nil || refusal == nil {
+	_, refusal, err = ReadList(ctx, readFixture{err: sentinel}, id, selection)
+	if !errors.Is(err, sentinel) || refusal != nil {
 		t.Fatal(refusal, err)
 	}
 	task := model.Task{ID: id, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
@@ -111,11 +105,6 @@ func TestSyncAndAssigneesProjection(t *testing.T) {
 	sync, refusal, err := ReadSync(ctx, f, clock, id, "", nil, time.Second, model.TaskSync{})
 	if err != nil || refusal != nil || sync.Mode != "snapshot" || len(sync.AssigneeVersions) != 1 {
 		t.Fatal(sync, refusal, err)
-	}
-	f.size.NodeCount = 1001
-	_, refusal, err = ReadSync(ctx, f, clock, id, id, nil, time.Second, model.TaskSync{})
-	if err != nil || refusal == nil || refusal.Code != "graph_limit_exceeded" {
-		t.Fatal(refusal, err)
 	}
 	f.err = errors.New("database")
 	if _, err = ReadAssignees(ctx, f, id, nil); err == nil {

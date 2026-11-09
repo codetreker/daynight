@@ -132,22 +132,12 @@ func TestStatusAndCandidateValidation(t *testing.T) {
 }
 func ptr[T any](v T) *T { return &v }
 
-func TestMutationRefusesInvalidWorkerAndDependencies(t *testing.T) {
+func TestMutationRefusesInvalidWritesAndIncompatibleWorker(t *testing.T) {
 	ctx := context.Background()
 	id := "00000000-0000-4000-8000-000000000001"
 	dao := &mutationDAO{current: model.Task{ID: id, Title: "Old", Status: model.TaskTodo, Version: 2, Properties: model.TaskProperties{}}}
 	_, err := PrepareCreate(ctx, dao, id, store.TaskWrite{DependsOn: []string{"unknown"}})
 	faultCode(t, err, "invalid_input")
-	dao.current.Properties["worker"] = []byte(`{"bad":true}`)
-	if _, err = PrepareUpdate(ctx, dao, id, UpdateTask{Version: 2}); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
-	if _, err = PrepareStatus(ctx, dao, model.Principal{}, id, SetTaskStatus{Version: 2, Status: model.TaskDone}); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
-	if err = ValidateDelete(ctx, dao, dao.current, true); err == nil {
-		t.Fatal("invalid worker accepted")
-	}
 	active, worker := activeFixture(t)
 	worker.AgentControlMode = model.AgentControlModeWeb
 	props, err := properties.WithWorker(model.TaskProperties{}, worker)

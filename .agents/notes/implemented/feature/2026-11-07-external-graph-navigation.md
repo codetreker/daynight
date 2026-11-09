@@ -67,8 +67,9 @@ That list mutation is superseded by the independent resource ownership above.
 
 The one-hop boundary limits context depth without limiting the number of direct
 external prerequisites or removing ordinary Goal members. The complete project
-snapshot and its validation remain required, and a large ordinary component can
-still approach the supported graph limits. Context cards use the existing 136px
+snapshot and its client structural checks remain required. A large ordinary
+component increases traversal and layout work without a stored node/edge limit,
+as recorded in the [batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md). Context cards use the existing 136px
 action-footer geometry so their navigation is available even when no local
 neighbors are hidden.
 

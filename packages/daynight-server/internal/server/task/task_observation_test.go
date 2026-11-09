@@ -16,9 +16,9 @@ import (
 func TestTaskGETReturnsAuthorizedSnapshotEpoch(t *testing.T) {
 	handler := newHTTPFixture(t, io.Discard)
 	task := testTask("Observed")
-	handler.Tasks.ObserveRESTFunc = func(ctx context.Context, principal model.Principal, pid, id string, extended bool) (taskservice.TaskObservation, error) {
-		if principal != handler.principal || pid != testProjectID || id != testTaskID || extended || ctx.Err() != nil {
-			t.Fatalf("observation input=%+v %s %s extended=%t", principal, pid, id, extended)
+	handler.Tasks.ObserveFunc = func(ctx context.Context, principal model.Principal, pid, id string) (taskservice.TaskObservation, error) {
+		if principal != handler.principal || pid != testProjectID || id != testTaskID || ctx.Err() != nil {
+			t.Fatalf("observation input=%+v %s %s", principal, pid, id)
 		}
 		return taskservice.TaskObservation{Task: task, Epoch: testEpoch}, nil
 	}
@@ -28,7 +28,7 @@ func TestTaskGETReturnsAuthorizedSnapshotEpoch(t *testing.T) {
 		t.Fatalf("observation=%+v headers=%+v", got, response.Header())
 	}
 	unauthorized := projectRequest(handler.Handler, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, "")
-	if unauthorized.Code != 401 || unauthorized.Header().Get("Daynight-Task-Epoch") != "" || handler.Tasks.Calls("ObserveREST") != 1 {
+	if unauthorized.Code != 401 || unauthorized.Header().Get("Daynight-Task-Epoch") != "" || handler.Tasks.Calls("Observe") != 1 {
 		t.Fatalf("unauthorized=%d headers=%+v", unauthorized.Code, unauthorized.Header())
 	}
 	for _, tc := range []struct {
@@ -42,7 +42,7 @@ func TestTaskGETReturnsAuthorizedSnapshotEpoch(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newHTTPFixture(t, io.Discard)
-			fixture.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+			fixture.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
 				return taskservice.TaskObservation{}, tc.cause
 			}
 			response := projectRequest(fixture, http.MethodGet, taskCollection(testProjectID)+"/"+testTaskID, "")

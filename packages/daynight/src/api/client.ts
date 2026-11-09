@@ -1208,16 +1208,16 @@ export const createApiClient = (options: {
                 if (!/^(?:0|[1-9][0-9]*)$/.test(sources.get("total") ?? "")) throw new ProtocolError("Search total must be an integer.");
               } else {
                 const error = parseServerError(value);
-                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_context_limit_exceeded: 400, search_timeout: 504 };
+                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
                 if (expectedStatus[error.code] !== undefined && expectedStatus[error.code] !== metadata.status) throw new ProtocolError("Search error status is invalid.");
                 // Search-specific refusals originate after authentication. Generic
                 // authentication failures can precede the principal header.
                 if (expectedStatus[error.code] !== undefined && metadata.principalId === undefined) throw new ProtocolError("Search error principal is missing.");
-                if (error.code === "invalid_search_expression" || error.code === "search_context_limit_exceeded") {
+                if (error.code === "invalid_search_expression") {
                   const errorSources = jsonObjectSources(sources.get("error") ?? "");
                   const detailsSources = jsonObjectSources(errorSources.get("details") ?? "");
-                  const integerFields = error.code === "invalid_search_expression" ? ["position", "length"] : ["nodeCount", "edgeCount", "maxNodes", "maxEdges"];
-                  const allowedFields = error.code === "invalid_search_expression" ? ["reason", ...integerFields] : integerFields;
+                  const integerFields = ["position", "length"];
+                  const allowedFields = ["reason", ...integerFields];
                   if (detailsSources.size !== allowedFields.length || [...detailsSources.keys()].some((field) => !allowedFields.includes(field))) throw new ProtocolError("Search error details contain unexpected fields.");
                   if (integerFields.some((field) => !/^(?:0|[1-9][0-9]*)$/.test(detailsSources.get(field) ?? ""))) throw new ProtocolError("Search error details must use integers.");
                 }

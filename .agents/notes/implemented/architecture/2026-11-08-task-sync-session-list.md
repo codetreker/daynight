@@ -85,7 +85,7 @@ local body receipt survives those delays without another server clock field.
 ## Consequences
 
 List visibility, disclosure and filtering no longer generate full Current
-requests. One complete bounded map shares the project's existing synchronization
+requests. One complete minimal map shares the project's existing synchronization
 period; ordinary polling waits retain unexpired states, while accepted failures
 and auth/scope loss retract them. Reliable pending Sessions keep their shortcuts
 without an annotation. Full Current content and control authorization remain

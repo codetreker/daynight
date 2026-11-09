@@ -491,14 +491,6 @@ func (d *mcpAttachmentTaskReader) ResolveTaskAssignees(p0 context.Context, p1 st
 	unexpectedHTTPCall(d.t, "TaskReader.ResolveTaskAssignees")
 	panic("unreachable")
 }
-func (d *mcpAttachmentTaskReader) TaskGraphSize(p0 context.Context, p1 string) (store.TaskGraphSize, error) {
-	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphSize")
-	panic("unreachable")
-}
-func (d *mcpAttachmentTaskReader) TaskGraphProjectionSize(p0 context.Context, p1 string, p2 string, p3 store.TaskGraphSelection) (store.TaskGraphSize, error) {
-	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphProjectionSize")
-	panic("unreachable")
-}
 func (d *mcpAttachmentTaskReader) TaskGraphTasks(p0 context.Context, p1 string, p2 string, p3 store.TaskGraphSelection, p4 int) ([]model.GraphTask, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphTasks")
 	panic("unreachable")

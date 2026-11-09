@@ -1,8 +1,6 @@
 package task
 
 import (
-	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -12,9 +10,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -74,15 +69,6 @@ func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
 	return result
 }
 
-func admitSyncResponse(response api.TaskSync, max int64) error {
-	_, err := measure.JSON(io.Discard, "task sync", max, response, true)
-	var violation *limit.Violation
-	if errors.As(err, &violation) {
-		return &model.Fault{Code: "resource_limit_exceeded", Message: "Task sync exceeds the encoded resource limit.", Cause: err}
-	}
-	return err
-}
-
 func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	start := time.Now()
@@ -99,17 +85,11 @@ func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, pri
 	logger = logger.With("since", input.Since, "window", h.window)
 	result, err := h.sync(request.Context(), principal, projectID, input)
 	if err != nil {
-		if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
-			logger = logger.With("node_count", fault.GraphLimit.NodeCount, "edge_count", fault.GraphLimit.EdgeCount)
-		}
+
 		httpx.WriteError(w, request, logger, "task_sync", "get", err)
 		return
 	}
 	response := TaskSyncResponse(result)
-	if err := admitSyncResponse(response, taskcore.MaxSyncResponseJSONBytes); err != nil {
-		httpx.WriteError(w, request, logger, "task_sync", "response", err)
-		return
-	}
 	logger.InfoContext(request.Context(), "task sync read", "type", "resource", "component", "task_sync", "phase", "get",
 		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "mode", result.Mode, "returned_tasks", len(result.Tasks))
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)

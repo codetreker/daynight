@@ -6,7 +6,7 @@
 
 Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留。项目定义步骤名称、粒度和流程；系统提供读取、添加、修改、设置状态、移动和删除操作。执行前预列和执行中追加使用相同操作；每轮 coding/review 可新增独立记录，保留各轮身份与成果。架构保留 Task 整体状态、依赖、Worker 归属及 Session 生命周期，Step 状态不参与领取、调度或 Task 完成判断。
 
-公开约束包括 Task 内唯一的 8 位十六进制 ID、独立 Steps 资源、共享父 Task 版本、完整有序集合响应、64 MiB 编码容量，以及冲突和未知结果的读回规则。Task 的 show/list/ready/graph/task-sync 保持各自投影，不内嵌 Steps。
+公开约束包括 Task 内唯一的 8 位十六进制 ID、独立 Steps 资源、共享父 Task 版本、完整有序集合响应、64 MiB 写入候选编码容量，以及冲突和未知结果的读回规则。Task 的 show/list/ready/graph/task-sync 保持各自投影，不内嵌 Steps。
 
 ## 现有机制与复用点
 
@@ -109,7 +109,7 @@ type Placement = { readonly before: string } | { readonly after: string }
 
 Step ID 恰为 UUIDv4 第一段的 8 位十六进制字符，输入接受大小写并规范化为小写，保留前导零；同一 Task 内现存记录唯一，跨 Task 可以重复。标题和 Markdown 说明保留原始 UTF-8 字符串且不得含 NUL；标题至少包含一个不属于 Unicode `White_Space` 的字符。创建省略说明保存 `""`，省略状态保存 `todo`；读取返回全部字段。时间以 UTC RFC 3339 表示。`done` 表示该步结束，不推导 review 通过或 Task 完成；四状态之间均允许显式设置。
 
-新增和修改的完整目标候选调用 Task 与 Step 共用的文字准入策略，分别限制标题 1024 字节和说明 65536 字节。读侧 codec 保留结构校验，历史长文字不会被截断或因新写入限额而不可读；移动和删除不对目标施加单字段写入限额。目标文字和完整集合编码必须分别通过准入。
+新增和修改的完整目标候选调用 Task 与 Step 共用的文字准入策略，分别限制标题 1024 字节和说明 65536 字节。读取使用 `ProjectCollection/ProjectItem` 纯投影，不调用严格候选校验或容量计量；正常扫描和 JSON 编码失败沿原链路传播。移动和删除不对目标施加单字段写入限额。目标文字和完整集合编码必须分别通过准入。
 
 下表的 `/steps` 表示完整路径 `/api/v1/projects/{projectId}/tasks/{taskId}/steps`。
 
@@ -159,7 +159,7 @@ Task 元数据与整个 Steps 集合统一使用 `Task.version`，`StepsResource
 
 用于容量校验的 Step 时间就是将要存储和返回的时间。数据库时间先转 UTC 并保持微秒精度，再生成候选；不先用应用纳秒值计量后交由数据库截断。现有[同步精度规则](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/task_sync.go#L19-L33)已明确 PostgreSQL 的微秒边界。
 
-codec 是确定性的纯函数；容量检查和 HTTP 响应共用它。候选一旦通过，service 不再更改字段。超限返回 `steps_limit_exceeded` 与 encodedBytes/maxEncodedBytes，事务零变更；正常提交后的断连仍按未知结果处理。
+写入 codec 是确定性的纯函数；写入容量检查和该写入的 HTTP 响应共用它。读取使用独立的纯字段投影和正常编码，不校验保存的完整集合或复查其容量。候选一旦通过，service 不再更改字段。超限返回 `steps_limit_exceeded` 与 encodedBytes/maxEncodedBytes，事务零变更；正常提交后的断连仍按未知结果处理。
 
 ### 错误优先级
 
@@ -260,11 +260,11 @@ Steps workspace 按 Task 身份保存一个新增或编辑表单、草稿、预�
 
 ## 性能与调用预算
 
-单项字段写入可以局部持久化，但每次完整响应和容量检查仍为 O(n + B)，其中 B 为编码字节量；排序对受影响行是 O(n) 上界。最大合法集合的解码、候选和编码缓冲会占用显著请求内存，不能宣称整体操作 O(1)。
+单项字段写入可以局部持久化，但每次写入的完整响应和容量检查仍为 O(n + B)，其中 B 为编码字节量；排序对受影响行是 O(n) 上界。最大合法集合的解码、候选和编码缓冲会占用显著请求内存，不能宣称整体操作 O(1)。
 
-已交付 CLI list/show 各读取一次完整资源。Steps 正文的有效单响应上限取配置预算与 64 MiB 资源上限的较小值，恰好达到上限允许；共享 transport 的单响应 128 MiB/操作总量 256 MiB 默认值与更严格的配置限制保持。CLI Add/Update/Set-status/Move/Delete 的显式 project/version 为一次对应写入，默认版本为一次 GET 加一次写入；unknown 仅在同一仍有效操作内额外读取至多一次，全部消耗共享期限和累计字节。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
+已交付 CLI list/show 各读取一次完整资源。客户端 Steps 正文的有效单响应上限取配置预算与既有 64 MiB 传输安全上限的较小值，恰好达到上限允许；共享 transport 的单响应 128 MiB/操作总量 256 MiB 默认值与更严格的配置限制保持。CLI Add/Update/Set-status/Move/Delete 的显式 project/version 为一次对应写入，默认版本为一次 GET 加一次写入；unknown 仅在同一仍有效操作内额外读取至多一次，全部消耗共享期限和累计字节。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
 
-MCP 提供七项 Steps 读取与写入工具。列表使用有界 DAO 投影及绑定父版本的游标；summary 不读取完整描述，显式 full 可读取完整内容。按实际协议编码的单个 JSON-RPC 成功响应计量，包括请求 ID、内容外壳和协议版本字段；summary 列表限 16 KiB、full 列表限 4 MiB、full show 限 512 KiB。批量调用按各自的 ID 计量；列表在单快照中逐项计量，cursor 指向最后返回项。写入复用上述原子用例，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
+MCP 提供七项 Steps 读取与写入工具。列表使用一次 `limit+1` DAO 查询及绑定父版本的游标；summary 不读取完整描述，显式 full 返回完整内容。读取直接投影保存的规范字段，不设置领域结构、容量或响应字节检查，不逐项查询和计量；cursor 指向最后返回项。单项分别使用普通 Get/GetSummary，输入的父版本条件仍显式比较。共享 MCP 入口的 128 MiB 结果限制和大对象许可继续独立适用。写入复用上述原子用例及严格完整候选 codec，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
 
 ## 迁移与部署
 

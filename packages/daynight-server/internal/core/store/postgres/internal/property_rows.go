@@ -7,7 +7,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -29,11 +28,7 @@ func LoadTaskProperties(ctx context.Context, tx pgx.Tx, taskIDs []string) (map[s
 		if err := rows.Scan(&id, &name, &raw); err != nil {
 			return nil, QueryError("read task properties", err)
 		}
-		value, err := taskproperties.NormalizeValue(name, json.RawMessage(raw))
-		if err != nil {
-			return nil, QueryError("decode task property", err)
-		}
-		result[id][name] = value
+		result[id][name] = json.RawMessage(raw)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, QueryError("read task properties", err)

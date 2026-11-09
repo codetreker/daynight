@@ -75,7 +75,7 @@ export const useTaskSearch = (projectId: string, scope: TaskCacheScope, initialA
         error: keepFailure ? state.error : null, errorQuery: keepFailure ? state.errorQuery : null }));
     } catch (error) {
       if (!stillCurrent()) return;
-      const safeCodes = new Set(['invalid_input', 'invalid_search_expression', 'search_changed', 'search_context_limit_exceeded', 'search_timeout', 'not_found', 'unauthenticated', 'forbidden', 'principal_mismatch', 'network', 'protocol']);
+      const safeCodes = new Set(['invalid_input', 'invalid_search_expression', 'search_changed', 'search_timeout', 'not_found', 'unauthenticated', 'forbidden', 'principal_mismatch', 'network', 'protocol']);
       console.warn('Task search failed', { type: 'operation_error', component: 'task_search', phase: 'read', cycle_id: cycleId, request_id: requestId ?? (error instanceof ApiError ? error.requestId : null), project_id: projectId, user_id: scope.userId, duration_ms: performance.now() - started, error_code: error instanceof ApiError && safeCodes.has(error.code) ? error.code : 'unknown', ...taskCacheFailureDiagnostic(error) });
       if (isAbortError(error)) {
         if (!preserveFailure) retryPage.current = page;

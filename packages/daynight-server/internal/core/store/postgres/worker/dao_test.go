@@ -244,8 +244,12 @@ func TestWorkerDAOReportedTaskSourcesAndStoredCorruption(t *testing.T) {
 		t.Fatalf("private sources: %+v %v", items, err)
 	}
 	execute(t, tx, `UPDATE task_properties SET value='invalid JSON' WHERE task_id=$1 AND name='worker'`, task)
-	if _, err := writer.ReportTaskSnapshots(ctx, user, inventory); err == nil || errors.Unwrap(err) == nil {
-		t.Fatalf("corrupt worker property accepted: %v", err)
+	items, err = writer.ReportTaskSnapshots(ctx, user, inventory)
+	if err != nil || len(items) != 1 || string(items[0].Task.Properties["worker"]) != "invalid JSON" {
+		t.Fatalf("reported property bytes changed: %+v %v", items, err)
+	}
+	if _, err := taskproperty.Worker(items[0].Task.Properties); err == nil {
+		t.Fatal("worker JSON decode failure was hidden")
 	}
 	workerID := uuid.NewString()
 	stamp := time.Now().UTC()

@@ -296,8 +296,7 @@ func TestTaskHTTPAssignmentFullGraphAndSyncProjections(t *testing.T) {
 	rows := []model.Task{unassigned, assigned}
 	facts := []model.TaskAssigneeFact{{UserID: f.principal.UserID, ProfileID: &f.principal.UserID, HasProjectAccess: true, Qualified: true}}
 	check := func(expected map[string]*string, delta string) {
-		queries := []store.TaskQuery{{Page: store.Page{Limit: 1}, BoundedText: true, LegacyProjection: true}, {Page: store.Page{After: &store.Position{CreatedAt: rows[0].CreatedAt, ID: rows[0].ID}, Limit: 1}, BoundedText: true, LegacyProjection: true}}
-		f.expectList(queries, []store.TaskPage{{Items: []model.Task{rows[0]}, HasMore: true}, {Items: []model.Task{rows[1]}}})
+		f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: rows}})
 		response := projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), "")
 		decodeResponse[api.TaskPage](t, response, http.StatusOK)
 		assertHTTPAssignmentResources(t, response.Body.Bytes(), "items", expected)
@@ -307,7 +306,7 @@ func TestTaskHTTPAssignmentFullGraphAndSyncProjections(t *testing.T) {
 			t.Fatalf("Graph: %d %s", response.Code, response.Body)
 		}
 		assertHTTPAssignmentResources(t, response.Body.Bytes(), "tasks", expected)
-		f.expectSync([]model.TaskViewRecord{assignmentHTTPSyncRow(rows[0]), assignmentHTTPSyncRow(rows[1])}, facts, nil, store.TaskGraphSize{NodeCount: 2, EdgeCount: 1})
+		f.expectSync([]model.TaskViewRecord{assignmentHTTPSyncRow(rows[0]), assignmentHTTPSyncRow(rows[1])}, facts, nil)
 		response = projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID), "")
 		decodeResponse[api.TaskSync](t, response, http.StatusOK)
 		assertHTTPAssignmentResources(t, response.Body.Bytes(), "tasks", expected)
@@ -319,7 +318,7 @@ func TestTaskHTTPAssignmentFullGraphAndSyncProjections(t *testing.T) {
 		}
 		if delta != "" {
 			lower := f.observed.Add(-10 * time.Second)
-			f.expectSync([]model.TaskViewRecord{assignmentHTTPSyncRow(rows[0]), assignmentHTTPSyncRow(rows[1])}, facts, &lower, store.TaskGraphSize{NodeCount: 2, EdgeCount: 1})
+			f.expectSync([]model.TaskViewRecord{assignmentHTTPSyncRow(rows[0]), assignmentHTTPSyncRow(rows[1])}, facts, &lower)
 			response = projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID)+delta, "")
 			result := decodeResponse[api.TaskSync](t, response, http.StatusOK)
 			if result.Mode != "delta" {
@@ -329,7 +328,7 @@ func TestTaskHTTPAssignmentFullGraphAndSyncProjections(t *testing.T) {
 		}
 	}
 	check(map[string]*string{unassigned.ID: nil, assigned.ID: &f.principal.UserID}, "")
-	f.expectSync([]model.TaskViewRecord{assignmentHTTPSyncRow(unassigned), assignmentHTTPSyncRow(assigned)}, facts, nil, store.TaskGraphSize{NodeCount: 2, EdgeCount: 1})
+	f.expectSync([]model.TaskViewRecord{assignmentHTTPSyncRow(unassigned), assignmentHTTPSyncRow(assigned)}, facts, nil)
 	baseline := decodeResponse[api.TaskSync](t, projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID), ""), http.StatusOK)
 	after := platformHTTPResult(unassigned, unassigned)
 	after.AssignedTo = &f.principal.UserID

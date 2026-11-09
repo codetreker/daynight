@@ -159,7 +159,7 @@ it('logs safe structured cycle correlation without query, cursor or upstream err
   try {
     const search = vi.mocked(searchTasks);
     search.mockImplementationOnce(async (_project, _query, _filters, _cursor, _signal, _admission, correlation) => { correlation?.onResponseId('observed'); return page('a', 'secret-cursor'); });
-    search.mockRejectedValueOnce(new ApiError('network', null, 'network', null, undefined, new Error('private upstream text')));
+    search.mockRejectedValueOnce(new ApiError('network', null, 'network', null, new Error('private upstream text')));
     const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
     act(() => { result.current.setDraft('private query'); result.current.submit(); }); await waitFor(() => expect(result.current.canNext).toBe(true));
     act(() => result.current.next()); await waitFor(() => expect(result.current.error).toMatchObject({ kind: 'network' }));

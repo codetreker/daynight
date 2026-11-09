@@ -2,18 +2,10 @@ package task
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"io"
 	"time"
 
-	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
-	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
+	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 )
 
 func (s *Reader) TaskCacheEpoch(ctx context.Context, projectID string) (string, error) {
@@ -50,9 +42,6 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn); err != nil {
 			return nil, pg.QueryError("read task sync", err)
 		}
-		if !task.Status.Valid() {
-			return nil, pg.QueryError("read task sync", fmt.Errorf("stored task status is invalid"))
-		}
 		task.CreatedAt = task.CreatedAt.UTC()
 		task.UpdatedAt = task.UpdatedAt.UTC()
 		task.StartedAt = pg.UTCTime(task.StartedAt)
@@ -64,25 +53,16 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 		return nil, pg.QueryError("read task sync", err)
 	}
 	rows.Close()
-	var used int64
+	ids := make([]string, len(tasks))
 	for index := range tasks {
-		properties, err := pg.LoadTaskPropertiesBounded(ctx, s.tx, tasks[index].ID, taskcore.MaxSyncResponseJSONBytes-used, false)
-		if err != nil {
-			return nil, pg.QueryError("read task sync properties", err)
-		}
-		tasks[index].Properties = properties
-		// The complete response also contains an envelope, commas and assignees.
-		// A task-only excess is therefore a definite overflow, and permits early
-		// refusal before materializing the remaining task properties.
-		n, err := measure.JSON(io.Discard, "task sync", taskcore.MaxSyncResponseJSONBytes-used, taskprotocol.RESTSyncRecord(tasks[index]), false)
-		var violation *limit.Violation
-		if errors.As(err, &violation) {
-			return nil, &model.Fault{Code: "resource_limit_exceeded", Message: "Task sync exceeds the encoded resource limit.", Cause: err}
-		}
-		if err != nil {
-			return nil, err
-		}
-		used += n
+		ids[index] = tasks[index].ID
+	}
+	properties, err := pg.LoadTaskProperties(ctx, s.tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for index := range tasks {
+		tasks[index].Properties = properties[tasks[index].ID]
 	}
 	return tasks, nil
 }

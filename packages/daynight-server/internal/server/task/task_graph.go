@@ -52,9 +52,7 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 	}
 	graph, err := h.tasks.Graph(request.Context(), principal, projectID, taskID)
 	if err != nil {
-		if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
-			logger = logger.With("node_count", fault.GraphLimit.NodeCount, "edge_count", fault.GraphLimit.EdgeCount)
-		}
+
 		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}

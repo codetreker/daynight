@@ -226,17 +226,7 @@ func TestReaderListsGraphsSyncAndAssignees(t *testing.T) {
 	if fence.Count != "4" || fence.VersionSum != "5" {
 		t.Fatalf("fence: %+v", fence)
 	}
-	size, e := r.TaskGraphSize(ctx, f.project)
-	mustOK(t, e)
-	if size.NodeCount != 4 || size.EdgeCount != 2 {
-		t.Fatalf("graph size: %+v", size)
-	}
 	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
-	size, e = r.TaskGraphProjectionSize(ctx, f.project, a.ID, selection)
-	mustOK(t, e)
-	if size.NodeCount != 3 || size.EdgeCount != 2 {
-		t.Fatalf("projection: %+v", size)
-	}
 	graph, e := r.TaskGraphTasks(ctx, f.project, a.ID, selection, 5)
 	mustOK(t, e)
 	if len(graph) != 3 || graph[0].ID != a.ID || graph[0].TitlePreview != "ready" || !graph[0].TitleTruncated {
@@ -417,27 +407,5 @@ func TestWorkerInventoryFilteringAndThreadSource(t *testing.T) {
 	mustOK(t, e)
 	if decoded.ClaimID != worker.ClaimID || decoded.State != model.WorkerActive {
 		t.Fatalf("thread source worker: %+v", decoded)
-	}
-}
-
-func TestBoundedTaskPageWithholdsHistoricalText(t *testing.T) {
-	f := newFixture(t)
-	w := task.NewWriter(f.tx, f.project)
-	r := task.NewReader(f.tx)
-	first := mustTask(t, w, store.TaskWrite{Title: "First"})
-	second := mustTask(t, w, store.TaskWrite{Title: "Second"})
-	_, err := f.tx.Exec(t.Context(), `UPDATE tasks SET description=repeat('x', 12582912) WHERE id=$1`, second.ID)
-	mustOK(t, err)
-	query := store.TaskQuery{Page: store.Page{Limit: 1}, BoundedText: true}
-	page, err := r.Tasks(t.Context(), f.project, query)
-	mustOK(t, err)
-	if len(page.Items) != 1 || page.Items[0].ID != first.ID || page.Oversized || !page.HasMore {
-		t.Fatalf("first page: %+v", page)
-	}
-	query.Page.After = &store.Position{CreatedAt: first.CreatedAt, ID: first.ID}
-	page, err = r.Tasks(t.Context(), f.project, query)
-	mustOK(t, err)
-	if len(page.Items) != 1 || page.Items[0].ID != second.ID || !page.Oversized || page.Items[0].Description != "" {
-		t.Fatalf("candidate was not withheld: %+v", page)
 	}
 }

@@ -43,7 +43,7 @@ func (tracer *syncPropertiesTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Co
 	}
 }
 
-func TestTaskSyncPropertiesShareTaskSnapshotAndBoundedQueries(t *testing.T) {
+func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQueries(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
@@ -85,8 +85,8 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBoundedQueries(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if tracer.taskQueries != 1 || tracer.propertyQueries != 3 {
-		t.Fatalf("properties were not loaded per task: task=%d properties=%d", tracer.taskQueries, tracer.propertyQueries)
+	if tracer.taskQueries != 1 || tracer.propertyQueries != 1 {
+		t.Fatalf("properties were not loaded in one batch: task=%d properties=%d", tracer.taskQueries, tracer.propertyQueries)
 	}
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
@@ -110,34 +110,12 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBoundedQueries(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if tracer.taskQueries != 2 || tracer.propertyQueries != 3 {
+	if tracer.taskQueries != 2 || tracer.propertyQueries != 1 {
 		t.Fatalf("empty window queried properties: task=%d properties=%d", tracer.taskQueries, tracer.propertyQueries)
 	}
 }
 
 func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
-	for _, test := range []struct{ name, field, raw string }{
-		{"unknown", "unknown", `[]`}, {"invalid JSON", "pullRequests", `[`}, {"invalid shape", "pullRequests", `null`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			database := isolatedStore(t)
-			ctx := context.Background()
-			project := queryProject(t, database, 1)
-			queryTask(t, database, project.ID, 10, model.TaskTodo)
-			bad := queryTask(t, database, project.ID, 11, model.TaskTodo)
-			mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)`, bad.ID, test.field, test.raw)
-			var actual []model.TaskViewRecord
-			err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-				var err error
-				actual, err = snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
-				return err
-			})
-			var invalid *taskproperties.ValidationError
-			if !errors.As(err, &invalid) || actual != nil {
-				t.Fatalf("bad property lost cause or returned partial tasks: %#v %v", actual, err)
-			}
-		})
-	}
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	queryTask(t, database, project.ID, 10, model.TaskTodo)
@@ -155,36 +133,28 @@ func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
 	}
 }
 
-type cancelPropertyChunkTracer struct {
-	cancel context.CancelFunc
-	chunks int
+type cancelPropertyBatchTracer struct {
+	cancel  context.CancelFunc
+	queries int
 }
-type propertyChunkTraceKey struct{}
 
-func (tracer *cancelPropertyChunkTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "substring(value FROM") {
-		return context.WithValue(ctx, propertyChunkTraceKey{}, true)
+func (tracer *cancelPropertyBatchTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "FROM task_properties") {
+		tracer.queries++
+		tracer.cancel()
 	}
 	return ctx
 }
-func (tracer *cancelPropertyChunkTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
-	if hit, _ := ctx.Value(propertyChunkTraceKey{}).(bool); hit {
-		tracer.chunks++
-		if tracer.chunks == 1 {
-			tracer.cancel()
-		}
-	}
-}
+func (*cancelPropertyBatchTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-func TestTaskSyncPropertyChunkReadHonorsCancellation(t *testing.T) {
+func TestTaskSyncPropertyBatchReadHonorsCancellation(t *testing.T) {
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	item := queryTask(t, database, project.ID, 10, model.TaskTodo)
-	value := `[{"url":"` + strings.Repeat("x", 200000) + `","title":""}]`
-	mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, item.ID, value)
+	mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, item.ID, `[{"url":"https://example.com/pr/1","title":"Change"}]`)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	tracer := &cancelPropertyChunkTracer{cancel: cancel}
+	tracer := &cancelPropertyBatchTracer{cancel: cancel}
 	config := database.Pool.Config()
 	config.ConnConfig.Tracer = tracer
 	pool, err := pgxpool.NewWithConfig(context.Background(), config)
@@ -199,7 +169,7 @@ func TestTaskSyncPropertyChunkReadHonorsCancellation(t *testing.T) {
 		result, e = snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		return e
 	})
-	if !errors.Is(err, context.Canceled) || len(result) != 0 || tracer.chunks < 1 || tracer.chunks > 2 {
-		t.Fatalf("result=%d chunks=%d error=%v", len(result), tracer.chunks, err)
+	if !errors.Is(err, context.Canceled) || len(result) != 0 || tracer.queries != 1 {
+		t.Fatalf("result=%d queries=%d error=%v", len(result), tracer.queries, err)
 	}
 }

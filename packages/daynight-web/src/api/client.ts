@@ -4,7 +4,7 @@ import { parseTaskSync } from "./task-sync";
 import { timestamp } from "./parse";
 import { isTaskVersion, parseApiJson, stringifyApiJson } from "./json";
 import { canonicalId, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail } from "./parse";
-import type { ExecutionPlatform, Attachment, AttachmentPage, GraphLimitDetails, ProjectPage, TaskDetail, TaskStatus, TaskSyncRead } from "./types";
+import type { ExecutionPlatform, Attachment, AttachmentPage, ProjectPage, TaskDetail, TaskStatus, TaskSyncRead } from "./types";
 import { decodeProjectPageJson, decodeTaskGraphJson, decodeTaskSyncJson, type TaskSyncJsonRead } from "./project-json";
 
 const serverMessages: Readonly<Record<string, string>> = {
@@ -16,7 +16,6 @@ const serverMessages: Readonly<Record<string, string>> = {
   forbidden: "You do not have permission to perform this action.",
   version_conflict: "The resource changed. Refresh it before trying again.",
   invitation_unavailable: "This invitation is no longer available.",
-  graph_limit_exceeded: "This project's task graph exceeds the supported size.",
 };
 
 export class ApiError extends Error {
@@ -24,7 +23,6 @@ export class ApiError extends Error {
   readonly status: number | null;
   readonly code: string;
   readonly requestId: string | null;
-  readonly graphLimit: GraphLimitDetails | undefined;
   readonly serverMessage: string | undefined;
   readonly stepsLimit: { readonly encodedBytes: number; readonly maxEncodedBytes: number } | undefined;
   readonly writeOutcome: "not_committed" | undefined;
@@ -34,7 +32,6 @@ export class ApiError extends Error {
     status: number | null = null,
     code: string = kind,
     requestId: string | null = null,
-    graphLimit?: GraphLimitDetails,
     cause?: unknown,
     serverMessage?: string,
     stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number },
@@ -51,7 +48,6 @@ export class ApiError extends Error {
     this.status = status;
     this.code = code;
     this.requestId = requestId;
-    this.graphLimit = graphLimit;
     this.serverMessage = serverMessage;
     this.stepsLimit = stepsLimit;
     this.writeOutcome = writeOutcome;
@@ -149,7 +145,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   } catch (error) {
     signal.throwIfAborted();
     if (isAbortError(error)) throw error;
-    throw new ApiError("network", null, "network", null, undefined, error);
+    throw new ApiError("network", null, "network", null, error);
   }
   signal.throwIfAborted();
   if (response.status === 401 && generation === authGeneration) {
@@ -169,15 +165,15 @@ export const json = async <T>(response: Response, signal: AbortSignal, parse: (d
   } catch (error) {
     signal.throwIfAborted();
     if (isAbortError(error)) throw error;
-    throw new ApiError("protocol", response.status, "protocol", null, undefined, error);
+    throw new ApiError("protocol", response.status, "protocol", null, error);
   }
   try {
     if (response.ok) return parse(body);
     const serverError = parseServerError(body, includeStepsError);
-    throw new ApiError("server", response.status, serverError.code, serverError.requestId, serverError.graphLimit, undefined, serverError.serverMessage, serverError.stepsLimit, serverError.writeOutcome);
+    throw new ApiError("server", response.status, serverError.code, serverError.requestId, undefined, serverError.serverMessage, serverError.stepsLimit, serverError.writeOutcome);
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    throw new ApiError("protocol", response.status, "protocol", null, undefined, error);
+    throw new ApiError("protocol", response.status, "protocol", null, error);
   }
 };
 
@@ -225,7 +221,7 @@ export const getTaskSync = async (
   if (query.since !== undefined) {
     if (query.epoch === undefined) throw new ApiError("protocol");
     try { parameters.set("since", timestamp(query.since)); }
-    catch (error) { throw new ApiError("protocol", null, "protocol", null, undefined, error); }
+    catch (error) { throw new ApiError("protocol", null, "protocol", null, error); }
   }
   const suffix = parameters.size === 0 ? "" : `?${parameters}`;
   const response = await request(`/api/v1/projects/${project}/task-sync${suffix}`, signal, { headers: { Accept: "application/json" } });
@@ -480,7 +476,7 @@ export const readAttachmentText = async (projectId: string, taskId: string, path
   } catch (error) {
     signal.throwIfAborted();
     if (isAbortError(error)) throw error;
-    throw new ApiError("network", response.status, "network", null, undefined, error);
+    throw new ApiError("network", response.status, "network", null, error);
   }
 };
 

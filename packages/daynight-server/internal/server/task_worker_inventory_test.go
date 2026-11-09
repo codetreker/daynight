@@ -47,7 +47,7 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 			previous := wanted[index-1]
 			after = &store.Position{CreatedAt: previous.CreatedAt, ID: previous.ID}
 		}
-		expected := store.TaskQuery{Page: store.Page{After: after, Limit: 1}, Worker: &store.WorkerQuery{UserID: f.principal.UserID, WorkerID: workerID}, BoundedText: true, LegacyProjection: true}
+		expected := store.TaskQuery{Page: store.Page{After: after, Limit: 1}, Worker: &store.WorkerQuery{UserID: f.principal.UserID, WorkerID: workerID}}
 		f.expectList([]store.TaskQuery{expected}, []store.TaskPage{{Items: []model.Task{current}, HasMore: index < len(wanted)-1}})
 		response := projectRequest(f.handler, http.MethodGet, requestPath, "")
 		page := decodeResponse[api.TaskPage](t, response, http.StatusOK)

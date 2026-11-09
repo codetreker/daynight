@@ -17,14 +17,14 @@ import (
 func TestTaskAndSyncHTTPRecoverAfterDependencyFailure(t *testing.T) {
 	var logs bytes.Buffer
 	handler := newHTTPFixture(t, &logs)
-	handler.Tasks.ExpectCalls("ObserveREST", 2)
+	handler.Tasks.ExpectCalls("Observe", 2)
 	handler.ExpectCalls("Sync", 2)
 	failure := &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("task_dependencies private_missing_dependencies")}
 	task := testTask("Dependent")
 	sync := syncModel()
 	sync.Tasks = []model.TaskViewRecord{{ID: task.ID, TitlePreview: task.Title, Version: task.Version, Properties: task.Properties, Status: task.Status, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}}
 	taskCalls, syncCalls := 0, 0
-	handler.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+	handler.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
 		taskCalls++
 		if taskCalls == 1 {
 			return taskservice.TaskObservation{}, failure

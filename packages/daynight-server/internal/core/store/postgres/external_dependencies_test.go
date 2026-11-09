@@ -138,10 +138,6 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 		if err != nil || len(graph) != 3 || !slices.Equal(graph[2].ExternalDependsOn, target.ExternalDependsOn) {
 			t.Fatalf("scoped graph lost classification: %#v, %v", graph, err)
 		}
-		size, err := snapshot.TaskDAO().TaskGraphSize(ctx, project.ID)
-		if err != nil || size != (TaskGraphSize{NodeCount: 4, EdgeCount: 4}) {
-			t.Fatalf("external edges changed graph budget: %#v, %v", size, err)
-		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)

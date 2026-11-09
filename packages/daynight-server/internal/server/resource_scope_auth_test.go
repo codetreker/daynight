@@ -117,7 +117,7 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 		case base:
 			want["project"] = 1
 		case base + "/task-graph?taskId=" + task.ID:
-			want["project"], want["presence"], want["size"], want["graph"], want["observed"] = 1, 1, 1, 1, 1
+			want["project"], want["presence"], want["graph"], want["observed"] = 1, 1, 1, 1
 		case collection:
 			want["tasks"] = 1
 		case taskPath:
@@ -157,7 +157,7 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 		identityHTTPNow(t, now)
 		return []model.ProjectInvitation{}, nil
 	}}
-	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, IncludeExternalEdges: true, LiveOnly: true}
+	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
 	tasks := &taskHTTPReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "resource.Task"), TaskFn: func(_ context.Context, projectID, id string) (model.Task, error) {
 		plan.Called("task")
 		projectHTTPCheck(t, []string{projectID, id}, []string{project.ID, task.ID})
@@ -165,7 +165,7 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 	}, TasksFn: func(_ context.Context, id string, query store.TaskQuery) (store.TaskPage, error) {
 		plan.Called("tasks")
 		projectHTTPCheck(t, id, project.ID)
-		projectHTTPCheck(t, query, store.TaskQuery{Page: store.Page{Limit: 1}, BoundedText: true, LegacyProjection: true})
+		projectHTTPCheck(t, query, store.TaskQuery{Page: store.Page{Limit: 50}})
 		return store.TaskPage{Items: []model.Task{resourceScopeTaskCopy(task)}}, nil
 	}, TaskPresenceFn: func(_ context.Context, projectID, id string) (store.TaskPresence, error) {
 		plan.Called("presence")
@@ -176,12 +176,6 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 		projectHTTPCheck(t, id, project.ID)
 		return "resource-scope", nil
 	},
-		TaskGraphProjectionSizeFn: func(_ context.Context, projectID, id string, got store.TaskGraphSelection) (store.TaskGraphSize, error) {
-			plan.Called("size")
-			projectHTTPCheck(t, []string{projectID, id}, []string{project.ID, task.ID})
-			projectHTTPCheck(t, got, selection)
-			return store.TaskGraphSize{NodeCount: 1}, nil
-		},
 		TaskGraphTasksFn: func(_ context.Context, projectID, id string, got store.TaskGraphSelection, characters int) ([]model.GraphTask, error) {
 			plan.Called("graph")
 			projectHTTPCheck(t, []string{projectID, id}, []string{project.ID, task.ID})

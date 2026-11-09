@@ -175,32 +175,6 @@ func TestTaskGraphHTTPEmptyMissingQueryAndMethods(t *testing.T) {
 	}
 }
 
-func TestTaskGraphHTTPLimitDetailsAndDomainClassification(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		nodes, edges int64
-	}{{"nodes", 1001, 1000}, {"edges", 102, 5001}} {
-		t.Run(tc.name, func(t *testing.T) {
-			var logs bytes.Buffer
-			handler := newHTTPFixture(t, &logs)
-			handler.Tasks.GraphFunc = func(context.Context, model.Principal, string, string) (model.TaskGraph, error) {
-				return model.TaskGraph{}, &model.Fault{Code: "graph_limit_exceeded", Message: "Graph limit exceeded.", GraphLimit: &model.GraphLimitDetails{NodeCount: tc.nodes, EdgeCount: tc.edges, MaxNodes: 1000, MaxEdges: 5000}}
-			}
-			response := projectRequest(handler, http.MethodGet, graphPath(testProjectID, testTaskID), "")
-			value := decodeResponse[api.ErrorResponse](t, response, 409)
-			limits := value.Error.Details
-			if value.Error.Code != "graph_limit_exceeded" || limits == nil || limits.NodeCount == nil || *limits.NodeCount != tc.nodes || limits.EdgeCount == nil || *limits.EdgeCount != tc.edges || limits.MaxNodes == nil || *limits.MaxNodes != 1000 || limits.MaxEdges == nil || *limits.MaxEdges != 5000 || strings.Contains(response.Body.String(), "taskIds") || response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatalf("numeric limits=%s", response.Body)
-			}
-			for _, fragment := range []string{`"cause":"graph_limit_exceeded"`, `"error_code":"graph_limit_exceeded"`, `"node_count":`, `"edge_count":`} {
-				if !strings.Contains(logs.String(), fragment) {
-					t.Fatalf("missing %s: %s", fragment, &logs)
-				}
-			}
-		})
-	}
-}
-
 func TestTaskGraphHTTPDatabaseFailureAndCancellation(t *testing.T) {
 	var logs bytes.Buffer
 	handler := newHTTPFixture(t, &logs)
@@ -248,7 +222,7 @@ func TestTaskGraphHTTPErrorPrecedenceAndDTOUTC(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, cause := range []error{&store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("driver-secret")}, context.Canceled, context.DeadlineExceeded} {
-		err := errors.Join(&model.Fault{Code: "graph_limit_exceeded", Message: "domain-secret", GraphLimit: &model.GraphLimitDetails{NodeCount: 1001, MaxNodes: 1000, MaxEdges: 5000}}, cause)
+		err := errors.Join(&model.Fault{Code: "task_deleted", Message: "domain-secret"}, cause)
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		request.Header.Set("X-Request-ID", "project-test")
@@ -285,8 +259,8 @@ func TestTaskHTTPTodoReadContractWithoutGenericStatusWrites(t *testing.T) {
 	blocked.Ready = false
 	blocked.BlockedBy = []string{testTaskID}
 	values := []model.Task{ready, blocked}
-	handler.Tasks.ExpectCalls("ObserveREST", 2)
-	handler.Tasks.ObserveRESTFunc = func(ctx context.Context, principal model.Principal, pid, id string, extended bool) (taskservice.TaskObservation, error) {
+	handler.Tasks.ExpectCalls("Observe", 2)
+	handler.Tasks.ObserveFunc = func(ctx context.Context, principal model.Principal, pid, id string) (taskservice.TaskObservation, error) {
 		for _, value := range values {
 			if value.ID == id {
 				return taskservice.TaskObservation{Task: value, Epoch: testEpoch}, nil

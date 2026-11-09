@@ -42,9 +42,9 @@ func TestTaskFactsOnlyActualChanges(t *testing.T) {
 	if err != nil || len(facts) != 0 {
 		t.Fatalf("unpaused: %#v %v", facts, err)
 	}
-	next.Properties = model.TaskProperties{"paused": json.RawMessage(`null`)}
+	next.Properties = model.TaskProperties{"paused": json.RawMessage(`"true"`)}
 	if _, err = taskFacts(false, current, next); err == nil {
-		t.Fatal("invalid paused accepted")
+		t.Fatal("paused JSON type error was hidden")
 	}
 }
 

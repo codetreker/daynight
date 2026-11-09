@@ -49,10 +49,13 @@ describe("complete lightweight Session snapshot", () => {
   ])("rejects malformed Session maps %#", (sessions) => {
     expect(() => parseTaskSync({ ...sync, sessions }, projectId)).toThrow("invalid response");
   });
-  it("enforces the supported project capacity without truncating the map", () => {
-    const sessions = Object.fromEntries(Array.from({ length: 1000 }, (_, index) => [`20000000-0000-0000-0000-${index.toString().padStart(12, "0")}`, "pending"]));
-    expect(Object.keys(parseTaskSync({ ...sync, sessions }, projectId).sessions)).toHaveLength(1000);
-    expect(() => parseTaskSync({ ...sync, sessions: { ...sessions, [userId]: "notice" } }, projectId)).toThrow("invalid response");
+  it("preserves every Task and Session in a complete snapshot", () => {
+    const ids = Array.from({ length: 1001 }, (_, index) => `20000000-0000-0000-0000-${index.toString().padStart(12, "0")}`);
+    const tasks = ids.map((id, index) => ({ ...task, id, dependsOn: ids.slice(Math.max(0, index - 6), index) }));
+    const sessions = Object.fromEntries(ids.map((id) => [id, "pending"]));
+    const result = parseTaskSync({ ...sync, tasks, sessions }, projectId);
+    expect(result.tasks).toEqual(tasks.map((task) => ({ ...task, version: 9_007_199_254_740_993n })));
+    expect(result.sessions).toEqual(sessions);
   });
 });
 

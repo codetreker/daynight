@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
@@ -54,7 +53,7 @@ func workerInventoryTask(t *testing.T, principal model.Principal, workerID strin
 }
 
 func workerInventoryQuery(principal model.Principal, workerID string) store.TaskQuery {
-	return store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: principal.UserID, WorkerID: workerID}, BoundedText: true, LegacyProjection: true}
+	return store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: principal.UserID, WorkerID: workerID}}
 }
 
 func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T) {
@@ -129,26 +128,15 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	} {
 		tc.request.PageRequest, tc.request.WorkerID = model.PageRequest{Limit: 100}, &workerID
 		expected = workerInventoryQuery(owner, workerID)
+		expected.Page.Limit = 100
 		expected.Ready, expected.AllowAgents, expected.CompatiblePlatform, expected.Status = tc.request.Ready, tc.request.AllowAgents, tc.request.CompatiblePlatform, tc.request.Status
 		calls := 0
 		reader.TasksFn = func(ctx context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
-			if ctx != t.Context() || id != first.ProjectID || !reflect.DeepEqual(q, expected) {
-				t.Fatalf("combined query: got %#v want %#v", q, expected)
-			}
-			if len(tc.items) == 0 {
-				calls++
-				if calls != 1 {
-					t.Fatal("empty inventory read more than once")
-				}
-				return store.TaskPage{Items: []model.Task{}}, nil
-			}
-			if calls >= len(tc.items) {
-				t.Fatal("inventory projected beyond supplied filtered results")
-			}
-			item := tc.items[calls]
 			calls++
-			expected.Page.After = &store.Position{CreatedAt: item.CreatedAt, ID: item.ID}
-			return store.TaskPage{Items: []model.Task{item}, HasMore: calls < len(tc.items)}, nil
+			if ctx != t.Context() || id != first.ProjectID || !reflect.DeepEqual(q, expected) || calls != 1 {
+				t.Fatalf("combined query: got %#v want %#v calls=%d", q, expected, calls)
+			}
+			return store.TaskPage{Items: append([]model.Task{}, tc.items...)}, nil
 		}
 		page, err := tasks.List(t.Context(), owner, first.ProjectID, tc.request)
 		var ids, wantIDs []string
@@ -181,6 +169,7 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 		t.Run(stage.name, func(t *testing.T) {
 			tasks, reader, _ := workerInventoryFixture(t, owner, current.ProjectID)
 			expected := workerInventoryQuery(owner, workerID)
+			expected.Page.Limit = 100
 			calls := 0
 			returned := current
 			worker := *testWorker(t, returned.Properties)
@@ -233,7 +222,7 @@ func TestTaskWorkerInventoryRejectsInvalidFilterAndPreservesReadFailures(t *test
 	_, err := tasks.List(t.Context(), owner, project, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
 	requireFault(t, err, "not_found")
 	tasks, reader, _ = workerInventoryFixture(t, owner, project)
-	cause := &taskproperty.ValidationError{Path: "worker", Rule: "invalid stored worker"}
+	cause := errors.New("worker decode failed")
 	failure := &store.Error{Phase: "decode worker", Cause: cause}
 	calls := 0
 	reader.TasksFn = func(ctx context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
@@ -244,44 +233,8 @@ func TestTaskWorkerInventoryRejectsInvalidFilterAndPreservesReadFailures(t *test
 		return store.TaskPage{}, failure
 	}
 	page, err := tasks.List(t.Context(), owner, project, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
-	requireFault(t, err, "invalid_input")
 	var stored *store.Error
 	if calls != 1 || !errors.As(err, &stored) || stored != failure || !errors.Is(err, cause) || page.Items != nil || page.NextCursor != nil {
 		t.Fatalf("invalid stored ownership lost original read failure: %#v %v", page, err)
-	}
-}
-
-func TestWorkerInventorySkipsOversizedUnrelatedClaim(t *testing.T) {
-	owner := workerServicePrincipal()
-	workerID := "20000000-0000-4000-8000-000000000006"
-	first, second := workerInventoryTask(t, owner, workerID, 1), workerInventoryTask(t, owner, workerID, 2)
-	tasks, reader, _ := workerInventoryFixture(t, owner, first.ProjectID)
-	expected := workerInventoryQuery(owner, workerID)
-	calls := 0
-	reader.TasksFn = func(ctx context.Context, id string, q store.TaskQuery) (store.TaskPage, error) {
-		calls++
-		if ctx != t.Context() || id != first.ProjectID || !reflect.DeepEqual(q, expected) {
-			t.Fatalf("bounded inventory lost worker filter: %#v", q)
-		}
-		switch calls {
-		case 1:
-			return store.TaskPage{Items: []model.Task{first}, HasMore: true}, nil
-		case 2:
-			return store.TaskPage{Items: []model.Task{second}}, nil
-		default:
-			t.Fatal("inventory read beyond supplied filtered candidates")
-			return store.TaskPage{}, nil
-		}
-	}
-	request := taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID}
-	page, err := tasks.List(t.Context(), owner, first.ProjectID, request)
-	if err != nil || len(page.Items) != 1 || page.Items[0].ID != first.ID || page.NextCursor == nil {
-		t.Fatalf("first inventory page: %#v %v", page, err)
-	}
-	expected.Page.After = &store.Position{CreatedAt: first.CreatedAt, ID: first.ID}
-	request.Cursor = page.NextCursor
-	page, err = tasks.List(t.Context(), owner, first.ProjectID, request)
-	if err != nil || len(page.Items) != 1 || page.Items[0].ID != second.ID || page.NextCursor != nil || calls != 2 {
-		t.Fatalf("second inventory page: %#v %v", page, err)
 	}
 }

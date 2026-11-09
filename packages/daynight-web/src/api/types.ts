@@ -111,13 +111,6 @@ export type TaskDetail = {
   readonly updatedAt: string;
 };
 
-export type GraphLimitDetails = {
-  readonly nodeCount: number;
-  readonly edgeCount: number;
-  readonly maxNodes: number;
-  readonly maxEdges: number;
-};
-
 export type Attachment = {
   readonly path: string;
   readonly contentType: string;

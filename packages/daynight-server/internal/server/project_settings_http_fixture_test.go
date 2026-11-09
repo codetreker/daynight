@@ -97,15 +97,11 @@ func settingsHTTPWrite(t *testing.T, tx *httpTestStore, actor model.Principal, b
 type settingsHTTPGraphReader struct {
 	store.TaskReader
 	presence func(context.Context, string, string) (store.TaskPresence, error)
-	size     func(context.Context, string, string, store.TaskGraphSelection) (store.TaskGraphSize, error)
 	tasks    func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 }
 
 func (d settingsHTTPGraphReader) TaskPresence(ctx context.Context, projectID, taskID string) (store.TaskPresence, error) {
 	return d.presence(ctx, projectID, taskID)
-}
-func (d settingsHTTPGraphReader) TaskGraphProjectionSize(ctx context.Context, projectID, taskID string, selection store.TaskGraphSelection) (store.TaskGraphSize, error) {
-	return d.size(ctx, projectID, taskID, selection)
 }
 func (d settingsHTTPGraphReader) TaskGraphTasks(ctx context.Context, projectID, taskID string, selection store.TaskGraphSelection, characters int) ([]model.GraphTask, error) {
 	return d.tasks(ctx, projectID, taskID, selection, characters)
@@ -126,9 +122,9 @@ func (s settingsHTTPSnapshot) ObservedAt(ctx context.Context) (time.Time, error)
 
 func settingsHTTPGraph(t *testing.T, tx *httpTestStore, actor model.Principal, value model.Project, taskID string) {
 	t.Helper()
-	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, IncludeExternalEdges: true, LiveOnly: true}
-	calls := make([]string, 0, 6)
-	want := []string{"access", "project", "presence", "size", "tasks", "observed"}
+	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
+	calls := make([]string, 0, 5)
+	want := []string{"access", "project", "presence", "tasks", "observed"}
 	next := func(method string) {
 		if len(calls) >= len(want) {
 			t.Errorf("extra settings graph DAO call %s", method)
@@ -147,12 +143,6 @@ func settingsHTTPGraph(t *testing.T, tx *httpTestStore, actor model.Principal, v
 			next("presence")
 			check(projectID, root)
 			return store.TaskPresence{Found: true}, nil
-		},
-		size: func(ctx context.Context, projectID, root string, got store.TaskGraphSelection) (store.TaskGraphSize, error) {
-			next("size")
-			check(projectID, root)
-			projectHTTPCheck(t, got, selection)
-			return store.TaskGraphSize{NodeCount: 1}, nil
 		},
 		tasks: func(ctx context.Context, projectID, root string, got store.TaskGraphSelection, characters int) ([]model.GraphTask, error) {
 			next("tasks")

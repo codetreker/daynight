@@ -347,25 +347,7 @@ func TestProjectAccessRejectsMissingSourceProfile(t *testing.T) {
 	}
 }
 
-func TestTaskHelpersRejectInvalidStoredProperties(t *testing.T) {
-	tx := helperTransaction(t)
-	ctx := t.Context()
-	project, task := helperTask(t, tx)
-	helperExec(t, tx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','null')`, task)
-	if _, err := pg.LoadTaskProperties(ctx, tx, []string{task}); err == nil || !helperPhase(err, "decode task property") {
-		t.Fatalf("invalid property=%v", err)
-	}
-	if _, err := pg.ReadTaskWithLock(ctx, tx, project, task, ""); err == nil || !helperPhase(err, "decode task property") {
-		t.Fatalf("invalid task property=%v", err)
-	}
-}
-
 func helperCauseContains(err error, text string) bool {
 	var failure *store.Error
 	return errors.As(err, &failure) && strings.Contains(failure.Cause.Error(), text)
-}
-
-func helperPhase(err error, phase string) bool {
-	var failure *store.Error
-	return errors.As(err, &failure) && failure.Phase == phase
 }

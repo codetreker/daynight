@@ -87,16 +87,6 @@ func (d mcpStepsRejectedTaskReader) ResolveTaskAssignees(context.Context, string
 	panic("unreachable")
 }
 
-func (d mcpStepsRejectedTaskReader) TaskGraphSize(context.Context, string) (store.TaskGraphSize, error) {
-	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphSize")
-	panic("unreachable")
-}
-
-func (d mcpStepsRejectedTaskReader) TaskGraphProjectionSize(context.Context, string, string, store.TaskGraphSelection) (store.TaskGraphSize, error) {
-	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphProjectionSize")
-	panic("unreachable")
-}
-
 func (d mcpStepsRejectedTaskReader) TaskGraphTasks(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error) {
 	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphTasks")
 	panic("unreachable")

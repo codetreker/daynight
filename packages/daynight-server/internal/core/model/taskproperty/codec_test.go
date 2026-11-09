@@ -55,7 +55,7 @@ func pullRequestsValue(t *testing.T, properties model.TaskProperties) []model.Pu
 	return value
 }
 
-func TestCodecRejectsCorruptStoredStructures(t *testing.T) {
+func TestCodecRejectsInvalidInputStructures(t *testing.T) {
 	for _, invalid := range []string{
 		`null`, `[]`, `{`, `{} {}`, `{"unknown":[]}`, `{"worker":null}`, `{"pullRequests":[],"pullRequests":[]}`, `{"pullRequests":null}`, `{"pullRequests":{}}`,
 		`{"paused":null}`, `{"paused":"true"}`, `{"paused":1}`, `{"paused":[]}`, `{"paused":{}}`, `{"paused":true,"paused":false}`,
@@ -67,13 +67,13 @@ func TestCodecRejectsCorruptStoredStructures(t *testing.T) {
 			_, err := taskproperty.Decode([]byte(invalid))
 			var invalidValue *taskproperty.ValidationError
 			if !errors.As(err, &invalidValue) {
-				t.Fatalf("corrupt stored properties must retain validation type: %v", err)
+				t.Fatalf("invalid property inputs must retain validation type: %v", err)
 			}
 		})
 	}
 }
 
-func TestCodecNormalizationPreservesLegacyDecodedTextAndValueSemantics(t *testing.T) {
+func TestCodecNormalizationPreservesDecodedTextAndValueSemantics(t *testing.T) {
 	left, err := taskproperty.Decode([]byte(`{"pullRequests":[{"title":"\ud800","url":"a\u0000b"}]}`))
 	if err != nil {
 		t.Fatal(err)

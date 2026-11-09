@@ -15,16 +15,22 @@ Its cursor binds the caller, project, filters, view, ordering and the last
 returned key to a repeatable-read fence of task count and exact version sum.
 The fence includes deleted and filtered-out tasks because their changes can
 alter readiness of visible dependents. A changed fence rejects continuation.
-The summary query reads bounded title previews and counts without materializing
-properties or dependency arrays. Full list results are materialized incrementally
-under the large-object permit and the response byte budget. Graph reads retain
-the existing snapshot, limits and title-preview semantics; bounded summaries
-mark omitted nodes and provide a full-read continuation.
+The summary query reads title previews and counts without materializing
+properties or dependency arrays. Full list results retain their selected-item
+materialization under the large-object permit. Pages continue by requested item
+count without Task-specific response-byte slicing.
+
+Graph summary and full views return the complete selected graph with the
+existing snapshot and title-preview semantics. The shared MCP entry retains its
+independent 128 MiB result limit and resource permits. The
+[Task canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)
+partially supersedes the original Task list byte admission, graph size checks
+and summary graph truncation.
 
 Ready queries use the separate count-limited operation described by the
 [single-batch ready decision](../simplification/2026-11-06-mcp-ready-candidates.md).
-That decision supersedes the original ready continuation and byte-budget behavior;
-the list fence and graph decisions remain in effect.
+That decision supersedes the original ready continuation and byte-budget
+behavior; list fences and complete graph selection remain.
 
 ## Alternatives
 
@@ -42,14 +48,16 @@ count-limited selection without continuation.
 
 ## Consequences
 
-Every list page scans project task headers in O(n) time with constant-size
+Every list page scans project Task headers in O(n) time with constant-size
 aggregate state. This relies on increasing versions, soft deletion and
 project-local prerequisites; physical purges or version rewrites require a new
-fence. Full list results reserve the large-object budget and may require more work
-per page. Summary graph omissions are explicit and a full read preserves the
-complete graph within the existing node and edge limits.
+fence. Full results reserve the large-object permit and require selected-item
+materialization. Complete graphs have work and memory proportional to their
+selected data, without domain node, edge or encoded-byte admission.
 
-The original ready continuation used the task list, preserving task identities
+The original ready continuation used the Task list, preserving Task identities
 but omitting descriptions; it disclosed that difference and relied on a separate
 Task adapter for complete details. Ready now returns a single current batch,
-while complete list traversal remains an independent operation.
+while complete list traversal remains an independent operation. The original
+summary graph omitted nodes explicitly and offered a full read; both graph views
+now preserve the complete selected nodes.

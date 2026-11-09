@@ -181,36 +181,15 @@ func TestTaskSyncHTTPValidationMethodsAndIdentity(t *testing.T) {
 	}
 }
 
-func TestTaskSyncHTTPFullLimitAndDatabaseError(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		cause  error
-		status int
-		code   string
-	}{
-		{"capacity", &model.Fault{Code: "graph_limit_exceeded", Message: "Graph limit exceeded.", GraphLimit: &model.GraphLimitDetails{NodeCount: 1001, EdgeCount: 0, MaxNodes: 1000, MaxEdges: 5000}}, 409, "graph_limit_exceeded"},
-		{"database", &store.Error{Phase: "query", DatabaseFailure: true, Cause: io.ErrUnexpectedEOF}, 500, "internal_error"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var logs bytes.Buffer
-			handler := newHTTPFixture(t, &logs)
-			calls := 0
-			handler.Sync = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskSyncRequest) (model.TaskSync, error) {
-				calls++
-				return model.TaskSync{}, tc.cause
-			}
-			response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
-			value := decodeResponse[api.ErrorResponse](t, response, tc.status)
-			if value.Error.Code != tc.code || strings.Contains(response.Body.String(), `"tasks"`) || calls != 1 {
-				t.Fatalf("failure=%s calls=%d", response.Body, calls)
-			}
-			if tc.name == "capacity" {
-				limits := value.Error.Details
-				if limits == nil || limits.NodeCount == nil || *limits.NodeCount != 1001 || limits.EdgeCount == nil || *limits.EdgeCount != 0 || limits.MaxNodes == nil || *limits.MaxNodes != 1000 || limits.MaxEdges == nil || *limits.MaxEdges != 5000 {
-					t.Fatalf("capacity=%s", response.Body)
-				}
-			}
-		})
+func TestTaskSyncHTTPDatabaseFailureDoesNotSendPartialTasks(t *testing.T) {
+	handler := newHTTPFixture(t, io.Discard)
+	handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
+		return model.TaskSync{}, &store.Error{Phase: "query", DatabaseFailure: true, Cause: io.ErrUnexpectedEOF}
+	}
+	response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+	assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+	if strings.Contains(response.Body.String(), `"tasks"`) {
+		t.Fatalf("partial tasks=%s", response.Body)
 	}
 }
 

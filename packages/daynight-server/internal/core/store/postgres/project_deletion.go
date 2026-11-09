@@ -98,9 +98,7 @@ func (s *deletionSnapshot) Summary(ctx context.Context) (store.ProjectDeletionSu
 	return out, nil
 }
 
-// VisitTaskWorkers streams every stored Worker value, including historical Tasks.
-// Guarding the SQL casts permits invalid raw values to reach the canonical
-// decoder, which reports corruption rather than treating it as no claim.
+// VisitTaskWorkers includes claims retained by deleted Tasks.
 func (s *deletionSnapshot) VisitTaskWorkers(ctx context.Context, visit func(store.ProjectDeletionWorker) error) error {
 	return s.projectDeletion.visitTaskWorkers(ctx, true, visit)
 }
@@ -114,9 +112,8 @@ func (d *projectDeletion) visitTaskWorkers(ctx context.Context, includeTitle boo
 	if includeTitle {
 		title, extras = "t.title", "pp.value,w.last_seen_at"
 		joins = `LEFT JOIN task_properties pp ON pp.task_id=t.id AND pp.name='paused'
-        LEFT JOIN LATERAL (SELECT CASE WHEN pg_input_is_valid(wp.value,'jsonb') THEN wp.value::jsonb END AS value) decoded ON true
-        LEFT JOIN workers w ON w.user_id=CASE WHEN pg_input_is_valid(decoded.value->>'userId','uuid') THEN (decoded.value->>'userId')::uuid END
-          AND w.worker_id=CASE WHEN pg_input_is_valid(decoded.value->>'workerId','uuid') THEN (decoded.value->>'workerId')::uuid END`
+        LEFT JOIN workers w ON w.user_id=(wp.value::jsonb->>'userId')::uuid
+          AND w.worker_id=(wp.value::jsonb->>'workerId')::uuid`
 	}
 	rows, err := d.tx.Query(ctx, `SELECT t.id::text,`+title+`,wp.value,`+extras+` FROM tasks t
         JOIN task_properties wp ON wp.task_id=t.id AND wp.name='worker' `+joins+`
@@ -137,11 +134,7 @@ func (d *projectDeletion) visitTaskWorkers(ctx context.Context, includeTitle boo
 			return pg.QueryError("decode project worker claim", err)
 		}
 		if paused != nil {
-			value, err := taskproperty.NormalizeValue("paused", json.RawMessage(*paused))
-			if err != nil {
-				return pg.QueryError("decode project paused property", err)
-			}
-			if err = json.Unmarshal(value, &item.Paused); err != nil {
+			if err = json.Unmarshal([]byte(*paused), &item.Paused); err != nil {
 				return pg.QueryError("decode project paused property", err)
 			}
 		}
