@@ -64,7 +64,7 @@ func TestDeletionCleanupRemovesActualOrphanArchiveInOwnedNamespace(t *testing.T)
 		return out, nil
 	}}
 	live := &discardedSessions{}
-	s := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, store.TransactionCommitted, nil, nil), files, live)
+	s := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, store.TransactionCommitted, callbackCause(nil), nil), files, live)
 	bindDeletionFacts(t, s, bots, p, bot, request, deletionFacts{ctx: t.Context(), calls: map[string]int{"owner": 1, "server": 1, "save": 1}, serverChange: true})
 	got, err := s.clean(t.Context(), p, bot.ID, request.DeletionID)
 	if err != nil {

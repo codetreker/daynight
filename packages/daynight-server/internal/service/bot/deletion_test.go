@@ -65,7 +65,7 @@ func (d *deletionBotDAO) SaveBotDeletion(_ context.Context, _ string, value *mod
 type deletionWriter struct {
 	t             *testing.T
 	ctx           context.Context
-	callbackError error
+	callbackError callbackExpectation
 	scope         deletionScope
 	outcome       store.TransactionOutcome
 	err           error
@@ -74,7 +74,7 @@ type deletionWriter struct {
 func (w deletionWriter) WriteSession(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
 	identical(w.t, ctx, w.ctx)
 	actual := fn(w.scope)
-	same(w.t, actual, w.callbackError)
+	w.callbackError.check(w.t, actual)
 	return store.Completion{Outcome: w.outcome}, w.err
 }
 
@@ -120,7 +120,7 @@ func TestDeletionChecksExhaustionAfterSessionRevocation(t *testing.T) {
 	request := store.DeleteBot{Version: math.MaxInt64, DeletionID: "3469e571-cc04-45c1-9b73-796d0c85fabe"}
 	dao := &deletionDAO{calls: &calls, revokeErr: cause}
 	bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Version: math.MaxInt64}}
-	s := NewDeletions(deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionNotCommitted, callbackError: cause, err: cause}, nil, &discardedSessions{})
+	s := NewDeletions(deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionNotCommitted, callbackError: callbackCause(cause), err: cause}, nil, &discardedSessions{})
 	bindDeletionFacts(t, s, bots, p, bots.bot, request, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "request": 1}})
 	_, err := s.DeleteBot(context.Background(), p, id, request)
 	if !errors.Is(err, cause) || !reflect.DeepEqual(calls, []string{"credential", "bot", "sessions", "revoke"}) {
@@ -129,7 +129,7 @@ func TestDeletionChecksExhaustionAfterSessionRevocation(t *testing.T) {
 	calls = nil
 	dao.revokeErr = nil
 	exhausted := &model.Fault{Code: "version_exhausted", Message: "exhausted"}
-	s.writer = deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionNotCommitted, callbackError: exhausted, err: exhausted}
+	s.writer = deletionWriter{t: t, ctx: context.Background(), scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionNotCommitted, callbackError: callbackCause(exhausted), err: exhausted}
 	bindDeletionFacts(t, s, bots, p, bots.bot, request, deletionFacts{ctx: context.Background(), calls: map[string]int{"owner": 1, "request": 1, "save": 1}, saveError: exhausted})
 	_, err = s.DeleteBot(context.Background(), p, id, request)
 	var fault *model.Fault
@@ -177,7 +177,7 @@ func (w *cleanupFailureWriter) WriteSession(_ context.Context, fn func(store.Ses
 	if w.calls != 1 {
 		w.t.Fatal("unexpected cleanup scope")
 	}
-	same(w.t, fn(w.scope), nil)
+	callbackCause(nil).check(w.t, fn(w.scope))
 	return store.Completion{Outcome: store.TransactionCommitted}, nil
 }
 

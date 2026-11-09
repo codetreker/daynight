@@ -51,7 +51,7 @@ func TestDeletionPropagatesLowerRefusalsAndCleanupReplay(t *testing.T) {
 				outcome = store.TransactionCommitted
 				callbackError = nil
 			}
-			s := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, outcome, callbackError, callbackError), nil, &discardedSessions{})
+			s := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, outcome, callbackCause(callbackError), callbackError), nil, &discardedSessions{})
 			receipt := BotDeletionReceipt{DeletionID: request.DeletionID, Result: model.BotCleanupResult{State: "completed"}}
 			facts := deletionFacts{ctx: t.Context(), calls: map[string]int{"owner": 1}}
 			switch stage {
@@ -100,10 +100,13 @@ func TestDeletionMissingAndStorageFailuresDoNotBecomeSuccess(t *testing.T) {
 			calls := expectSessionDeletionProofCalls(t, map[string]int{"credential": 1})
 			dao := &sessionDeletionProofDAO{calls: calls, credential: func(context.Context, model.Principal, time.Time) error { return cause }}
 			callbackError := cause
+			expectedCallback := callbackCause(cause)
 			if errors.Is(cause, model.ErrNotFound) {
-				callbackError = &model.Fault{Code: "unauthenticated", Message: "Credential expired or was revoked."}
+				fault := &model.Fault{Code: "unauthenticated", Message: "Credential expired or was revoked."}
+				callbackError = fault
+				expectedCallback = callbackFreshFault(fault)
 			}
-			svc := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: &sessionDeletionProofBots{calls: calls}}, store.TransactionNotCommitted, callbackError, callbackError), nil, &discardedSessions{})
+			svc := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: &sessionDeletionProofBots{calls: calls}}, store.TransactionNotCommitted, expectedCallback, callbackError), nil, &discardedSessions{})
 			svc.operations = deletionOperations{}
 			got, err := svc.DeleteBot(t.Context(), p, bot.ID, request)
 			same(t, got, model.Bot{})
@@ -130,7 +133,7 @@ func TestDeletionReplayRetainsCompleteCommittedReceipt(t *testing.T) {
 		return bot, nil
 	}}
 	live := &discardedSessions{}
-	s := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, store.TransactionCommitted, nil, nil), nil, live)
+	s := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, store.TransactionCommitted, callbackCause(nil), nil), nil, live)
 	bindDeletionFacts(t, s, bots, p, bot, request, deletionFacts{ctx: t.Context(), calls: map[string]int{"owner": 1, "request": 1}, replay: true})
 	got, err := s.DeleteBot(t.Context(), p, bot.ID, request)
 	if err != nil {
