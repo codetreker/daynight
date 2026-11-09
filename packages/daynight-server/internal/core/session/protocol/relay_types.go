@@ -52,10 +52,11 @@ type Identity struct {
 	NativeSessionID      *string `json:"nativeSessionId"`
 }
 type Capabilities struct {
-	Send    bool `json:"send"`
-	Steer   bool `json:"steer"`
-	Cancel  bool `json:"cancel"`
-	Respond bool `json:"respond"`
+	Images  *ImageCapabilities `json:"images,omitempty"`
+	Send    bool               `json:"send"`
+	Steer   bool               `json:"steer"`
+	Cancel  bool               `json:"cancel"`
+	Respond bool               `json:"respond"`
 }
 type Operations struct {
 	CanSend    bool `json:"canSend"`
@@ -63,20 +64,23 @@ type Operations struct {
 	CanRespond bool `json:"canRespond"`
 }
 type State struct {
+	ProviderImages        *ProviderImageCapabilities `json:"providerImages,omitempty"`
+	Controls              *Controls                  `json:"controls,omitempty"`
+	TurnStartedAt         *string                    `json:"turnStartedAt,omitempty"`
+	CleanupInteractionIDs []string                   `json:"cleanupInteractionIds,omitempty"`
+	NativeSessionID       *string                    `json:"nativeSessionId"`
+	InitialInputState     string                     `json:"initialInputState"`
+	Synchronized          bool                       `json:"synchronized"`
+	Activity              string                     `json:"activity"`
+	CurrentTurnID         *string                    `json:"currentTurnId"`
+	Capabilities          Capabilities               `json:"capabilities"`
+}
+type Snapshot struct {
+	ContentRevision       int          `json:"contentRevision,omitempty"`
+	ImageBudget           *ImageBudget `json:"imageBudget,omitempty"`
 	Controls              *Controls    `json:"controls,omitempty"`
 	TurnStartedAt         *string      `json:"turnStartedAt,omitempty"`
 	CleanupInteractionIDs []string     `json:"cleanupInteractionIds,omitempty"`
-	NativeSessionID       *string      `json:"nativeSessionId"`
-	InitialInputState     string       `json:"initialInputState"`
-	Synchronized          bool         `json:"synchronized"`
-	Activity              string       `json:"activity"`
-	CurrentTurnID         *string      `json:"currentTurnId"`
-	Capabilities          Capabilities `json:"capabilities"`
-}
-type Snapshot struct {
-	Controls              *Controls `json:"controls,omitempty"`
-	TurnStartedAt         *string   `json:"turnStartedAt,omitempty"`
-	CleanupInteractionIDs []string  `json:"cleanupInteractionIds,omitempty"`
 	ControllerFence
 	Protocol          string       `json:"protocol"`
 	SchemaVersion     int          `json:"schemaVersion"`
@@ -109,6 +113,10 @@ type Operation struct {
 	Error          *OperationError `json:"error"`
 }
 type Resource struct {
+	Revision   string  `json:"revision,omitempty"`
+	Width      *int    `json:"width,omitempty"`
+	Height     *int    `json:"height,omitempty"`
+	FrameCount *int    `json:"frameCount,omitempty"`
 	ResourceID string  `json:"resourceId"`
 	Status     string  `json:"status"`
 	Name       string  `json:"name"`
@@ -159,6 +167,11 @@ type Reconciliation struct {
 // ControllerMessage is a decoded inbound union. Only fields belonging to Type
 // are populated; Raw preserves the exact validated union for durable hashing.
 type ControllerMessage struct {
+	ContentRevision int             `json:"contentRevision,omitempty"`
+	Action          string          `json:"action,omitempty"`
+	MediaBody       json.RawMessage `json:"-"`
+	MediaResult     json.RawMessage `json:"-"`
+	MediaError      *ImageError     `json:"-"`
 	ControllerFence
 	Type                 string           `json:"type"`
 	Protocol             string           `json:"protocol"`
@@ -195,6 +208,9 @@ func (m ControllerMessage) MarshalJSON() ([]byte, error) {
 		fields["testExecutionId"] = m.TestExecutionID
 	}
 	if m.Type == "hello" {
+		if m.ContentRevision != 0 {
+			fields["contentRevision"] = m.ContentRevision
+		}
 		fields["schemaVersion"], fields["projectionVersion"] = m.SchemaVersion, m.ProjectionVersion
 		fields["controllerId"], fields["controllerInstanceId"], fields["provider"] = m.ControllerID, m.ControllerInstanceID, m.Provider
 		fields["sourceEpoch"], fields["lastAckedSourceSeq"] = m.SourceEpoch, m.LastAckedSourceSeq
@@ -219,6 +235,10 @@ func (m ControllerMessage) MarshalJSON() ([]byte, error) {
 			fields["requestId"], fields["sourceThrough"], fields["result"], fields["error"] = m.RequestID, m.SourceThrough, m.ContentResult, m.ContentError
 		case "sync_state":
 			fields["state"], fields["pendingInteractions"] = m.State, m.PendingInteractions
+		case "image_response":
+			fields["requestId"], fields["action"], fields["result"], fields["error"] = m.RequestID, m.Action, m.MediaResult, m.MediaError
+		case "image_capture":
+			fields["requestId"], fields["action"], fields["body"] = m.RequestID, m.Action, m.MediaBody
 		case "heartbeat":
 		default:
 			return nil, errInvalid

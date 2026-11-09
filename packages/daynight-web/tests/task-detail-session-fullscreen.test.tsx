@@ -54,7 +54,7 @@ async function fixture(modal: boolean, initialFullscreen = false) {
     current: async () => ({ status: 'registered', session: snapshot }),
     timeline: async () => ({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: [{ kind: 'assistant_message', entryId: 'message', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Retained message' }] }], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' }),
     channel: (_id, _after, onMessage) => { connections++; receive = onMessage; return { close: () => { closed++; } }; },
-    archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused',
+    archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused',
   };
   vi.spyOn(sessions, 'createSessionApi').mockReturnValue(api);
   await world.sync([detail]);

@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
@@ -7,6 +9,7 @@ import type { CliContext } from "../../../src/cli/context.js";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import { controllerExecutionDirectory, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { SessionSnapshot } from "../../../src/session/protocol.js";
+const journalVersion = currentSqliteVersion(controllerJournalFormat);
 const proof = vi.hoisted(() => ({ capture: vi.fn(), stopped: vi.fn() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: proof.capture, confirmControllerProcessesStopped: proof.stopped }));
 import { acquireResume } from "../../../src/commands/controller/resume.js";
@@ -190,7 +193,7 @@ test("lease release preserves its row when another actor changes the format", as
 });
 
 test("journal format failure aborts resume inventory rather than hiding a candidate", async () => {
-  const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file); db.pragma("user_version=7"); db.close();
+  const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file); db.pragma(`user_version=${journalVersion + 1}`); db.close();
   await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow("unsupported-version");
   expect(f.fetch).not.toHaveBeenCalled(); expect(proof.capture).not.toHaveBeenCalled();
 });

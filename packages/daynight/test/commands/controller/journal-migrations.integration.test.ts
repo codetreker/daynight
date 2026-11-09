@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -7,6 +9,7 @@ import { openControllerLifecycleStore, readControllerOperation, readControllerSn
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
 
+const journalVersion = currentSqliteVersion(controllerJournalFormat);
 const proof = vi.hoisted(() => ({ stopped: vi.fn() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ confirmControllerProcessesStopped: proof.stopped }));
 const roots: string[] = [];
@@ -42,7 +45,7 @@ test.each([1, 2, 3, 4])("readonly helpers upgrade journal v%s without claiming o
   expect(readControllerSnapshot(f.file)).toMatchObject({ executionId: f.ticket.executionId });
   const db = new Database(f.file, { readonly: true });
   try {
-    expect(db.pragma("user_version", { simple: true })).toBe(6);
+    expect(db.pragma("user_version", { simple: true })).toBe(journalVersion);
     expect(db.prepare("SELECT owner_pid,snapshot,ticket_hash,last_sequence,last_acknowledged,source_floor,projection_gap FROM execution").get()).toEqual({ owner_pid: null, snapshot: original.snapshot, ticket_hash: "old-ticket", last_sequence: 3, last_acknowledged: 0, source_floor: 0, projection_gap: null });
     expect(db.prepare("SELECT value,acknowledged FROM operations").get()).toEqual({ value: original.operation, acknowledged: 0 });
     expect(db.prepare("SELECT value FROM outbox").get()).toEqual({ value: '{ "kind": "state", "payload": { "original": true } }' });
@@ -89,7 +92,7 @@ test.each(["snapshot", "operation", "writer"] as const)("%s resets an unknown un
   }
   const check = new Database(f.file);
   try {
-    expect(check.pragma("user_version", { simple: true })).toBe(6);
+    expect(check.pragma("user_version", { simple: true })).toBe(journalVersion);
     expect(check.prepare("SELECT name FROM sqlite_schema WHERE name='original_data'").get()).toBeUndefined();
     expect(check.prepare("SELECT count(*) AS total FROM content_index").get()).toEqual({ total: 0 });
   } finally { check.close(); }
@@ -133,7 +136,7 @@ test.each([false, true])("unversioned reset cannot adopt nonempty history into a
   expect(await readFile(`${pending}/manifest.json`)).toEqual(manifest);
   const check = new Database(f.file);
   try {
-    expect(check.pragma("user_version", { simple: true })).toBe(resetByRead ? 6 : 0);
+    expect(check.pragma("user_version", { simple: true })).toBe(resetByRead ? journalVersion : 0);
     const row = check.prepare("SELECT snapshot FROM execution").get() as { snapshot: string } | undefined;
     if (resetByRead) expect(row).toBeUndefined();
     else expect(JSON.parse(row!.snapshot).executionId).toBe(f.ticket.executionId);
@@ -162,14 +165,14 @@ test("missing and invalid journal paths preserve their distinct read contracts",
 test("stopped-generation writing rejects a format change during asynchronous process proof", async () => {
   const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
   store.patchSnapshot({ controllerProcess: { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) } }); store.close();
-  proof.stopped.mockImplementationOnce(async () => { const changed = new Database(f.file); changed.pragma("user_version=7"); changed.close(); return true; });
+  proof.stopped.mockImplementationOnce(async () => { const changed = new Database(f.file); changed.pragma(`user_version=${journalVersion + 1}`); changed.close(); return true; });
   await expect(recordStoppedControllerGeneration(f.file, f.ticket)).rejects.toThrow("unsupported-version");
   const db = new Database(f.file); try { expect(JSON.parse((db.prepare("SELECT snapshot FROM execution").get() as { snapshot: string }).snapshot).nativeStopped).toBe(false); } finally { db.close(); }
 });
 
 test("journal.close refuses stale-version SQL while still closing its handle", async () => {
   const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
-  const db = new Database(f.file); db.pragma("user_version=7");
+  const db = new Database(f.file); db.pragma(`user_version=${journalVersion + 1}`);
   expect(() => store.close()).toThrow("unsupported-version");
   expect(db.prepare("SELECT owner_pid FROM execution").get()).toEqual({ owner_pid: process.pid });
   expect(() => store.getSnapshot()).toThrow(); db.close();

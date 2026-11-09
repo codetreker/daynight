@@ -615,6 +615,18 @@ diagnostics and cause categories.
 | `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration for database connection and listener startup | `10s` |
 | `DAYNIGHT_SHUTDOWN_TIMEOUT` | Shared positive shutdown duration, at most 10 seconds | `10s` |
 | `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
+| `DAYNIGHT_IMAGE_NODE_PATH` | Absolute clean path to the pinned Node.js 24 executable | Unconfigured |
+| `DAYNIGHT_IMAGE_HELPER_PATH` | Absolute clean path to the packaged image validation helper | Unconfigured |
+| `DAYNIGHT_IMAGE_MANIFEST_PATH` | Absolute clean path to the helper and engine SHA-256 manifest | Unconfigured |
+| `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Absolute clean private staging directory (mode 0700) | Unconfigured |
+
+Image validation settings are configured together or omitted together. Omitting
+them retains text service and refuses new image uploads. A configured runtime,
+helper, engine or manifest that fails validation prevents startup; it does not
+silently enable a weaker decoder. The deployment image supplies all four paths.
+The service and Controller independently consume every decoded image frame and
+check original length and SHA-256. Decoder RSS is measured, not a hard OS memory
+sandbox. See the [media design](../../docs/design/session-image-contracts.md).
 
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes are rejected during

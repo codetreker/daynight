@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -13,8 +14,18 @@ import (
 
 func (s *Execution) Resource(ctx context.Context, p model.Principal, project, taskID, id, resource string) ([]byte, sp.Resource, error) {
 	var descriptor sp.Resource
-	if _, err := uuid.Parse(resource); err != nil {
-		return nil, descriptor, fault("invalid_input", "Invalid session resource identity.")
+	if s.releaseMediaLeaseRun != nil || s.imageDecoder != nil {
+		if data, saved, err := s.savedResource(ctx, p, project, taskID, id, resource); err == nil {
+			return data, saved, nil
+		} else if !errors.Is(err, model.ErrNotFound) {
+			var refusal *model.Fault
+			if !errors.As(err, &refusal) || refusal.Code != "component_unsupported" {
+				return nil, descriptor, err
+			}
+		}
+		if _, err := uuid.Parse(resource); err != nil {
+			return nil, descriptor, fault("invalid_input", "Invalid session resource identity.")
+		}
 	}
 	work, err := s.BeginOperation()
 	if err != nil {
@@ -65,8 +76,8 @@ func (s *Execution) Resource(ctx context.Context, p model.Principal, project, ta
 	}
 }
 
-// Resource bodies belong to the native controller. The former upload endpoint
-// cannot turn this online relay back into persistent content storage.
+// The legacy controller upload lacks the actor, target and immutable upload
+// identity required by the current prepare/write/complete resource contract.
 func (s *Execution) PutResource(context.Context, string, string, string, []byte) (sp.Resource, error) {
-	return sp.Resource{}, fault("not_found", "Session resources are read from the online controller; server uploads are not supported.")
+	return sp.Resource{}, fault("not_found", "Legacy resource uploads are unavailable; use the scoped Session upload contract.")
 }

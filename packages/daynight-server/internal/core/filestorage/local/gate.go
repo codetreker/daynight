@@ -118,6 +118,24 @@ func (p *gatePermit) Close() error {
 }
 
 func (s *Storage) AcquireGate(ctx context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
+	if domain == filestorage.MediaLeaseGate {
+		if key == "" {
+			return nil, errors.New("empty media lease key")
+		}
+		for {
+			permit, err := s.TryAcquireResidency(ctx, "media-lease/"+key)
+			if !errors.Is(err, filestorage.ErrGateBusy) {
+				return permit, err
+			}
+			timer := time.NewTimer(10 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			}
+		}
+	}
 	var index int
 	switch domain {
 	case filestorage.TargetGate:

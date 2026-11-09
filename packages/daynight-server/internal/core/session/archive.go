@@ -13,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 const archiveBucket = sessionarchive.Bucket
@@ -40,11 +41,28 @@ func archiveStatus(ctx context.Context, tx *operationTx, id string) (sp.ArchiveS
 }
 func (s *Execution) ArchiveStatus(ctx context.Context, p model.Principal, project, taskID, id string) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
+	convertLegacy := false
 	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, _ *record, _ task) error {
 		var err error
 		out, _, err = archiveStatus(ctx, tx, id)
+		_, capable := tx.dao.(store.SessionArchiveDAO)
+		convertLegacy = capable && out.State == "ready" && out.SchemaVersion != 3
 		return err
 	})
+	if err == nil && convertLegacy {
+		content, e := s.ArchiveContent(ctx, p, project, taskID, id)
+		if e != nil {
+			return out, e
+		}
+		if e = content.Close(); e != nil {
+			return out, e
+		}
+		err = s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, _ *record, _ task) error {
+			var e error
+			out, _, e = archiveStatus(ctx, tx, id)
+			return e
+		})
+	}
 	return out, err
 }
 func archiveWriter(p model.Principal, r *record, f sp.Fence, controller, instance string) error {
@@ -98,6 +116,9 @@ func (s *Execution) putArchive(ctx context.Context, op *ArchiveOperation, data [
 		}
 		if err := archiveWriter(p, r, doc.Fence, doc.ControllerID, doc.ControllerInstanceID); err != nil {
 			return err
+		}
+		if _, unified := tx.dao.(store.SessionArchiveDAO); unified {
+			return fault("component_unsupported", "This server requires a unified external archive writer.")
 		}
 		if doc.Provider != r.Snapshot.Identity.Provider || r.Snapshot.Identity.NativeSessionID != nil && !jsonEqual(encode(doc.NativeSessionID), encode(r.Snapshot.Identity.NativeSessionID)) {
 			return conflict()
@@ -177,6 +198,7 @@ func (s *Execution) ArchiveContentReserved(ctx context.Context, p model.Principa
 func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (json.RawMessage, error) {
 	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out json.RawMessage
+	legacyPath := ""
 	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *record, _ task) (result error) {
 		if r.Owner != op.owner {
 			return conflict()
@@ -201,11 +223,23 @@ func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (j
 		if status.SHA256 == nil || status.ByteLength == nil || strconv.Itoa(len(data)) != *status.ByteLength || hex.EncodeToString(sum[:]) != *status.SHA256 {
 			return errors.New("session archive integrity check failed")
 		}
-		if _, err = sp.DecodeArchive(data); err != nil {
+		if status.SchemaVersion == 3 {
+			if _, err = sp.DecodeArchiveManifest(data); err != nil {
+				return err
+			}
+		} else if _, err = sp.DecodeArchive(data); err != nil {
 			return err
+		}
+		if status.SchemaVersion != 3 {
+			if _, capable := tx.dao.(store.SessionArchiveDAO); capable {
+				legacyPath = path
+			}
 		}
 		out = data
 		return nil
 	})
+	if err == nil && legacyPath != "" {
+		return s.migrateLegacyArchive(ctx, op, out, legacyPath)
+	}
 	return out, err
 }

@@ -7,6 +7,9 @@
 !packages/
 !packages/daynight/
 !packages/daynight/package.json
+!packages/daynight/tsconfig*.json
+!packages/daynight/scripts/
+!packages/daynight/scripts/**
 !packages/daynight/src/
 !packages/daynight/src/**
 !packages/daynight-web/

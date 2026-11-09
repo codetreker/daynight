@@ -1,9 +1,10 @@
 import { OperationRequestError } from './operation-error';
 import { sameStartupReport, type SessionStartupReport } from '../../../../daynight/src/session/startup';
 import { liveHistoryAllowed } from './presentation';
-import type { SessionArchive, SessionArchiveStatus } from '../../../../daynight/src/session/archive';
+import type { SessionArchiveStatus } from '../../../../daynight/src/session/archive';
+import type { SessionResourceClient } from '../../../../daynight/src/session/resource-client';
 import { ApiError, isAbortError } from '../../api/client';
-import { IndependentSessionReadDenied, type BotSessionBinding, type SessionApi, type SessionChannel } from '../../api/sessions';
+import { IndependentSessionReadDenied, type BotSessionBinding, type SessionApi, type SessionChannel, type LoadedSessionArchive } from '../../api/sessions';
 import { clearSessionDisplayPreference } from './useSessionDisplayPreference';
 import { SESSION_PROTOCOL, assertSessionFence, sessionFence, sessionFenceKey, parseSessionOperation, type InteractionResponse, type SessionCommand, type SessionInteraction, type SessionOperation, type SessionSnapshot } from '../../../../daynight/src/session/protocol';
 import type { BrowserMessage, TimelinePage } from '../../../../daynight/src/session/controller-protocol';
@@ -63,7 +64,8 @@ type CurrentReadFlight = { readonly kind: 'start' | 'observation' | 'archive'; r
 
 export class TaskSessionClient {
   private view: SessionViewState = { operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyRevision: 0, connectionGeneration: 0 };
-  private archive: SessionArchive | null = null;
+  private archive: LoadedSessionArchive | null = null;
+  private media: { readonly key: string; readonly client: SessionResourceClient } | null = null;
   private listeners = new Set<() => void>();
   private lifetime = new AbortController();
   private invalidated = false;
@@ -565,7 +567,7 @@ export class TaskSessionClient {
       assertSessionFence(archive, sessionFence(finalSnapshot));
       if (archive.provider !== finalSnapshot.identity.provider || archive.controllerId !== finalSnapshot.identity.controllerId || archive.controllerInstanceId !== finalSnapshot.identity.controllerInstanceId || archive.nativeSessionId !== finalSnapshot.identity.nativeSessionId) throw new ApiError('protocol');
       this.archive = archive;
-      const resources = archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
+      const resources = archive.schemaVersion === 3 ? archive.resources.map(({ resource }) => resource) : archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
       const state = hydrateSession(emptySessionState(), finalSnapshot, archive.entries, resources);
       this.publish({ archiveState: 'ready', state, status: 'ready', connected: false, error: null });
     } catch (error) {
@@ -774,14 +776,24 @@ export class TaskSessionClient {
     if (!this.live() || !s || this.view.state.resources.get(id)?.status !== 'available') throw new Error('Resource unavailable.');
     const combinedSignal = AbortSignal.any([signal, this.lifetime.signal]);
     combinedSignal.throwIfAborted();
-    if (s.lifecycle !== 'active') {
+    const descriptor = this.view.state.resources.get(id)!;
+    if (s.lifecycle !== 'active' && this.archive?.schemaVersion !== 3) {
       const archived = this.archive?.resources.find(item => item.resource.resourceId === id);
       if (this.view.archiveState !== 'ready' || !archived || archived.data === null) throw new Error('Resource unavailable.');
       const bytes = Uint8Array.from(atob(archived.data), character => character.charCodeAt(0));
       combinedSignal.throwIfAborted();
       return new Blob([bytes], { type: archived.resource.mediaType ?? 'application/octet-stream' });
     }
-    const blob = await this.options.api.resource(s.sessionId, id, combinedSignal).catch((error: unknown) => {
+    const load = async (): Promise<Blob> => {
+      if (s.lifecycle === 'active' && !Object.hasOwn(descriptor, 'revision')) return this.options.api.resource(s.sessionId, id, combinedSignal);
+      const key = sessionFenceKey(s);
+      if (this.media?.key !== key) {
+        void this.media?.client.close();
+        this.media = { key, client: this.options.api.resources(sessionFence(s), () => this.owned() && this.sameSession(s)) };
+      }
+      return new Blob([await this.media.client.readResource(descriptor, combinedSignal)], { type: descriptor.mediaType ?? 'application/octet-stream' });
+    };
+    const blob = await load().catch((error: unknown) => {
       if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
       throw error;
     });
@@ -822,5 +834,5 @@ export class TaskSessionClient {
     this.close();
     this.options.onInvalidate?.();
   };
-  close = (): void => { this.lastStartupReport = null; this.currentReadFailure = null; this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ startupReport: null, error: this.invalidated ? this.view.error : null, errorCode: this.invalidated ? this.view.errorCode : null, archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
+  close = (): void => { void this.media?.client.close(); this.media = null; this.lastStartupReport = null; this.currentReadFailure = null; this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ startupReport: null, error: this.invalidated ? this.view.error : null, errorCode: this.invalidated ? this.view.errorCode : null, archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
 }

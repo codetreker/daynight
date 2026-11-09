@@ -25,6 +25,7 @@ type Fence struct {
 }
 
 type Command struct {
+	ContentRevision int `json:"contentRevision,omitempty"`
 	Fence
 	Protocol    string          `json:"protocol"`
 	RequestID   string          `json:"requestId"`
@@ -34,13 +35,22 @@ type Command struct {
 }
 
 type TextPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	ImageID    string `json:"imageId,omitempty"`
+	UploadID   string `json:"uploadId,omitempty"`
+	ResourceID string `json:"resourceId,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	ByteLength string `json:"byteLength,omitempty"`
 }
 
 type SendMessage struct {
-	Content        []TextPart `json:"content"`
-	ExpectedTurnID *string    `json:"expectedTurnId"`
+	Content                         []TextPart   `json:"content"`
+	ExpectedTurnID                  *string      `json:"expectedTurnId"`
+	Target                          *ImageTarget `json:"target,omitempty"`
+	DraftID                         string       `json:"draftId,omitempty"`
+	DraftRevision                   string       `json:"draftRevision,omitempty"`
+	ExpectedImageCapabilityRevision string       `json:"expectedImageCapabilityRevision,omitempty"`
 }
 
 type Cancel struct {
@@ -67,7 +77,14 @@ func DecodeCommand(data []byte) (Command, error) {
 	if _, ok := fields["testExecutionId"]; ok {
 		binding = "testExecutionId"
 	}
-	_, err := object(data, "protocol", "requestId", "operationId", "sessionId", binding, "executionGeneration", "kind", "payload")
+	keys := []string{"protocol", "requestId", "operationId", "sessionId", binding, "executionGeneration", "kind", "payload"}
+	if fields["contentRevision"] != nil {
+		keys = append(keys, "contentRevision")
+		if !integerRange(1, ContentRevision)(fields["contentRevision"]) {
+			return Command{}, errInvalid
+		}
+	}
+	_, err := object(data, keys...)
 	if err != nil {
 		return Command{}, err
 	}
@@ -77,7 +94,14 @@ func DecodeCommand(data []byte) (Command, error) {
 	}
 	switch command.Kind {
 	case "send_message":
-		err = validateSend(command.Payload)
+		if ContainsImages(command.Payload) {
+			if command.ContentRevision != ContentRevision {
+				return Command{}, errInvalid
+			}
+			err = validateImageSend(command.Payload)
+		} else {
+			err = validateSend(command.Payload)
+		}
 	case "cancel":
 		var fields map[string]json.RawMessage
 		fields, err = object(command.Payload, "expectedTurnId")

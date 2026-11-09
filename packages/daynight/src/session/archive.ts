@@ -1,8 +1,23 @@
-import { parseSessionResource, parseTimelineEntry, type SessionFence, type SessionProvider, type SessionResource, type TimelineEntry } from "./protocol.js";
+import { parseSessionResource, parseTimelineEntry, sessionFence, type SessionFence, type SessionProvider, type SessionResource, type TimelineEntry } from "./protocol.js";
+import { decodeStrictSessionJson } from "./v2/values.js";
+import { parseImageError, verifyTimelineImageMetadata, type ImageError } from "./image-values.js";
 
 // Archives are inert display records, never native resume or command inputs.
+export const SESSION_ARCHIVE_HISTORY_MAX_BYTES = 67_125_248;
 export const SESSION_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 export const SESSION_ARCHIVE_RESOURCE_MAX_BYTES = 8 * 1024 * 1024;
+export const SESSION_ARCHIVE_MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
+export const SESSION_ARCHIVE_BLOB_MAX_BYTES = 10 * 1024 * 1024;
+export type SessionArchiveFileReference = { readonly fileId: string; readonly sha256: string; readonly byteLength: string };
+export type SessionArchiveResourceReference = { readonly resource: SessionResource; readonly blobId: string | null };
+export type SessionArchiveManifest = {
+  readonly schemaVersion: 3; readonly contentKind: "native_timeline"; readonly recordId: string; readonly fence: SessionFence;
+  readonly provider: SessionProvider; readonly nativeSessionId: string | null; readonly controllerId: string; readonly controllerInstanceId: string;
+  readonly timeline: SessionArchiveFileReference; readonly resources: readonly SessionArchiveResourceReference[]; readonly completeness: "complete" | "partial";
+};
+export type SessionArchiveTimeline = { readonly entries: readonly TimelineEntry[] };
+export type SessionArchivePreparation = { recordId: string; phase: "settling" | "sealed" | "failed"; resources: readonly SessionArchiveResourceReference[]; timelineRevision: string | null; error: ImageError | null; historyEpoch: string; sourceThrough: string };
+export type SessionArchiveFileReceipt = SessionArchiveFileReference & { state: "receiving" | "complete" | "failed"; acceptedOffset: string; error: ImageError | null };
 export type SessionArchive = SessionFence & {
   readonly schemaVersion: 1;
   readonly controllerId: string;
@@ -17,6 +32,8 @@ export type SessionArchiveStatus = {
   readonly sha256: string | null;
   readonly byteLength: string | null;
   readonly errorCode: string | null;
+  readonly schemaVersion?: 3;
+  readonly completeness?: "complete" | "partial" | null;
 };
 
 const invalid = (): never => { throw new Error("Invalid Daynight session archive."); };
@@ -29,18 +46,101 @@ const exact = (value: unknown, keys: readonly string[]): Record<string, unknown>
 const uuid = (value: unknown): string => typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value) ? value : invalid();
 const sequence = (value: unknown): string => typeof value === "string" && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n ? value : invalid();
 const hash = (value: unknown): string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : invalid();
+const zeroSequence = (value: unknown): string => value === "0" ? "0" : sequence(value);
+
+export const parseSessionArchivePreparation = (value: unknown): SessionArchivePreparation => {
+  const data = exact(value, ["recordId", "phase", "resources", "timelineRevision", "error", "historyEpoch", "sourceThrough"]);
+  if (!["settling", "sealed", "failed"].includes(String(data.phase)) || !Array.isArray(data.resources) || data.resources.length > 1000 || typeof data.historyEpoch !== "string" || !data.historyEpoch.trim() || !data.historyEpoch.isWellFormed() || data.historyEpoch.includes("\0") || new TextEncoder().encode(data.historyEpoch).length > 256) return invalid();
+  const ids = new Set<string>(); const resources = data.resources.map(raw => { const item = exact(raw, ["resource", "blobId"]), resource = parseSessionResource(item.resource), blobId = item.blobId === null ? null : uuid(item.blobId); if (ids.has(resource.resourceId) || resource.status === "pending" || (resource.status === "available") !== (blobId !== null)) return invalid(); ids.add(resource.resourceId); return { resource, blobId }; });
+  if (data.phase === "sealed" ? data.timelineRevision === null || data.error !== null : resources.length !== 0 || data.timelineRevision !== null || (data.phase === "failed") !== (data.error !== null)) return invalid();
+  return { recordId: uuid(data.recordId), phase: data.phase as SessionArchivePreparation["phase"], resources, timelineRevision: data.timelineRevision === null ? null : sequence(data.timelineRevision), error: data.error === null ? null : parseImageError(data.error), historyEpoch: data.historyEpoch, sourceThrough: zeroSequence(data.sourceThrough) };
+};
+export const parseSessionArchiveFileReceipt = (value: unknown): SessionArchiveFileReceipt => {
+  const data = exact(value, ["fileId", "state", "acceptedOffset", "byteLength", "sha256", "error"]), byteLength = sequence(data.byteLength), acceptedOffset = zeroSequence(data.acceptedOffset);
+  if (!["receiving", "complete", "failed"].includes(String(data.state)) || BigInt(byteLength) > BigInt(SESSION_ARCHIVE_HISTORY_MAX_BYTES) || BigInt(acceptedOffset) > BigInt(byteLength) || data.state === "complete" && acceptedOffset !== byteLength || (data.state === "failed") !== (data.error !== null)) return invalid();
+  return { fileId: uuid(data.fileId), state: data.state as SessionArchiveFileReceipt["state"], acceptedOffset, byteLength, sha256: hash(data.sha256), error: data.error === null ? null : parseImageError(data.error) };
+};
 
 export const parseSessionArchiveStatus = (value: unknown): SessionArchiveStatus => {
-  const data = exact(value, ["state", "sha256", "byteLength", "errorCode"]);
+  const modern = !!value && typeof value === "object" && Object.hasOwn(value, "schemaVersion");
+  const data = exact(value, ["state", "sha256", "byteLength", "errorCode", ...(modern ? ["schemaVersion", "completeness"] : [])]);
+  if (modern && (data.schemaVersion !== 3 || (data.state === "ready" ? !["complete", "partial"].includes(String(data.completeness)) : data.completeness !== null))) return invalid();
+  const extra = modern ? { schemaVersion: 3 as const, completeness: data.completeness as "complete" | "partial" | null } : {};
   if (!["pending", "ready", "failed", "unavailable"].includes(String(data.state))) return invalid();
   if (data.state === "ready") {
     const byteLength = sequence(data.byteLength);
-    if (BigInt(byteLength) > BigInt(SESSION_ARCHIVE_MAX_BYTES) || data.errorCode !== null) return invalid();
-    return { state: "ready", sha256: hash(data.sha256), byteLength, errorCode: null };
+    if (BigInt(byteLength) > BigInt(modern ? SESSION_ARCHIVE_MANIFEST_MAX_BYTES : SESSION_ARCHIVE_MAX_BYTES) || data.errorCode !== null) return invalid();
+    return { state: "ready", sha256: hash(data.sha256), byteLength, errorCode: null, ...extra };
   }
   if (data.sha256 !== null || data.byteLength !== null || (data.errorCode !== null && (typeof data.errorCode !== "string" || !/^[a-z_]{1,64}$/.test(data.errorCode)))) return invalid();
   if (data.state !== "failed" && data.errorCode !== null) return invalid();
-  return { state: data.state as SessionArchiveStatus["state"], sha256: null, byteLength: null, errorCode: data.errorCode as string | null };
+  return { state: data.state as SessionArchiveStatus["state"], sha256: null, byteLength: null, errorCode: data.errorCode as string | null, ...extra };
+};
+
+export const parseSessionArchiveManifest = (value: unknown): SessionArchiveManifest => {
+  const data = exact(value, ["schemaVersion", "contentKind", "recordId", "fence", "provider", "nativeSessionId", "controllerId", "controllerInstanceId", "timeline", "resources", "completeness"]);
+  if (data.schemaVersion !== 3 || data.contentKind !== "native_timeline" || !["codex", "claude", "copilot"].includes(String(data.provider)) || !["complete", "partial"].includes(String(data.completeness))) return invalid();
+  const binding = sessionFence(data.fence as SessionFence);
+  exact(data.fence, ["sessionId", binding.claimId !== undefined ? "claimId" : "testExecutionId", "executionGeneration"]);
+  if (uuid(data.recordId) !== binding.sessionId) return invalid();
+  if (data.nativeSessionId !== null && (typeof data.nativeSessionId !== "string" || !data.nativeSessionId.trim() || !data.nativeSessionId.isWellFormed() || /\p{Cc}/u.test(data.nativeSessionId) || new TextEncoder().encode(data.nativeSessionId).length > 256)) return invalid();
+  const file = exact(data.timeline, ["fileId", "sha256", "byteLength"]), byteLength = sequence(file.byteLength);
+  if (BigInt(byteLength) > BigInt(SESSION_ARCHIVE_MAX_BYTES) || !Array.isArray(data.resources) || data.resources.length > 1000) return invalid();
+  const ids = new Set<string>(); let bytes = 0n;
+  const resources = data.resources.map(raw => { const item = exact(raw, ["resource", "blobId"]), resource = parseSessionResource(item.resource);
+    if (ids.has(resource.resourceId) || resource.status === "pending") return invalid(); ids.add(resource.resourceId);
+    const blobId = item.blobId === null ? null : uuid(item.blobId);
+    if (resource.status === "available") { if (blobId === null || resource.byteLength === null || resource.sha256 === null || BigInt(resource.byteLength) > BigInt(SESSION_ARCHIVE_BLOB_MAX_BYTES)) return invalid(); bytes += BigInt(resource.byteLength); }
+    else if (blobId !== null) return invalid(); return { resource, blobId };
+  });
+  if (bytes > 1073741824n || new TextEncoder().encode(JSON.stringify(data)).length > SESSION_ARCHIVE_MANIFEST_MAX_BYTES) return invalid();
+  return { schemaVersion: 3, contentKind: "native_timeline", recordId: binding.sessionId, fence: binding, provider: data.provider as SessionProvider, nativeSessionId: data.nativeSessionId as string | null, controllerId: uuid(data.controllerId), controllerInstanceId: uuid(data.controllerInstanceId), timeline: { fileId: uuid(file.fileId), sha256: hash(file.sha256), byteLength }, resources, completeness: data.completeness as "complete" | "partial" };
+};
+
+export const parseSessionArchiveTimeline = (value: unknown): SessionArchiveTimeline => {
+  const data = exact(value, ["entries"]);
+  if (!Array.isArray(data.entries) || data.entries.length > 100000 || new TextEncoder().encode(JSON.stringify(data)).length > SESSION_ARCHIVE_MAX_BYTES) return invalid();
+  const entries = data.entries.map(parseTimelineEntry), ids = new Set<string>(); let previous = 0n;
+  for (const entry of entries) { if (ids.has(entry.entryId) || BigInt(entry.entrySeq) <= previous) return invalid(); ids.add(entry.entryId); previous = BigInt(entry.entrySeq); }
+  return { entries };
+};
+
+/** Traverse the complete persisted entry, including retained and reasoning bindings. */
+export const sessionArchiveReferences = (entries: readonly TimelineEntry[], requireSealable = true): { resources: Set<string>; unavailable: boolean } => {
+  const resources = new Set<string>(); let unavailable = false;
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    if (!value || typeof value !== "object") return;
+    const item = value as Record<string, unknown>;
+    if (requireSealable && (Object.hasOwn(item, "imageProjectionError") && item.imageProjectionError !== null || Object.hasOwn(item, "bindings") && item.bindings === null)) return invalid();
+    if (item.type === "resource" || item.type === "image") { if (item.resourceId === null) unavailable = true; else resources.add(uuid(item.resourceId)); }
+    if (item.type === "image_unavailable") unavailable = true;
+    Object.values(item).forEach(visit);
+  };
+  entries.forEach(visit); return { resources, unavailable };
+};
+const digest = async (bytes: Uint8Array): Promise<string> => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes))), value => value.toString(16).padStart(2, "0")).join("");
+export const verifySessionArchiveMetadata = async (manifest: SessionArchiveManifest, bytes: Uint8Array): Promise<SessionArchiveTimeline> => {
+  if (String(bytes.byteLength) !== manifest.timeline.byteLength || await digest(bytes) !== manifest.timeline.sha256) return invalid();
+  let raw: unknown; try { raw = decodeStrictSessionJson(bytes, SESSION_ARCHIVE_MAX_BYTES); } catch { return invalid(); }
+  const timeline = parseSessionArchiveTimeline(raw), refs = sessionArchiveReferences(timeline.entries), descriptors = new Map(manifest.resources.map(ref => [ref.resource.resourceId, ref]));
+  for (const entry of timeline.entries) await verifyTimelineImageMetadata(entry);
+  for (const id of refs.resources) if (!descriptors.has(id)) return invalid();
+  for (const ref of manifest.resources) {
+    if (!refs.resources.has(ref.resource.resourceId)) return invalid();
+    if (ref.resource.status !== "available") { refs.unavailable = true; continue; }
+  }
+  if ((manifest.completeness === "partial") !== refs.unavailable) return invalid();
+  return timeline;
+};
+export const verifySessionArchiveClosure = async (manifest: SessionArchiveManifest, bytes: Uint8Array, readBlob: (reference: SessionArchiveResourceReference) => Promise<Uint8Array>): Promise<SessionArchiveTimeline> => {
+  const timeline = await verifySessionArchiveMetadata(manifest, bytes);
+  for (const ref of manifest.resources) {
+    if (ref.resource.status !== "available") continue;
+    const original = await readBlob(ref);
+    if (String(original.byteLength) !== ref.resource.byteLength || await digest(original) !== ref.resource.sha256) return invalid();
+  }
+  return timeline;
 };
 
 export const parseSessionArchive = (value: unknown): SessionArchive => {

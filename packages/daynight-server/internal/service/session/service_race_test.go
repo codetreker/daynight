@@ -11,6 +11,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -30,6 +33,7 @@ import (
 type serviceStorageBarrier struct {
 	filestorage.Storage
 	kind             string
+	manifestOnly     bool
 	entered, release chan struct{}
 	once             sync.Once
 }
@@ -44,7 +48,7 @@ func (s *serviceStorageBarrier) wait(ctx context.Context) error {
 	}
 }
 func (s *serviceStorageBarrier) Put(ctx context.Context, bucket, path string, body io.Reader) (filestorage.FileInfo, error) {
-	if s.kind == "upload" {
+	if s.kind == "upload" && (!s.manifestOnly || strings.HasSuffix(path, ".json")) {
 		if err := s.wait(ctx); err != nil {
 			return filestorage.FileInfo{}, err
 		}
@@ -58,6 +62,12 @@ func (s *serviceStorageBarrier) DeleteSessionArchives(ctx context.Context, n ses
 		}
 	}
 	return s.Storage.DeleteSessionArchives(ctx, n)
+}
+func (s *serviceStorageBarrier) DeleteSessionResources(ctx context.Context, n sessionresource.Namespace) error {
+	return s.Storage.(filestorage.ResourceStorage).DeleteSessionResources(ctx, n)
+}
+func (s *serviceStorageBarrier) ResourceSpace(ctx context.Context) (int64, int64, error) {
+	return s.Storage.(filestorage.ResourceStorage).ResourceSpace(ctx)
 }
 
 func serviceBoundBot(t *testing.T, f serviceFixture, files filestorage.Storage) (serviceFixture, core.BotRegistrationResult) {
@@ -89,19 +99,61 @@ func serviceBoundBot(t *testing.T, f serviceFixture, files filestorage.Storage) 
 	}
 	return f, out
 }
-func serviceArchive(t *testing.T, v sp.Snapshot) []byte {
+func prepareServiceArchive(t *testing.T, ctx context.Context, service *Service, actor model.Principal, project, task string, v sp.Snapshot) []byte {
 	t.Helper()
 	raw, _ := json.Marshal(map[string]any{"entryId": uuid.NewString(), "entrySeq": "1", "revision": "1", "kind": "reasoning", "text": "local-only body"})
 	entry, err := sp.DecodeTimeline(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := sp.ArchiveDocument{Fence: v.Fence, SchemaVersion: 1, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, Entries: []sp.TimelineEntry{entry}, Resources: []sp.ArchiveResource{}}
+	op, err := service.BeginArchive(ctx, actor, project, task, v.SessionID, core.ArchiveV1Upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if e := op.Close(); e != nil {
+			t.Error(e)
+		}
+	}()
+	prepared, err := op.PrepareArchive(ctx, sp.ArchivePrepareRequest{Fence: v.Fence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := json.Marshal(sp.ArchiveTimeline{Entries: []sp.TimelineEntry{entry}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := json.Marshal(sp.ArchiveHistoryContent{HistoryEpoch: prepared.HistoryEpoch, SourceThrough: prepared.SourceThrough, Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := func(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+	if _, err = op.PutArchiveFile(ctx, "history", uuid.NewString(), 0, int64(len(history)), digest(history), digest(history), history); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := op.SealArchive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	timelineID := uuid.NewString()
+	if _, err = op.PutArchiveFile(ctx, "timeline", timelineID, 0, int64(len(timeline)), digest(timeline), digest(timeline), timeline); err != nil {
+		t.Fatal(err)
+	}
+	doc := sp.ArchiveManifest{SchemaVersion: 3, ContentKind: "native_timeline", RecordID: v.SessionID, Fence: v.Fence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, NativeSessionID: v.Identity.NativeSessionID, Timeline: sp.ArchiveFileReference{FileID: timelineID, SHA256: digest(timeline), ByteLength: strconv.Itoa(len(timeline))}, Resources: sealed.Resources, Completeness: "complete"}
 	data, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
+}
+func publishServiceArchive(ctx context.Context, service *Service, actor model.Principal, project, task, id string, data []byte) (err error) {
+	op, err := service.BeginArchive(ctx, actor, project, task, id, core.ArchiveV1Upload)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, op.Close()) }()
+	_, err = op.PutArchiveManifest(ctx, data)
+	return err
 }
 func serviceStopReceipt(out core.BotRegistrationResult, id string) botservice.BotDeletionReceipt {
 	v := out.Session
@@ -117,6 +169,26 @@ func waitServiceBotLock(ctx context.Context, f serviceFixture) error {
 			return err
 		}
 		if waiting {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+func waitServiceResourceDeletion(ctx context.Context, f serviceFixture, id string) error {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var deleting bool
+		var leases int
+		err := f.db.Pool.QueryRow(ctx, `SELECT s.deleting,(SELECT count(*) FROM session_resource_leases l WHERE l.session_id=s.session_id) FROM session_resource_state s WHERE s.session_id=$1`, id).Scan(&deleting, &leases)
+		if err != nil {
+			return err
+		}
+		if deleting && leases > 0 {
 			return nil
 		}
 		select {
@@ -152,7 +224,7 @@ func TestProductionArchiveDeletionSerializesBothOrders(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			gate := &serviceStorageBarrier{Storage: files, kind: ordering, entered: make(chan struct{}), release: make(chan struct{})}
+			gate := &serviceStorageBarrier{Storage: files, kind: ordering, manifestOnly: true, entered: make(chan struct{}), release: make(chan struct{})}
 			var released sync.Once
 			release := func() { released.Do(func() { close(gate.release) }) }
 			t.Cleanup(release)
@@ -166,7 +238,7 @@ func TestProductionArchiveDeletionSerializesBothOrders(t *testing.T) {
 			if _, err = f.db.Pool.Exec(ctx, `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{lifecycle}','"archived"') WHERE id=$1`, out.Session.SessionID); err != nil {
 				t.Fatal(err)
 			}
-			data := serviceArchive(t, out.Session)
+			data := prepareServiceArchive(t, ctx, f.service, f.owner, "", "", out.Session)
 			namespace, err := sessionarchive.NewNamespace(sessionarchive.Users, f.owner.UserID, out.Session.SessionID)
 			if err != nil {
 				t.Fatal(err)
@@ -196,35 +268,38 @@ func TestProductionArchiveDeletionSerializesBothOrders(t *testing.T) {
 			cleanup := make(chan error, 1)
 			if ordering == "upload" {
 				go func() {
-					_, err := f.service.PutArchive(ctx, f.owner, "", "", out.Session.SessionID, data)
+					err := publishServiceArchive(ctx, f.service, f.owner, "", "", out.Session.SessionID, data)
 					upload <- err
 				}()
 				awaitBarrier(t, ctx, gate, upload)
-				go func() { _, err := deletion.DeleteBot(ctx, f.owner, out.Bot.ID, request); cleanup <- err }()
-				waitErr := waitServiceBotLock(ctx, f)
+				if _, err = deletion.DeleteBot(ctx, f.owner, out.Bot.ID, request); err != nil {
+					t.Fatal(err)
+				}
+				go func() {
+					result, e := deletion.CompleteBotDeletion(ctx, f.owner, out.Bot.WorkerID, out.Bot.ID, receipt)
+					if e == nil && result.Deletion.ServerCleanup.State != "completed" {
+						e = errors.New("cleanup did not complete")
+					}
+					cleanup <- e
+				}()
+				if err = waitServiceResourceDeletion(ctx, f, out.Session.SessionID); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err = <-cleanup:
+					t.Fatalf("cleanup passed the exact active I/O lease: %v", err)
+				default:
+				}
 				release()
-				if err := <-upload; err != nil {
+				requireServiceError(t, <-upload, "resource_conflict")
+				if err = <-cleanup; err != nil {
 					t.Fatal(err)
-				}
-				if err := <-cleanup; err != nil {
-					t.Fatal(err)
-				}
-				if waitErr != nil {
-					t.Fatal(waitErr)
-				}
-				var state string
-				if err = f.db.Pool.QueryRow(ctx, `SELECT state FROM session_archives WHERE session_id=$1`, out.Session.SessionID).Scan(&state); err != nil || state != "ready" {
-					t.Fatalf("archive not committed first: %s %v", state, err)
-				}
-				result, err := deletion.CompleteBotDeletion(ctx, f.owner, out.Bot.WorkerID, out.Bot.ID, receipt)
-				if err != nil || result.Deletion.ServerCleanup.State != "completed" {
-					t.Fatalf("cleanup: %+v %v", result, err)
 				}
 			} else {
 				if _, err = deletion.DeleteBot(ctx, f.owner, out.Bot.ID, request); err != nil {
 					t.Fatal(err)
 				}
-				_, err = f.service.PutArchive(ctx, f.owner, "", "", out.Session.SessionID, data)
+				err = publishServiceArchive(ctx, f.service, f.owner, "", "", out.Session.SessionID, data)
 				requireServiceError(t, err, "resource_conflict")
 				go func() {
 					result, err := deletion.CompleteBotDeletion(ctx, f.owner, out.Bot.WorkerID, out.Bot.ID, receipt)
@@ -235,7 +310,7 @@ func TestProductionArchiveDeletionSerializesBothOrders(t *testing.T) {
 				}()
 				awaitBarrier(t, ctx, gate, cleanup)
 				go func() {
-					_, err := f.service.PutArchive(ctx, f.owner, "", "", out.Session.SessionID, data)
+					err := publishServiceArchive(ctx, f.service, f.owner, "", "", out.Session.SessionID, data)
 					upload <- err
 				}()
 				// A committed deletion may be rejected by the unlocked archive
@@ -277,7 +352,7 @@ func TestProductionArchiveDeletionSerializesBothOrders(t *testing.T) {
 			if b, err := os.ReadFile(filepath.Join(root, sessionarchive.Bucket, otherPath)); err != nil || string(b) != "other" {
 				t.Fatalf("other namespace damaged: %q %v", b, err)
 			}
-			if _, err = f.service.PutArchive(ctx, f.owner, "", "", out.Session.SessionID, data); err == nil {
+			if err = publishServiceArchive(ctx, f.service, f.owner, "", "", out.Session.SessionID, data); err == nil {
 				t.Fatal("late retry rewrote cleaned namespace")
 			}
 			var count int

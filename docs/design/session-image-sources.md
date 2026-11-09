@@ -1,6 +1,6 @@
-# Session 图片来源采集设计（待实现）
+# Session 图片来源采集设计
 
-本文定义真实 Markdown 图片节点的稳定绑定、本地授权句柄读取、外部 HTTP(S) 无凭据获取，以及首次成功后的不可变快照。设计已确定，来源采集、平台竞态防护和真实网络验收仍待实现；文档发布不表示生产功能可用。
+本文定义真实 Markdown 图片节点的稳定绑定、本地授权句柄读取、外部 HTTP(S) 无凭据获取，以及首次成功后的不可变快照。统一 register/query/commitCapture、不可变资源存储与读取已经由基础层提供；来源解析、平台竞态防护和真实网络验收仍由来源消费者交付，文档发布不表示这些功能已可用。
 
 [历史规格](../spec/session-image-history.md)拥有所需显示、原内容和权限结果；[公共合同](session-image-contracts.md)拥有 ImageLocator、ImageOccurrence、capture/read/retry DTO、错误与存储，本文不另建协议或数据库。[Provider 设计](session-image-providers.md)提供可信原生来源，[浏览器设计](session-image-browser.md)负责渲染和预览，[归档设计](session-image-archives.md)负责封存、读取与清理。[来源决策记录](../../.agents/notes/implemented/architecture/2026-11-05-session-image-sources.md)保留替代方案及代价。
 
@@ -26,7 +26,7 @@
 
 ## Markdown part 与保留图片交换
 
-下列字段仅属于 `daynight.session.images.v1` 的 Markdown 表示，不增加到旧 TextPart。UUID、Decimal、SHA256、ImagePart、ImageUnavailablePart 和严格对象/null 规则沿[公共合同](session-image-contracts.md)。新的 `MarkdownImagePart` 严格包含 `{type:"markdown",text,partId,revision,textSha256,complete,truncated,bindings,retainedImages}`，全部字段必填，不接受额外字段。`text:string` 保存完整正文；`type` 只接受字面值 `"markdown"`。图片表示的 `MessagePart` union 为 `TextPart | ResourcePart | ImagePart | ImageUnavailablePart | MarkdownImagePart`，其中旧 TextPart/ResourcePart 的字段保持不变；新分支只用于显示，不能作为发送输入。
+下列字段仅属于 `daynight.session.v1` 的 `contentRevision:2` 的 Markdown 表示，不增加到旧 TextPart。UUID、Decimal、SHA256、ImagePart、ImageUnavailablePart 和严格对象/null 规则沿[公共合同](session-image-contracts.md)。新的 `MarkdownImagePart` 严格包含 `{type:"markdown",text,partId,revision,textSha256,complete,truncated,bindings,retainedImages}`，全部字段必填，不接受额外字段。`text:string` 保存完整正文；`type` 只接受字面值 `"markdown"`。图片表示的 `MessagePart` union 为 `TextPart | ResourcePart | ImagePart | ImageUnavailablePart | MarkdownImagePart`，其中旧 TextPart/ResourcePart 的字段保持不变；新分支只用于显示，不能作为发送输入。
 
 | 字段 | 类型与约束 |
 | --- | --- |
@@ -49,7 +49,7 @@ text 与 bindings 在同一 entry revision 原子发布；旧图移出 bindings 
 
 整个 part 被删除时，原 entry 保留同 partId 的只读容器，text/bindings 为空而 retained 不变；整个 entry 撤回但记录尚存时保留同 entryId 的图片历史容器。原 reserved/copying/unknown 出现不能随 UI 删除，迟到 committed 原子进入原容器；确定从未采集的失败才保留 unavailable。不能产生无主 blob 或以删除节点为由释放 unknown pin。
 
-所有当前 bindings、reasoning、retained 和撤回容器均进入在线/历史/content/schema3、引用闭包、授权、删除及新旧 JSON 容量检查。关联前预留潜在 retained 元数据；修订容不下既有引用时保留上一可读快照并报容量失败，不删旧图腾出空间。旧表示将 Markdown part 降为完整 TextPart，不重复追加当前图片说明；retained 在原正文后追加有界“较早版本图片”说明，保留 event/entry 序列。
+所有当前 bindings、reasoning、retained 和撤回容器均进入统一在线/历史/content/schema3、引用闭包、授权、删除及 JSON 容量检查。关联前预留潜在 retained 元数据；修订容不下既有引用时保留上一可读快照并报容量失败，不删旧图腾出空间。含新 Markdown part 的记录要求支持 contentRevision2 的 reader，不生成另一份降级文字投影。旧文本记录在读取边界保留完整原正文和 event/entry 序列。
 
 ### 解析失败的严格分支
 
@@ -162,9 +162,9 @@ DNS 前拒绝 localhost/子域、`.local`、单标签内部名称及元数据名
 
 同 URL/path 只是来源，不是资源身份。两个真实出现可保存不同 bytes；同 source event 重放只恢复原映射。成功后固定原 resourceId/hash，再次预览、下载或历史读取都不访问原 source。同源新内容只能通过明确新出现/记录取得，不能用“重试”改写已保存图。
 
-同 Session/record 的可信 resource locator 可复用 available 原件并增加出现引用，不增加 blob 槽；pending 只观察，failed/missing 不按 name 猜 path。legacy 和新 ImageResource 是独立 namespace：旧 bytes 经原授权 reader、旧 8 MiB 限制读取，再新 capture 转换；旧 UUID 不冒充新资源 UUID，不批量抓旧路径，只有 descriptor 无 bytes 明确 unavailable。
+同 Session/record 的可信 resource locator 可复用 available 原件并增加出现引用，不增加 blob 槽；pending 只观察，failed/missing 不按 name 猜 path。legacy bytes在旧数据边界经原授权reader和原8 MiB限制核验，外置到同一SessionResource内核并保留原ID/hash；迁移不会授予新来源读取权，不批量抓旧路径，只有descriptor而无bytes时明确unavailable。
 
-浏览器来源重试唯一为 `POST {base}/image-occurrences/{imageId}/retry`，严格 `{}`，回 `{capture:ImageCaptureReceipt}`；Controller 控制为 `retry_capture {captureId}`。它只处理已登记原 occurrence、原可信 local/external locator，不接受 path、URL、headers、actor、roots 或其他 Session。当前真实 operator 须有操作权限，不要求等于原上传 actor；只读权限不够。具体返回类型和 `GET image-occurrences/{imageId}` 的 state/action/null 组合由[公共合同](session-image-contracts.md)唯一规定。
+浏览器来源重试唯一为 `POST {base}/image-occurrences/{imageId}/retry`，严格 `{}`，回 `{capture:ImageCaptureReceipt}`；Controller 控制为 `retry_capture {captureId,attemptId}`。它只处理已登记原 occurrence、原可信 local/external locator，不接受 path、URL、headers、actor、roots 或其他 Session。新attempt须等待旧writer实际停止和staging释放，旧attempt迟到结果不能提交。当前真实 operator 须有操作权限，不要求等于原上传 actor；只读权限不够。具体返回类型和 `GET image-occurrences/{imageId}` 的 state/action/null 组合由[公共合同](session-image-contracts.md)唯一规定。
 
 服务 action 是按钮资格依据，不按错误文案猜：pending/unknown 只 observe 原身份；committed 只 read_saved；failed 只有从未 committed、服务已确认释放旧预留、来源可信且当前可操作才 retry_source。POST 响应未知先 GET 原状态，不能自动重发 POST；并发按 capture 键串行。
 

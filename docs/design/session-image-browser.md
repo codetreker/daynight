@@ -1,6 +1,6 @@
-# Session 图片浏览器交互设计（待实现）
+# Session 图片浏览器交互设计
 
-本文发布已确定的浏览器图片设计；下述模块、持久化和协议接线均为待实现要求，不表示产品已经开放图片能力。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
+本文定义浏览器图片交互及其接入要求。统一资源客户端和 schema3 归档读取已经接入现有 Session 消费者；图片 renderer、预览及持久草稿仍由各自消费者交付，不表示产品已经开放原生图片输入。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
 
 [公共协议与存储设计](session-image-contracts.md)唯一拥有 wire DTO、严格解析、能力、身份、错误及容量合同；本文只定义浏览器内部状态和预览接口，并消费该合同。[来源采集设计](session-image-sources.md)拥有 AST 与来源 IO，[归档设计](session-image-archives.md)拥有记录 reader。本文不扩展 Herdr、Thread、通用文件、富文本、跨设备草稿、图片编辑或轮播。采用原 textarea 与有序附件区，所有入口沿现有 Session resolver。
 
@@ -17,7 +17,7 @@
 采用一个 Session owner 的 `ImageDraftController`，由现有 Session client/host 提供已认证身份和生命周期。它不创建第二个 Session client。职责拆为四个模块：
 
 - `draft-store`：IndexedDB 原始 Blob、文本、版本、冻结提交、清理引用与事务结果；不发网络。
-- `draft-uploads`：消费服务图片存储的 `api/session-images.ts`，逐图 prepare/chunk/complete/query/release；不构造 SessionCommand。
+- `draft-uploads`：消费服务图片存储的 `api/sessions.ts` 与共享 `session/resource-client.ts`，逐图 prepare/chunk/complete/query/release；不构造 SessionCommand。
 - `draft-send`：完整集合 gate、持久冻结、唯一 dispatch 权、operation 查询及同版本结算；通过现有 client 的命令入口发送，不调用 Provider。
 - `ComposerAttachments` 与 draft preview adapter：选择/粘贴/拖拽、逐图错误、移除和预览；复用预览模块的 ImagePreviewController/VerifiedImageLease，不接管预览模态。
 
@@ -218,7 +218,7 @@ type ImageAssetAdapter = {
 
 ## 资源与浏览器状态
 
-公共协议的 `ImagePart`、`ImageUnavailablePart`、`ImageResource` 原样消费。`imageId` 是出现身份，`resourceId` 是原件身份；两个出现可以共享原件但不共享消息位置。available descriptor 的 MIME、长度、SHA、存储尺寸和 frameCount 不可变。资源更新用 decimal revision 比较，旧 revision 不覆盖新状态；同 available ID 出现不同身份元数据视为合同错误，停止读取并重取所属条目，不接受换图。
+公共协议的 `ImagePart`、`ImageUnavailablePart`、`SessionResource` 原样消费。`imageId` 是出现身份，`resourceId` 是原件身份；两个出现可以共享原件但不共享消息位置。available descriptor 的 MIME、长度、SHA、存储尺寸和 frameCount 不可变。资源更新用 decimal revision 比较，旧 revision 不覆盖新状态；同 available ID 出现不同身份元数据视为合同错误，停止读取并重取所属条目，不接受换图。
 
 | 服务事实 / 本地状态 | 呈现及允许动作 |
 | --- | --- |
@@ -239,7 +239,7 @@ type ImageAssetAdapter = {
 
 ## 读取、缓存、容量与下载
 
-saved reader 由真实 Session/record resolver 得到 base，使用公共协议的 `GET {base}/images/{resourceId}/content?offset&limit`，每块至多 524288 原字节，每 Session 最多两个媒体块在途。只接受规范 Base64、连续 offset、相同 resourceId/hash/byteLength、精确 EOF；最终 SHA 对完整原始 bytes 计算，不能对 Base64 或像素计算。不得把 10 MiB 图片塞回旧 8 MiB resource reader。HTTP `private, no-store`，不放 Service Worker、共享 HTTP 缓存或 localStorage；草稿模块本地草稿持久化是另一责任。
+saved reader 由真实 Session/record resolver 得到 base，使用公共协议的 `GET {base}/resources/{resourceId}/content?offset&limit` 和内容 revision header，每块至多 524288 原字节，每 Session 最多两个媒体块在途。只接受规范 Base64、连续 offset、相同 resourceId/hash/byteLength、精确 EOF；最终 SHA 对完整原始 bytes 计算，不能对 Base64 或像素计算。不得把 10 MiB 图片塞回旧 8 MiB raw resource reader。HTTP `private, no-store`，不放 Service Worker、共享 HTTP 缓存或 localStorage；草稿模块本地草稿持久化是另一责任。
 
 缓存键为规范 service origin、真实 accountId、owner kind+owner ID、读取表示/legacy 命名空间、resourceId、sha256；live owner 还含当前 Session 的授权身份边界。recordId 不能替成 taskId/botId，resource UUID/hash 不能作为权限凭据。epoch 改变不改变已确认相同 owner 的内容身份。单次读取的请求合并、lease 引用计数和最后使用时间独立于 React 卡片。一个消费者卸载只释放自身 lease，最后一个等待者取消才取消尚未完成的请求。
 

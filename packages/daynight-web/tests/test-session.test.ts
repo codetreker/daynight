@@ -46,7 +46,7 @@ it('shares client delivery, keeps uncertain operations, and rejects owner/scope 
   const api: sessions.SessionApi = { archive: vi.fn(), archiveContent: vi.fn(),
     current: vi.fn(async () => ({ status: 'registered' as const, session: s })),
     timeline: vi.fn(async () => ({ sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' })),
-    command: vi.fn(async () => { throw new Error('lost acknowledgement'); }), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource',
+    command: vi.fn(async () => { throw new Error('lost acknowledgement'); }), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/resource',
     channel: vi.fn((_id, _after, onMessage) => { receive = onMessage; return { close: vi.fn() }; }),
   };
   const client = new TaskSessionClient({ api, userId: owner, testSessionId: s.sessionId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage: window.sessionStorage });
@@ -90,7 +90,7 @@ it('drops prior execution state before hydrating a new Test fence on the channel
   const api: sessions.SessionApi = { archive: vi.fn(), archiveContent: vi.fn(),
     current: async () => ({ status: 'registered', session: s }),
     timeline: vi.fn(async () => ({ sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' })),
-    command: vi.fn(async () => { throw new Error('lost acknowledgement'); }), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource',
+    command: vi.fn(async () => { throw new Error('lost acknowledgement'); }), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/resource',
     channel: (_id, _after, onMessage) => { receive = onMessage; return { close: vi.fn() }; },
   };
   const client = new TaskSessionClient({ api, userId: owner, testSessionId: s.sessionId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage: null });
@@ -113,7 +113,7 @@ it('clears persisted Test receipts when access is revoked before a snapshot can 
   const key = `daynight:session-operations:${owner}:${s.sessionId}:test:${execution}:${s.executionGeneration}`;
   window.sessionStorage.setItem(key, '[]');
   const api: sessions.SessionApi = { archive: vi.fn(), archiveContent: vi.fn(),
-    current: async () => { throw new ApiError('server', 403, 'forbidden'); }, timeline: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn(),
+    current: async () => { throw new ApiError('server', 403, 'forbidden'); }, timeline: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/resource', channel: vi.fn(),
   };
   const client = new TaskSessionClient({ api, userId: owner, testSessionId: s.sessionId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage: window.sessionStorage });
   try { await client.start(); expect(client.snapshot().status).toBe('unavailable'); expect(window.sessionStorage.getItem(key)).toBeNull(); }

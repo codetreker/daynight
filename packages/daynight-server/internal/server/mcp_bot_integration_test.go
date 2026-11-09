@@ -180,10 +180,21 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 	final := workerComplete
 	final.Version = 5
 	final.Deletion = &model.BotDeletion{DeletionID: deletionID, RequestedVersion: 2, WorkerCleanup: model.BotCleanupResult{State: "completed"}, ServerCleanup: model.BotCleanupResult{State: "completed"}, ReceiptDigest: workerComplete.Deletion.ReceiptDigest}
-	receiptScript := mcpBotScript(t, mcpBotCall("WriteSession", nil), mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, deletionModel, nil), mcpBotCall("LockBotSessionStop", []any{bound.Session.SessionID, id, principal.UserID}, store.BotSessionStop{Snapshot: bound.Session}, nil), mcpBotCall("SaveBotDeletion", []any{id, workerComplete.Deletion}, workerComplete, nil), mcpBotCall("WriteSession", nil), mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, workerComplete, nil), mcpBotCall("LockBotSessions", []any{id}, botSessions, nil), mcpBotCall("DeleteBotSession", []any{bound.Session.SessionID, id}, nil), mcpBotCall("RedactDeletedBot", []any{id}, nil), mcpBotCall("SaveBotDeletion", []any{id, final.Deletion}, final, nil))
+	receiptScript := mcpBotScript(t,
+		mcpBotCall("WriteSession", nil), mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, deletionModel, nil),
+		mcpBotCall("LockBotSessionStop", []any{bound.Session.SessionID, id, principal.UserID}, store.BotSessionStop{Snapshot: bound.Session}, nil),
+		mcpBotCall("SaveBotDeletion", []any{id, workerComplete.Deletion}, workerComplete, nil),
+		mcpBotCall("WriteSession", nil), mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, workerComplete, nil),
+		mcpBotCall("LockBotSessions", []any{id}, botSessions, nil),
+		mcpBotCall("SessionResourceUsage", []any{bound.Session.SessionID}, store.SessionResourceUsage{}, nil),
+		mcpBotCall("BeginSessionResourceDeletion", []any{bound.Session.SessionID}, int64(1), nil),
+		mcpBotCall("WriteSession", nil), mcpBotCall("ListSessionResourceLeases", []any{bound.Session.SessionID}, []store.SessionResourceLease{}, nil),
+		mcpBotCall("WriteSession", nil), mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, workerComplete, nil),
+		mcpBotCall("LockBotSessions", []any{id}, botSessions, nil), mcpBotCall("DeleteBotSession", []any{bound.Session.SessionID, id}, nil),
+		mcpBotCall("RedactDeletedBot", []any{id}, nil), mcpBotCall("SaveBotDeletion", []any{id, final.Deletion}, final, nil))
 	tx.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
 		receiptScript.call("WriteSession")
-		err := fn(mcpBotSessionScope{session: &mcpBotSessionDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: receiptScript}, bot: &mcpBotWriteDAO{s: receiptScript}})
+		err := fn(mcpBotSessionScope{session: &mcpBotResourceSessionDAO{mcpBotSessionDAO: &mcpBotSessionDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: receiptScript}}, bot: &mcpBotWriteDAO{s: receiptScript}})
 		return mcpBotResult(err)
 	}
 	completed := decodeResponse[api.Bot](t, projectRequest(h, "POST", base+"/deletion-complete", jsonBody(t, receipt)), 200)

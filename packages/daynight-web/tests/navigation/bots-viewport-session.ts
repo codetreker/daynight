@@ -68,6 +68,6 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
       if (!archived) throw new Error('No archive is expected.');
       return archive();
     },
-    resource: async () => new Blob(), resourceUrl: () => '/unused',
+    resource: async () => new Blob(), resources: () => { throw new Error('Unexpected image resource client call.'); }, resourceUrl: () => '/unused',
   };
 }

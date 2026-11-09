@@ -70,6 +70,9 @@ type GateDomain string
 const (
 	TargetGate  GateDomain = "target"
 	PrivateGate GateDomain = "private"
+	// MediaLeaseGate uses an exact key because a media operation can hold a
+	// separate striped upload/archive gate for its entire lifetime.
+	MediaLeaseGate GateDomain = "media-lease"
 )
 
 type Storage interface {

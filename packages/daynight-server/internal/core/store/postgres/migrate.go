@@ -177,6 +177,15 @@ var memberTerminalIndexesSQL string
 //go:embed migrations/056_worker_prompts.sql
 var workerPromptsSQL string
 
+//go:embed migrations/057_session_image_resources.sql
+var sessionImageResourcesMigration string
+
+//go:embed migrations/058_session_archive_bundles.sql
+var sessionArchiveBundlesMigration string
+
+//go:embed migrations/059_session_media_rates.sql
+var sessionMediaRatesMigration string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -241,6 +250,9 @@ var schemaMigrations = []migration{
 	{version: 54, sql: workerPlatformPreferenceSQL},
 	{version: 55, sql: memberTerminalIndexesSQL},
 	{version: 56, sql: workerPromptsSQL},
+	{version: 57, sql: sessionImageResourcesMigration},
+	{version: 58, sql: sessionArchiveBundlesMigration},
+	{version: 59, sql: sessionMediaRatesMigration},
 }
 
 const migrationLock int64 = 0x4441594e49474854

@@ -20,7 +20,9 @@ import (
 )
 
 func (h *Routes) registerArchiveRoutes(mux *http.ServeMux) {
+	h.registerHistoryLedgerRoutes(mux)
 	for _, base := range []string{sessionBase + "/{sessionId}/archive", "/api/v1/test-sessions/{sessionId}/archive"} {
+		h.registerUnifiedArchiveRoutes(mux, base)
 		for method, handler := range map[string]httpx.AuthenticatedHandler{"GET": h.archiveStatus, "POST": h.updateArchive, "PUT": h.putArchive} {
 			route := h.auth.Require(h.Parameters(handler))
 			if method == http.MethodPut {
@@ -84,6 +86,10 @@ func (h *Routes) archiveContent(w http.ResponseWriter, r *http.Request, p model.
 	// The archive is already validated JSON. Preserve its exact bytes inside
 	// the v1 envelope instead of letting the JSON encoder rewrite them.
 	data := make([]byte, 0, len(out.Data)+12)
+	if _, err := sp.DecodeArchiveManifest(out.Data); err == nil {
+		h.sendArchive(w, r, out.Data, 120*time.Second, out)
+		return
+	}
 	data = append(data, `{"archive":`...)
 	data = append(data, out.Data...)
 	data = append(data, '}')

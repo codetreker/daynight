@@ -1,3 +1,5 @@
+import { parseSessionInput, parseImageError, imageId, imageText, imageDecimal, imageInteger, parseImageCapabilities, parseImageBudget, parseMarkdownImagePart, parseMarkdownImageMetadata, type ImageError, type MarkdownImageMetadata, type SessionInput, type ImagePart, type ImageUnavailablePart, type MarkdownImagePart, type ImageCapabilities, type ImageBudget } from "./image-values.js";
+export * from "./image-values.js";
 import { parseSessionControls, type SessionControls } from "./controls.js";
 // This wire contract is shared with the browser and must not import Node modules.
 export const SESSION_PROTOCOL = "daynight.session.v1" as const;
@@ -12,9 +14,11 @@ export type SessionFence = SessionBinding & {
 };
 export type ControllerFence = SessionFence & { readonly connectionEpoch: DecimalSequence };
 export type InitialInputState = "not_required" | "not_submitted" | "dispatching" | "provider_accepted" | "confirmed" | "failed" | "unknown";
-export type SessionCapabilities = { readonly send: boolean; readonly steer: boolean; readonly cancel: boolean; readonly respond: boolean };
+export type SessionCapabilities = { readonly send: boolean; readonly steer: boolean; readonly cancel: boolean; readonly respond: boolean; readonly images?: ImageCapabilities };
 export type SessionOperations = { readonly canSend: boolean; readonly canCancel: boolean; readonly canRespond: boolean };
 export type SessionSnapshot = ControllerFence & {
+  readonly contentRevision?: 2;
+  readonly imageBudget?: ImageBudget;
   readonly controls?: SessionControls;
   readonly turnStartedAt?: string | null;
   readonly protocol: typeof SESSION_PROTOCOL;
@@ -40,7 +44,7 @@ export type SessionSnapshot = ControllerFence & {
 };
 export type TextPart = { readonly type: "text"; readonly text: string };
 export type ResourcePart = { readonly type: "resource"; readonly resourceId: string; readonly label: string };
-export type MessagePart = TextPart | ResourcePart;
+export type MessagePart = TextPart | ResourcePart | ImagePart | ImageUnavailablePart | MarkdownImagePart;
 export type ApprovalAction = "allow_once" | "allow_session" | "reject";
 export type FormValue = string | number | boolean | readonly string[];
 export type InteractionResponse =
@@ -49,11 +53,12 @@ export type InteractionResponse =
   | { readonly kind: "form"; readonly values: readonly { readonly fieldId: string; readonly value: FormValue }[] }
   | { readonly kind: "dismiss" };
 export type SessionCommand = SessionFence & {
+  readonly contentRevision?: 2;
   readonly protocol: typeof SESSION_PROTOCOL;
   readonly requestId: string;
   readonly operationId: string;
 } & (
-  | { readonly kind: "send_message"; readonly payload: { readonly content: readonly TextPart[]; readonly expectedTurnId: string | null } }
+  | { readonly kind: "send_message"; readonly payload: SessionInput }
   | { readonly kind: "update_setting"; readonly payload: { readonly settingId: string; readonly value: string; readonly expectedControlsRevision: string } }
   | { readonly kind: "execute_command"; readonly payload: { readonly commandId: string; readonly arguments: string; readonly expectedControlsRevision: string; readonly expectedTurnId: string | null } }
   | { readonly kind: "refresh_controls"; readonly payload: Record<string, never> }
@@ -70,6 +75,10 @@ export type SessionOperation = SessionFence & {
   readonly error: { readonly code: string; readonly message: string } | null;
 };
 export type SessionResource = {
+  readonly revision?: DecimalSequence;
+  readonly width?: number | null;
+  readonly height?: number | null;
+  readonly frameCount?: number | null;
   readonly resourceId: string;
   readonly status: "pending" | "available" | "failed" | "unavailable";
   readonly name: string;
@@ -98,10 +107,10 @@ export type SessionInteraction = {
   | { readonly kind: "form"; readonly fields: readonly FormField[]; readonly canDismiss: boolean }
 );
 export type TimelineEntry = {
-  readonly entryId: string; readonly entrySeq: DecimalSequence; readonly revision: DecimalSequence;
+  readonly entryId: string; readonly entrySeq: DecimalSequence; readonly revision: DecimalSequence; readonly imageProjectionError?: ImageError | null;
 } & (
   | { readonly kind: "user_message" | "assistant_message"; readonly content: readonly MessagePart[] }
-  | { readonly kind: "reasoning"; readonly text: string }
+  | { readonly kind: "reasoning"; readonly text: string; readonly markdown?: MarkdownImageMetadata }
   | { readonly kind: "tool_call"; readonly callId: string; readonly name: string; readonly input: string; readonly output: readonly MessagePart[]; readonly status: "running" | "completed" | "failed"; readonly truncated: boolean }
   | { readonly kind: "interaction"; readonly interaction: SessionInteraction }
   | { readonly kind: "error"; readonly code: string; readonly message: string }
@@ -202,19 +211,23 @@ export const parseInteractionResponse = (value: unknown): InteractionResponse =>
   return invalid();
 };
 export const parseSessionCommand = (value: unknown): SessionCommand => {
-  const data = object(value, ["protocol", "requestId", "operationId", ...fenceKeys(value), "kind", "payload"]);
+  const marked = value && typeof value === "object" && Object.hasOwn(value, "contentRevision");
+  const data = object(value, ["protocol", "requestId", "operationId", ...fenceKeys(value), "kind", "payload", ...(marked ? ["contentRevision"] : [])]);
+  if (marked && data.contentRevision !== 2) return invalid();
   const requestId = key(data.requestId);
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(requestId)) return invalid();
-  const base = { protocol: protocol(data.protocol), requestId, operationId: id(data.operationId), ...fence(data) };
+  const base = { protocol: protocol(data.protocol), requestId, operationId: id(data.operationId), ...fence(data), ...(marked ? { contentRevision: 2 as const } : {}) };
   if (data.kind === "send_message") {
-    const payload = object(data.payload, ["content", "expectedTurnId"]);
-    const content = nonempty(list(payload.content, (part): TextPart => {
+    const payload = parseSessionInput(data.payload, part => {
       const item = object(part, ["type", "text"]);
       if (item.type !== "text") return invalid();
       return { type: "text", text: text(item.text) };
-    }));
-    return { ...base, kind: "send_message", payload: { content, expectedTurnId: nullable(payload.expectedTurnId, key) } };
+    });
+    if (payload.target) { if (!marked) return invalid(); assertSessionFence(payload.target.fence, base); }
+    else if (marked) return invalid();
+    return { ...base, kind: "send_message", payload };
   }
+
   if (data.kind === "update_setting") {
     const payload = object(data.payload, ["settingId", "value", "expectedControlsRevision"]);
     const value = text(payload.value); if (textBytes.encode(value).length > 4096) return invalid();
@@ -247,22 +260,25 @@ export const parseSessionControlFields = (data: Record<string, unknown>): Pick<S
   return result;
 };
 export const parseSessionSnapshot = (value: unknown): SessionSnapshot => {
-  const data = object(value, ["protocol", "schemaVersion", "projectionVersion", ...fenceKeys(value), ...sessionControlKeys(value), "connectionEpoch", "identity", "sessionRevision", "historyEpoch", "lastEventSeq", "lastTimelineSeq", "initialInputState", "synchronized", "lifecycle", "connectionState", "activity", "currentTurnId", "capabilities", "operations", ...(value && typeof value === "object" && Object.hasOwn(value, "cleanupInteractionIds") ? ["cleanupInteractionIds"] : [])]);
+  const data = object(value, ["protocol", "schemaVersion", "projectionVersion", ...fenceKeys(value), ...sessionControlKeys(value), ...(value && typeof value === "object" && Object.hasOwn(value, "contentRevision") ? ["contentRevision", "imageBudget"] : []), "connectionEpoch", "identity", "sessionRevision", "historyEpoch", "lastEventSeq", "lastTimelineSeq", "initialInputState", "synchronized", "lifecycle", "connectionState", "activity", "currentTurnId", "capabilities", "operations", ...(value && typeof value === "object" && Object.hasOwn(value, "cleanupInteractionIds") ? ["cleanupInteractionIds"] : [])]);
   if (data.schemaVersion !== SESSION_SCHEMA_VERSION || data.projectionVersion !== SESSION_PROJECTION_VERSION) return invalid();
   const test = Object.hasOwn(data, "testExecutionId");
   const identity = object(data.identity, [...(test ? ["ownerUserId"] : ["projectId", "taskId", "workerId", "worktreeId"]), "controllerId", "controllerInstanceId", "agentControlMode", "provider", "nativeSessionId"]);
   if (identity.agentControlMode !== "web") return invalid();
-  const capabilities = object(data.capabilities, ["send", "steer", "cancel", "respond"]);
+  const imageFields = data.contentRevision === 2 ? ["images"] : [];
+  if (Object.hasOwn(data, "contentRevision") && data.contentRevision !== 2) return invalid();
+  const capabilities = object(data.capabilities, ["send", "steer", "cancel", "respond", ...imageFields]);
   const operations = object(data.operations, ["canSend", "canCancel", "canRespond"]);
   const result: SessionSnapshot = {
     ...parseSessionControlFields(data),
+    ...(data.contentRevision === 2 ? { contentRevision: 2 as const, imageBudget: parseImageBudget(data.imageBudget) } : {}),
     ...(Object.hasOwn(data, "cleanupInteractionIds") ? { cleanupInteractionIds: unique(list(data.cleanupInteractionIds, id), item => item) } : {}),
     protocol: protocol(data.protocol), schemaVersion: SESSION_SCHEMA_VERSION, projectionVersion: SESSION_PROJECTION_VERSION, ...fence(data), connectionEpoch: sequence(data.connectionEpoch, true),
     identity: { ...(test ? { ownerUserId: id(identity.ownerUserId) } : { projectId: id(identity.projectId), taskId: id(identity.taskId), workerId: id(identity.workerId), worktreeId: id(identity.worktreeId) }), controllerId: id(identity.controllerId), controllerInstanceId: id(identity.controllerInstanceId), agentControlMode: "web", provider: oneOf(identity.provider, ["codex", "claude", "copilot"]), nativeSessionId: nullable(identity.nativeSessionId, key) },
     sessionRevision: sequence(data.sessionRevision), historyEpoch: key(data.historyEpoch), lastEventSeq: sequence(data.lastEventSeq, true), lastTimelineSeq: sequence(data.lastTimelineSeq, true),
     initialInputState: oneOf(data.initialInputState, [...(test ? ["not_required" as const] : []), "not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"]), synchronized: bool(data.synchronized),
     lifecycle: oneOf(data.lifecycle, ["active", "draining", "archived"]), connectionState: oneOf(data.connectionState, ["connected", "disconnected", "synchronizing"]), activity: oneOf(data.activity, ["initializing", "idle", "working", "waiting_input", "stopped", "unknown"]), currentTurnId: nullable(data.currentTurnId, key),
-    capabilities: { send: bool(capabilities.send), steer: bool(capabilities.steer), cancel: bool(capabilities.cancel), respond: bool(capabilities.respond) },
+    capabilities: { send: bool(capabilities.send), steer: bool(capabilities.steer), cancel: bool(capabilities.cancel), respond: bool(capabilities.respond), ...(data.contentRevision === 2 ? { images: parseImageCapabilities(capabilities.images) } : {}) },
     operations: { canSend: bool(operations.canSend), canCancel: bool(operations.canCancel), canRespond: bool(operations.canRespond) },
   };
   // Initial approval callbacks may be actionable before the managed input is accepted.
@@ -280,11 +296,21 @@ export const parseSessionOperation = (value: unknown): SessionOperation => {
   return { protocol: protocol(data.protocol), ...fence(data), operationId: id(data.operationId), kind: oneOf(data.kind, ["send_message", "cancel", "interaction_response", "update_setting", "execute_command", "refresh_controls"]), state: oneOf(data.state, ["accepted", "offered", "dispatching", "provider_accepted", "confirmed", "failed", "rejected", "expired", "unknown"]), providerResult: nullable(data.providerResult, (value) => oneOf(value, ["started", "queued", "handled"])), error: error === null ? null : { code: key(error.code), message: text(error.message) } };
 };
 export const parseSessionResource = (value: unknown): SessionResource => {
-  const data = object(value, ["resourceId", "status", "name", "mediaType", "byteLength", "sha256", "error"]);
-  const result: SessionResource = { resourceId: id(data.resourceId), status: oneOf(data.status, ["pending", "available", "failed", "unavailable"]), name: key(data.name), mediaType: nullable(data.mediaType, key), byteLength: nullable(data.byteLength, (value) => sequence(value, true)), sha256: nullable(data.sha256, key), error: nullable(data.error, text) };
+  const extended = value && typeof value === "object" && Object.hasOwn(value, "revision");
+  const data = object(value, ["resourceId", "status", "name", "mediaType", "byteLength", "sha256", "error", ...(extended ? ["revision", "width", "height", "frameCount"] : [])]);
+  const result: SessionResource = { resourceId: id(data.resourceId), status: oneOf(data.status, ["pending", "available", "failed", "unavailable"]), name: extended ? imageText(data.name) : key(data.name), mediaType: nullable(data.mediaType, key), byteLength: nullable(data.byteLength, (value) => sequence(value, true)), sha256: nullable(data.sha256, key), error: nullable(data.error, text) };
   if (result.sha256 !== null && !/^[a-f0-9]{64}$/.test(result.sha256)) return invalid();
   if (result.mediaType !== null && !/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(result.mediaType)) return invalid();
   if (result.status === "available" && (result.sha256 === null || result.mediaType === null || result.byteLength === null || result.error !== null)) return invalid();
+  if (extended) {
+    Object.assign(result, { revision: imageDecimal(data.revision), width: nullable(data.width, v => imageInteger(v, 16384)), height: nullable(data.height, v => imageInteger(v, 16384)), frameCount: nullable(data.frameCount, v => imageInteger(v, 256)) });
+    const known = [result.width, result.height, result.frameCount].filter(v => v !== null).length;
+    const image = /^image\//.test(result.mediaType ?? "");
+    if (image && !["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"].includes(result.mediaType!)) return invalid();
+    if (known !== 0 && known !== 3 || result.status === "available" && image && known !== 3 || known === 3 && (!image || result.width! * result.height! > 33554432 || result.width! * result.height! * result.frameCount! > 67108864)) return invalid();
+    if (result.status === "available") { if (BigInt(result.byteLength!) < 1n || BigInt(result.byteLength!) > 10485760n) return invalid(); }
+    else if (result.mediaType !== null || result.byteLength !== null || result.sha256 !== null || known !== 0 || (result.status === "pending" ? result.error !== null : result.error === null)) return invalid();
+  }
   return result;
 };
 const formField = (value: unknown): FormField => {
@@ -322,21 +348,48 @@ const messagePart = (value: unknown): MessagePart => {
   if (typeof value !== "object" || value === null || !("type" in value)) return invalid();
   if (value.type === "text") { const data = object(value, ["type", "text"]); return { type: "text", text: text(data.text, true) }; }
   if (value.type === "resource") { const data = object(value, ["type", "resourceId", "label"]); return { type: "resource", resourceId: id(data.resourceId), label: text(data.label) }; }
+  if (value.type === "markdown") return parseMarkdownImagePart(value);
+  if (value.type === "image") { const data = object(value, ["type", "imageId", "resourceId", "label"]); return { type: "image", imageId: imageId(data.imageId), resourceId: imageId(data.resourceId), label: imageText(data.label) }; }
+  if (value.type === "image_unavailable") { const data = object(value, ["type", "imageId", "label", "error"]); return { type: "image_unavailable", imageId: imageId(data.imageId), label: imageText(data.label), error: parseImageError(data.error) }; }
   return invalid();
 };
 export const parseTimelineEntry = (value: unknown): TimelineEntry => {
   if (typeof value !== "object" || value === null || !("kind" in value)) return invalid();
-  const common = ["entryId", "entrySeq", "revision", "kind"];
+  const enriched = Object.hasOwn(value, "imageProjectionError");
+  const common = ["entryId", "entrySeq", "revision", "kind", ...(enriched ? ["imageProjectionError"] : [])];
   const extras: Record<string, readonly string[]> = {
-    user_message: ["content"], assistant_message: ["content"], reasoning: ["text"], tool_call: ["callId", "name", "input", "output", "status", "truncated"],
+    user_message: ["content"], assistant_message: ["content"], reasoning: ["text", ...(enriched ? ["markdown"] : [])], tool_call: ["callId", "name", "input", "output", "status", "truncated"],
     interaction: ["interaction"], error: ["code", "message"], compaction: ["summary"], todo: ["items"],
   };
   const kind = oneOf(value.kind, ["user_message", "assistant_message", "reasoning", "tool_call", "interaction", "error", "compaction", "todo"]);
   const data = object(value, [...common, ...extras[kind]!]);
-  const base = { entryId: id(data.entryId), entrySeq: sequence(data.entrySeq), revision: sequence(data.revision) };
-  if (kind === "user_message" || kind === "assistant_message") return { ...base, kind, content: list(data.content, messagePart) };
-  if (kind === "reasoning") return { ...base, kind, text: text(data.text, true) };
-  if (kind === "tool_call") return { ...base, kind, callId: key(data.callId), name: key(data.name), input: text(data.input, true), output: list(data.output, messagePart), status: oneOf(data.status, ["running", "completed", "failed"]), truncated: bool(data.truncated) };
+  if (enriched && !["user_message", "assistant_message", "reasoning", "tool_call"].includes(kind)) return invalid();
+  const base = { entryId: id(data.entryId), entrySeq: sequence(data.entrySeq), revision: sequence(data.revision), ...(enriched ? { imageProjectionError: nullable(data.imageProjectionError, parseImageError) } : {}) };
+  if (base.imageProjectionError && base.imageProjectionError.code !== "source_unavailable") return invalid();
+  const content = (raw: unknown): readonly MessagePart[] => {
+    const parts = list(raw, messagePart);
+    if (!enriched && parts.some(part => part.type !== "text" && part.type !== "resource")) return invalid();
+    const partIds = new Set<string>(), imageIds = new Set<string>();
+    for (const part of parts) {
+      if (part.type === "markdown") {
+        if (partIds.has(part.partId)) return invalid(); partIds.add(part.partId);
+        for (const binding of [...(part.bindings ?? []), ...part.retainedImages]) {
+          if (imageIds.has(binding.imageId)) return invalid(); imageIds.add(binding.imageId);
+        }
+      } else if (part.type === "image" || part.type === "image_unavailable") {
+        if (imageIds.has(part.imageId)) return invalid(); imageIds.add(part.imageId);
+      }
+    }
+    if (base.imageProjectionError && !parts.some((part, index) => part.type === "markdown" && index > 0 && parts[index - 1]?.type === "text" && part.text === "" && part.complete && !part.truncated && part.bindings?.length === 0)) return invalid();
+    return parts;
+  };
+  if (kind === "user_message" || kind === "assistant_message") return { ...base, kind, content: content(data.content) };
+  if (kind === "reasoning") {
+    const body = text(data.text, true), markdown = enriched ? parseMarkdownImageMetadata(data.markdown, body, !!base.imageProjectionError) : null;
+    if (markdown && (markdown.bindings === null) !== !!base.imageProjectionError) return invalid();
+    return { ...base, kind, text: body, ...(markdown ? { markdown } : {}) };
+  }
+  if (kind === "tool_call") return { ...base, kind, callId: key(data.callId), name: key(data.name), input: text(data.input, true), output: content(data.output), status: oneOf(data.status, ["running", "completed", "failed"]), truncated: bool(data.truncated) };
   if (kind === "interaction") return { ...base, kind, interaction: parseSessionInteraction(data.interaction) };
   if (kind === "error") return { ...base, kind, code: key(data.code), message: text(data.message) };
   if (kind === "compaction") return { ...base, kind, summary: text(data.summary, true) };

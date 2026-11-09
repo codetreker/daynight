@@ -1,8 +1,8 @@
-# Session 图片原生 Provider 设计（待实现）
+# Session 图片原生 Provider 设计
 
-本文定义 Codex、Claude Code、Copilot 的图片输入、接受证据、原生图片投影和有界历史读取。设计已确定；本文的发布不表示图片适配、原生模型识图或平台验收已经完成。图片输入要求由[输入与草稿规格](../spec/session-image-input.md)拥有，显示与保存要求由[历史规格](../spec/session-image-history.md)拥有，验收证据由[验收规格](../spec/session-image-acceptance.md)拥有。
+本文定义 Codex、Claude Code、Copilot 的图片输入、接受证据、原生图片投影和有界历史读取。三 Provider 的文字已使用统一结构化 `send` 入口；图片原生编码、来源投影和支持 profile 仍由 Provider 消费者交付。本文的发布不表示原生模型识图或平台验收已经完成。图片输入要求由[输入与草稿规格](../spec/session-image-input.md)拥有，显示与保存要求由[历史规格](../spec/session-image-history.md)拥有，验收证据由[验收规格](../spec/session-image-acceptance.md)拥有。
 
-[协议与存储设计](session-image-contracts.md)是 `sendInput`、能力、operation、occurrence、capture、错误、预算和字节存储的唯一公共定义。Provider 只实现各自原生编码器、强关联证据和来源投影，不另建上传协议、数据库或预览接口。本地及外部来源使用[来源采集设计](session-image-sources.md)，展示使用[浏览器设计](session-image-browser.md)，封存与恢复使用[归档设计](session-image-archives.md)。[决策记录](../../.agents/notes/implemented/architecture/2026-11-05-session-image-providers.md)保留备选与维护代价。
+[协议与存储设计](session-image-contracts.md)是 `send`、能力、operation、occurrence、capture、错误、预算和字节存储的唯一公共定义。Provider 只实现各自原生编码器、强关联证据和来源投影，不另建上传协议、数据库或预览接口。本地及外部来源使用[来源采集设计](session-image-sources.md)，展示使用[浏览器设计](session-image-browser.md)，封存与恢复使用[归档设计](session-image-archives.md)。[决策记录](../../.agents/notes/implemented/architecture/2026-11-05-session-image-providers.md)保留备选与维护代价。
 
 ## 原生事实与版本资格
 
@@ -154,7 +154,7 @@ SDK 未保证 messageId 等于 user.message.id。运行时只在同 native Sessi
 | 原生槽已公开，原 Promise 迟到返回且精确匹配 | 原槽位、原生 bytes 和顺序不变；持久 provenance，在同 entry 末尾追加有序“原上传图片”槽，用原 image/resource；既有槽标“原生记录图片”。 |
 | 同迟到证据重放 | operation+原 imageId 唯一键复用同附加槽，不重复追加；alias、引用和单调 entry revision 同事务。 |
 
-少数迟到情况显示两种真实来源，即使同摘要也不能改绑已公开身份。原接纳时须按每图最坏双槽预留新 timeline/旧 schema1 两份元数据空间，正常早回执释放余量；不能等迟到后因历史已满丢原图。原生 capture 另按资源预算准入，不足时原生槽不可用，已保存原上传图仍可在可信迟到关联后读取。
+少数迟到情况显示两种真实来源，即使同摘要也不能改绑已公开身份。原接纳时须按每图最坏双槽预留统一 timeline 的元数据空间及132 MiB保守归档额度，正常早回执释放余量；不能等迟到后因历史已满丢原图。原生 capture 另按资源预算准入，不足时原生槽不可用，已保存原上传图仍可在可信迟到关联后读取。
 
 原 send 的响应丢失、空 ID、传输错误、接受证据提交未知均保持 unknown，只查询原操作。`omittedReason` 仅表示历史 bytes 缺失，不自动证明模型未收到；真正部分交付失败按共同规则持久可见并关闭 profile。blob 不传 native 路径，但只有 SDK 读取/序列化结束且无读者的证据才能释放调用 pin；unknown 与服务历史 pin 独立。
 

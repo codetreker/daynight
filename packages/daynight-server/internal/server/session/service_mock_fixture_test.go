@@ -11,7 +11,7 @@ import (
 )
 
 func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
-	return sessionhttp.ServiceCallsForTest{
+	calls := sessionhttp.ServiceCallsForTest{
 		ArchiveContentReserved: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 io.Closer) (sessionhttp.ArchiveContentForTest, error) {
 			b.mu.Lock()
 			fn := b.Funcs.ArchiveContentReserved
@@ -471,4 +471,5 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			return fn(a0, a1, a2, a3, a4, a5, a6)
 		},
 	}
+	return b.wrapResourceCalls(calls)
 }

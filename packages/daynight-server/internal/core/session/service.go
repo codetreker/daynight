@@ -23,10 +23,15 @@ const PollInterval = 250 * time.Millisecond
 const HeartbeatTimeout = 30 * time.Second
 
 type Engine struct {
+	captureMutex          sync.Mutex
+	captureJobs           map[string]bool
+	mediaWork             imageWorkRegistry
 	archiveSlots          chan struct{}
 	archivePreflightSlots chan struct{}
 	Origin                string
 	files                 filestorage.Storage
+	imageDecoder          ImageDecoder
+	releaseMediaLeaseRun  func(context.Context, string, string) error
 	now                   func() time.Time
 	liveMutex             sync.Mutex
 	live                  map[string]*liveCell
@@ -327,6 +332,13 @@ func (s *Execution) Connect(ctx context.Context, token string, h sp.ControllerMe
 		}
 		if number(h.LastAckedSourceSeq) > r.SourceSeq {
 			return conflict()
+		}
+		v.ContentRevision = 0
+		if h.ContentRevision == 2 {
+			v.ContentRevision = 2
+		}
+		if err := s.refreshImageState(ctx, tx, r, nil); err != nil {
+			return err
 		}
 		v.ConnectionEpoch = next(v.ConnectionEpoch)
 		v.ConnectionState = "synchronizing"

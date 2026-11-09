@@ -217,6 +217,19 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 }
 
 func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID string) (model.Bot, error) {
+	resourcesPrepared := false
+	if local, ok := s.live.(interface {
+		CancelSessionMedia(context.Context, string) error
+	}); ok {
+		if err := s.cleanSessionResources(ctx, p, id, deletionID, local); err != nil {
+			var physical *resourceCleanupFailure
+			if errors.As(err, &physical) {
+				return s.recordCleanupFailure(ctx, p, id, deletionID)
+			}
+			return model.Bot{}, err
+		}
+		resourcesPrepared = true
+	}
 	var out model.Bot
 	var sessions []store.BotSession
 	cleanupFailed := false
@@ -248,7 +261,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 				return deletionFault("controller_offline", "Archive file storage is unavailable.")
 			}
 			namespace, err := sessionarchive.NewNamespace(sessionarchive.Users, bot.OwnerUserID, session.ID)
-			if err == nil {
+			if err == nil && !resourcesPrepared {
 				err = s.files.DeleteSessionArchives(ctx, namespace)
 			}
 			if err == nil {
@@ -281,7 +294,13 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 	if !cleanupFailed || completion.Outcome != store.TransactionNotCommitted {
 		return model.Bot{}, err
 	}
-	// The barrier and Worker receipt are durable. Record failure separately without downgrading a successful retry.
+	return s.recordCleanupFailure(ctx, p, id, deletionID)
+}
+
+// The barrier and Worker receipt are durable. Record failure separately without
+// downgrading a successful retry or interpreting an uncertain transaction.
+func (s *Deletions) recordCleanupFailure(ctx context.Context, p model.Principal, id, deletionID string) (model.Bot, error) {
+	var out model.Bot
 	completion, failure := s.writer.WriteSession(ctx, func(scope store.SessionScope) error {
 		bot, e := s.lockBot(ctx, scope, p, id)
 		if e != nil {

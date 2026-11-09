@@ -145,7 +145,7 @@ func TestProjectDeletionSerializesWithSessionArchives(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = files.Close() })
-				uploadGate := &serviceStorageBarrier{Storage: files, kind: "upload", entered: make(chan struct{}), release: make(chan struct{})}
+				uploadGate := &serviceStorageBarrier{Storage: files, kind: "upload", manifestOnly: true, entered: make(chan struct{}), release: make(chan struct{})}
 				var once sync.Once
 				releaseUpload := func() { once.Do(func() { close(uploadGate.release) }) }
 				t.Cleanup(releaseUpload)
@@ -157,10 +157,10 @@ func TestProjectDeletionSerializesWithSessionArchives(t *testing.T) {
 				if backend == "web" {
 					v := f.registerWeb(t)
 					id = v.SessionID
-					data = serviceArchive(t, v)
 					if _, err = f.db.Pool.Exec(ctx, `UPDATE tasks SET status='done' WHERE id=$1`, f.task); err != nil {
 						t.Fatal(err)
 					}
+					data = prepareServiceArchive(t, ctx, f.service, f.owner, f.project, f.task, v)
 				} else {
 					id, data = readyTerminalArchive(t, f)
 				}
@@ -179,7 +179,7 @@ func TestProjectDeletionSerializesWithSessionArchives(t *testing.T) {
 				deletion := make(chan error, 1)
 				upload := func() {
 					if backend == "web" {
-						_, err := f.service.PutArchive(ctx, f.owner, f.project, f.task, id, data)
+						err := publishServiceArchive(ctx, f.service, f.owner, f.project, f.task, id, data)
 						archive <- err
 					} else {
 						_, err := f.service.PutTerminalArchive(ctx, f.owner, f.project, f.task, id, data)
@@ -197,36 +197,58 @@ func TestProjectDeletionSerializesWithSessionArchives(t *testing.T) {
 					go upload()
 					awaitBarrier(t, ctx, uploadGate, archive)
 					go remove()
-					if err = waitArchiveLock(ctx, f.db, "SELECT id FROM tasks WHERE project_id=$1 ORDER BY id FOR UPDATE"); err != nil {
-						t.Fatal(err)
-					}
-					releaseUpload()
-					if err = <-archive; err != nil {
-						t.Fatal(err)
-					}
-					select {
-					case <-deletionGate.entered:
-					case err = <-deletion:
-						t.Fatalf("deletion did not acquire locks: %v", err)
-					case <-ctx.Done():
-						t.Fatal(ctx.Err())
-					}
-					releaseDelete()
-					if err = <-deletion; err != nil {
-						t.Fatal(err)
-					}
-					var state, path string
-					if err = f.db.Pool.QueryRow(ctx, `SELECT state,object_path FROM session_archives WHERE session_id=$1`, id).Scan(&state, &path); err != nil || state != "ready" {
-						t.Fatalf("archive lost: %s %v", state, err)
-					}
-					object, err := files.Open(ctx, sessionarchive.Bucket, path)
-					if err != nil {
-						t.Fatal(err)
-					}
-					retained, err := io.ReadAll(object.Body)
-					closeErr := object.Body.Close()
-					if err != nil || closeErr != nil || !bytes.Equal(retained, data) {
-						t.Fatalf("archive bytes changed: %v %v", err, closeErr)
+					if backend == "web" {
+						// Publication performs volume I/O without holding the Task row.
+						// Deletion can commit first; the late manifest must not become ready.
+						select {
+						case <-deletionGate.entered:
+						case err = <-deletion:
+							t.Fatalf("deletion did not acquire locks: %v", err)
+						case <-ctx.Done():
+							t.Fatal(ctx.Err())
+						}
+						releaseDelete()
+						if err = <-deletion; err != nil {
+							t.Fatal(err)
+						}
+						releaseUpload()
+						requireServiceError(t, <-archive, "not_found")
+						var ready int
+						if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM session_archives WHERE session_id=$1 AND state='ready'`, id).Scan(&ready); err != nil || ready != 0 {
+							t.Fatalf("late archive became ready: %d %v", ready, err)
+						}
+					} else {
+						if err = waitArchiveLock(ctx, f.db, "SELECT id FROM tasks WHERE project_id=$1 ORDER BY id FOR UPDATE"); err != nil {
+							t.Fatal(err)
+						}
+						releaseUpload()
+						if err = <-archive; err != nil {
+							t.Fatal(err)
+						}
+						select {
+						case <-deletionGate.entered:
+						case err = <-deletion:
+							t.Fatalf("deletion did not acquire locks: %v", err)
+						case <-ctx.Done():
+							t.Fatal(ctx.Err())
+						}
+						releaseDelete()
+						if err = <-deletion; err != nil {
+							t.Fatal(err)
+						}
+						var state, path string
+						if err = f.db.Pool.QueryRow(ctx, `SELECT state,object_path FROM session_archives WHERE session_id=$1`, id).Scan(&state, &path); err != nil || state != "ready" {
+							t.Fatalf("archive lost: %s %v", state, err)
+						}
+						object, err := files.Open(ctx, sessionarchive.Bucket, path)
+						if err != nil {
+							t.Fatal(err)
+						}
+						retained, err := io.ReadAll(object.Body)
+						closeErr := object.Body.Close()
+						if err != nil || closeErr != nil || !bytes.Equal(retained, data) {
+							t.Fatalf("archive bytes changed: %v %v", err, closeErr)
+						}
 					}
 				} else {
 					go remove()

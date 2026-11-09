@@ -23,6 +23,9 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "verify-storage" {
+		return verifyStorageCommand(ctx, getenv, stderr)
+	}
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	if len(args) != 0 {
 		httpx.LogFailure(logger, ctx, "configuration", "arguments", &config.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"})

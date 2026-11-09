@@ -24,6 +24,15 @@ func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	})
 	s.Execution = sessioncore.NewExecution(engine, s.browser, s.controller, s.archive, s.terminal, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.registerTerminal, s.authorize)
 	s.Execution.SetArchivePreflight(s.archivePreflight)
+	engine.SetMediaLeaseCleanup(func(ctx context.Context, id, lease string) error {
+		return s.write(ctx, func(store.TransactionOutcome) {}, func(scope store.SessionScope) error {
+			dao, ok := scope.SessionDAO().(store.SessionResourceDAO)
+			if !ok {
+				return errors.New("resource lease cleanup requires resource DAO")
+			}
+			return dao.ReleaseSessionResourceLease(ctx, id, lease)
+		})
+	})
 	return s
 }
 

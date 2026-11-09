@@ -1,3 +1,5 @@
+import { nativeInputText, textNativeInput } from "./native-input.js";
+import type { NativeInput } from "./types.js";
 import { ClaudeControls, type ClaudeControlQuery } from "./controls-claude.js";
 import { NativeTurns } from "./turns.js";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -223,7 +225,8 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     try { await close(); } catch { options.onDiagnostic?.("Claude startup cleanup failed; native process stop remains unconfirmed."); }
     throw failure;
   }
-  const send = async (text: string, operationId: string, expectedTurnId: string | null): Promise<ProviderReceipt> => {
+  const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null): Promise<ProviderReceipt> => {
+      const text = nativeInputText(inputValue);
       if (closed || disconnected || currentTurnId !== expectedTurnId || interactions.size) throw new NativeRpcError(-32602, "Claude cannot accept input in this session state.");
       if (currentTurnId !== null) {
         if (!capabilities.steer) throw new NativeRpcError(-32602, "This Claude version cannot accept input during an active turn.");
@@ -248,7 +251,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     async setSetting(id, value, operationId, revision) { if (closed || disconnected) throw new NativeRpcError(-32602, "Native session unavailable."); await controls!.set(id, value, operationId, revision); return { disposition: "handled" }; },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (currentTurnId !== null || expectedTurnId !== null || interactions.size) throw new NativeRpcError(-32602, "Claude commands require an idle session.");
-      const command = controls!.command(id, revision); return send(`/${command.name}${args ? ` ${args}` : ""}`, operationId, null);
+      const command = controls!.command(id, revision); return send(textNativeInput(`/${command.name}${args ? ` ${args}` : ""}`), operationId, null);
     },
     async cancel(expectedTurnId) {
       if (closed || disconnected || !currentTurnId || currentTurnId !== expectedTurnId || cancellation) throw new NativeRpcError(-32602, "Native turn changed or cancellation is already pending.");

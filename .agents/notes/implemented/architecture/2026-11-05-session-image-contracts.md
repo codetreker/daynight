@@ -13,11 +13,16 @@ success can lose originals or replay an uncertain native input.
 
 ## Decision
 
+The [unified Session media decision](2026-11-09-unified-session-media-core.md)
+replaces the separate wire and compatibility-copy choices below. The original
+publication rationale is retained as decision history; current production
+contracts use one resource model and one archive representation.
+
 The published [protocol and storage design](../../../../docs/design/session-image-contracts.md)
-adopts a separate `daynight.session.images.v1` representation, immutable private
+originally adopted a separate `daynight.session.images.v1` representation, immutable private
 service originals and Controller files whose metadata and operation pins share
-the execution journal. This implemented status records publication of the
-adopted design; the image runtime remains unimplemented.
+the execution journal. This implemented status originally recorded publication of that design. The
+unified decision owns the current foundation and its remaining consumer scope.
 
 The design separates occurrence, resource, upload and operation identities.
 Complete upload means both full decoders agree and the service has durably

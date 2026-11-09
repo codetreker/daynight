@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	coresession "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
@@ -24,13 +25,14 @@ import (
 // App owns the shared modules and their underlying resources.
 type App struct {
 	*application.Application
-	Web              *webresources.Resources
-	Ready            func(context.Context) error
-	Webhooks         *webhook.Service
-	webhookRuntime   *webhookRuntime
-	OAuthProfile     *OAuthProfile
-	OAuthError       error
-	oauthMaintenance *oauthservice.MaintenanceRunner
+	Web                  *webresources.Resources
+	Ready                func(context.Context) error
+	Webhooks             *webhook.Service
+	webhookRuntime       *webhookRuntime
+	OAuthProfile         *OAuthProfile
+	OAuthError           error
+	ImageValidationError error
+	oauthMaintenance     *oauthservice.MaintenanceRunner
 
 	closeLock         chan struct{}
 	files             interface{ Close() error }
@@ -67,6 +69,11 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
+	decoder, err := configuredImageDecoder(c, coresession.NewImageDecoder)
+	app.ImageValidationError = err
+	if decoder != nil {
+		app.Engine.SetImageDecoder(decoder)
+	}
 	if database != nil && c.PublicOrigin != "" {
 		admission := coreoauth.PublicAdmission{Writer: database}
 		clients, err := oauthservice.NewClients(database, admission, c.OAuthClients)
@@ -98,6 +105,17 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	// refuses startup unless the complete private storage lifecycle is present.
 	app.Uploads = mcptransfer.NewUploads(app.PrivateContent, private, app.Attachments)
 	return app
+}
+
+func configuredImageDecoder(c config.Config, factory func(coresession.ImageDecoderConfig) (coresession.ImageDecoder, error)) (coresession.ImageDecoder, error) {
+	if c.ImageNodePath == "" && c.ImageHelperPath == "" && c.ImageManifestPath == "" && c.ImageTemporaryDirectory == "" {
+		return nil, nil
+	}
+	decoder, err := factory(coresession.ImageDecoderConfig{NodePath: c.ImageNodePath, HelperPath: c.ImageHelperPath, ManifestPath: c.ImageManifestPath, TemporaryDirectory: c.ImageTemporaryDirectory})
+	if err != nil {
+		return nil, &config.ConfigurationError{Field: "image decoder", Rule: "must identify the complete pinned Node 24 validation build", Cause: err}
+	}
+	return decoder, nil
 }
 
 // OpenApp validates and assembles one set of application dependencies.
@@ -158,6 +176,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	if err := app.assembleWebhooks(database.Transactions, c.WebhookEnabled, logger); err != nil {
 		return failOpen(err)
+	}
+	if app.ImageValidationError != nil {
+		return failOpen(app.ImageValidationError)
 	}
 	if app.PrivateContent == nil {
 		return failOpen(errors.New("private transfer storage is unavailable"))

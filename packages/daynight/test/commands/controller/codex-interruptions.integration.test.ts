@@ -1,3 +1,4 @@
+import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
@@ -15,7 +16,7 @@ const open = async (scenario: string, resumed = false, journal?: { hasTimelineEn
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: resumed ? "native-thread" : null,
     executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), env: { ...process.env, CODEX_TEST_INTERRUPT: scenario },
     ...(journal ? { hasTimelineEntry: (id: string) => journal.hasTimelineEntry(id) } : {}),
-    onTimeline: entry => { entries.push(entry); journal?.projectTimeline(entry); }, onInputObserved: id => observed.push(id), onState: () => {}, onSpawn: value => { child = value; } });
+    onTimeline: entry => { entries.push(entry); journal?.projectTimeline(entry); }, onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onState: () => {}, onSpawn: value => { child = value; } });
   return { provider, entries, observed, child };
 };
 const rows = (entries: readonly ProviderEntry[]) => [...new Map(entries.map(entry => [entry.entryId, entry])).values()];
@@ -33,7 +34,7 @@ test.each(["history-user", "history-read-failure", "ack-first"])("%s input keeps
   try {
     const live = await open(scenario, false, hooks);
     try {
-      const sent = await live.provider.send("cancel", "11111111-1111-4111-8111-111111111111", null);
+      const sent = await live.provider.send(textNativeInput("cancel"), "11111111-1111-4111-8111-111111111111", null);
       await live.provider.cancel(sent.turnId!);
       if (scenario === "history-user") await vi.waitFor(() => expect(live.observed).toContain("11111111-1111-4111-8111-111111111111"));
       if (scenario === "history-read-failure") await vi.waitFor(() => expect(live.entries.some(entry => entry.kind === "error" && entry.code === "native_input_missing")).toBe(true));

@@ -1,3 +1,4 @@
+import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -89,7 +90,7 @@ test.each([
     expect(params.developerInstructions).toBe(role);
     if (resume) for (const key of ["model", "sandbox", "approvalPolicy"]) expect(params).not.toHaveProperty(key);
     else expect(params).toMatchObject({ model: "requested-model", sandbox, approvalPolicy });
-    const receipt = await provider.send("Actual user request", "first-user-operation", null);
+    const receipt = await provider.send(textNativeInput("Actual user request"), "first-user-operation", null);
     await provider.waitForTurn(receipt.turnId!, Date.now() + 1000);
     const turns = (await requests()).filter(item => item.method.startsWith("turn/"));
     expect(turns).toEqual([{ method: "turn/start", params: {

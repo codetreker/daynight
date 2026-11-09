@@ -1,3 +1,4 @@
+import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { test, expect, beforeEach, afterEach, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -159,33 +160,33 @@ test("new Codex execution rejects unsupported effort before accepting input and 
 test("a late turn/start receipt does not resurrect a completed native turn", async () => {
   const states: ProviderState[] = [];
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: s => states.push(s), onSpawn: () => {} });
-  try { const receipt = await provider.send("test", randomUUID(), null); await provider.waitForTurn(receipt.turnId!, Date.now() + 1000); expect(states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null }); }
+  try { const receipt = await provider.send(textNativeInput("test"), randomUUID(), null); await provider.waitForTurn(receipt.turnId!, Date.now() + 1000); expect(states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null }); }
   finally { await provider.close(); }
 });
 
 test("concurrent idle sends cannot both pass native turn admission", async () => {
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
-  try { const first = provider.send("first", randomUUID(), null); await expect(provider.send("second", randomUUID(), null)).rejects.toThrow("pending"); await first; }
+  try { const first = provider.send(textNativeInput("first"), randomUUID(), null); await expect(provider.send(textNativeInput("second"), randomUUID(), null)).rejects.toThrow("pending"); await first; }
   finally { await provider.close(); }
 });
 
 test("native input identity and tool deltas are observed without waiting for the final message", async () => {
   const ids: string[] = [], entries: unknown[] = [];
-  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onInputObserved: id => ids.push(id), onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
-  try { const id = randomUUID(); await provider.send("test", id, null); expect(ids).toEqual([id]); expect(entries).toContainEqual(expect.objectContaining({ kind: "tool_call", output: [{ type: "text", text: "safe output" }] })); }
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onInputObserved: id => ids.push(typeof id === "string" ? id : id.operationId), onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
+  try { const id = randomUUID(); await provider.send(textNativeInput("test"), id, null); expect(ids).toEqual([id]); expect(entries).toContainEqual(expect.objectContaining({ kind: "tool_call", output: [{ type: "text", text: "safe output" }] })); }
   finally { await provider.close(); }
 });
 
 test("resumed native history supplies receipt evidence with the original client message identity", async () => {
   const ids: string[] = [];
-  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: "native-thread", executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onInputObserved: id => ids.push(id), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: "native-thread", executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onInputObserved: id => ids.push(typeof id === "string" ? id : id.operationId), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
   try { expect(ids).toEqual(["persisted-operation"]); } finally { await provider.close(); }
 });
 
 test("cancel confirmation waits for the matching native turn to end", async () => {
   const states: ProviderState[] = [];
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: s => states.push(s), onSpawn: () => {} });
-  try { const sent = await provider.send("cancel", randomUUID(), null); expect(states.at(-1)?.activity).toBe("working"); await provider.cancel(sent.turnId!); expect(states.at(-1)?.activity).toBe("idle"); }
+  try { const sent = await provider.send(textNativeInput("cancel"), randomUUID(), null); expect(states.at(-1)?.activity).toBe("working"); await provider.cancel(sent.turnId!); expect(states.at(-1)?.activity).toBe("idle"); }
   finally { await provider.close(); }
 });
 
@@ -193,7 +194,7 @@ test("native approval resolves exactly once and only exposes native decision cho
   const entries: import("../../../src/commands/controller/providers/types.js").ProviderEntry[] = [];
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
   try {
-    await provider.send("approval", randomUUID(), null);
+    await provider.send(textNativeInput("approval"), randomUUID(), null);
     const { vi } = await import("vitest");
     await vi.waitFor(() => expect(entries.some(e => e.kind === "interaction")).toBe(true));
     const entry = entries.find(e => e.kind === "interaction"); if (!entry || entry.kind !== "interaction") throw new Error("Missing approval");
@@ -209,7 +210,7 @@ test("a native cancel-only approval exposes Reject and sends the offered cancel 
   const entries: import("../../../src/commands/controller/providers/types.js").ProviderEntry[] = [];
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
   try {
-    await provider.send("approval_cancel", randomUUID(), null);
+    await provider.send(textNativeInput("approval_cancel"), randomUUID(), null);
     const { vi } = await import("vitest"); await vi.waitFor(() => expect(entries.some(e => e.kind === "interaction")).toBe(true));
     const card = entries.find(e => e.kind === "interaction"); if (!card || card.kind !== "interaction") throw new Error("Missing approval");
     expect(card.interaction).toMatchObject({ actions: ["allow_once", "reject"] });
@@ -223,7 +224,7 @@ test("closing native Codex rejects an unresolved response without waiting for it
   const entries: import("../../../src/commands/controller/providers/types.js").ProviderEntry[] = [];
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
   try {
-    await provider.send("approval_hold", randomUUID(), null);
+    await provider.send(textNativeInput("approval_hold"), randomUUID(), null);
     const { vi } = await import("vitest"); await vi.waitFor(() => expect(entries.some(e => e.kind === "interaction")).toBe(true));
     const card = entries.find(e => e.kind === "interaction"); if (!card || card.kind !== "interaction") throw new Error("Missing approval");
     const response = provider.respond(card.interaction.interactionId, "1", { kind: "approval", action: "allow_once" });
@@ -238,7 +239,7 @@ test("closing native Codex rejects an unresolved response without waiting for it
   let child!: import("node:child_process").ChildProcess;
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: s => states.push(structuredClone(s)), onSpawn: process => { child = process; }, onFatalError: error => fatal.push(error) });
   try {
-    await provider.send("cancel", randomUUID(), null);
+    await provider.send(textNativeInput("cancel"), randomUUID(), null);
     child.kill("SIGTERM");
     await vi.waitFor(() => expect(fatal).toHaveLength(1));
     expect(states.at(-1)).toMatchObject({ activity: "unknown", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });

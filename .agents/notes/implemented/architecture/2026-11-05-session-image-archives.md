@@ -13,10 +13,15 @@ not prove that its physical writer has stopped.
 
 ## Decision
 
+The [unified Session media decision](2026-11-09-unified-session-media-core.md)
+replaces the separate wire and compatibility-copy choices below. The original
+publication rationale is retained as decision history; current production
+contracts use one resource model and one archive representation.
+
 The repository publishes the adopted
 [image archive design](../../../../docs/design/session-image-archives.md).
-This implemented note records publication of the design, not implementation or
-acceptance of image runtime behavior. Immutable Session-owned originals are
+This implemented note originally recorded publication of the design. Its dual
+representation is superseded; native consumer acceptance remains separate. Immutable Session-owned originals are
 retained by explicit references. A schema3 manifest points to a sealed timeline,
 verified original resources and a deterministic legacy representation. New
 history and the complete legacy envelope each receive exact capacity accounting

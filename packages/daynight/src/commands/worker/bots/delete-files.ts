@@ -1,3 +1,4 @@
+import { releaseControllerMediaBudget } from "../../controller/media/budget-ledger.js";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -145,12 +146,15 @@ export const removeBotDeletionFile = async (target: BotDeletionTarget, signal: A
     signal.throwIfAborted();
     return true;
   };
-  if (!await check()) return;
+  const releaseExecutionBudget = () => {
+    if (target.kind === "directory" && path.basename(target.root) === "executions" && path.basename(path.dirname(target.root)) === "controller" && canonicalId(path.basename(target.path)) === path.basename(target.path)) releaseControllerMediaBudget(path.dirname(path.dirname(target.root)), path.basename(target.path), target.path);
+  };
+  if (!await check()) { releaseExecutionBudget(); return; }
   if (target.kind === "directory") {
     const operation = createOperation({ signal, limits: { totalMs: 300_000 } });
     try { await removeHerdrSourceDirectory(target.root, target.path, operation, { rootIdentity: target.rootIdentity, sourceIdentity: target.identity }); }
     finally { operation.dispose(); }
-    return;
+    releaseExecutionBudget(); return;
   }
   const handle = process.platform === "win32" ? null : await open(target.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {

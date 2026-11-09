@@ -3,30 +3,36 @@ package config
 import (
 	"net"
 	"net/netip"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Config struct {
-	WebhookEnabled       bool
-	PublicOrigin         string
-	MCPAllowedOrigins    []string
-	OAuthClients         map[string][]byte
-	MCPTempBudgetBytes   int64
-	MCPReservedFreeBytes int64
-	UniAuthURL           string
-	UniAuthAppID         string
-	UniAuthAppSecret     string
-	UniAuthCallbackURL   string
-	AllowHTTPTestOrigin  bool
-	AllowLoopbackHTTP    bool
-	DatabaseURL          string
-	StorageRoot          string
-	ListenAddress        string
-	StartupTimeout       time.Duration
-	ShutdownTimeout      time.Duration
-	TaskSyncOverlap      time.Duration
+	WebhookEnabled          bool
+	PublicOrigin            string
+	MCPAllowedOrigins       []string
+	OAuthClients            map[string][]byte
+	MCPTempBudgetBytes      int64
+	MCPReservedFreeBytes    int64
+	UniAuthURL              string
+	UniAuthAppID            string
+	UniAuthAppSecret        string
+	UniAuthCallbackURL      string
+	AllowHTTPTestOrigin     bool
+	AllowLoopbackHTTP       bool
+	DatabaseURL             string
+	StorageRoot             string
+	ListenAddress           string
+	StartupTimeout          time.Duration
+	ShutdownTimeout         time.Duration
+	TaskSyncOverlap         time.Duration
+	ImageNodePath           string
+	ImageHelperPath         string
+	ImageManifestPath       string
+	ImageTemporaryDirectory string
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -71,24 +77,28 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		address = "127.0.0.1:8787"
 	}
 	config := Config{
-		WebhookEnabled:       webhookEnabled,
-		PublicOrigin:         getenv("DAYNIGHT_PUBLIC_ORIGIN"),
-		MCPAllowedOrigins:    splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
-		OAuthClients:         clients,
-		MCPTempBudgetBytes:   tempBudget,
-		MCPReservedFreeBytes: reservedFree,
-		UniAuthURL:           getenv("DAYNIGHT_UNIAUTH_URL"),
-		UniAuthAppID:         getenv("DAYNIGHT_UNIAUTH_APP_ID"),
-		UniAuthAppSecret:     getenv("DAYNIGHT_UNIAUTH_APP_SECRET"),
-		UniAuthCallbackURL:   getenv("DAYNIGHT_UNIAUTH_CALLBACK_URL"),
-		AllowHTTPTestOrigin:  allowHTTP,
-		AllowLoopbackHTTP:    allowLoopback,
-		DatabaseURL:          getenv("DAYNIGHT_DATABASE_URL"),
-		StorageRoot:          getenv("DAYNIGHT_STORAGE_ROOT"),
-		ListenAddress:        address,
-		StartupTimeout:       startupTimeout,
-		ShutdownTimeout:      shutdownTimeout,
-		TaskSyncOverlap:      taskSyncOverlap,
+		WebhookEnabled:          webhookEnabled,
+		PublicOrigin:            getenv("DAYNIGHT_PUBLIC_ORIGIN"),
+		MCPAllowedOrigins:       splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
+		OAuthClients:            clients,
+		MCPTempBudgetBytes:      tempBudget,
+		MCPReservedFreeBytes:    reservedFree,
+		UniAuthURL:              getenv("DAYNIGHT_UNIAUTH_URL"),
+		UniAuthAppID:            getenv("DAYNIGHT_UNIAUTH_APP_ID"),
+		UniAuthAppSecret:        getenv("DAYNIGHT_UNIAUTH_APP_SECRET"),
+		UniAuthCallbackURL:      getenv("DAYNIGHT_UNIAUTH_CALLBACK_URL"),
+		AllowHTTPTestOrigin:     allowHTTP,
+		AllowLoopbackHTTP:       allowLoopback,
+		DatabaseURL:             getenv("DAYNIGHT_DATABASE_URL"),
+		StorageRoot:             getenv("DAYNIGHT_STORAGE_ROOT"),
+		ListenAddress:           address,
+		StartupTimeout:          startupTimeout,
+		ShutdownTimeout:         shutdownTimeout,
+		TaskSyncOverlap:         taskSyncOverlap,
+		ImageNodePath:           getenv("DAYNIGHT_IMAGE_NODE_PATH"),
+		ImageHelperPath:         getenv("DAYNIGHT_IMAGE_HELPER_PATH"),
+		ImageManifestPath:       getenv("DAYNIGHT_IMAGE_MANIFEST_PATH"),
+		ImageTemporaryDirectory: getenv("DAYNIGHT_IMAGE_TEMP_DIRECTORY"),
 	}
 	return config, config.Validate()
 }
@@ -189,6 +199,18 @@ func (c Config) Validate() error {
 	}
 	if c.TaskSyncOverlap <= 0 {
 		return &ConfigurationError{Field: "DAYNIGHT_TASK_SYNC_OVERLAP", Rule: "must be a positive Go duration"}
+	}
+	if c.ImageNodePath != "" || c.ImageHelperPath != "" || c.ImageManifestPath != "" || c.ImageTemporaryDirectory != "" {
+		for _, item := range []struct{ field, path string }{
+			{"DAYNIGHT_IMAGE_NODE_PATH", c.ImageNodePath},
+			{"DAYNIGHT_IMAGE_HELPER_PATH", c.ImageHelperPath},
+			{"DAYNIGHT_IMAGE_MANIFEST_PATH", c.ImageManifestPath},
+			{"DAYNIGHT_IMAGE_TEMP_DIRECTORY", c.ImageTemporaryDirectory},
+		} {
+			if !filepath.IsAbs(item.path) || filepath.Clean(item.path) != item.path || strings.IndexFunc(item.path, unicode.IsControl) >= 0 {
+				return &ConfigurationError{Field: item.field, Rule: "must be an absolute clean path in a complete image decoder configuration"}
+			}
+		}
 	}
 	return nil
 }

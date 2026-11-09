@@ -1,3 +1,4 @@
+import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { test, expect, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -16,7 +17,7 @@ async function open(cases: Record<string, unknown>) {
     env: { ...process.env, CODEX_TEST_APPROVAL_CASES: JSON.stringify(cases) }, onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
   const send = async (text: string): Promise<SessionInteraction> => {
     const start = entries.length;
-    await provider.send(text, randomUUID(), null);
+    await provider.send(textNativeInput(text), randomUUID(), null);
     await vi.waitFor(() => expect(entries.slice(start).some(e => e.kind === "interaction")).toBe(true));
     const entry = entries.slice(start).find(e => e.kind === "interaction");
     if (!entry || entry.kind !== "interaction") throw new Error("Missing approval");

@@ -1,8 +1,16 @@
+import { createImageCaptureSource } from "./media/capture-source.js";
+import { controllerMetadataBudget } from "./media/metadata-budget.js";
+import { createImageHistorySource } from "./media/history-source.js";
+import { openControllerMediaStore, type ControllerMediaStore } from "./media/preparations.js";
+import type { ImageDecoder } from "./media/image-decoder.js";
+import { createHash } from "node:crypto";
+import { canonicalSessionIntent, parseImageOccurrence, parseNativeImageSource, parseInputObservation, type ImageOccurrence, type NativeImageSource, type InputObservation, parseProviderImageCapabilities, canonicalImageJson, type ProviderImageCapabilities } from "../../session/image-values.js";
+import type { SessionCommand } from "../../session/protocol.js";
 import { parseStartupObservation, type StartupObservation } from "../../session/startup.js";
 import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
-import { openPendingContent, reconcilePendingContent } from "./pending-content.js";
+import { openPendingContent, reconcilePendingContent, finalizePendingMigration } from "./pending-content.js";
 import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
@@ -46,7 +54,7 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
 /** The store owns a supplied connection; file identifies its separate pending-content archive. */
-export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database } = {}) => {
+export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; mediaStateDirectory?: string; imageDecoder?: ImageDecoder } = {}) => {
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
@@ -87,6 +95,8 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     reconcilePendingContent(db, pendingContent);
     },
   });
+  finalizePendingMigration(db, pendingContent);
+  const metadataBudget = controllerMetadataBudget(file, db);
   const transaction = <T>(action: () => T, mode: "deferred" | "immediate"): T => {
     let failed = false, primary: unknown;
     try {
@@ -103,15 +113,16 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   const read = <T>(action: () => T): T => transaction(action, "deferred");
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
-  const writeOperation = (operation: ControllerOperation): ControllerOperation => { db.prepare("INSERT INTO operations(id,value) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value,acknowledged=0").run(operation.operationId, JSON.stringify(operation)); return operation; };
+  const writeOperation = (operation: ControllerOperation): ControllerOperation => { metadataBudget.assert(Buffer.byteLength(JSON.stringify(operation)) + 16384, operation.state !== "accepted"); db.prepare("INSERT INTO operations(id,value) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value,acknowledged=0").run(operation.operationId, JSON.stringify(operation)); return operation; };
   const patchSnapshot = (patch: Partial<Omit<ControllerSnapshot, "executionId" | "claimId" | "testExecutionId" | "sessionId" | "executionGeneration" | "controllerInstanceId">>): ControllerSnapshot => atomic(() => {
+    metadataBudget.assert(16384, true);
     const current = getSnapshot();
     if (Object.keys(patch).some((key) => ["executionId", "claimId", "testExecutionId", "sessionId", "executionGeneration", "controllerInstanceId"].includes(key))) throw new Error("Controller identity cannot change within a generation.");
     if (current.nativeSessionId !== null && patch.nativeSessionId !== undefined && patch.nativeSessionId !== current.nativeSessionId) throw new Error("The original native session cannot be replaced.");
     const value = checkedSnapshot({ ...current, ...patch }); db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
   });
   const outboxBytes = (): number => read(() => (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes);
-  const assertInputCapacity = (): void => { if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
+  const assertInputCapacity = (): void => { metadataBudget.assert(); if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
   const localContent = createLocalSessionContent(pendingContent, ticket.sessionId, { read, write: atomic });
   const appendEvent = (payload: unknown): ControllerOutboxEvent => atomic(() => {
     if (options.contentOwnedLocally && payload && typeof payload === "object" && "kind" in payload && payload.kind === "resource" && "payload" in payload) {
@@ -119,6 +130,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       if (event.kind === "resource") localContent.saveResource(event.payload);
     }
     const encoded = JSON.stringify(payload);
+    if (encoded !== undefined) metadataBudget.assert(Buffer.byteLength(encoded) + 16384, true);
     if (encoded === undefined) throw new Error("Controller event must be serializable.");
     if (outboxBytes() + Buffer.byteLength(encoded) > maxOutboxBytes) {
       if (!options.contentOwnedLocally) throw new Error("Controller outbox capacity exceeded; event was not discarded.");
@@ -133,8 +145,44 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     return { sequence: row.sequence, payload };
   });
   let closed = false;
+  let mediaInstance: ControllerMediaStore | undefined;
+  const media = () => mediaInstance ??= openControllerMediaStore(file, ticket, db, pendingContent, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory);
   return {
+    ...createImageHistorySource(file, db, pendingContent, { read, write: atomic }, metadataBudget),
+    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
+    media,
+    stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
     getSnapshot, patchSnapshot, getOperation, assertInputCapacity,
+    providerImageCapabilities: (value: Omit<ProviderImageCapabilities, "revision">): ProviderImageCapabilities => atomic(() => {
+      const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images'").get() as { value: string } | undefined;
+      const previous = row ? parseProviderImageCapabilities(JSON.parse(row.value)) : null;
+      const candidate = parseProviderImageCapabilities({ ...value, revision: previous?.revision ?? "1" });
+      if (previous && canonicalImageJson(candidate) === canonicalImageJson(previous)) return previous;
+      const next = { ...candidate, revision: previous ? String(BigInt(previous.revision) + 1n) : "1" };
+      parseProviderImageCapabilities(next);
+      db.prepare("INSERT INTO image_runtime_state VALUES('provider_images',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(next));
+      return next;
+    }),
+    recordRelayHistory: (historyEpoch: string): void => atomic(() => {
+      if (typeof historyEpoch !== "string" || !historyEpoch.isWellFormed() || !/[^\p{White_Space}]/u.test(historyEpoch) || historyEpoch.includes("\0") || Buffer.byteLength(historyEpoch) > 256) throw new Error("Invalid relay history epoch.");
+      db.prepare("INSERT INTO image_runtime_state VALUES('history_epoch',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(historyEpoch));
+    }),
+    getHistorySource: (): { historyEpoch: string | null; sourceThrough: string; acknowledgedThrough: string; projectionGap: boolean; archiveIncomplete: boolean } => read(() => {
+      const row = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sourceThrough,CAST(last_acknowledged AS TEXT) AS acknowledgedThrough,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { sourceThrough: string; acknowledgedThrough: string; projection_gap: string | null; archive_incomplete: number };
+      const epoch = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_epoch'").get() as { value: string } | undefined;
+      return { historyEpoch: epoch ? JSON.parse(epoch.value) as string : null, sourceThrough: row.sourceThrough, acknowledgedThrough: row.acknowledgedThrough, projectionGap: row.projection_gap !== null, archiveIncomplete: row.archive_incomplete === 1 };
+    }),
+    recordHistoryCheckpoint: (checkpoint: { historyEpoch: string; sourceThrough: string }): void => atomic(() => {
+      validSequence(checkpoint.sourceThrough);
+      const epoch = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_epoch'").get() as { value: string } | undefined;
+      const row = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sourceThrough,CAST(last_acknowledged AS TEXT) AS acknowledgedThrough,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { sourceThrough: string; acknowledgedThrough: string; projection_gap: string | null; archive_incomplete: number };
+      if (!epoch || JSON.parse(epoch.value) !== checkpoint.historyEpoch || row.sourceThrough !== checkpoint.sourceThrough || row.acknowledgedThrough !== checkpoint.sourceThrough || row.projection_gap !== null || row.archive_incomplete !== 0) throw new Error("History checkpoint does not cover the complete acknowledged source.");
+      db.prepare("INSERT INTO image_runtime_state VALUES('history_checkpoint',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(checkpoint));
+    }),
+    getHistoryCheckpoint: (): { historyEpoch: string; sourceThrough: string } | null => read(() => {
+      const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_checkpoint'").get() as { value: string } | undefined;
+      return row ? JSON.parse(row.value) as { historyEpoch: string; sourceThrough: string } : null;
+    }),
     ...localContent,
     getSourceFloor: (): string => read(() => (db.prepare("SELECT CAST(source_floor AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
     getLastSourceSequence: (): string => read(() => (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
@@ -167,6 +215,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
     hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.entries.has(entryId)),
     projectTimeline: (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
+      metadataBudget.assert(Buffer.byteLength(JSON.stringify(entry)) * 2 + 16384, true);
       const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
       void ignored; void ignoredSequence;
       const contentHash = controllerPayloadHash(content);
@@ -183,13 +232,53 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       db.prepare("INSERT INTO content_index VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_hash=excluded.content_hash,revision=excluded.revision,entry_seq=excluded.entry_seq").run(entry.entryId, controllerPayloadHash(durableEntry), revision, entrySeq);
       return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
     }),
-    prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload">): ControllerOperation => atomic(() => {
+    prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload"> & { intent?: SessionCommand }): ControllerOperation => atomic(() => {
       if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("Controller operation ID must be a UUID.");
-      const hash = controllerPayloadHash({ kind: input.kind, payload: input.payload }); const existing = getOperation(input.operationId);
+      const images = input.kind === "send_message" && input.payload !== null && typeof input.payload === "object" && "content" in input.payload && Array.isArray(input.payload.content) && input.payload.content.some((part: unknown) => part !== null && typeof part === "object" && "type" in part && part.type === "image");
+      if (images && input.intent === undefined) throw new Error("Image input requires the complete original operation intent.");
+      const canonical = images ? canonicalSessionIntent(input.intent!) : null;
+      const hash = canonical === null ? controllerPayloadHash({ kind: input.kind, payload: input.payload }) : createHash("sha256").update(canonical).digest("hex"); const existing = getOperation(input.operationId);
       if (existing !== null) { if (existing.payloadHash !== hash) throw new Error("The operation ID has different content."); return existing; }
+      metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) * 2 + 16384);
       if (input.kind === "initial" || input.kind === "send_message" || input.kind === "interaction_response" || input.kind === "execute_command" || input.kind === "update_setting") assertInputCapacity();
-      return writeOperation({ ...input, executionGeneration: ticket.executionGeneration, payloadHash: hash, state: "accepted", result: null, error: null, createdAt: Date.now(), updatedAt: Date.now() });
+      if (canonical !== null) db.prepare("INSERT INTO input_intents VALUES(?,?,?)").run(input.operationId, canonical, hash);
+      const { intent: _intent, ...operation } = input; void _intent;
+      return writeOperation({ ...operation, executionGeneration: ticket.executionGeneration, payloadHash: hash, state: "accepted", result: null, error: null, createdAt: Date.now(), updatedAt: Date.now() });
     }),
+    getInputIntent: (operationId: string): { canonical: string; sha256: string } | null => read(() => {
+      const row = db.prepare("SELECT canonical,sha256 FROM input_intents WHERE operation_id=?").get(operationId) as { canonical: string; sha256: string } | undefined;
+      return row ?? null;
+    }),
+    recordInputObservation: (input: InputObservation): boolean => atomic(() => {
+      metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) + 16384, true);
+      const observation = parseInputObservation(input), operation = getOperation(observation.operationId), snapshot = getSnapshot();
+      const intent = db.prepare("SELECT sha256 FROM input_intents WHERE operation_id=?").get(observation.operationId) as { sha256: string } | undefined;
+      if (!operation || !intent || intent.sha256 !== observation.intentSha256 || snapshot.nativeSessionId !== observation.nativeSessionId || ticket.provider !== observation.provider || !["dispatching", "unknown", "provider_accepted"].includes(operation.state)) return false;
+      const previous = db.prepare("SELECT observation FROM input_observations WHERE operation_id=?").get(observation.operationId) as { observation: string } | undefined;
+      const value = JSON.stringify(observation);
+      if (previous && previous.observation !== value) throw new Error("Native input observation conflicts with its original operation.");
+      if (!previous) db.prepare("INSERT INTO input_observations VALUES(?,?)").run(observation.operationId, value);
+      return true;
+    }),
+    registerImageOccurrence: (input: ImageOccurrence, native: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean } => atomic(() => {
+      metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) + 16384, true);
+      const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
+      if (nativeSource && (nativeSource.provider !== ticket.provider || nativeSource.nativeSessionId !== getSnapshot().nativeSessionId)) throw new Error("Image occurrence belongs to another native session.");
+      const entry = pendingContent.entries.get(occurrence.entryId);
+      if (!entry || occurrence.container === "tool_output" && (entry.kind !== "tool_call" || entry.callId !== occurrence.callId) || occurrence.container === "reasoning" && entry.kind !== "reasoning" || occurrence.container === "content" && !["user_message", "assistant_message"].includes(entry.kind)) throw new Error("Image occurrence has no durable original position.");
+      const value = JSON.stringify(occurrence), source = nativeSource === null ? null : JSON.stringify(nativeSource);
+      const previous = db.prepare("SELECT occurrence,native_source,source_sequence,acknowledged FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string; native_source: string | null; source_sequence: string; acknowledged: number } | undefined;
+      if (previous) {
+        if (previous.occurrence !== value || previous.native_source !== source) throw new Error("Image occurrence cannot move from its original source.");
+        return { occurrence, sourceSequence: previous.source_sequence, acknowledged: previous.acknowledged === 1 };
+      }
+      const sequence = (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
+      const ack = (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence;
+      const acknowledged = BigInt(ack) >= BigInt(sequence);
+      db.prepare("INSERT INTO image_occurrences VALUES(?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0);
+      return { occurrence, sourceSequence: sequence, acknowledged };
+    }),
+    imageOccurrenceAcknowledged: (imageId: string): boolean => read(() => (db.prepare("SELECT acknowledged FROM image_occurrences WHERE image_id=?").get(imageId) as { acknowledged: number } | undefined)?.acknowledged === 1),
     markDispatching: (operationId: string): ControllerOperation => atomic(() => {
       const operation = getOperation(operationId); if (operation === null || operation.state !== "accepted") throw new Error("Controller operation cannot replay a possible native dispatch.");
       if (operation.kind === "initial") patchSnapshot({ initialInputState: "dispatching" });
@@ -211,6 +300,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       const value = validSequence(sequence); const row = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string };
       if (value > BigInt(row.sequence)) throw new Error("Controller ACK exceeds its durable event watermark.");
       db.prepare("DELETE FROM outbox WHERE sequence<=?").run(value);
+      db.prepare("UPDATE image_occurrences SET acknowledged=1 WHERE CAST(source_sequence AS INTEGER)<=?").run(value);
       db.prepare("UPDATE execution SET last_acknowledged=MAX(last_acknowledged,?) WHERE id=1").run(value);
     }),
     close: (): void => {
