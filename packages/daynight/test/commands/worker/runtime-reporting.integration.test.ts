@@ -191,12 +191,14 @@ describe("worker runtime configuration reporting", () => {
     const running = start(f);
     await eventuallyWithoutAdvancingTime(() => expect(posts).toBe(1));
     await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
-    await advanceTime(30_000);
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    // Startup configuration can trigger reconciliation before the periodic tick.
+    // Keep both clocks fixed until the first stalled request is observed.
+    coordinatorOptions.onInventory!(null);
     await eventuallyWithoutAdvancingTime(() => expect(requestSignal).toBeDefined());
     const firstRequestSignal = requestSignal!;
     expect(getOperation?.limits).toMatchObject({ totalMs: 15_000, requestMs: 10_000 });
-    await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
-    const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
     coordinatorOptions.onClaim!({ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3) });
     await advanceTime(9_999); expect(firstRequestSignal.aborted).toBe(false);
     expect(reads).toBe(2); expect(posts).toBe(1);
