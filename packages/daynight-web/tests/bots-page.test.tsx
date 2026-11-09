@@ -1,3 +1,4 @@
+import type { SessionHeaderSlot, SessionPresentationSlots } from '../src/features/task-agent-session/session-presentation-slots';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BotsPage } from '../src/features/bots/BotsPage';
@@ -8,7 +9,7 @@ import { parseAuthRoute } from '../src/app/router';
 import * as router from '../src/app/router';
 import { pauseAuthRequests } from '../src/api/client';
 import { assistantCreateSubmit, assistantDetailsOpener, expandAssistantAdvancedSettings, mockWideAssistantWorkspace, openAssistantCreation } from './helpers/assistant-ui';
-vi.mock('../src/features/bots/BotSessionHost', () => ({ useBotSessionCache: () => cache, BotSessionHost: ({ displayBinding }: {displayBinding: {botId:string}|null}) => <section data-testid="host">{displayBinding?.botId ?? 'no binding'}</section> }));
+vi.mock('../src/features/bots/BotSessionHost', () => ({ useBotSessionCache: () => cache, BotSessionHost: ({ displayBinding, presentation, error, active }: {displayBinding: {botId:string}|null; presentation: SessionPresentationSlots; error?: string | null; active: boolean}) => <section data-testid="host"><header>{presentation.renderHeader?.(undefined as unknown as SessionHeaderSlot)}</header>{displayBinding?.botId ?? 'no binding'}{active && error ? presentation.renderUnavailable?.({ phase: 'binding', hasContent: false, retry: () => {}, error }) : null}</section> }));
 const emptyPanes = Object.freeze([]);
 const cache = { snapshot: () => emptyPanes, suspendActions: vi.fn(), invalidateBot: vi.fn(), blockBot: vi.fn(), unblockBot: vi.fn(), isBlocked: () => false, isRevoked: () => false, subscribe: () => () => {}, guardSnapshot: () => 0 };
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];

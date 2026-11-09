@@ -156,6 +156,17 @@ command choices follow the current Session's capabilities and native confirmatio
 The input remains reachable in short layouts and grows to a local scrolling limit.
 Switching assistants restores their independent drafts and reading positions.
 
+Reloading or reopening an assistant can show its recent saved history before
+details, Session metadata and the first history page arrive. The authenticated
+account owns these bounded localStorage snapshots: six targets, at most 150
+complete entries per target, with the existing character budgets. Only accepted,
+settled real history updates them. Preview rows are read-only, cannot download or
+load resources, and do not restore historical approvals or live activity. Verified
+pages replace covered rows while preserving the timeline and reading owner.
+Account changes, authoritative access loss and cold-target deletion withdraw
+preview eligibility before best-effort storage cleanup. Storage failures retain
+the live conversation and do not establish that physical clearing succeeded.
+
 Startup success is not proof of a connected Session or permission to send. Use the
 error's own retry or check action: history failures retain readable messages,
 unknown sends check the original operation without resending, and recovery errors
@@ -2282,7 +2293,8 @@ records the division.
 
 ### Assistant browser validation
 
-The [Bot viewport suite](tests/navigation/bots-viewport.browser.ts) and
+The [Bot viewport suite](tests/navigation/bots-viewport.browser.ts),
+[persistent history suite](tests/navigation/bot-persistent-history.browser.ts) and
 [assistant presentation suite](tests/navigation/assistant-modern.browser.ts) run
 the production application, Session host and timeline against controlled HTTP and
 Session API responses. Together they cover responsive navigation, assistant creation,
@@ -2292,6 +2304,12 @@ pause. Cases include English and Simplified Chinese, desktop and phone widths,
 390×300 short viewports, reduced motion, accessible names and normal text contrast.
 The details tests check both 1279/1280px window and 759/760px stable-container
 boundaries, including opening details without layout oscillation.
+Persistent history checks use the production observer and real browser
+localStorage across reload, closed-page reopening, pane eviction and cross-tab
+invalidation. Controlled detail/current/history barriers verify the same timeline
+and article DOM, reading anchors, and zero resource access during previews at
+1440px, 390px and 320px. Multi-tab idle checks detect LRU write feedback; cold
+access-loss checks keep the narrow-screen return path available.
 
 From the repository root, with the workspace dependencies installed:
 
@@ -2302,7 +2320,7 @@ pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navig
 ```
 
 The [configuration](tests/navigation/bots-viewport-playwright.config.ts) discovers
-both files and starts its own Vite host on `127.0.0.1:4198`; keep that port free.
+the assistant fixture files and starts its own Vite host on `127.0.0.1:4198`; keep that port free.
 It uses one worker, zero retries and a 45-second test timeout. An installed Chrome
 can be selected with `DAYNIGHT_BROWSER_CHANNEL=chrome` on the test command; record
 that browser choice with the result. Captures are saved under

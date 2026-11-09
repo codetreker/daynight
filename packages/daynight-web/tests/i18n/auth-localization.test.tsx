@@ -328,6 +328,7 @@ describe("authentication language changes", () => {
       view = renderWithLocale(<AuthenticatedApp />, { locale: "en" });
       await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
       await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.revokeLabel({ name: "Raw 令牌" }) }));
+      await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(true));
     } else {
       view = renderWithLocale(<MembersPanel projectId={projectId} user={user} onRemoved={vi.fn()} />, { locale: "en", taskCache: { viewerId: userId } });
       await interaction.click(await screen.findByRole("button", { name: kind === "member" ? en.auth.management.members.removeLabel({ name: "协作者 Raw" }) : en.auth.management.members.revokeLabel({ id: invitationId }) }));

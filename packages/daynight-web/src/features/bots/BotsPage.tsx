@@ -133,12 +133,12 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
         event.preventDefault(); event.stopPropagation(); changeDetails(false);
       }
     }}>
-      {binding === null ? <header className="bot-conversation-heading">{botId !== null ? <BotConversationHeader target={headerTarget} /> : <h2>{m.select}</h2>}</header> : null}
+      {botId === null || blocked(botId) || denied || deleted ? <header className="bot-conversation-heading">{botId === null ? <h2>{m.select}</h2> : <BotConversationHeader target={headerTarget} />}</header> : null}
       <div className="bot-conversation-body"><div className="bot-conversation-content">
-      {botId !== null && detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null}
+      {botId !== null && denied && detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null}
       {botId !== null && deletions.filter(record => record.id === botId).map(record => <div className="bot-selected-deletion" key={record.id}><BotDeletionStatus record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} /></div>)}
       {bot && bot.sessionId === null ? <p className="bot-empty" role="status">{bot.startupResult.code ? m.reason(bot.startupResult.code) : m[bot.startupResult.state]}</p> : null}
-      <div className="bot-conversation-session" hidden={binding === null}><BotSessionHost cache={cache} botId={botId} displayBinding={binding} actionBinding={actionBinding} active={binding !== null} fullscreenBoundary={conversation} presentation={{ variant: 'assistant', renderHeader: session => <BotConversationHeader target={headerTarget} session={session} /> }} /></div>
+      <div className="bot-conversation-session" hidden={botId === null}><BotSessionHost cache={cache} botId={botId} botName={bot?.name ?? selectedName ?? null} displayBinding={binding} actionBinding={actionBinding} active={botId !== null && !blocked(botId) && !denied && !deleted} error={detail.error !== null ? m.detailError : null} onRetry={detail.refresh} fullscreenBoundary={conversation} presentation={{ variant: 'assistant', renderHeader: session => <BotConversationHeader target={headerTarget} session={session} />, renderUnavailable: () => detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null }} /></div>
       </div>
       {showDetails ? <BotDetailsPanel id={headerTarget.detailsId} bot={headerTarget.bot} worker={headerTarget.worker} stale={headerTarget.stale} opener={headerTarget.detailsOpener} cache={cache} deleteDisabled={!readEnabled || detailStale} modalBlocked={deleteDialog !== null} onDelete={(bot, opener) => setDeleteTarget({ scope, bot, opener })} onClose={() => changeDetails(false)} /> : null}
       </div>

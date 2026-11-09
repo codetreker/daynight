@@ -26,6 +26,74 @@ function fixture() {
 async function ready(f: ReturnType<typeof fixture>) { await f.client.start(); f.receive(); await flush(); expect(f.client.snapshot().connected).toBe(true); }
 
 describe('session history request progress', () => {
+  it('distinguishes an accepted empty history page from a current snapshot or connection', async () => {
+    const f = fixture(), tail = deferred<TimelinePage>();
+    vi.mocked(f.api.timeline).mockReturnValueOnce(tail.promise);
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+    await f.client.start();
+    expect(f.client.snapshot().historyLoaded).toBe(false);
+    f.receive(); await flush();
+    expect(f.client.snapshot().historyLoaded).toBe(false);
+    tail.resolve({ ...f.page, beforeCursor: null, hasMoreBefore: false }); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true, historyCoverage: { firstEntrySeq: null, throughEntrySeq: f.s.lastTimelineSeq, completeBefore: true, lastEventSeq: '0' } });
+  });
+  it('accepts a validated offline page without claiming online pagination readiness', async () => {
+    const f = fixture(); await f.client.start();
+    f.channels[0]!.disconnect(); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true, connected: false, historyReady: false });
+  });
+  it('keeps accepted history through refresh but blocks observation while its replacement is incomplete', async () => {
+    const f = fixture(); await ready(f);
+    const tail = deferred<TimelinePage>(); vi.mocked(f.api.timeline).mockReturnValueOnce(tail.promise);
+    f.client.refresh(); await flush(); f.receive(); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: false });
+    tail.resolve(f.page); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true });
+    f.channels.at(-1)!.disconnect();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true });
+  });
+  it.each(['history', 'execution'] as const)('clears loaded facts and coverage immediately when %s changes', async identity => {
+    const f = fixture(); await ready(f);
+    const tail = deferred<TimelinePage>(); vi.mocked(f.api.timeline).mockReturnValueOnce(tail.promise);
+    const next = { ...f.s, ...(identity === 'history' ? { historyEpoch: 'history-2' } : { executionGeneration: '2' }), sessionRevision: '13' };
+    f.receive(next); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+    tail.resolve({ ...f.page, historyEpoch: next.historyEpoch }); await flush();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true });
+    f.client.close();
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+  });
+  it('reports only applied page coverage and preserves newer authoritative revisions', async () => {
+    const f = fixture();
+    const row = { kind: 'assistant_message' as const, entryId: 'message', entrySeq: '10', revision: '3', content: [{ type: 'text' as const, text: 'latest' }] };
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: [row] }); await ready(f);
+    expect(f.client.snapshot().historyCoverage).toEqual({ firstEntrySeq: '10', throughEntrySeq: '10', completeBefore: false, lastEventSeq: '0' });
+    f.receive({ ...f.s, sessionRevision: '13', lastTimelineSeq: '200' });
+    expect(f.client.snapshot().historyCoverage?.throughEntrySeq).toBe('10');
+    f.receive({ ...f.s, sessionRevision: '12', lastTimelineSeq: '1' });
+    expect(f.client.snapshot().historyCoverage?.throughEntrySeq).toBe('10');
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: [{ ...row, revision: '1' }, { ...row, entryId: 'older', entrySeq: '2' }], hasMoreBefore: false, beforeCursor: null });
+    await f.client.loadOlder();
+    expect(f.client.snapshot().historyCoverage).toEqual({ firstEntrySeq: '2', throughEntrySeq: '10', completeBefore: true, lastEventSeq: '0' });
+    expect(f.client.snapshot().state.entries.find(entry => entry.entryId === row.entryId)?.revision).toBe('3');
+    f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: f.s.executionGeneration, connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: { ...row, entryId: 'new', entrySeq: '300' } } });
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '2', throughEntrySeq: '300', lastEventSeq: '1' });
+  });
+  it('does not expose old coverage under a snapshot event replacing the history epoch', async () => {
+    const f = fixture(); await ready(f);
+    f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: f.s.executionGeneration, connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'snapshot', payload: { ...f.s, historyEpoch: 'history-2', sessionRevision: '13' } } });
+    expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
+  });
+  it('keeps accepted event progress when an older same-history refresh page arrives', async () => {
+    const f = fixture(); await ready(f);
+    const row = { kind: 'assistant_message' as const, entryId: 'message', entrySeq: '10', revision: '3', content: [{ type: 'text' as const, text: 'latest' }] };
+    f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: f.s.executionGeneration, connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: row } });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: [{ ...row, revision: '1' }], lastEventSeq: '0' });
+    f.client.refresh(); await flush(); f.receive(); await flush();
+    expect(f.client.snapshot().state.lastEventSeq).toBe('1');
+    expect(f.client.snapshot().historyCoverage?.lastEventSeq).toBe('1');
+    expect(f.client.snapshot().state.entries[0]?.revision).toBe('3');
+  });
   it.each([null, ''])('rejects an initial tail advertising more history without a usable cursor (%s)', async cursor => {
     vi.useFakeTimers();
     const f = fixture(); vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, beforeCursor: cursor });

@@ -196,7 +196,7 @@ export class BotDisplaySnapshotStore {
     }
   };
   /** Returns a detached preview after account confirmation; reading updates the bounded LRU. */
-  read(ownerUserId: string, botId: string): Promise<BotDisplayPreview | null> {
+  read(ownerUserId: string, botId: string, options: { readonly touch?: boolean } = {}): Promise<BotDisplayPreview | null> {
     if (!this.current(ownerUserId) || !uuid(botId)) return Promise.resolve(null);
     return this.serialized(ownerUserId, () => {
       if (!this.current(ownerUserId)) return null;
@@ -205,8 +205,10 @@ export class BotDisplaySnapshotStore {
       const index = account.value.records.findIndex(row => row.preview.botId === botId);
       if (index < 0) return null;
       const row = account.value.records[index]!;
-      account.value.records.splice(index, 1); account.value.records.push(row);
-      this.persist(account);
+      if (options.touch !== false) {
+        account.value.records.splice(index, 1); account.value.records.push(row);
+        this.persist(account);
+      }
       return parseBotDisplayPreview(row.preview, ownerUserId, botId);
     }, null);
   }
@@ -277,6 +279,25 @@ export class BotDisplaySnapshotStore {
    */
   clearTarget(ownerUserId: string, botId: string): Promise<boolean> { return this.clear(ownerUserId, botId); }
   clearAccount(ownerUserId: string): Promise<boolean> { return this.clear(ownerUserId); }
+  /** Retry only the disk value left by a failed cleanup, without revoking a newer scope or record. */
+  retryClearAccount(ownerUserId: string, expectedRaw: string | null): Promise<boolean> {
+    if (this.closed || !uuid(ownerUserId)) return Promise.resolve(false);
+    return this.serialized(ownerUserId, locked => {
+      if (!this.storage) return false;
+      try {
+        const raw = this.storage.getItem(keyFor(ownerUserId));
+        if (raw !== expectedRaw || raw === null) return true;
+        if (!locked) return false;
+        const account = this.account(ownerUserId);
+        account.value = emptyEnvelope(ownerUserId, crypto.randomUUID());
+        account.localGeneration = {}; account.memoryOnly = false;
+        this.revoke(account);
+        const cleared = this.persist(account);
+        this.publish(ownerUserId);
+        return cleared;
+      } catch { return false; }
+    }, false);
+  }
   private clear(ownerUserId: string, botId?: string): Promise<boolean> {
     if (this.closed || !uuid(ownerUserId) || botId !== undefined && !uuid(botId)) return Promise.resolve(false);
     const account = this.account(ownerUserId);

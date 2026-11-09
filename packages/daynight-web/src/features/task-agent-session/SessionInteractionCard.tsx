@@ -6,7 +6,8 @@ import { useSessionMessages } from './messages';
 
 // Native interaction cards follow the typed controls in ARC's FormCard and QuestionCard:
 // https://github.com/xuangong/agent-remote-control/tree/f166d2f570bbcf8f6c68bd009c701e85b8457943/packages/agent-remote-web/src/react/interactions
-export function SessionInteractionCard({ interaction, enabled, actionAdmitted = true, onRespond, operations = new Map() }: {
+export function SessionInteractionCard({ interaction, enabled, readOnly = false, actionAdmitted = true, onRespond, operations = new Map() }: {
+  readonly readOnly?: boolean;
   readonly operations?: SessionState['operations'];
   readonly actionAdmitted?: boolean;
   readonly interaction: SessionInteraction; readonly enabled: boolean; readonly onRespond: (response: InteractionResponse) => Promise<void>;
@@ -50,8 +51,8 @@ export function SessionInteractionCard({ interaction, enabled, actionAdmitted = 
   }
   return <section className="session-interaction" tabIndex={-1} aria-label={interaction.title} aria-busy={pending}>
     <h4>{interaction.title}</h4>
-    {interaction.state !== 'pending' || resolved ? <>
-      <p className="session-interaction-status">{resolved ? m.resolved : m[interaction.state]}</p>
+    {readOnly || interaction.state !== 'pending' || resolved ? <>
+      <p className="session-interaction-status">{readOnly ? m.historyPreview : resolved ? m.resolved : m[interaction.state]}</p>
       <details className="session-interaction-request">
         <summary>{m.showRequest}</summary>
         <div className="session-request-content" role="region" aria-label={m.requestContent} tabIndex={0}>

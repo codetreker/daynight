@@ -97,6 +97,62 @@ Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩�
 
 独立 API 仅把已认证 current 读取的 409/resource_conflict 转为 `IndependentSessionReadDenied`，保留真实 HTTP 状态和错误码；它不解释一般 command/resource 冲突。共享 client 对该访问失效清空状态、草稿、回执和 Session 显示偏好。独立 current 没有调用方可变版本/fence，服务端删除屏障使用该拒绝。共享观察器每三秒复核独立 live/归档入口，归档已载入时只复核权限，不重复下载正文；本地已知的删除屏障不等待轮询结果。暂停、close 与 invalidate 沿原生命周期停止或延迟观察；普通 Task 的冲突语义保持不变。
 
+## 持久显示快照与真实历史
+
+`display-snapshot-coordinator.ts` 为已认证 `TaskCacheScope` 共享一个
+`BotDisplaySnapshotStore`。页面读取、pane 观察器和冷目标删除使用同一协调器；
+账号清理入口还覆盖当前没有挂载助手页面的账号。协调器先同步撤销读取、观察
+和待写候选资格，再调用 store 的 `clearTarget` 或 `clearAccount`。物理清理失败
+保留撤销状态并记录诊断，不能作为已从磁盘删除的证据。临时删除 block 只冻结
+目标，只有权威 active 详情允许恢复；权威拒绝或删除清目标记录。
+
+选择目标时读取可更新 LRU；存储通知触发的被动重读使用 `touch: false`，不能
+再次写磁盘并形成跨标签反馈。旧清理失败的重试只处理失败时的磁盘值，不重新
+撤销后续同账号 scope 的资格或重复清理其当前草稿；磁盘已有新值时不覆盖新记录。
+
+`SessionViewState.historyLoaded` 表示当前 fence/historyEpoch 下实际应用过合法
+历史页或校验归档；它与负责在线分页的 `historyReady` 分开。`historySettled`
+还要求替换和 hydration 已结束且没有待恢复缺口。普通同历史刷新保留已读事实，
+身份或 epoch 替换、close 和 invalidate 清除；current 和连接本身不构成历史证据。
+`historyCoverage` 记录真实应用页的首条序列、覆盖水位、完整前边界和事件水位，
+供视图撤下已覆盖预览，不由保存时间或空数组猜测完整性。
+
+`BotHistorySnapshotObserver` 仅观察真实 client。确认完整绑定、scope、历史与
+可信名称后取得 store-owned lease，再合并约两秒的变化；候选保持原 lease，
+隐藏、pagehide 和关闭尽力 flush。异步 lease 返回后重新验证当前历史与撤销代次。
+预览行不进入 client state 或保存输入；替换半成品、空壳和无法保留一条完整 entry
+的超大记录不能覆盖最后成功快照。预算与 UTF-16 单位裁剪继续由既有 codec/store
+拥有；pagehide 写入不保证完成，无 Web Locks 或存储失败沿用内存降级。
+
+stale lease 或跨标签失效会冻结该次已接受历史来源，后续本地草稿发布不能为
+旧 payload 续租。新合法页或同身份真实历史进度允许重新观察，完整历史身份
+替换还须等待旧快照清理完成。覆盖水位与阅读锚点只描述历史，不授予操作资格。
+
+读取须等待实际账号确认，并在返回时重新校验账号、目标、选择和撤销代次。
+临时身份复核暂停新读取和保存；仅同账号、目标和撤销代次下已经前台显示的
+预览继续可读，隐藏或切换后不能在暂停期间重新恢复。
+`lastKnownBinding` 只校验历史数据，不能创建 client 或授予新操作资格。无绑定
+时 `SessionView` 接受 null client，保持同一外壳、Timeline 和输入占位；绑定由
+真实详情提供后接入实际 client，不以伪造 snapshot 复用能力或操作账本。
+
+共享 `SessionHistoryPreview` 仅包含 fence、epoch、事件水位、entries、资源描述符和可选
+阅读锚点。Timeline 在同一滚动区使用相同 entryId 行 key，真实 reducer 的行优先；
+实际页覆盖的范围撤下旧预览，未覆盖范围继续明确标记。完整历史或权威空历史
+撤下剩余预览，身份变化拒绝跨历史拼接。预览资源显式使用 `resourceAccess: none`，
+不请求资源、不生成下载入口；历史交互只读，不恢复旧审批。
+
+`SessionPresentationSlots` 的可选 `renderPending` / `renderUnavailable` 接受
+`binding`、`snapshot`、`history` 阶段、是否存在可读内容及现有重试回调。
+插槽只负责显示，错误、请求、身份和权限仍由原 owner 管理。正常复核保留正文、
+草稿和阅读状态；无内容时显示稳定占位，有内容的失败局部显示，不能制造欢迎语
+或缓存活动状态。省略预览及新插槽的 Task/Test 调用方保持原默认行为。
+
+详情错误重试归详情 owner，已绑定 Session 的刷新与历史恢复归真实 client，
+不能用详情回调覆盖其固定失败恢复。撤权或删除撤下私有正文和操作后，窄屏仍
+保留中性标题与返回助手列表入口，避免列表隐藏时失去产品内导航。
+
+数据所有者及取舍见[持久历史决策](../../.agents/notes/implemented/architecture/2026-11-09-bot-persistent-history-preview.md)。
+
 ## 书签与分页
 
 `SessionView` 将可选 `reading` 透传给 `SessionTimeline`；未提供时保持原调用方式。pane 的 scope 是完整 Bot 绑定，Timeline 再加实际 Session fence，并独立校验 historyEpoch。

@@ -5,6 +5,7 @@ import { TaskSessionClient, clearIndependentSessionStorage } from '../task-agent
 import type { SessionTimelineReadingHandle } from '../task-agent-session/SessionTimeline';
 import { clearSessionDisplayPreference } from '../task-agent-session/useSessionDisplayPreference';
 import { BotSessionStorage, clearBotSessionStorage } from './session-storage';
+import { BotHistorySnapshotObserver, type BotDisplaySnapshotCoordinator } from './display-snapshot-coordinator';
 
 export const botSessionKey = (binding: BotSessionBinding): string => JSON.stringify([binding.ownerUserId, binding.botId, binding.sessionId, binding.testExecutionId]);
 
@@ -33,6 +34,7 @@ type Options = {
   readonly onPrincipalMismatch: () => void;
   readonly storage: Storage | null;
   readonly createApi?: (binding: BotSessionBinding, onPrincipalMismatch: () => void) => SessionApi;
+  readonly displaySnapshots?: BotDisplaySnapshotCoordinator;
 };
 type Guards = { readonly blocked: Set<string>; readonly revoked: Set<string>; readonly caches: Set<BotSessionCache>; revision: number };
 const scopeGuards = new WeakMap<object, Map<string, Guards>>();
@@ -55,7 +57,17 @@ export class BotSessionCache {
   private readonly listeners = new Set<() => void>();
   private clock = 0;
   private invalidated = false;
+  private readonly names = new Map<string, string>();
+  private readonly observers = new Map<string, BotHistorySnapshotObserver>();
   constructor(private readonly options: Options) { this.guards = guardsFor(options); this.guards.caches.add(this); }
+  displaySnapshots = (): BotDisplaySnapshotCoordinator | undefined => this.options.displaySnapshots;
+  accountUserId = (): string => this.options.userId;
+  setBotName(botId: string, name: string | null): void {
+    if (!name || this.names.get(botId) === name) return;
+    this.names.set(botId, name);
+    for (const pane of this.panes) if (pane.binding.botId === botId) this.observers.get(pane.key)?.refresh();
+  }
+  flushDisplay(botId: string): void { for (const pane of this.panes) if (pane.binding.botId === botId) void this.observers.get(pane.key)?.flush(); }
   isCurrent = (): boolean => !this.invalidated && this.options.isCurrent();
   isBlocked = (botId: string): boolean => this.guards.blocked.has(botId);
   isRevoked = (botId: string): boolean => this.guards.revoked.has(botId);
@@ -70,6 +82,7 @@ export class BotSessionCache {
     if (!this.isCurrent()) { this.invalidate(); return; }
     this.guards.caches.add(this);
     if (!binding || binding.ownerUserId !== this.options.userId || this.isRevoked(binding.botId) || this.isBlocked(binding.botId)) return;
+    this.options.displaySnapshots?.bind(binding);
     const key = botSessionKey(binding);
     const actionAdmitted = actionBinding !== null && botSessionKey(actionBinding) === key;
     this.recent.set(key, ++this.clock);
@@ -98,10 +111,12 @@ export class BotSessionCache {
       storage: saved.storage,
     });
     const pane: BotSessionPane = { key, binding: immutableBinding, client, reading: createRef(), retained: saved };
+    if (this.options.displaySnapshots) this.observers.set(key, new BotHistorySnapshotObserver({ owner: this.options.displaySnapshots, binding: immutableBinding, client, name: () => this.names.get(binding.botId) ?? null, bookmark: () => pane.reading.current?.captureBookmark() ?? pane.retained.bookmark }));
     this.panes = [...this.panes, pane]; client.setActionAdmission(actionAdmitted); this.publish(); client.syncAvailability();
   }
   private remove(key: string, invalidate: boolean): void {
     const pane = this.panes.find(value => value.key === key), saved = this.retained.get(key);
+    this.observers.get(key)?.close(!invalidate && !this.isBlocked(pane?.binding.botId ?? '') && !this.isRevoked(pane?.binding.botId ?? '')); this.observers.delete(key);
     if (pane && !invalidate) pane.retained.bookmark = pane.reading.current?.captureBookmark() ?? pane.retained.bookmark;
     this.panes = this.panes.filter(value => value.key !== key); this.recent.delete(key);
     if (invalidate) {
@@ -114,6 +129,7 @@ export class BotSessionCache {
   blockBot(botId: string): void {
     if (this.isBlocked(botId) || this.isRevoked(botId)) return;
     this.guards.blocked.add(botId); this.guards.revision++;
+    this.options.displaySnapshots?.blockBot(botId);
     for (const cache of this.guards.caches) {
       for (const pane of cache.panes) if (pane.binding.botId === botId) cache.remove(pane.key, false);
       cache.publish();
@@ -122,6 +138,7 @@ export class BotSessionCache {
   /** Only an authoritative active definition permits resuming a blocked Bot. */
   unblockBot(botId: string): void {
     if (!this.guards.blocked.delete(botId)) return;
+    this.options.displaySnapshots?.unblockBot(botId);
     this.guards.revision++;
     for (const cache of this.guards.caches) cache.publish();
   }
@@ -129,6 +146,7 @@ export class BotSessionCache {
   invalidateBot(botId: string, sessionId?: string): void {
     if (!this.isRevoked(botId)) this.guards.revision++;
     this.guards.revoked.add(botId); this.guards.blocked.delete(botId);
+    this.options.displaySnapshots?.invalidateBot(botId);
     clearBotStoredSessionState(this.options.userId, botId, sessionId, this.options.storage);
     for (const cache of this.guards.caches) {
       for (const [key, saved] of cache.retained) if (saved.binding.botId === botId) cache.remove(key, true);
@@ -138,6 +156,7 @@ export class BotSessionCache {
   invalidate = (): void => {
     if (this.invalidated) return;
     this.invalidated = true;
+    if (this.options.displaySnapshots) void this.options.displaySnapshots.clearAccount();
     for (const sessionId of clearBotSessionStorage(this.options.userId, undefined, this.options.storage)) clearSessionDisplayPreference({ userId: this.options.userId, sessionId });
     for (const key of this.retained.keys()) this.remove(key, true);
     this.guards.caches.delete(this);
