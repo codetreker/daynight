@@ -1,6 +1,6 @@
 # Task handoff
 
-Use for a task or fixed group of tasks that the user explicitly requests to hand off: review content and authenticated responsibility, enable automatic execution permission after both pass, then return.
+Use for a task or fixed group of tasks that the user explicitly requests to hand off: review content readiness and authenticated responsibility, enable automatic execution permission after both pass, then return.
 See [authorization and scope](authorization.md) for boundaries; handoff does not start execution in this session or change assignment, status, dependencies, or platform.
 
 ## Content and responsibility review
@@ -13,6 +13,7 @@ daynight task show <task-id> --project <project-id> --json
 
 If it is done or cancelled, report the actual terminal result and that no handoff is needed, then return without an ownership check or further task discovery. Cancelled does not prove delivery and cannot be reopened.
 Read actually required sources under the [task content standard](task-content.md), checking definitions, stage requirements, and producer and consumer contracts.
+For every delivery task, including standalone tasks, verify that its problem, selected solution, detailed design, implementation steps and acceptance criteria meet the [content sufficiency requirements](task-content.md#content-sufficiency) before approving its content. Missing or unresolved information in any of these areas prevents a passing handoff; do not delegate those gaps implicitly to the implementer.
 For a Goal delivery task, check its [delivery brief and task boundary](goal.md#delivery-task-brief) and [architecture source index](goal.md#register-the-delivery-breakdown). Its objective, scope, implementation approach and acceptance must remain consistent with the confirmed Goal and accepted solution; a missing approach, unsuitable boundary or departure from that Goal is a content gap.
 Read cited source tasks and upstream or downstream contracts only as genuinely needed to assess the selected task. Report concrete content or contract gaps; this review does not authorize repartitioning tasks or changing dependencies.
 Whole-breakdown coverage follows the Goal breakdown checks; handoff does not discover additional work or reconstruct the entire Goal for a selected task.
@@ -21,8 +22,8 @@ Compare the selected task's non-null assignedTo with the current authenticated a
 Do not enumerate project or account task collections to check ownership. A null or different assignment, unknown account UUID, or unreadable task prevents a passing handoff; report the actual assignment or verification error without assigning the task yourself or enabling permission. Recheck the selected task and reassess changes before the exact-version update.
 CLI creation defaults to the authenticated account; existing tasks and other clients may still create unassigned or other-user tasks.
 
-For todo tasks with permission false, organize confirmed content within existing authorization; missing decisions prevent approval, and material changes require user confirmation.
-Incomplete predecessor tasks need not block handoff when existing designs and interfaces sufficiently define the work, but do not claim that future outputs are already readable.
+For todo tasks with permission false, complete authorized content preparation and read back the resulting material before enabling permission. Identify and resolve specific gaps within the authorized scope, obtaining confirmation for substantive decisions as required; missing decisions prevent approval, and material changes require user confirmation.
+Content readiness is separate from readiness to start. Incomplete predecessor tasks need not block handoff when the selected solution, detailed design, exchange contracts and integration steps already fully define the work. Unresolved predecessor design decisions are content gaps; do not treat them or future outputs as existing inputs.
 Tasks with permission already true may be selected at any time; review them read-only, without assuming execution is paused.
 
 ## Act on observed state

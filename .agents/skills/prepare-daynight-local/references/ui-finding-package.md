@@ -2,7 +2,8 @@
 
 Prepare one directory for each independently actionable improvement before the
 [production handoff](ui-handoff.md). `task.md` owns the Chinese requirements,
-observed behavior, bounded solution and acceptance criteria. The JSON manifest
+observed behavior, selected solution, detailed design, ordered implementation
+steps and acceptance criteria. The JSON manifest
 lists its files; it does not duplicate the task definition.
 
 ## Files and local validation
@@ -87,8 +88,10 @@ later edit cannot certify the new upload.
 
 ## Task description template
 
-Adapt the detail to the finding; preserve unknowns instead of filling them with
-guesses. This example is task material, so its prose is Chinese.
+Adapt the detail to the finding under the [task content standard](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md).
+Resolve the investigation and design questions needed to select and implement the
+solution before delivery handoff. Preserve verification limitations accurately.
+This example is task material, so its prose is Chinese.
 
 ```markdown
 # 窄屏项目标题被操作区挤压，影响识别项目
@@ -110,10 +113,16 @@ guesses. This example is task material, so its prose is Chinese.
 
 ## 预期行为与方案
 
-窄屏仍能识别标题并触达所有操作。说明建议的排列、换行、截断或展开行为；
-需要视觉取舍时使用[交互原型](prototype.html)。
-区分已核实的原因与待实现者确认的定位线索，链接相关固定源码及适用设计原则。
+窄屏仍能识别标题并触达所有操作。说明已选定的排列、换行、截断或展开行为及理由，
+链接相关固定源码及适用设计原则；[交互原型](prototype.html) 展现确定的视觉与交互。
+详细设计明确负责标题与操作区布局的组件、尺寸和状态规则及必要交互。
+移交前解决影响方案选择或实现设计的定位问题，使接手者可直接按材料落实。
 说明为何此处值得调整，不以单个尺寸或个人偏好代替影响判断。
+
+## 实施步骤
+
+按依赖顺序说明具体变更目标及每步预期结果，包括组件布局和状态规则的修改、
+必要交互衔接，以及原复现场景和相关状态的产品页面验证。
 
 ## 验收
 
