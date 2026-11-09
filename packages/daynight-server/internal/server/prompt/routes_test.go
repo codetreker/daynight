@@ -14,6 +14,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
@@ -52,7 +53,7 @@ func requestResource(f *fakePrompts, method, path, body string, scope model.Prom
 		r.SetPathValue(pathKey, id)
 	}
 	w := httptest.NewRecorder()
-	h := handler{prompts: f, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	h := newHandler(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	h.resource(w, r, model.Principal{UserID: userID}, scope)
 	return w
 }
@@ -149,14 +150,14 @@ func TestPromptInputMediaAndReadFailure(t *testing.T) {
 	for _, media := range []string{"", "text/plain", "application/json; charset=latin-1"} {
 		r := httptest.NewRequest(http.MethodPut, "/", strings.NewReader(`{}`))
 		r.Header.Set("Content-Type", media)
-		if _, err := decodePut(httptest.NewRecorder(), r); err == nil {
+		if _, err := decodePut(httptest.NewRecorder(), r, transport.JSONBodyReadTimeout); err == nil {
 			t.Fatalf("accepted media %q", media)
 		}
 	}
 	r := httptest.NewRequest(http.MethodPut, "/", nil)
 	r.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	r.Body = failedBody{}
-	if _, err := decodePut(httptest.NewRecorder(), r); err == nil {
+	if _, err := decodePut(httptest.NewRecorder(), r, transport.JSONBodyReadTimeout); err == nil {
 		t.Fatal("accepted failed body read")
 	}
 }
