@@ -10,7 +10,9 @@ byte guards repeated JSON semantics in SQL, including fields absent from the
 Worker summary. Bot page admission also queried and authorized successive
 candidates and repeatedly encoded the growing response. These mechanisms added
 work to ordinary canonical records and made SQL, Go decoding and protocol
-accounting jointly responsible for the same stored representation.
+accounting jointly responsible for the same stored representation. Client
+single-response caps smaller than their aggregate transport budgets could also
+reject ordinary count-based Bot pages containing valid persisted definitions.
 
 The original [encoded response decision](../architecture/2026-11-07-encoded-response-budgets.md)
 addressed a real distinction between row counts and encoded bytes, including
@@ -46,6 +48,17 @@ read-byte guards and candidate measurement callbacks are absent. The shared MCP
 entry retains its independent result limits; they do not cause Bot candidate
 queries or byte-based page slicing.
 
+Bot clients preserve their existing aggregate transport budgets while allowing
+one count-based page to use the remaining budget. Worker Bot inventory reads
+use 64 MiB for both a response and the complete operation. CLI `bot list` uses
+`DEFAULT_OPERATION_LIMITS.totalBytes`, 256 MiB, as its response limit through the
+existing runtime options; its aggregate limit remains 256 MiB. Both retain
+100-item pages. Other CLI commands keep their defaults, and deadlines,
+cancellation, identity checks and whole-list failure semantics remain. The
+[Worker inventory design](../../../../docs/design/worker-bot-inventory.md#权威读取与对账)
+and [CLI assistant design](../../../../docs/design/assistant.md#cli-管理与远端观测)
+own these transport settings. They introduce no server read admission or quota.
+
 The [Worker design](../../../../docs/design/daynight-worker-snapshots.md) and
 [assistant design](../../../../docs/design/assistant.md#查询与授权) own these read
 paths. This partially supersedes the encoded response decision for Worker/Bot
@@ -78,7 +91,9 @@ Worker summaries keep a bounded row count and compact result projection. Bot
 pages use one candidate query and ordinary decoding rather than per-item
 admission. Neither domain promises a response-byte bound or interprets arbitrary
 historical database contents. Write limits continue to protect accepted input;
-there is no new aggregate storage quota.
+there is no new aggregate storage quota. Client response bytes still count
+against their unchanged aggregate transport budgets; a later page failure does
+not publish a partial CLI list or permit Worker inventory absence reconciliation.
 
 Tests observe canonical field output, current visibility, pagination and natural
 error propagation. Worker result metadata permits the projected observation-time

@@ -104,7 +104,7 @@ Bot 命令拥有参数、业务请求身份、资源解析和显示；共享服�
 
 已派发写入的传输失败、未知服务结果或无效成功响应保留原业务 ID 和未确认结果。错误投影仅公开操作、资源和请求身份、阶段、HTTP 状态、错误码和白名单内的可操作原因；不转储传输 cause、认证配置或服务端错误正文。显式 show 读取当前资源用于核对，CLI 本身不自动重发写入、更新版本或生成替代请求。创建的业务请求 ID 是 botId，删除的是 deletionId；HTTP 关联 ID 单独保留，避免把日志关联误作幂等依据。
 
-列表按服务端不透明游标读完所有页面，检测重复游标和重复资源身份，之后才统一输出；后页失败时丢弃未完整的显示结果并保留错误。Bot 输出只包含公开 DTO，删除对象整体省略定义；删除完成取决于两个清理阶段，不能由 HTTP 200、列表隐藏或一个阶段完成推导。
+列表以每页 100 项按服务端不透明游标读完所有页面，检测重复游标和重复资源身份，之后才统一输出；后页失败时丢弃未完整的显示结果并保留错误。`runBotCommand` 仅为 `list` 向共享 runtime 传入 `operationLimits.responseBytes=DEFAULT_OPERATION_LIMITS.totalBytes`，即 256 MiB；累计 `totalBytes` 仍为 256 MiB。这样一个普通条数页可使用剩余累计传输预算，全部分页继续共同计量。`show/create/delete` 保留默认 128 MiB 单响应上限，所有命令沿用原累计额度、总期限、请求期限和取消规则。[共享客户端设计](daynight-project-task.md#服务地址与-http-客户端)拥有默认计量机制，[Worker 库存设计](worker-bot-inventory.md#权威读取与对账)拥有托管清单的独立 64 MiB 传输额度。Bot 输出只包含公开 DTO，删除对象整体省略定义；删除完成取决于两个清理阶段，不能由 HTTP 200、列表隐藏或一个阶段完成推导。
 
 Worker 列表保留服务端 observedAt 与完整 items，详情保留 observedAt 与 worker。人类显示从服务端时间计算 120 秒在线阈值，库存 observed/stale/unavailable 独立显示；null 库存不转为零，资源探测错误不转为可用。assistantHost 缺失表示没有托管观测。此读取与 Worker 运行、调度及能力广告无副作用联系，普通远端查询沿用服务端 72 小时窗口。
 

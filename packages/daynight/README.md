@@ -1616,6 +1616,16 @@ daynight bot show <bot-id> --json
 daynight bot delete <bot-id> --if-version <observed-version> --json
 ```
 
+`bot list` requests 100 items per page and prints results only after every page
+succeeds. Its per-response limit uses the existing 256 MiB aggregate response
+budget; all pages together still have that same 256 MiB limit. A later page or
+budget failure produces an error without partial output. `bot show`, `bot create`
+and `bot delete` retain the default 128 MiB per-response limit. Existing operation
+and request deadlines continue to apply. These client transport limits are
+independent of the server's item-count pagination. The foreground Worker's Bot
+inventory reader separately uses its existing 64 MiB aggregate budget for both
+a single response and all pages of one read operation.
+
 Creation needs only `--name`. Optional `--worker`, `--cwd`, `--agent`, `--model` and
 `--reasoning-effort` preserve explicit choices; the service resolves and freezes omitted settings. The
 specified directory belongs to the target Worker, may be outside a repository,

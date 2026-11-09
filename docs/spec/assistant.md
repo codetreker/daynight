@@ -93,7 +93,7 @@ model 和 reasoningEffort 独立可选，只接受非空、无控制字符、良
 
 Bot JSON 的 version、creationOrder 和 requestedVersion 始终为十进制字符串，不经浮点数转换。删除分别显示 Worker 和服务端清理状态；任一 pending 不构成完成，只有两方均 completed 才表示完成，failed 保留错误码。CLI 遵守服务端的删除准入及真实清理阶段，不将列表隐藏解释为历史或原生进程已清理。
 
-列表在所有分页成功后才输出结果。权限错误、网络错误、格式错误或后续页失败不产生空列表或部分成功。Bot 和远端 Worker 操作失败时 `--json` 向 stderr 输出单个 `{error:{...}}` 对象，包含 operation、可取得的 botId/requestId 或 workerId、phase、HTTP status、code、serverRequestId 以及 outcomeUnconfirmed；未知写入另有 reconcile 核对命令。已知创建环境失败和请求冲突通过 reason 保留具体原因；缺少认证时给出 login_required。认证材料、原始传输异常和任意服务端错误正文不进入诊断。操作失败 exit 1，参数用法错误沿用文本诊断与 exit 2，不因 `--json` 改变。
+列表在所有分页成功后才输出结果。`bot list` 每页请求 100 项，单响应上限采用该命令现有累计响应体预算 256 MiB，全部页面的累计上限仍为 256 MiB；服务端条数分页不要求每页低于通用客户端的 128 MiB 默认值。`bot show/create/delete` 和其他命令保留默认传输限额，操作与请求期限继续适用。权限、网络、格式、预算或后续页错误不产生空列表或部分成功。Bot 和远端 Worker 操作失败时 `--json` 向 stderr 输出单个 `{error:{...}}` 对象，包含 operation、可取得的 botId/requestId 或 workerId、phase、HTTP status、code、serverRequestId 以及 outcomeUnconfirmed；未知写入另有 reconcile 核对命令。已知创建环境失败和请求冲突通过 reason 保留具体原因；缺少认证时给出 login_required。认证材料、原始传输异常和任意服务端错误正文不进入诊断。操作失败 exit 1，参数用法错误沿用文本诊断与 exit 2，不因 `--json` 改变。
 
 远端 Worker 保留服务端 observedAt、lastReportedAt 和库存观测状态。在线显示按服务端观测时间与最后报告的 120 秒间隔判断；它不证明空闲容量或 Provider 可启动。unavailable 库存的任务数与观察时间为 null，不能当作零任务；stale 和 offline 保留旧事实的时效边界。详情保留探测失败码和采样时间；缺少 assistantHost 不能推断支持助手托管。普通 Worker 查询沿用最近 72 小时窗口，超出窗口的单项查询返回不可用结果，不证明 Worker 从未存在。`worker repo list` 仍只列本机配置的仓库。
 
