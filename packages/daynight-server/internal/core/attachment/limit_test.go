@@ -18,10 +18,11 @@ func TestBoundedContentReadsOneByteBeyondMaximum(t *testing.T) {
 				t.Fatalf("got %d bytes", len(body))
 			}
 			var fault *model.Fault
+			var overflow *ContentOverflowError
 			if size == int(MaxFileBytes) && err != nil {
 				t.Fatal(err)
 			}
-			if size > int(MaxFileBytes) && (!errors.As(err, &fault) || fault.Code != "payload_too_large" || source.Len() != size-int(MaxFileBytes)-1) {
+			if size > int(MaxFileBytes) && (!errors.As(err, &overflow) || !errors.As(err, &fault) || fault.Code != "payload_too_large" || source.Len() != size-int(MaxFileBytes)-1) {
 				t.Fatalf("err=%v remaining=%d", err, source.Len())
 			}
 		})

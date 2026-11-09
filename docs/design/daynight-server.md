@@ -303,7 +303,7 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 
 Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHeaderBytes` 设置为 64 KiB 减去初始读取的 4096-byte slop。该预算适用于 HTTP/1；未来 HTTP/2 的解压头字段需独立定义。`httpx` 沿 `ResponseWriter.Unwrap` 使用 `ResponseController`，在实际读取开始时设置 socket deadline。成功读到 EOF 后清除期限；请求入口跟踪底层 body 的实际 EOF，使已消费正文的业务错误保留连接与正常取消语义。取消或未消费正文时关闭连接并阻止自动 drain。流式读取使用 `DeadlineBody`，供附件和归档入口在授权后的实际读取处应用各自期限。
 
-确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
+确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。附件实际字节超限由共享 reader 的 `ContentOverflowError` 标识并保留领域 Fault；分类器检查错误树中的每个发布结果均为 `not_published`、事务仅为未尝试提交且清理成功的 operation 拒绝，才将其映射为终止 413。一般 `payload_too_large` Fault 不授予独立响应资格。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
 
 MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读并交给 SDK。名额持续到 HTTP 与 SDK handler 均不再持有输入，与 Control 和 Large 工具预算独立。失败、取消、初始化和关闭均释放名额。详细额度及适用状态见[输入规范](../spec/daynight-api-input-limits.md)。
 

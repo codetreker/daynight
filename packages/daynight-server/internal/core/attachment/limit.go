@@ -14,6 +14,13 @@ func FileTooLarge() error {
 	return &model.Fault{Code: "payload_too_large", Message: "Attachment content exceeds 5 MiB."}
 }
 
+// ContentOverflowError identifies a byte observed beyond the complete-content
+// limit. Its domain fault remains available to non-HTTP consumers.
+type ContentOverflowError struct{}
+
+func (e *ContentOverflowError) Error() string { return e.Unwrap().Error() }
+func (*ContentOverflowError) Unwrap() error   { return FileTooLarge() }
+
 // BoundedContent preserves an explicit overflow error rather than accepting a
 // truncated EOF. It reads at most one byte beyond the limit.
 func BoundedContent(source io.Reader) io.Reader {
@@ -33,7 +40,7 @@ func (r *boundedContent) Read(p []byte) (int, error) {
 		var probe [1]byte
 		n, err := r.source.Read(probe[:])
 		if n > 0 {
-			return 0, FileTooLarge()
+			return 0, &ContentOverflowError{}
 		}
 		return 0, err
 	}

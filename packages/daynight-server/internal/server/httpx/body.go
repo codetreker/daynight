@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
@@ -44,8 +46,18 @@ func bodyReadFailure(err error) *BodyReadError {
 			}
 			found = value
 			return true
+		case *attachmentcore.ContentOverflowError:
+			return visit(&BodyReadError{Cause: value, Status: http.StatusRequestEntityTooLarge, Code: "payload_too_large", Message: value.Error()})
+		case *filestorage.PublicationError:
+			if value.Outcome != filestorage.NotPublished {
+				return false
+			}
 		case *store.TransactionError:
-			if value.Phase != "operation" || value.CleanupFailed || value.Outcome != store.TransactionNotCommitted {
+			if value.Phase != "operation" || value.CommitAttempted || value.CleanupFailed || value.Outcome != store.TransactionNotCommitted {
+				return false
+			}
+		case *store.Error:
+			if value.DatabaseFailure {
 				return false
 			}
 		case *store.ThreadTransactionError:
