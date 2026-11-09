@@ -24,17 +24,17 @@ type Attachments struct {
 	uploadSlots chan struct{}
 }
 
-// fileEffectError records that a file mutation was entered. The underlying
+// FileEffectError records that a file mutation was entered. The underlying
 // transaction result remains available, but cannot undo that external effect.
-type fileEffectError struct{ cause error }
+type FileEffectError struct{ Cause error }
 
-func (e *fileEffectError) Error() string { return e.cause.Error() }
-func (e *fileEffectError) Unwrap() error { return e.cause }
+func (e *FileEffectError) Error() string { return e.Cause.Error() }
+func (e *FileEffectError) Unwrap() error { return e.Cause }
 
 // FileEffectPossible reports whether an unsuccessful operation entered file
 // mutation; an error after this point cannot prove the file was unchanged.
 func FileEffectPossible(err error) bool {
-	var effect *fileEffectError
+	var effect *FileEffectError
 	return errors.As(err, &effect)
 }
 
@@ -130,7 +130,7 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 	if lease != nil && !RetainUploadLease(ctx, lease) {
 		if closeErr := lease.Close(); closeErr != nil {
 			if err == nil {
-				err = &fileEffectError{cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
+				err = &FileEffectError{Cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
 			} else {
 				err = errors.Join(err, closeErr)
 			}
@@ -176,7 +176,7 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 	defer func() {
 		if closeErr := permit.Close(); closeErr != nil {
 			if resultErr == nil {
-				resultErr = &fileEffectError{cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
+				resultErr = &FileEffectError{Cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
 			} else {
 				resultErr = errors.Join(resultErr, closeErr)
 			}
@@ -224,9 +224,9 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 		err = &filestorage.PublicationError{Outcome: publication, Cause: err}
 		if publication != filestorage.NotPublished {
 			if operation.CompletionFacts(err).Outcome == store.TransactionCommitted {
-				return attachment, created, lease, &fileEffectError{cause: err}
+				return attachment, created, lease, &FileEffectError{Cause: err}
 			}
-			return model.Attachment{}, false, lease, &fileEffectError{cause: err}
+			return model.Attachment{}, false, lease, &FileEffectError{Cause: err}
 		}
 		return model.Attachment{}, false, lease, err
 	}
@@ -312,7 +312,7 @@ func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.Attac
 		defer func() {
 			if closeErr := lease.Close(); closeErr != nil {
 				if resultErr == nil {
-					resultErr = &fileEffectError{cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
+					resultErr = &FileEffectError{Cause: &filestorage.PublicationError{Outcome: filestorage.Published, Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: closeErr}}}
 				} else {
 					resultErr = errors.Join(resultErr, closeErr)
 				}
@@ -394,7 +394,7 @@ func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer
 	if err != nil {
 		err = &filestorage.PublicationError{Outcome: publication, Cause: err}
 		if publication != filestorage.NotPublished {
-			err = &fileEffectError{cause: err}
+			err = &FileEffectError{Cause: err}
 			if operation.CompletionFacts(err).Outcome == store.TransactionCommitted {
 				return attachment, created, err
 			}
@@ -487,7 +487,7 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 		return nil
 	})
 	if err != nil && fileStarted {
-		return &fileEffectError{cause: err}
+		return &FileEffectError{Cause: err}
 	}
 	return err
 }

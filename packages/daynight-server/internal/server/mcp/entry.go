@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -74,22 +75,23 @@ func (s *requestScope) finish() {
 }
 
 type Entry struct {
-	server     *sdk.Server
-	http       http.Handler
-	auth       Authenticator
-	oauth      OAuthAuthenticator
-	resource   string
-	logger     *slog.Logger
-	origins    map[string]bool
-	publicHost string
-	budget     *Budget
-	input      chan struct{}
-	ctx        context.Context
-	cancel     context.CancelFunc
-	mu         sync.Mutex
-	stopped    bool
-	drained    chan struct{}
-	active     sync.WaitGroup
+	server          *sdk.Server
+	http            http.Handler
+	auth            Authenticator
+	oauth           OAuthAuthenticator
+	resource        string
+	logger          *slog.Logger
+	origins         map[string]bool
+	publicHost      string
+	budget          *Budget
+	input           chan struct{}
+	bodyReadTimeout time.Duration
+	ctx             context.Context
+	cancel          context.CancelFunc
+	mu              sync.Mutex
+	stopped         bool
+	drained         chan struct{}
+	active          sync.WaitGroup
 }
 
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
@@ -108,7 +110,7 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 	ctx, cancel := context.WithCancel(context.Background())
 	sdkLogger := slog.New(safeSDKLog{handler: logger.Handler()})
 	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: sdkLogger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
-	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), input: make(chan struct{}, transport.MaxMCPInputOperations), ctx: ctx, cancel: cancel}
+	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), input: make(chan struct{}, transport.MaxMCPInputOperations), bodyReadTimeout: transport.JSONBodyReadTimeout, ctx: ctx, cancel: cancel}
 	// Raw input is limited before SDK dispatch. Batch correlation adds fewer
 	// than 80 bytes per Task call, each of which occupies over 50 input bytes.
 	// Four times the raw limit therefore bounds the transformed SDK input.
@@ -244,7 +246,7 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 			http.Error(w, "MCP input capacity exhausted", http.StatusTooManyRequests)
 			return
 		}
-		body, err := httpx.ReadBody(w, r.WithContext(ctx), transport.MaxMCPJSONBodyBytes, transport.JSONBodyReadTimeout)
+		body, err := httpx.ReadBody(w, r.WithContext(ctx), transport.MaxMCPJSONBodyBytes, e.bodyReadTimeout)
 		if err != nil {
 			httpx.WriteBodyError(w, r, e.logger, "mcp", "read", err)
 			return

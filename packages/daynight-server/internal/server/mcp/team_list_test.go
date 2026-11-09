@@ -3,64 +3,62 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type listTeamsDB struct {
-	store.TeamWriter
-	store.SnapshotReader
-	items []model.Team
-}
-type listTeamsScope struct {
-	store.SnapshotScope
-	items []model.Team
-}
-type listTeamsReader struct {
-	store.TeamReader
-	items []model.Team
-}
-
-func (d *listTeamsDB) ReadSnapshot(_ context.Context, f func(store.SnapshotScope) error) error {
-	return f(listTeamsScope{items: d.items})
-}
-func (s listTeamsScope) TeamDAO() store.TeamReader { return listTeamsReader{items: s.items} }
-func (r listTeamsReader) TeamsBounded(_ context.Context, _ string, page store.Page, _ int) (store.TeamPage, error) {
-	result := store.TeamPage{Items: []model.Team{}}
-	for _, item := range r.items {
-		if page.After != nil && !item.CreatedAt.After(page.After.CreatedAt) {
-			continue
-		}
-		if len(result.Items) == page.Limit {
-			result.HasMore = true
-			break
-		}
-		result.Items = append(result.Items, item)
-	}
-	return result, nil
-}
-
 func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
-	f := newEntryFixture(t)
-	f.entry.auth = validTeamAuth{}
-	db := &listTeamsDB{}
+	mocks := newTeamToolMocks(t)
+	f := registerTeamToolMocks(t, mocks)
+	var items []model.Team
 	for i, name := range []string{strings.Repeat("<", 500000), strings.Repeat("<", 500000), strings.Repeat("<", 800000)} {
 		team := testUnknownTeam()
 		team.ID = []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}[i]
 		team.Name = &name
 		team.CreatedAt = time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC)
-		db.items = append(db.items, team)
+		items = append(items, team)
 	}
-	if err := RegisterTeamTools(f.entry, teamservice.NewTeams(db), projectservice.NewProjects(&failedTeamReadDB{}), identity.New(nil, nil, "")); err != nil {
-		t.Fatal(err)
+	cursors := []string{"team-page-1", "team-page-2"}
+	call := 0
+	mocks.expect("Teams.ListAdmitted", "Teams.ListAdmitted", "Teams.ListAdmitted")
+	mocks.teams.ListAdmittedFunc = func(_ context.Context, _ model.Principal, request model.PageRequest, measure func([]model.Team, *string) error) (coreteam.TeamPage, error) {
+		index := call
+		call++
+		expected := model.PageRequest{Limit: 10}
+		if index > 0 {
+			expected.Cursor = &cursors[index-1]
+		}
+		if !reflect.DeepEqual(request, expected) {
+			t.Errorf("request = %+v; want %+v", request, expected)
+		}
+		var cursor *string
+		if index < len(cursors) {
+			cursor = &cursors[index]
+		}
+		err := measure(items[index:index+1], cursor)
+		if index == 2 {
+			var violation *limit.Violation
+			if !errors.As(err, &violation) {
+				t.Errorf("oversized Team envelope = %v", err)
+			}
+			return coreteam.TeamPage{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Team exceeds the encoded page limit.", Cause: err}
+		}
+		if err != nil {
+			t.Errorf("one-Team envelope: %v", err)
+		}
+		var violation *limit.Violation
+		if err := measure(items[index:index+2], cursor); !errors.As(err, &violation) {
+			t.Errorf("two-Team envelope = %v", err)
+		}
+		return coreteam.TeamPage{Items: items[index : index+1], NextCursor: cursor}, nil
 	}
 	c := f.client(t, "2025-11-25", "alice")
 	var cursor string
@@ -85,7 +83,7 @@ func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
 		if err := json.Unmarshal(raw, &env); err != nil {
 			t.Fatal(err)
 		}
-		if len(env.Data.Items) != 1 || env.Data.Items[0].ID != db.items[i].ID || env.Data.NextCursor == "" {
+		if len(env.Data.Items) != 1 || env.Data.Items[0].ID != items[i].ID || env.Data.NextCursor == "" {
 			t.Fatalf("page %d: %s", i, raw)
 		}
 		cursor = env.Data.NextCursor

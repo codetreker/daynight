@@ -1016,6 +1016,37 @@ owns responsibility boundaries; the
 [Session use-case decision](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)
 records the direct Session binding and retained proofs.
 
+### MCP protocol tests
+
+`internal/server/mcp` tests use controlled direct service/use-case operations
+while executing the actual Entry, HTTP transport, SDK, schemas and tool response
+encoding. Principals and domain results are explicit facts; operations verify
+arguments, context, authority and calls. Unconfigured calls fail independently
+of the tool's error response. No Task state or database persistence is simulated.
+The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_UNIAUTH_FIXTURE` before running the complete selection.
+
+Run from this module with the unit resource overlay:
+
+```bash
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json ./internal/server/mcp
+```
+
+The suite retains real MCP framing and SDK parsing, schema registration errors,
+exact RPC ID and Task write-response boundaries, HTML escaping, compiled-input
+limits, request cancellation, shutdown and input/content admission. The native
+stalled-body test asserts the 15-second production default and uses a
+200-millisecond instance duration through the same logical and socket deadline.
+Global definition mutation tests remain isolated from concurrent registration.
+
+Service tests own response admission, Team page-prefix selection, transfer
+receipts and deleted-project refusal. Core and Store retain their rules and
+actual SQL, transactions, rollback, persistence and authorization rechecks.
+Protocol mocks supply completion facts; they do not prove physical completion.
+The [MCP ownership decision](../../.agents/notes/implemented/testing/2026-11-09-mcp-use-case-test-ownership.md)
+records the proof split and alternatives. Normal assembled flows retain the
+separate API integration entry.
+
 ### Session HTTP tests
 
 The regular `internal/server/session` suite executes actual routes and

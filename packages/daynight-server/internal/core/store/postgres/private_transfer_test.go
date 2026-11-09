@@ -399,6 +399,18 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 	if err := authorize(principal, "oauth", otherGrant); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("deleted task: %v", err)
 	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=NULL WHERE id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(principal, "oauth", otherGrant); err != nil {
+		t.Fatalf("restored task: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE projects SET deleted_at=now() WHERE id=$1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(principal, "oauth", otherGrant); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("deleted project: %v", err)
+	}
 }
 
 func TestPrivateTransferMaterializationAndRollback(t *testing.T) {

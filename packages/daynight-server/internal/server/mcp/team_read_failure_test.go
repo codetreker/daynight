@@ -7,10 +7,9 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -20,47 +19,9 @@ func (validTeamAuth) Authenticate(context.Context, model.CredentialKind, string)
 	return model.Principal{Kind: model.PATCredential, UserID: unknownActor, CredentialID: "44444444-4444-4444-8444-444444444444"}, nil
 }
 
-type failedTeamReadDB struct {
-	store.TeamWriter
-	store.ProjectWriter
-	store.ProjectCreationWriter
-	outcome store.TransactionOutcome
-}
-
-func (d *failedTeamReadDB) ReadSnapshot(_ context.Context, f func(store.SnapshotScope) error) error {
-	if err := f(failedTeamReadScope{}); err != nil {
-		return err
-	}
-	return &store.TransactionError{Phase: "commit", Outcome: d.outcome, CommitAttempted: true, Cause: errors.New("snapshot completion failure")}
-}
-
-type failedTeamReadScope struct{ store.SnapshotScope }
-
-func (failedTeamReadScope) TeamDAO() store.TeamReader       { return failedTeamReadTeam{} }
-func (failedTeamReadScope) ProjectDAO() store.ProjectReader { return failedTeamReadProject{} }
-
-type failedTeamReadTeam struct{ unknownReader }
-
-func (failedTeamReadTeam) TeamsBounded(context.Context, string, store.Page, int) (store.TeamPage, error) {
-	return store.TeamPage{}, nil
-}
-func (failedTeamReadTeam) TeamMembersPage(context.Context, string, store.Page) (store.TeamMemberPage, error) {
-	return store.TeamMemberPage{}, nil
-}
-
-type failedTeamReadProject struct{ store.ProjectReader }
-
-func (failedTeamReadProject) ScopedProjects(context.Context, model.Principal, store.ProjectScope, store.Page) (store.ProjectPage, error) {
-	return store.ProjectPage{}, nil
-}
-
 func TestTeamReadSnapshotFailureHasNoWriteOutcome(t *testing.T) {
-	f := newEntryFixture(t)
-	f.entry.auth = validTeamAuth{}
-	db := &failedTeamReadDB{}
-	if err := RegisterTeamTools(f.entry, teamservice.NewTeams(db), projectservice.NewProjects(db), identity.New(nil, nil, "")); err != nil {
-		t.Fatal(err)
-	}
+	mocks := newTeamToolMocks(t)
+	f := registerTeamToolMocks(t, mocks)
 	c := f.client(t, "2025-11-25", "alice")
 	cases := []struct {
 		name string
@@ -72,9 +33,44 @@ func TestTeamReadSnapshotFailureHasNoWriteOutcome(t *testing.T) {
 		{"team_member_list", map[string]any{"team": unknownTeam}},
 	}
 	for _, outcome := range []store.TransactionOutcome{store.TransactionUnknown, store.TransactionNotCommitted, store.TransactionCommitted} {
-		db.outcome = outcome
 		for _, tc := range cases {
 			t.Run(string(outcome)+"/"+tc.name, func(t *testing.T) {
+				failure := &store.TransactionError{Phase: "commit", Outcome: outcome, CommitAttempted: true, Cause: errors.New("snapshot completion failure")}
+				switch tc.name {
+				case "team_list":
+					mocks.expect("Teams.ListAdmitted")
+					mocks.teams.ListAdmittedFunc = func(_ context.Context, _ model.Principal, request model.PageRequest, _ func([]model.Team, *string) error) (coreteam.TeamPage, error) {
+						if request.Limit != 50 || request.Cursor != nil {
+							t.Errorf("page = %+v", request)
+						}
+						return coreteam.TeamPage{}, failure
+					}
+				case "team_show":
+					mocks.expect("Teams.GetBounded")
+					mocks.teams.GetBoundedFunc = func(_ context.Context, _ model.Principal, id string, limit int) (model.Team, error) {
+						if id != unknownTeam || limit != 1<<20 {
+							t.Errorf("GetBounded(%s, %d)", id, limit)
+						}
+						return model.Team{}, failure
+					}
+				case "team_projects":
+					mocks.expect("Projects.ListAdmitted")
+					mocks.projects.ListAdmittedFunc = func(_ context.Context, _ model.Principal, request coreproject.ProjectListRequest, _ func([]model.Project, *string) error) (coreproject.ProjectPage, error) {
+						if request.TeamID == nil || *request.TeamID != unknownTeam || request.Page.Limit != 50 || request.Page.Cursor != nil {
+							t.Errorf("scope = %+v", request)
+						}
+						return coreproject.ProjectPage{}, failure
+					}
+				case "team_member_list":
+					mocks.expect("Teams.MembersAdmitted")
+					mocks.teams.MembersAdmittedFunc = func(_ context.Context, _ model.Principal, id string, request model.PageRequest, _ func([]model.TeamMemberProfile, *string) error) (coreteam.MemberPage, error) {
+						if id != unknownTeam || request.Limit != 50 || request.Cursor != nil {
+							t.Errorf("member page %s %+v", id, request)
+						}
+						return coreteam.MemberPage{}, failure
+					}
+				}
+
 				result, err := c.CallTool(context.Background(), &sdk.CallToolParams{Name: tc.name, Arguments: tc.args})
 				if err != nil || !result.IsError {
 					t.Fatalf("result=%#v err=%v", result, err)
@@ -93,6 +89,7 @@ func TestTeamReadSnapshotFailureHasNoWriteOutcome(t *testing.T) {
 				if _, exists := env.Error["writeOutcome"]; exists || env.Error["code"] != "internal_error" || env.Error["phase"] != "commit" || len(env.Data) != 0 {
 					t.Fatalf("invalid read failure: %s", raw)
 				}
+				mocks.verify()
 			})
 		}
 	}

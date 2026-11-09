@@ -10,8 +10,6 @@ import (
 	"unicode/utf8"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 )
 
 func TestWireDecimals(t *testing.T) {
@@ -85,42 +83,33 @@ func TestWireProjectAndTeamVersions(t *testing.T) {
 	}
 }
 
-type wireIdentityScope struct {
-	dao    wireIdentityDAO
-	userID string
-	teamID string
-	err    error
+type wireIdentityMock struct {
+	resolve func(context.Context, core.Principal) (string, error)
 }
 
-type wireIdentityDAO struct {
-	store.IdentityDAO
-	scope *wireIdentityScope
-}
-
-func (s *wireIdentityScope) IdentityDAO() store.IdentityDAO         { s.dao.scope = s; return &s.dao }
-func (s *wireIdentityScope) PersonalTeamDAO() store.PersonalTeamDAO { return nil }
-func (d *wireIdentityDAO) IdentityPersonalTeam(_ context.Context, id string) (store.PersonalTeamFacts, error) {
-	s := d.scope
-	s.userID = id
-	return store.PersonalTeamFacts{ID: s.teamID, MemberCount: 1, OwnerAdminCount: 1}, s.err
-}
-func (s *wireIdentityScope) WriteIdentity(ctx context.Context, f func(store.IdentityScope) error) (store.Completion, error) {
-	if err := f(s); err != nil {
-		return store.Completion{}, err
-	}
-	return store.Completion{Outcome: store.TransactionCommitted}, nil
+func (m wireIdentityMock) PersonalTeamID(ctx context.Context, principal core.Principal) (string, error) {
+	return m.resolve(ctx, principal)
 }
 
 func TestWirePersonalTeamResolutionUsesPrincipalAndPropagatesFailure(t *testing.T) {
-	dao := &wireIdentityScope{teamID: "f5ba8b54-c700-4a2f-b19f-ba0083b36f52"}
-	id := identity.New(dao, nil, "")
+	const teamID = "f5ba8b54-c700-4a2f-b19f-ba0083b36f52"
 	principal := core.Principal{UserID: "caller"}
-	got, err := ResolveTeamID(context.Background(), id, principal, "personal")
-	if err != nil || got != dao.teamID || dao.userID != principal.UserID {
-		t.Fatalf("got %q, %v, user %q", got, err, dao.userID)
+	calls := 0
+	var failure error
+	ctx := t.Context()
+	resolver := wireIdentityMock{resolve: func(gotCtx context.Context, got core.Principal) (string, error) {
+		calls++
+		if calls > 2 || gotCtx != ctx || got != principal {
+			t.Fatalf("unexpected personal-Team resolution: %v %+v (%d calls)", gotCtx, got, calls)
+		}
+		return teamID, failure
+	}}
+	got, err := ResolveTeamID(ctx, resolver, principal, "personal")
+	if err != nil || got != teamID || calls != 1 {
+		t.Fatalf("got %q, %v, calls %d", got, err, calls)
 	}
-	dao.err = errors.New("unavailable")
-	if _, err = ResolveTeamID(context.Background(), id, principal, "personal"); err == nil {
-		t.Fatal("identity error discarded")
+	failure = errors.New("unavailable")
+	if got, err = ResolveTeamID(ctx, resolver, principal, "personal"); err != failure || got != "" || calls != 2 {
+		t.Fatalf("identity failure = %q, %v, calls %d", got, err, calls)
 	}
 }

@@ -5,10 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
-
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 )
 
 // Decimal encodes an integer without passing it through a JSON number.
@@ -41,9 +39,13 @@ func parseDecimal(value string, allowZero bool) (int64, error) {
 	return v, nil
 }
 
+type personalTeamResolver interface {
+	PersonalTeamID(context.Context, core.Principal) (string, error)
+}
+
 // ResolveTeamID resolves an explicit UUID or the current user's personal team.
 // This does not authorize access to the selected team.
-func ResolveTeamID(ctx context.Context, identity *identity.Identity, principal core.Principal, selection string) (string, error) {
+func ResolveTeamID(ctx context.Context, identity personalTeamResolver, principal core.Principal, selection string) (string, error) {
 	if selection != "personal" {
 		return core.CanonicalID(selection)
 	}
