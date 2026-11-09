@@ -217,12 +217,16 @@ func TestBotReadyAndSuccessfulPreferencesShareOneTransaction(t *testing.T) {
 }
 
 func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
+	database := isolatedStore(t)
+	candidate, _ := storedBotCandidate(t, database)
+	bot := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/choice"), Provider: botPreferenceText("claude")})
+	markPreferenceBotReady(t, database, bot.ID)
+	before := runtimeBotState(t, database, bot.ID)
 	for _, stage := range []string{"worker", "cwd", "provider"} {
-		t.Run(stage, func(t *testing.T) {
-			database := isolatedStore(t)
-			candidate, _ := storedBotCandidate(t, database)
-			bot := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/choice"), Provider: botPreferenceText("claude")})
-			markPreferenceBotReady(t, database, bot.ID)
+		if !t.Run(stage, func(t *testing.T) {
+			if before != runtimeBotState(t, database, bot.ID) {
+				t.Fatal("previous fault changed the shared preference fixture")
+			}
 			table, condition := "bot_configuration_preferences", "NEW.cwd IS NOT NULL"
 			if stage == "worker" {
 				table, condition = "bot_worker_preferences", "true"
@@ -240,13 +244,20 @@ func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
 			if result.PreferredWorkerID != nil || len(result.WorkerPreferences) != 0 {
 				t.Fatalf("failed transaction left a partial preference: %+v", result)
 			}
-		})
+			if before != runtimeBotState(t, database, bot.ID) {
+				t.Fatal("failed preference transaction changed the shared fixture")
+			}
+			assertMigrationPoolReusable(t, database.Pool)
+			mustQueryExec(t, database, "DROP TRIGGER refuse_preference ON "+pgx.Identifier{table}.Sanitize()+"; DROP FUNCTION refuse_preference()")
+			assertFaultTriggerRemoved(t, database, "refuse_preference", table)
+		}) {
+			return
+		}
 	}
 }
 
 func TestBotClosedPoolDoesNotInvokeScope(t *testing.T) {
-	database := isolatedStore(t)
-	database.Close()
+	database := closedStore(t)
 	if err := writeBotTest(database, context.Background(), func(BotWriteDAO) error { t.Fatal("closed pool invoked callback"); return nil }); err == nil {
 		t.Fatal("closed pool appeared writable")
 	}

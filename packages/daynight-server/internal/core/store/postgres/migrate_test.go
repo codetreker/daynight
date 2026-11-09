@@ -106,22 +106,45 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 }
 
 func TestMigrationsRejectInvalidHistory(t *testing.T) {
+	database := isolatedStore(t)
+	ledger := func(t *testing.T) string {
+		t.Helper()
+		var records string
+		if err := database.Pool.QueryRow(t.Context(), "SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m").Scan(&records); err != nil {
+			t.Fatal(err)
+		}
+		return records
+	}
+	before := ledger(t)
 	for _, test := range []struct{ name, sql, want string }{
 		{"checksum", `UPDATE schema_migrations SET checksum = repeat('0', 64) WHERE version = 1`, "checksum mismatch"},
 		{"gap", `DELETE FROM schema_migrations WHERE version = 1`, "not an ordered prefix"},
 		{"unknown", fmt.Sprintf(`INSERT INTO schema_migrations (version, checksum) VALUES (%d, repeat('0', 64))`, schemaMigrations[len(schemaMigrations)-1].version+1), "not an ordered prefix"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			database := isolatedStore(t)
-			if _, err := database.Pool.Exec(context.Background(), test.sql); err != nil {
+		if !t.Run(test.name, func(t *testing.T) {
+			if before != ledger(t) {
+				t.Fatal("previous fault changed the shared migration ledger")
+			}
+			if _, err := database.Pool.Exec(t.Context(), test.sql); err != nil {
 				t.Fatal(err)
 			}
-			err := migrate(context.Background(), database.Pool, schemaMigrations)
+			err := migrate(t.Context(), database.Pool, schemaMigrations)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("expected %q, got %v", test.want, err)
 			}
 			assertMigrationPoolReusable(t, database.Pool)
-		})
+			if _, err := database.Pool.Exec(t.Context(), "DELETE FROM schema_migrations"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Pool.Exec(t.Context(), "INSERT INTO schema_migrations SELECT * FROM jsonb_populate_recordset(NULL::schema_migrations,$1::jsonb)", before); err != nil {
+				t.Fatal(err)
+			}
+			if before != ledger(t) {
+				t.Fatal("migration ledger was not restored exactly")
+			}
+		}) {
+			return
+		}
 	}
 }
 
