@@ -1,4 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { canonicalId } from "../../api/validation";
+import type { AssigneeFilter } from "../task-assignment/TaskAssigneeFilter";
 
 type PreferenceIssue = { readonly kind: "read" | "invalid" | "write"; readonly cause: unknown };
 type InitialPreference<Value> = {
@@ -48,6 +50,17 @@ const scrollPreference = (value: unknown): number => {
   return value;
 };
 
+const assigneePreference = (value: unknown): AssigneeFilter => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid assignee filter preference.");
+  const entry = value as Record<string, unknown>;
+  if ((entry.kind === "all" || entry.kind === "me" || entry.kind === "unassigned") && Object.keys(entry).length === 1) return { kind: entry.kind };
+  if (entry.kind === "user" && Object.keys(entry).length === 2 && typeof entry.userId === "string") {
+    const userId = canonicalId(entry.userId);
+    if (userId !== null) return { kind: "user", userId };
+  }
+  throw new Error("Invalid assignee filter preference.");
+};
+
 const useNamedPreference = <Value,>(key: string, decode: (value: unknown) => Value, defaultValue: Value) => {
   const [initial] = useState(() => readPreference(key, decode));
   const [value, setValue] = useState(initial.value === undefined ? defaultValue : initial.value);
@@ -72,6 +85,30 @@ export const useProjectSection = (projectId: string) => {
 export const useTaskView = (projectId: string) => {
   const { value, save, issue } = useNamedPreference(`daynight:task-view:${projectId}`, taskViewPreference, "chains");
   return { activeView: value, onViewChange: save, issue };
+};
+
+export const useProjectAssigneeFilter = (projectId: string, userId: string) => {
+  const key = `daynight:task-assignee-filter:${JSON.stringify([projectId, userId])}`;
+  const load = () => {
+    const initial = readPreference(key, assigneePreference);
+    return { key, filter: initial.value ?? { kind: "all" } as AssigneeFilter, initialIssue: initial.issue, writeIssue: null as PreferenceIssue | null };
+  };
+  const [stored, setStored] = useState(load);
+  let current = stored;
+  if (stored.key !== key) {
+    current = load();
+    setStored(current);
+  }
+  const onFilterChange = useCallback((filter: AssigneeFilter) => {
+    let writeIssue: PreferenceIssue | null = null;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(filter));
+    } catch (cause) {
+      writeIssue = { kind: "write", cause };
+    }
+    setStored((previous) => previous.key === key ? { ...previous, filter, initialIssue: writeIssue === null ? null : previous.initialIssue, writeIssue } : previous);
+  }, [key]);
+  return { filter: current.filter, onFilterChange, issue: current.writeIssue ?? current.initialIssue };
 };
 
 export const useGraphDirection = (projectId: string, rootId: string) => {

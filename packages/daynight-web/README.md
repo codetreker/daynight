@@ -2223,8 +2223,9 @@ failure captures are written to
 `packages/daynight-web/.tmp/acceptance/navigation-contract/`.
 
 The Team navigation browser suite builds one production application preview for
-four Playwright projects: `team-preference` covers Team selection and Worker
-configuration identity, `team-management` covers settings and rename interactions,
+four Playwright projects: `team-preference` covers Team selection, Worker
+configuration identity, and prompt editing across background checks, history and
+narrow layouts, `team-management` covers settings and rename interactions,
 `team-members` covers membership and self-exit, and `session-record-layout` covers
 responsive execution-record selection, keyboard and touch input, history loading,
 errors and pagination. Each case owns its browser

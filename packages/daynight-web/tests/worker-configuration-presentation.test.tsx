@@ -5,11 +5,11 @@ import { WorkerConfigurationPanel } from '../src/features/workers/configuration/
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
-import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
+import { WORKER_TIME, WORKER_USER, workerId, workerResponse } from './helpers/workers';
 
 const mount = () => renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online={null} tasks={[]} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const install = (response: () => Response) => {
-  const fetch = vi.fn((url: string, _init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }) : response());
+  const fetch = vi.fn((url: string, _init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }) : url === `/api/v1/me/workers/${workerId(1)}/prompt` ? workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }) : response());
   vi.stubGlobal('fetch', fetch); return fetch;
 };
 
@@ -18,7 +18,7 @@ describe('configuration presentation', () => {
     const fetch = install(() => configurationResponse({ desired: null, observationRevision: '0', observation: null }));
     mount();
     expect(await screen.findByText('Configuration management is not connected')).toBeInTheDocument();
-    expect(screen.queryByRole('textbox')).toBeNull(); expect(screen.queryByRole('button', { name: 'Save configuration' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Concurrent task limit' })).toBeNull(); expect(screen.queryByRole('button', { name: 'Save configuration' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(fetch.mock.calls.every(([, options]) => options?.method === undefined)).toBe(true);
   });
@@ -28,7 +28,7 @@ describe('configuration presentation', () => {
     install(() => failed ? configurationError(500, 'internal_error') : configurationResponse(configurationResource()));
     mount();
     expect(await screen.findByText('Configuration could not be loaded.')).toBeInTheDocument();
-    expect(screen.queryByText('Your draft has been kept.')).toBeNull(); expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByText('Your draft has been kept.')).toBeNull(); expect(screen.queryByRole('textbox', { name: 'Concurrent task limit' })).toBeNull();
     failed = false; fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByRole('textbox', { name: 'Concurrent task limit' })).toHaveValue('2');
   });

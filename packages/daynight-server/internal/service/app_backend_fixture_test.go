@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // The empty maintenance batches are explicit startup facts. Metadata writes do
@@ -38,6 +40,7 @@ type appBackend struct {
 	privateRecord, privateUpdated                                                     *model.PrivateTransfer
 	privateActor                                                                      *model.Principal
 	privateGets, privatePuts                                                          int
+	collector                                                                         *appTestCollector
 }
 
 func newAppBackend(t *testing.T) *appBackend {
@@ -48,11 +51,15 @@ func newAppBackend(t *testing.T) *appBackend {
 		OperationMaxAgeSeconds: 300, OperationFutureSkewSeconds: 60, HTTPTimeoutSeconds: 15, LeaseSeconds: 45,
 		MinimumFailureWaitSeconds: 5, JitterBasisPoints: 1000, JitterMaxSeconds: 1800, KeyOverlapDefaultSeconds: 86400, KeyOverlapMaxSeconds: 604800}}}
 	b.Transactions = unexpectedAppTransactions{backend: b}
+	b.collector = &appTestCollector{gauge: prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_persistence_instance", Help: "Persistence instance."})}
 	t.Cleanup(func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		if b.opened && b.closes != 1 {
 			t.Errorf("App backend close calls=%d, want 1", b.closes)
+		}
+		if b.opened && b.calls["MetricsCollector"] != 1 {
+			t.Errorf("App backend collector calls=%d, want 1", b.calls["MetricsCollector"])
 		}
 		if b.opened && (b.policiesRead != b.expectedPolicies || b.referencesRead != b.expectedReferences) {
 			t.Errorf("App startup calls policies=%d references=%d, want %d/%d", b.policiesRead, b.referencesRead, b.expectedPolicies, b.expectedReferences)
@@ -60,6 +67,27 @@ func newAppBackend(t *testing.T) *appBackend {
 
 	})
 	return b
+}
+
+type appTestCollector struct {
+	gauge    prometheus.Gauge
+	collects atomic.Int32
+}
+
+func (c *appTestCollector) Describe(ch chan<- *prometheus.Desc) { c.gauge.Describe(ch) }
+func (c *appTestCollector) Collect(ch chan<- prometheus.Metric) {
+	c.collects.Add(1)
+	c.gauge.Collect(ch)
+}
+
+func (b *appBackend) MetricsCollector() prometheus.Collector {
+	if err := b.record("MetricsCollector", 1); err != nil {
+		return nil
+	}
+	if b.collector == nil {
+		return nil
+	}
+	return b.collector
 }
 func (b *appBackend) record(name string, maximum int) error {
 	b.mu.Lock()

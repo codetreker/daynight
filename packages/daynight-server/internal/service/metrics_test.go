@@ -90,10 +90,92 @@ func TestMetricsDisabledAndRegistrationFailureCleanup(t *testing.T) {
 			if err != nil || called || app.Metrics != nil {
 				t.Fatalf("disabled registry: app=%v called=%v err=%v", app, called, err)
 			}
+			if backend.collector.collects.Load() != 0 {
+				t.Fatal("disabled metrics collected persistence")
+			}
 			if err := app.Close(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestAppRegistersItsPersistenceCollector(t *testing.T) {
+	var apps [2]*App
+	var backends [2]*appBackend
+	for i := range apps {
+		c := appTestConfig(t)
+		c.MetricsListenAddress = "127.0.0.1:0"
+		var err error
+		apps[i], backends[i], err = openTestApp(t, context.Background(), c, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if apps[i].persistence.Transactions != backends[i] || apps[i].persistence.MetricsCollector != backends[i].collector {
+			t.Fatal("App did not retain the collector from its own persistence backend")
+		}
+		backends[i].collector.gauge.Set(float64(i + 1))
+	}
+	for i, app := range apps {
+		families, err := app.Metrics.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, family := range families {
+			if family.GetName() == "test_persistence_instance" {
+				found = true
+				if len(family.Metric) != 1 || family.Metric[0].GetGauge().GetValue() != float64(i+1) {
+					t.Fatalf("App %d collected another persistence instance: %v", i, family)
+				}
+			}
+		}
+		if !found || backends[i].collector.collects.Load() != 1 || backends[1-i].collector.collects.Load() != int32(i) {
+			t.Fatalf("App %d collection was missing or leaked to another instance", i)
+		}
+	}
+}
+
+func TestPersistenceCollectorRegistrationFailureCleansResources(t *testing.T) {
+	c := appTestConfig(t)
+	c.MetricsListenAddress = "127.0.0.1:0"
+	backend := newAppBackend(t)
+	open := appTestOpeners(t, c, backend)
+	open.metrics = func() (*prometheus.Registry, error) {
+		registry := prometheus.NewRegistry()
+		if err := registry.Register(backend.collector); err != nil {
+			t.Fatal(err)
+		}
+		return registry, nil
+	}
+	app, err := openApp(context.Background(), c, nil, open)
+	var duplicate prometheus.AlreadyRegisteredError
+	if app != nil || !errors.As(err, &duplicate) {
+		t.Fatalf("duplicate collector error lost: app=%v err=%v", app, err)
+	}
+	// The fixture asserts that both resources close once, in dependency order.
+}
+
+func TestMissingMetricsRegistryCleansResources(t *testing.T) {
+	c := appTestConfig(t)
+	c.MetricsListenAddress = "127.0.0.1:0"
+	backend := newAppBackend(t)
+	open := appTestOpeners(t, c, backend)
+	open.metrics = func() (*prometheus.Registry, error) { return nil, nil }
+	app, err := openApp(context.Background(), c, nil, open)
+	if app != nil || err == nil {
+		t.Fatalf("missing registry accepted: app=%v err=%v", app, err)
+	}
+}
+
+func TestPersistenceRejectsMissingCollector(t *testing.T) {
+	c := appTestConfig(t)
+	backend := newAppBackend(t)
+	backend.collector = nil
+	backend.expectedPolicies, backend.expectedReferences = 0, 0
+	app, err := openApp(context.Background(), c, nil, appTestOpeners(t, c, backend))
+	if app != nil || err == nil {
+		t.Fatalf("missing collector accepted: app=%v err=%v", app, err)
 	}
 }
 

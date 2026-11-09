@@ -724,10 +724,28 @@ forwarder or an appropriately restricted container network when needed. The
 [localhost stack](../../deployment/localhost/README.md) provides a separate
 host-loopback TCP forwarding port.
 
-Each enabled App owns an independent Prometheus registry with the official
-default Go and process collectors. Their `go_*` and `process_*` families describe
+Each enabled App owns an independent Prometheus registry with its PostgreSQL
+pool collector and the official default Go and process collectors. Their `go_*` and `process_*` families describe
 the Go runtime and this process, not the machine. Availability depends on the
 platform and build; Linux process collection requires readable `/proc`.
+The pool collector reads one local `pgxpool.Stat` snapshot per scrape without
+issuing SQL. It exposes the following families for the App's own pool:
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `daynight_postgres_pool_connections` | Gauge | Connections with `state` of `acquired`, `idle`, or `constructing` |
+| `daynight_postgres_pool_total_connections` | Gauge | Current total connections |
+| `daynight_postgres_pool_max_connections` | Gauge | Configured connection limit |
+| `daynight_postgres_pool_acquires_total` | Counter | Successful acquisitions |
+| `daynight_postgres_pool_acquire_duration_seconds_total` | Counter | Total time spent in successful acquisitions, in seconds |
+| `daynight_postgres_pool_canceled_acquires_total` | Counter | Acquisitions canceled by context |
+| `daynight_postgres_pool_empty_acquires_total` | Counter | Successful acquisitions that waited for an empty pool |
+| `daynight_postgres_pool_empty_acquire_wait_seconds_total` | Counter | Total empty-pool wait time for those successful acquisitions, in seconds |
+
+Only the connections family has labels. These acquisition durations are not SQL
+execution latency; the pool metrics do not describe the database server's CPU or
+resource use. Counters reset when the process restarts.
+
 Collection failures are exposed rather than replaced with zero values. Scrapes
 negotiate Prometheus text or OpenMetrics; clients should parse according to the
 response Content-Type. At most two scrapes execute concurrently; further

@@ -4,7 +4,7 @@ import type { WorkerSessionApi } from "./backends/session-api.js";
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
 import type { Task, TaskPlatform, WorkerClaimDescriptor, WorkerMachine } from "../../api/types.js";
-import type { WorkerRepositoryAssignment } from "./coordinator.js";
+import type { WorkerInputWait, WorkerRepositoryAssignment } from "./coordinator.js";
 import type { WorkerEvent } from "./execution.js";
 import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
@@ -18,7 +18,7 @@ export type WorkerControlRequest =
 type ControlCoordinator = {
   assertCanAcquire(target: Pick<ClaimIdentity, "projectId" | "taskId">): void;
   registerClaim(task: Task): void;
-  advanceRetry(identity: ClaimIdentity): Promise<void>;
+  advanceRetry(identity: ClaimIdentity): Promise<WorkerInputWait | void>;
   cleanupSource(identity: ClaimIdentity, settings: { deleteWorktree?: boolean }): Promise<ResourceOwner>;
   completeSource(owner: ResourceOwner): Promise<void>;
 };
@@ -96,7 +96,8 @@ export const submitWorkerControl = async (options: {
     if (principal !== worker.userId) throw new Error("Retry requires the original authenticated execution owner.");
     if (source.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
     signal.throwIfAborted();
-    await coordinator.advanceRetry(identity);
+    const result = await coordinator.advanceRetry(identity);
+    if (result?.kind === "waiting_input") return { task: store.getTask(identity), message: `Recovery input was not submitted for claim ${request.claimId}; waiting for ${result.reason === "prompt_unknown" ? "prompt synchronization" : "a prompt within the native input limit"}.` };
     return { task: store.getTask(identity), message: `One recovery attempt completed for claim ${request.claimId}; worker run will connect its actual resources.` };
   }
   exactVersion();

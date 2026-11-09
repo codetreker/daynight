@@ -1,4 +1,4 @@
-import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "../../api/worker-configuration.js";
+import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
 import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
@@ -24,8 +24,8 @@ export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
   report(workerId: string, report: WorkerReport, operation: Operation): Promise<WorkerReportReceipt>;
-  configuration(workerId: string, signal: AbortSignal): Promise<WorkerCloudResource>;
-  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation): Promise<WorkerCloudReportReceipt>;
+  configuration(workerId: string, signal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource>;
+  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
   authorizeControl(projectId: string, originalUserId: string, signal: AbortSignal): Promise<void>;
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;
@@ -97,10 +97,12 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       operation.check();
       return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
-    configuration: (workerId, signal) => request(signal, api => api.getWorkerConfiguration(workerId)),
-    reportConfiguration: (workerId, input, configuration, operation) => {
+    configuration: (workerId, signal, operation) => operation === undefined
+      ? request(signal, api => api.getWorkerConfiguration(workerId))
+      : createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).getWorkerConfiguration(workerId),
+    reportConfiguration: (workerId, input, configuration, operation, selectors) => {
       operation.check();
-      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration);
+      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration, selectors);
     },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
     authorizeControl: async (projectId, originalUserId, signal) => {

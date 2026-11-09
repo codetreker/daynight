@@ -15,6 +15,8 @@ import type { Store } from "../store.js";
 import type { AttemptIdentity, ProcessesExcluded, ReviewState } from "../model.js";
 import { validateReviewSkillDiscovery } from "../skill.js";
 import type { PreparedReviewSkill } from "../skill.js";
+import { spawnWindowsReviewPhase } from "../windows-phase.js";
+import type { WindowsReviewPhase } from "../windows-phase.js";
 
 export type PreviousReview = Pick<ReviewState, "id" | "revision" | "headSha" | "baseRef">;
 export type CopilotProcessOutcome = {
@@ -210,7 +212,13 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
     const runPhase = async (phase: "skill-list" | "review", args: string[], output: Transform, files: [Awaited<ReturnType<typeof open>>, Awaited<ReturnType<typeof open>>], prompt?: string): Promise<void> => {
       outcome.directProcessClosed = false; outcome.captureComplete = false; outcome.exitCode = null; outcome.signal = null; outcome.launchFailure = null;
       let child;
-      try { child = crossSpawn(commandFile, args, { cwd: worktree.path, env: environment, shell: false, windowsHide: true, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] }); }
+      let windowsPhase: WindowsReviewPhase | undefined;
+      try {
+        if (process.platform === "win32") {
+          windowsPhase = spawnWindowsReviewPhase({ file: commandFile, args, cwd: worktree.path, environment, deadline, graceMs: grace });
+          child = windowsPhase.child;
+        } else child = crossSpawn(commandFile, args, { cwd: worktree.path, env: environment, shell: false, windowsHide: true, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+      }
       catch (error) { errors.push(asError(error)); await Promise.all(files.map((file) => file.close())); outcome.directProcessClosed = true; return; }
       let timeout: NodeJS.Timeout | undefined;
       let force: NodeJS.Timeout | undefined;
@@ -221,8 +229,9 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
       const stop = (): void => {
         if (stopped || outcome.directProcessClosed || outcome.launchFailure !== null) return;
         stopped = true;
-        if (input.stopProcess !== undefined && child.pid !== undefined) {
-          void input.stopProcess(child, attempt).catch((error: unknown) => { errors.push(asError(error)); }).finally(() => {
+        if (windowsPhase !== undefined || input.stopProcess !== undefined && child.pid !== undefined) {
+          const stopping = input.stopProcess !== undefined && child.pid !== undefined ? input.stopProcess(child, attempt) : windowsPhase!.stop();
+          void stopping.catch((error: unknown) => { errors.push(asError(error)); }).finally(() => {
             if (!outcome.directProcessClosed) {
               errors.push(new Error("Copilot termination could not confirm its direct process and streams closed; retained state requires operator recovery."));
               child.stdin!.destroy(); child.stdout!.destroy(); child.stderr!.destroy(); resolveClose();
@@ -255,7 +264,21 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
           input.onProcess?.(child, attempt);
         } catch (error) { errors.push(asError(error)); stop(); }
       });
-      child.once("close", (code, signal) => { outcome.directProcessClosed = true; outcome.exitCode = code; outcome.signal = signal; resolveClose(); });
+      const observeClose = (code: number | null, signal: NodeJS.Signals | null): void => {
+        outcome.directProcessClosed = true;
+        if (windowsPhase === undefined) { outcome.exitCode = code; outcome.signal = signal; }
+        else if (windowsPhase.result !== undefined) {
+          const receipt = windowsPhase.result;
+          outcome.exitCode = receipt.code; outcome.signal = receipt.signal;
+          if (receipt.failure !== null) {
+            errors.push(new Error(receipt.failure.message));
+            if (receipt.failure.missing) outcome.launchFailure = "command-not-found";
+          }
+        } else if (!stopped) errors.push(new Error("Windows review guardian closed without the target command's result."));
+        resolveClose();
+      };
+      if (windowsPhase === undefined) child.once("close", observeClose);
+      else void windowsPhase.closed.then(() => observeClose(child.exitCode, child.signalCode));
       const abort = (): void => { outcome.interruption = "aborted"; stop(); };
       input.signal?.addEventListener("abort", abort, { once: true });
       timeout = setTimeout(() => { outcome.interruption = "timeout"; stop(); }, Math.max(0, deadline - performance.now()));
@@ -271,11 +294,18 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
       const outputs = [capture(pipeline(child.stdout!, output, files[0].createWriteStream())), capture(pipeline(child.stderr!, files[1].createWriteStream())),
         capture(pipeline(Readable.from(prompt === undefined ? [] : [prompt]), child.stdin!), true)];
       if (input.signal?.aborted) abort();
+      if (windowsPhase !== undefined) {
+        try { await windowsPhase.start(); } catch (error) { errors.push(asError(error)); stop(); }
+      }
       await closed;
       if (timeout !== undefined) clearTimeout(timeout);
       if (force !== undefined) clearTimeout(force);
       if (abandon !== undefined) clearTimeout(abandon);
       input.signal?.removeEventListener("abort", abort);
+      if (windowsPhase !== undefined) {
+        try { await windowsPhase.stop(); }
+        catch (error) { outcome.processExclusionFailure = asError(error); errors.push(outcome.processExclusionFailure); }
+      }
       outcome.captureComplete = (await Promise.all(outputs)).every(Boolean);
     };
     let mainStarted = false;
@@ -287,6 +317,7 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
       catch (error) { await discoveryStdout.close(); throw error; }
       if (interrupted()) { await Promise.all([discoveryStdout.close(), discoveryStderr.close()]); return outcome; }
       await runPhase("skill-list", [...prefix, "--no-auto-update", "skill", "list", "--json"], discovery, [discoveryStdout, discoveryStderr]);
+      if (outcome.processExclusionFailure !== null) return outcome;
       const current = store.getReview(review.id)!;
       try {
         const { directProcessClosed, captureComplete, exitCode, signal, interruption, launchFailure } = outcome;

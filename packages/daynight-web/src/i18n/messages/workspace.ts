@@ -121,6 +121,7 @@ export type WorkspaceMessages = {
   readonly preferences: {
     readonly section: PreferenceNotices;
     readonly tab: PreferenceNotices;
+    readonly assignee: PreferenceNotices;
     readonly scroll: PreferenceNotices;
   };
 };

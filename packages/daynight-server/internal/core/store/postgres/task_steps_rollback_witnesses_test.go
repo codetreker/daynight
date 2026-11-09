@@ -133,27 +133,35 @@ func TestTaskStepsConfirmedRollbackAfterEachActualSQLWrite(t *testing.T) {
 }
 
 func TestTaskStepsPartialWritesAndSuppressedRowsRollBack(t *testing.T) {
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
+	seedStepWitnessRows(t, database, task.ID, 4)
+	before := stepWitnessState(t, database, task.ID, false)
 	for _, test := range []struct {
-		name, operation, setup, sequence string
-		suppressed                       bool
+		name, operation, trigger, table, event, body, sequence string
+		suppressed                                             bool
 	}{
-		{"change/parent_touch", "change", `CREATE FUNCTION refuse_step_touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'touch-failure-sentinel' USING ERRCODE='P0001'; END $$; CREATE TRIGGER refuse_step_touch BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION refuse_step_touch()`, "", false},
-		{"change/suppressed_target", "change", `CREATE FUNCTION suppress_step_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER suppress_step_update BEFORE UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION suppress_step_update()`, "", true},
-		{"delete/partial_tail", "delete", `CREATE SEQUENCE delete_tail_attempts; CREATE FUNCTION fail_delete_tail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('delete_tail_attempts')=2 THEN RAISE EXCEPTION 'partial-tail-sentinel' USING ERRCODE='P0001'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_delete_tail AFTER UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION fail_delete_tail()`, "delete_tail_attempts", false},
-		{"delete/parent_touch", "delete", `CREATE FUNCTION refuse_delete_touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'delete-touch-sentinel' USING ERRCODE='P0001'; END $$; CREATE TRIGGER refuse_delete_touch BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION refuse_delete_touch()`, "", false},
-		{"delete/suppressed_target", "delete", `CREATE FUNCTION suppress_delete_target() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER suppress_delete_target BEFORE DELETE ON task_steps FOR EACH ROW EXECUTE FUNCTION suppress_delete_target()`, "", true},
-		{"delete/suppressed_tail", "delete", `CREATE FUNCTION suppress_delete_tail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id='11111111' THEN RETURN NULL; END IF; RETURN NEW; END $$; CREATE TRIGGER suppress_delete_tail BEFORE UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION suppress_delete_tail()`, "", true},
-		{"move/partial_interval", "move", `CREATE SEQUENCE move_attempts; CREATE FUNCTION fail_partial_move() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('move_attempts')=2 THEN RAISE EXCEPTION 'partial-move-sentinel' USING ERRCODE='P0001'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_partial_move AFTER UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION fail_partial_move()`, "move_attempts", false},
-		{"move/parent_touch", "move", `CREATE FUNCTION refuse_move_touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'move-touch-sentinel' USING ERRCODE='P0001'; END $$; CREATE TRIGGER refuse_move_touch BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION refuse_move_touch()`, "", false},
-		{"move/suppressed_interval", "move", `CREATE FUNCTION suppress_move_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id='11111111' THEN RETURN NULL; END IF; RETURN NEW; END $$; CREATE TRIGGER suppress_move_row BEFORE UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION suppress_move_row()`, "", true},
+		{"change/parent_touch", "change", "refuse_step_touch", "tasks", "BEFORE UPDATE", `RAISE EXCEPTION 'touch-failure-sentinel' USING ERRCODE='P0001';`, "", false},
+		{"change/suppressed_target", "change", "suppress_step_update", "task_steps", "BEFORE UPDATE", `RETURN NULL;`, "", true},
+		{"delete/partial_tail", "delete", "fail_delete_tail", "task_steps", "AFTER UPDATE", `IF nextval('delete_tail_attempts')=2 THEN RAISE EXCEPTION 'partial-tail-sentinel' USING ERRCODE='P0001'; END IF; RETURN NEW;`, "delete_tail_attempts", false},
+		{"delete/parent_touch", "delete", "refuse_delete_touch", "tasks", "BEFORE UPDATE", `RAISE EXCEPTION 'delete-touch-sentinel' USING ERRCODE='P0001';`, "", false},
+		{"delete/suppressed_target", "delete", "suppress_delete_target", "task_steps", "BEFORE DELETE", `RETURN NULL;`, "", true},
+		{"delete/suppressed_tail", "delete", "suppress_delete_tail", "task_steps", "BEFORE UPDATE", `IF OLD.id='11111111' THEN RETURN NULL; END IF; RETURN NEW;`, "", true},
+		{"move/partial_interval", "move", "fail_partial_move", "task_steps", "AFTER UPDATE", `IF nextval('move_attempts')=2 THEN RAISE EXCEPTION 'partial-move-sentinel' USING ERRCODE='P0001'; END IF; RETURN NEW;`, "move_attempts", false},
+		{"move/parent_touch", "move", "refuse_move_touch", "tasks", "BEFORE UPDATE", `RAISE EXCEPTION 'move-touch-sentinel' USING ERRCODE='P0001';`, "", false},
+		{"move/suppressed_interval", "move", "suppress_move_row", "task_steps", "BEFORE UPDATE", `IF OLD.id='11111111' THEN RETURN NULL; END IF; RETURN NEW;`, "", true},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			task := queryTask(t, database, project.ID, 10, model.TaskTodo)
-			seedStepWitnessRows(t, database, task.ID, 4)
-			mustQueryExec(t, database, test.setup)
-			before := stepWitnessState(t, database, task.ID, false)
+		if !t.Run(test.name, func(t *testing.T) {
+			if before != stepWitnessState(t, database, task.ID, false) {
+				t.Fatal("previous fault changed the shared Step fixture")
+			}
+			if test.sequence != "" {
+				mustQueryExec(t, database, "CREATE SEQUENCE "+pgx.Identifier{test.sequence}.Sanitize())
+			}
+			trigger := pgx.Identifier{test.trigger}.Sanitize()
+			table := pgx.Identifier{test.table}.Sanitize()
+			mustQueryExec(t, database, "CREATE FUNCTION "+trigger+"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "+test.body+" END $$; CREATE TRIGGER "+trigger+" "+test.event+" ON "+table+" FOR EACH ROW EXECUTE FUNCTION "+trigger+"()")
 			completion, err := database.WriteProject(t.Context(), project.ID, func(scope ProjectWriteScope) error {
 				return mutateStepWitness(t.Context(), scope.TaskDAO(), task.ID, test.operation)
 			})
@@ -176,12 +184,23 @@ func TestTaskStepsPartialWritesAndSuppressedRowsRollBack(t *testing.T) {
 			}
 			if test.sequence != "" {
 				var count int64
-				if err := database.Pool.QueryRow(t.Context(), "SELECT last_value FROM "+test.sequence).Scan(&count); err != nil || count != 2 {
+				if err := database.Pool.QueryRow(t.Context(), "SELECT last_value FROM "+pgx.Identifier{test.sequence}.Sanitize()).Scan(&count); err != nil || count != 2 {
 					t.Fatalf("second actual row write was not reached: %d %v", count, err)
 				}
 			}
 			assertMigrationPoolReusable(t, database.Pool)
-		})
+			mustQueryExec(t, database, "DROP TRIGGER "+trigger+" ON "+table+"; DROP FUNCTION "+trigger+"()")
+			assertFaultTriggerRemoved(t, database, test.trigger, test.table)
+			if test.sequence != "" {
+				mustQueryExec(t, database, "DROP SEQUENCE "+pgx.Identifier{test.sequence}.Sanitize())
+				var retained *string
+				if err := database.Pool.QueryRow(t.Context(), "SELECT to_regclass($1)::text", test.sequence).Scan(&retained); err != nil || retained != nil {
+					t.Fatalf("attempt sequence was retained: %v %v", retained, err)
+				}
+			}
+		}) {
+			return
+		}
 	}
 }
 

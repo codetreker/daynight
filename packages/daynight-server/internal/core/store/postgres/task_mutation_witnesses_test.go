@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -354,59 +355,47 @@ func taskMutationWaitForWriters(t *testing.T, ctx context.Context, database *Sto
 }
 
 func TestConcurrentSameVersionTaskWritesReadFreshAfterProjectLock(t *testing.T) {
-	for _, kind := range []string{"metadata", "status", "permission", "platform", "assignment"} {
-		t.Run(kind, func(t *testing.T) {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			target := queryTask(t, database, project.ID, 11, model.TaskTodo)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+	database := isolatedStore(t)
+	for index, kind := range []string{"metadata", "status", "permission", "platform", "assignment"} {
+		if !t.Run(kind, func(t *testing.T) {
+			project := queryProject(t, database, index*100+1)
+			target := queryTask(t, database, project.ID, index*100+11, model.TaskTodo)
 			conflict := errors.New("writer observed preceding version")
-			results := make(chan error, 2)
-			if err := writeProjectForTest(database, ctx, project.ID, func(ProjectWriteScope) error {
-				for _, title := range []string{"First", "Second"} {
-					go func() {
-						results <- writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-							current, err := scope.TaskDAO().Task(ctx, target.ID)
-							if err != nil {
-								return err
-							}
-							if current.Version != target.Version {
-								return conflict
-							}
-							values := taskMutationValues(current)
-							values.Title = title
-							switch kind {
-							case "metadata":
-								values.Description = title
-								values.Properties = taskMutationPR(t, strings.ToLower(title), title)
-							case "status":
-								values.Status = model.TaskInProgress
-							case "permission":
-								values.AllowAgents = true
-							case "platform":
-								platform := model.TaskPlatform("linux")
-								values.RequiredPlatform = &platform
-							case "assignment":
-								var userID string
-								if err := database.Pool.QueryRow(ctx, "SELECT user_id::text FROM team_members WHERE team_id=(SELECT team_id FROM project_ownership WHERE project_id=$1) LIMIT 1", project.ID).Scan(&userID); err != nil {
-									return err
-								}
-								values.AssignedTo = &userID
-							}
-							_, err = scope.TaskDAO().UpdateTask(ctx, target.ID, values)
+			operation := func(title string) func(context.Context, ProjectWriteScope) error {
+				return func(ctx context.Context, scope ProjectWriteScope) error {
+					current, err := scope.TaskDAO().Task(ctx, target.ID)
+					if err != nil {
+						return err
+					}
+					if current.Version != target.Version {
+						return conflict
+					}
+					values := taskMutationValues(current)
+					values.Title = title
+					switch kind {
+					case "metadata":
+						values.Description = title
+						values.Properties = taskMutationPR(t, strings.ToLower(title), title)
+					case "status":
+						values.Status = model.TaskInProgress
+					case "permission":
+						values.AllowAgents = true
+					case "platform":
+						platform := model.TaskPlatform("linux")
+						values.RequiredPlatform = &platform
+					case "assignment":
+						var userID string
+						if err := database.Pool.QueryRow(ctx, "SELECT user_id::text FROM team_members WHERE team_id=(SELECT team_id FROM project_ownership WHERE project_id=$1) LIMIT 1", project.ID).Scan(&userID); err != nil {
 							return err
-						})
-					}()
+						}
+						values.AssignedTo = &userID
+					}
+					_, err = scope.TaskDAO().UpdateTask(ctx, target.ID, values)
+					return err
 				}
-				taskMutationWaitForWriters(t, ctx, database, 2)
-				return nil
-			}); err != nil {
-				t.Fatal(err)
 			}
 			succeeded, refused := 0, 0
-			for range 2 {
-				err := receiveQueryResult(t, ctx, results)
+			for _, err := range taskMutationRace(t, database, project.ID, operation("First"), operation("Second")) {
 				if err == nil {
 					succeeded++
 				} else if errors.Is(err, conflict) {
@@ -425,7 +414,9 @@ func TestConcurrentSameVersionTaskWritesReadFreshAfterProjectLock(t *testing.T) 
 					t.Fatal("competing writes mixed material fields")
 				}
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
@@ -521,8 +512,7 @@ func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T
 			t.Fatalf("missing Project relation lost its driver cause: %v", err)
 		}
 	}
-	database = isolatedStore(t)
-	database.Close()
+	database = closedStore(t)
 	if err := database.ReadSnapshot(context.Background(), func(SnapshotScope) error { t.Error("closed pool entered snapshot callback"); return nil }); err == nil {
 		t.Fatal("closed snapshot pool hid failure")
 	}
@@ -702,11 +692,23 @@ func TestTaskDeletionSerializesWithIncomingSourceWrites(t *testing.T) {
 func taskMutationRace(t *testing.T, database *Store, projectID string, operations ...func(context.Context, ProjectWriteScope) error) []error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	var writers sync.WaitGroup
+	defer func() {
+		cancel()
+		drained := make(chan struct{})
+		go func() { writers.Wait(); close(drained) }()
+		select {
+		case <-drained:
+		case <-time.After(5 * time.Second):
+			t.Error("competing task writers did not drain after cancellation")
+		}
+	}()
 	results := make(chan error, len(operations))
 	if err := writeProjectForTest(database, ctx, projectID, func(ProjectWriteScope) error {
 		for _, operation := range operations {
+			writers.Add(1)
 			go func() {
+				defer writers.Done()
 				results <- writeProjectForTest(database, ctx, projectID, func(scope ProjectWriteScope) error { return operation(ctx, scope) })
 			}()
 		}
@@ -773,13 +775,16 @@ func TestTaskProjectSerializationSuppliesFreshReachabilityToCompetingWriters(t *
 }
 
 func TestTaskProjectSerializationKeepsPrerequisiteAndDependentQueriesConsistent(t *testing.T) {
+	database := isolatedStore(t)
+	caseNumber := 0
 	for _, edgeWrite := range []bool{false, true} {
 		for _, external := range []bool{false, true} {
 			for _, status := range []model.TaskStatus{model.TaskInProgress, model.TaskDone} {
-				t.Run(fmt.Sprintf("edge=%t_external=%t_status=%s", edgeWrite, external, status), func(t *testing.T) {
-					database := isolatedStore(t)
-					project := queryProject(t, database, 1)
-					predecessor := queryTask(t, database, project.ID, 11, model.TaskDone)
+				caseNumber++
+				offset := caseNumber * 100
+				if !t.Run(fmt.Sprintf("edge=%t_external=%t_status=%s", edgeWrite, external, status), func(t *testing.T) {
+					project := queryProject(t, database, offset+1)
+					predecessor := queryTask(t, database, project.ID, offset+11, model.TaskDone)
 					initialStatus := model.TaskTodo
 					dependencies := []string{}
 					if edgeWrite {
@@ -787,7 +792,7 @@ func TestTaskProjectSerializationKeepsPrerequisiteAndDependentQueriesConsistent(
 					} else {
 						dependencies = []string{predecessor.ID}
 					}
-					successor := queryTask(t, database, project.ID, 12, initialStatus, dependencies...)
+					successor := queryTask(t, database, project.ID, offset+12, initialStatus, dependencies...)
 					if external && !edgeWrite {
 						mustQueryExec(t, database, "UPDATE task_dependencies SET external=true WHERE task_id=$1", successor.ID)
 						successor = snapshotTask(t, database, project.ID, successor.ID)
@@ -844,7 +849,9 @@ func TestTaskProjectSerializationKeepsPrerequisiteAndDependentQueriesConsistent(
 					if external && len(afterSuccessor.DependsOn) > 0 && !slices.Equal(afterSuccessor.ExternalDependsOn, []string{predecessor.ID}) {
 						t.Fatal("competing dependency writes lost external classification")
 					}
-				})
+				}) {
+					return
+				}
 			}
 		}
 	}

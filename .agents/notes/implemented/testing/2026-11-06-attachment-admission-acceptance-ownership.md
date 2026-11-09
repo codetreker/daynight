@@ -49,6 +49,16 @@ The [server guide](../../../../packages/daynight-server/README.md) and
 [Web guide](../../../../packages/daynight-web/README.md#independent-browser-checks)
 own the current validation commands and their limits.
 
+The grant witness receipt records readiness separately from the child Wait
+result, exit code and signal. Process facts are read only after the Wait
+goroutine closes its completion channel. Startup diagnostics inspect at most
+the first 64 KiB of captured output and publish at most four failures using
+fixed component, phase, cause and detail values. Unknown text, extra JSON fields,
+addresses and raw diagnostics are not published; ignored and truncated input
+remain explicit. The private full capture retains the existing secret check,
+registered before startup so early failure also runs it. These observations do
+not replace the original assertion or cleanup outcome.
+
 ## Alternatives
 
 **Keep the database observer in the Web journey.** It could observe the same
@@ -63,6 +73,14 @@ the lock. After the authorization-source locks were removed, the current test
 instead observes successful removal and denied new access while the admitted
 body remains incomplete.
 
+**Publish child output directly.** Lifecycle output can contain listener
+addresses, and runtime failures can include arbitrary text. A fixed-value
+projection preserves useful startup categories without exposing those values.
+
+**Retry startup or extend readiness after an unexplained exit.** Neither action
+establishes why the child exited. The witness retains the failure and records
+the available classification instead of changing its startup policy.
+
 ## Consequences
 
 Server ordering and Web presentation have separate evidence and failure
@@ -74,3 +92,6 @@ configuration does not enable race instrumentation; when race is required, the
 separate test uses its race build tag for the fresh server build and checks that
 binary's build information. An explicit source overlay must be supplied through
 `GOFLAGS` so the child build inherits it.
+The diagnostic window can miss a later error, and non-JSON exits remain
+unclassified; exit facts and truncation markers preserve those limits. A later
+passing run cannot establish the cause of an earlier unclassified exit.
