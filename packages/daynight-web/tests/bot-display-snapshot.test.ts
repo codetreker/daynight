@@ -290,6 +290,26 @@ describe('Bot display snapshot storage', () => {
     expect(JSON.parse(localStorage.getItem(key(owner))!).records).toEqual([]);
   });
 
+  it('retries old disk cleanup without discarding newer memory history or its lease in the same storage realm', async () => {
+    const owner = crypto.randomUUID(), old = store(owner, { storage: localStorage }), first = preview(owner);
+    expect(await save(old, first)).toBe('saved');
+    const oldRaw = localStorage.getItem(key(owner));
+    const denied = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); });
+    expect(await old.clearAccount(owner)).toBe(false);
+    denied.mockRestore();
+    const fresh = store(owner, { storage: localStorage }), next = { ...first, lastEventSeq: '2', entries: [entry(2, 'new authorized history')] };
+    const lease = (await fresh.observe(owner, next.botId))!;
+    expect(await fresh.save(lease, { source: 'verified-history', historyLoaded: true, preview: next })).toBe('memory');
+    expect(localStorage.getItem(key(owner))).toBe(oldRaw);
+    expect(await old.retryClearAccount(owner, oldRaw)).toBe(true);
+    expect(JSON.parse(localStorage.getItem(key(owner))!).records).toEqual([]);
+    expect(await fresh.read(owner, next.botId)).toEqual(next);
+    const latest = { ...next, lastEventSeq: '3' };
+    expect(await fresh.save(lease, { source: 'verified-history', historyLoaded: true, preview: latest })).toBe('memory');
+    expect(await fresh.read(owner, next.botId)).toEqual(latest);
+    expect(JSON.parse(localStorage.getItem(key(owner))!).records).toEqual([]);
+  });
+
   it('recovers read-only data without Web Locks and avoids unlocked persistent writes', async () => {
     const owner = crypto.randomUUID(), value = preview(owner), raw = JSON.stringify(envelope(owner, value));
     localStorage.setItem(key(owner), raw); vi.stubGlobal('navigator', { locks: undefined });
@@ -365,6 +385,26 @@ describe('Bot display snapshot invalidation and observations', () => {
     expect(await first.read(owner, id(1))).toBeNull();
   });
 
+  it('does not renew an observation queued before a peer replaces the target history', async () => {
+    const owner = crypto.randomUUID(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    let blocked = false;
+    const first = store(owner, { storage: storageFacade(), withLock: async (_name, run) => {
+      if (blocked) { entered.resolve(); await gate.promise; }
+      return run();
+    } });
+    const second = store(owner, { storage: storageFacade() }), original = preview(owner);
+    expect(await save(first, original)).toBe('saved');
+    blocked = true;
+    const queued = first.observe(owner, original.botId);
+    await entered.promise;
+    const replacement = { ...original, historyEpoch: 'history-2', lastEventSeq: '0', entries: [] };
+    expect(await save(second, replacement)).toBe('saved');
+    gate.resolve();
+    expect(await queued).toBeNull();
+    expect(await first.read(owner, original.botId)).toEqual(replacement);
+    expect(await save(first, replacement)).toBe('saved');
+  });
+
   it('rejects stale history and absence leases after identity and eviction ABA cycles', async () => {
     const owner = crypto.randomUUID(), target = store(owner), original = preview(owner);
     await save(target, original); const old = (await target.observe(owner, id(1)))!;
@@ -402,6 +442,45 @@ describe('Bot display snapshot invalidation and observations', () => {
     window.dispatchEvent(new StorageEvent('storage', { key: key(owner), newValue: oldRaw, storageArea: localStorage }));
     expect(changes).toHaveBeenCalled(); expect(target.getVersion()).toBeGreaterThan(version);
     expect((await target.read(owner, value.botId))?.lastEventSeq).toBe('2');
+  });
+
+  it('does not restore revoked disk history when the first reconciliation cannot acquire its lock', async () => {
+    const owner = crypto.randomUUID();
+    let denied = false;
+    const target = store(owner, { storage: localStorage, withLock: async (_name, run) => {
+      if (denied) throw new DOMException('locks denied', 'SecurityError');
+      return run();
+    } });
+    const peer = store(owner, { storage: storageFacade() }), value = preview(owner);
+    expect(await save(target, value)).toBe('saved');
+    const oldLease = (await target.observe(owner, value.botId))!;
+    expect(await peer.clearTarget(owner, value.botId)).toBe(true);
+    window.dispatchEvent(new StorageEvent('storage', { key: key(owner), storageArea: localStorage, newValue: localStorage.getItem(key(owner)) }));
+    denied = true;
+    expect(await target.read(owner, value.botId)).toBeNull();
+    expect(await target.save(oldLease, { source: 'verified-history', historyLoaded: true, preview: value })).toBe('stale');
+    expect(JSON.parse(localStorage.getItem(key(owner))!).records).toEqual([]);
+  });
+
+  it('does not issue a newer lease when an unreconciled storage notification is superseded by another clear', async () => {
+    const owner = crypto.randomUUID(), target = store(owner, { storage: localStorage }), peer = store(owner, { storage: storageFacade() });
+    await save(target, preview(owner, 1)); await save(target, preview(owner, 2));
+    expect(await peer.clearTarget(owner, id(1))).toBe(true);
+    window.dispatchEvent(new StorageEvent('storage', { key: key(owner), storageArea: localStorage, newValue: localStorage.getItem(key(owner)) }));
+    expect(await peer.clearTarget(owner, id(2))).toBe(true);
+    expect(await target.observe(owner, id(2))).toBeNull();
+    expect(await target.read(owner, id(2))).toBeNull();
+  });
+
+  it('can observe new accepted sibling history before the first passive reconciliation', async () => {
+    const owner = crypto.randomUUID(), target = store(owner, { storage: localStorage }), peer = store(owner, { storage: storageFacade() });
+    const sibling = preview(owner, 2);
+    await save(target, preview(owner, 1)); await save(target, sibling);
+    expect(await peer.clearTarget(owner, id(1))).toBe(true);
+    window.dispatchEvent(new StorageEvent('storage', { key: key(owner), storageArea: localStorage, newValue: localStorage.getItem(key(owner)) }));
+    const lease = await target.observe(owner, id(2));
+    expect(lease).not.toBeNull();
+    expect(await target.save(lease!, { source: 'verified-history', historyLoaded: true, preview: { ...sibling, lastEventSeq: '2' } })).toBe('saved');
   });
 
   it.each([false, true])('fences leases on %s whole-storage removal events even after same-generation rewrite', async wholeStorage => {

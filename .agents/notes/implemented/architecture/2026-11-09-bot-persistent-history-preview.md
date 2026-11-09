@@ -24,10 +24,23 @@ two tabs from feeding each other's reads back into writes. An expired history
 source cannot regain a lease through local draft publication; another accepted
 history observation is required. Failed cleanup retries retain the original
 disk value as their target and cannot revoke a newer same-account scope.
+Their disk-only tombstone does not replace newer memory-only history or leases
+in the shared storage realm. Account-wide revocation tokens also fence first
+observations that have no cached preview yet; ordinary saves and LRU updates
+trigger passive reads without revoking accepted history sources.
+Revocation events discard old memory records immediately, including before a
+failed lock can force memory-only operation. Disk reconciliation consumes the
+event's existing token, so a valid sibling's first passive read is not revoked
+again. Pending fences retain only validated generation and history-version
+metadata. New observations capture that known metadata before queuing and still
+require the locked version comparison; a superseded notification cannot renew
+an older source against a later disk version.
 
 The client publishes accepted-history and settled-history facts separately from
 online pagination readiness. Applied-page coverage, rather than a current
 snapshot or wall-clock timestamp, determines which cached rows have been verified.
+An individual upsert verifies its own entry ID; it cannot extend a contiguous
+page boundary across entries that no page has supplied.
 The shared Session renderer accepts inert history data without a fabricated
 snapshot. A null client permits the same shell and timeline to display history
 before a verified binding exists. A real binding alone creates the actual client.

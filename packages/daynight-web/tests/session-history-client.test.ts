@@ -5,6 +5,8 @@ import type { SessionApi } from '../src/api/sessions';
 import { TaskSessionClient } from '../src/features/task-agent-session/client';
 import type { BrowserMessage, TimelinePage } from '../../daynight/src/session/controller-protocol';
 import type { TaskSessionSnapshot } from './helpers/session';
+import { sessionFence } from '../../daynight/src/session/protocol';
+import { selectSessionHistoryRows, type SessionHistoryPreview } from '../src/features/task-agent-session/history-preview';
 
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
@@ -77,7 +79,25 @@ describe('session history request progress', () => {
     expect(f.client.snapshot().historyCoverage).toEqual({ firstEntrySeq: '2', throughEntrySeq: '10', completeBefore: true, lastEventSeq: '0' });
     expect(f.client.snapshot().state.entries.find(entry => entry.entryId === row.entryId)?.revision).toBe('3');
     f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, sessionId: f.s.sessionId, claimId: f.s.claimId, executionGeneration: f.s.executionGeneration, connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: { ...row, entryId: 'new', entrySeq: '300' } } });
-    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '2', throughEntrySeq: '300', lastEventSeq: '1' });
+    expect(f.client.snapshot().historyCoverage).toMatchObject({ firstEntrySeq: '2', throughEntrySeq: '10', lastEventSeq: '1' });
+    expect(f.client.snapshot().state.entries.some(entry => entry.entryId === 'new')).toBe(true);
+  });
+  it.each(['older', 'newer'] as const)('does not turn a single %s upsert into contiguous page coverage', async direction => {
+    const f = fixture();
+    const row = (seq: number, revision = '1') => ({ kind: 'assistant_message' as const, entryId: `message-${seq}`, entrySeq: String(seq), revision, content: [{ type: 'text' as const, text: `Message ${seq}` }] });
+    const cached = Array.from({ length: 150 }, (_, index) => row(51 + index));
+    const tail = Array.from({ length: 100 }, (_, index) => row((direction === 'older' ? 101 : 51) + index));
+    Object.assign(f.s, { lastTimelineSeq: tail.at(-1)!.entrySeq });
+    vi.mocked(f.api.timeline).mockResolvedValueOnce({ ...f.page, items: tail }); await ready(f);
+    const preview: SessionHistoryPreview = { fence: sessionFence(f.s), historyEpoch: f.s.historyEpoch, lastEventSeq: '2', entries: cached, resources: [] };
+    const upsert = row(direction === 'older' ? 51 : 200, '2');
+    f.channels[0]!.receive({ protocol: f.s.protocol, type: 'event', cursor: 'next', event: { protocol: f.s.protocol, ...sessionFence(f.s), connectionEpoch: f.s.connectionEpoch, historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: upsert } });
+    const view = f.client.snapshot(), rows = selectSessionHistoryRows(view.state, preview, view.historyLoaded, view.historyCoverage);
+    expect(rows).toHaveLength(150);
+    expect(rows.find(item => item.entry.entryId === upsert.entryId)).toEqual({ entry: upsert, preview: false });
+    const untouchedSeq = direction === 'older' ? '52' : '199';
+    expect(rows.find(item => item.entry.entrySeq === untouchedSeq)?.preview).toBe(true);
+    expect(view.historyCoverage).toMatchObject({ firstEntrySeq: tail[0]!.entrySeq, throughEntrySeq: tail.at(-1)!.entrySeq, lastEventSeq: '1' });
   });
   it('does not expose old coverage under a snapshot event replacing the history epoch', async () => {
     const f = fixture(); await ready(f);

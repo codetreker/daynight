@@ -60,6 +60,92 @@ it('rejects a read queued before revocation instead of publishing its late priva
   await expect(read).resolves.toBeNull();
   expect(await owner.read(value.botId)).toBeNull();
 });
+it.each([false, true])('cannot save cold accepted history when a peer clears it before its observation acquires the lock (storage event: %s)', async notify => {
+  const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  let blocked = false;
+  const store = new BotDisplaySnapshotStore({ isCurrent: user => user === botOwner, storage: storage(), withLock: async (_key, run) => {
+    if (blocked) { entered.resolve(); await gate.promise; }
+    return run();
+  } });
+  const owner = new BotDisplaySnapshotCoordinator({ userId: botOwner, isCurrent: () => true, store });
+  const peer = new BotDisplaySnapshotStore({ isCurrent: user => user === botOwner, storage: storage(), withLock: async (_key, run) => run() });
+  cleanups.push(() => owner.close(), () => peer.close());
+  const bot = botFixture(), item = { ...bot.page.items[0]!, entryId: crypto.randomUUID() };
+  vi.mocked(bot.api.timeline).mockResolvedValue({ ...bot.page, items: [item] });
+  const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, createApi: () => bot.api, onPrincipalMismatch: vi.fn() });
+  cleanups.push(cache.close); cache.select(bot.binding, bot.binding);
+  const client = cache.snapshot()[0]!.client;
+  await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
+  const acceptedRevision = client.snapshot().historyRevision;
+  expect(await owner.read(bot.binding.botId)).toBeNull();
+  expect(owner.cached(bot.binding.botId)).toBeNull();
+  blocked = true;
+  const observe = vi.spyOn(store, 'observe');
+  const observer = new BotHistorySnapshotObserver({ owner, binding: bot.binding, client, name: () => 'Assistant', bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  await entered.promise;
+  await expect(peer.clearTarget(botOwner, bot.binding.botId)).resolves.toBe(true);
+  if (notify) window.dispatchEvent(new StorageEvent('storage', { key: `daynight:bot-display:v1:${botOwner}`, storageArea: localStorage, newValue: localStorage.getItem(`daynight:bot-display:v1:${botOwner}`) }));
+  gate.resolve();
+  await observe.mock.results[0]!.value;
+  await expect(observer.flush()).resolves.toBeNull();
+  expect(await store.read(botOwner, bot.binding.botId)).toBeNull();
+  client.setDraft('local edits cannot renew the pre-clear payload');
+  await observe.mock.results.at(-1)!.value;
+  await observer.flush();
+  expect(await store.read(botOwner, bot.binding.botId)).toBeNull();
+  await client.refresh();
+  await vi.waitFor(() => expect(client.snapshot().historyRevision).toBeGreaterThan(acceptedRevision));
+  await observe.mock.results.at(-1)!.value;
+  await expect(observer.flush()).resolves.toBe('saved');
+  expect((await store.read(botOwner, bot.binding.botId))?.entries).toEqual([item]);
+});
+it.each(['save', 'touch'] as const)('does not revoke a cold target first save when a peer %s changes only another target', async change => {
+  const store = new BotDisplaySnapshotStore({ isCurrent: user => user === botOwner, storage: localStorage, withLock: async (_key, run) => run() });
+  const owner = new BotDisplaySnapshotCoordinator({ userId: botOwner, isCurrent: () => true, store });
+  const peer = new BotDisplaySnapshotStore({ isCurrent: user => user === botOwner, storage: storage(), withLock: async (_key, run) => run() });
+  cleanups.push(() => owner.close(), () => peer.close());
+  const sibling = await seed(peer), bot = botFixture(botBinding(2));
+  const item = { ...bot.page.items[0]!, entryId: crypto.randomUUID() };
+  vi.mocked(bot.api.timeline).mockResolvedValue({ ...bot.page, items: [item] });
+  const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, createApi: () => bot.api, onPrincipalMismatch: vi.fn() });
+  cleanups.push(cache.close); cache.select(bot.binding, bot.binding);
+  const client = cache.snapshot()[0]!.client;
+  await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
+  expect(await owner.read(bot.binding.botId)).toBeNull();
+  const observe = vi.spyOn(store, 'observe');
+  const observer = new BotHistorySnapshotObserver({ owner, binding: bot.binding, client, name: () => 'Assistant', bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  await observe.mock.results[0]!.value;
+  if (change === 'save') await seed(peer, { ...sibling, lastEventSeq: '2' });
+  else await peer.read(botOwner, sibling.botId);
+  window.dispatchEvent(new StorageEvent('storage', { key: `daynight:bot-display:v1:${botOwner}`, storageArea: localStorage, newValue: localStorage.getItem(`daynight:bot-display:v1:${botOwner}`) }));
+  await expect(observer.flush()).resolves.toBe('saved');
+  expect((await store.read(botOwner, bot.binding.botId))?.entries).toEqual([item]);
+  expect((await peer.read(botOwner, sibling.botId))?.lastEventSeq).toBe(change === 'save' ? '2' : '1');
+});
+it.each([false, true])('accepts the first passive sibling read after a peer clear while rejecting older queued reads (queued: %s)', async queued => {
+  const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  let blocked = false;
+  const store = new BotDisplaySnapshotStore({ isCurrent: user => user === botOwner, storage: localStorage, withLock: async (_key, run) => {
+    if (blocked) { entered.resolve(); await gate.promise; }
+    return run();
+  } });
+  const owner = new BotDisplaySnapshotCoordinator({ userId: botOwner, isCurrent: () => true, store });
+  const peer = new BotDisplaySnapshotStore({ isCurrent: user => user === botOwner, storage: storage(), withLock: async (_key, run) => run() });
+  cleanups.push(() => owner.close(), () => peer.close());
+  const removed = await seed(store), binding = botBinding(2);
+  const sibling = await seed(store, { ...preview(), botId: binding.botId, lastKnownBinding: binding, fence: { sessionId: binding.sessionId, testExecutionId: binding.testExecutionId, executionGeneration: '1' } });
+  expect(await owner.read(sibling.botId)).toEqual(sibling);
+  let oldRead: Promise<BotDisplayPreview | null> | null = null;
+  if (queued) { blocked = true; oldRead = owner.read(sibling.botId, { touch: false }); await entered.promise; }
+  await expect(peer.clearTarget(botOwner, removed.botId)).resolves.toBe(true);
+  window.dispatchEvent(new StorageEvent('storage', { key: `daynight:bot-display:v1:${botOwner}`, storageArea: localStorage, newValue: localStorage.getItem(`daynight:bot-display:v1:${botOwner}`) }));
+  gate.resolve();
+  if (oldRead) await expect(oldRead).resolves.toBeNull();
+  await expect(owner.read(sibling.botId, { touch: false })).resolves.toEqual(sibling);
+  await expect(owner.read(removed.botId, { touch: false })).resolves.toBeNull();
+});
 it('does not feed passive cross-tab invalidation reads back into persistent LRU writes', async () => {
   const { owner, store } = fixture(), first = await seed(store), binding = botBinding(2);
   const second = { ...preview(), botId: binding.botId, lastKnownBinding: binding, fence: { sessionId: binding.sessionId, testExecutionId: binding.testExecutionId, executionGeneration: '1' } };

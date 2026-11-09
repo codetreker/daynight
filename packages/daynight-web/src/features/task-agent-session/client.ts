@@ -537,12 +537,10 @@ export class TaskSessionClient {
     }
     const coverage = this.view.historyCoverage;
     const applied = !state.recoveryRequired && BigInt(state.lastEventSeq) > BigInt(this.view.state.lastEventSeq);
+    // An upsert verifies its own row, not the unread interval between it and a
+    // loaded page. Only accepted pages may expand contiguous entry coverage.
     const historyCoverage = applied && coverage ? {
       ...coverage,
-      ...(value.event.kind === 'timeline_upsert' ? {
-        firstEntrySeq: coverage.firstEntrySeq === null || BigInt(value.event.payload.entrySeq) < BigInt(coverage.firstEntrySeq) ? value.event.payload.entrySeq : coverage.firstEntrySeq,
-        throughEntrySeq: BigInt(value.event.payload.entrySeq) > BigInt(coverage.throughEntrySeq) ? value.event.payload.entrySeq : coverage.throughEntrySeq,
-      } : {}),
       lastEventSeq: state.lastEventSeq,
     } : sameHistory ? coverage : null;
     this.publish({ state, historyCoverage });

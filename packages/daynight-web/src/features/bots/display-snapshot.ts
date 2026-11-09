@@ -13,7 +13,8 @@ const keyFor = (ownerUserId: string): string => BOT_DISPLAY_SNAPSHOT_NAMESPACE +
 type RecordValue = { historyVersion: string; preview: BotDisplayPreview };
 /** Array order is least to most recently read or saved; wall-clock changes cannot reorder it. */
 type Envelope = { schemaVersion: 1; ownerUserId: string; generation: string; records: RecordValue[] };
-type Account = { value: Envelope; memoryOnly: boolean; localGeneration: object; clearing: number; revokedAll: boolean; revokedTargets: Set<string> };
+type StorageFence = { readonly token: object; readonly historyVersions: ReadonlyMap<string, string> };
+type Account = { value: Envelope; memoryOnly: boolean; localGeneration: object; pendingStorageFence: StorageFence | null; clearing: number; revokedAll: boolean; revokedTargets: Set<string> };
 type Realm = { accounts: Map<string, Account>; listeners: Set<(ownerUserId: string) => void>; tail: Promise<void> };
 const realms = new WeakMap<object, Realm>();
 const unavailableStorage = {};
@@ -110,10 +111,16 @@ export class BotDisplaySnapshotStore {
     this.listeners.add(listener); return () => { this.listeners.delete(listener); };
   };
   getVersion = (): number => this.revision;
+  /** Opaque account revocation fence; ordinary saves and LRU touches keep it stable. */
+  revocationToken(ownerUserId: string): object | null {
+    const account = this.realm.accounts.get(ownerUserId);
+    if (account) return account.localGeneration;
+    return this.current(ownerUserId) ? this.account(ownerUserId).localGeneration : null;
+  }
   private account(ownerUserId: string): Account {
     let account = this.realm.accounts.get(ownerUserId);
     if (!account) {
-      account = { value: emptyEnvelope(ownerUserId), memoryOnly: !this.storage || !this.lock, localGeneration: {}, clearing: 0, revokedAll: false, revokedTargets: new Set() };
+      account = { value: emptyEnvelope(ownerUserId), memoryOnly: !this.storage || !this.lock, localGeneration: {}, pendingStorageFence: null, clearing: 0, revokedAll: false, revokedTargets: new Set() };
       this.realm.accounts.set(ownerUserId, account);
       // Read-only recovery is useful even if this browser cannot safely persist new writes.
       if (this.storage) {
@@ -125,11 +132,15 @@ export class BotDisplaySnapshotStore {
   }
   private refresh(ownerUserId: string): Account {
     const account = this.account(ownerUserId);
-    if (account.memoryOnly || !this.storage) return account;
+    if (account.memoryOnly || !this.storage) { account.pendingStorageFence = null; return account; }
+    const alreadyFenced = account.pendingStorageFence?.token === account.localGeneration;
+    account.pendingStorageFence = null;
     try {
       const raw = this.storage.getItem(keyFor(ownerUserId));
       const value = raw === null ? emptyEnvelope(ownerUserId) : parseEnvelope(raw, ownerUserId);
-      if (value.generation !== account.value.generation) account.localGeneration = {};
+      // The event already revoked every older reader and removed its payload.
+      // Reconciling current disk must not revoke the read doing that recovery.
+      if (value.generation !== account.value.generation && !alreadyFenced) account.localGeneration = {};
       account.value = this.withRevocations(account, value);
     } catch {
       // A corrupt or denied read is a miss, never an invitation to overwrite another tab.
@@ -183,14 +194,18 @@ export class BotDisplaySnapshotStore {
       if (event.newValue === null) {
         account.localGeneration = {};
         account.value = emptyEnvelope(owner, crypto.randomUUID());
+        account.pendingStorageFence = account.memoryOnly ? null : { token: account.localGeneration, historyVersions: new Map() };
       } else {
         try {
           const incoming = parseEnvelope(event.newValue, owner);
           if (incoming.generation !== account.value.generation) {
             account.localGeneration = {};
-            if (account.memoryOnly) account.value = emptyEnvelope(owner, incoming.generation);
+            account.value = emptyEnvelope(owner, incoming.generation);
+            account.pendingStorageFence = account.memoryOnly ? null : { token: account.localGeneration, historyVersions: new Map(incoming.records.map(row => [row.preview.botId, row.historyVersion])) };
+          } else if (account.pendingStorageFence?.token === account.localGeneration) {
+            account.pendingStorageFence = { token: account.localGeneration, historyVersions: new Map(incoming.records.map(row => [row.preview.botId, row.historyVersion])) };
           }
-        } catch { account.localGeneration = {}; account.value = emptyEnvelope(owner, crypto.randomUUID()); account.memoryOnly = true; }
+        } catch { account.localGeneration = {}; account.pendingStorageFence = null; account.value = emptyEnvelope(owner, crypto.randomUUID()); account.memoryOnly = true; }
       }
       this.publish(owner);
     }
@@ -220,11 +235,19 @@ export class BotDisplaySnapshotStore {
    */
   observe(ownerUserId: string, botId: string): Promise<BotDisplaySnapshotObservation | null> {
     if (!this.current(ownerUserId) || !uuid(botId)) return Promise.resolve(null);
+    const observed = this.account(ownerUserId), localGeneration = observed.localGeneration, generation = observed.value.generation;
+    // A revocation notification retains only validated version metadata. New
+    // authority can capture it without reviving entries or leasing a later clear.
+    const pending = observed.pendingStorageFence;
+    const historyVersion = pending?.token === localGeneration ? pending.historyVersions.get(botId) ?? null : observed.value.records.find(row => row.preview.botId === botId)?.historyVersion ?? null;
     return this.serialized(ownerUserId, () => {
       if (!this.current(ownerUserId)) return null;
       const account = this.refresh(ownerUserId);
-      if (account.clearing) return null;
+      // Storage events may trail lock acquisition. Never issue a post-clear lease
+      // for history admitted before the observation started waiting for its lock.
+      if (account.clearing || account.localGeneration !== localGeneration || account.value.generation !== generation) return null;
       const row = account.value.records.find(row => row.preview.botId === botId);
+      if ((row?.historyVersion ?? null) !== historyVersion) return null;
       const observation = Object.freeze({ ownerUserId, botId, generation: account.value.generation, historyVersion: row?.historyVersion ?? null });
       this.leases.set(observation, { ...observation, localGeneration: account.localGeneration, historyKey: null });
       return observation;
@@ -263,7 +286,7 @@ export class BotDisplaySnapshotStore {
         next.records.shift(); evicted = true;
       }
       // Eviction also fences writers that observed absence before an insert/evict cycle.
-      if (evicted) { next.generation = crypto.randomUUID(); account.localGeneration = {}; }
+      if (evicted) { next.generation = crypto.randomUUID(); account.localGeneration = {}; account.pendingStorageFence = null; }
       account.value = next;
       lease.generation = next.generation; lease.localGeneration = account.localGeneration;
       lease.historyVersion = historyVersion; lease.historyKey = historyKey;
@@ -288,13 +311,11 @@ export class BotDisplaySnapshotStore {
         const raw = this.storage.getItem(keyFor(ownerUserId));
         if (raw !== expectedRaw || raw === null) return true;
         if (!locked) return false;
-        const account = this.account(ownerUserId);
-        account.value = emptyEnvelope(ownerUserId, crypto.randomUUID());
-        account.localGeneration = {}; account.memoryOnly = false;
-        this.revoke(account);
-        const cleared = this.persist(account);
+        // This is a disk-only retry of the old cleanup. A newer authorized store
+        // may share this realm and already own memory-only history and leases.
+        this.storage.setItem(keyFor(ownerUserId), JSON.stringify(emptyEnvelope(ownerUserId, crypto.randomUUID())));
         this.publish(ownerUserId);
-        return cleared;
+        return true;
       } catch { return false; }
     }, false);
   }
@@ -305,6 +326,7 @@ export class BotDisplaySnapshotStore {
     this.revoke(account, botId);
     const generation = crypto.randomUUID();
     account.localGeneration = {};
+    account.pendingStorageFence = null;
     account.value = { ...account.value, generation, records: account.value.records.filter(row => botId !== undefined && row.preview.botId !== botId) };
     // Prevent reads and newly created stores from recovering disk data while clear waits for its lock.
     account.memoryOnly = true;

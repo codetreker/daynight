@@ -73,6 +73,8 @@ export class BotDisplaySnapshotCoordinator {
   private readonly listeners = new Set<() => void>();
   private readonly historyListeners = new Set<(botId: string) => void>();
   private revision = 0;
+  private storageGeneration = 0;
+  private storeRevocation: object | null = null;
   private invalidated = false;
   private clearing: Promise<boolean> | null = null;
   private readonly detach: () => void;
@@ -92,10 +94,16 @@ export class BotDisplaySnapshotCoordinator {
   private expire(botId: string) { this.generations.set(botId, (this.generations.get(botId) ?? 0) + 1); this.previews.delete(botId); this.publish(); }
   private externalChange = (event: StorageEvent) => {
     if (event.key !== null && event.key !== `daynight:bot-display:v1:${this.options.userId}`) return;
-    for (const id of this.previews.keys()) this.generations.set(id, (this.generations.get(id) ?? 0) + 1);
     this.previews.clear(); this.publish();
   };
-  generation = (botId: string) => this.generations.get(botId) ?? 0;
+  generation = (botId: string) => {
+    const token = this.store.revocationToken(this.options.userId);
+    // The store distinguishes real revocation from same-generation history and
+    // LRU writes. A first read establishes the baseline without expiring itself.
+    if (this.storeRevocation !== null && token !== this.storeRevocation) this.storageGeneration++;
+    this.storeRevocation = token;
+    return this.storageGeneration + (this.generations.get(botId) ?? 0);
+  };
   cached = (botId: string): BotDisplayPreview | null => this.allowed(botId) ? this.previews.get(botId) ?? null : null;
   async read(botId: string, options: { readonly touch?: boolean } = {}): Promise<BotDisplayPreview | null> {
     if (!this.allowed(botId)) return null;
@@ -198,7 +206,8 @@ export class BotHistorySnapshotObserver {
     const ticket = ++this.observation;
     const enqueue = (lease: BotDisplaySnapshotObservation | null) => {
       const current = client.snapshot();
-      if (!lease || this.closed || ticket !== this.observation || !owner.allowed(binding.botId) || generation !== owner.generation(binding.botId) || !current.historyLoaded || !current.historySettled || !current.state.snapshot || historyKey(current.state.snapshot) !== identity) return;
+      if (this.closed || ticket !== this.observation || !owner.allowed(binding.botId) || generation !== owner.generation(binding.botId) || !current.historyLoaded || !current.historySettled || !current.state.snapshot || historyKey(current.state.snapshot) !== identity) return;
+      if (!lease) { this.expiredSource = source; this.lease = null; this.candidate = null; this.lastAccepted = null; return; }
       this.lease = lease;
       const bookmark = this.options.bookmark(), anchor = bookmark?.anchor;
       const readingAnchor = anchor && bookmark.historyEpoch === snapshot.historyEpoch ? { entryId: anchor.key, offset: Math.max(0, -anchor.top), following: bookmark.following } : undefined;
