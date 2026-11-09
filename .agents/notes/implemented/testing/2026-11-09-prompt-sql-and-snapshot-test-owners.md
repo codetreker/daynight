@@ -16,7 +16,10 @@ proof. It creates a committed Prompt, establishes the production factory
 snapshot through metadata and text reads, commits an interleaved update, and
 observes the original revision/text until the snapshot ends. Fresh Store reads
 observe the committed update and reject a proposed update after callback refusal.
-The pre-canceled write still proves that its callback is not invoked.
+A directly supplied `version_conflict` refusal retains its identity and code
+through the real Prompt writer's error wrapping, independently from the DAO's
+conditional-write decision. The pre-canceled write still proves that its callback
+is not invoked.
 
 The existing DAO conditional-write test receives the committed CAS lifecycle
 after its original rollback and closed-transaction checks, using the same schema.

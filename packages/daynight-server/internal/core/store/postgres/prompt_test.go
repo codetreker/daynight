@@ -118,6 +118,13 @@ func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
 		t.Fatalf("rollback: %+v %v", completion, err)
 	}
 	check()
+	domainRefusal := &model.Fault{Code: "version_conflict", Message: "The prompt revision has changed."}
+	completion, err = NewPrompt(db.Pool).WritePrompt(ctx, func(PromptWriteScope) error { return domainRefusal })
+	var actual *model.Fault
+	if completion.Outcome != TransactionNotCommitted || !errors.Is(err, domainRefusal) || !errors.As(err, &actual) || actual.Code != "version_conflict" {
+		t.Fatalf("domain refusal lost in writer: completion=%+v identity=%v fault=%+v err=%v", completion, errors.Is(err, domainRefusal), actual, err)
+	}
+	check()
 	cancelled, cancelNow := context.WithCancel(ctx)
 	cancelNow()
 	called := false
