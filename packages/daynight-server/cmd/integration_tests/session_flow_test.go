@@ -118,7 +118,10 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 	}
 
 	entryID := uuid.NewString()
-	content := []byte(`[{"type":"text","text":"Native Session API content"}]`)
+	content, err := json.Marshal([]map[string]string{{"type": "text", "text": "Native Session API content"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	entry := sp.TimelineEntry{EntryID: entryID, Revision: "1", Kind: "assistant_message", Data: map[string]json.RawMessage{"content": content}}
 	payload, err := json.Marshal(entry)
 	if err != nil {
