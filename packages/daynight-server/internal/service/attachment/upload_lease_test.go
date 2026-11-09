@@ -66,20 +66,20 @@ func TestUploadLeaseCoordinatesInstancesAndOwners(t *testing.T) {
 }
 
 func TestAdmittedPutFromRequiresLiveLeaseAndBoundsContent(t *testing.T) {
-	attachments, _, db, files, task, principal := attachmentService(t)
-	ctx := t.Context()
+	attachments, m, files, task, p := attachmentUnit(t)
 	namespace := transferNamespace(t)
-	private, err := files.AcquireGate(ctx, filestorage.PrivateGate, namespace.ID())
+	private, err := files.AcquireGate(t.Context(), filestorage.PrivateGate, namespace.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer private.Close()
-	admission, err := attachments.AdmitTransfer(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", namespace)
+	expectTransferAdmission(m, p, task, "file")
+	admission, err := attachments.AdmitTransfer(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", namespace)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admission.Close()
-	lease, err := attachments.AcquireUploadLease(ctx, principal, task.ProjectID, task.ID)
+	lease, err := attachments.AcquireUploadLease(t.Context(), p, task.ProjectID, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,15 +89,16 @@ func TestAdmittedPutFromRequiresLiveLeaseAndBoundsContent(t *testing.T) {
 	source := func(store.AttachmentMutationScope) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(strings.Repeat("x", int(attachmentcore.MaxFileBytes)+1))), nil
 	}
-	if _, _, err := admission.PutFromWithLease(ctx, lease, source); err == nil {
+	if _, _, err := admission.PutFromWithLease(t.Context(), lease, source); err == nil {
 		t.Fatal("closed lease accepted")
 	}
-	_, _, err = admission.PutFrom(ctx, source)
+	expectTransferMutation(m, task, "file", store.Completion{Outcome: store.TransactionNotCommitted})
+	_, _, err = admission.PutFrom(t.Context(), source)
 	requireFault(t, err, "payload_too_large")
 	if FileEffectPossible(err) || filestorage.PublicationOutcome(err) != filestorage.NotPublished {
 		t.Fatalf("wrong publication: %v", err)
 	}
-	assertAttachmentState(t, ctx, db, files, task, false, "")
+	requireTransferMissing(t, files, task, "file")
 }
 
 type poolCapacity struct {

@@ -40,7 +40,9 @@ func attachmentFixture(t *testing.T) (*postgres.Store, string, string, model.Pri
 func attachmentRows(t *testing.T, db *postgres.Store, projectID, taskID string) (string, string) {
 	t.Helper()
 	var task, attachments string
-	err := db.Pool.QueryRow(t.Context(), `SELECT to_jsonb(t)::text,
+	err := db.Pool.QueryRow(t.Context(), `SELECT jsonb_build_array(to_jsonb(t),
+        (SELECT COALESCE(jsonb_agg(to_jsonb(d) ORDER BY d.depends_on_task_id),'[]'::jsonb) FROM task_dependencies d WHERE d.task_id=t.id),
+        (SELECT COALESCE(jsonb_agg(to_jsonb(p) ORDER BY p.name),'[]'::jsonb) FROM task_properties p WHERE p.task_id=t.id))::text,
         COALESCE((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.path) FROM task_attachments a
           WHERE a.project_id=t.project_id AND a.task_id=t.id),'[]'::jsonb)::text
         FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, projectID, taskID).Scan(&task, &attachments)
@@ -53,6 +55,19 @@ func attachmentRows(t *testing.T, db *postgres.Store, projectID, taskID string) 
 func TestMutationDAOLifecycleAndRollback(t *testing.T) {
 	db, projectID, taskID, principal := attachmentFixture(t)
 	ctx := t.Context()
+	prerequisite := uuid.NewString()
+	for _, query := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Prerequisite')`, []any{prerequisite, projectID}},
+		{`INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, []any{projectID, taskID, prerequisite}},
+		{`INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, []any{taskID, `[{"url":"https://github.com/example/repository/pull/1","title":""}]`}},
+	} {
+		if _, err := db.Pool.Exec(ctx, query.sql, query.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
 	taskBefore, _ := attachmentRows(t, db, projectID, taskID)
 	writer := db
 	result, err := writer.WriteAttachmentMutation(ctx, func(tx store.AttachmentMutationScope) error {

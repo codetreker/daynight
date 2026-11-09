@@ -754,9 +754,14 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 [跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)，各层验证职责如下：
 
 - Storage：bucket 隔离、真实相对路径、同路径完整覆盖、原始字节一致、实际大小、
-  缺失与权限错误、取消、普通失败的临时文件清理及路径不能越出根目录。
-- 附件服务与 PG：同实例 project 隔离、规范化 UUID 分片、同/不同分片 task 的同名路径独立、
-  原始路径校验、文件/目录冲突、覆盖保留元数据身份、删除、分页和 task 版本/状态/图不变。
+  缺失与权限错误、取消、普通失败的临时文件清理及路径不能越出根目录；同/不同分片及
+  project 前缀下同名文件的字节独立、兄弟目录保留与空目录清理，由真实本地文件验证。
+- 附件服务：通过合成 principal、Project/Task 数据与严格 snapshot、mutation、DAO 预期，
+  验证准入、规范化 UUID 分片地址、原始路径校验、文件/元数据操作顺序、结果与错误链、
+  完成事实、取消，以及上传租约和传输清理。测试不连接数据库；写入参数不当作持久化证据。
+- PG：附件 DAO 验证实际 SQL、文件/目录前缀冲突、覆盖保留元数据身份、删除、分页、历史
+  字段值及 task 版本/状态/图不变；根 scope 测试验证 Task/Project 删除与附件变更的真实
+  锁顺序、准入后的撤权、事务完成，以及文件副作用后的回滚和持久化读回。
 - HTTP：二进制单文件上传、原样读取、下载与 inline 响应、相对资源、URL 编码、
   非法路径拒绝，以及失败明确暴露；不以跨介质原子性作为验收条件。
 - CLI：实际构建入口的上传、完整列表、文本和二进制 stdout、背压、取消、管道中断、
@@ -769,6 +774,9 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
   发布后回执歧义、同操作续作及完整目录/内容/业务行不变。
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
+
+[附件服务测试归属决策](../../.agents/notes/implemented/testing/2026-11-09-attachment-service-test-ownership.md)
+记录服务、Store 与本地文件验证职责。
 
 Go、CLI 和 Web 分别验证附件存储、协议与界面行为；正常同数据读写须由独立产品
 组合验证证明，部署验证拥有持久化和备份恢复。Go 模块的 `TestAttachmentGrantRevocationWithFreshProcess`

@@ -542,8 +542,14 @@ execute without PostgreSQL. Store tests retain actual SQL, locking, transaction,
 persistence and database recheck mechanisms. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns focused commands and failure expectations. The complete
-`internal/core/session` and `internal/service/webhook` suites execute without a
-database URL. The regular `internal/server/session` unit suite controls directly
+`internal/core/session`, `internal/service/webhook` and
+`internal/service/attachment` suites execute without a database URL. Attachment
+service tests use explicit snapshot, mutation and DAO expectations for admission,
+file/metadata order, completion facts and resource lifetime. Their test binary
+clears database and UniAuth fixture variables even during full module validation.
+The [attachment service guide](../packages/daynight-server/README.md#attachment-service-and-store-tests)
+owns its focused command and the separate PostgreSQL and local filesystem proof
+owners. The regular `internal/server/session` unit suite controls directly
 called Session use cases and executes actual routing, credential middleware,
 HTTP, WebSocket and TCP behavior. Its
 [guide](../packages/daynight-server/README.md#session-http-tests) owns the standalone

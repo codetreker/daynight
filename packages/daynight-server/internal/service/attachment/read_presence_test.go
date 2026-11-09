@@ -1,140 +1,85 @@
 package attachment
 
 import (
-	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
-	"github.com/google/uuid"
 )
 
-type taskPresenceSnapshot struct {
-	store.SnapshotReader
-	presenceErr, snapshotErr error
-	taskReads, presenceReads int
-}
-
-func (s *taskPresenceSnapshot) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
-	if s.snapshotErr != nil {
-		return s.snapshotErr
-	}
-	return s.SnapshotReader.ReadSnapshot(ctx, func(scope store.SnapshotScope) error { return fn(taskPresenceScope{SnapshotScope: scope, owner: s}) })
-}
-
-type taskPresenceScope struct {
-	store.SnapshotScope
-	owner *taskPresenceSnapshot
-}
-
-func (s taskPresenceScope) TaskDAO() store.TaskReader {
-	return taskPresenceReader{TaskReader: s.SnapshotScope.TaskDAO(), owner: s.owner}
-}
-
-type taskPresenceReader struct {
-	store.TaskReader
-	owner *taskPresenceSnapshot
-}
-
-func (r taskPresenceReader) Task(context.Context, string, string) (model.Task, error) {
-	r.owner.taskReads++
-	return model.Task{}, errors.New("full task read is forbidden")
-}
-func (r taskPresenceReader) TaskPresence(ctx context.Context, project, task string) (store.TaskPresence, error) {
-	r.owner.presenceReads++
-	if r.owner.presenceErr != nil {
-		return store.TaskPresence{}, r.owner.presenceErr
-	}
-	return r.TaskReader.TaskPresence(ctx, project, task)
-}
 func TestAttachmentReadsUseTaskPresence(t *testing.T) {
-	service, _, database, _, task, principal := attachmentService(t)
-	putAttachment(t, service, principal, task, "file", "content")
-	observed := &taskPresenceSnapshot{SnapshotReader: database}
-	service.store = observed
-	page, err := service.List(t.Context(), principal, task.ProjectID, task.ID, model.PageRequest{Limit: 10})
-	if err != nil || len(page.Items) != 1 {
-		t.Fatalf("list: %+v %v", page, err)
+	subject, m, files, task, p := attachmentUnit(t)
+	item := attachmentItem(task, "file", "text/plain", 7)
+	if _, err := files.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"), strings.NewReader("content")); err != nil {
+		t.Fatal(err)
 	}
-	_, obj, err := service.Open(t.Context(), principal, task.ProjectID, task.ID, "file")
+	m.read(p, task)
+	m.expect("list", task.ProjectID, task.ID, store.AttachmentQuery{Limit: 10}).result = store.AttachmentPage{Items: []model.Attachment{item}}
+	page, err := subject.List(t.Context(), p, task.ProjectID, task.ID, model.PageRequest{Limit: 10})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("list: %#v %v", page, err)
+	}
+	planAttachmentOpen(m, p, task, item)
+	_, obj, err := subject.Open(t.Context(), p, task.ProjectID, task.ID, "file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err := io.ReadAll(obj.Body)
-	_ = obj.Body.Close()
-	if err != nil || string(content) != "content" {
-		t.Fatalf("open: %q %v", content, err)
-	}
-	if observed.taskReads != 0 || observed.presenceReads != 2 {
-		t.Fatalf("full task reads=%d presence reads=%d", observed.taskReads, observed.presenceReads)
+	content, readErr := io.ReadAll(obj.Body)
+	closeErr := obj.Body.Close()
+	if readErr != nil || closeErr != nil || string(content) != "content" {
+		t.Fatalf("open: %q %v %v", content, readErr, closeErr)
 	}
 }
+
 func TestAttachmentPresenceErrorAndAuthorizationSemantics(t *testing.T) {
-	service, _, database, _, task, principal := attachmentService(t)
-	putAttachment(t, service, principal, task, "file", "content")
-	observed := &taskPresenceSnapshot{SnapshotReader: database}
-	service.store = observed
+	subject, m, _, task, p := attachmentUnit(t)
 	for _, action := range []string{"list", "open"} {
-		run := func(id string, actor model.Principal) error {
+		run := func(actor model.Principal, taskID string) error {
 			if action == "list" {
-				_, err := service.List(t.Context(), actor, task.ProjectID, id, model.PageRequest{Limit: 1})
+				_, err := subject.List(t.Context(), actor, task.ProjectID, taskID, model.PageRequest{Limit: 1})
 				return err
 			}
-			_, obj, err := service.Open(t.Context(), actor, task.ProjectID, id, "file")
+			_, obj, err := subject.Open(t.Context(), actor, task.ProjectID, taskID, "file")
 			if err == nil {
 				_ = obj.Body.Close()
 			}
 			return err
 		}
-		err := run(uuid.NewString(), principal)
-		var fault *model.Fault
-		if !errors.As(err, &fault) || fault.Code != "not_found" {
-			t.Fatalf("%s missing: %v", action, err)
-		}
-		outsider := testsupport.ServicePrincipal(t, database)
-		before := observed.presenceReads
-		if err := run(task.ID, outsider); err == nil {
-			t.Fatalf("%s unauthorized", action)
-		}
-		if observed.presenceReads != before {
-			t.Fatalf("%s queried task before authorization", action)
-		}
+		missing := "ab000000-0000-4000-8000-000000000002"
+		m.expect("snapshot").callback = true
+		m.expect("access", p, task.ProjectID).result = model.ProjectAccess{}
+		m.expect("presence", task.ProjectID, missing).result = store.TaskPresence{Found: false}
+		requireFault(t, run(p, missing), "not_found")
+		outsider := p
+		outsider.UserID = "ef000000-0000-4000-8000-000000000003"
+		m.expect("snapshot").callback = true
+		m.expect("access", outsider, task.ProjectID).err = model.ErrNotFound
+		requireFault(t, run(outsider, task.ID), "not_found")
 		failure := errors.New("presence query failed")
-		observed.presenceErr = failure
-		if err := run(task.ID, principal); !errors.Is(err, failure) {
+		m.expect("snapshot").callback = true
+		m.expect("access", p, task.ProjectID).result = model.ProjectAccess{}
+		m.expect("presence", task.ProjectID, task.ID).err = failure
+		if err := run(p, task.ID); !errors.Is(err, failure) {
 			t.Fatalf("%s presence error: %v", action, err)
 		}
-		observed.presenceErr = nil
 		failure = errors.New("snapshot failed")
-		observed.snapshotErr = failure
-		if err := run(task.ID, principal); !errors.Is(err, failure) {
+		m.expect("snapshot").err = failure
+		if err := run(p, task.ID); !errors.Is(err, failure) {
 			t.Fatalf("%s snapshot error: %v", action, err)
 		}
-		observed.snapshotErr = nil
-	}
-	if _, err := database.Pool.Exec(t.Context(), `UPDATE tasks SET deleted_at=now() WHERE id=$1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	for _, run := range []func() error{
-		func() error {
-			_, err := service.List(t.Context(), principal, task.ProjectID, task.ID, model.PageRequest{Limit: 1})
-			return err
-		},
-		func() error {
-			_, _, err := service.Open(t.Context(), principal, task.ProjectID, task.ID, "file")
-			return err
-		},
-	} {
-		err := run()
-		var fault *model.Fault
-		if !errors.As(err, &fault) || fault.Code != "task_deleted" || !errors.Is(err, model.ErrTaskDeleted) {
-			t.Fatalf("deleted task: %v", err)
+		deleted := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		m.expect("snapshot").callback = true
+		m.expect("access", p, task.ProjectID).result = model.ProjectAccess{}
+		m.expect("presence", task.ProjectID, task.ID).result = store.TaskPresence{Found: true, DeletedAt: &deleted}
+		err := run(p, task.ID)
+		requireFault(t, err, "task_deleted")
+		if !errors.Is(err, model.ErrTaskDeleted) {
+			t.Fatalf("deleted task cause: %v", err)
 		}
-	}
-	if observed.taskReads != 0 {
-		t.Fatalf("full task reads: %d", observed.taskReads)
 	}
 }
