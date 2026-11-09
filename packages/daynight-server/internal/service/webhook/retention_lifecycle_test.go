@@ -305,14 +305,72 @@ func TestRetentionObservationConcurrentReadersSeeWholePass(t *testing.T) {
 
 func TestRetentionBlockedEventConsumerDoesNotBlockPassOrStop(t *testing.T) {
 	r := NewRetention(retentionEmptyStore(t))
+	parent, cancelParent := context.WithCancel(context.Background())
 	consumed, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	go func() { defer close(done); <-r.Events(); close(consumed); <-release }()
-	defer func() { close(release); <-done }()
-	retentionFail(t, r.Start(context.Background()))
+	waiting, waitDone := make(chan struct{}, 1), make(chan struct{})
+	r.wait = func(ctx context.Context, _ time.Duration) bool {
+		defer close(waitDone)
+		select {
+		case waiting <- struct{}{}:
+		case <-ctx.Done():
+			return false
+		}
+		<-ctx.Done()
+		return false
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		cancelParent()
+		releaseOnce.Do(func() { close(release) })
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := r.Stop(ctx); err != nil {
+			t.Errorf("retention cleanup stop: %v", err)
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("event consumer did not exit during cleanup")
+		}
+		select {
+		case err := <-r.Failures():
+			t.Errorf("retention background failure: %v", err)
+		default:
+		}
+	})
+	go func() {
+		defer close(done)
+		select {
+		case _, open := <-r.Events():
+			if !open {
+				t.Error("event stream closed before its first event")
+				return
+			}
+			close(consumed)
+		case <-parent.Done():
+			return
+		}
+		select {
+		case <-release:
+		case <-parent.Done():
+		}
+	}()
+	retentionFail(t, r.Start(parent))
+	ready := time.After(time.Second)
 	select {
 	case <-consumed:
-	case <-time.After(time.Second):
+	case err := <-r.Failures():
+		t.Fatalf("retention failed before its first event: %v", err)
+	case <-ready:
 		t.Fatal("event not published")
+	}
+	// Publishing the first event precedes the pass lock's deferred release.
+	select {
+	case <-waiting:
+	case err := <-r.Failures():
+		t.Fatalf("retention failed before its idle wait: %v", err)
+	case <-ready:
+		t.Fatal("background pass did not enter its idle wait")
 	}
 	for i := 0; i < 350 && r.Observation().DroppedEvents == 0; i++ {
 		_, _, err := r.Pass(t.Context())
@@ -325,11 +383,19 @@ func TestRetentionBlockedEventConsumerDoesNotBlockPassOrStop(t *testing.T) {
 	defer cancel()
 	retentionFail(t, r.Stop(ctx))
 	select {
-	case _, open := <-r.Events():
-		if !open {
-			t.Fatal("Stop closed the drainable event stream")
-		}
+	case <-waitDone:
 	default:
+		t.Fatal("retention stopped before its idle wait exited")
+	}
+	for {
+		select {
+		case _, open := <-r.Events():
+			if !open {
+				t.Fatal("Stop closed the drainable event stream")
+			}
+		default:
+			return
+		}
 	}
 }
 
