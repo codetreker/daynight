@@ -68,6 +68,39 @@ it("reports repeated Web observations as successful without inventing worktree p
   expect(phases).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "worktree-preparation" }, true, undefined);
 });
 
+it("keeps grant renewal evidence distinct from a healthy controller observation", async () => {
+  const f = await orchestrationFixture(); f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  const phases = vi.fn(), successes = vi.fn(), failure = new Error("grant refresh failed");
+  const operationKey = `grant-refresh/${f.task.webExecution!.executionGeneration}/${f.task.webExecution!.launchId}`;
+  f.backend.setMonitoringObserver({ observePhase: phases, observeSuccess: successes });
+  const failedRefresh = async (_task: LocalTask, _ticket: ControllerLaunchTicket, _signal: AbortSignal, _refreshed?: () => void, starting?: () => void) => { starting?.(); throw failure; };
+  f.launcher.refreshGrant.mockImplementationOnce(failedRefresh).mockImplementationOnce(failedRefresh).mockResolvedValueOnce(undefined)
+    .mockImplementationOnce(async (_task: LocalTask, _ticket: ControllerLaunchTicket, _signal: AbortSignal, refreshed?: () => void, starting?: () => void) => { starting?.(); refreshed?.(); });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "preparing" }, false, undefined, operationKey);
+    expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "agent-observation" });
+    expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "preparing" }, operationKey);
+  }
+  phases.mockClear();
+  await f.backend.advance(f.task, new AbortController().signal);
+  expect(phases).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "preparing" }, false, undefined, operationKey);
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "preparing" }, operationKey);
+  await f.backend.advance(f.task, new AbortController().signal);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "preparing" }, operationKey);
+});
+
+it("keeps ticket preparation distinct from worktree and controller observation", async () => {
+  const f = await orchestrationFixture(), phases = vi.fn(), successes = vi.fn(), failure = new Error("ticket unavailable");
+  f.backend.setMonitoringObserver({ observePhase: phases, observeSuccess: successes });
+  f.launcher.prepare.mockRejectedValueOnce(failure).mockResolvedValue(f.source.ticket);
+  await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toBe(failure);
+  expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "agent-start" }, "web-ticket");
+  await f.backend.advance(f.task, new AbortController().signal);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "agent-start" }, "web-ticket");
+});
+
 it("reports in-flight Web worktree and startup stages without changing operation failures", async () => {
   const f = await fixture(), input = f.store.getTask(f.identity)!;
   const binding = await f.git.prepareWorktree({ projectId: input.projectId, repoUrl: input.repoUrl, localPath: input.repositoryPath }, input, {} as never);
@@ -87,7 +120,7 @@ it("reports in-flight Web worktree and startup stages without changing operation
     await worktreeEntered;
     expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "worktree-preparation" }, false, undefined);
     releaseWorktree(); await startEntered;
-    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "agent-start" }, false, undefined);
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");
     releaseStart(); await expect(result).rejects.toBe(original);
   } finally { releaseWorktree(); releaseStart(); await result.catch(() => {}); }
 });

@@ -7,7 +7,7 @@ type Identity = { projectId: string; taskId: string; claimId: string };
 type ReservationInput = { identity: Identity; roles: readonly ReservationRole[]; occupied?: boolean; observedAt?: string };
 type ActivityInput = ActivityPhase & { scope: Scope; status?: Activity["status"]; deadlineAt?: string | null; waitReason?: WaitReason | null; nextAttemptAt?: string | null };
 type ActivityPatch = { phase?: Activity["phase"]; status?: Activity["status"]; deadlineAt?: string | null; waitReason?: WaitReason | null; nextAttemptAt?: string | null; progress?: boolean };
-type FailureInput = { operationId: string; component: FailureComponent; phase: string; scope: Scope; error: unknown; retryState?: RetryState; nextAttemptAt?: string | null; outcomeUnconfirmed?: boolean };
+type FailureInput = { operationId: string; component: FailureComponent; phase: string; scope: Scope; error: unknown; retryState?: RetryState; nextAttemptAt?: string | null; outcomeUnconfirmed?: boolean; observedFailure?: { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number } };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const identityKey = (id: Identity): string => `${id.projectId}/${id.taskId}/${id.claimId}`;
 const validIdentity = (id: Identity): boolean => uuid.test(id.projectId) && uuid.test(id.taskId) && uuid.test(id.claimId);
@@ -37,6 +37,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
   let projectPreparationIncomplete = false;
   let reservations: Reservation[] = [];
   let reservationPartial = false, detailsPartial = false;
+  const unattributed = new Set<string>();
   const activities = new Map<string, { value: Activity; monotonicStart: number }>();
   const failures = new Map<string, Failure>();
   let lastRecovery: Observation["lastRecovery"] = null;
@@ -66,7 +67,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
       runId, sequence, capturedAt: time(), lifecycle, scheduler: { ...scheduler, coverage: preparationIncomplete() ? "partial" : scheduler.coverage }, capacity: capacity === null ? null : { ...capacity, detailCoverage: reservationPartial || reservationItems.length > 128 ? "partial" : "complete" },
       admission: { ...admission, coverage: reasonsTruncated && admissionCoverage !== "unknown" ? "partial" : admissionCoverage, reasons: selectedReasons.slice(0, 16).map(item => ({ ...item, scope: copyScope(item.scope) })) },
       reservations: reservationItems.slice(0, 128), activities: activityItems.slice(0, 128), currentFailures: failureItems.slice(0, 32), lastRecovery: lastRecovery === null ? null : { ...lastRecovery, scope: copyScope(lastRecovery.scope) },
-      detailCoverage: detailsPartial || reservationPartial || reservationItems.length > 128 || activityItems.length > 128 || failureItems.length > 32 ? "partial" : "complete", delivery: { ...delivery, lastFailure: delivery.lastFailure === null ? null : { ...delivery.lastFailure, error: { ...delivery.lastFailure.error } } },
+      detailCoverage: detailsPartial || unattributed.size > 0 || reservationPartial || reservationItems.length > 128 || activityItems.length > 128 || failureItems.length > 32 ? "partial" : "complete", delivery: { ...delivery, lastFailure: delivery.lastFailure === null ? null : { ...delivery.lastFailure, error: { ...delivery.lastFailure.error } } },
     };
     // Account for both the PUT envelope and Go's normalized body; never infer total capacity from details.
     const payload = { expectedRevision: "00000000-0000-4000-8000-000000000000", observation: result };
@@ -149,11 +150,12 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
     updateActivity(id: string, patch: ActivityPatch): void { const entry = activities.get(id); if (!entry) return; entry.value = { ...entry.value, ...(patch.phase === undefined ? {} : { phase: patch.phase }), ...(patch.status === undefined ? {} : { status: patch.status }), ...(patch.deadlineAt === undefined ? {} : { deadlineAt: patch.deadlineAt }), ...(patch.waitReason === undefined ? {} : { waitReason: patch.waitReason }), ...(patch.nextAttemptAt === undefined ? {} : { nextAttemptAt: patch.nextAttemptAt }), ...(patch.progress ? { lastProgressAt: time() } : {}) } as Activity; dirty(); },
     endActivity(id: string): void { if (activities.delete(id)) dirty(); },
     clearActivities(): void { if (activities.size > 0) { activities.clear(); dirty(); } },
+    setUnattributed(key: string, value: boolean): void { const changed = value ? !unattributed.has(key) : unattributed.has(key); if (!changed) return; if (value) unattributed.add(key); else unattributed.delete(key); dirty(); },
     fail(input: FailureInput): void {
       if (!validScope(input.scope) || input.component === "project" && input.scope.kind === "worker" || !uuid.test(input.operationId)) { detailsPartial = true; dirty(); return; }
       const at = time(), previous = failures.get(input.operationId), retryState = input.retryState ?? "none";
       if (retryState === "scheduled" && !input.nextAttemptAt) throw new Error("A scheduled retry requires its next attempt time.");
-      failures.set(input.operationId, { operationId: input.operationId, component: input.component, phase: input.phase, scope: copyScope(input.scope), error: classifyFailure(input.error, input.outcomeUnconfirmed), firstObservedAt: previous?.firstObservedAt ?? at, lastObservedAt: at, occurrencesInRun: Math.min(Number.MAX_SAFE_INTEGER, (previous?.occurrencesInRun ?? 0) + 1), retryState, nextAttemptAt: retryState === "scheduled" ? input.nextAttemptAt! : null }); dirty();
+      failures.set(input.operationId, { operationId: input.operationId, component: input.component, phase: input.phase, scope: copyScope(input.scope), error: classifyFailure(input.error, input.outcomeUnconfirmed), firstObservedAt: previous?.firstObservedAt ?? input.observedFailure?.firstObservedAt ?? at, lastObservedAt: input.observedFailure?.lastObservedAt ?? at, occurrencesInRun: Math.min(Number.MAX_SAFE_INTEGER, (previous?.occurrencesInRun ?? 0) + (input.observedFailure?.occurrencesInRun ?? 1)), retryState, nextAttemptAt: retryState === "scheduled" ? input.nextAttemptAt! : null }); dirty();
     },
     updateFailureRetry(id: string, retryState: RetryState, nextAttemptAt: string | null = null): void {
       const failure = failures.get(id);

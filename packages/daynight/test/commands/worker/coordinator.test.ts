@@ -3060,6 +3060,187 @@ describe("worker monitoring of coordinator jobs", () => {
     } finally { release(); await coordinator.shutdown(); }
   });
 
+  it("retains separate unattributed Web renewal failures until the original claim is verified", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase()), monitor = createMonitoringObserver({ now: () => 1000 });
+    const web = { agent: "codex" as const, agentControlMode: "web" as const, model: "model", args: [], recoveryLimit: 2 };
+    const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+    const owner = { projectId: remote.projectId, taskId: remote.id, claimId: uuid(810), worktreeId: uuid(811) };
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+    const record = webStore.initializeWebExecution(webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: web }, 1), 2);
+    type GrantObserver = NonNullable<Parameters<ReturnType<typeof import("../../../src/commands/worker/backends/web-process.js").createWebControllerLauncher>["setGrantObserver"]>[0]>;
+    let grantObserver: GrantObserver | undefined;
+    const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn(), setGrantObserver: (value: GrantObserver | undefined) => { grantObserver = value; } };
+    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, onUnattributed: (identity, operation, value) => monitor.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operation}`, value) });
+    const failure = new Error("private ticket path");
+    grantObserver!.ticketFailed(record, failure);
+    expect(monitor.capture("1")).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
+    grantObserver!.ticketVerified(record);
+    expect(monitor.capture("2")).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
+    grantObserver!.ticketFailed(record, failure); grantObserver!.failed(record, failure, true);
+    grantObserver!.ticketVerified(record);
+    expect(monitor.capture("2").detailCoverage).toBe("partial");
+    grantObserver!.ticketFailed(record, failure); grantObserver!.ticketFailed(record, failure);
+    grantObserver!.started(record);
+    let coordinatorHooks: Parameters<typeof backend.setMonitoringObserver>[0] | undefined;
+    const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance: vi.fn(async task => task), cleanup: vi.fn(), setMonitoringObserver: value => { coordinatorHooks = value; backend.setMonitoringObserver(value); } } });
+    try {
+      expect(monitor.capture("3")).toMatchObject({ detailCoverage: "partial", currentFailures: [] });
+      await coordinator.tick();
+      const verified = monitor.capture("4");
+      expect(verified.detailCoverage).toBe("complete"); expect(verified.currentFailures).toHaveLength(2);
+      expect(verified.currentFailures.map(value => value.occurrencesInRun).sort()).toEqual([1, 2]);
+      const retrying = verified.currentFailures.find(value => value.occurrencesInRun === 1)!;
+      expect(retrying.retryState).toBe("running");
+      grantObserver!.settled(record);
+      expect(monitor.capture("4").currentFailures.find(value => value.operationId === retrying.operationId)?.retryState).toBe("none");
+      expect(verified.currentFailures.every(value => value.scope.kind === "claim" && value.scope.claimId === owner.claimId)).toBe(true);
+      const ticket = verified.currentFailures.find(value => value.occurrencesInRun === 2)!;
+      grantObserver!.ticketVerified(record);
+      expect(monitor.capture("5").lastRecovery).toMatchObject({ operationId: ticket.operationId });
+      expect(monitor.capture("5").currentFailures).toHaveLength(1);
+      expect(JSON.stringify(monitor.capture("5"))).not.toContain("private ticket path");
+      backend.setMonitoringObserver({});
+      grantObserver!.ticketFailed(record, failure);
+      expect(monitor.capture("6").detailCoverage).toBe("partial");
+      backend.setMonitoringObserver(coordinatorHooks!);
+      expect(monitor.capture("7").detailCoverage).toBe("complete");
+      expect(monitor.capture("7").currentFailures).toHaveLength(2);
+      const lastRecovery = monitor.capture("7").lastRecovery;
+      const successor = { ...record, webExecution: { ...record.webExecution!, executionGeneration: "2", launchId: uuid(999) } };
+      grantObserver!.ticketVerified(successor);
+      expect(monitor.capture("8").currentFailures).toEqual([]);
+      expect(monitor.capture("8").lastRecovery).toEqual(lastRecovery);
+      grantObserver!.failed(record, failure, true);
+      expect(monitor.capture("9").currentFailures).toEqual([]);
+      grantObserver!.failed(successor, failure, true);
+      const newFailure = monitor.capture("10").currentFailures[0]!;
+      grantObserver!.refreshed(record);
+      expect(monitor.capture("11").currentFailures).toContainEqual(expect.objectContaining({ operationId: newFailure.operationId }));
+      grantObserver!.refreshed(successor);
+      expect(monitor.capture("12").lastRecovery).toMatchObject({ operationId: newFailure.operationId });
+    } finally { await coordinator.shutdown(); webStore.close(); }
+  });
+
+  it("preserves a real in-flight renewal across claim confirmation and cancellation", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+    const { createWebControllerLauncher } = await import("../../../src/commands/worker/backends/web-process.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase()), monitor = createMonitoringObserver({ now: () => 1000 });
+    const web = { agent: "codex" as const, agentControlMode: "web" as const, model: "model", args: [], recoveryLimit: 2 };
+    const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+    const owner = { projectId: remote.projectId, taskId: remote.id, claimId: uuid(810), worktreeId: uuid(811) };
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+    let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: web }, 1);
+    record = webStore.bindWorktree(record, await f.git.prepareWorktree(f.project, owner, {} as Operation), 2);
+    record = webStore.initializeWebExecution(record, 3);
+    const grant = vi.fn().mockResolvedValueOnce({ token: "initial", expiresAt: new Date(91_000).toISOString() });
+    const sessionApi = { register: vi.fn(async () => ({ sessionId: uuid(812) })), grant, verifySupport: vi.fn(), verifyUnregistered: vi.fn() } as unknown as import("../../../src/commands/worker/backends/session-api.js").WorkerSessionApi;
+    const launcher = createWebControllerLauncher({ homeDirectory: f.root, packageDirectory: f.root, store: webStore, sessionApi, now: () => 1000 });
+    const ticket = await launcher.prepare(record, "managed", new AbortController().signal);
+    record = webStore.updateWebExecution(record, { launchSubmission: "acknowledged" }, 4);
+    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, onUnattributed: (identity, operation, value) => monitor.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operation}`, value) });
+    const failure = new Error("grant unavailable"); grant.mockRejectedValueOnce(failure);
+    await expect(launcher.refreshGrant(record, ticket, new AbortController().signal)).rejects.toBe(failure);
+    expect(monitor.capture("1")).toMatchObject({ detailCoverage: "partial", currentFailures: [] });
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), cancellation = new AbortController();
+    grant.mockImplementationOnce(async () => { entered.resolve(); await gate.promise; return { token: "late", expiresAt: new Date(901_000).toISOString() }; });
+    const retry = launcher.refreshGrant(record, ticket, cancellation.signal); void retry.catch(() => {});
+    await entered.promise;
+    const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance: vi.fn(async task => task), cleanup: vi.fn(async task => ({ task, complete: true })), setMonitoringObserver: backend.setMonitoringObserver } });
+    try {
+      await coordinator.tick();
+      const observed = monitor.capture("2").currentFailures[0]!;
+      expect(observed).toMatchObject({ phase: "preparing", retryState: "running", occurrencesInRun: 1 });
+      cancellation.abort(new Error("cancelled")); gate.resolve(); await expect(retry).rejects.toThrow("cancelled");
+      expect(monitor.capture("3").currentFailures[0]).toMatchObject({ operationId: observed.operationId, retryState: "none" });
+      expect(monitor.capture("3").lastRecovery).toBeNull();
+      grant.mockResolvedValueOnce({ token: "renewed", expiresAt: new Date(901_000).toISOString() });
+      await launcher.refreshGrant(record, ticket, new AbortController().signal);
+      expect(monitor.capture("4").lastRecovery).toMatchObject({ operationId: observed.operationId });
+    } finally { gate.resolve(); cancellation.abort(); await Promise.allSettled([retry]); await coordinator.shutdown(); webStore.close(); }
+  });
+
+  it.each(["inventory", "project"] as const)("clears pre-coordinator unknown Web identity on %s loss", async loss => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase()), monitor = createMonitoringObserver(); f.candidates.splice(0);
+    const web = { agent: "codex" as const, agentControlMode: "web" as const, model: "model", args: [], recoveryLimit: 2 };
+    const owner = { projectId: f.project.projectId, taskId: uuid(30), claimId: uuid(31), worktreeId: uuid(32) };
+    const record = webStore.initializeWebExecution(webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: web }, 1), 2);
+    type GrantObserver = NonNullable<Parameters<ReturnType<typeof import("../../../src/commands/worker/backends/web-process.js").createWebControllerLauncher>["setGrantObserver"]>[0]>;
+    let grantObserver: GrantObserver | undefined;
+    const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn(), setGrantObserver: (value: GrantObserver | undefined) => { grantObserver = value; } };
+    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, onUnattributed: (identity, operation, value) => monitor.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operation}`, value) });
+    grantObserver!.identityUnknown(record);
+    expect(monitor.capture("1")).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
+    const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor, webBackend: { advance: vi.fn(async task => task), cleanup: vi.fn(), setMonitoringObserver: backend.setMonitoringObserver } });
+    try {
+      expect(monitor.capture("2").detailCoverage).toBe("partial");
+      if (loss === "inventory") await coordinator.tick(); else coordinator.invalidateProject(f.project.projectId);
+      expect(monitor.capture("3")).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
+    } finally { await coordinator.shutdown(); webStore.close(); }
+  });
+
+  it("clears unattributed renewal state when a complete inventory excludes its claim", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase()), monitor = createMonitoringObserver(); f.candidates.splice(0);
+    const web = { agent: "codex" as const, agentControlMode: "web" as const, model: "model", args: [], recoveryLimit: 2 };
+    type Monitoring = Parameters<import("../../../src/commands/worker/backends/web.js").WebExecutionBackend["setMonitoringObserver"]>[0];
+    let hooks: Monitoring | undefined;
+    const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance: vi.fn(async task => task), cleanup: vi.fn(), setMonitoringObserver: value => { hooks = value; } } });
+    try {
+      hooks!.observeFailure?.({ projectId: f.project.projectId, taskId: uuid(30), claimId: uuid(31) }, { kind: "execution", phase: "preparing" }, new Error("private"), "grant-ticket");
+      expect(monitor.capture("1")).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
+      await coordinator.tick();
+      expect(monitor.capture("2")).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
+    } finally { await coordinator.shutdown(); webStore.close(); }
+  });
+
+  it("keeps Web grant failures through healthy IPC and no-op checks until actual renewal", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase()), monitor = createMonitoringObserver();
+    const web = { agent: "codex" as const, agentControlMode: "web" as const, model: "model", args: [], recoveryLimit: 2 };
+    type Monitoring = Parameters<import("../../../src/commands/worker/backends/web.js").WebExecutionBackend["setMonitoringObserver"]>[0];
+    let hooks: Monitoring | undefined, attempt = 0;
+    const failure = new Error("private grant failure"), operationKey = `grant-refresh/1/${uuid(900)}`;
+    const advance = vi.fn(async (record: WebTask) => {
+      hooks!.observePhase?.(record, { kind: "execution", phase: "agent-observation" }, false);
+      hooks!.observeSuccess?.(record, { kind: "execution", phase: "agent-observation" });
+      hooks!.observePhase?.(record, { kind: "execution", phase: "preparing" }, false, undefined, operationKey);
+      attempt++;
+      if (attempt <= 2) throw failure;
+      if (attempt === 4) hooks!.observeSuccess?.(record, { kind: "execution", phase: "preparing" }, operationKey);
+      return record;
+    });
+    const webBackend = { advance, cleanup: vi.fn(), setMonitoringObserver: (value: Monitoring) => { hooks = value; } };
+    const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend });
+    try {
+      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
+      const first = monitor.capture("1").currentFailures[0]!; expect(first).toMatchObject({ component: "execution", phase: "preparing", occurrencesInRun: 1 });
+      await coordinator.tick(); await eventually(() => expect(monitor.capture("2").currentFailures[0]).toMatchObject({ operationId: first.operationId, occurrencesInRun: 2 }));
+      await coordinator.tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(3));
+      expect(monitor.capture("3").currentFailures).toContainEqual(expect.objectContaining({ operationId: first.operationId, occurrencesInRun: 2, retryState: "none" }));
+      expect(monitor.capture("3").lastRecovery).toBeNull();
+      const identity = f.store.listTasks()[0]!;
+      hooks!.observeRetry?.(identity, operationKey, true);
+      expect(monitor.capture("3").currentFailures[0]!.retryState).toBe("running");
+      hooks!.observeRetry?.(identity, operationKey, false);
+      expect(monitor.capture("3").currentFailures[0]!.retryState).toBe("none");
+      await coordinator.tick(); await eventually(() => expect(monitor.capture("4").lastRecovery).toMatchObject({ operationId: first.operationId }));
+      expect(monitor.capture("4").currentFailures).toEqual([]);
+      const row = f.store.listTasks()[0]!;
+      hooks!.observeFailure?.(row, { kind: "execution", phase: "preparing" }, failure, operationKey);
+      const background = monitor.capture("5").currentFailures[0]!; expect(background.phase).toBe("preparing");
+      hooks!.observeSuccess?.(row, { kind: "execution", phase: "agent-observation" });
+      expect(monitor.capture("6").currentFailures).toContainEqual(expect.objectContaining({ operationId: background.operationId }));
+      hooks!.observeSuccess?.(row, { kind: "execution", phase: "preparing" }, operationKey);
+      expect(monitor.capture("7").lastRecovery).toMatchObject({ operationId: background.operationId });
+      expect(JSON.stringify(monitor.capture("7"))).not.toContain("private grant failure");
+    } finally { await coordinator.shutdown(); webStore.close(); }
+  });
+
   it("reports a paused Web recovery without retrying its native execution", async () => {
     const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
     const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase()), monitor = createMonitoringObserver();

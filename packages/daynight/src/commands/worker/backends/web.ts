@@ -3,7 +3,7 @@ import { CLEANUP_OPERATION_MS, cleanupOperation } from "../../cleanup-operation.
 import path from "node:path";
 import { lstat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { controllerExecutionDirectory, readLaunchTicket } from "../../controller/launch-ticket.js";
+import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
@@ -20,12 +20,13 @@ import type { WebExecutionStore } from "./web-store.js";
 import type { TaskPlatform } from "../../../api/types.js";
 import type { createWebControllerLauncher } from "./web-process.js";
 export type WebBackendOptions = {
-  homeDirectory: string; store: WebExecutionStore; git: WorkerGitManager; launcher: ReturnType<typeof createWebControllerLauncher>;
+  homeDirectory: string; store: WebExecutionStore; git: WorkerGitManager; launcher: Pick<ReturnType<typeof createWebControllerLauncher>, "prepare" | "launch" | "refreshGrant"> & Partial<Pick<ReturnType<typeof createWebControllerLauncher>, "setGrantObserver">>;
   platform: TaskPlatform; buildPrompt: (task: LocalTask, platform: TaskPlatform) => string; emit: (event: { kind: string; message: string; task?: LocalTask }) => void; now: () => number;
   promptSource?: Pick<WorkerPromptSource, "current">;
   preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>;
   request?: typeof requestController;
   archive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<void>;
+  onUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => void;
 };
 export class WebRecoveryBlockedError extends Error {
   constructor(readonly reasonCode: NonNullable<RecoveryState["reasonCode"]>, message: string, options?: ErrorOptions) { super(message, options); }
@@ -35,9 +36,84 @@ export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large";
 export type WebAdvanceResult = { kind: "observed"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
 class PromptUnknownError extends Error {}
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
-  let monitoring: { observePhase?: WorkerPhaseObserver; observeSuccess?: (identity: ClaimIdentity, phase: WorkerObservedPhase) => void } = {};
-  const phase = (identity: ClaimIdentity, value: WorkerObservedPhase, progressed = false, deadlineAt?: number): void => observeWorkerPhase(monitoring.observePhase, identity, value, progressed, deadlineAt);
-  const success = (identity: ClaimIdentity, value: WorkerObservedPhase): void => { try { monitoring.observeSuccess?.(identity, value); } catch { /* Monitoring cannot change the operation result. */ } };
+  type FailureObservation = { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; running?: boolean };
+  type Monitoring = { observePhase?: WorkerPhaseObserver; observeSelect?: (identity: ClaimIdentity, phase: WorkerObservedPhase, operationKey: string) => void; observeSuccess?: (identity: ClaimIdentity, phase: WorkerObservedPhase, operationKey?: string) => void; observeFailure?: (identity: ClaimIdentity, phase: WorkerObservedPhase, error: unknown, operationKey?: string, observedFailure?: FailureObservation) => boolean; observeRetry?: (identity: ClaimIdentity, operationKey: string, running: boolean) => void; observeDiscard?: (identity: ClaimIdentity, operationKey: string) => void; observeUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => boolean };
+  let monitoring: Monitoring = {};
+  const pendingFailures = new Map<string, { identity: ClaimIdentity; operationKey: string; error: unknown; observedFailure: FailureObservation }>();
+  const pendingIdentities = new Map<string, { identity: ClaimIdentity; operationKey: string }>();
+  const identityKey = (task: ClaimIdentity): string => `${task.projectId}/${task.taskId}/${task.claimId}`;
+  const markUnattributed = (task: ClaimIdentity, operationKey: string, value: boolean): void => { try { options.onUnattributed?.(task, operationKey, value); } catch { /* Optional monitoring cannot alter renewal. */ } };
+  const markIdentityUnknown = (task: ClaimIdentity, operationKey: string, value: boolean): void => {
+    markUnattributed(task, operationKey, value);
+    const pendingKey = `${identityKey(task)}/${operationKey}`;
+    try { if (monitoring.observeUnattributed?.(task, operationKey, value) === true) { pendingIdentities.delete(pendingKey); return; } } catch { /* Retain the current unattributed state. */ }
+    if (value) pendingIdentities.set(pendingKey, { identity: { projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, operationKey });
+    else pendingIdentities.delete(pendingKey);
+  };
+  const generations = new Map<string, { generation: bigint; launchId: string }>();
+  const grantOperation = (task: LocalTask, kind: "grant-refresh" | "grant-ticket" | "grant-identity" | "grant-eligibility"): string | null => {
+    const execution = task.webExecution;
+    if (execution === null) return null;
+    const identity = identityKey(task), generation = BigInt(execution.executionGeneration), previous = generations.get(identity);
+    if (previous !== undefined && (generation < previous.generation || generation === previous.generation && previous.launchId !== execution.launchId)) return null;
+    if (previous !== undefined && generation > previous.generation) {
+      for (const oldKind of ["grant-refresh", "grant-ticket", "grant-identity", "grant-eligibility"] as const) {
+        const oldOperation = `${oldKind}/${previous.generation}/${previous.launchId}`, pendingKey = `${identity}/${oldOperation}`;
+        pendingFailures.delete(pendingKey); if (oldKind === "grant-identity") markIdentityUnknown(task, oldOperation, false); else markUnattributed(task, oldOperation, false);
+        try { monitoring.observeDiscard?.(task, oldOperation); } catch { /* Optional monitoring cannot alter renewal. */ }
+      }
+    }
+    generations.set(identity, { generation, launchId: execution.launchId });
+    return `${kind}/${generation}/${execution.launchId}`;
+  };
+  const phase = (identity: ClaimIdentity, value: WorkerObservedPhase, progressed = false, deadlineAt?: number, operationKey?: string): void => observeWorkerPhase(monitoring.observePhase, identity, value, progressed, deadlineAt, operationKey);
+  const success = (identity: ClaimIdentity, value: WorkerObservedPhase, operationKey?: string): void => { try { if (operationKey === undefined) monitoring.observeSuccess?.(identity, value); else monitoring.observeSuccess?.(identity, value, operationKey); } catch { /* Monitoring cannot change the operation result. */ } };
+  const backgroundFailure = (task: LocalTask, error: unknown, operationKey: string): void => {
+    try {
+      try { if (monitoring.observeFailure?.(task, { kind: "execution", phase: "preparing" }, error, operationKey) === true) return; } catch { /* Retain the current failure until it is accepted. */ }
+      const key = `${identityKey(task)}/${operationKey}`, previous = pendingFailures.get(key), at = new Date(options.now()).toISOString();
+      const prior = previous?.operationKey === operationKey ? previous.observedFailure : undefined;
+      pendingFailures.set(key, { identity: { projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, error, operationKey, observedFailure: { firstObservedAt: prior?.firstObservedAt ?? at, lastObservedAt: at, occurrencesInRun: Math.min(Number.MAX_SAFE_INTEGER, (prior?.occurrencesInRun ?? 0) + 1), running: prior?.running ?? false } });
+      markUnattributed(task, operationKey, true);
+    } catch { /* Optional monitoring cannot alter renewal. */ }
+  };
+  const backgroundSuccess = (task: LocalTask, operationKey: string): void => {
+    const key = `${identityKey(task)}/${operationKey}`, pending = pendingFailures.get(key);
+    if (pending !== undefined) { pendingFailures.delete(key); markUnattributed(task, operationKey, false); return; }
+    success(task, { kind: "execution", phase: "preparing" }, operationKey);
+  };
+  const backgroundRetry = (task: LocalTask, running: boolean): void => {
+    const operationKey = grantOperation(task, "grant-refresh"); if (operationKey === null) return;
+    const pending = pendingFailures.get(`${identityKey(task)}/${operationKey}`);
+    if (pending !== undefined) pending.observedFailure.running = running;
+    else try { monitoring.observeRetry?.(task, operationKey, running); } catch { /* Optional monitoring cannot alter renewal. */ }
+  };
+  try { options.launcher.setGrantObserver?.({
+    started: task => backgroundRetry(task, true),
+    settled: task => backgroundRetry(task, false),
+    checked: task => { const operationKey = grantOperation(task, "grant-eligibility"); if (operationKey !== null) backgroundSuccess(task, operationKey); },
+    refreshed: task => { const operationKey = grantOperation(task, "grant-refresh"); if (operationKey !== null) backgroundSuccess(task, operationKey); },
+    failed: (task, error, started) => { const operationKey = grantOperation(task, started ? "grant-refresh" : "grant-eligibility"); if (operationKey !== null) backgroundFailure(task, error, operationKey); },
+    ticketFailed: (task, error) => { const operationKey = grantOperation(task, "grant-ticket"); if (operationKey !== null) backgroundFailure(task, error, operationKey); },
+    ticketVerified: task => { const operationKey = grantOperation(task, "grant-ticket"); if (operationKey !== null) backgroundSuccess(task, operationKey); },
+    identityUnknown: task => { const operationKey = grantOperation(task, "grant-identity"); if (operationKey !== null) markIdentityUnknown(task, operationKey, true); },
+    identityResolved: task => { const operationKey = grantOperation(task, "grant-identity"); if (operationKey !== null) markIdentityUnknown(task, operationKey, false); },
+    identityLost: task => { try { monitoring.observeSelect?.(task, { kind: "execution", phase: "preparing" }, "grant-identity-lost"); } catch { /* Optional monitoring cannot alter identity handling. */ } },
+  }); } catch { /* Optional monitoring cannot alter execution. */ }
+  const refreshGrant = async (task: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+    const operationKey = grantOperation(task, "grant-refresh"), eligibilityKey = grantOperation(task, "grant-eligibility");
+    if (eligibilityKey !== null) try { monitoring.observeSelect?.(task, { kind: "execution", phase: "preparing" }, eligibilityKey); } catch { /* Optional monitoring cannot alter renewal. */ }
+    let started = false;
+    try {
+      await options.launcher.refreshGrant(task, ticket, signal, () => { if (operationKey !== null) success(task, { kind: "execution", phase: "preparing" }, operationKey); }, () => { started = true; if (operationKey !== null) { phase(task, { kind: "execution", phase: "preparing" }, false, undefined, operationKey); backgroundRetry(task, true); } });
+    } finally { if (started) backgroundRetry(task, false); }
+  };
+  const prepareTicket = async (task: LocalTask, prompt: string | (() => string), signal: AbortSignal): Promise<ControllerLaunchTicket> => {
+    phase(task, { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");
+    const ticket = await options.launcher.prepare(task, prompt, signal);
+    success(task, { kind: "execution", phase: "agent-start" }, "web-ticket");
+    return ticket;
+  };
   const request = options.request ?? requestController;
   const waiting = new Map<string, WebInputWaitingReason>();
   const rejected = new Map<string, string>();
@@ -100,6 +176,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     task = await verifyWorktree(task, signal);
     const execution = task.webExecution;
     if (execution === null || execution.launchSubmission === "not-submitted") return { task: options.store.clearOrchestration(task, blocker, null, options.now()), live: false };
+    phase(task, { kind: "execution", phase: "preparing" }, false, undefined, "web-orchestration-ticket");
     if (execution.ticketPath === null) throw new Error("Orchestration verification cannot replace missing launch evidence.");
     const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
     if (ticket.executionId !== execution.executionId || ticket.sessionId !== execution.sessionId || ticket.executionGeneration !== execution.executionGeneration
@@ -108,6 +185,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       || ticket.userId !== task.userId || ticket.serverOrigin !== task.serverOrigin || ticket.provider !== task.configuration?.agent
       || ticket.cwd !== task.resources.worktree!.worktreePath || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt
       || JSON.stringify(ticket.configuration) !== JSON.stringify(task.configuration)) throw new Error("Orchestration verification found conflicting original launch ownership.");
+    success(task, { kind: "execution", phase: "preparing" }, "web-orchestration-ticket");
+    phase(task, { kind: "execution", phase: "agent-observation" });
     const saved = readControllerSnapshot(journal(task));
     const firstNativeObservation = blocker.source !== "legacy_worktree" && execution.executionGeneration === "1" && task.resources.nativeSession === null;
     if (saved === null || !matchesGeneration(task, saved) || (!firstNativeObservation && (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession?.sessionId))
@@ -152,7 +231,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, observed, options.now());
     if (observed.lifecycle === "ready" || observed.lifecycle === "working") success(task, { kind: "execution", phase: "agent-observation" });
     if (initialContinuation && observed.initialInputState === "not_submitted") {
-      await options.launcher.refreshGrant(task, ticket, signal);
+      await refreshGrant(task, ticket, signal);
       phase(task, { kind: "execution", phase: "input-submission" });
       const response = await request(ticket, { kind: "submit_initial", operationId: execution.initialOperationId }, { signal, timeoutMs: 30000 });
       task = remember(task, response.snapshot);
@@ -167,7 +246,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       waiting.delete(task.claimId);
       if (task.cleanup !== null || task.control !== null || task.configuration === null) throw new Error("Ordinary Web execution is fenced by cleanup or management.");
       if (legacyBranchLatch(task)) {
+        phase(task, { kind: "execution", phase: "preparing" }, false, undefined, "web-legacy-provenance");
         await verifyLegacyBranchProvenance(options.homeDirectory, task, signal);
+        success(task, { kind: "execution", phase: "preparing" }, "web-legacy-provenance");
         const blocker = options.store.blockOrchestration(task, { source: "legacy_worktree", code: "branch_mismatch", message: task.recovery.pauseReason! }, options.now());
         return (await resumeOrchestration(task, blocker, signal)).task;
       }
@@ -189,6 +270,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       };
       try {
         if (retryAttempt && task.recovery.pauseReason !== null) {
+          phase(task, { kind: "execution", phase: "preparing" }, false, undefined, "web-recovery-proof");
           // Authorization permits one replacement generation only after proving the old writer stopped.
           if (task.webExecution === null || task.resources.nativeSession === null) throw new WebRecoveryBlockedError("native_identity_missing", "Web retry requires the original native session identity.");
           if (task.webExecution.launchSubmission === "not-submitted" && BigInt(task.webExecution.executionGeneration) > 1n) {
@@ -209,6 +291,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             const stopped = await recordStoppedControllerGeneration(journal(task), ticket);
             task = options.store.beginWebGeneration(task, stopped, options.now());
           }
+          success(task, { kind: "execution", phase: "preparing" }, "web-recovery-proof");
         } else if (!retryAttempt && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted" && task.recovery.count >= task.configuration!.recoveryLimit) {
           // Older versions recorded exhaustion without a pause. Inspect before any launch preparation.
           try {
@@ -231,25 +314,33 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         task = await verifyWorktree(task, signal);
         task = options.store.initializeWebExecution(task, options.now());
         if (task.webExecution!.initialPrompt === null && options.promptSource !== undefined) {
-          await options.preparePromptSource?.(task.projectId, signal);
+          if (options.preparePromptSource !== undefined) {
+            phase(task, { kind: "execution", phase: "preparing" }, false, undefined, "web-prompt-source");
+            await options.preparePromptSource(task.projectId, signal);
+            success(task, { kind: "execution", phase: "preparing" }, "web-prompt-source");
+          }
           const tuple = options.promptSource.current(task.projectId);
           if (tuple === null) { waiting.set(task.claimId, "prompt_unknown"); return task; }
           if (rejected.get(task.claimId) === signature(task, tuple)) { waiting.set(task.claimId, "prompt_too_large"); return task; }
         }
         const preparedTask = task;
-        const prompt = task.webExecution!.initialPrompt ?? (options.promptSource === undefined
-          ? options.buildPrompt(task, options.platform)
-          : () => {
-            const tuple = options.promptSource!.current(preparedTask.projectId);
-            if (tuple === null) throw new PromptUnknownError();
-            capturedSignature = signature(preparedTask, tuple);
-            return appendWorkerPrompts(options.buildPrompt(preparedTask, options.platform), tuple);
-          });
-        phase(task, { kind: "execution", phase: "agent-start" });
-        let ticket = await options.launcher.prepare(task, prompt, signal);
+        const makePrompt = (): string => {
+          phase(preparedTask, { kind: "execution", phase: "preparing" }, false, undefined, "web-prompt-build");
+          const tuple = options.promptSource?.current(preparedTask.projectId);
+          if (options.promptSource !== undefined && tuple == null) throw new PromptUnknownError();
+          if (tuple != null) capturedSignature = signature(preparedTask, tuple);
+          const builtin = options.buildPrompt(preparedTask, options.platform);
+          const result = tuple == null ? builtin : appendWorkerPrompts(builtin, tuple);
+          success(preparedTask, { kind: "execution", phase: "preparing" }, "web-prompt-build");
+          phase(preparedTask, { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");
+          return result;
+        };
+        const prompt = task.webExecution!.initialPrompt ?? (options.promptSource === undefined ? makePrompt() : makePrompt);
+        let ticket = await prepareTicket(task, prompt, signal);
         rejected.delete(task.claimId);
         task = current(task);
         const wasUnsubmitted = task.webExecution?.launchSubmission === "not-submitted";
+        phase(task, { kind: "execution", phase: "agent-start" });
         await options.launcher.launch(task, ticket, signal);
         task = current(task);
         if (wasUnsubmitted && task.webExecution?.launchSubmission !== "not-submitted") { success(task, { kind: "execution", phase: "agent-start" }); phase(task, { kind: "execution", phase: "agent-start" }, true); }
@@ -260,6 +351,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           signal.throwIfAborted();
           // A retry never grants a second generation when its first observation fails.
           if (retryAttempt) throw error;
+          phase(task, { kind: "execution", phase: "preparing" }, false, undefined, "web-recovery-proof");
           const saved = originalSnapshot();
           task = remember(task, saved);
           const proof = task.webExecution!.controllerProcess;
@@ -270,8 +362,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           if (task.recovery.pauseReason !== null) return task;
           recovering = true;
           task = options.store.beginWebGeneration(task, stopped, options.now());
+          success(task, { kind: "execution", phase: "preparing" }, "web-recovery-proof");
+          ticket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
           phase(task, { kind: "execution", phase: "agent-start" });
-          ticket = await options.launcher.prepare(task, task.webExecution!.initialPrompt!, signal);
           await options.launcher.launch(current(task), ticket, signal);
           success(task, { kind: "execution", phase: "agent-start" });
           phase(task, { kind: "execution", phase: "agent-observation" });
@@ -294,7 +387,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           success(task, { kind: "execution", phase: "agent-observation" });
           recovering = false;
         }
-        await options.launcher.refreshGrant(task, ticket, signal);
+        await refreshGrant(task, ticket, signal);
         if (snapshot.lifecycle === "starting") return options.store.updateWebExecution(task, { activity: "initializing" }, options.now());
         if (snapshot.initialInputState === "not_submitted") {
           phase(task, { kind: "execution", phase: "input-submission" });
@@ -447,7 +540,15 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   return {
     ...backend,
-    setMonitoringObserver: (value: { observePhase?: WorkerPhaseObserver; observeSuccess?: (identity: ClaimIdentity, phase: WorkerObservedPhase) => void }): void => { monitoring = value; },
+    setMonitoringObserver: (value: Monitoring): void => {
+      monitoring = value;
+      if (value.observeFailure !== undefined) for (const [key, pending] of pendingFailures) {
+        try { if (value.observeFailure(pending.identity, { kind: "execution", phase: "preparing" }, pending.error, pending.operationKey, pending.observedFailure)) pendingFailures.delete(key); } catch { /* Retain unconfirmed current failure. */ }
+      }
+      if (value.observeUnattributed !== undefined) for (const [key, pending] of pendingIdentities) {
+        try { if (value.observeUnattributed(pending.identity, pending.operationKey, true)) pendingIdentities.delete(key); } catch { /* Retain the current unattributed state. */ }
+      }
+    },
     advanceResult: async (task: LocalTask, signal: AbortSignal): Promise<WebAdvanceResult> => {
       const result = await backend.advance(task, signal);
       const reason = waiting.get(task.claimId);
