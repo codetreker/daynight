@@ -90,25 +90,45 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const canAdvanceProject = (projectId: string): boolean => selected(projectId)
     && (configuration.targetProjectIds === undefined || configuration.targetProjectIds.includes(projectId))
     && !projectStops.has(projectId);
+  const recoverCleanupPhase = (identity: ClaimIdentity, phase: string): void => {
+    const failureKey = `true/${key(identity)}/${phase}`, failure = monitoringFailures.get(failureKey);
+    if (failure !== undefined) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
+  };
+  const recoverLimitIfReady = (identity: string): void => {
+    const limitKey = `limit/${identity}`, failure = monitoringFailures.get(limitKey);
+    if (failure === undefined || !monitoringLimitRetries.has(identity)) return;
+    if ([...monitoringFailures.keys()].some(value => value.startsWith(`false/${identity}/`)) || [...nameMonitoringFailures.keys()].some(value => value.startsWith(`${identity}/`))) return;
+    observe(m => m.recover(failure)); monitoringFailures.delete(limitKey); recoveredLimitNames.delete(identity);
+  };
   const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, readTask: options.remote.readTask, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, ...(options.promptSource === undefined ? {} : { promptSource: options.promptSource }), ...(options.preparePromptSource === undefined ? {} : { preparePromptSource: options.preparePromptSource }), emit: options.emit, now,
     observePhase: (identity, phase, progressed) => {
       const identityKey = key(identity);
       const operationId = monitoringJobs.get(identityKey);
       monitoringPhases.set(identityKey, phase.phase);
-      if (operationId !== undefined) observe(m => m.updateActivity(operationId, { phase: pausedClaims.has(identityKey) && phase.kind === "execution" ? "paused" : phase.phase, progress: progressed, status: pausedClaims.has(identityKey) && phase.kind === "execution" ? "paused" : phase.phase === "waiting" ? "waiting" : "running", waitReason: pausedClaims.has(identityKey) && phase.kind === "execution" ? "task-paused" : phase.phase === "waiting" ? "native-input" : null }));
+      if (operationId !== undefined) observe(m => {
+        m.updateActivity(operationId, { phase: pausedClaims.has(identityKey) && phase.kind === "execution" ? "paused" : phase.phase, progress: progressed, status: pausedClaims.has(identityKey) && phase.kind === "execution" ? "paused" : phase.phase === "waiting" ? "waiting" : "running", waitReason: pausedClaims.has(identityKey) && phase.kind === "execution" ? "task-paused" : phase.phase === "waiting" ? "native-input" : null });
+        if (phase.kind === "execution" && !progressed && phase.phase !== "waiting" && phase.phase !== "paused") {
+          const failure = monitoringFailures.get(`false/${identityKey}/${phase.phase}`);
+          if (failure !== undefined) m.updateFailureRetry(failure, "running");
+        }
+        if (phase.kind === "cleanup") {
+          const failure = monitoringFailures.get(`true/${identityKey}/${phase.phase}`);
+          if (progressed) recoverCleanupPhase(identity, phase.phase);
+          else if (failure !== undefined) m.updateFailureRetry(failure, "running");
+        }
+      });
     },
     observeSuccess: (identity, phase) => {
-      const failureKey = `false/${key(identity)}`, previous = monitoringFailures.get(failureKey);
-      if (previous !== undefined && monitoringFailurePhases.get(failureKey) === phase.phase) {
-        observe(m => m.recover(previous)); monitoringFailures.delete(failureKey); monitoringFailurePhases.delete(failureKey);
-        const limitKey = `limit/${key(identity)}`, limitFailure = monitoringFailures.get(limitKey);
-        if (limitFailure !== undefined) { observe(m => m.recover(limitFailure)); monitoringFailures.delete(limitKey); }
+      const ownerKey = key(identity), failureKey = `false/${ownerKey}/${phase.phase}`, previous = monitoringFailures.get(failureKey);
+      if (previous !== undefined) {
+        observe(m => m.recover(previous)); monitoringFailures.delete(failureKey);
+        recoverLimitIfReady(ownerKey);
       }
     },
   };
   const execution = createExecutionDriver(deps);
   const cleanup = createCleanupDriver(deps);
-  try { options.webBackend?.setMonitoringObserver?.({ ...(deps.observePhase === undefined ? {} : { observePhase: deps.observePhase }), observeSuccess: (identity, phase) => { if (phase.kind === "execution") deps.observeSuccess?.(identity, phase); } }); } catch { /* Monitoring remains independent of the backend. */ }
+  try { options.webBackend?.setMonitoringObserver?.({ ...(deps.observePhase === undefined ? {} : { observePhase: deps.observePhase }), observeSuccess: (identity, phase) => { if (phase.kind === "execution") deps.observeSuccess?.(identity, phase); else if (controllers.get(key(identity))?.terminal === true) recoverCleanupPhase(identity, phase.phase); } }); } catch { /* Monitoring remains independent of the backend. */ }
   const normalSignal = options.signal === undefined ? new AbortController().signal : options.signal;
   const tails = new Map<string, Promise<void>>();
   const jobs = new Map<string, Promise<void>>();
@@ -123,6 +143,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const inventoryMonitoringFailures = new Map<string, string>();
   const nameMonitoringFailures = new Map<string, string>();
   const nameFailureThisJob = new Set<string>();
+  const monitoringLimitRetries = new Set<string>();
+  const recoveredLimitNames = new Map<string, Set<string>>();
   const pausedClaims = new Set<string>();
   const webMonitoringState = new Map<string, string>();
   const webRecoveryFailures = new Map<string, { id: string; reason: "native_identity_missing" | "recovery_limit" | "recovery_blocked" }>();
@@ -185,9 +207,6 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     options.onInventory?.(null);
     for (const [identity, activity] of monitoringActivities) if (identity.startsWith(`false/${projectId}/`)) {
       observe(m => m.endActivity(activity)); monitoringActivities.delete(identity);
-      const failure = monitoringFailures.get(identity);
-      if (failure !== undefined) observe(m => m.discardFailure(failure));
-      monitoringFailures.delete(identity); monitoringFailurePhases.delete(identity);
       const limitKey = `limit/${identity.slice("false/".length)}`, limitFailure = monitoringFailures.get(limitKey);
       if (limitFailure !== undefined) { observe(m => m.discardFailure(limitFailure)); monitoringFailures.delete(limitKey); }
       const ownerKey = identity.slice("false/".length);
@@ -197,6 +216,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (recovery !== undefined) observe(m => m.discardFailure(recovery.id));
       webRecoveryFailures.delete(identity.slice("false/".length));
     }
+    for (const [failureKey, operationId] of monitoringFailures) if (failureKey.startsWith(`false/${projectId}/`) || failureKey.startsWith(`limit/${projectId}/`)) { observe(m => m.discardFailure(operationId)); monitoringFailures.delete(failureKey); }
+    for (const [failureKey, operationId] of nameMonitoringFailures) if (failureKey.startsWith(`${projectId}/`)) { observe(m => m.discardFailure(operationId)); nameMonitoringFailures.delete(failureKey); }
+    for (const identity of monitoringLimitRetries) if (identity.startsWith(`${projectId}/`)) monitoringLimitRetries.delete(identity);
+    for (const identity of recoveredLimitNames.keys()) if (identity.startsWith(`${projectId}/`)) recoveredLimitNames.delete(identity);
+    for (const [identity, recovery] of webRecoveryFailures) if (identity.startsWith(`${projectId}/`)) { observe(m => m.discardFailure(recovery.id)); webRecoveryFailures.delete(identity); }
     for (const [identity, running] of controllers) {
       if (identity.startsWith(`${projectId}/`) && !running.terminal) running.controller.abort(new Error("The project is unavailable; its original claim and resources are retained."));
     }
@@ -367,12 +391,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (!terminal && !canAdvanceProject(identity.projectId)) return Promise.resolve();
       if (operationId !== undefined && (terminal || !pausedClaims.has(identityKey))) observe(m => {
         m.updateActivity(operationId!, { status: "running", waitReason: null, nextAttemptAt: null });
-        const failure = terminal ? monitoringFailures.get(`true/${identityKey}`) : undefined;
+        const failure = terminal ? monitoringFailures.get(`true/${identityKey}/observation`) : undefined;
         if (failure !== undefined) m.updateFailureRetry(failure, "running");
       });
       return action(signal).then(() => {
-        const previous = monitoringFailures.get(`${terminal}/${identityKey}`);
-        if (terminal && previous !== undefined) { observe(m => m.recover(previous)); monitoringFailures.delete(`${terminal}/${identityKey}`); monitoringFailurePhases.delete(`${terminal}/${identityKey}`); }
+        if (terminal) for (const [failureKey, failure] of monitoringFailures) if (failureKey.startsWith(`true/${identityKey}/`)) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
       });
     }).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
       if (isWorkerCancellation(error, signal)) return;
@@ -400,10 +423,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const stage = error instanceof WorkerCleanupError ? error.stage : "observation";
         const nextAttemptAt = now() + retryMs;
         if (operationId !== undefined) {
-          const failureId = monitoringFailures.get(`${terminal}/${identityKey}`) ?? operationId;
-          monitoringFailures.set(`${terminal}/${identityKey}`, failureId);
-          monitoringFailurePhases.set(`${terminal}/${identityKey}`, stage);
+          const failureKey = `true/${identityKey}/${stage}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
+          monitoringFailures.set(failureKey, failureId);
           observe(m => m.fail({ operationId: failureId, component: "cleanup", phase: stage, scope, error, retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
+          for (const [key, pending] of monitoringFailures) if (key.startsWith(`true/${identityKey}/`) && key !== failureKey) observe(m => m.updateFailureRetry(pending, "scheduled", new Date(nextAttemptAt).toISOString()));
           observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: "retry-backoff", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
         }
         // Storage failures must not reject the job or prevent shutdown from proving stop.
@@ -419,16 +442,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       } else {
         task = options.store.getTask(identity);
         if (task?.agentControlMode !== "web") failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
-        if (operationId !== undefined && !nameFailureThisJob.has(identityKey) && !(error instanceof WebRecoveryBlockedError && webRecoveryFailures.has(identityKey))) {
-          const failureId = monitoringFailures.get(`${terminal}/${identityKey}`) ?? operationId;
-          monitoringFailures.set(`${terminal}/${identityKey}`, failureId);
+        if (operationId !== undefined && !signal.aborted && !nameFailureThisJob.has(identityKey) && !(error instanceof WebRecoveryBlockedError && webRecoveryFailures.has(identityKey))) {
           const phase = monitoringPhases.get(identityKey) ?? "observation";
-          monitoringFailurePhases.set(`${terminal}/${identityKey}`, phase);
+          const failureKey = `false/${identityKey}/${phase}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
+          monitoringFailures.set(failureKey, failureId);
           observe(m => m.fail({ operationId: failureId, component: "execution", phase, scope, error }));
         }
       }
       options.emit({ kind: terminal ? "cleanup-error" : "execution-error", ...(task === null ? {} : { task }), message: terminal ? cleanupMessage! : task?.agentControlMode === "web" ? "The task operation failed; native recovery accounting remains independent of orchestration retries." : "The task operation failed; this process retains its recovery count.", error: reportedError });
-    }).finally(() => { monitoringJobs.delete(identityKey); if (jobs.get(identityKey) === job) { jobs.delete(identityKey); controllers.delete(identityKey); } });
+    }).finally(() => {
+      if (!terminal && monitoringLimitRetries.delete(identityKey)) { const failure = monitoringFailures.get(`limit/${identityKey}`); if (failure !== undefined) observe(m => m.updateFailureRetry(failure, "none")); }
+      monitoringJobs.delete(identityKey); if (jobs.get(identityKey) === job) { jobs.delete(identityKey); controllers.delete(identityKey); }
+    });
     jobs.set(identityKey, job);
   };
   const recordMissingClaim = (owner: ResourceOwner, pane: HerdrOwnedWorkspace["panes"][number] | undefined): LocalTask | null => {
@@ -544,7 +569,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     };
     const recoverName = (boundary: "admission" | "discovery" | "rename"): void => {
       const failureKey = `${identity}/${boundary}`, previous = nameMonitoringFailures.get(failureKey);
-      if (previous !== undefined) { observe(m => m.recover(previous)); nameMonitoringFailures.delete(failureKey); }
+      if (previous !== undefined) {
+        observe(m => m.recover(previous)); nameMonitoringFailures.delete(failureKey);
+        if (monitoringFailures.has(`limit/${identity}`) && !monitoringLimitRetries.has(identity)) {
+          const boundaries = recoveredLimitNames.get(identity) ?? new Set<string>(); boundaries.add(boundary); recoveredLimitNames.set(identity, boundaries);
+        }
+      }
+      if (previous !== undefined || recoveredLimitNames.get(identity)?.has(boundary)) recoverLimitIfReady(identity);
     };
     let pending: ReturnType<typeof pendingStops>;
     try {
@@ -634,10 +665,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (activity !== undefined) {
             const taskPaused = pausedClaims.has(key(task));
             const paused = taskPaused || record?.recovery.pauseReason != null || (record !== null && options.webStore.getOrchestrationBlocker(record) !== null);
+            const nativeWaiting = waitingInput !== undefined || record?.webExecution?.activity === "waiting_input";
+            const monitoringPhase = nativeWaiting ? "waiting" : phase;
             const state = JSON.stringify([phase, paused, record?.webExecution?.activity, record?.webExecution?.executionGeneration, nativeSessionId]);
             const progress = observed && webMonitoringState.get(key(task)) !== state;
             if (observed) webMonitoringState.set(key(task), state);
-            observe(m => m.updateActivity(activity, { phase: paused ? "paused" : phase, status: paused ? "paused" : phase === "waiting" ? "waiting" : "running", waitReason: taskPaused ? "task-paused" : paused ? "recovery-blocked" : waitingInput !== undefined ? "native-input" : phase === "waiting" ? "initializing" : null, progress }));
+            observe(m => m.updateActivity(activity, { phase: paused ? "paused" : monitoringPhase, status: paused ? "paused" : monitoringPhase === "waiting" ? "waiting" : "running", waitReason: taskPaused ? "task-paused" : paused ? "recovery-blocked" : nativeWaiting ? "native-input" : monitoringPhase === "waiting" ? "initializing" : null, progress }));
             const recoveryKey = key(task);
             const recoveryReason = record?.recovery.pauseReason != null ? record.recovery.reasonCode ?? "recovery_blocked" : null;
             const recovery = webRecoveryFailures.get(recoveryKey);
@@ -649,10 +682,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             } else if (recovery !== undefined && recoveryReason === null && observed && !paused && waitingInput === undefined && !record?.recovery.retryAuthorized && record?.webExecution?.activity !== "initializing") {
               observe(m => m.recover(recovery.id)); webRecoveryFailures.delete(recoveryKey);
             }
-            const failureKey = `false/${key(task)}`;
+            const failureKey = `false/${key(task)}/observation`;
             const previous = monitoringFailures.get(failureKey);
-            if (observed && !paused && waitingInput === undefined && !record?.recovery.retryAuthorized && record?.webExecution?.activity !== "initializing" && previous !== undefined && monitoringFailurePhases.get(failureKey) === "observation") {
-              observe(m => m.recover(previous)); monitoringFailures.delete(failureKey); monitoringFailurePhases.delete(failureKey);
+            if (observed && !paused && waitingInput === undefined && !record?.recovery.retryAuthorized && record?.webExecution?.activity !== "initializing" && previous !== undefined) {
+              observe(m => m.recover(previous)); monitoringFailures.delete(failureKey);
             }
           }
           let startupReport: SessionStartupReport | undefined;
@@ -728,6 +761,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       observe(m => {
         const identity = key(task), activity = monitoringActivities.get(`false/${identity}`), limitKey = `limit/${identity}`;
         if (exhausted) {
+          monitoringLimitRetries.delete(identity);
           if (!monitoringFailures.has(limitKey)) {
             const operationId = randomUUID(); monitoringFailures.set(limitKey, operationId);
             m.fail({ operationId, component: "execution", phase: "paused", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, error: new MonitoringRecoveryEvidence("recovery_limit"), retryState: "manual" });
@@ -735,7 +769,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (activity !== undefined) m.updateActivity(activity, pausedClaims.has(identity) ? { phase: "paused", status: "paused", waitReason: "task-paused" } : { phase: "paused", status: "paused", waitReason: "recovery-blocked" });
         } else {
           const failure = monitoringFailures.get(limitKey);
-          if (failure !== undefined) m.updateFailureRetry(failure, "running");
+          if (failure !== undefined) { monitoringLimitRetries.add(identity); m.updateFailureRetry(failure, "running"); }
         }
       });
       return ensure(task, remoteTask, signal, !exhausted).then(() => undefined);
@@ -1066,11 +1100,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (!coveredProjects.has(local.projectId) || inventory.has(key(local))) continue;
       const running = controllers.get(key(local));
       if (running !== undefined && !running.terminal) running.controller.abort(new Error("The original claim no longer belongs to this worker."));
-      const identity = key(local), activity = monitoringActivities.get(`false/${identity}`), failure = monitoringFailures.get(`false/${identity}`);
+      const identity = key(local), activity = monitoringActivities.get(`false/${identity}`);
       if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(`false/${identity}`); }
-      if (failure !== undefined) { observe(m => m.discardFailure(failure)); monitoringFailures.delete(`false/${identity}`); monitoringFailurePhases.delete(`false/${identity}`); }
+      for (const [failureKey, operationId] of monitoringFailures) if (failureKey.startsWith(`false/${identity}/`)) { observe(m => m.discardFailure(operationId)); monitoringFailures.delete(failureKey); }
       const limitKey = `limit/${identity}`, limitFailure = monitoringFailures.get(limitKey);
       if (limitFailure !== undefined) { observe(m => m.discardFailure(limitFailure)); monitoringFailures.delete(limitKey); }
+      monitoringLimitRetries.delete(identity); recoveredLimitNames.delete(identity);
       for (const [failureKey, operationId] of nameMonitoringFailures) if (failureKey.startsWith(`${identity}/`)) { observe(m => m.discardFailure(operationId)); nameMonitoringFailures.delete(failureKey); }
       nameFailureThisJob.delete(identity);
       const recovery = webRecoveryFailures.get(identity);

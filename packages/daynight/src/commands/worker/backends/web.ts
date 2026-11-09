@@ -123,7 +123,6 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     if (observed !== null && !preservesControllerEvidence(saved, observed, ticket.launchId)) throw new Error("The native observation conflicts with the original controller journal.");
     if (observed !== null && ((!firstNativeObservation && observed.nativeSessionId !== task.resources.nativeSession?.sessionId)
       || ((observed.lifecycle === "ready" || observed.lifecycle === "working") && !liveObservation))) throw new Error("Orchestration verification found conflicting original native evidence.");
-    if (observed !== null) success(task, { kind: "execution", phase: "agent-observation" });
     const unusedRetry = task.recovery.retryAuthorized && task.recovery.pauseReason !== null;
     if (unusedRetry || execution.restartAfterShutdown || observed === null || !liveObservation) {
       const stopped = await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses);
@@ -151,6 +150,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     task = options.store.clearOrchestration(task, blocker, observed, options.now(), legacyReport);
     task = remember(task, observed);
     if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, observed, options.now());
+    if (observed.lifecycle === "ready" || observed.lifecycle === "working") success(task, { kind: "execution", phase: "agent-observation" });
     if (initialContinuation && observed.initialInputState === "not_submitted") {
       await options.launcher.refreshGrant(task, ticket, signal);
       phase(task, { kind: "execution", phase: "input-submission" });
@@ -278,7 +278,6 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           snapshot = (await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 })).snapshot;
         }
         task = remember(current(task), snapshot);
-        success(task, { kind: "execution", phase: "agent-observation" });
         if (snapshot.lifecycle === "failed" || snapshot.lifecycle === "paused" || snapshot.lifecycle === "stopped" || snapshot.lifecycle === "stopping") {
           recovering = true;
           const error = new Error(snapshot.error ?? "The native controller is paused or stopped.");
@@ -292,6 +291,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         if (snapshot.lifecycle === "ready" || snapshot.lifecycle === "working") {
           if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, snapshot, options.now());
+          success(task, { kind: "execution", phase: "agent-observation" });
           recovering = false;
         }
         await options.launcher.refreshGrant(task, ticket, signal);

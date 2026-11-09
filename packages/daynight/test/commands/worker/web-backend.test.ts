@@ -147,7 +147,9 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   source.stopped.mockResolvedValue(false); vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("running");
   const launcher = { prepare: vi.fn(async () => source.ticket), launch: vi.fn(), refreshGrant: vi.fn() };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50_000, request: source.request });
+  const successes = vi.fn(); backend.setMonitoringObserver({ observeSuccess: successes });
   const starting = await backend.advance(source.task, new AbortController().signal);
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "agent-observation" });
   expect(starting.resources.nativeSession !== null).toBe(bound);
   expect(starting.webExecution?.initialInputState).toBe("not_submitted");
   vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Temporary branch deviation."));
@@ -155,6 +157,7 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   snapshot = { ...snapshot, lifecycle: "ready", activity: "idle", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: starting.resources.nativeSession?.sessionId ?? randomUUID(), initialInputState: delivery, nativeProcesses: [native] };
   launcher.prepare.mockClear(); launcher.launch.mockClear(); source.request.mockClear();
   const ready = await backend.advance(starting, new AbortController().signal);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: starting.claimId }), { kind: "execution", phase: "agent-observation" });
   expect(ready.resources.nativeSession?.sessionId).toBe(snapshot.nativeSessionId);
   expect(ready.webExecution?.executionGeneration).toBe("1");
   expect(ready.recovery).toEqual({ count: 0, pauseReason: null, retryAuthorized: false });
@@ -219,7 +222,9 @@ it.each((["paused", "failed", "stopped", "stopping"] as const).flatMap(lifecycle
   f.source.stopped.mockResolvedValue(false);
   f.launcher.prepare.mockResolvedValue(f.source.ticket);
   f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, lifecycle: lifecycleState, error: "Original native lifecycle failed." } });
+  const successes = vi.fn(); f.backend.setMonitoringObserver({ observeSuccess: successes });
   await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow();
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "agent-observation" });
   expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, pauseReason: "Original native lifecycle failed.", retryAuthorized: false });
   expect(f.backend.observeStartupReport(f.task)?.recovery).toEqual({ state: "blocked", reasonCode: "recovery_blocked" });
   expect(f.store.getOrchestrationBlocker(f.task) !== null).toBe(blocked);
@@ -236,7 +241,9 @@ it.each(["native", "generation", "controller", "process", "stopped", "initial"])
   if (conflict === "initial") snapshot.initialInputState = "not_submitted";
   if (conflict === "process") vi.mocked(processProof.inspectProcessProof).mockResolvedValue("replaced");
   f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  const successes = vi.fn(); f.backend.setMonitoringObserver({ observeSuccess: successes });
   await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow();
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "agent-observation" });
   expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
   expect(f.store.getTask(f.task)?.recovery.count).toBe(0);
   expect(f.launcher.launch).not.toHaveBeenCalled();
