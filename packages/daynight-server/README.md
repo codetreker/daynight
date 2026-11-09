@@ -798,6 +798,29 @@ records the proof allocation and the shared-factory rationale. Runtime compariso
 include receiving packages; removed database preparation is distinct from moved
 physical work.
 
+The inner `internal/service/application` suite verifies the business-module
+construction shared by protocol adapters. It records Projects, Tasks and
+Attachments constructor arguments and returned module identities through the
+same production assembly body. The wrappers call real pure constructors; fixed
+business data does not require Project/Task/Attachment workflows or PostgreSQL.
+Actual Session/Engine identity, origin propagation and operation/stop/close
+behavior remain real, with store and files borrowed from their external owners.
+
+Run the inner suite without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/application
+```
+
+The existing API attachment normal flow retains complete byte and final Project
+readback through production construction. Exact constructor dependency identity
+and that normal connectivity prove different responsibilities. The
+[inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
+records the three bindings and the retained lifetime proof.
+
 ### Bot runtime service tests
 
 The `internal/service/bot/runtime` suite executes the Runtime transaction and

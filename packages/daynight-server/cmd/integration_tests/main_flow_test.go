@@ -187,6 +187,10 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if len(empty.Items) != 0 {
 			t.Fatalf("deleted attachment remained in list: %+v", empty)
 		}
+		readProject := requestJSON[api.Project](t, f, http.MethodGet, "/api/v1/projects/"+project.ID, nil, http.StatusOK)
+		if readProject.ID != project.ID || readProject.Name != project.Name {
+			t.Fatalf("attachment flow changed its owning Project: %+v", readProject)
+		}
 	})
 	t.Run("worker claim and Agent discussion", func(t *testing.T) {
 		project := createProject(t, f, "API Worker claim")
