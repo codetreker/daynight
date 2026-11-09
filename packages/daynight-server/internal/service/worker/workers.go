@@ -20,16 +20,41 @@ type workerStore interface {
 	store.WorkerWriter
 }
 
+type reportOperations struct {
+	validate              func(model.WorkerReport) (model.WorkerReport, error)
+	parseConfiguration    func(json.RawMessage) (*model.WorkerConfigurationExchange, error)
+	admit                 func(store.WorkerAdmission) error
+	matchTasks            func([]store.WorkerTaskSource, model.WorkerTaskInventory, string, string) ([]model.WorkerObservedTask, error)
+	snapshot              func(string, string, model.WorkerReport, time.Time, []model.WorkerObservedTask) model.WorkerSnapshot
+	exchangeConfiguration func(context.Context, store.WorkerWriteDAO, model.Principal, string, model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error)
+}
+
+func workerReportOperations() reportOperations {
+	return reportOperations{
+		validate:              workercore.ValidateReport,
+		parseConfiguration:    workercore.ParseWorkerConfigurationExchange,
+		admit:                 workercore.AdmitActiveWorker,
+		matchTasks:            workercore.MatchTaskSnapshots,
+		snapshot:              workercore.SnapshotForReport,
+		exchangeConfiguration: workercore.ExchangeConfiguration,
+	}
+}
+
 type Workers struct {
+	report     reportOperations
 	store      workerStore
 	prompts    store.PromptSnapshotReader
 	monitoring store.MonitoringStore
 }
 
-func NewWorkers(database workerStore) *Workers { return &Workers{store: database} }
+func NewWorkers(database workerStore) *Workers {
+	return &Workers{store: database, report: workerReportOperations()}
+}
 
 func NewWorkersWithPrompts(database workerStore, prompts store.PromptSnapshotReader) *Workers {
-	return &Workers{store: database, prompts: prompts}
+	workers := NewWorkers(database)
+	workers.prompts = prompts
+	return workers
 }
 
 type WorkerReportResult struct {
@@ -90,7 +115,7 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
-	input, err = workercore.ValidateReport(input)
+	input, err = s.report.validate(input)
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
@@ -102,7 +127,7 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 		if marshalErr != nil {
 			return WorkerReportResult{}, &model.Fault{Code: "invalid_input", Message: "Worker configuration exchange is invalid."}
 		}
-		input.Configuration, err = workercore.ParseWorkerConfigurationExchange(raw)
+		input.Configuration, err = s.report.parseConfiguration(raw)
 		if err != nil {
 			return WorkerReportResult{}, err
 		}
@@ -114,7 +139,7 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 		if err != nil {
 			return err
 		}
-		if err := workercore.AdmitActiveWorker(admission); err != nil {
+		if err := s.report.admit(admission); err != nil {
 			return err
 		}
 		observedAt := admission.ObservedAt
@@ -124,12 +149,12 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 			if err != nil {
 				return err
 			}
-			items, err = workercore.MatchTaskSnapshots(sources, *input.TaskInventory, principal.UserID, workerID)
+			items, err = s.report.matchTasks(sources, *input.TaskInventory, principal.UserID, workerID)
 			if err != nil {
 				return err
 			}
 		}
-		stored, err := tx.UpsertWorker(ctx, workercore.SnapshotForReport(principal.UserID, workerID, input, observedAt, items))
+		stored, err := tx.UpsertWorker(ctx, s.report.snapshot(principal.UserID, workerID, input, observedAt, items))
 		if err != nil {
 			return err
 		}
@@ -137,7 +162,7 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 			return workercore.InputLimit(err)
 		}
 		if input.Configuration != nil {
-			result.Configuration, err = workercore.ExchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
+			result.Configuration, err = s.report.exchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
 			if err != nil {
 				return err
 			}
