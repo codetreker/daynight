@@ -22,6 +22,7 @@ var projectToolsJSON []byte
 
 type projectOperations interface {
 	RegisterRepository(context.Context, model.Principal, coreproject.CreateProject, bool) (model.Project, bool, error)
+	ResolveRepository(context.Context, model.Principal, string) (model.Project, error)
 	Get(context.Context, model.Principal, string) (model.Project, error)
 	ListScoped(context.Context, model.Principal, coreproject.ProjectListRequest) (coreproject.ProjectPage, error)
 	TransferPreview(context.Context, model.Principal, string, string) (coreproject.TransferPreview, error)
@@ -48,6 +49,9 @@ type projectTransferInput struct {
 type projectShowInput struct {
 	ProjectID string `json:"projectId"`
 }
+type projectResolveInput struct {
+	RepoURL string `json:"repoUrl"`
+}
 type projectListInput struct {
 	Limit  *int    `json:"limit"`
 	Cursor *string `json:"cursor"`
@@ -71,6 +75,9 @@ func RegisterProjectTools(e *Entry, projects projectOperations, identity *identi
 		return err
 	}
 	if err := registerTypedReadTool(e, byName["project_list"], BudgetLarge, h.list, "cursor"); err != nil {
+		return err
+	}
+	if err := registerTypedReadTool(e, byName["project_resolve"], BudgetLarge, h.resolve, "repoUrl"); err != nil {
 		return err
 	}
 	return registerTypedReadTool(e, byName["project_show"], BudgetLarge, h.show, "projectId")
@@ -119,6 +126,14 @@ func projectCreateBodySize(name, repoURL, teamID, userID string) int {
 
 func (h *projectTools) show(ctx context.Context, actor RequestActor, in projectShowInput) (ToolResult, error) {
 	project, err := h.projects.Get(ctx, actor.Principal, in.ProjectID)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	return ToolResult{Data: MapProject(project)}, nil
+}
+
+func (h *projectTools) resolve(ctx context.Context, actor RequestActor, in projectResolveInput) (ToolResult, error) {
+	project, err := h.projects.ResolveRepository(ctx, actor.Principal, in.RepoURL)
 	if err != nil {
 		return ToolResult{}, err
 	}

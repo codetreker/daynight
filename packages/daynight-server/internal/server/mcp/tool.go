@@ -394,6 +394,11 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 		}
 		release, err := actor.Budget.Acquire(ctx, class)
 		if err != nil {
+			cause := httpx.ErrorKind(err)
+			if errors.Is(err, ErrResourceBusy) {
+				cause = "resource_busy"
+			}
+			e.logger.ErrorContext(ctx, "MCP tool admission failed", "type", "operation_error", "component", "mcp", "operation", tool.Name, "phase", "tool_admission", "cause", cause, "error_code", "resource_busy", "request_id", actor.RequestID)
 			return e.errorResult(output, actor, envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
 		}
 		scope.hold(release)
@@ -439,7 +444,11 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 				failure.Code = fault.Code
 				failure.Message = fault.Message
 			}
-			logger.ErrorContext(ctx, "MCP tool failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome, "cleanup_failed", facts.CleanupFailed)
+			cause := httpx.ErrorKind(err)
+			if errors.Is(err, ErrResourceBusy) {
+				cause = "resource_busy"
+			}
+			logger.ErrorContext(ctx, "MCP tool failed", "type", "operation_error", "component", "mcp", "operation", tool.Name, "phase", "tool_call", "cause", cause, "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome, "cleanup_failed", facts.CleanupFailed)
 			return e.errorResult(output, actor, failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
@@ -460,7 +469,7 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			if inferWriteOutcome && result.WriteOutcome == "" && (result.Outcome == "changed" || result.Outcome == "unchanged") {
 				result.WriteOutcome = "confirmed"
 			}
-			logger.ErrorContext(ctx, "MCP output construction failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)
+			logger.ErrorContext(ctx, "MCP output construction failed", "type", "operation_error", "component", "mcp", "operation", tool.Name, "phase", "output", "cause", "output_invalid", "error_code", "internal_error", "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)
 			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool result could not be constructed.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: "output", Refs: result.Refs}), nil
 		}
 		logger.InfoContext(ctx, "MCP tool completed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "user_id", actor.Principal.UserID, "credential_id", actor.Principal.CredentialID, "outcome", result.Outcome, "write_outcome", result.WriteOutcome)

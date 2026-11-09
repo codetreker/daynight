@@ -35,13 +35,18 @@ func (m *RepositoryMatch) Add(candidate model.Project) error {
 	return nil
 }
 
-// Select returns an existing match or indicates that confirmed creation may proceed.
-func (m *RepositoryMatch) Select(confirm bool) (model.Project, bool, error) {
+// Result returns the unique match collected so far, if any.
+func (m *RepositoryMatch) Result() (model.Project, bool) {
 	if m.match != nil {
-		return *m.match, false, nil
+		return *m.match, true
 	}
+	return model.Project{}, false
+}
+
+// RequireRepositoryCreationConfirmation guards creation when no match exists.
+func RequireRepositoryCreationConfirmation(confirm bool) error {
 	if !confirm {
-		return model.Project{}, false, &model.Fault{Code: "invalid_input", Message: "Project creation requires confirmation."}
+		return &model.Fault{Code: "invalid_input", Message: "Project creation requires confirmation."}
 	}
-	return model.Project{}, true, nil
+	return nil
 }

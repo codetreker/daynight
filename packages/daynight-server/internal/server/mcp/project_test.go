@@ -29,6 +29,7 @@ type fakeProjectOperations struct {
 	transferInput coreproject.TransferInput
 	createInput   coreproject.CreateProject
 	confirm       bool
+	resolve       func(context.Context, model.Principal, string) (model.Project, error)
 	err           error
 	transferErr   error
 	calls         int
@@ -38,6 +39,12 @@ type fakeProjectOperations struct {
 func (f *fakeProjectOperations) RegisterRepository(_ context.Context, _ model.Principal, in coreproject.CreateProject, confirm bool) (model.Project, bool, error) {
 	f.createInput, f.confirm = in, confirm
 	return f.project, confirm, f.err
+}
+func (f *fakeProjectOperations) ResolveRepository(ctx context.Context, principal model.Principal, address string) (model.Project, error) {
+	if f.resolve != nil {
+		return f.resolve(ctx, principal, address)
+	}
+	return f.project, f.err
 }
 func (f *fakeProjectOperations) Get(context.Context, model.Principal, string) (model.Project, error) {
 	return f.project, f.err
@@ -216,7 +223,7 @@ func TestProjectToolHTTPDiscoveryAndInputs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	listing, err := client.ListTools(ctx, nil)
-	if err != nil || len(listing.Tools) != 5 {
+	if err != nil || len(listing.Tools) != 6 {
 		t.Fatalf("tools: %+v %v", listing, err)
 	}
 	call := func(name string, args any) *sdk.CallToolResult {
@@ -269,7 +276,7 @@ func TestProjectRegistrationRejectsMissingOrCorruptToolDefinitions(t *testing.T)
 	if err := json.Unmarshal(original, &tools); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"project_create", "project_transfer", "project_list", "project_show"} {
+	for _, name := range []string{"project_create", "project_transfer", "project_list", "project_resolve", "project_show"} {
 		t.Run(name, func(t *testing.T) {
 			var filtered []map[string]any
 			for _, tool := range tools {
