@@ -36,6 +36,15 @@ connection-release and lost-commit-reply witnesses retain physical observations;
 a supplied mock outcome cannot replace them. Equal test names are insufficient
 to remove a duplicate: distinct inputs and assertions must remain executed.
 
+Attachment metadata upsert, readback and deletion have one canonical scenario
+in the attachment implementation tests. It invokes the public `Store` write
+entry points and snapshot reader, preserving their delegation coverage together
+with exact identity fields, content-type updates, timestamp/creation semantics,
+keyset pages, path conflicts and missing-row refusals. The root retains the
+independent mutation callback, transaction completion, lifecycle and shared
+snapshot proofs. Repeating metadata CRUD through those same public methods in
+the root adds no separate binding or persistence guarantee.
+
 Small files are grouped by a common owner and mechanism, such as query
 contracts, mutation constraints, operation receipts, scope completion or
 historical upgrades. Grouping preserves fault conditions, build tags, barriers,
@@ -58,6 +67,12 @@ restrictions and proof-preserving migration conditions. The
 commands and actual package discovery.
 
 ## Alternatives
+
+**Keep duplicate public attachment CRUD scenarios in root and child suites.**
+Both exercise the same Store writer delegation and snapshot reader. Keeping one
+canonical scenario preserves those calls and their distinct assertions while
+avoiding another full schema; transaction, cancellation and lifecycle scenarios
+retain their separate owners.
 
 **Move every root test to a domain directory.** Root scopes bind several DAOs
 and own commit, cleanup and snapshot behavior. A domain-only test cannot replace

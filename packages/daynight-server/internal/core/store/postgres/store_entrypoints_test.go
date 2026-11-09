@@ -10,52 +10,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func TestStoreAttachmentEntryPointsPersistUpdatesAndDelete(t *testing.T) {
-	parallelRootDatabaseTest(t)
-	database := isolatedStore(t)
-	ctx := t.Context()
-	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 2, model.TaskTodo)
-	input := model.Attachment{ProjectID: project.ID, TaskID: task.ID, Path: "docs/readme.md", ContentType: "text/markdown", SizeBytes: 10}
-	first, created, err := database.PutAttachment(ctx, input)
-	if err != nil || !created || first.ProjectID != project.ID || first.TaskID != task.ID || first.Path != input.Path || first.SizeBytes != 10 || first.CreatedAt.IsZero() {
-		t.Fatalf("insert=%#v, created=%v, error=%v", first, created, err)
-	}
-	input.ContentType = "text/plain"
-	input.SizeBytes = 20
-	updated, created, err := database.PutAttachment(ctx, input)
-	if err != nil || created || updated.SizeBytes != 20 || updated.ContentType != "text/plain" || !updated.CreatedAt.Equal(first.CreatedAt) {
-		t.Fatalf("update=%#v, created=%v, error=%v", updated, created, err)
-	}
-	if err := database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		actual, err := snapshot.AttachmentDAO().Attachment(ctx, project.ID, task.ID, input.Path)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(actual, updated) {
-			t.Fatalf("persisted=%#v, want=%#v", actual, updated)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.DeleteAttachment(ctx, project.ID, task.ID, input.Path); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		_, err := snapshot.AttachmentDAO().Attachment(ctx, project.ID, task.ID, input.Path)
-		if !errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("deleted read=%v", err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.DeleteAttachment(ctx, project.ID, task.ID, input.Path); !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("repeat delete=%v", err)
-	}
-}
-
 func TestStoreAttachmentMutationCommitsAndRollsBackCallback(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
