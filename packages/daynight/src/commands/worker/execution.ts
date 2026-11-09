@@ -151,6 +151,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
     success(task, "input-submission");
     observeWorkerPhase(deps.observePhase, task, { kind: "execution", phase: "input-submission" }, true);
     lastInput.set(identity, inputState(receipt.observation));
+    observeWorkerPhase(deps.observePhase, task, { kind: "execution", phase: "agent-observation" }, false);
     const current = await workerOperation((operation) => deps.herdr.tasks.observe(context, observed.binding, operation), signal);
     if (task.sessionId === null || current.nativeSession === null || current.nativeSession.sessionId === task.sessionId) success(task, "agent-observation");
     return { observation: current, submitted: true };

@@ -384,6 +384,9 @@ export const runWorker = async (options: {
       return { repositories, targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, local.agentControlMode, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
     };
     const transitions = new Map<string, string>();
+    const preparationFailures = new Map<string, { operationId: string; observedAt: string; revision: string; successRevision: string | null }>();
+    const fallbackPreparationFailures = new Map<string, { operationId: string; observedAt: string }>();
+    let monitoringTargetSignature: string | undefined;
     let effectiveSignature = "";
     let configurationChanged = new AbortController();
     let scheduleInitialRemovals: (() => void) | undefined;
@@ -391,6 +394,42 @@ export const runWorker = async (options: {
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal,
       applyNative: nativeApplication.apply,
       onChange: snapshot => {
+        const targetSignature = JSON.stringify(snapshot.desired?.value ?? null);
+        if (monitoringTargetSignature !== targetSignature) { monitoringTargetSignature = targetSignature; observeMonitoring(m => m.invalidateAdmission()); }
+        const incomplete = snapshot.desired === null
+          ? fallback !== null && (!fallbackComplete || fallbackRepositories.length !== fallback.repositories.length)
+          : !snapshot.synchronized || snapshot.desired.value.projects.some(project => {
+            const effective = snapshot.effective.projects.find(value => value.projectId === project.projectId);
+            return effective === undefined || !effective.ready || effective.native === null || !prepared.has(project.projectId);
+          });
+        observeMonitoring(m => m.setProjectPreparationIncomplete(incomplete));
+        if (snapshot.desired !== null) observeMonitoring(m => m.setProjectPreparationUnknown(false));
+        const selectedProjects = new Set(snapshot.desired?.value.projects.map(project => project.projectId) ?? []);
+        if (snapshot.desired !== null) for (const [projectId, failure] of fallbackPreparationFailures) {
+          if (selectedProjects.has(projectId)) {
+            const item = snapshot.items.find(value => value.key.kind === "projectPreparation" && value.key.projectId === projectId);
+            preparationFailures.set(projectId, { ...failure, revision: item?.targetRevision ?? snapshot.desired.revision, successRevision: null });
+          } else observeMonitoring(m => { m.discardFailure(failure.operationId); m.setProjectPreparationReason(projectId, null); });
+          fallbackPreparationFailures.delete(projectId);
+        }
+        for (const [projectId, failure] of preparationFailures) {
+          if (!selectedProjects.has(projectId)) {
+            observeMonitoring(m => { m.discardFailure(failure.operationId); m.setProjectPreparationReason(projectId, null); });
+            preparationFailures.delete(projectId);
+            continue;
+          }
+          const item = snapshot.items.find(value => value.key.kind === "projectPreparation" && value.key.projectId === projectId);
+          if (item === undefined) { failure.successRevision = null; continue; }
+          if (failure.successRevision !== null && failure.successRevision !== item.targetRevision) failure.successRevision = null;
+          if (item.state === "applied" && failure.successRevision === item.targetRevision) {
+            observeMonitoring(m => { m.recover(failure.operationId); m.setProjectPreparationReason(projectId, null); });
+            preparationFailures.delete(projectId);
+          } else if (item.state === "error" && item.targetRevision === failure.revision && item.nextAttemptAt !== null) {
+            observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", item.nextAttemptAt); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt: item.nextAttemptAt }); });
+          } else if (item.state === "pending") {
+            observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt: null }); });
+          }
+        }
         for (const project of snapshot.desired?.value.projects ?? []) {
           if (getStore().getProject({ projectId: project.projectId }) === null && !confirmedNoLocalMapping.has(project.projectId)) unobservedLocalMappings.add(project.projectId);
         }
@@ -510,6 +549,16 @@ export const runWorker = async (options: {
         signal.throwIfAborted();
         let projectId = repository.projectId ?? discovered.get(repository.remote);
         let resolving = false;
+        let activityId: string | undefined;
+        const startPreparation = (id: string): void => {
+          if (activityId !== undefined) return;
+          const previous = fallbackPreparationFailures.get(id);
+          observeMonitoring(m => {
+            if (previous !== undefined) { m.updateFailureRetry(previous.operationId, "running"); m.setProjectPreparationReason(id, { observedAt: previous.observedAt, nextAttemptAt: null }); }
+            activityId = m.startActivity({ kind: "maintenance", phase: "project-preparation", scope: { kind: "project", projectId: id } });
+          });
+        };
+        if (projectId !== undefined) startPreparation(projectId);
         if (projectId !== undefined) targets.add(projectId);
         try {
           if (projectId !== undefined && getStore().getProject({ projectId }) === null) {
@@ -519,6 +568,7 @@ export const runWorker = async (options: {
           const project = await resolveProject({ repoUrl: repository.remote, ...(projectId === undefined ? {} : { projectId }) }, signal);
           resolving = false;
           projectId = project.id;
+          startPreparation(projectId);
           discovered.set(repository.remote, projectId);
           targets.add(projectId);
           fallbackTargets = [...targets];
@@ -534,7 +584,22 @@ export const runWorker = async (options: {
             } finally { reservations.delete(projectId); }
           }
           repositories.push({ project: prepared.get(projectId)!, configuration: repository });
+          if (activityId !== undefined && !signal.aborted) observeMonitoring(m => m.updateActivity(activityId!, { progress: true }));
+          const recovered = fallbackPreparationFailures.get(projectId);
+          if (recovered !== undefined && !signal.aborted && manager.current().desired === null) { observeMonitoring(m => { m.recover(recovered.operationId); m.setProjectPreparationReason(projectId!, null); }); fallbackPreparationFailures.delete(projectId); }
         } catch (error) {
+          if (signal.aborted && projectId !== undefined) {
+            const failure = fallbackPreparationFailures.get(projectId);
+            if (failure !== undefined) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setProjectPreparationReason(projectId!, { observedAt: failure.observedAt, nextAttemptAt: null }); });
+          }
+          if (!signal.aborted && manager.current().desired === null) {
+            if (projectId === undefined) observeMonitoring(m => m.setProjectPreparationUnknown(true));
+            else {
+              const observedAt = new Date().toISOString(), operationId = fallbackPreparationFailures.get(projectId)?.operationId ?? randomUUID();
+              fallbackPreparationFailures.set(projectId, { operationId, observedAt });
+              observeMonitoring(m => { m.fail({ operationId, component: "project", phase: "project-preparation", scope: { kind: "project", projectId: projectId! }, error }); m.setProjectPreparationReason(projectId!, { observedAt, nextAttemptAt: null }); });
+            }
+          }
           if (signal.aborted || error instanceof ProtocolError || error instanceof ApiError && !projectUnavailable(error) || resolving && !projectUnavailable(error)) {
             reporter?.publishInventory(null);
             throw error;
@@ -542,11 +607,19 @@ export const runWorker = async (options: {
           if (projectUnavailable(error)) allAccessible = false;
           if (projectId === undefined) allIdentified = false;
           emit({ kind: "warning", message: `Worker repository ${projectId ?? repository.remote} could not be prepared.`, error });
+        } finally {
+          if (signal.aborted && projectId !== undefined) {
+            const failure = fallbackPreparationFailures.get(projectId);
+            if (failure !== undefined) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setProjectPreparationReason(projectId!, { observedAt: failure.observedAt, nextAttemptAt: null }); });
+          }
+          if (activityId !== undefined) observeMonitoring(m => m.endActivity(activityId!));
         }
       }
       fallbackTargets = [...targets];
       fallbackRepositories = repositories;
       fallbackComplete = allIdentified;
+      if (manager.current().desired === null) observeMonitoring(m => m.setProjectPreparationIncomplete(!allIdentified || repositories.length !== current.repositories.length));
+      if (allIdentified) observeMonitoring(m => m.setProjectPreparationUnknown(false));
       if (allAccessible && allIdentified) {
         try { bootstrap = await parseWorkerCloudBootstrap(local.source, paths, resolveProject, signal); }
         catch (error) { if (signal.aborted || !projectUnavailable(error)) throw error; emit({ kind: "warning", message: "Worker configuration bootstrap could not be verified.", error }); }
@@ -676,16 +749,48 @@ export const runWorker = async (options: {
       return job;
     };
     await manager.configureProjectAdapters({ prepare: async (projectId, applicationSignal) => {
-      const binding = await resolveBinding(projectId, applicationSignal);
-      await reserveRepository(binding, applicationSignal);
+      const revision = manager.current().items.find(item => item.key.kind === "projectPreparation" && item.key.projectId === projectId)?.targetRevision;
+      const previous = preparationFailures.get(projectId);
+      if (previous !== undefined) { previous.successRevision = null; observeMonitoring(m => { m.updateFailureRetry(previous.operationId, "running"); m.setProjectPreparationReason(projectId, { observedAt: previous.observedAt, nextAttemptAt: null }); }); }
+      let activityId: string | undefined;
+      observeMonitoring(m => { activityId = m.startActivity({ kind: "maintenance", phase: "project-preparation", scope: { kind: "project", projectId } }); });
       try {
-        const operation = createOperation({ signal: applicationSignal });
-        try { await getGit().prepareRepository(binding, operation); }
-        finally { operation.dispose(); }
-        applicationSignal.throwIfAborted();
-        prepared.set(projectId, await admitRepository(binding, applicationSignal));
-        if (!manager.current().desired?.value.projects.some(project => project.projectId === projectId)) await manager.ensureProjectRemoval(projectId);
-      } finally { reservations.delete(projectId); }
+        const binding = await resolveBinding(projectId, applicationSignal);
+        await reserveRepository(binding, applicationSignal);
+        try {
+          const operation = createOperation({ signal: applicationSignal });
+          try { await getGit().prepareRepository(binding, operation); }
+          finally { operation.dispose(); }
+          applicationSignal.throwIfAborted();
+          prepared.set(projectId, await admitRepository(binding, applicationSignal));
+          if (!manager.current().desired?.value.projects.some(project => project.projectId === projectId)) await manager.ensureProjectRemoval(projectId);
+        } finally { reservations.delete(projectId); }
+        const failure = preparationFailures.get(projectId);
+        if (failure !== undefined && revision !== undefined && !applicationSignal.aborted) failure.successRevision = revision;
+        if (activityId !== undefined && !applicationSignal.aborted) observeMonitoring(m => m.updateActivity(activityId!, { progress: true }));
+      } catch (error) {
+        const current = manager.current();
+        const item = current.items.find(value => value.key.kind === "projectPreparation" && value.key.projectId === projectId);
+        if (applicationSignal.aborted) {
+          const failure = preparationFailures.get(projectId);
+          if (failure !== undefined) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt: null }); });
+        }
+        if (!applicationSignal.aborted && revision !== undefined && item?.targetRevision === revision && current.desired?.value.projects.some(project => project.projectId === projectId)) {
+          const observedAt = new Date().toISOString(), operationId = preparationFailures.get(projectId)?.operationId ?? randomUUID();
+          preparationFailures.set(projectId, { operationId, observedAt, revision, successRevision: null });
+          observeMonitoring(m => {
+            m.fail({ operationId, component: "project", phase: "project-preparation", scope: { kind: "project", projectId }, error });
+            m.setProjectPreparationReason(projectId, { observedAt, nextAttemptAt: null });
+          });
+        }
+        throw error;
+      } finally {
+        if (applicationSignal.aborted) {
+          const failure = preparationFailures.get(projectId);
+          if (failure !== undefined) { failure.successRevision = null; observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt: null }); }); }
+        }
+        if (activityId !== undefined) observeMonitoring(m => m.endActivity(activityId!));
+      }
     }, remove: async (projectId, applicationSignal) => {
       const runningCoordinator = await ensureCoordinator();
       applicationSignal.throwIfAborted();
@@ -727,6 +832,10 @@ export const runWorker = async (options: {
       const interval = manager.current().effective.pollIntervalMs ?? (manager.current().desired === null ? fallback?.pollIntervalMs ?? null : null);
       observeMonitoring(m => { m.setPhase("waiting-poll"); m.setNextPoll(new Date(Date.now() + (interval ?? 1_000)).toISOString()); });
       const changed = configurationChanged;
+      if (!changed.signal.aborted && fallback !== null && manager.current().desired === null) {
+        const nextAttemptAt = new Date(Date.now() + (interval ?? 1_000)).toISOString();
+        for (const [projectId, failure] of fallbackPreparationFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt }); });
+      }
       try {
         if (!changed.signal.aborted) await delay(interval === null ? 1_000 : interval, undefined, { signal: AbortSignal.any([signal, changed.signal]) });
       } catch (error) { if (!changed.signal.aborted && !isWorkerCancellation(error, signal)) throw error; }

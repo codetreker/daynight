@@ -148,6 +148,24 @@ describe("execution from current Herdr resources", () => {
     expect(phases).toEqual(expect.arrayContaining(["observation", "worktree-preparation", "agent-start", "input-submission"]));
   });
 
+  it("labels an observation failure after confirmed input and recovers at the same operation", async () => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const observePhase = vi.fn(), observeSuccess = vi.fn();
+    f.dependencies.observePhase = observePhase; f.dependencies.observeSuccess = observeSuccess;
+    const originalObserve = f.manager.observe.bind(f.manager);
+    const failure = new Error("post-submission observation failed");
+    vi.spyOn(f.manager, "observe").mockImplementationOnce(originalObserve).mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    expect(observeSuccess).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "input-submission" });
+    expect(observePhase).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.input.owner.claimId }), { kind: "execution", phase: "agent-observation" }, false, undefined);
+    observeSuccess.mockClear();
+    await f.driver.advance(f.input);
+    expect(observeSuccess).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
   it("preserves the original execution failure when monitoring throws", async () => {
     const f = await fixture("codex", null);
     const failure = new Error("original worktree failure");

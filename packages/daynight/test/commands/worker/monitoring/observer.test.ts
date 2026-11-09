@@ -13,6 +13,44 @@ const identity = (index: number) => ({ projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaa
 const secret = "secret /private/path prompt $(command output)";
 
 describe("worker monitoring observer", () => {
+  it("retains independent project preparation reasons across scheduler admission updates", () => {
+    const observer = createMonitoringObserver({ runId, now: () => 1_000 });
+    const projectId = identity(1).projectId, observedAt = new Date(1_000).toISOString(), nextAttemptAt = new Date(6_000).toISOString();
+    observer.setProjectPreparationReason(projectId, { observedAt, nextAttemptAt });
+    observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt, nextAttemptAt: null }]);
+    expect(observer.capture("1").admission).toMatchObject({ coverage: "partial", reasons: [{ code: "project-preparation-failed", scope: { kind: "project", projectId }, observedAt, nextAttemptAt }] });
+    observer.setAdmission("complete", [{ code: "capacity-full", scope: { kind: "worker" }, observedAt, nextAttemptAt: null }]);
+    expect(observer.capture("2").admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "capacity-full" }), expect.objectContaining({ code: "project-preparation-failed" })]));
+    observer.setProjectPreparationReason(projectId, null);
+    expect(observer.capture("3").admission).toMatchObject({ coverage: "partial", reasons: [{ code: "capacity-full" }] });
+    observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt, nextAttemptAt: null }]);
+    observer.setProjectPreparationUnknown(true);
+    expect(observer.capture("4").admission).toMatchObject({ coverage: "partial", reasons: [] });
+    observer.setProjectPreparationUnknown(false);
+    expect(observer.capture("5").admission).toMatchObject({ coverage: "unknown", reasons: [] });
+    observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt, nextAttemptAt: null }]);
+    expect(observer.capture("6").admission).toMatchObject({ coverage: "complete", reasons: [{ code: "no-ready-tasks" }] });
+  });
+
+  it("keeps scheduler success and idle evidence from advancing during preparation", () => {
+    let now = 1_000;
+    const observer = createMonitoringObserver({ runId, now: () => now });
+    observer.startCycle("claim-search"); observer.markCycleSuccessful(); observer.endCycle("completed", "complete");
+    observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date(now).toISOString(), nextAttemptAt: null }]);
+    const previousSuccess = observer.capture("1").scheduler.lastSuccessfulAt;
+    now = 2_000; observer.setProjectPreparationIncomplete(true);
+    observer.startCycle("claim-search"); observer.markCycleSuccessful(); observer.endCycle("completed", "complete");
+    observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date(now).toISOString(), nextAttemptAt: null }]);
+    expect(observer.capture("2")).toMatchObject({ scheduler: { coverage: "partial", lastSuccessfulAt: previousSuccess }, admission: { coverage: "partial", reasons: [] } });
+    observer.setAdmission("complete", [{ code: "no-projects-selected", scope: { kind: "worker" }, observedAt: new Date(now).toISOString(), nextAttemptAt: null }]);
+    expect(observer.capture("2").admission).toMatchObject({ coverage: "partial", reasons: [] });
+    observer.setProjectPreparationIncomplete(false);
+    expect(observer.capture("3")).toMatchObject({ scheduler: { coverage: "partial", lastSuccessfulAt: previousSuccess }, admission: { coverage: "partial", reasons: [] } });
+    now = 3_000; observer.startCycle("claim-search"); observer.markCycleSuccessful(); observer.endCycle("completed", "complete");
+    observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date(now).toISOString(), nextAttemptAt: null }]);
+    expect(observer.capture("4")).toMatchObject({ scheduler: { coverage: "complete", lastSuccessfulAt: new Date(now).toISOString() }, admission: { coverage: "complete", reasons: [{ code: "no-ready-tasks" }] } });
+  });
+
   it("retains unknown capacity, true counts, deduplicated roles and stable run-local reservations", () => {
     let now = 0;
     const observer = createMonitoringObserver({ runId, now: () => now, reservationKey: new Uint8Array(32).fill(1) });

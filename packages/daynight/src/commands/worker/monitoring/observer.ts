@@ -31,12 +31,17 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
   let scheduler: Observation["scheduler"] = { phase: "initializing", coverage: "unknown", cycleId: null, lastCompletedAt: null, lastSuccessfulAt: null, lastOutcome: null, nextPollAt: null };
   let capacity: Observation["capacity"] = null;
   let admission: Observation["admission"] = { observedAt: time(), coverage: "unknown", reasons: [] };
+  const projectPreparationReasons = new Map<string, { observedAt: string; nextAttemptAt: string | null }>();
+  let projectPreparationUnknown = false;
+  let projectPreparationIncomplete = false;
   let reservations: Reservation[] = [];
   let reservationPartial = false, detailsPartial = false;
   const activities = new Map<string, { value: Activity; monotonicStart: number }>();
   const failures = new Map<string, Failure>();
   let lastRecovery: Observation["lastRecovery"] = null;
   let delivery: Observation["delivery"] = { lastSucceededAt: null, lastFailure: null };
+  const preparationIncomplete = (): boolean => projectPreparationUnknown || projectPreparationIncomplete || projectPreparationReasons.size > 0 || [...activities.values()].some(({ value }) => value.kind === "maintenance" && value.phase === "project-preparation");
+  const invalidateAdmission = (): void => { admission = { observedAt: time(), coverage: "unknown", reasons: [] }; scheduler = { ...scheduler, coverage: "partial" }; dirty(); };
   const reservationId = (id: Identity): string => {
     const digest = options.reservationDigest?.(id) ?? createHmac("sha256", key).update("daynight-worker-monitoring-reservation-v1\0", "utf8").update(id.projectId + id.taskId + id.claimId, "ascii").digest();
     if (digest.length < 16) throw new Error("Monitoring reservation digest is too short.");
@@ -50,12 +55,14 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
     activityItems.sort((a, b) => Number(b.status !== "running") - Number(a.status !== "running") || a.startedAt.localeCompare(b.startedAt) || a.operationId.localeCompare(b.operationId));
     const failureItems = [...failures.values()].map(value => ({ ...value, scope: copyScope(value.scope), error: { ...value.error } })).sort((a, b) => a.firstObservedAt.localeCompare(b.firstObservedAt) || a.operationId.localeCompare(b.operationId));
     const reservationItems = reservations.map(value => ({ ...value, scope: copyScope(value.scope), roles: [...value.roles] })).sort((a, b) => Number(b.roles.includes("cleanup") || b.roles.includes("unresolved") || b.roles.includes("pending-stop")) - Number(a.roles.includes("cleanup") || a.roles.includes("unresolved") || a.roles.includes("pending-stop")) || a.observedAt.localeCompare(b.observedAt) || a.reservationId.localeCompare(b.reservationId));
-    let selectedReasons = [...admission.reasons].sort((a, b) => Number(b.code === "cleanup-capacity-blocked") - Number(a.code === "cleanup-capacity-blocked") || a.observedAt.localeCompare(b.observedAt) || a.code.localeCompare(b.code));
+    const preparationReasons: AdmissionReason[] = [...projectPreparationReasons].map(([projectId, reason]) => ({ code: "project-preparation-failed", scope: { kind: "project", projectId }, ...reason }));
+    const admissionCoverage: Coverage = preparationIncomplete() ? "partial" : admission.coverage;
+    let selectedReasons = [...admission.reasons, ...preparationReasons].sort((a, b) => Number(b.code === "cleanup-capacity-blocked") - Number(a.code === "cleanup-capacity-blocked") || a.observedAt.localeCompare(b.observedAt) || a.code.localeCompare(b.code));
     const reasonsTruncated = selectedReasons.length > 16;
-    if (admission.coverage !== "complete" || reasonsTruncated) selectedReasons = selectedReasons.filter(reason => reason.code !== "no-ready-tasks");
+    if (admissionCoverage !== "complete" || reasonsTruncated) selectedReasons = selectedReasons.filter(reason => reason.code !== "no-ready-tasks" && reason.code !== "no-projects-selected");
     const result: Observation = {
-      runId, sequence, capturedAt: time(), lifecycle, scheduler: { ...scheduler }, capacity: capacity === null ? null : { ...capacity, detailCoverage: reservationPartial || reservationItems.length > 128 ? "partial" : "complete" },
-      admission: { ...admission, coverage: reasonsTruncated && admission.coverage !== "unknown" ? "partial" : admission.coverage, reasons: selectedReasons.slice(0, 16).map(item => ({ ...item, scope: copyScope(item.scope) })) },
+      runId, sequence, capturedAt: time(), lifecycle, scheduler: { ...scheduler, coverage: preparationIncomplete() ? "partial" : scheduler.coverage }, capacity: capacity === null ? null : { ...capacity, detailCoverage: reservationPartial || reservationItems.length > 128 ? "partial" : "complete" },
+      admission: { ...admission, coverage: reasonsTruncated && admissionCoverage !== "unknown" ? "partial" : admissionCoverage, reasons: selectedReasons.slice(0, 16).map(item => ({ ...item, scope: copyScope(item.scope) })) },
       reservations: reservationItems.slice(0, 128), activities: activityItems.slice(0, 128), currentFailures: failureItems.slice(0, 32), lastRecovery: lastRecovery === null ? null : { ...lastRecovery, scope: copyScope(lastRecovery.scope) },
       detailCoverage: detailsPartial || reservationPartial || reservationItems.length > 128 || activityItems.length > 128 || failureItems.length > 32 ? "partial" : "complete", delivery: { ...delivery, lastFailure: delivery.lastFailure === null ? null : { ...delivery.lastFailure, error: { ...delivery.lastFailure.error } } },
     };
@@ -65,7 +72,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
       if (result.activities.length) { result.activities = result.activities.slice(0, -1); result.detailCoverage = "partial"; }
       else if (result.reservations.length) { result.reservations = result.reservations.slice(0, -1); result.detailCoverage = "partial"; if (result.capacity) result.capacity.detailCoverage = "partial"; }
       else if (result.currentFailures.length) { result.currentFailures = result.currentFailures.slice(0, -1); result.detailCoverage = "partial"; }
-      else if (result.admission.reasons.length) { result.admission.reasons = result.admission.reasons.slice(0, -1).filter(reason => reason.code !== "no-ready-tasks"); result.admission.coverage = "partial"; }
+      else if (result.admission.reasons.length) { result.admission.reasons = result.admission.reasons.slice(0, -1).filter(reason => reason.code !== "no-ready-tasks" && reason.code !== "no-projects-selected"); result.admission.coverage = "partial"; }
       else throw new Error("Monitoring observation exceeds its encoding budget.");
     }
     return result;
@@ -75,8 +82,8 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
     setLifecycle(value: Observation["lifecycle"]): void { lifecycle = value; dirty(); },
     startCycle(phase: SchedulerPhase): string { const cycleId = randomUUID(); scheduler = { ...scheduler, phase, cycleId, coverage: "unknown" }; dirty(); return cycleId; },
     setPhase(phase: SchedulerPhase, coverage?: Coverage): void { scheduler = { ...scheduler, phase, ...(coverage === undefined ? {} : { coverage }) }; dirty(); },
-    endCycle(outcome: "completed" | "failed" | "cancelled", coverage: Coverage = outcome === "completed" ? "complete" : "partial"): void { const at = time(); scheduler = { ...scheduler, lastCompletedAt: at, lastOutcome: outcome, coverage }; dirty(); },
-    markCycleSuccessful(): void { scheduler = { ...scheduler, lastSuccessfulAt: time() }; dirty(); },
+    endCycle(outcome: "completed" | "failed" | "cancelled", coverage: Coverage = outcome === "completed" ? "complete" : "partial"): void { const at = time(); scheduler = { ...scheduler, lastCompletedAt: at, lastOutcome: outcome, coverage: preparationIncomplete() ? "partial" : coverage }; dirty(); },
+    markCycleSuccessful(): void { if (!preparationIncomplete()) { scheduler = { ...scheduler, lastSuccessfulAt: time() }; dirty(); } },
     setNextPoll(at: string | null): void { scheduler = { ...scheduler, nextPollAt: at }; dirty(); },
     setCapacity(input: { limit: number; occupied: number; reservations: readonly ReservationInput[]; partial?: boolean; observedAt?: string }): void {
       const at = input.observedAt ?? time();
@@ -107,12 +114,24 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
       const observedAt = time();
       let globalCleanup = false;
       const accepted = reasons.filter(reason => { const duplicate = reason.code === "cleanup-capacity-blocked" && globalCleanup; if (reason.code === "cleanup-capacity-blocked") globalCleanup = true; const valid = !duplicate && validScope(reason.scope) && (!(reason.code === "project-unavailable" || reason.code === "project-preparation-failed") || reason.scope.kind !== "worker") && (reason.code !== "cleanup-capacity-blocked" || reason.scope.kind === "worker"); if (!valid) partial = true; return valid; }).map(reason => ({ code: reason.code, scope: copyScope(reason.scope), observedAt: reason.code === "cleanup-capacity-blocked" ? observedAt : reason.observedAt, nextAttemptAt: reason.code === "cleanup-capacity-blocked" ? null : reason.nextAttemptAt }));
-      const effectiveCoverage = partial && coverage !== "unknown" ? "partial" : coverage;
-      admission = { observedAt, coverage: effectiveCoverage, reasons: effectiveCoverage === "complete" ? accepted : accepted.filter(reason => reason.code !== "no-ready-tasks") }; dirty();
+      const effectiveCoverage = (partial || preparationIncomplete()) && coverage !== "unknown" ? "partial" : coverage;
+      admission = { observedAt, coverage: effectiveCoverage, reasons: effectiveCoverage === "complete" ? accepted : accepted.filter(reason => reason.code !== "no-ready-tasks" && reason.code !== "no-projects-selected") }; dirty();
     },
+    setProjectPreparationReason(projectId: string, reason: { observedAt: string; nextAttemptAt: string | null } | null): void {
+      if (!uuid.test(projectId)) { detailsPartial = true; dirty(); return; }
+      if (reason === null) { if (projectPreparationReasons.delete(projectId)) dirty(); return; }
+      const previous = projectPreparationReasons.get(projectId);
+      if (previous?.observedAt === reason.observedAt && previous.nextAttemptAt === reason.nextAttemptAt) return;
+      if (previous === undefined) invalidateAdmission();
+      projectPreparationReasons.set(projectId, { ...reason }); dirty();
+    },
+    setProjectPreparationUnknown(value: boolean): void { if (projectPreparationUnknown !== value) { if (value) invalidateAdmission(); projectPreparationUnknown = value; dirty(); } },
+    setProjectPreparationIncomplete(value: boolean): void { if (projectPreparationIncomplete !== value) { if (value) invalidateAdmission(); projectPreparationIncomplete = value; dirty(); } },
+    invalidateAdmission,
     startActivity(input: ActivityInput): string {
       const operationId = randomUUID();
       if (!validScope(input.scope)) { detailsPartial = true; dirty(); return operationId; }
+      if (input.kind === "maintenance" && input.phase === "project-preparation") invalidateAdmission();
       const at = time(), value = { kind: input.kind, phase: input.phase, operationId, scope: copyScope(input.scope), status: input.status ?? "running", startedAt: at, lastProgressAt: null, elapsedMs: 0, deadlineAt: input.deadlineAt ?? null, waitReason: input.waitReason ?? null, nextAttemptAt: input.nextAttemptAt ?? null } as Activity;
       activities.set(operationId, { value, monotonicStart: monotonic() }); dirty(); return operationId;
     },
