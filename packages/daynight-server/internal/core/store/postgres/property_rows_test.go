@@ -134,17 +134,45 @@ func TestPropertyRowsMigrationPreservesValuesAndTaskFacts(t *testing.T) {
 }
 
 func TestPropertyRowsMigrationRejectsInvalidInputAtomically(t *testing.T) {
+	ctx := context.Background()
+	pool := emptyPool(t)
+	if err := migrate(ctx, pool, schemaMigrations[:25]); err != nil {
+		t.Fatal(err)
+	}
+	database := &Store{Pool: pool}
+	project := queryProject(t, database, 1)
+	const good = `{"pullRequests":[],"worker":null}`
+	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,properties) VALUES($1,$2,'Good',$4),($3,$2,'Bad',$4)`, queryID(10), project.ID, queryID(20), good)
+	source := func(t *testing.T) string {
+		t.Helper()
+		var facts string
+		if err := pool.QueryRow(t.Context(), "SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t").Scan(&facts); err != nil {
+			t.Fatal(err)
+		}
+		return facts
+	}
+	ledger := func(t *testing.T) string {
+		t.Helper()
+		var facts string
+		if err := pool.QueryRow(t.Context(), "SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m").Scan(&facts); err != nil {
+			t.Fatal(err)
+		}
+		return facts
+	}
+	original, originalLedger := source(t), ledger(t)
 	for _, bad := range []string{`{"pullRequests":[],"worker":null,"unknown":0}`, `{"pullRequests":null,"worker":null}`, `{"pullRequests":[],"worker":null,"worker":null}`, `{"pullRequests":[]}`, `{"pullRequests":[],"worker":{}}`} {
-		t.Run(bad, func(t *testing.T) {
-			ctx := context.Background()
-			pool := emptyPool(t)
-			if err := migrate(ctx, pool, schemaMigrations[:25]); err != nil {
-				t.Fatal(err)
+		if !t.Run(bad, func(t *testing.T) {
+			if original != source(t) || originalLedger != ledger(t) {
+				t.Fatal("previous failure changed the historical property fixture")
 			}
-			database := &Store{Pool: pool}
-			project := queryProject(t, database, 1)
-			mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,properties) VALUES($1,$2,'Good','{"pullRequests":[],"worker":null}'),($3,$2,'Bad',$4)`, queryID(10), project.ID, queryID(20), bad)
-			if err := migrate(ctx, pool, schemaMigrations); err == nil {
+			mustQueryExec(t, database, "UPDATE tasks SET properties=$2 WHERE id=$1", queryID(20), bad)
+			var stored string
+			if err := pool.QueryRow(t.Context(), "SELECT properties FROM tasks WHERE id=$1", queryID(20)).Scan(&stored); err != nil || stored != bad {
+				t.Fatalf("invalid legacy input bytes changed: %q %v", stored, err)
+			}
+			before := source(t)
+			migrations := append([]migration(nil), schemaMigrations...)
+			if err := migrate(ctx, pool, migrations); err == nil {
 				t.Fatal("invalid legacy value migrated")
 			}
 			var table, oldColumn bool
@@ -155,7 +183,17 @@ func TestPropertyRowsMigrationRejectsInvalidInputAtomically(t *testing.T) {
 			if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=26`).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("failed migration ledger retained: %v", err)
 			}
-		})
+			if before != source(t) || originalLedger != ledger(t) {
+				t.Fatal("failed property migration changed original source rows or ledger")
+			}
+			assertMigrationPoolReusable(t, pool)
+			mustQueryExec(t, database, "UPDATE tasks SET properties=$2 WHERE id=$1", queryID(20), good)
+			if original != source(t) || originalLedger != ledger(t) {
+				t.Fatal("historical property fixture was not restored exactly")
+			}
+		}) {
+			return
+		}
 	}
 }
 
