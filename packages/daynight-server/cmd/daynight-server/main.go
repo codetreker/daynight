@@ -42,6 +42,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		httpx.LogFailure(logger, ctx, "server", "startup", err)
 		return 1
 	}
+	return serveApp(ctx, startup, cancelStartup, cfg, app, logger)
+}
+
+func serveApp(ctx, startup context.Context, cancelStartup context.CancelFunc, cfg config.Config, app *service.App, logger *slog.Logger) int {
 	handler, err := server.New(app, cfg, logger)
 	if err == nil {
 		runtime, startErr := server.Start(startup, cfg.ListenAddress, cfg.StartupTimeout, cfg.ShutdownTimeout, logger, handler, handler.Shutdown, app.CancelWork, app.Drain, app.Close)
@@ -71,5 +75,4 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	err = errors.Join(err, app.Close(cleanup))
 	httpx.LogFailure(logger, ctx, "server", "startup", err)
 	return 1
-
 }

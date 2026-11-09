@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -160,6 +163,49 @@ func TestRunStartupFailures(t *testing.T) {
 	if code := run(context.Background(), nil, func(key string) string { return values[key] }, &output); code != 1 || !strings.Contains(output.String(), "HTTP listen failed") {
 		t.Fatalf("occupied listener was not diagnosed: %s", &output)
 	}
+	t.Run("worker startup failure", func(t *testing.T) {
+		values := processAPIEnvironment(t)
+		cfg, err := config.LoadConfig(func(key string) string { return values[key] })
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := &persistenceProcessLog{}
+		logger := slog.New(slog.NewJSONHandler(output, nil))
+		startup, cancelStartup := context.WithTimeout(t.Context(), cfg.StartupTimeout)
+		defer cancelStartup()
+		app, err := service.OpenAppWithLogger(startup, cfg, logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			defer cancel()
+			if err := app.Close(cleanup); err != nil {
+				t.Error(err)
+			}
+		})
+		// A second Start produces a deterministic worker startup failure after
+		// the serving lifecycle has acquired its real listener.
+		if err := app.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if code := serveApp(t.Context(), startup, cancelStartup, cfg, app, logger); code != 1 {
+			t.Fatalf("worker startup failure returned %d", code)
+		}
+		if !strings.Contains(output.String(), `"phase":"startup"`) || strings.Contains(output.String(), `"phase":"listening"`) {
+			t.Fatalf("worker startup failure diagnostics: %s", output.String())
+		}
+		if err := app.Ready(t.Context()); err == nil {
+			t.Fatal("worker startup failure retained database resources")
+		}
+		listener, err := net.Listen("tcp", cfg.ListenAddress)
+		if err != nil {
+			t.Fatalf("worker startup failure retained listener: %v", err)
+		}
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 type stoppingWriter struct {
