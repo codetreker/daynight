@@ -68,7 +68,11 @@ partially supersedes the DAO mock boundary for that HTTP matrix, preserving its
 lower validation and projection proofs with Core. The
 [Configuration capacity decision](2026-11-09-worker-configuration-capacity-test-owners.md)
 assigns its eight HTTP cases and receiving Core input/business proofs to the
-same direct operation boundary. Existing scenarios are
+same direct operation boundary. The
+[assistant-host HTTP decision](2026-11-09-worker-assistant-host-http-test-owners.md)
+assigns the first reporting/detail/list case to controlled operations and retains
+its validation, complete snapshot and service-stage observations separately.
+Existing scenarios are
 corrected in place or consolidated with an existing mechanism owner; protocol
 matrices are not added to normal API integration or product E2E.
 

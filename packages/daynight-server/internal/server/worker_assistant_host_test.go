@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"github.com/google/uuid"
 )
 
@@ -25,19 +26,15 @@ func assistantHostBody() map[string]any {
 
 func TestWorkerAssistantHostHTTPReportingAndLegacyReplacement(t *testing.T) {
 	var logs bytes.Buffer
-	f := newCapacityHTTPFixture(t, uuid.NewString(), &logs)
+	f := newCapacityReportOperationFixtureWithOutput(t, uuid.NewString(), &logs)
 	body := workerSnapshotReportBody()
 	host := assistantHostBody()
 	host["observedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
 	host["defaultCwd"] = "/private/assistant-host-marker"
 	body["assistantHost"] = host
+	f.success(body)
 	stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-	plan := f.report(body, stored)
-	reportSnapshotHTTP(t, f.handler, f.worker, body)
-	plan.check()
-	plan = f.readWorker(stored)
-	response := snapshotDetailHTTP(t, f.handler, f.worker)
-	plan.check()
+	response := decodeResponse[api.WorkerDetailResponse](t, f.getRequest(workerservice.WorkerDetailResult{ObservedAt: capacityObservedAt, Worker: stored}), http.StatusOK)
 	if response.Worker.Telemetry.AssistantHost == nil {
 		t.Fatal("assistant hosting report missing from detail")
 	}
@@ -51,54 +48,40 @@ func TestWorkerAssistantHostHTTPReportingAndLegacyReplacement(t *testing.T) {
 		provider["available"] = false
 		provider["reason"] = "timeout"
 	}
+	f.success(body)
 	failedSnapshot := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-	plan = f.report(body, failedSnapshot)
-	reportSnapshotHTTP(t, f.handler, f.worker, body)
-	plan.check()
-	plan = f.readWorker(failedSnapshot)
-	failed := snapshotDetailHTTP(t, f.handler, f.worker)
-	plan.check()
+	failed := decodeResponse[api.WorkerDetailResponse](t, f.getRequest(workerservice.WorkerDetailResult{ObservedAt: capacityObservedAt, Worker: failedSnapshot}), http.StatusOK)
+	if failed.Worker.Telemetry.AssistantHost == nil || !reflect.DeepEqual(capacityDecode[map[string]any](t, failed.Worker.Telemetry.AssistantHost), capacityDecode[map[string]any](t, host)) {
+		t.Fatal("failed preflight changed complete hosting configuration")
+	}
 	if failed.Worker.Telemetry.AssistantHost.Providers[0].Available || *failed.Worker.Telemetry.AssistantHost.Providers[0].Reason != "timeout" {
 		t.Fatal("failed preflight retained previous availability")
 	}
 	delete(body, "assistantHost")
+	f.success(body)
 	legacySnapshot := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-	plan = f.report(body, legacySnapshot)
-	reportSnapshotHTTP(t, f.handler, f.worker, body)
-	plan.check()
-	plan = f.readWorker(legacySnapshot)
-	legacy := snapshotDetailHTTP(t, f.handler, f.worker)
-	plan.check()
+	legacy := decodeResponse[api.WorkerDetailResponse](t, f.getRequest(workerservice.WorkerDetailResult{ObservedAt: capacityObservedAt, Worker: legacySnapshot}), http.StatusOK)
 	if legacy.Worker.Telemetry.AssistantHost != nil {
 		t.Fatal("legacy replacement retained obsolete hosting capability")
 	}
-	plan = f.readWorker(legacySnapshot)
-	raw := projectRequest(f.handler, http.MethodGet, "/api/v1/me/workers/"+f.worker, "")
-	plan.check()
+	raw := f.getRequest(workerservice.WorkerDetailResult{ObservedAt: capacityObservedAt, Worker: capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)})
 	if strings.Contains(raw.Body.String(), `"assistantHost"`) {
 		t.Fatal("absent legacy hosting field was serialized")
 	}
 	body["assistantHost"] = assistantHostBody()
 	body["assistantHost"].(map[string]any)["protocolVersion"] = 2
-	f.rejectBeforeWrite()
-	assertProjectError(t, projectRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(t, body)), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, f.request(body, 1, &model.Fault{Code: "invalid_input", Message: "Assistant host protocol is unsupported."}), http.StatusBadRequest, "invalid_input")
+	zero := 0
+	observed := capacityObservedAt
+	summary := api.WorkerSummary{WorkerID: f.worker, Machine: api.WorkerMachine{ID: legacySnapshot.Telemetry.Machine.ID, Name: legacySnapshot.Telemetry.Machine.Name}, Platform: string(model.PlatformLinux), LastReportedAt: capacityObservedAt,
+		TaskObservationState: string(model.WorkerTasksObserved), TaskObservedAt: &observed, ActiveTaskCount: &zero}
+	wantPage := api.WorkerPage{ObservedAt: capacityObservedAt, Items: []api.WorkerSummary{summary}}
+	page := decodeResponse[api.WorkerPage](t, f.listRequest(workerservice.WorkerPage{ObservedAt: capacityObservedAt, Items: []api.WorkerSummary{summary}}), http.StatusOK)
+	if len(page.Items) != 1 || page.Items[0].WorkerID != f.worker || page.NextCursor != nil || !reflect.DeepEqual(page, wantPage) {
+		t.Fatal("assistant reporting changed worker listing")
+	}
 	if strings.Contains(logs.String(), "assistant-host-marker") || strings.Contains(logs.String(), "gpt-5") {
 		t.Fatal("worker logs exposed hosting configuration")
-	}
-	zero := 0
-	summary := store.WorkerSummary{WorkerID: f.worker, CreatedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Machine: legacySnapshot.Telemetry.Machine, Platform: model.PlatformLinux, TaskObservationState: model.WorkerTasksObserved, TaskObservedAt: &capacityObservedAt, ActiveTaskCount: &zero}
-	plan = f.read([]string{"observed", "dao", "summaries"}, func(r *capacityWorkerReader) {
-		r.summaries = func(user string, observed time.Time, page store.Page) (store.WorkerSummaryPage, error) {
-			if user != f.handler.principal.UserID || observed != capacityObservedAt || page.Limit != 50 || page.After != nil {
-				t.Fatalf("worker list arguments differ: %+v", page)
-			}
-			return store.WorkerSummaryPage{Items: []store.WorkerSummary{summary}}, nil
-		}
-	})
-	page := decodeResponse[api.WorkerPage](t, projectRequest(f.handler, http.MethodGet, "/api/v1/me/workers", ""), http.StatusOK)
-	plan.check()
-	if len(page.Items) != 1 || page.Items[0].WorkerID != f.worker || page.NextCursor != nil {
-		t.Fatal("assistant reporting changed worker listing")
 	}
 }
 
