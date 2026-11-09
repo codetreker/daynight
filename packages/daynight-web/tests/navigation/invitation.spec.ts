@@ -6,6 +6,11 @@ const user = {
   email: 'test@example.com', emailVerified: true, avatarUrl: null,
 };
 const team = { id: '00000000-0000-4000-8000-000000000010', kind: 'ordinary', name: 'Invited Team' };
+const catalog = {
+  items: ['task.created', 'task.status_changed', 'task.paused', 'task.deleted', 'task.step_updated', 'task.thread_posted'].map(key => ({ key, wireType: `cc.daynight.${key}.v1`, schemaVersion: 1, resourceKind: 'project' })),
+  service: { configurationExpansionAvailable: true, dispatchEnabled: false },
+  limits: { policyVersion: '1', requestBytes: 262144, payloadBytes: 65536, maxAutomaticAttempts: 8, automaticWindowSeconds: 86400, maxManualOperations: 3, payloadRetentionSeconds: 2592000, operationMaxAgeSeconds: 300, operationFutureSkewSeconds: 60 },
+};
 
 for (const scope of ['project', 'team'] as const) {
   for (const blocked of [false, true]) {
@@ -40,6 +45,8 @@ for (const scope of ['project', 'team'] as const) {
         let body: unknown;
         if (path === '/api/v1/me') body = user;
         else if (path === '/api/v1/auth/providers') body = { providers: ['github'] };
+        else if (request.method() === 'GET' && path === '/api/v1/teams') body = { items: [], nextCursor: null };
+        else if (request.method() === 'GET' && path === '/api/v1/webhook-event-types') body = catalog;
         else if (path === '/api/v1/invitations/inspect') {
           inspections.push(request.postDataJSON().token);
           body = { projectId: team.id, projectName: 'Invited project', directGrant: null, access: null };
