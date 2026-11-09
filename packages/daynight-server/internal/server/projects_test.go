@@ -48,7 +48,7 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 	database := newHTTPTestStore(t)
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, database, &logs)
-	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 1}, []model.Project{}, false)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 50}, []model.Project{}, false)
 	empty := projectRequest(handler, http.MethodGet, "/api/v1/projects", "")
 	page := decodeResponse[api.ProjectPage](t, empty, http.StatusOK)
 	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil || !strings.Contains(empty.Body.String(), `"items":[]`) || !strings.Contains(empty.Body.String(), `"nextCursor":null`) {
@@ -77,7 +77,7 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 	if read != project {
 		t.Fatalf("read differs from create: %+v %+v", read, project)
 	}
-	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 1}, []model.Project{*expected}, false)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 50}, []model.Project{*expected}, false)
 	page = decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
 	if len(page.Items) != 1 || page.Items[0] != project || page.NextCursor != nil {
 		t.Fatalf("project list projection: %+v", page)
@@ -130,7 +130,7 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "github.com") {
 		t.Fatalf("request content leaked: %s", &logs)
 	}
-	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 1}, []model.Project{}, false)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 50}, []model.Project{}, false)
 	page := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
 	if len(page.Items) != 0 {
 		t.Fatal("invalid request created a project")
@@ -230,7 +230,7 @@ func TestProjectHTTPScopedPagination(t *testing.T) {
 	if len(second.Items) != 1 || second.Items[0].ID == first.Items[0].ID || second.NextCursor != nil {
 		t.Fatalf("second team page: %+v", second)
 	}
-	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeShared, ""), store.Page{Limit: 1}, []model.Project{}, false)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeShared, ""), store.Page{Limit: 50}, []model.Project{}, false)
 	shared := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?shared=true", ""), http.StatusOK)
 	if len(shared.Items) != 0 || shared.Items == nil || shared.NextCursor != nil {
 		t.Fatalf("shared scope included team projects: %+v", shared)
@@ -282,7 +282,7 @@ func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testi
 	const externalTeam = "00000000-0000-4000-8000-000000000190"
 	const missingTeam = "00000000-0000-4000-8000-000000000191"
 	record := projectHTTPRecord("00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo", externalTeam)
-	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeShared, ""), store.Page{Limit: 1}, []model.Project{record}, false)
+	projectHTTPPage(t, database, handler.principal, projectHTTPListScope(store.ProjectScopeShared, ""), store.Page{Limit: 50}, []model.Project{record}, false)
 	shared := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?shared=true", ""), http.StatusOK)
 	if len(shared.Items) != 1 || shared.Items[0].ID != record.ID {
 		t.Fatalf("direct grant should permit the shared project: %+v", shared)
@@ -293,7 +293,7 @@ func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testi
 			called()
 			projectHTTPCheck(t, p, handler.principal)
 			projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeTeam, team))
-			projectHTTPCheck(t, page, store.Page{Limit: 1})
+			projectHTTPCheck(t, page, store.Page{Limit: 50})
 			return store.ProjectPage{}, model.ErrNotFound
 		}})
 		return projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+team, "")
@@ -309,7 +309,7 @@ func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testi
 		called()
 		projectHTTPCheck(t, p, handler.principal)
 		projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeTeam, externalTeam))
-		projectHTTPCheck(t, page, store.Page{Limit: 1})
+		projectHTTPCheck(t, page, store.Page{Limit: 50})
 		return store.ProjectPage{}, &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("private_membership_secret")}
 	}})
 	failed := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+externalTeam, "")
@@ -329,7 +329,7 @@ func TestProjectHTTPDatabaseFailuresAreVisibleAndSafe(t *testing.T) {
 		list()
 		projectHTTPCheck(t, p, handler.principal)
 		projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeAll, ""))
-		projectHTTPCheck(t, page, store.Page{Limit: 1})
+		projectHTTPCheck(t, page, store.Page{Limit: 50})
 		return store.ProjectPage{}, failure
 	}})
 	responses := []*httptest.ResponseRecorder{projectRequest(handler, http.MethodGet, "/api/v1/projects", "")}
@@ -369,7 +369,7 @@ func TestProjectHTTPCanceledReadDoesNotWrite(t *testing.T) {
 		called()
 		projectHTTPCheck(t, p, handler.principal)
 		projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeAll, ""))
-		projectHTTPCheck(t, page, store.Page{Limit: 1})
+		projectHTTPCheck(t, page, store.Page{Limit: 50})
 		close(reached)
 		<-ctx.Done()
 		return store.ProjectPage{}, &store.Error{Phase: "query", Cause: ctx.Err()}

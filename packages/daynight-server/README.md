@@ -36,8 +36,9 @@ lists authorize once within their read snapshot and use one `limit+1` query
 through `List` or `ListWorker`. The DAO uses ordinary Go JSON decoding; fields,
 normalization and existing capacity checks belong to write ingress. Bot pages
 continue by item count without domain read-byte admission or candidate callbacks.
-Normal decoding and output errors propagate. The shared MCP entry retains its
-independent result limits.
+Normal decoding and output errors propagate. Successful MCP reads have no
+output-schema or byte admission; input checks, deadlines and resource permits
+remain independent.
 
 A name-only create resolves a fresh compatible Worker report and freezes its
 configuration. Older Workers without `assistantHost` remain unsupported, even
@@ -435,8 +436,9 @@ bounded reads and inline or resumable upload. The [attachment design](../../docs
 owns upload admission and transfer behavior. Attachment open creates a private immutable snapshot for ranged
 reads; each request rechecks access. Inspection returns metadata by default,
 explicit reads default to 8 KiB, and binary content requires base64 selection.
-Inspect and open results are limited to 16 KiB; exceptionally oversized MIME or
-paths are rejected explicitly. Close and expiry reclaim only the private snapshot.
+Inspect and open return complete metadata through ordinary reads without
+stored-field or result-byte admission. Requested paths and content ranges retain
+their input and I/O security rules. Close and expiry reclaim only the private snapshot.
 Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
@@ -451,17 +453,18 @@ deciding whether to send again. Bot creation resolves omitted settings from
 available Worker defaults and does not imply startup readiness. Bot deletion
 requires an explicit version and reports the separate Worker and server cleanup
 states. Team and membership versions are decimal strings, and list results use
-scoped cursors. An item in a Team, Team member or scoped Project list that
-exceeds its response budget produces an explicit error; complete MCP retrieval
-and continuation past that item are not yet available.
+scoped cursors. Team, member, scoped Project, invitation and attachment pages
+use ordinary candidate batches and item-count continuation. Reads preserve full
+items without field-budget admission or repeated prefix encoding.
 
 Task list excludes done tasks by default and orders in-progress, ready, blocked
 and done tasks before paging. Its cursor binds the caller, project, filters and
 view to a snapshot fence; `list_changed` requires restarting traversal when
 project task versions change. Task list pages use item-count continuation, and
 Task graph summary and full views return the complete selected graph. They do
-not apply domain read-byte or graph-size admission; the shared MCP entry retains
-its independent 128 MiB result limit.
+not apply domain read-byte or graph-size admission. Successful MCP reads use
+ordinary encoding without output-schema or result-byte admission; input,
+concurrency and deadline rules remain.
 
 `task_ready` returns the first matching ready Tasks ordered by creation time and
 UUID. Its `limit` defaults to 5 and accepts 1 through 20; permission and platform
@@ -470,7 +473,8 @@ pagination. The result contains `items` and `projection`, with no `nextCursor` o
 `next` continuation. It does not calculate a response byte budget or shorten the
 batch based on encoded size. The default `summary` contains marked title previews
 and selection fields; `view: full` returns complete Tasks, including descriptions
-and properties. The shared MCP response limit and resource admission still apply.
+and properties. MCP input, deadline and resource-permit rules still apply;
+successful read results have no schema or byte admission.
 To traverse all ready tasks, use `task_list` with `ready: true`; its full list
 projection omits descriptions. Read current complete Tasks separately through
 `task_show` with `view: full`. These separate reads do not share the list's fence.
@@ -855,7 +859,7 @@ the handler duration to the existing 60-second attachment deadline.
 The real 5 MiB content boundary, fixed-length and chunked requests, path guards,
 preview/download headers and error responses remain HTTP or native-resource
 assertions. The consumed-body metadata failure case uses direct `PutRetained`
-and `ListREST` callbacks, controlled credential middleware and an actual TCP
+and `List` callbacks, controlled credential middleware and an actual TCP
 connection to verify the following keepalive request. Existing store metadata
 tests retain actual SQL, transaction and
 unchanged-state readback; native attachment lifecycle and process tests retain
@@ -1962,7 +1966,7 @@ for actual changes. Reads use pure `ProjectCollection`/`ProjectItem` projection
 and ordinary JSON encoding without stored-field or collection-capacity checks.
 MCP Step pages use one `limit+1` query and an explicitly compared parent version;
 summary and full views retain the same item-count cursor. The shared MCP entry
-retains its independent result limit. Invalid write candidates, natural decoding
+does not admit successful read output by schema or bytes. Invalid write candidates, natural decoding
 or encoding errors, database failures and failed transaction cleanup retain
 their causes; the service never substitutes a partial or empty result.
 
@@ -2082,9 +2086,10 @@ ordinary users expose that object. The database generates message_id once; its
 primary key is (task_id,message_id), with no single-column uniqueness guarantee.
 Reply and pagination IDs are always resolved within the selected task.
 
-The shared codec admits both default/detailed message encodings at <= 65,536
-bytes and complete pages at <= 262,144 bytes. HTTP writes exactly those escaped
-JSON bytes without an added LF. Full bodies and names are never truncated.
+The write codec admits both default/detailed message encodings at <= 65,536
+bytes before commit. Reads select count-based pages and encode canonical fields
+normally without message or page-byte admission. HTTP writes those escaped JSON
+bytes without an added LF. Full bodies and names are never truncated.
 Service operations have a 10-second ceiling with shorter parent deadlines taking
 precedence; actual-clock advancement has a 100 ms sub-budget, and rollback uses
 an independent 5-second cleanup context. These bounds do not claim a whole-handler
@@ -2094,8 +2099,8 @@ POST success follows confirmed commit. A failed cleanup remains 500 even with a
 nested business refusal. Unknown COMMIT returns 503 message_outcome_unknown;
 clients keep drafts and must not automatically repeat POST. A post-commit
 response failure is logged once at response phase without another append.
-Clock-budget exhaustion returns 503 clock_not_advanced; encoded oversize is 413
-payload_too_large. Missing local messages are 404 message_not_found. Invalid or
+Clock-budget exhaustion returns 503 clock_not_advanced; an oversized message
+write is 413 payload_too_large. Missing local messages are 404 message_not_found. Invalid or
 expired credentials are 401, missing project membership or source-owner mismatch
 is 403, invalid/stale claim is 409, and deleted tasks are 410. Existing PAT/Cookie,
 Origin, no-store and Daynight-User-ID behavior applies.

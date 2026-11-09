@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -43,39 +41,8 @@ func (f *fakeProjectOperations) RegisterRepository(_ context.Context, _ model.Pr
 func (f *fakeProjectOperations) Get(context.Context, model.Principal, string) (model.Project, error) {
 	return f.project, f.err
 }
-func (f *fakeProjectOperations) ListAdmitted(_ context.Context, principal model.Principal, request coreproject.ProjectListRequest, measure func([]model.Project, *string) error) (coreproject.ProjectPage, error) {
-	if f.err != nil {
-		return coreproject.ProjectPage{}, f.err
-	}
-	out := coreproject.ProjectPage{Items: []model.Project{}}
-	for i, item := range f.page.Items {
-		cursor, err := query.EncodeProjectCursor(item, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
-		if err != nil {
-			return coreproject.ProjectPage{}, err
-		}
-		var next *string
-		if i+1 < len(f.page.Items) || f.page.NextCursor != nil {
-			next = &cursor
-		}
-		candidate := append(out.Items, item)
-		if err := measure(candidate, next); err != nil {
-			if len(out.Items) == 0 {
-				return coreproject.ProjectPage{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Project exceeds the encoded page limit."}
-			}
-			previous, err := query.EncodeProjectCursor(out.Items[len(out.Items)-1], principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
-			if err != nil {
-				return coreproject.ProjectPage{}, err
-			}
-			out.NextCursor = &previous
-			return out, nil
-		}
-		out.Items = candidate
-		if len(out.Items) == request.Page.Limit {
-			out.NextCursor = next
-			return out, nil
-		}
-	}
-	return out, nil
+func (f *fakeProjectOperations) ListScoped(_ context.Context, _ model.Principal, _ coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
+	return f.page, f.err
 }
 func (f *fakeProjectOperations) TransferPreview(context.Context, model.Principal, string, string) (coreproject.TransferPreview, error) {
 	f.previews++
@@ -166,46 +133,6 @@ func TestProjectTransferPreservesVersionsReceiptsAndUnknown(t *testing.T) {
 	}
 }
 func ptr(s string) *string { return &s }
-func TestProjectListBudgetRetainsCursorAtLastIncludedItem(t *testing.T) {
-	f := &fakeProjectOperations{}
-	for i := range 5 {
-		p := sampleProject(fmt.Sprintf("%08x-1111-4111-8111-111111111111", i+1))
-		p.Name = strings.Repeat("<", 500000)
-		f.page.Items = append(f.page.Items, p)
-	}
-	h := projectTools{projects: f}
-	result, err := h.list(context.Background(), projectActor(), projectListInput{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	page := result.Data.(projectPage)
-	if len(page.Items) == 0 || len(page.Items) >= 5 || page.NextCursor == nil {
-		t.Fatalf("page has %d items and cursor %v", len(page.Items), page.NextCursor)
-	}
-	// Existing query decoder verifies the cursor's actual final item and account scope.
-	decoded, err := queryProjectCursor(*page.NextCursor)
-	if err != nil || decoded != f.page.Items[len(page.Items)-1].ID {
-		t.Fatalf("cursor %q %v", decoded, err)
-	}
-}
-
-func TestProjectListOversizedFirstItemProvidesRecovery(t *testing.T) {
-	project := sampleProject(testProjectID)
-	project.Name = strings.Repeat("<", 800000)
-	h := projectTools{projects: &fakeProjectOperations{page: coreproject.ProjectPage{Items: []model.Project{project}}}}
-	_, err := h.list(context.Background(), projectActor(), projectListInput{})
-	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
-		t.Fatalf("oversized: %v", err)
-	}
-}
-func queryProjectCursor(cursor string) (string, error) {
-	page, err := query.ProjectListPage(model.PageRequest{Limit: 1, Cursor: &cursor}, testUserID, store.ProjectScope{Kind: store.ProjectScopeAll})
-	if err != nil {
-		return "", err
-	}
-	return page.After.ID, nil
-}
 func TestProjectToolHTTPDiscoveryAndInputs(t *testing.T) {
 	f := newEntryFixture(t)
 	project := sampleProject(testProjectID)
@@ -311,7 +238,7 @@ func TestProjectTransferMapsCompleteActorAccess(t *testing.T) {
 	}
 }
 
-func TestProjectHandlersPreserveFailuresAndListBounds(t *testing.T) {
+func TestProjectHandlersPreserveFailures(t *testing.T) {
 	refusal := &model.Fault{Code: "not_found", Message: "Project not found."}
 	f := &fakeProjectOperations{err: refusal}
 	h := projectTools{projects: f, origin: "https://daynight.test"}
@@ -330,16 +257,5 @@ func TestProjectHandlersPreserveFailuresAndListBounds(t *testing.T) {
 	}
 	if _, err := h.transfer(context.Background(), actor, projectTransferInput{ProjectID: testProjectID, ToTeam: testTargetID}); !errors.Is(err, refusal) {
 		t.Fatalf("preview error: %v", err)
-	}
-	f.err = nil
-	project := sampleProject(testProjectID)
-	project.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
-	f.page.Items = []model.Project{project}
-	if _, err := h.list(context.Background(), actor, projectListInput{}); err == nil {
-		t.Fatal("unencodable project accepted")
-	}
-	f.page.Items = append(f.page.Items, sampleProject(testProjectID))
-	if _, err := h.list(context.Background(), actor, projectListInput{}); err == nil {
-		t.Fatal("unencodable cursor accepted")
 	}
 }

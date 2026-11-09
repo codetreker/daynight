@@ -64,7 +64,7 @@ func RegisterTaskTools(e *Entry, tasks *taskservice.Tasks) error {
 			}
 			return BudgetLarge
 		}
-		if err := e.registerTool(tool, budget, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+		handler := func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
 			if err := ValidateUnicodeFields(raw, "title", "description", "name", "valueText"); err != nil {
 				return ToolResult{}, err
 			}
@@ -77,7 +77,12 @@ func RegisterTaskTools(e *Entry, tasks *taskservice.Tasks) error {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 			}
 			return handleTaskTool(ctx, actor, tasks, name, input, fields)
-		}); err != nil {
+		}
+		register := e.registerTool
+		if name == "task_show" || name == "task_properties" {
+			register = e.registerReadTool
+		}
+		if err := register(tool, budget, handler); err != nil {
 			return fmt.Errorf("register %s: %w", name, err)
 		}
 	}

@@ -1500,9 +1500,10 @@ commands provide readable text and do not accept `--json`.
 `... Has more messages before` appears above a page with earlier messages;
 `Has more messages after...` appears below a page with later messages. Continue
 history with the first displayed Id and incremental reading with the last
-fully consumed displayed Id. The 256 KiB output budget can reduce the page
-below its requested count; complete messages remain contiguous and bodies are
-never truncated. A post receipt cannot advance the read position: after reading
+fully consumed displayed Id. The CLI prints every message selected by the
+server count page, with direction notices taken directly from the server. There
+is no Thread-specific read-byte admission or stdout prefix trimming. Shared
+operation transport limits still apply, and complete bodies are never truncated. A post receipt cannot advance the read position: after reading
 A, another person's B and a local post C must still be read from A.
 
 Post requires nonblank `--body`, preserving its original whitespace. For text
@@ -1558,7 +1559,7 @@ and `--json` select mutually exclusive formats. `read` writes the original bytes
 without labels, decoding or an added newline. Diagnostics remain on stderr;
 a failed transfer can leave incomplete stdout and exits nonzero. File transfers
 stream with backpressure and retain the shared deadlines and cancellation;
-metadata JSON keeps its existing byte budgets. Use `--` for a dash-prefixed
+metadata JSON keeps the shared client response and aggregate transport budgets. Use `--` for a dash-prefixed
 positional path, for example:
 
 ```bash

@@ -15,7 +15,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
-	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -218,7 +217,7 @@ func (f *attachmentFixture) expectList(task api.Task, query store.AttachmentQuer
 	f.dao.attachmentsFn = func(_ context.Context, p, id string, actual store.AttachmentQuery) (store.AttachmentPage, error) {
 		f.called("attachments")
 		f.checkIDs(task, p, id)
-		expected := store.AttachmentQuery{Limit: 1, After: query.After, MaxPathBytes: attachmentcore.MaxMetadataPageResponseJSONBytes, MaxFieldBytes: attachmentcore.MaxMetadataPageResponseJSONBytes}
+		expected := query
 		if index > 0 {
 			expected.After = &page.Items[index-1].Path
 		}

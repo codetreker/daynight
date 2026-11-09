@@ -41,7 +41,7 @@ func (failedTeamReadScope) ProjectDAO() store.ProjectReader { return failedTeamR
 
 type failedTeamReadTeam struct{ unknownReader }
 
-func (failedTeamReadTeam) TeamsBounded(context.Context, string, store.Page, int) (store.TeamPage, error) {
+func (failedTeamReadTeam) Teams(context.Context, string, store.Page) (store.TeamPage, error) {
 	return store.TeamPage{}, nil
 }
 func (failedTeamReadTeam) TeamMembersPage(context.Context, string, store.Page) (store.TeamMemberPage, error) {

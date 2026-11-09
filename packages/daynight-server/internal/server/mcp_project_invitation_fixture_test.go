@@ -70,7 +70,6 @@ type mcpOrgTeamReader struct {
 
 	store.TeamReader
 	TeamCall                 func(ctx context.Context, user, id string) (model.Team, error)
-	TeamBoundedCall          func(ctx context.Context, user, id string, budget int) (model.Team, bool, error)
 	TeamInvitationCall       func(ctx context.Context, hash []byte) (model.TeamInvitation, error)
 	TeamInvitationPageCall   func(ctx context.Context, id string, now time.Time, page store.Page) (store.TeamInvitationPage, error)
 	InvitationTeamCall       func(ctx context.Context, id string) (model.TeamRef, error)
@@ -82,12 +81,6 @@ func (d mcpOrgTeamReader) Team(ctx context.Context, user, id string) (model.Team
 		unexpectedHTTPCall(d.t, "MCP DAO TeamCall")
 	}
 	return d.TeamCall(ctx, user, id)
-}
-func (d mcpOrgTeamReader) TeamBounded(ctx context.Context, user, id string, budget int) (model.Team, bool, error) {
-	if d.TeamBoundedCall == nil {
-		unexpectedHTTPCall(d.t, "MCP DAO TeamBoundedCall")
-	}
-	return d.TeamBoundedCall(ctx, user, id, budget)
 }
 func (d mcpOrgTeamReader) TeamInvitation(ctx context.Context, hash []byte) (model.TeamInvitation, error) {
 	if d.TeamInvitationCall == nil {
@@ -125,7 +118,6 @@ type mcpOrgTeamWriter struct {
 
 	store.TeamWriteDAO
 	TeamCall              func(ctx context.Context, user string) (model.Team, error)
-	TeamBoundedCall       func(ctx context.Context, user string, budget int) (model.Team, bool, error)
 	CreateInvitationCall  func(ctx context.Context, invitation model.TeamInvitation) error
 	LockInvitationCall    func(ctx context.Context, hash []byte) (model.TeamInvitation, error)
 	InvitationTeamCall    func(ctx context.Context) (model.TeamRef, error)
@@ -140,12 +132,6 @@ func (d mcpOrgTeamWriter) Team(ctx context.Context, user string) (model.Team, er
 		unexpectedHTTPCall(d.t, "MCP DAO TeamCall")
 	}
 	return d.TeamCall(ctx, user)
-}
-func (d mcpOrgTeamWriter) TeamBounded(ctx context.Context, user string, budget int) (model.Team, bool, error) {
-	if d.TeamBoundedCall == nil {
-		unexpectedHTTPCall(d.t, "MCP DAO TeamBoundedCall")
-	}
-	return d.TeamBoundedCall(ctx, user, budget)
 }
 func (d mcpOrgTeamWriter) CreateInvitation(ctx context.Context, invitation model.TeamInvitation) error {
 	if d.CreateInvitationCall == nil {

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -176,7 +175,7 @@ func projectHTTPCreate(t *testing.T, tx *httpTestStore, p model.Principal, name,
 const projectHTTPPersonalTeam = "d0000000-0000-4000-8000-000000000050"
 
 func projectHTTPListScope(kind store.ProjectScopeKind, team string) store.ProjectScope {
-	return store.ProjectScope{Kind: kind, TeamID: team, MaxItemBytes: coreproject.MaxPageResponseJSONBytes}
+	return store.ProjectScope{Kind: kind, TeamID: team}
 }
 
 func projectHTTPCopyPointer[T any](value *T) *T {

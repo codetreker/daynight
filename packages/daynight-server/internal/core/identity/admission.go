@@ -11,6 +11,7 @@ import (
 const UpstreamTimeout = 15 * time.Second
 
 const (
+	MaxPATNameCodePoints       = 100
 	MaxProfileFieldBytes       = 1024
 	MaxAvatarURLBytes          = 512 << 10
 	MaxProfileJSONBytes        = 1 << 20

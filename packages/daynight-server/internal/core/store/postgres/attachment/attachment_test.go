@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -126,66 +125,5 @@ func assertAttachmentStoreError(t *testing.T, err error) {
 	var databaseError *Error
 	if !errors.As(err, &postgresError) || postgresError.Code != "42P01" || !errors.As(err, &databaseError) || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing table error lost: %v", err)
-	}
-}
-
-func TestAttachmentBoundedProjectionPreservesPageBoundary(t *testing.T) {
-	db := isolatedStore(t)
-	ctx := t.Context()
-	projectID, taskID := uuid.NewString(), uuid.NewString()
-	for _, item := range []model.Attachment{
-		{ProjectID: projectID, TaskID: taskID, Path: "a", ContentType: "short"},
-		{ProjectID: projectID, TaskID: taskID, Path: "b", ContentType: strings.Repeat("x", 1000000)},
-		{ProjectID: projectID, TaskID: taskID, Path: "long-path", ContentType: "short"},
-	} {
-		if _, _, err := db.PutAttachment(ctx, item); err != nil {
-			t.Fatal(err)
-		}
-	}
-	err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		page, err := snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2, MaxPathBytes: 5, MaxFieldBytes: 5})
-		if err != nil || len(page.Items) != 2 || !page.HasMore || page.Items[0].Path != "a" || page.Items[0].ContentType != "short" || page.Oversized[0] || page.Items[1].Path != "b" || page.Items[1].ContentType != "" || !page.Oversized[1] {
-			t.Fatalf("bounded first page: %+v %v", page, err)
-		}
-		after := page.Items[1].Path
-		page, err = snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2, After: &after, MaxPathBytes: 5, MaxFieldBytes: 5})
-		if err != nil || len(page.Items) != 1 || page.Items[0].Path != "" || !page.Oversized[0] {
-			t.Fatalf("bounded long path: %+v %v", page, err)
-		}
-		full, err := snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2})
-		if err != nil || full.Items[1].ContentType != strings.Repeat("x", 1000000) || full.Oversized != nil {
-			t.Fatalf("unbounded contract changed: %+v %v", full, err)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestAttachmentBoundedSingleProjection(t *testing.T) {
-	database := isolatedStore(t)
-	ctx := t.Context()
-	project, task := uuid.NewString(), uuid.NewString()
-	source := model.Attachment{ProjectID: project, TaskID: task, Path: "file", ContentType: "text/plain; x=" + strings.Repeat("a", 4096), SizeBytes: 3}
-	if _, _, err := database.PutAttachment(ctx, source); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		a, tooLarge, err := snapshot.AttachmentDAO().AttachmentBounded(ctx, project, task, "file", 64)
-		if err != nil || !tooLarge || a.ContentType != "" || a.Path != "file" {
-			t.Fatalf("oversized projection: %+v %v %v", a, tooLarge, err)
-		}
-		a, tooLarge, err = snapshot.AttachmentDAO().AttachmentBounded(ctx, project, task, "file", len(source.ContentType))
-		if err != nil || tooLarge || a.ContentType != source.ContentType {
-			t.Fatalf("full bounded projection: %+v %v %v", a, tooLarge, err)
-		}
-		_, _, err = snapshot.AttachmentDAO().AttachmentBounded(ctx, project, task, "missing", 64)
-		if !errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("missing: %v", err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
 	}
 }

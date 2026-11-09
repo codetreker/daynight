@@ -49,15 +49,15 @@ func testUnknownTeam() model.Team {
 	name := "Original"
 	return model.Team{TeamRef: model.TeamRef{ID: unknownTeam, Kind: "ordinary", Name: &name}, Version: 1, Membership: model.TeamMember{TeamID: unknownTeam, UserID: unknownActor, Role: model.ProjectAdmin, Version: 1}}
 }
-func (unknownReader) TeamBounded(context.Context, string, string, int) (model.Team, bool, error) {
-	return testUnknownTeam(), false, nil
+func (unknownReader) Team(context.Context, string, string) (model.Team, error) {
+	return testUnknownTeam(), nil
 }
 func (unknownReader) TeamAccess(context.Context, string, string) error { return nil }
 func (unknownReader) InvitationTeamMember(_ context.Context, _, user string) (model.TeamMember, error) {
 	return model.TeamMember{TeamID: unknownTeam, UserID: user, Role: model.ProjectMemberRole, Version: 1}, nil
 }
-func (unknownWriter) TeamBounded(context.Context, string, int) (model.Team, bool, error) {
-	return testUnknownTeam(), false, nil
+func (unknownWriter) Team(context.Context, string) (model.Team, error) {
+	return testUnknownTeam(), nil
 }
 func (unknownWriter) Member(_ context.Context, user string) (model.TeamMember, error) {
 	return model.TeamMember{TeamID: unknownTeam, UserID: user, Role: model.ProjectMemberRole, Version: 1}, nil

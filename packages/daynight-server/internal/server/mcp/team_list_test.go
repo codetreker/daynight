@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +32,7 @@ func (d *listTeamsDB) ReadSnapshot(_ context.Context, f func(store.SnapshotScope
 	return f(listTeamsScope{items: d.items})
 }
 func (s listTeamsScope) TeamDAO() store.TeamReader { return listTeamsReader{items: s.items} }
-func (r listTeamsReader) TeamsBounded(_ context.Context, _ string, page store.Page, _ int) (store.TeamPage, error) {
+func (r listTeamsReader) Teams(_ context.Context, _ string, page store.Page) (store.TeamPage, error) {
 	result := store.TeamPage{Items: []model.Team{}}
 	for _, item := range r.items {
 		if page.After != nil && !item.CreatedAt.After(page.After.CreatedAt) {
@@ -48,11 +47,11 @@ func (r listTeamsReader) TeamsBounded(_ context.Context, _ string, page store.Pa
 	return result, nil
 }
 
-func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
+func TestTeamListMCPPagination(t *testing.T) {
 	f := newEntryFixture(t)
 	f.entry.auth = validTeamAuth{}
 	db := &listTeamsDB{}
-	for i, name := range []string{strings.Repeat("<", 500000), strings.Repeat("<", 500000), strings.Repeat("<", 800000)} {
+	for i, name := range []string{"First", "Second", "Third"} {
 		team := testUnknownTeam()
 		team.ID = []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}[i]
 		team.Name = &name
@@ -63,15 +62,15 @@ func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := f.client(t, "2025-11-25", "alice")
-	var cursor string
-	for i := 0; i < 2; i++ {
-		args := map[string]any{"limit": 10}
-		if cursor != "" {
-			args["cursor"] = cursor
+	var cursor *string
+	for offset := 0; offset < len(db.items); offset += 2 {
+		args := map[string]any{"limit": 2}
+		if cursor != nil {
+			args["cursor"] = *cursor
 		}
-		result, err := c.CallTool(context.Background(), &sdk.CallToolParams{Name: "team_list", Arguments: args})
+		result, err := c.CallTool(t.Context(), &sdk.CallToolParams{Name: "team_list", Arguments: args})
 		if err != nil || result.IsError {
-			t.Fatalf("page %d: %#v %v", i, result, err)
+			t.Fatalf("page %d: %#v %v", offset, result, err)
 		}
 		raw, _ := json.Marshal(result.StructuredContent)
 		var env struct {
@@ -79,32 +78,23 @@ func TestTeamListMCPPaginationAndOversizedItem(t *testing.T) {
 				Items []struct {
 					ID string `json:"id"`
 				} `json:"items"`
-				NextCursor string `json:"nextCursor"`
+				NextCursor *string `json:"nextCursor"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(raw, &env); err != nil {
 			t.Fatal(err)
 		}
-		if len(env.Data.Items) != 1 || env.Data.Items[0].ID != db.items[i].ID || env.Data.NextCursor == "" {
-			t.Fatalf("page %d: %s", i, raw)
+		if len(env.Data.Items) != min(2, len(db.items)-offset) {
+			t.Fatalf("page %d count: %s", offset, raw)
+		}
+		for i, item := range env.Data.Items {
+			if item.ID != db.items[offset+i].ID {
+				t.Fatalf("page %d item %d: %s", offset, i, raw)
+			}
 		}
 		cursor = env.Data.NextCursor
-	}
-	result, err := c.CallTool(context.Background(), &sdk.CallToolParams{Name: "team_list", Arguments: map[string]any{"limit": 10, "cursor": cursor}})
-	if err != nil || !result.IsError {
-		t.Fatalf("oversized: %#v %v", result, err)
-	}
-	raw, _ := json.Marshal(result.StructuredContent)
-	var env struct {
-		Error struct {
-			Code string         `json:"code"`
-			Refs map[string]any `json:"refs"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		t.Fatal(err)
-	}
-	if env.Error.Code != "resource_limit_exceeded" {
-		t.Fatalf("oversized: %s", raw)
+		if (cursor != nil) != (offset+2 < len(db.items)) {
+			t.Fatalf("page %d cursor: %s", offset, raw)
+		}
 	}
 }

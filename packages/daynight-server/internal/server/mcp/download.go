@@ -74,19 +74,6 @@ func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
 			}
 			return ToolResult{Refs: refs}, err
 		}
-		if input.Action == "" || input.Action == "inspect" || input.Action == "open" {
-			encoded, err := json.Marshal(envelope{Data: result, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-			if err != nil {
-				return ToolResult{}, err
-			}
-			if len(encoded) > 16<<10 {
-				refs := map[string]any{"projectId": input.ProjectID, "taskId": input.TaskID}
-				if input.TransferID != "" {
-					refs["transferId"] = input.TransferID
-				}
-				return ToolResult{Refs: refs}, &model.Fault{Code: "payload_too_large", Message: "Attachment metadata exceeds the MCP response limit."}
-			}
-		}
 		return ToolResult{Data: result}, nil
 	})
 }

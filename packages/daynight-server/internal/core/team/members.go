@@ -54,9 +54,6 @@ func MembersPage(ctx context.Context, dao store.TeamReader, p model.Principal, i
 	if err != nil {
 		return MemberPage{}, err
 	}
-	if result.OversizedUserID != "" {
-		return MemberPage{}, &model.Fault{Code: "payload_too_large", Message: fmt.Sprintf("Team %s member %s profile exceeds the list budget; the page cannot be returned.", id, result.OversizedUserID)}
-	}
 	response := MemberPage{Items: result.Items}
 	if result.HasMore {
 		last := result.Items[len(result.Items)-1]

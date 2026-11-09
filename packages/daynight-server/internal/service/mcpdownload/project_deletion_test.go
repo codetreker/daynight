@@ -18,8 +18,8 @@ type heldInlineSource struct {
 	entered, release chan struct{}
 }
 
-func (h *heldInlineSource) OpenBounded(ctx context.Context, p model.Principal, project, task, path string, limit int) (model.Attachment, filestorage.Object, error) {
-	metadata, obj, err := h.Opener.OpenBounded(ctx, p, project, task, path, limit)
+func (h *heldInlineSource) Open(ctx context.Context, p model.Principal, project, task, path string) (model.Attachment, filestorage.Object, error) {
+	metadata, obj, err := h.Opener.Open(ctx, p, project, task, path)
 	if err == nil {
 		obj.Body = &blockedRangeReader{ReadCloser: obj.Body, ctx: ctx, entered: h.entered, release: h.release}
 	}

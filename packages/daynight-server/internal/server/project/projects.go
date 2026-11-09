@@ -1,8 +1,6 @@
 package project
 
 import (
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -138,11 +136,7 @@ func (h *projectHandler) list(w http.ResponseWriter, request *http.Request, prin
 		}
 		input.Shared = true
 	}
-	result, err := h.projects.ListAdmitted(request.Context(), principal, input, func(items []model.Project, cursor *string) error {
-		response := projectPageResponse(items, cursor)
-		_, err := measure.JSON(io.Discard, "project.page", coreproject.MaxPageResponseJSONBytes, response, true)
-		return err
-	})
+	result, err := h.projects.ListScoped(request.Context(), principal, input)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "project", "list", err)
 		return

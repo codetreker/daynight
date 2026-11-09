@@ -90,7 +90,7 @@ UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含�
 
 Project 的 owner Team admin 可以读取删除预览并删除项目。预览返回当前项目身份、可见任务、未完成任务和附件计数，以及按 Task UUID 分页的全部 active Worker claim；离线、暂停或等待均不解除阻塞。Worker 连通性只依据该 claim 对应的最后报告时间：不足 120 秒为 online，有更旧报告为 offline，没有报告为 unknown。预览是当前观察，不作为删除条件。`DELETE` 不接受查询参数、正文、预览版本或名称；删除时重新检查当前权限与所有历史 Task 的 claim。存在 active claim 返回 `409 active_worker_claims`，不改数据。
 
-预览返回 `observedAt`、`project:{id,name,repoUrl,ownerTeam}`、`summary:{taskCount,unfinishedTaskCount,attachmentCount}`、`activeClaims` 和可空 `nextCursor`。每条阻塞项包含 `taskId`、`title` 及 `worker:{machineName,platform,phase,paused,connectivity}`。分页默认 50、最大 100，cursor 绑定当前用户和 Project；响应受字节预算保护，单项无法容纳时明确拒绝，不把不完整列表伪装成完整结果。
+预览返回 `observedAt`、`project:{id,name,repoUrl,ownerTeam}`、`summary:{taskCount,unfinishedTaskCount,attachmentCount}`、`activeClaims` 和可空 `nextCursor`。每条阻塞项包含 `taskId`、`title` 及 `worker:{machineName,platform,phase,paused,connectivity}`。分页默认 50、最大 100，cursor 绑定当前用户和 Project；按条数返回完整阻塞项，不按标题或响应字节缩短页面。
 
 成功返回 `200` 与 `{projectId, deleted:true}`，此后项目及其子资源不再可访问或接受新写入，重复删除返回 404。删除保留任务状态、版本、计时、依赖、成员关系、历史和附件文件；撤回项目 Session 的可操作状态，不声称本机进程已退出。其他项目、账号 Bot 和独立测试 Session 保持可用。Team 非空检查只计活跃项目；旧邀请不可消费，Worker 历史输出不显示已删除项目。事务结果未知返回 `503 write_outcome_unknown`，已确认未提交的内部失败返回 `500 internal_error` 和 `error.details.writeOutcome: "not_committed"`；后续读取不能恢复原操作回执。
 
@@ -296,7 +296,7 @@ Task 更新示例：
 
 列表使用 `limit`、`cursor`。`limit` 默认 `50`，允许 `1..100`；按
 `createdAt ASC, id ASC` 稳定排序，返回 `items` 和 `nextCursor`，末页后者为 `null`。
-Team 和 Project 既有分页的完整 JSON 响应最多 4 MiB，包含转义、cursor 与末尾换行。达到字节上限时从最后返回项继续；历史首项无法装入时整体返回 409 `resource_limit_exceeded`。Task 单项、属性和列表直接读取保存的规范数据，不重复结构、字段或容量检查，也不设置领域读取响应字节预算；Task 列表按条数续页。普通 Task 写入成功响应在提交前保留 512 KiB 准入。
+Team、Project 和 Task 列表按请求条数读取一批候选，并以一项 lookahead 判断续页；cursor 指向最后返回项。普通资源直接读取保存的规范数据，不重复结构、字段或容量检查，也不设置领域或共享 MCP 读取响应字节预算。普通 Task 写入成功响应在提交前保留 512 KiB 准入。
 Project 列表默认返回当前主体全部可访问项目；单值 `teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥；非成员或不存在的 Team 返回 404，读取失败不能视为空列表。资格筛选先于排序和分页，不返回总数。Project cursor 使用独立 kind 与版本 2，绑定规范主体及 all/team/shared 范围和 Team ID；旧 cursor 和不匹配范围被拒绝。cursor 不需要防篡改，也不授予访问权。
 
 Task 列表支持单个四状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
@@ -387,7 +387,7 @@ blocked 只计入前置未全部完成的 todo；查询不改变任务状态、�
 | `409` | `active_worker_claims` | 项目仍有 active Worker claim，删除未执行 |
 | `409` | `step_id_conflict` | 同一 Task 内添加的 Step ID 已存在；版本检查先于身份与锚点检查 |
 | `409` | `steps_limit_exceeded` | Steps 真实变化候选超过完整编码容量，返回 encodedBytes/maxEncodedBytes |
-| `409` | `resource_limit_exceeded` | 只读资源无法装入适用的完整编码预算，或已知写入响应在提交前无法准入 |
+| `409` | `resource_limit_exceeded` | 已知写入响应在提交前无法通过容量准入 |
 | `409` | `version_exhausted` | Steps 父 Task 或 Team 真实改名所需版本已达最大正 int64；同值 no-op 仍有效 |
 | `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform/assignedTo，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |

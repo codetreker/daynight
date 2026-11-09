@@ -29,6 +29,8 @@ requires clients to restart when the parent changes.
 
 ## Consequences
 
-Full content remains available explicitly and retains existing admission limits.
+Full read content remains available explicitly without read-output schema or
+byte admission. Write candidate capacity and input/concurrency rules remain, as
+recorded in the [ordinary resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md).
 A changed parent invalidates a cursor even when its Steps did not change. The
 large-object slot serializes writes independently of the requested return view.

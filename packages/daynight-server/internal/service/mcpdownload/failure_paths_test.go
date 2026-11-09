@@ -19,8 +19,8 @@ type alteredOpener struct {
 	mode string
 }
 
-func (o alteredOpener) OpenBounded(ctx context.Context, p model.Principal, project, task, path string, limit int) (model.Attachment, filestorage.Object, error) {
-	a, obj, err := o.Opener.OpenBounded(ctx, p, project, task, path, limit)
+func (o alteredOpener) Open(ctx context.Context, p model.Principal, project, task, path string) (model.Attachment, filestorage.Object, error) {
+	a, obj, err := o.Opener.Open(ctx, p, project, task, path)
 	if err != nil {
 		return a, obj, err
 	}

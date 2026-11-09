@@ -4,15 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"strings"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	teamcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -176,7 +173,11 @@ func RegisterInvitationTools(e *Entry, identity *identity.Identity, teams invita
 		default:
 			return errors.New("unknown invitation tool")
 		}
-		if err := RegisterTypedTool(e, &tools[i], BudgetControl, handler, "team", "invitationId", "link", "cursor"); err != nil {
+		register := RegisterTypedTool[invitationInput]
+		if tools[i].Name == "team_invitation_list" || tools[i].Name == "invitation_inspect" {
+			register = registerTypedReadTool[invitationInput]
+		}
+		if err := register(e, &tools[i], BudgetControl, handler, "team", "invitationId", "link", "cursor"); err != nil {
 			return err
 		}
 	}
@@ -209,48 +210,13 @@ func (a *invitationAdapter) list(ctx context.Context, actor RequestActor, in inv
 		limit = 50
 	}
 	request := model.PageRequest{Limit: limit, Cursor: in.Cursor}
-	var page teamcore.InvitationPage
-	if reader, ok := a.teams.(interface {
-		InvitationsAdmitted(context.Context, model.Principal, string, model.PageRequest, func([]model.TeamInvitation, *string) error) (teamcore.InvitationPage, error)
-	}); ok {
-		page, err = reader.InvitationsAdmitted(ctx, actor.Principal, id, request, func(items []model.TeamInvitation, cursor *string) error {
-			data := invitationPage{Items: make([]teamInvitation, 0, len(items)), NextCursor: cursor}
-			for _, item := range items {
-				data.Items = append(data.Items, mapTeamInvitation(item))
-			}
-			_, err := measure.JSON(io.Discard, "invitation page", 16<<10, envelope{Data: data, Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
-			return err
-		})
-	} else {
-		page, err = a.teams.ListInvitationPage(ctx, actor.Principal, id, request)
-	}
+	page, err := a.teams.ListInvitationPage(ctx, actor.Principal, id, request)
 	if err != nil {
 		return ToolResult{}, err
 	}
 	result := invitationPage{Items: make([]teamInvitation, 0, len(page.Items)), NextCursor: page.NextCursor}
 	for _, i := range page.Items {
 		result.Items = append(result.Items, mapTeamInvitation(i))
-	}
-	// Keep the entire encoded response within the default budget and ensure that
-	// its cursor follows the last returned item, including when a page is trimmed.
-	for {
-		encoded, err := json.Marshal(envelope{Data: result, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-		if err != nil {
-			return ToolResult{}, err
-		}
-		if len(encoded) <= 16<<10 {
-			break
-		}
-		if len(result.Items) <= 1 {
-			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Invitation exceeds the encoded page limit."}
-		}
-		result.Items = result.Items[:len(result.Items)-1]
-		last := result.Items[len(result.Items)-1]
-		cursor, err := query.EncodeListCursor(query.ListScope{Kind: "team_invitations", UserID: actor.Principal.UserID, ProjectID: id}, last.CreatedAt, last.ID)
-		if err != nil {
-			return ToolResult{}, err
-		}
-		result.NextCursor = &cursor
 	}
 	return ToolResult{Data: result}, nil
 }

@@ -118,46 +118,6 @@ func List(ctx context.Context, dao store.TeamReader, p model.Principal, request 
 	return response, nil
 }
 
-// GetBounded and ListBounded are protocol projections that reject oversized
-// names before materializing them. Ordinary Team reads keep their full contract.
-func GetBounded(ctx context.Context, dao store.TeamReader, p model.Principal, id string, limit int) (model.Team, error) {
-	t, oversized, err := dao.TeamBounded(ctx, p.UserID, id, limit)
-	if errors.Is(err, model.ErrNotFound) {
-		return model.Team{}, &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
-	}
-	if err != nil {
-		return model.Team{}, err
-	}
-	if oversized {
-		return model.Team{}, &model.Fault{Code: "payload_too_large", Message: fmt.Sprintf("Team %s exceeds the read budget.", id)}
-	}
-	return t, nil
-}
-func ListBounded(ctx context.Context, dao store.TeamReader, p model.Principal, request model.PageRequest, limit int) (TeamPage, error) {
-	scope := query.ListScope{Kind: "teams", UserID: p.UserID}
-	page, err := query.ListPage(request, scope)
-	if err != nil {
-		return TeamPage{}, err
-	}
-	result, err := dao.TeamsBounded(ctx, p.UserID, page, limit)
-	if err != nil {
-		return TeamPage{}, err
-	}
-	if result.OversizedTeamID != "" {
-		return TeamPage{}, &model.Fault{Code: "payload_too_large", Message: fmt.Sprintf("Team %s exceeds the list budget.", result.OversizedTeamID)}
-	}
-	response := TeamPage{Items: result.Items}
-	if result.HasMore {
-		last := result.Items[len(result.Items)-1]
-		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.ID)
-		if err != nil {
-			return TeamPage{}, fmt.Errorf("encode Team cursor: %w", err)
-		}
-		response.NextCursor = &cursor
-	}
-	return response, nil
-}
-
 func ValidateChange(p model.Principal, id string, input ChangeTeam) (string, error) {
 	if err := RequireActor(p, input.ExpectedUserID); err != nil {
 		return "", err

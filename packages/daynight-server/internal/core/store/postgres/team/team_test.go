@@ -43,28 +43,10 @@ type teamRow func(...any) error
 
 func (row teamRow) Scan(values ...any) error { return row(values...) }
 
-func TestTeamScannersRejectInvalidShapeAndRetainCauses(t *testing.T) {
+func TestTeamScannerRetainsCauses(t *testing.T) {
 	cause := errors.New("Team scan failed")
 	if _, err := scanTeam(teamRow(func(...any) error { return cause })); !errors.Is(err, cause) {
 		t.Fatalf("scan cause: %v", err)
-	}
-	if _, _, err := scanBoundedTeam(teamRow(func(...any) error { return cause })); !errors.Is(err, cause) {
-		t.Fatalf("bounded scan cause: %v", err)
-	}
-	for _, personal := range []bool{false, true} {
-		row := teamRow(func(destinations ...any) error {
-			if personal {
-				owner := "owner"
-				*destinations[1].(**string) = &owner
-			}
-			return nil
-		})
-		if _, err := scanTeam(row); err == nil {
-			t.Fatalf("invalid personal=%v shape accepted", personal)
-		}
-		if _, _, err := scanBoundedTeam(row); err == nil {
-			t.Fatalf("invalid bounded personal=%v shape accepted", personal)
-		}
 	}
 }
 

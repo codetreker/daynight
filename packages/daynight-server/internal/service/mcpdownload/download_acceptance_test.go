@@ -80,8 +80,8 @@ type heldSource struct {
 	calls   atomic.Int32
 }
 
-func (h *heldSource) OpenBounded(ctx context.Context, p model.Principal, project, task, path string, limit int) (model.Attachment, filestorage.Object, error) {
-	a, object, err := h.Opener.OpenBounded(ctx, p, project, task, path, limit)
+func (h *heldSource) Open(ctx context.Context, p model.Principal, project, task, path string) (model.Attachment, filestorage.Object, error) {
+	a, object, err := h.Opener.Open(ctx, p, project, task, path)
 	if err != nil {
 		return a, object, err
 	}

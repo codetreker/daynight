@@ -2,7 +2,6 @@ package team
 
 import (
 	"context"
-	"fmt"
 
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 
@@ -21,7 +20,7 @@ func scanTeamMember(row pgx.Row) (model.TeamMember, error) {
 const teamMemberColumns = `team_id::text,user_id::text,role,version,created_at,updated_at`
 
 func (s *reader) TeamMembers(ctx context.Context, teamID string) ([]model.TeamMemberProfile, error) {
-	rows, err := s.tx.Query(ctx, `SELECT m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at,u.id::text,u.name,u.email,u.avatar_url
+	rows, err := s.tx.Query(ctx, `SELECT m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at,u.name,u.email,u.avatar_url
  FROM team_members m LEFT JOIN users u ON u.id=m.user_id WHERE m.team_id=$1 ORDER BY m.created_at,m.user_id`, teamID)
 	if err != nil {
 		return nil, pg.QueryError("list Team members", err)
@@ -30,13 +29,9 @@ func (s *reader) TeamMembers(ctx context.Context, teamID string) ([]model.TeamMe
 	items := []model.TeamMemberProfile{}
 	for rows.Next() {
 		var item model.TeamMemberProfile
-		var profileID *string
 		m := &item.Membership
-		if err := rows.Scan(&m.TeamID, &m.UserID, &m.Role, &m.Version, &m.CreatedAt, &m.UpdatedAt, &profileID, &item.Profile.Name, &item.Profile.Email, &item.Profile.AvatarURL); err != nil {
+		if err := rows.Scan(&m.TeamID, &m.UserID, &m.Role, &m.Version, &m.CreatedAt, &m.UpdatedAt, &item.Profile.Name, &item.Profile.Email, &item.Profile.AvatarURL); err != nil {
 			return nil, pg.QueryError("list Team members", err)
-		}
-		if profileID == nil || *profileID != m.UserID {
-			return nil, pg.QueryError("list Team members", fmt.Errorf("Team member profile is missing or inconsistent"))
 		}
 		m.CreatedAt, m.UpdatedAt = m.CreatedAt.UTC(), m.UpdatedAt.UTC()
 		items = append(items, item)
@@ -49,43 +44,23 @@ func (s *reader) TeamMembers(ctx context.Context, teamID string) ([]model.TeamMe
 
 func (s *reader) TeamMembersPage(ctx context.Context, teamID string, page store.Page) (store.TeamMemberPage, error) {
 	afterTime, afterID := pg.PageValues(page)
-	// CASE prevents oversized profile values from being transferred to Go.
-	rows, err := s.tx.Query(ctx, `SELECT m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at,u.id::text,
- CASE WHEN size.bytes <= $5 THEN u.name END,
- CASE WHEN size.bytes <= $5 THEN u.email END,
- CASE WHEN size.bytes <= $5 THEN u.avatar_url END,
- size.bytes > $5
+	rows, err := s.tx.Query(ctx, `SELECT m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at,u.name,u.email,u.avatar_url
  FROM team_members m LEFT JOIN users u ON u.id=m.user_id
- CROSS JOIN LATERAL (SELECT coalesce(octet_length(u.name),0)::bigint + coalesce(octet_length(u.email),0)::bigint + coalesce(octet_length(u.avatar_url),0)::bigint AS bytes) size
  WHERE m.team_id=$1 AND ($2::timestamptz IS NULL OR (m.created_at,m.user_id)>($2,$3::uuid))
- ORDER BY m.created_at,m.user_id LIMIT $4`, teamID, afterTime, afterID, page.Limit+1, store.TeamMemberProfileByteLimit)
+ ORDER BY m.created_at,m.user_id LIMIT $4`, teamID, afterTime, afterID, page.Limit+1)
 	if err != nil {
 		return store.TeamMemberPage{}, pg.QueryError("list Team members", err)
 	}
 	defer rows.Close()
 	result := store.TeamMemberPage{Items: []model.TeamMemberProfile{}}
-	blocked := false
 	for rows.Next() {
 		var item model.TeamMemberProfile
-		var profileID *string
-		var oversized bool
 		m := &item.Membership
-		if err := rows.Scan(&m.TeamID, &m.UserID, &m.Role, &m.Version, &m.CreatedAt, &m.UpdatedAt, &profileID, &item.Profile.Name, &item.Profile.Email, &item.Profile.AvatarURL, &oversized); err != nil {
+		if err := rows.Scan(&m.TeamID, &m.UserID, &m.Role, &m.Version, &m.CreatedAt, &m.UpdatedAt, &item.Profile.Name, &item.Profile.Email, &item.Profile.AvatarURL); err != nil {
 			return store.TeamMemberPage{}, pg.QueryError("list Team members", err)
 		}
-		if profileID == nil || *profileID != m.UserID {
-			return store.TeamMemberPage{}, pg.QueryError("list Team members", fmt.Errorf("Team member profile is missing or inconsistent"))
-		}
-		if blocked || len(result.Items) == page.Limit {
+		if len(result.Items) == page.Limit {
 			result.HasMore = true
-			continue
-		}
-		if oversized {
-			result.HasMore = true
-			blocked = true
-			if len(result.Items) == 0 {
-				result.OversizedUserID = m.UserID
-			}
 			continue
 		}
 		m.CreatedAt, m.UpdatedAt = m.CreatedAt.UTC(), m.UpdatedAt.UTC()

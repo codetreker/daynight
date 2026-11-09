@@ -23,7 +23,6 @@ type cursor struct {
 type Page struct {
 	Items      []model.Attachment
 	NextCursor *string
-	Oversized  []bool
 }
 
 func invalidInput(message string) *model.Fault {
@@ -63,8 +62,8 @@ func ListQuery(request model.PageRequest, projectID, taskID string) (store.Attac
 }
 
 func MakePage(result store.AttachmentPage, projectID, taskID string) (Page, error) {
-	response := Page{Items: result.Items, Oversized: result.Oversized}
-	if result.HasMore && len(result.Items) > 0 && result.Items[len(result.Items)-1].Path != "" {
+	response := Page{Items: result.Items}
+	if result.HasMore && len(result.Items) > 0 {
 		var data bytes.Buffer
 		encoder := json.NewEncoder(&data)
 		encoder.SetEscapeHTML(false)

@@ -415,18 +415,6 @@ func (a *TransferAdmission) Close() error {
 }
 
 func (s *Attachments) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (model.Attachment, filestorage.Object, error) {
-	return s.open(ctx, principal, projectID, taskID, path, 0)
-}
-
-// OpenBounded checks the metadata limit in the same target gate as the stable file open.
-func (s *Attachments) OpenBounded(ctx context.Context, principal model.Principal, projectID, taskID, path string, maxContentTypeBytes int) (model.Attachment, filestorage.Object, error) {
-	if maxContentTypeBytes < 1 {
-		return model.Attachment{}, filestorage.Object{}, &model.Fault{Code: "invalid_input", Message: "Metadata limit must be positive."}
-	}
-	return s.open(ctx, principal, projectID, taskID, path, maxContentTypeBytes)
-}
-
-func (s *Attachments) open(ctx context.Context, principal model.Principal, projectID, taskID, path string, maxContentTypeBytes int) (model.Attachment, filestorage.Object, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
@@ -442,11 +430,7 @@ func (s *Attachments) open(ctx context.Context, principal model.Principal, proje
 	var attachment model.Attachment
 	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
 		var err error
-		if maxContentTypeBytes > 0 {
-			attachment, err = attachmentcore.MetadataBounded(ctx, reader, address, maxContentTypeBytes)
-		} else {
-			attachment, err = attachmentcore.Metadata(ctx, reader, address)
-		}
+		attachment, err = attachmentcore.Metadata(ctx, reader, address)
 		return err
 	})
 	if err != nil {
@@ -493,19 +477,6 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 }
 
 func (s *Attachments) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (attachmentcore.Page, error) {
-	return s.list(ctx, principal, projectID, taskID, request, 0, 0)
-}
-
-// ListBounded omits oversized path or content type fields and marks those rows.
-// It avoids materializing unbounded metadata before an adapter's output limit.
-func (s *Attachments) ListBounded(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest, maxPathBytes, maxFieldBytes int) (attachmentcore.Page, error) {
-	if maxPathBytes < 1 || maxFieldBytes < 1 {
-		return attachmentcore.Page{}, &model.Fault{Code: "invalid_input", Message: "Field limit must be positive."}
-	}
-	return s.list(ctx, principal, projectID, taskID, request, maxPathBytes, maxFieldBytes)
-}
-
-func (s *Attachments) list(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest, maxPathBytes, maxFieldBytes int) (attachmentcore.Page, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return attachmentcore.Page{}, err
 	}
@@ -521,8 +492,6 @@ func (s *Attachments) list(ctx context.Context, principal model.Principal, proje
 	if err != nil {
 		return attachmentcore.Page{}, err
 	}
-	query.MaxFieldBytes = maxFieldBytes
-	query.MaxPathBytes = maxPathBytes
 	var result store.AttachmentPage
 	err = s.read(ctx, principal, projectID, taskID, func(reader store.AttachmentReader) error {
 		var err error

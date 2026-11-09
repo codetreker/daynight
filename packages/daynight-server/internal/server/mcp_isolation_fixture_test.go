@@ -102,11 +102,10 @@ func mcpIsolationSource(t *testing.T, tx *httpTestStore, p model.Principal, item
 		mcpAttachmentCheck(t, []string{pid, id}, []string{item.ProjectID, item.TaskID})
 		return store.TaskPresence{Found: true}, nil
 	}}
-	scope.Attachments = &mcpAttachmentDAO{t: t, AttachmentBoundedCall: func(ctx context.Context, pid, id, path string, max int) (model.Attachment, bool, error) {
+	scope.Attachments = &mcpAttachmentDAO{t: t, AttachmentCall: func(ctx context.Context, pid, id, path string) (model.Attachment, error) {
 		counts.Called("source metadata")
 		mcpAttachmentCheck(t, []string{pid, id, path}, []string{item.ProjectID, item.TaskID, item.Path})
-		mcpAttachmentCheck(t, max, 2048)
-		return item, false, nil
+		return item, nil
 	}}
 	tx.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
 		counts.Called("source snapshot")

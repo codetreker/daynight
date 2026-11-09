@@ -45,8 +45,9 @@ Authorization occurs once within the domain list snapshot, followed by the
 ordinary `Bots` page query and `scanBot` JSON decoding. Scope, deletion filtering,
 complete response fields and count-based cursors remain. SQL JSON emulators,
 read-byte guards and candidate measurement callbacks are absent. The shared MCP
-entry retains its independent result limits; they do not cause Bot candidate
-queries or byte-based page slicing.
+entry has no read-output schema or byte admission; input checks, deadlines and
+resource permits remain. The [ordinary resource-read decision](2026-11-09-canonical-resource-pages.md)
+records the final shared entry and other resource-list simplification.
 
 Bot clients preserve their existing aggregate transport budgets while allowing
 one count-based page to use the remaining budget. Worker Bot inventory reads
@@ -62,8 +63,8 @@ own these transport settings. They introduce no server read admission or quota.
 The [Worker design](../../../../docs/design/daynight-worker-snapshots.md) and
 [assistant design](../../../../docs/design/assistant.md#查询与授权) own these read
 paths. This partially supersedes the encoded response decision for Worker/Bot
-domain reads. Its other read budgets and Task write completion/admission
-mechanisms remain. The [Task canonical batch-read decision](2026-11-09-task-canonical-batch-reads.md)
+domain reads. Its Task write completion/admission mechanisms remain; the ordinary resource
+read decision supersedes the remaining read-budget portion. The [Task canonical batch-read decision](2026-11-09-task-canonical-batch-reads.md)
 applies the same write/read responsibility split to Task, property, sync, graph,
 search and Step reads. The [Bot fixture decision](../testing/2026-11-08-bot-projection-fixtures.md)
 preserves the former guard tests' rationale; the

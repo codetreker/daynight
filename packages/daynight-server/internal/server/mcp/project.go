@@ -5,8 +5,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
-	"io"
 	"net/url"
 	"regexp"
 	"strings"
@@ -25,7 +23,7 @@ var projectToolsJSON []byte
 type projectOperations interface {
 	RegisterRepository(context.Context, model.Principal, coreproject.CreateProject, bool) (model.Project, bool, error)
 	Get(context.Context, model.Principal, string) (model.Project, error)
-	ListAdmitted(context.Context, model.Principal, coreproject.ProjectListRequest, func([]model.Project, *string) error) (coreproject.ProjectPage, error)
+	ListScoped(context.Context, model.Principal, coreproject.ProjectListRequest) (coreproject.ProjectPage, error)
 	TransferPreview(context.Context, model.Principal, string, string) (coreproject.TransferPreview, error)
 	Transfer(context.Context, model.Principal, string, coreproject.TransferInput) (coreproject.TransferReceipt, error)
 }
@@ -72,10 +70,10 @@ func RegisterProjectTools(e *Entry, projects projectOperations, identity *identi
 	if err := RegisterTypedTool(e, byName["project_transfer"], BudgetControl, h.transfer, "projectId", "toTeam", "ifVersion"); err != nil {
 		return err
 	}
-	if err := RegisterTypedTool(e, byName["project_list"], BudgetLarge, h.list, "cursor"); err != nil {
+	if err := registerTypedReadTool(e, byName["project_list"], BudgetLarge, h.list, "cursor"); err != nil {
 		return err
 	}
-	return RegisterTypedTool(e, byName["project_show"], BudgetLarge, h.show, "projectId")
+	return registerTypedReadTool(e, byName["project_show"], BudgetLarge, h.show, "projectId")
 }
 
 func (h *projectTools) create(ctx context.Context, actor RequestActor, in projectCreateInput) (ToolResult, error) {
@@ -144,10 +142,7 @@ func (h *projectTools) list(ctx context.Context, actor RequestActor, in projectL
 		}
 		return out
 	}
-	page, err := h.projects.ListAdmitted(ctx, actor.Principal, coreproject.ProjectListRequest{Page: model.PageRequest{Limit: limit, Cursor: in.Cursor}}, func(items []model.Project, cursor *string) error {
-		_, err := measure.JSON(io.Discard, "project.page", coreproject.MaxPageResponseJSONBytes, envelope{Data: project(items, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
-		return err
-	})
+	page, err := h.projects.ListScoped(ctx, actor.Principal, coreproject.ProjectListRequest{Page: model.PageRequest{Limit: limit, Cursor: in.Cursor}})
 	if err != nil {
 		return ToolResult{}, err
 	}

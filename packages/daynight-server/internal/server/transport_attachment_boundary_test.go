@@ -136,7 +136,7 @@ func configureTransportAttachments(t *testing.T, database *httpTestStore, projec
 		list: func(_ context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
 			count("list")
 			ids(project, task)
-			check(query, store.AttachmentQuery{After: &path, Limit: 1, MaxPathBytes: attachmentcore.MaxMetadataPageResponseJSONBytes, MaxFieldBytes: attachmentcore.MaxMetadataPageResponseJSONBytes})
+			check(query, store.AttachmentQuery{After: &path, Limit: 1})
 			return store.AttachmentPage{Items: []model.Attachment{second}}, nil
 		},
 		conflict: func(_ context.Context, project, task string, query store.AttachmentConflictQuery) (bool, error) {

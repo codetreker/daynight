@@ -19,13 +19,12 @@ func mcpAttachmentCheck(t *testing.T, got, want any) {
 }
 
 type mcpAttachmentDAO struct {
-	t                     *testing.T
-	AttachmentCall        func(context.Context, string, string, string) (model.Attachment, error)
-	AttachmentBoundedCall func(context.Context, string, string, string, int) (model.Attachment, bool, error)
-	AttachmentsCall       func(context.Context, string, string, store.AttachmentQuery) (store.AttachmentPage, error)
-	ConflictCall          func(context.Context, string, string, store.AttachmentConflictQuery) (bool, error)
-	PutCall               func(context.Context, model.Attachment) (model.Attachment, bool, error)
-	DeleteCall            func(context.Context, string, string, string) error
+	t               *testing.T
+	AttachmentCall  func(context.Context, string, string, string) (model.Attachment, error)
+	AttachmentsCall func(context.Context, string, string, store.AttachmentQuery) (store.AttachmentPage, error)
+	ConflictCall    func(context.Context, string, string, store.AttachmentConflictQuery) (bool, error)
+	PutCall         func(context.Context, model.Attachment) (model.Attachment, bool, error)
+	DeleteCall      func(context.Context, string, string, string) error
 }
 
 func (d *mcpAttachmentDAO) Attachment(ctx context.Context, project, task, path string) (model.Attachment, error) {
@@ -33,12 +32,6 @@ func (d *mcpAttachmentDAO) Attachment(ctx context.Context, project, task, path s
 		unexpectedHTTPCall(d.t, "AttachmentDAO.Attachment")
 	}
 	return d.AttachmentCall(ctx, project, task, path)
-}
-func (d *mcpAttachmentDAO) AttachmentBounded(ctx context.Context, project, task, path string, max int) (model.Attachment, bool, error) {
-	if d.AttachmentBoundedCall == nil {
-		unexpectedHTTPCall(d.t, "AttachmentDAO.AttachmentBounded")
-	}
-	return d.AttachmentBoundedCall(ctx, project, task, path, max)
 }
 func (d *mcpAttachmentDAO) Attachments(ctx context.Context, project, task string, q store.AttachmentQuery) (store.AttachmentPage, error) {
 	if d.AttachmentsCall == nil {
@@ -317,13 +310,13 @@ func (d *mcpTransferDAO) Prune(ctx context.Context, at time.Time, limit int) (in
 	return d.PruneCall(ctx, at, limit)
 }
 
-func mcpAttachmentPage(t *testing.T, tx *httpTestStore, p model.Principal, project, task, after string, limit, maxPath, maxField int, result store.AttachmentPage) {
+func mcpAttachmentPage(t *testing.T, tx *httpTestStore, p model.Principal, project, task, after string, limit int, result store.AttachmentPage) {
 	t.Helper()
 	calls := newHTTPCallPlan(t, map[string]int{"page": 1})
 	mcpAttachmentRead(t, tx, p, project, task, &mcpAttachmentDAO{t: t, AttachmentsCall: func(ctx context.Context, pid, tid string, q store.AttachmentQuery) (store.AttachmentPage, error) {
 		calls.Called("page")
 		mcpAttachmentCheck(t, []string{pid, tid}, []string{project, task})
-		want := store.AttachmentQuery{Limit: limit, MaxPathBytes: maxPath, MaxFieldBytes: maxField}
+		want := store.AttachmentQuery{Limit: limit}
 		if after != "" {
 			want.After = &after
 		}

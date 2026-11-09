@@ -100,7 +100,7 @@ func TestDownloadAdmissionDoesNotMaterializeTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := newEntryFixture(t)
-	entry.entry.auth = downloadBoundedAuthenticator{principal}
+	entry.entry.auth = downloadAuthenticator{principal}
 	if err := RegisterDownloadTool(entry.entry, mcpdownload.New(attachments, lifecycle, files)); err != nil {
 		t.Fatal(err)
 	}
