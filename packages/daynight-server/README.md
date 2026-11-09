@@ -472,6 +472,14 @@ scoped cursors. Team, member, scoped Project, invitation and attachment pages
 use ordinary candidate batches and item-count continuation. Reads preserve full
 items without field-budget admission or repeated prefix encoding.
 
+`project_resolve` reads the unique accessible Project for a supplied repository
+address, returning its ID in `data.id`. Equivalent HTTPS, SSH and SCP addresses
+use the registration identity rules. No match returns `not_found`; multiple
+visible matches return `resource_conflict`. Invalid addresses and addresses over
+4096 UTF-8 bytes return `invalid_input`. The scan uses one read-only snapshot,
+does not create or bind a Project, and does not access local or remote Git.
+Later operations check access again.
+
 Task list excludes done tasks by default and orders in-progress, ready, blocked
 and done tasks before paging. Its cursor binds the caller, project, filters and
 view to a snapshot fence; `list_changed` requires restarting traversal when
