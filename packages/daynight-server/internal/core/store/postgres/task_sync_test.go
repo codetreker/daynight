@@ -5,7 +5,6 @@ import (
 	"errors"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,78 +18,6 @@ import (
 // Catalog predicates can be evaluated before schema filters. Resolve the
 // fixture-owned OID first so concurrent schema cleanup stays outside this check.
 const taskSyncIndexColumnsQuery = `SELECT pg_get_indexdef(format('%I.%I', current_schema(), 'tasks_project_updated_id')::regclass) LIKE '%(project_id, updated_at, id)%'`
-
-func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
-	s := isolatedStore(t)
-	ctx := context.Background()
-	project, other := queryProject(t, s, 1), queryProject(t, s, 2)
-	queryTask(t, s, other.ID, 19, model.TaskTodo)
-	a := queryTask(t, s, project.ID, 10, model.TaskDone)
-	b := queryTask(t, s, project.ID, 11, model.TaskInProgress, a.ID)
-	c := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID, b.ID)
-	stamp := time.Date(2026, 10, 24, 1, 2, 3, 123456000, time.UTC)
-	mustQueryExec(t, s, `UPDATE tasks SET created_at=$1, updated_at=$1, version=9007199254740993,
-		title=repeat('😀',161) WHERE project_id=$2`, stamp, project.ID)
-	mustQueryExec(t, s, "UPDATE tasks SET updated_at=$1, required_platform='linux', allow_agents=true WHERE id=$2", stamp.Add(time.Microsecond), c.ID)
-	mustQueryExec(t, s, "UPDATE task_dependencies SET external=true WHERE task_id=$1 AND depends_on_task_id=$2", c.ID, b.ID)
-	// Failing detail expressions prove that the summary reader never selects bodies.
-	mustQueryExec(t, s, `CREATE FUNCTION reject_sync_detail() RETURNS text LANGUAGE plpgsql STABLE AS $$
-		BEGIN RAISE EXCEPTION 'private details selected'; END $$;
-		ALTER TABLE tasks RENAME TO task_source;
-		CREATE VIEW tasks AS SELECT id, project_id, title, reject_sync_detail() AS description,
-		status, version, created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
-	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		all, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
-		if err != nil || len(all) != 3 || all[0].Version != 9007199254740993 || all[0].TitlePreview != strings.Repeat("😀", 160) || !all[0].TitleTruncated ||
-			all[0].RequiredPlatform != nil || all[2].RequiredPlatform == nil || *all[2].RequiredPlatform != model.TaskPlatform("linux") || !all[2].AllowAgents ||
-			!slices.Equal(all[2].DependsOn, []string{a.ID, b.ID}) || !slices.Equal(all[2].ExternalDependsOn, []string{b.ID}) {
-			t.Fatalf("intrinsic projection: %#v, %v", all, err)
-		}
-		for _, test := range []struct {
-			lower time.Time
-			count int
-		}{
-			{stamp, 3}, {stamp.Add(time.Nanosecond), 1}, {stamp.Add(999 * time.Nanosecond), 1},
-			{stamp.Add(time.Microsecond), 1}, {stamp.Add(time.Microsecond + time.Nanosecond), 0},
-		} {
-			got, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &test.lower, 160)
-			if err != nil || got == nil || len(got) != test.count {
-				t.Fatalf("lower %s: %#v, %v", test.lower.Format(time.RFC3339Nano), got, err)
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	mustQueryExec(t, s, "UPDATE task_source SET version=version+1 WHERE id=$1", b.ID)
-	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &stamp, 160)
-		if err != nil || len(tasks) != 3 || tasks[1].Version != 9007199254740994 || tasks[1].UpdatedAt != stamp {
-			t.Fatalf("same-timestamp higher version disappeared: %#v, %v", tasks, err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var future time.Time
-	if err := s.Pool.QueryRow(ctx, "SELECT clock_timestamp()+interval '1 hour'").Scan(&future); err != nil {
-		t.Fatal(err)
-	}
-	mustQueryExec(t, s, "UPDATE task_source SET updated_at=$2 WHERE id=$1", b.ID, future)
-	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		tasks, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &future, 160)
-		if err != nil {
-			return err
-		}
-		observedAt, err := snapshot.ObservedAt(ctx)
-		if err != nil || len(tasks) != 1 || tasks[0].ID != b.ID || !tasks[0].UpdatedAt.After(observedAt) {
-			t.Fatalf("snapshot clock became a query upper bound: %#v, observed %v, %v", tasks, observedAt, err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	database, _, reader, project := membershipFixture(t)
@@ -303,32 +230,7 @@ func TestTaskSyncIndexCheckStaysInFixtureSchema(t *testing.T) {
 	}
 }
 
-func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
-	for _, test := range []struct{ name, ddl string }{
-		{"query", "DROP TABLE tasks"},
-		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
-		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			s := isolatedStore(t)
-			project := queryProject(t, s, 1)
-			queryTask(t, s, project.ID, 11, model.TaskTodo)
-			mustQueryExec(t, s, test.ddl)
-			err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-				_, err := snapshot.TaskDAO().TaskSyncTasks(context.Background(), project.ID, nil, 160)
-				return err
-			})
-			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private") {
-				t.Fatalf("sync failure hidden or leaked: %v", err)
-			}
-			if test.name == "iteration" {
-				var pgErr *pgconn.PgError
-				if !errors.As(err, &pgErr) || pgErr.Code != "P1003" {
-					t.Fatalf("driver cause lost: %v", err)
-				}
-			}
-		})
-	}
+func TestTaskSyncSnapshotCannotEscapeCallback(t *testing.T) {
 	s := isolatedStore(t)
 	var expired SnapshotScope
 	if err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error { expired = snapshot; return nil }); err != nil {

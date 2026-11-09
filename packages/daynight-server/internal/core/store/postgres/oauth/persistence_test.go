@@ -95,6 +95,11 @@ func TestFamilyIssuanceAdmissionAndRevocation(t *testing.T) {
 	if !active {
 		t.Fatal("live grant missing from client references")
 	}
+	foreign, err := dao.ActiveClientReferences(ctx, "other", now)
+	check(t, err)
+	if foreign {
+		t.Fatal("foreign client acquired grant reference")
+	}
 	active, err = dao.ActiveClientReferences(ctx, issue.Grant.ClientID, issue.Grant.ExpiresAt)
 	check(t, err)
 	if active {
@@ -144,8 +149,10 @@ func TestFamilyRejectsInvalidIssueBeforePersistence(t *testing.T) {
 		{"short refresh hash", func(v *store.OAuthFamilyIssue) { v.RefreshHash = nil }},
 		{"nonpositive grant lifetime", func(v *store.OAuthFamilyIssue) { v.Grant.ExpiresAt = now }},
 		{"long grant lifetime", func(v *store.OAuthFamilyIssue) { v.Grant.ExpiresAt = now.Add(30*24*time.Hour + time.Microsecond) }},
+		{"31-day grant lifetime", func(v *store.OAuthFamilyIssue) { v.Grant.ExpiresAt = now.Add(31 * 24 * time.Hour) }},
 		{"nonpositive access lifetime", func(v *store.OAuthFamilyIssue) { v.AccessExpiresAt = now }},
 		{"long access lifetime", func(v *store.OAuthFamilyIssue) { v.AccessExpiresAt = now.Add(time.Hour + time.Microsecond) }},
+		{"two-hour access lifetime", func(v *store.OAuthFamilyIssue) { v.AccessExpiresAt = now.Add(2 * time.Hour) }},
 		{"access exceeds grant", func(v *store.OAuthFamilyIssue) { v.Grant.ExpiresAt = now.Add(time.Minute) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {

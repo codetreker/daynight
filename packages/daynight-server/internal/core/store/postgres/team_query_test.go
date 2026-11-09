@@ -9,69 +9,8 @@ import (
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
-
-func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) {
-	s, actor, first := storeTeamFixture(t)
-	ctx := context.Background()
-	_, other, _ := testAuthRecords(t, s)
-	if _, err := testCreateTeam(s, ctx, other.UserID, uuid.NewString(), "An invisible Team between visible rows"); err != nil {
-		t.Fatal(err)
-	}
-	second, err := testCreateTeam(s, ctx, actor.UserID, uuid.NewString(), "Same visible name")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const metadataVersion int64 = 9007199254740993
-	const memberVersion int64 = 9007199254740995
-	mustQueryExec(t, s, `UPDATE teams SET version=$2 WHERE id=$1`, first.ID, metadataVersion)
-	mustQueryExec(t, s, `UPDATE team_members SET version=$3 WHERE team_id=$1 AND user_id=$2`, first.ID, actor.UserID, memberVersion)
-	var ids []string
-	var page Page
-	page.Limit = 1
-	for {
-		var result TeamPage
-		if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-			var err error
-			result, err = snapshot.TeamDAO().Teams(ctx, actor.UserID, page)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if result.Items == nil || len(result.Items) != 1 {
-			t.Fatalf("membership-filtered page %#v", result)
-		}
-		team := result.Items[0]
-		if team.Membership.UserID != actor.UserID || team.Membership.TeamID != team.ID {
-			t.Fatalf("wrong actor membership %#v", team)
-		}
-		if team.ID == first.ID && (team.Version != metadataVersion || team.Membership.Version != memberVersion) {
-			t.Fatalf("rounded versions %#v", team)
-		}
-		if len(ids) == 0 && (team.Kind != "personal" || team.Name != nil || team.Membership.Role != model.ProjectAdmin) {
-			t.Fatalf("Personal projection %#v", team)
-		}
-		ids = append(ids, team.ID)
-		page.After = &Position{CreatedAt: team.CreatedAt, ID: team.ID}
-		if !result.HasMore {
-			break
-		}
-	}
-	if len(ids) != 3 || ids[1] != first.ID || ids[2] != second.ID {
-		t.Fatalf("joined list pagination/order %#v", ids)
-	}
-	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		last, err := snapshot.TeamDAO().Teams(ctx, actor.UserID, page)
-		if err == nil && (last.Items == nil || len(last.Items) != 0 || last.HasMore) {
-			t.Fatalf("empty final page %#v", last)
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 	s, actor, team := storeTeamFixture(t)
@@ -105,30 +44,6 @@ func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 	fresh := readStoreTeam(t, s, actor.UserID, team.ID)
 	if !reflect.DeepEqual(fresh, changed) || fresh.Version != team.Version+1 || *fresh.Name != "Changed after snapshot" {
 		t.Fatalf("fresh snapshot missed committed rename %#v", fresh)
-	}
-}
-
-func TestTeamSnapshotAbsenceAndCancellation(t *testing.T) {
-	s, actor, team := storeTeamFixture(t)
-	ctx := context.Background()
-	_, outsider, _ := testAuthRecords(t, s)
-	for _, target := range []struct{ userID, teamID string }{{outsider.UserID, team.ID}, {actor.UserID, uuid.NewString()}} {
-		err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-			_, err := snapshot.TeamDAO().Team(ctx, target.userID, target.teamID)
-			return err
-		})
-		if !errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("missing Team membership cause %v", err)
-		}
-	}
-	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		canceled, cancel := context.WithCancel(ctx)
-		cancel()
-		_, err := snapshot.TeamDAO().Teams(canceled, actor.UserID, Page{Limit: 1})
-		return err
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled list cause was lost %v", err)
 	}
 }
 

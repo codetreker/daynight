@@ -73,7 +73,7 @@ server 管理 HTTP listener、HTTP server 和请求的生命周期，并与模�
 
 ## 测试职责
 
-按被验证的职责选择 mock 边界，具体规则由 [测试编写规则](writing_tests.md) 维护。server、service 与 core 的单元测试不连接真实 PostgreSQL，也不为取得固定领域数据或 principal 启动完整应用与认证服务。
+按被验证的职责选择 mock 边界和测试目录，具体规则由 [测试编写规则](writing_tests.md) 维护。领域 DAO 的 SQL、映射、约束与锁测试随实际实现子包组织；实现根包保留自己拥有的连接、迁移、scope、事务完成、共享快照和跨 DAO 原子性证明。`core/store` 的数据库中立接口能力与纯函数合同测试直接构造输入，不依赖驱动。使用根包 fixture 或通过 scope 取得 DAO，本身不改变被测职责。server、service 与 core 的单元测试不连接真实 PostgreSQL，也不为取得固定领域数据或 principal 启动完整应用与认证服务。
 
 server 单元测试保留真实路由、HTTP 请求解析、响应编码、错误映射、协议认证接入与请求生命周期，mock 直接调用的 service 或业务用例。server 直接调用 core 操作时，仍在业务用例调用处隔离；仅 mock DAO 并继续执行真实 service/core，不能隔离 HTTP 适配职责。协议拒绝应验证业务用例未被调用；取消与 deadline 应验证 context 传递和操作退出；响应失败应验证日志与完成结果的表达、调用次数和无重复调用。
 
@@ -81,7 +81,7 @@ core 业务规则测试使用合成领域数据，通过所需 `core/store` DAO 
 
 Mock 只实现当前职责需要的能力，未配置或额外调用应立即使测试失败。事务 callback、拟写参数与 committed、not_committed、unknown 结果必须分开；mock 返回 committed 或记录过写入都不等于已经持久化。并发顺序只验证同一逻辑操作或明确 barrier 的关系，不要求所有 goroutine 使用全局 FIFO。后台未预期调用也必须独立标记测试失败并完成取消与 drain。不要 mock SQL 字符串或另建完整内存数据库来模拟 PostgreSQL。所属层单元测试应能在未设置 `DAYNIGHT_TEST_DATABASE_URL` 时实际执行；不得以跳过测试或默认空结果代替隔离。
 
-store 测试使用隔离真实 PostgreSQL，证明 SQL、约束、锁、快照、事务提交与回滚、结果未知、持久化读回和查询取消。跨操作的权限与版本重新检查分别保留规则层的决策证明，以及存储层真实读取、锁定与数据变化的证明；一次 mock 调用不能替代真实事务或跨调用持久化观察。
+DAO 实现测试使用隔离真实 PostgreSQL，证明 SQL、约束、锁、快照、事务提交与回滚、结果未知、持久化读回和查询取消。跨操作的权限与版本重新检查分别保留规则层的决策证明，以及存储层真实读取、锁定与数据变化的证明；一次 mock 调用不能替代真实事务或跨调用持久化观察。
 
 完整组装的正常 API 主流程归使用显式 `integration` build tag 的 `cmd/integration_tests`，通过 Go HTTP 客户端顺序驱动真实 Go Server 进程、认证接入、存储与 PostgreSQL。`scripts/integration.sh` 负责生产构建和该入口的执行，普通单元测试发现不隐式运行它。HTTP 单元测试保留协议边界，命令与运行器机制测试保留自己验证的真实进程、socket 或文件行为。将混合测试中的正常业务链路提取到 API 集成层时，边界、拒绝、冲突、故障、竞态与压力场景仍留在所属层；必须确认新入口实际运行并保全独有证明后，才能移除原位置的重复流程。
 

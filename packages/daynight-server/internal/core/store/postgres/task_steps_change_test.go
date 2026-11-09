@@ -5,48 +5,12 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-	"time"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
-
-func TestTaskStepsChangeStoreUpdatesOneExistingTarget(t *testing.T) {
-	database := isolatedStore(t)
-	ctx := context.Background()
-	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, model.TaskDone)
-	seedStoreStep(t, database, task.ID, "00000000", 0)
-	seedStoreStep(t, database, task.ID, "abcdef01", 1)
-	var before []model.TaskStep
-	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		var err error
-		before, err = snapshot.TaskDAO().TaskSteps(ctx, task.ID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	stamp := time.Date(2026, 11, 4, 3, 4, 5, 654321000, time.UTC)
-	target := before[0]
-	target.Title, target.Description, target.Status, target.UpdatedAt = "  Paired title  ", "# Paired body\n", model.TaskStepSkipped, stamp
-	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error { return tx.TaskDAO().UpdateTaskStep(ctx, task.ID, target) }); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		after, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID)
-		if err != nil {
-			return err
-		}
-		if len(after) != 2 || after[0] != target || after[1] != before[1] {
-			t.Fatal("narrow update changed identity, order, createdAt or other rows")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestTaskStepsChangeStoreFailuresKeepCausesAndRollback(t *testing.T) {
 	database := isolatedStore(t)

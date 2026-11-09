@@ -106,75 +106,6 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	}
 }
 
-// A reader must not expose a partial directory when decoding or streaming fails.
-type teamMembersFailureTx struct {
-	pgx.Tx
-	cause     error
-	scan      bool
-	failQuery bool
-}
-
-func (tx teamMembersFailureTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	if tx.failQuery {
-		return nil, tx.cause
-	}
-	rows, err := tx.Tx.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	return teamMembersFailureRows{Rows: rows, cause: tx.cause, scan: tx.scan}, nil
-}
-
-type teamMembersFailureRows struct {
-	pgx.Rows
-	cause error
-	scan  bool
-}
-
-func (rows teamMembersFailureRows) Scan(dest ...any) error {
-	if rows.scan {
-		return rows.cause
-	}
-	return rows.Rows.Scan(dest...)
-}
-func (rows teamMembersFailureRows) Err() error {
-	if err := rows.Rows.Err(); err != nil {
-		return err
-	}
-	if !rows.scan {
-		return rows.cause
-	}
-	return nil
-}
-
-func TestTeamMemberDirectoryFailuresDoNotPublishPartialResults(t *testing.T) {
-	s, _, team := storeTeamFixture(t)
-	ctx := context.Background()
-	for _, mode := range []string{"query", "scan", "stream"} {
-		cause := errors.New("directory stream failure")
-		err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-			snapshot.(*Snapshot).tx = teamMembersFailureTx{Tx: snapshot.(*Snapshot).tx, cause: cause, scan: mode == "scan", failQuery: mode == "query"}
-			items, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
-			if items != nil || !errors.Is(err, cause) {
-				t.Fatalf("partial directory %#v: %v", items, err)
-			}
-			return err
-		})
-		if !errors.Is(err, cause) {
-			t.Fatalf("failure chain lost: %v", err)
-		}
-	}
-	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		canceled, cancel := context.WithCancel(ctx)
-		cancel()
-		_, err := snapshot.TeamDAO().TeamMembers(canceled, team.ID)
-		return err
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled list: %v", err)
-	}
-}
-
 func TestTeamMemberMutationFailuresRollbackAndPreserveCauses(t *testing.T) {
 	for _, operation := range []string{"update", "delete"} {
 		t.Run(operation, func(t *testing.T) {
@@ -242,18 +173,5 @@ func TestTeamMemberCancellationAndUnknownCommit(t *testing.T) {
 	got := readStoreTeam(t, s, actor.UserID, team.ID)
 	if got.Membership.Role != model.ProjectMemberRole || got.Membership.Version <= team.Membership.Version {
 		t.Fatalf("actual committed membership: %#v", got.Membership)
-	}
-}
-
-func TestTeamMemberAdminCountCancellationPreservesCause(t *testing.T) {
-	s, _, team := storeTeamFixture(t)
-	err := testWriteTeam(s, context.Background(), team.ID, func(tx TeamWriteDAO) error {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		_, err := tx.AdminCount(ctx)
-		return err
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled admin count: %v", err)
 	}
 }

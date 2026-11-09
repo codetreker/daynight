@@ -882,13 +882,16 @@ source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task
 ```
 
-Existing PostgreSQL witnesses live in `internal/core/store/postgres` and use
-direct DAO and transaction scopes for physical query, locking, snapshot,
-partial-write rollback, Session and capture atomicity, and process-exit
-readback. Their test environment owns an isolated PostgreSQL instance and its
-cleanup. Store tests do not reproduce complete service flows. API integration
-and product E2E retain their normal-flow scope under the
-[test-writing rules](../../docs/writing_tests.md).
+PostgreSQL witnesses follow their implementation owners under
+`internal/core/store/postgres/`. Domain subpackages test direct DAO queries,
+mapping, constraints and locks. The root package tests its connection,
+migration, scope, transaction completion, shared snapshot and cross-DAO
+atomicity mechanisms, including partial-write rollback and process-exit
+readback. Pure database-independent contract tests live in `internal/core/store`;
+independent business rules use core or service mocks. The test environment owns
+an isolated PostgreSQL instance and its cleanup. Store tests do not reproduce
+complete service flows. API integration and product E2E retain their normal-flow
+scope under the [test-writing rules](../../docs/writing_tests.md).
 
 Step service tests retain the real 64 MiB codec boundary: 170 escaped descriptions
 fit, 171 exceed the collection limit, and both Add and Update refuse before any
@@ -1143,8 +1146,15 @@ migration change requires refreshing and verifying the snapshot.
 
 The PostgreSQL root test package shares only its management connection pool,
 closing it after all schema cleanups. Operational pools and schema namespaces
-remain fixture-owned. Selected error matrices reuse restored or read-only
-fixtures; [the preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
+remain fixture-owned. `internal/core/store/postgres/testdata/testutil` shares
+fixture creation and database observation through existing store contracts and
+explicit pools. Backend-opening factories remain in consuming test packages;
+external DAO tests pass `postgres.Open` to the shared factory helper. The shared
+helpers do not import the root implementation. Same-owner tests share
+these helpers and retain their independent transaction and cleanup conditions.
+The [ownership decision](../../.agents/notes/implemented/testing/2026-11-09-postgres-test-ownership.md)
+records directory and consolidation choices. Selected error matrices reuse
+restored or read-only fixtures; [the preparation decision](../../.agents/notes/implemented/testing/2026-11-08-postgres-test-preparation.md)
 records their isolation and expiry guarantees.
 
 Regenerate from a fresh historical schema with a PostgreSQL 18 `pg_dump` client:

@@ -13,19 +13,13 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func taskMutationValues(task model.Task) TaskWrite {
-	return TaskWrite{
-		AssignedTo: task.AssignedTo, RequiredPlatform: task.RequiredPlatform,
-		AllowAgents: task.AllowAgents, Title: task.Title, Description: task.Description,
-		Properties: task.Properties, Status: task.Status,
-		DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn,
-	}
-}
+func taskMutationValues(task model.Task) TaskWrite { return testutil.TaskWrite(task) }
 
 func taskMutationPR(t *testing.T, url, title string) model.TaskProperties {
 	t.Helper()
@@ -254,7 +248,7 @@ func TestTaskDeletionAndDependencyRemovalFailuresRollBackAllFacts(t *testing.T) 
 	}
 }
 
-func TestTaskDependencyWritesRetainExactCountsAndClassification(t *testing.T) {
+func TestTaskDependencyReadScopeRefusalPreservesFacts(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
@@ -270,13 +264,6 @@ func TestTaskDependencyWritesRetainExactCountsAndClassification(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatal(err)
-	}
-	var stored, external []string
-	if err := database.Pool.QueryRow(ctx, `SELECT ARRAY(SELECT depends_on_task_id::text FROM task_dependencies WHERE task_id=$1 ORDER BY depends_on_task_id),ARRAY(SELECT depends_on_task_id::text FROM task_dependencies WHERE task_id=$1 AND external ORDER BY depends_on_task_id)`, target.ID).Scan(&stored, &external); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(stored, ids[:15]) || !slices.Equal(external, ids[:2]) || target.Ready {
-		t.Fatalf("fifteen stored edges lost order/classification: %#v %#v %#v", stored, external, target)
 	}
 	before := taskMutationProjectFacts(t, database, project.ID)
 	rejected := errors.New("reject candidate before dependency SQL")
@@ -493,58 +480,36 @@ func TestTaskAssignmentTargetQueryFailureKeepsSafeDriverCause(t *testing.T) {
 	}
 }
 
-func TestTaskReadAndWriteDatabaseFailures(t *testing.T) {
-	for _, table := range []string{"tasks", "projects"} {
-		t.Run(table, func(t *testing.T) {
-			database := isolatedStore(t)
-			ctx := context.Background()
-			project := queryProject(t, database, 1)
-			target := queryTask(t, database, project.ID, 11, model.TaskTodo)
-			mustQueryExec(t, database, "DROP TABLE "+table)
-			operations := []func() error{
-				func() error {
-					return database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
-						if _, err := scope.ProjectDAO().Project(ctx, project.ID); err != nil {
-							return err
-						}
-						_, err := scope.TaskDAO().Task(ctx, project.ID, target.ID)
-						return err
-					})
-				},
-				func() error {
-					return database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
-						if _, err := scope.ProjectDAO().Project(ctx, project.ID); err != nil {
-							return err
-						}
-						_, err := scope.TaskDAO().Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
-						return err
-					})
-				},
-				func() error {
-					return writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-						_, err := scope.TaskDAO().CreateTask(ctx, queryID(12), TaskWrite{Title: "New", Status: model.TaskTodo})
-						return err
-					})
-				},
-				func() error {
-					return writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-						values := taskMutationValues(target)
-						values.Title = "Changed"
-						_, err := scope.TaskDAO().UpdateTask(ctx, target.ID, values)
-						return err
-					})
-				},
-			}
-			for _, operation := range operations {
-				err := operation()
-				var cause *pgconn.PgError
-				if !errors.As(err, &cause) || cause.Code != "42P01" {
-					t.Fatalf("missing Task/Project relation lost its driver cause: %v", err)
-				}
-			}
-		})
-	}
+func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T) {
 	database := isolatedStore(t)
+	ctx := t.Context()
+	project := queryProject(t, database, 1)
+	target := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	mustQueryExec(t, database, "DROP TABLE projects")
+	operations := []func() error{
+		func() error {
+			return writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
+				_, err := scope.TaskDAO().CreateTask(ctx, queryID(12), TaskWrite{Title: "New", Status: model.TaskTodo})
+				return err
+			})
+		},
+		func() error {
+			return writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
+				values := taskMutationValues(target)
+				values.Title = "Changed"
+				_, err := scope.TaskDAO().UpdateTask(ctx, target.ID, values)
+				return err
+			})
+		},
+	}
+	for _, operation := range operations {
+		err := operation()
+		var cause *pgconn.PgError
+		if !errors.As(err, &cause) || cause.Code != "42P01" {
+			t.Fatalf("missing Project relation lost its driver cause: %v", err)
+		}
+	}
+	database = isolatedStore(t)
 	database.Close()
 	if err := database.ReadSnapshot(context.Background(), func(SnapshotScope) error { t.Error("closed pool entered snapshot callback"); return nil }); err == nil {
 		t.Fatal("closed snapshot pool hid failure")
@@ -613,38 +578,6 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 				t.Fatalf("decision reads mutated their prerequisite: %#v", after)
 			}
 		})
-	}
-}
-
-func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
-	database := isolatedStore(t)
-	ctx := context.Background()
-	project := queryProject(t, database, 1)
-	owner := storeAssigneeUser(t, database, project.ID, 51, true)
-	claim := workerWitnessClaim(11, owner, queryID(52), model.WorkerCompleted)
-	target := workerWitnessTask(t, database, project.ID, 11, claim, true, nil)
-	var before, after string
-	readHistory := func() string {
-		t.Helper()
-		var history string
-		if err := database.Pool.QueryRow(ctx, `SELECT jsonb_build_object('task',to_jsonb(t)-ARRAY['updated_at','version','deleted_at'],
-			'properties',(SELECT jsonb_object_agg(name,value) FROM task_properties WHERE task_id=t.id))::text FROM tasks t WHERE id=$1`, target.ID).Scan(&history); err != nil {
-			t.Fatal(err)
-		}
-		return history
-	}
-	before = readHistory()
-	var tombstone model.TaskTombstone
-	if err := writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-		var err error
-		tombstone, err = scope.TaskDAO().DeleteTask(ctx, target.ID, false)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	after = readHistory()
-	if before != after || tombstone.Version != target.Version+1 || tombstone.DeletedAt.Before(target.UpdatedAt) {
-		t.Fatalf("soft deletion lost completed worker/material history: %s -> %s, %#v", before, after, tombstone)
 	}
 }
 

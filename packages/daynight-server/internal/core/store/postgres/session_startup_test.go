@@ -119,23 +119,6 @@ func TestSessionStartupFenceRejectsForeignAndStaleIdentity(t *testing.T) {
 	if matched, err := check(ctx, updatedWorker, report); err != nil || !matched || !reflect.DeepEqual(snapshotTask(t, db, project.ID, target.ID), persisted) {
 		t.Fatalf("read-only startup replay changed Task facts: %t %v", matched, err)
 	}
-	for name, mutate := range map[string]func(*model.WorkerClaim, *sp.StartupReport){
-		"old generation":   func(_ *model.WorkerClaim, r *sp.StartupReport) { r.ExecutionGeneration = "1" },
-		"foreign session":  func(_ *model.WorkerClaim, r *sp.StartupReport) { r.SessionID = uuid.NewString() },
-		"old claim":        func(_ *model.WorkerClaim, r *sp.StartupReport) { r.ClaimID = uuid.NewString() },
-		"foreign instance": func(_ *model.WorkerClaim, r *sp.StartupReport) { r.ControllerInstanceID = uuid.NewString() },
-		"foreign owner":    func(w *model.WorkerClaim, _ *sp.StartupReport) { w.UserID = uuid.NewString() },
-		"foreign worker":   func(w *model.WorkerClaim, _ *sp.StartupReport) { w.WorkerID = uuid.NewString() },
-		"foreign worktree": func(w *model.WorkerClaim, _ *sp.StartupReport) { w.WorktreeID = uuid.NewString() },
-	} {
-		t.Run(name, func(t *testing.T) {
-			w, r := updatedWorker, report
-			mutate(&w, &r)
-			if matched, err := check(ctx, w, r); err != nil || matched {
-				t.Fatalf("identity mismatch accepted: %t %v", matched, err)
-			}
-		})
-	}
 	run := func(work func() error) <-chan error {
 		result := make(chan error, 1)
 		done := make(chan struct{})
@@ -299,13 +282,8 @@ func TestSessionStartupFenceRejectsForeignAndStaleIdentity(t *testing.T) {
 	currentReport := newer
 	currentReport.ExecutionGeneration, currentReport.ControllerInstanceID = "4", generationFourInstance
 	if matched, err := check(ctx, updatedWorker, currentReport); err != nil || !matched {
-		t.Fatalf("current identity was not valid before archiving: %t %v", matched, err)
+		t.Fatalf("current identity after generation grants: %t %v", matched, err)
 	}
-	mustQueryExec(t, db, `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{lifecycle}','"archived"') WHERE id=$1`, report.SessionID)
-	if matched, err := check(ctx, updatedWorker, currentReport); err != nil || matched {
-		t.Fatalf("archived session accepted: %t %v", matched, err)
-	}
-	mustQueryExec(t, db, `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{lifecycle}','"active"') WHERE id=$1`, report.SessionID)
 	fresh := updatedWorker
 	fresh.ClaimID, fresh.WorktreeID, fresh.Phase = uuid.NewString(), uuid.NewString(), model.WorkerPreparing
 	completion, err = db.WriteProject(ctx, project.ID, func(scope ProjectWriteScope) error {
@@ -327,10 +305,6 @@ func TestSessionStartupFenceRejectsForeignAndStaleIdentity(t *testing.T) {
 	}
 	if matched, err := check(ctx, fresh, currentReport); err != nil || matched {
 		t.Fatalf("fresh claim matched historical Session: %t %v", matched, err)
-	}
-	mustQueryExec(t, db, `UPDATE task_sessions SET snapshot='[]' WHERE id=$1`, report.SessionID)
-	if _, err := check(ctx, updatedWorker, currentReport); err == nil {
-		t.Fatal("corrupt persisted identity accepted")
 	}
 	canceled, cancelCheck := context.WithCancel(ctx)
 	cancelCheck()

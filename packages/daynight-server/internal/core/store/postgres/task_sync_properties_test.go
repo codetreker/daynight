@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -85,9 +84,6 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQueries(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if tracer.taskQueries != 1 || tracer.propertyQueries != 1 {
-		t.Fatalf("properties were not loaded in one batch: task=%d properties=%d", tracer.taskQueries, tracer.propertyQueries)
-	}
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil {
@@ -99,77 +95,5 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQueries(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-	future := task.UpdatedAt.AddDate(100, 0, 0)
-	if err := traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &future, 160)
-		if err != nil || actual == nil || len(actual) != 0 {
-			t.Fatalf("empty window changed: %#v %v", actual, err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if tracer.taskQueries != 2 || tracer.propertyQueries != 1 {
-		t.Fatalf("empty window queried properties: task=%d properties=%d", tracer.taskQueries, tracer.propertyQueries)
-	}
-}
-
-func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	queryTask(t, database, project.ID, 10, model.TaskTodo)
-	mustQueryExec(t, database, `DROP TABLE task_properties`)
-	err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-		actual, err := snapshot.TaskDAO().TaskSyncTasks(context.Background(), project.ID, nil, 160)
-		if actual != nil {
-			t.Fatalf("property query failure returned tasks: %#v", actual)
-		}
-		return err
-	})
-	var invalid *taskproperties.ValidationError
-	if err == nil || errors.As(err, &invalid) {
-		t.Fatalf("database failure became a property refusal: %v", err)
-	}
-}
-
-type cancelPropertyBatchTracer struct {
-	cancel  context.CancelFunc
-	queries int
-}
-
-func (tracer *cancelPropertyBatchTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "FROM task_properties") {
-		tracer.queries++
-		tracer.cancel()
-	}
-	return ctx
-}
-func (*cancelPropertyBatchTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func TestTaskSyncPropertyBatchReadHonorsCancellation(t *testing.T) {
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	item := queryTask(t, database, project.ID, 10, model.TaskTodo)
-	mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, item.ID, `[{"url":"https://example.com/pr/1","title":"Change"}]`)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	tracer := &cancelPropertyBatchTracer{cancel: cancel}
-	config := database.Pool.Config()
-	config.ConnConfig.Tracer = tracer
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	traced := &Store{Pool: pool}
-	var result []model.TaskViewRecord
-	err = traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		var e error
-		result, e = snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
-		return e
-	})
-	if !errors.Is(err, context.Canceled) || len(result) != 0 || tracer.queries != 1 {
-		t.Fatalf("result=%d queries=%d error=%v", len(result), tracer.queries, err)
 	}
 }
