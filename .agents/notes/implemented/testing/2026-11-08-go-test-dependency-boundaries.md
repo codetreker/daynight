@@ -83,10 +83,19 @@ actual encoder, and surviving input/write capacity checks stay with their owner.
 Canonical reads do not restore response-byte admission. The
 [bounded Raw JSON decision](2026-11-08-bounded-raw-json-batching.md)
 owns capped output spans and the shared Writer's byte/error contracts, without
-changing each consumer's actual encoded boundary. The real 15-second Step socket body-timeout
-proof remains intact: an earlier socket deadline without changing the stored
-body deadline would alter cancellation/error classification. Capacity workloads
-use their separate `stress` fixture and entry point.
+changing each consumer's actual encoded boundary.
+
+The Step handler constructor initializes its body-read duration to the shared
+15-second production default. All Step write routes pass that instance duration
+through the shared JSON decoder to the actual body reader. The socket regression
+checks the constructed default before selecting 200 milliseconds for its own
+handler. It retains real TCP timeout delivery, `408 request_timeout`, request ID,
+connection closure, handler completion, zero Add calls and the `not_committed`
+log outcome. The body reader applies the same duration to its stored deadline
+and the socket; changing only the socket deadline can alter cancellation/error
+classification. The [Prompt socket decision](2026-11-09-prompt-socket-test-timeout.md)
+records the shared decoder's explicit duration entry. Capacity workloads use
+their separate `stress` fixture and entry point.
 
 `scripts/integration.sh` builds the production Server and runs explicitly tagged
 `cmd/integration_tests` through Go HTTP clients, real authentication and isolated
@@ -123,6 +132,12 @@ establish a normal API flow. SQL lock cancellation, lost commit receipts and
 runtime recovery need their real mechanisms and failure/concurrency conditions;
 a normal-flow suite cannot replace them.
 
+**Keep the production-sized Step timeout in the socket test.** It repeats the
+same transport and no-business-call proof with a longer fixed wait. Shortening
+only a socket or request-context deadline risks changing error classification;
+the instance duration instead reaches the production body reader's logical and
+socket deadlines together.
+
 ## Consequences
 
 Task HTTP tests obtain controlled feedback without repeating a business or
@@ -136,7 +151,10 @@ Database isolation and direct operation isolation are separate properties.
 Changing a mock boundary requires preserving each lower rule and mechanism in
 its actual owner before removing the original assertion.
 
-The real socket timeout and exact encoded boundaries remain meaningful costs.
-Performance comparisons must include receiving store/API suites and complete
-validation. Source-bound test, profile and CI artifacts own observed results;
-package speed alone does not establish faster complete validation or hosted CI.
+Socket timeout expiration and exact encoded boundaries retain their real
+mechanisms. The Step timeout interval is selected per handler, avoiding shared
+mutable timing and preserving production defaults without a fixed 15-second
+wait in the regression. Performance comparisons must include receiving store/API
+suites and complete validation. Source-bound test, profile and CI artifacts own
+observed results; package speed alone does not establish faster complete
+validation or hosted CI.

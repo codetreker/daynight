@@ -1055,9 +1055,13 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 
 A mock committed or unknown result describes the supplied service outcome;
 actual SQL, locks, snapshot consistency, commit acknowledgement and persistence
-belong to store tests with isolated PostgreSQL. The real 15-second Step socket
-read-timeout proof remains in the regular HTTP suite. Capacity workloads retain
-their full fixture only behind the separate `stress` build tag.
+belong to store tests with isolated PostgreSQL. The regular HTTP suite retains
+the real Step socket read-timeout proof. It checks the constructed 15-second
+production default, then selects 200 milliseconds for that handler instance
+through the same JSON decoder and body reader. The test verifies the timeout
+response, request ID, connection closure, handler completion, zero Step calls
+and `not_committed` log outcome. Capacity workloads retain their full fixture
+only behind the separate `stress` build tag.
 
 Project settings and encoded-budget validation, Attachment input validation and
 invalid login scopes use input-only fixtures. Existing fixture-based domain
