@@ -41,14 +41,15 @@ func workerReportOperations() reportOperations {
 }
 
 type Workers struct {
-	report     reportOperations
-	store      workerStore
-	prompts    store.PromptSnapshotReader
-	monitoring store.MonitoringStore
+	putConfiguration func(context.Context, store.WorkerWriteDAO, model.Principal, string, int64, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+	report           reportOperations
+	store            workerStore
+	prompts          store.PromptSnapshotReader
+	monitoring       store.MonitoringStore
 }
 
 func NewWorkers(database workerStore) *Workers {
-	return &Workers{store: database, report: workerReportOperations()}
+	return &Workers{store: database, report: workerReportOperations(), putConfiguration: workercore.PutConfiguration}
 }
 
 func NewWorkersWithPrompts(database workerStore, prompts store.PromptSnapshotReader) *Workers {
