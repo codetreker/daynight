@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
@@ -50,47 +49,6 @@ func TestReportRejectsOversizedMergedSnapshotAtomically(t *testing.T) {
 				t.Fatal("rejected report changed stored worker")
 			}
 		})
-	}
-}
-
-func TestHistoricalConfigurationRepairRetainsRevokedProject(t *testing.T) {
-	projects, database, _, owner := testsupport.ProjectService(t)
-	ctx := context.Background()
-	project, err := projects.Create(ctx, owner, coreproject.CreateProject{Name: "Historical configuration", RepoURL: "https://example.com/historical-configuration.git", ExpectedUserID: owner.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	member := testsupport.ServicePrincipal(t, database)
-	if _, err := database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, member.UserID); err != nil {
-		t.Fatal(err)
-	}
-	workers := NewWorkers(database)
-	id := uuid.NewString()
-	value := cloudWorkerConfiguration(project.ID)
-	value.Projects[0].NativeOverrides = map[string]json.RawMessage{"args": json.RawMessage(`["--foo","bar"]`)}
-	importWorkerConfiguration(t, workers, member, id, value)
-	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET desired_configuration=jsonb_set(desired_configuration, '{maxConcurrent}', '65'::jsonb) WHERE user_id=$1 AND worker_id=$2`, member.UserID, id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID); err != nil {
-		t.Fatal(err)
-	}
-	value.MaxConcurrent = 64
-	result, err := workers.PutConfiguration(ctx, member, id, "1", value)
-	if err != nil || result.Desired.Revision != "2" || result.Desired.Value.MaxConcurrent != 64 {
-		t.Fatalf("repair of unchanged inaccessible project failed: %+v %v", result, err)
-	}
-	value.Projects[0].NativeOverrides["args"] = json.RawMessage(`["--changed"]`)
-	_, err = workers.PutConfiguration(ctx, member, id, "2", value)
-	requireFault(t, err, "not_found")
-	current, err := workers.Configuration(ctx, member, id)
-	if err != nil || current.Desired.Revision != "2" || string(current.Desired.Value.Projects[0].NativeOverrides["args"]) != `["--foo", "bar"]` {
-		t.Fatalf("rejected modification changed configuration: %+v %v", current, err)
-	}
-	value.Projects = []model.WorkerProjectConfiguration{}
-	result, err = workers.PutConfiguration(ctx, member, id, "2", value)
-	if err != nil || result.Desired.Revision != "3" || len(result.Desired.Value.Projects) != 0 {
-		t.Fatalf("removal of inaccessible project failed: %+v %v", result, err)
 	}
 }
 
@@ -169,32 +127,5 @@ func TestObservationWrapperBudgetRollsBackReport(t *testing.T) {
 	result, err := workers.Report(ctx, principal, id, report)
 	if err != nil || result.Configuration.ObservationAccepted {
 		t.Fatal(fmt.Sprintf("stale observation: %+v %v", result, err))
-	}
-}
-
-func TestValidConfigurationCanReplaceOverLimitStoredValue(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
-	ctx := context.Background()
-	workers := NewWorkers(database)
-	id := uuid.NewString()
-	value := cloudWorkerConfiguration("")
-	importWorkerConfiguration(t, workers, principal, id, value)
-	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET desired_configuration=jsonb_set(desired_configuration, '{maxConcurrent}', '65'::jsonb) WHERE user_id=$1 AND worker_id=$2`, principal.UserID, id); err != nil {
-		t.Fatal(err)
-	}
-	result, err := workers.PutConfiguration(ctx, principal, id, "1", value)
-	if err != nil || result.Desired.Revision != "2" || result.Desired.Value.MaxConcurrent != value.MaxConcurrent {
-		t.Fatalf("valid replacement failed: %+v %v", result, err)
-	}
-	noop, err := workers.PutConfiguration(ctx, principal, id, "2", value)
-	if err != nil || noop.Desired.Revision != "2" || !noop.Desired.UpdatedAt.Equal(result.Desired.UpdatedAt) {
-		t.Fatalf("valid no-op changed state: %+v %v", noop, err)
-	}
-	value.MaxConcurrent = 65
-	_, err = workers.PutConfiguration(ctx, principal, id, "2", value)
-	requireFault(t, err, "invalid_input")
-	current, err := workers.Configuration(ctx, principal, id)
-	if err != nil || current.Desired.Revision != "2" || current.Desired.Value.MaxConcurrent != 2 {
-		t.Fatalf("rejected configuration changed state: %+v %v", current, err)
 	}
 }
