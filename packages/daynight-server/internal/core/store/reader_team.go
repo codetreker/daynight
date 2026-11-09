@@ -9,8 +9,6 @@ import (
 
 type TeamReader interface {
 	Team(context.Context, string, string) (model.Team, error)
-	TeamBounded(context.Context, string, string, int) (model.Team, bool, error)
-	TeamsBounded(context.Context, string, Page, int) (TeamPage, error)
 	TeamAccess(context.Context, string, string) error
 	Teams(context.Context, string, Page) (TeamPage, error)
 	TeamMembers(context.Context, string) ([]model.TeamMemberProfile, error)

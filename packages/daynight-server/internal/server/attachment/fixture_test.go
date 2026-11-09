@@ -15,7 +15,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
-	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -209,31 +208,14 @@ func (f *attachmentFixture) expectRead(task api.Task, path string, item model.At
 func (f *attachmentFixture) expectList(task api.Task, query store.AttachmentQuery, page store.AttachmentPage, err error) {
 	f.begin()
 	f.snapshot(task, nil, store.TaskPresence{Found: true})
-	count := len(page.Items)
-	if count == 0 || err != nil {
-		count = 1
-	}
-	f.require("attachments", count)
-	index := 0
+	f.require("attachments", 1)
 	f.dao.attachmentsFn = func(_ context.Context, p, id string, actual store.AttachmentQuery) (store.AttachmentPage, error) {
 		f.called("attachments")
 		f.checkIDs(task, p, id)
-		expected := store.AttachmentQuery{Limit: 1, After: query.After, MaxPathBytes: attachmentcore.MaxMetadataPageResponseJSONBytes, MaxFieldBytes: attachmentcore.MaxMetadataPageResponseJSONBytes}
-		if index > 0 {
-			expected.After = &page.Items[index-1].Path
+		if !reflect.DeepEqual(actual, query) {
+			f.t.Errorf("Attachments query=%+v want%+v", actual, query)
 		}
-		if !reflect.DeepEqual(actual, expected) {
-			f.t.Errorf("Attachments query=%+v want%+v", actual, expected)
-		}
-		if err != nil {
-			return store.AttachmentPage{}, err
-		}
-		if len(page.Items) == 0 {
-			return store.AttachmentPage{Items: []model.Attachment{}}, nil
-		}
-		row := store.AttachmentPage{Items: []model.Attachment{page.Items[index]}, HasMore: index < len(page.Items)-1 || page.HasMore}
-		index++
-		return row, nil
+		return page, err
 	}
 }
 func (f *attachmentFixture) conflict(task api.Task, path string, value bool, err error) {

@@ -51,7 +51,7 @@ Authentication middleware executes real HTTP authentication parsing and uses con
 
 Preserve server-owned request deadlines, cancellation propagation, short or lost responses, cancellation before body handling, background-operation exit and cleanup. Observe that the mock operation has started, or establish that fact with a barrier, before cancellation or deadline delivery. Necessary socket and ResponseWriter behavior uses real mechanisms. Mock `committed`, `not_committed` and `unknown` values are supplied lower outcomes, not proof of a real commit, rollback or persistence. Server tests still verify logs and business-call counts after response failure.
 
-Exact HTTP input and server-owned response envelopes, newlines and encoded page capacities must pass through the real parser or encoder. When service supplies an encoded Document/JSON result, server tests verify transmitted bytes, headers, short writes and cancellation; the producing service or pure protocol package verifies byte generation and admission. Graph node/edge limits, domain-field admission and other business capacities belong to their rule owners. Store tests verify actual query and storage capacity mechanisms.
+Exact HTTP input and server-owned response envelopes and newlines must pass through the real parser or encoder. Applicable input and write-response byte limits use the same production parser or encoder. When service supplies an encoded Document/JSON result, server tests verify transmitted bytes, headers, short writes and cancellation; the producing service or pure protocol package verifies byte generation and any applicable write admission. Ordinary resource pages preserve complete count-selected fields and cursor semantics without read-field revalidation or response-byte admission. Successful MCP reads use ordinary encoding without runtime output-schema or result-byte admission. Domain input and write capacities remain with their rule owners; store tests verify the actual query and storage mechanisms.
 
 ### Go service and core
 
@@ -81,7 +81,7 @@ These Go tests do not install or execute CLI, or run Web tests. Preparing produc
 
 ## Go API Integration Tests
 
-Go Server API integration tests live in `packages/daynight-server/cmd/integration_tests/`, use the explicit `integration` build tag, and run through `scripts/integration.sh` after a production Server build. They are Go module validation, separate from ordinary unit discovery and independent product E2E. The server README and development guide own executable commands, production-resource preparation and cleanup.
+Go Server API integration tests live in `packages/daynight-server/cmd/integration_tests/`, use the explicit `integration` build tag, and run through `scripts/integration.sh` after a production Server build. An independent API integration CI job executes them separately from Go unit/coverage jobs, ordinary unit discovery and independent product E2E. The server README and development guide own executable commands, production-resource preparation and cleanup.
 
 Start a real Go Server process, PostgreSQL instance and attachment storage in an isolated environment. Drive the service through Go HTTP clients and assert public responses and observable results. Requests must pass through real routing, authentication, service assembly, DAO and persistence. Do not replace DAO or product API behavior with mocks, or use CLI/browser drivers. Production Web resources are a Server build dependency; these tests do not drive Web interactions.
 

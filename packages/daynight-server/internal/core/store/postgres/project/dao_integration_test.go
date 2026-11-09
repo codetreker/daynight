@@ -253,16 +253,7 @@ func TestProjectPaginationScopesAndBudgets(t *testing.T) {
 			}
 		}
 	}
-	page, err := r.ScopedProjects(ctx, principal(f.member), store.ProjectScope{Kind: store.ProjectScopeAll, MaxItemBytes: 20}, store.Page{Limit: 10})
-	if err != nil || len(page.Items) != 1 || !page.HasMore {
-		t.Fatalf("bounded page = %+v, %v", page, err)
-	}
-	_, err = r.ScopedProjects(ctx, principal(f.member), store.ProjectScope{Kind: store.ProjectScopeAll, MaxItemBytes: 1}, store.Page{Limit: 10})
-	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != "payload_too_large" {
-		t.Fatalf("oversized = %v", err)
-	}
-	for _, scope := range []store.ProjectScope{{Kind: store.ProjectScopeAll, MaxItemBytes: -1}, {Kind: store.ProjectScopeAll, MaxItemBytes: 128<<20 + 1}, {Kind: store.ProjectScopeAll, TeamID: f.team}, {Kind: store.ProjectScopeShared, TeamID: f.team}, {Kind: store.ProjectScopeTeam}, {Kind: "unknown"}, {Kind: store.ProjectScopeTeam, TeamID: f.personal}} {
+	for _, scope := range []store.ProjectScope{{Kind: store.ProjectScopeAll, TeamID: f.team}, {Kind: store.ProjectScopeShared, TeamID: f.team}, {Kind: store.ProjectScopeTeam}, {Kind: "unknown"}, {Kind: store.ProjectScopeTeam, TeamID: f.personal}} {
 		_, err := r.ScopedProjects(ctx, principal(f.member), scope, store.Page{Limit: 10})
 		if err == nil {
 			t.Fatalf("invalid scope accepted: %+v", scope)

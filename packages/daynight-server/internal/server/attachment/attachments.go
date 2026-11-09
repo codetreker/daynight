@@ -31,7 +31,7 @@ type attachmentHandler struct {
 }
 
 type attachmentOperations struct {
-	ListREST    func(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error)
+	List        func(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error)
 	PutRetained func(context.Context, model.Principal, string, string, string, string, io.Reader) (model.Attachment, bool, io.Closer, error)
 	Delete      func(context.Context, model.Principal, string, string, string) error
 	Open        func(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
@@ -45,7 +45,7 @@ func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachmen
 func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *slog.Logger) *attachmentHandler {
 	return &attachmentHandler{
 		attachments: attachmentOperations{
-			ListREST: attachments.ListREST, PutRetained: attachments.PutRetained,
+			List: attachments.List, PutRetained: attachments.PutRetained,
 			Delete: attachments.Delete, Open: attachments.Open,
 		},
 		logger: logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout,
@@ -88,7 +88,7 @@ func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, p
 		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return
 	}
-	page, err := h.attachments.ListREST(request.Context(), principal, projectID, taskID, input)
+	page, err := h.attachments.List(request.Context(), principal, projectID, taskID, input)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return

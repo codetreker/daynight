@@ -23,13 +23,15 @@ failed admission retains the control permit until the error is delivered.
 Existing transfer status and cancellation retain control capacity when content
 operations are saturated.
 
-Inspection returns metadata by default; bounded explicit reads default to 8 KiB.
-Text ranges stop at UTF-8 boundaries and binary data requires explicit base64.
-Task admission reads only presence, and metadata is projected with a MIME byte
-limit before it is materialized; default results also have an encoded byte
-budget. Oversized MIME or paths return an explicit error instead of being
-silently truncated. The original attachment is not altered, but MCP does not
-provide complete reads for those exceptional metadata values.
+Inspection returns complete metadata by default; requested content reads default
+to 8 KiB. Text ranges stop at UTF-8 boundaries and binary data requires explicit
+base64. Task authorization reads only presence. Stored metadata is read through
+the ordinary opener without MIME or encoded-result admission; input path and
+range rules remain I/O responsibilities. The
+[ordinary resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md)
+removes the earlier metadata projection and result-byte guards. At the original
+decision, exceptionally long stored MIME or paths received a refusal without
+changing the attachment; that historical read requirement is superseded.
 The [attachment design](../../../../docs/design/daynight-task-attachments.md#mcp-私有传输内容)
 owns the current interface and lifecycle.
 
@@ -41,10 +43,11 @@ versions even if each individual read is authorized and internally consistent.
 **Keep an open file handle in memory.** It cannot survive a server restart or
 route later requests to another instance, and has no durable capacity owner.
 
-**Add a separate MIME streaming protocol.** It would retrieve exceptionally
-large legacy metadata, but requires another durable snapshot and expanded tool
-inputs. Bounded MIME values are returned without an additional protocol;
-exceptional values receive a clear refusal without changing the stored attachment.
+**Add a separate MIME streaming protocol at the original decision.** This
+would have retrieved exceptionally large historical metadata but required another
+durable snapshot and expanded tool inputs. The original read guard returned
+bounded MIME and refused exceptional values without changing the attachment.
+Ordinary metadata reads now make that separate protocol unnecessary.
 
 ## Consequences
 

@@ -12,8 +12,10 @@ a confirmed submission receipt.
 
 The MCP discussion tools call the shared TaskThreads service and return its
 complete encoded messages and pages. The service retains its transaction-scoped
-credential and Project authorization checks, byte limits, ordering and reply
-validation. Thread write errors retain the store’s completion fact separately
+credential and Project authorization checks, message write-byte limits, ordering
+and reply validation. Reads preserve count pages and complete natural encoding
+without stored-field or page-byte admission, as recorded in the
+[ordinary resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md). Thread write errors retain the store’s completion fact separately
 from cleanup errors so the adapter can report a confirmed rollback. Agent attribution requires an explicit claim ID. A successful post
 returns its confirmed message ID; an unknown outcome retains available references
 and advises reading the thread without automatically repeating the submission.
@@ -29,6 +31,6 @@ submission; another participant or an earlier post may have produced it.
 
 ## Consequences
 
-Clients receive complete messages within the existing message and page capacity
-rules. Clients must retain their draft and decide explicitly how to proceed after
+Clients receive complete messages in count-selected pages; message write
+capacity remains independently enforced. Clients must retain their draft and decide explicitly how to proceed after
 an unknown result; reading current messages cannot recover a lost receipt.

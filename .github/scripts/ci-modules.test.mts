@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { detectModules, pullRequestPaths, selectModules, type ModuleSelection } from "./ci-modules.mts";
 
-const none: ModuleSelection = { cli: false, server: false, web: false, e2e: false };
-const all: ModuleSelection = { cli: true, server: true, web: true, e2e: true };
+const none: ModuleSelection = { cli: false, server: false, api: false, web: false, e2e: false };
+const all: ModuleSelection = { cli: true, server: true, api: true, web: true, e2e: true };
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 for (const [path, expected] of [
@@ -37,14 +37,14 @@ for (const [path, expected] of [
   ["packages/daynight/scripts/clean-dist.ts", { ...none, cli: true, e2e: true }],
   ["packages/daynight/scripts/copy-resources.ts", { ...none, cli: true, e2e: true }],
   ["packages/daynight/scripts/check-runtime.mjs", { ...none, cli: true }],
-  ["packages/daynight-web/scripts/publish-assets.mts", { ...none, web: true, e2e: true }],
+  ["packages/daynight-web/scripts/publish-assets.mts", { ...none, api: true, web: true, e2e: true }],
   ["packages/daynight-web/scripts/ci.mts", { ...none, web: true }],
-  ["packages/daynight-web/vite.config.ts", { ...none, web: true, e2e: true }],
-  ["packages/daynight-web/public/favicon.svg", { ...none, web: true, e2e: true }],
-  ["packages/daynight-web/package.json", { ...none, web: true, e2e: true }],
-  ["packages/daynight-web/index.html", { ...none, web: true, e2e: true }],
-  ["packages/daynight-web/tsconfig.json", { ...none, web: true, e2e: true }],
-  ["packages/daynight-web/tsconfig.build.json", { ...none, web: true, e2e: true }],
+  ["packages/daynight-web/vite.config.ts", { ...none, api: true, web: true, e2e: true }],
+  ["packages/daynight-web/public/favicon.svg", { ...none, api: true, web: true, e2e: true }],
+  ["packages/daynight-web/package.json", { ...none, api: true, web: true, e2e: true }],
+  ["packages/daynight-web/index.html", { ...none, api: true, web: true, e2e: true }],
+  ["packages/daynight-web/tsconfig.json", { ...none, api: true, web: true, e2e: true }],
+  ["packages/daynight-web/tsconfig.build.json", { ...none, api: true, web: true, e2e: true }],
   ["packages/daynight-web/tests/task-status.test.tsx", { ...none, web: true }],
   ["packages/daynight-web/scripts/coverage.mts", { ...none, web: true }],
   ["packages/daynight-web/scripts/acceptance/task-search.mts", { ...none, web: true }],
@@ -52,20 +52,24 @@ for (const [path, expected] of [
   ["packages/daynight/test/session/fixtures/snapshot.json", { ...none, cli: true }],
   ["packages/daynight/test/tooling/copy-resources.test.ts", { ...none, cli: true }],
   ["packages/daynight/test/fixtures/installed-cli.ts", { ...none, cli: true }],
-  ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true, e2e: true }],
-  ["packages/daynight-server/cmd/daynight-server/main.go", { ...none, server: true, e2e: true }],
-  ["packages/daynight-server/api/v1/model.go", { ...none, server: true, e2e: true }],
-  ["packages/daynight-server/internal/core/store/postgres/migrations/001.sql", { ...none, server: true, e2e: true }],
-  ["packages/daynight-server/go.mod", { ...none, server: true, e2e: true }],
-  ["packages/daynight-server/go.sum", { ...none, server: true, e2e: true }],
-  ["packages/daynight-server/internal/server/tasks_test.go", { ...none, server: true }],
-  ["packages/daynight-server/internal/server/testdata/response.json", { ...none, server: true }],
-  ["packages/daynight-server/cmd/integration_tests/flow_test.go", { ...none, server: true }],
-  ["packages/daynight-server/testdata/uniauth-fixture/main.go", { ...none, server: true }],
-  ["packages/daynight-server/scripts/check.sh", { ...none, server: true }],
-  ["packages/daynight-server/.go-cov.toml", { ...none, server: true }],
-  ["packages/daynight-server/.gitignore", { ...none, server: true }],
-  ["packages/daynight-web/src/App.vue", { ...none, web: true, e2e: true }],
+  ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true, api: true, e2e: true }],
+  ["packages/daynight-server/cmd/daynight-server/main.go", { ...none, server: true, api: true, e2e: true }],
+  ["packages/daynight-server/api/v1/model.go", { ...none, server: true, api: true, e2e: true }],
+  ["packages/daynight-server/internal/core/store/postgres/migrations/001.sql", { ...none, server: true, api: true, e2e: true }],
+  ["packages/daynight-server/go.mod", { ...none, server: true, api: true, e2e: true }],
+  ["packages/daynight-server/go.sum", { ...none, server: true, api: true, e2e: true }],
+  ["packages/daynight-server/internal/server/tasks_test.go", { ...none, server: true, api: true }],
+  ["packages/daynight-server/internal/server/testdata/response.json", { ...none, server: true, api: true }],
+  ["packages/daynight-server/cmd/integration_tests/flow_test.go", { ...none, server: true, api: true }],
+  ["packages/daynight-server/testdata/uniauth-fixture/main.go", { ...none, server: true, api: true }],
+  ["packages/daynight-server/scripts/check.sh", { ...none, server: true, api: true }],
+  ["packages/daynight-server/scripts/integration.sh", { ...none, server: true, api: true }],
+  ["packages/daynight-server/scripts/integration-runtime.mts", { ...none, server: true, api: true }],
+  ["packages/daynight-server/scripts/integration-runtime.test.mts", { ...none, server: true, api: true }],
+  ["packages/daynight-server/scripts/prepare-uniauth-fixture.mts", { ...none, server: true, api: true }],
+  ["packages/daynight-server/.go-cov.toml", { ...none, server: true, api: true }],
+  ["packages/daynight-server/.gitignore", { ...none, server: true, api: true }],
+  ["packages/daynight-web/src/App.vue", { ...none, api: true, web: true, e2e: true }],
   ["packages/daynight-web/.gitignore", { ...none, web: true }],
   ["packages/e2e_tests/src/run.ts", { ...none, e2e: true }],
   ["packages/e2e_tests/src/provider.ts", { ...none, e2e: true }],
@@ -77,8 +81,8 @@ for (const [path, expected] of [
   ["packages/e2e_tests/Dockerfile.runtime", { ...none, e2e: true }],
   ["deployment/localhost/Dockerfile", { ...none, web: true }],
   ["deployment/dev-ci/tests/run.sh", { ...none, web: true }],
-  ["patches/@dagrejs__dagre@3.1.1.patch", { ...none, cli: true, web: true, e2e: true }],
-  ["patches/@xyflow__system@0.0.83.patch", { ...none, cli: true, web: true, e2e: true }],
+  ["patches/@dagrejs__dagre@3.1.1.patch", { ...none, cli: true, api: true, web: true, e2e: true }],
+  ["patches/@xyflow__system@0.0.83.patch", { ...none, cli: true, api: true, web: true, e2e: true }],
   ["README.md", none],
   [".gitignore", none],
   ["packages/daynight/README.md", none],
@@ -94,11 +98,11 @@ for (const [path, expected] of [
   [".agents/skills/beads/agents/openai.yaml", none],
   [".claude/settings.json", none],
   [".github/workflows/publish.yml", none],
-  ["package.json", { ...none, cli: true, web: true, e2e: true }],
-  ["pnpm-lock.yaml", { ...none, cli: true, web: true, e2e: true }],
-  ["pnpm-workspace.yaml", { ...none, cli: true, web: true, e2e: true }],
-  [".npmrc", { ...none, cli: true, web: true, e2e: true }],
-  ["patches/future-cli-dependency.patch", { ...none, cli: true, web: true, e2e: true }],
+  ["package.json", { ...none, cli: true, api: true, web: true, e2e: true }],
+  ["pnpm-lock.yaml", { ...none, cli: true, api: true, web: true, e2e: true }],
+  ["pnpm-workspace.yaml", { ...none, cli: true, api: true, web: true, e2e: true }],
+  [".npmrc", { ...none, cli: true, api: true, web: true, e2e: true }],
+  ["patches/future-cli-dependency.patch", { ...none, cli: true, api: true, web: true, e2e: true }],
   ["packages/future-module/src/main.ts", all],
   [".github/workflows/checks.yml", all],
   [".github/workflows/future.yml", all],
@@ -123,8 +127,8 @@ test("CLI production implementations also select product E2E while fixtures rema
 });
 
 test("combines module ownership without making documentation select a module", () => {
-  assert.deepEqual(selectModules(["docs/spec/daynight-web.md", "packages/daynight/src/main.ts", "packages/daynight-web/package.json"]), { ...none, cli: true, web: true, e2e: true });
-  assert.deepEqual(selectModules(["packages/daynight-server/internal/server/tasks.go", "packages/daynight-web/src/App.tsx"]), { ...none, server: true, web: true, e2e: true });
+  assert.deepEqual(selectModules(["docs/spec/daynight-web.md", "packages/daynight/src/main.ts", "packages/daynight-web/package.json"]), { ...none, cli: true, api: true, web: true, e2e: true });
+  assert.deepEqual(selectModules(["packages/daynight-server/internal/server/tasks.go", "packages/daynight-web/src/App.tsx"]), { ...none, server: true, api: true, web: true, e2e: true });
   assert.deepEqual(selectModules(["packages/daynight/test/session/fixtures/snapshot.json", "packages/daynight-server/internal/server/session/terminal.go", "packages/daynight-web/src/App.tsx"]), all);
   assert.deepEqual(selectModules([]), none);
 });
@@ -132,7 +136,7 @@ test("combines module ownership without making documentation select a module", (
 test("Node workspace inputs and patches combine with Go changes in either order", () => {
   const server = "packages/daynight-server/internal/server/tasks.go";
   for (const path of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", "patches/future-dependency.patch"]) {
-    assert.deepEqual(selectModules([path]), { ...none, cli: true, web: true, e2e: true });
+    assert.deepEqual(selectModules([path]), { ...none, cli: true, api: true, web: true, e2e: true });
     assert.deepEqual(selectModules([path, server]), all);
     assert.deepEqual(selectModules([server, path]), all);
   }
@@ -218,7 +222,7 @@ test("a server test-only PR does not select product E2E", async (t) => {
   repo.write("packages/daynight-server/internal/server/tasks_test.go", "package fixture\n");
   repo.write("packages/daynight-server/internal/server/testdata/response.json", "{}\n");
   const head = repo.commit();
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, server: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, server: true, api: true });
 });
 
 
@@ -267,7 +271,7 @@ test("retains deleted module paths", async (t) => {
   const base = repo.commit();
   rmSync(join(repo.cwd, "packages/daynight-server/deleted.go"));
   const head = repo.commit();
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, server: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, server: true, api: true });
 });
 
 test("retains whitespace, newlines, unicode, and leading dashes in Git paths", async (t) => {
@@ -276,7 +280,7 @@ test("retains whitespace, newlines, unicode, and leading dashes in Git paths", a
   for (const path of paths) repo.write(path);
   const head = repo.commit();
   assert.deepEqual(new Set(await pullRequestPaths(repo.cwd, repo.base, head)), new Set(paths));
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, web: true, e2e: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, api: true, web: true, e2e: true });
 });
 
 test("reads the complete change list beyond API file limits", async (t) => {
@@ -286,7 +290,7 @@ test("reads the complete change list beyond API file limits", async (t) => {
   const head = repo.commit();
   const paths = await pullRequestPaths(repo.cwd, repo.base, head);
   assert.equal(paths.length, 3_101);
-  assert.deepEqual(selectModules(paths), { ...none, server: true });
+  assert.deepEqual(selectModules(paths), { ...none, server: true, api: true });
 });
 
 const cliManifestPath = "packages/daynight/package.json";
@@ -313,8 +317,8 @@ for (const [path, expected] of [
   ["packages/daynight/README.md", { ...none, cli: true, e2e: true }],
   ["packages/daynight/src/commands/worker/runtime.ts", { ...none, cli: true, e2e: true }],
   ["packages/daynight/src/main.ts", { ...none, cli: true, e2e: true }],
-  ["packages/daynight-web/src/App.vue", { ...none, cli: true, web: true, e2e: true }],
-  ["pnpm-lock.yaml", { ...none, cli: true, web: true, e2e: true }],
+  ["packages/daynight-web/src/App.vue", { ...none, cli: true, api: true, web: true, e2e: true }],
+  ["pnpm-lock.yaml", { ...none, cli: true, api: true, web: true, e2e: true }],
   [".github/workflows/checks.yml", all],
 ] as const) {
   test(`version plus ${path} retains ordinary module checks`, async (t) => {
@@ -413,7 +417,7 @@ test("version-only manifest refinement preserves server selection from other cha
   repo.write("packages/daynight-server/internal/server/tasks.go");
   repo.write("packages/daynight/src/commands/worker/prompts.ts");
   const head = repo.commit();
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true, e2e: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true, api: true, e2e: true });
 });
 
 test("version-only skipping uses merge base and PR head rather than the target or checked-out tree", async (t) => {
@@ -488,8 +492,8 @@ test("rejects unknown events, malformed SHAs, and unavailable commits", async (t
 });
 
 for (const [path, expected] of [
-  ["packages/daynight-server/server.go", "cli=false\nserver=true\nweb=false\ne2e=false\n"],
-  ["packages/e2e_tests/src/run.ts", "cli=false\nserver=false\nweb=false\ne2e=true\n"],
+  ["packages/daynight-server/server.go", "cli=false\nserver=true\napi=true\nweb=false\ne2e=false\n"],
+  ["packages/e2e_tests/src/run.ts", "cli=false\nserver=false\napi=false\nweb=false\ne2e=true\n"],
 ] as const) {
   test(`command entry point writes the complete GitHub selection for ${path}`, async (t) => {
     const repo = repository(t);

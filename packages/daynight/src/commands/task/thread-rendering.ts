@@ -1,10 +1,5 @@
-import { ProtocolError } from "../../api/validation.js";
 import type { ThreadMessage, ThreadPage } from "../../api/types.js";
 import { terminalText } from "../../platform/terminal.js";
-
-export const THREAD_OUTPUT_BYTES = 262_144;
-export const MIN_THREAD_WIRE_FIXED_BYTES = 183;
-export const MAX_THREAD_RENDER_FIXED_BYTES = 473;
 
 const separator = "------------------------------";
 const betweenMessages = `\n\n${separator}\n\n`;
@@ -64,24 +59,9 @@ export const renderThreadPage = (
     check?.();
     return block;
   });
-  const prefixBytes = [0];
-  for (const block of blocks) prefixBytes.push(prefixBytes[prefixBytes.length - 1]! + Buffer.byteLength(block, "utf8"));
-  for (let count = blocks.length; count > 0; count--) {
-    check?.();
-    const start = direction === "after" ? 0 : blocks.length - count;
-    const end = start + count;
-    const before = page.hasMoreBefore || start > 0;
-    const after = page.hasMoreAfter || end < blocks.length;
-    const size = prefixBytes[end]! - prefixBytes[start]!
-      + (count - 1) * Buffer.byteLength(betweenMessages, "utf8")
-      + Buffer.byteLength(composePage([""], before, after), "utf8");
-    if (size > THREAD_OUTPUT_BYTES) continue;
-    const output = composePage(blocks.slice(start, end), before, after);
-    if (Buffer.byteLength(output, "utf8") !== size) throw new ProtocolError("The thread output byte calculation is inconsistent.");
-    check?.();
-    return output;
-  }
-  throw new ProtocolError("A complete thread message exceeds the terminal output byte limit.");
+  const output = composePage(blocks, page.hasMoreBefore, page.hasMoreAfter);
+  check?.();
+  return output;
 };
 
 export const renderThreadPostReceipt = (message: ThreadMessage): string =>

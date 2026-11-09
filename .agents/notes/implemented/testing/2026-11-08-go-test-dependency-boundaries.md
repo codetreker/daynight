@@ -56,8 +56,9 @@ transaction persisted or rolled back. HTTP cancellation propagation is distinct
 from releasing an actual SQL query and connection.
 
 Step and Thread services supply encoded documents; HTTP tests verify those
-bytes, headers, write failures and cancellation. Server-owned envelopes and
-budgets still use the actual encoder. The
+bytes, headers, write failures and cancellation. Server-owned envelopes use the
+actual encoder, and surviving input/write capacity checks stay with their owner.
+Canonical reads do not restore response-byte admission. The
 [bounded Raw JSON decision](2026-11-08-bounded-raw-json-batching.md)
 owns capped output spans and the shared Writer's byte/error contracts, without
 changing each consumer's actual encoded boundary. The real 15-second Step socket body-timeout
@@ -72,7 +73,12 @@ use distinct resources. Mixed scenarios are assigned to protocol, business,
 store or runtime owners; boundary, response-loss, concurrency and stress matrices
 are not copied into API integration. Receiver discovery and execution plus
 independent proof preservation are required before duplicate normal flows are
-removed.
+removed. The
+[independent API integration decision](2026-11-09-independent-go-api-integration.md)
+owns its CI scheduling and production build inputs. The runner's Linux process
+and cleanup failure tests run as a required step of the independent Linux API
+job, keeping those proofs outside the normal API-flow suite and the portable Go
+module check.
 
 ## Alternatives
 

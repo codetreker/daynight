@@ -391,12 +391,14 @@ release validation, existing-version skips and artifact verification.
 
 The [`checks` workflow](.github/workflows/checks.yml) selects PR jobs from all
 changed paths, including deletions and both sides of renames. Module jobs follow
-module ownership. The independent product E2E job follows the framework and its
-actual production build inputs. Mixed changes select the union of their jobs.
+module ownership. The independent Go API integration job follows server inputs
+and the production Web build inputs used by its Server binary. The independent
+product E2E job follows the framework and its actual production build inputs.
+Mixed changes select the union of their jobs.
 The [selector](.github/scripts/ci-modules.mts) owns exact path rules; the
 [development guide](docs/development.md#ci-selection) owns execution details.
-Main pushes select every module and product E2E. Each selected job runs its ordinary event checkout and
-its checked-in tests. Validation does not compose remote test PRs or require
+Main pushes select every module, Go API integration and product E2E. Each
+selected job runs its ordinary event checkout and its checked-in tests. Validation does not compose remote test PRs or require
 pairing receipts; the [checkout-source decision](.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
 preserves the source boundary and normal gates.
 
@@ -404,29 +406,35 @@ preserves the source boundary and normal gates.
 |---|---|
 | CLI production source, manifest, build configuration and resources | CLI and product E2E |
 | CLI tests and other CLI/installer test tooling | CLI |
-| Go production source, embedded data and module dependencies | Go and product E2E |
-| Go tests, fixtures and validation tooling | Go |
-| Web production source, resources and build inputs | Web and product E2E |
+| Go production source, embedded data and module dependencies | Go, Go API integration and product E2E |
+| Go tests, fixtures and validation tooling | Go and Go API integration |
+| Web production source, resources and build inputs | Web, Go API integration and product E2E |
 | Web tests, other Web validation tooling and `deployment/` | Web |
 | `packages/e2e_tests/` code, fixtures, scenarios and configuration | Product E2E |
-| Root `package.json`, lockfile, workspace configuration, `.npmrc`, and `patches/` | CLI, Web and product E2E |
+| Root `package.json`, lockfile, workspace configuration, `.npmrc`, and `patches/` | CLI, Web, Go API integration and product E2E |
 | Root `.gitignore`, documentation, repository instructions and manual publication workflow | None |
-| CI workflow, routing and unclassified paths | Every module and product E2E |
+| CI workflow, routing and unclassified paths | Every module, Go API integration and product E2E |
 
 Documentation exclusions apply inside module and framework directories. Bundled
 CLI source Markdown retains validation because it is a production resource. The
 strict CLI manifest version-only exception still selects no application jobs.
 The [module routing decision](.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
-records module ownership; the [product E2E decision](.agents/notes/implemented/testing/2026-11-08-self-contained-product-e2e.md)
-records the independent integration boundary.
+records module ownership; the
+[API integration decision](.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
+records its separate scheduling and build inputs, and the
+[product E2E decision](.agents/notes/implemented/testing/2026-11-08-self-contained-product-e2e.md)
+records the complete product runtime.
 
 CLI has ordinary and installed phases on Linux, Windows and macOS ARM64, a Node
-runtime matrix and shell-completion checks. Go owns its module job. Web owns
-independent quality and frontend browser jobs. Product E2E owns an independent
-Linux job that builds and runs the complete system with its own database and
-auth. Final `checks` reject failures and cancellations and explicitly require
-selected Web and product E2E jobs to succeed. A newer PR run cancels its older
-run; main runs queue without cancelling an active run.
+runtime matrix and shell-completion checks. Go module validation owns its
+ordinary tools and coverage. Go API integration owns an independent Linux job
+that checks its Linux runtime tools, prepares production Web resources and runs
+the real Server with its own database and auth. Web owns independent quality and frontend browser jobs.
+Product E2E owns an independent Linux job that builds and runs the complete
+system with its own database and auth. Final `checks` reject failures and
+cancellations and explicitly require selected API, Web and product E2E jobs to
+succeed. A newer PR run cancels its older run; main runs queue without cancelling
+an active run.
 
 ## Validation
 

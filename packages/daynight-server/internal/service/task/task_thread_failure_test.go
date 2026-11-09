@@ -16,7 +16,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 
-	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 )
 
@@ -388,17 +387,13 @@ func TestThreadReadCancellationAndServiceDeadlineAreBounded(t *testing.T) {
 	}
 }
 
-func TestThreadReadDatabaseFailureAndOversizeInvariantAreVisible(t *testing.T) {
-	oversize := model.ThreadMessage{ID: uuid.NewString(), Body: strings.Repeat("x", taskcodec.PageLimit+1)}
-	if _, err := threadcore.SelectPage(t.Context(), []model.ThreadMessage{oversize}, 1, false, false); err == nil {
-		t.Fatal("oversize stored message silently skipped")
-	}
+func TestThreadReadDatabaseFailureAndCancellationAreVisible(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := threadcore.AdmitMessage(ctx, model.ThreadMessage{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("admission cancellation lost: %v", err)
 	}
-	if _, err := threadcore.SelectPage(ctx, []model.ThreadMessage{{ID: "id"}}, 1, false, false); !errors.Is(err, context.Canceled) {
+	if _, err := threadcore.SelectPage(ctx, []model.ThreadMessage{{ID: "id"}}, 1, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("selection cancellation lost: %v", err)
 	}
 	for _, cause := range []error{errors.New("thread query failed"), errors.New("thread store closed")} {

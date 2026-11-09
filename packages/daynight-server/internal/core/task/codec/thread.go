@@ -33,10 +33,7 @@ type ThreadPage struct {
 	HasMoreAfter  bool            `json:"hasMoreAfter"`
 }
 
-const (
-	MessageLimit = 64 * 1024
-	PageLimit    = 256 * 1024
-)
+const MessageLimit = 64 * 1024
 
 func messageDTO(message model.ThreadMessage, details bool) ThreadMessage {
 	result := ThreadMessage{

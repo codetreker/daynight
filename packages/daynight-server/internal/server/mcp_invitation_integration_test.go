@@ -271,85 +271,27 @@ func TestMCPInvitationWorkflow(t *testing.T) {
 	for i := range rows {
 		rows[i] = model.TeamInvitation{ID: fmt.Sprintf("%08x-aaaa-4aaa-8aaa-aaaaaaaaaaaa", i+1), TeamID: team.ID, CreatedBy: admin.UserID, CreatedAt: team.CreatedAt.Add(time.Duration(i) * time.Second), ExpiresAt: consumedAt.Add(24 * time.Hour)}
 	}
-	seen = map[string]bool{}
-	cursor = nil
-	pages, offset := 0, 0
-	for offset < len(rows) {
-		start := offset
-		readCalls, pageCalls := 0, 0
-		var observed time.Time
-		tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-			readCalls++
-			if readCalls != 1 {
-				unexpectedHTTPCall(t, "Invitation budget snapshot")
-			}
-			dao := mcpOrgTeamReader{t: t, TeamCall: func(ctx context.Context, user, id string) (model.Team, error) {
-				projectHTTPCheck(t, []string{user, id}, []string{admin.UserID, team.ID})
-				return team, nil
-			}, TeamInvitationPageCall: func(ctx context.Context, id string, now time.Time, page store.Page) (store.TeamInvitationPage, error) {
-				idx := start + pageCalls
-				if idx >= len(rows) {
-					unexpectedHTTPCall(t, "Invitation budget extra read")
-				}
-				projectHTTPCheck(t, id, team.ID)
-				want := store.Page{Limit: 1}
-				if idx > 0 {
-					want.After = &store.Position{CreatedAt: rows[idx-1].CreatedAt, ID: rows[idx-1].ID}
-				}
-				projectHTTPCheck(t, page, want)
-				if pageCalls == 0 {
-					observed = now
-				} else {
-					projectHTTPCheck(t, now, observed)
-				}
-				pageCalls++
-				return store.TeamInvitationPage{Items: []model.TeamInvitation{rows[idx]}, HasMore: idx < len(rows)-1}, nil
-			}}
-			scope := newHTTPTestSnapshot(t)
-			scope.Teams = dao
-			return op(scope)
+	read, query := mcpOrgCount(t, 1), mcpOrgCount(t, 1)
+	mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamCall: func(ctx context.Context, user, id string) (model.Team, error) {
+		read()
+		projectHTTPCheck(t, []string{user, id}, []string{admin.UserID, team.ID})
+		return team, nil
+	}, TeamInvitationPageCall: func(ctx context.Context, id string, now time.Time, page store.Page) (store.TeamInvitationPage, error) {
+		query()
+		projectHTTPCheck(t, id, team.ID)
+		projectHTTPCheck(t, page, store.Page{Limit: 100})
+		if now.IsZero() || now.Location() != time.UTC {
+			unexpectedHTTPCall(t, "Team invitation page time")
 		}
-		pageArgs := map[string]any{"team": team.ID, "limit": 100}
-		if cursor != nil {
-			pageArgs["cursor"] = cursor
-		}
-		page := callInvitationTool(t, clients[0], "team_invitation_list", pageArgs, false)
-		encoded, _ := json.Marshal(page)
-		if len(encoded) > 16<<10 {
-			t.Fatal("invitation page exceeds output budget")
-		}
-		items, ok := page["items"].([]any)
-		if !ok || len(items) == 0 {
-			t.Fatal("empty invitation page")
-		}
-		for i, value := range items {
-			item := value.(map[string]any)
-			id := item["id"].(string)
-			if seen[id] {
-				t.Fatal("repeated invitation across byte-budget pages")
-			}
-			projectHTTPCheck(t, id, rows[start+i].ID)
-			seen[id] = true
-		}
-		offset += len(items)
-		pages++
-		cursor = page["nextCursor"]
-		wantReads := len(items)
-		if cursor != nil {
-			wantReads++
-		}
-		if readCalls != 1 || pageCalls != wantReads {
-			t.Fatalf("budget page DAO calls: snapshot=%d page=%d want=%d", readCalls, pageCalls, wantReads)
-		}
-		if cursor == nil {
-			break
-		}
-		if pages > 100 {
-			t.Fatal("pagination did not terminate")
-		}
+		return store.TeamInvitationPage{Items: rows}, nil
+	}})
+	page := callInvitationTool(t, clients[0], "team_invitation_list", map[string]any{"team": team.ID, "limit": 100}, false)
+	items, ok := page["items"].([]any)
+	if !ok || len(items) != len(rows) || page["nextCursor"] != nil {
+		t.Fatalf("complete invitation page: %+v", page)
 	}
-	if len(seen) != 100 || pages < 2 {
-		t.Fatalf("byte-budget pagination returned %d items over %d pages", len(seen), pages)
+	for i, value := range items {
+		projectHTTPCheck(t, value.(map[string]any)["id"], rows[i].ID)
 	}
 
 	project := projectHTTPRecord("a7777777-7777-4777-8777-777777777777", "Invite Project", "https://example.test/owner/repo.git", "b8888888-8888-4888-8888-888888888888")

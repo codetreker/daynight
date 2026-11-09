@@ -10,11 +10,11 @@ export const rejectThreadResponse = async (response: Response): Promise<never> =
   throw error;
 };
 
-export const readThreadJsonSource = async (response: Response, signal: AbortSignal, limit: number): Promise<string> => {
+export const readThreadJsonSource = async (response: Response, signal: AbortSignal, limit?: number): Promise<string> => {
   const type = response.headers.get('Content-Type');
   if (type === null || !/^application\/json(?:\s*;|\s*$)/i.test(type)) return rejectThreadResponse(response);
   const length = response.headers.get('Content-Length');
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > limit)) return rejectThreadResponse(response);
+  if (length !== null && (!/^\d+$/.test(length) || limit !== undefined && Number(length) > limit)) return rejectThreadResponse(response);
   if (response.body === null) throw new ApiError('protocol', response.status);
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -32,7 +32,7 @@ export const readThreadJsonSource = async (response: Response, signal: AbortSign
       signal.throwIfAborted();
       if (item.done) break;
       bytes += item.value.byteLength;
-      if (bytes > limit) {
+      if (limit !== undefined && bytes > limit) {
         await reader.cancel();
         throw new ApiError('protocol', response.status);
       }
@@ -53,4 +53,4 @@ export const readThreadJsonSource = async (response: Response, signal: AbortSign
   }
 };
 
-export const decodeThreadError = (source: string): unknown => decodeThreadJsonSource(source, 'error');
+export const decodeThreadError = (source: string): unknown => decodeThreadJsonSource(source);

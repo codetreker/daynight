@@ -18,8 +18,10 @@ required collaborator boundary.
 
 ## Decision
 
-MCP tests execute the actual authenticated Entry, HTTP parser, SDK, tool schemas,
-response envelopes and resource budgets. Consumer-owned operation contracts
+MCP tests execute the actual authenticated Entry, HTTP parser, SDK, advertised
+tool schemas, response envelopes and resource permits. Inputs and writes retain
+their encoded boundaries; successful reads use ordinary canonical output without
+read-schema or byte admission. Consumer-owned operation contracts
 accept the existing production services directly. Tests configure operation
 results, errors and completion facts and verify principals, authority, context,
 addresses, inputs and call counts. They do not model Task persistence or execute
@@ -36,9 +38,14 @@ service tests exercise the actual admission encoder, including exact and excess
 byte boundaries. Store tests retain physical rollback and committed readback.
 An operation mock's response is never treated as evidence of persistence.
 
-Team protocol tests execute the envelope-size callback supplied to the service.
-The service owns candidate-prefix selection, continuation and oversized-first
-item refusal, with explicit lower query results. Upload and download protocol
+Team protocol tests configure ordinary `List`, `Get`, `MembersPage` and scoped
+Project list operations through strict direct mocks. Service tests verify one
+snapshot and DAO batch per page, access before member reads, scoped cursors and
+transaction completion with explicit lower query results. The original
+envelope-size callback, candidate-prefix selection and oversized-first refusal
+were lower admission proofs when those readers existed; the
+[ordinary resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md)
+removes those read responsibilities while preserving the direct operation boundary. Upload and download protocol
 tests retain action mapping, credential authority, admission, cancellation and
 request drain; the respective services own transfer receipts, retry/status
 observations and deleted-project operation refusal. Store retains the actual
@@ -78,9 +85,9 @@ An instance duration must reach the complete existing deadline-body path.
 ## Consequences
 
 Protocol tests execute without database or authentication-service preparation.
-Their collaborators are explicit, while actual framing, escaping, exact byte
-limits, SDK compatibility, cancellation, shutdown and admission stay in the
-protocol suite. Lower rule, transaction and persistence observations retain
+Their collaborators are explicit, while actual framing, escaping, input and
+write-byte limits, SDK compatibility, cancellation, shutdown and resource
+permits stay in the protocol suite. Lower rule, transaction and persistence observations retain
 separate owners and failure causes.
 
 Receiver tests are part of validation cost. Constrained-container measurements

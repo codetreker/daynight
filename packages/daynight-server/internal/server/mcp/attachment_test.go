@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,16 +14,15 @@ import (
 )
 
 type attachmentTestOperations struct {
-	items       []model.Attachment
-	err         error
-	calls       int
-	principal   model.Principal
-	request     model.PageRequest
-	removed     string
-	missingPath bool
+	items     []model.Attachment
+	err       error
+	calls     int
+	principal model.Principal
+	request   model.PageRequest
+	removed   string
 }
 
-func (s *attachmentTestOperations) ListBounded(_ context.Context, principal model.Principal, project, task string, request model.PageRequest, maxPathBytes, maxFieldBytes int) (attachmentcore.Page, error) {
+func (s *attachmentTestOperations) List(_ context.Context, principal model.Principal, project, task string, request model.PageRequest) (attachmentcore.Page, error) {
 	s.calls++
 	s.principal, s.request = principal, request
 	if s.err != nil {
@@ -46,18 +44,7 @@ func (s *attachmentTestOperations) ListBounded(_ context.Context, principal mode
 		}
 		items = append(items, item)
 	}
-	oversized := make([]bool, len(items))
-	for i := range items {
-		if len(items[i].Path) > maxPathBytes || s.missingPath {
-			items[i].Path = ""
-			oversized[i] = true
-		}
-		if len(items[i].ContentType) > maxFieldBytes {
-			items[i].ContentType = ""
-			oversized[i] = true
-		}
-	}
-	return attachmentcore.MakePage(store.AttachmentPage{Items: items, HasMore: more, Oversized: oversized}, project, task)
+	return attachmentcore.MakePage(store.AttachmentPage{Items: items, HasMore: more}, project, task)
 }
 func (s *attachmentTestOperations) Delete(_ context.Context, principal model.Principal, project, task, path string) error {
 	s.calls++
@@ -141,90 +128,6 @@ func TestAttachmentToolsErrorsAndUnknown(t *testing.T) {
 	}
 }
 
-func TestAttachmentListStopsBeforeOversizedMetadata(t *testing.T) {
-	fixture := newEntryFixture(t)
-	s := &attachmentTestOperations{items: []model.Attachment{
-		{Path: "a", ContentType: "text/plain"},
-		{Path: "b", ContentType: strings.Repeat("x", 100000)},
-		{Path: "c", ContentType: "text/plain"},
-	}}
-	if err := RegisterAttachmentTools(fixture.entry, s); err != nil {
-		t.Fatal(err)
-	}
-	client := fixture.client(t, "2026-07-28", "alice")
-	args := map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID}
-	first := object(t, invitationCall(t, client, "task_attachment_list", args, false)["data"])
-	if len(first["items"].([]any)) != 1 || object(t, first["items"].([]any)[0])["path"] != "a" {
-		t.Fatalf("first page: %#v", first)
-	}
-	args["cursor"] = first["nextCursor"]
-	fault := object(t, invitationCall(t, client, "task_attachment_list", args, true)["error"])
-	refs := object(t, fault["refs"])
-	if fault["code"] != "resource_conflict" || refs["path"] != "b" || refs["restListPath"] != "/api/v1/projects/"+invitationTestProjectID+"/tasks/"+invitationTestTeamID+"/attachments" {
-		t.Fatalf("oversized: %#v", fault)
-	}
-	args["cursor"] = refs["nextCursor"]
-	tail := object(t, invitationCall(t, client, "task_attachment_list", args, false)["data"])
-	if len(tail["items"].([]any)) != 1 || object(t, tail["items"].([]any)[0])["path"] != "c" {
-		t.Fatalf("tail: %#v", tail)
-	}
-}
-
-func TestAttachmentListHighEscapeBudget(t *testing.T) {
-	fixture := newEntryFixture(t)
-	s := &attachmentTestOperations{}
-	for i := 0; i < 100; i++ {
-		s.items = append(s.items, model.Attachment{Path: fmt.Sprintf("%03d", i), ContentType: strings.Repeat("<", 3000)})
-	}
-	if err := RegisterAttachmentTools(fixture.entry, s); err != nil {
-		t.Fatal(err)
-	}
-	client := fixture.client(t, "2026-07-28", "alice")
-	out := invitationCall(t, client, "task_attachment_list", map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID}, true)
-	encoded, err := json.Marshal(out)
-	if err != nil || len(encoded) > 16<<10 {
-		t.Fatalf("unbounded error: %d %v", len(encoded), err)
-	}
-	refs := object(t, object(t, out["error"])["refs"])
-	if refs["path"] != "000" || refs["restListPath"] == nil {
-		t.Fatalf("missing reference: %+v", refs)
-	}
-}
-
-func TestAttachmentListAndRemoveLegacyOverlongPath(t *testing.T) {
-	fixture := newEntryFixture(t)
-	base := strings.Repeat(strings.Repeat("界", 50)+"/", 20) + "界界界界"
-	path := base + "x"
-	s := &attachmentTestOperations{items: []model.Attachment{
-		{Path: "a", ContentType: "text/plain"},
-		{Path: path, ContentType: "text/plain"},
-		{Path: base + "y", ContentType: "text/plain"},
-	}}
-	if err := RegisterAttachmentTools(fixture.entry, s); err != nil {
-		t.Fatal(err)
-	}
-	client := fixture.client(t, "2026-07-28", "alice")
-	args := map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID, "limit": 1}
-	first := object(t, invitationCall(t, client, "task_attachment_list", args, false)["data"])
-	if len(first["items"].([]any)) != 1 || object(t, first["items"].([]any)[0])["path"] != "a" {
-		t.Fatalf("page: %#v", first)
-	}
-	args["cursor"] = first["nextCursor"]
-	last := object(t, invitationCall(t, client, "task_attachment_list", args, false)["data"])
-	if len(last["items"].([]any)) != 1 || object(t, last["items"].([]any)[0])["path"] != path || last["nextCursor"] == nil {
-		t.Fatalf("legacy path lost: %#v", last)
-	}
-	args["cursor"] = last["nextCursor"]
-	tail := object(t, invitationCall(t, client, "task_attachment_list", args, false)["data"])
-	if len(tail["items"].([]any)) != 1 || object(t, tail["items"].([]any)[0])["path"] != base+"y" {
-		t.Fatalf("legacy cursor: %#v", tail)
-	}
-	result := object(t, invitationCall(t, client, "task_attachment_remove", map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID, "path": path}, false)["data"])
-	if result["removed"] != true || s.removed != path {
-		t.Fatal("legacy path could not be removed")
-	}
-}
-
 func TestAttachmentToolRegistrationFailures(t *testing.T) {
 	fixture := newEntryFixture(t)
 	if err := RegisterAttachmentTools(fixture.entry, nil); err == nil {
@@ -243,34 +146,5 @@ func TestAttachmentToolRegistrationFailures(t *testing.T) {
 				t.Fatal("invalid tool registration accepted")
 			}
 		})
-	}
-}
-
-func TestAttachmentListRereadsBoundedUnicodePath(t *testing.T) {
-	fixture := newEntryFixture(t)
-	path := strings.Repeat(strings.Repeat("😀", 50)+"/", 20) + "😀😀😀😀"
-	contentType := "text/plain; x=" + strings.Repeat("a", 4000)
-	s := &attachmentTestOperations{items: []model.Attachment{{Path: path, ContentType: contentType}}}
-	if err := RegisterAttachmentTools(fixture.entry, s); err != nil {
-		t.Fatal(err)
-	}
-	client := fixture.client(t, "2026-07-28", "alice")
-	data := object(t, invitationCall(t, client, "task_attachment_list", map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID}, false)["data"])
-	if len(data["items"].([]any)) != 1 || object(t, data["items"].([]any)[0])["path"] != path || object(t, data["items"].([]any)[0])["contentType"] != contentType || s.calls != 2 {
-		t.Fatalf("bounded reread: %#v calls=%d", data, s.calls)
-	}
-}
-
-func TestAttachmentListMissingPathDoesNotInventReference(t *testing.T) {
-	fixture := newEntryFixture(t)
-	s := &attachmentTestOperations{items: []model.Attachment{{Path: "file", ContentType: "text/plain"}}, missingPath: true}
-	if err := RegisterAttachmentTools(fixture.entry, s); err != nil {
-		t.Fatal(err)
-	}
-	client := fixture.client(t, "2026-07-28", "alice")
-	failure := object(t, invitationCall(t, client, "task_attachment_list", map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID}, true)["error"])
-	refs := object(t, failure["refs"])
-	if failure["code"] != "resource_conflict" || refs["path"] != nil || refs["nextCursor"] != nil || refs["restListPath"] != nil || s.calls != 2 {
-		t.Fatalf("invented reference: %#v calls=%d", failure, s.calls)
 	}
 }

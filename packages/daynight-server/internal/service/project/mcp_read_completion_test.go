@@ -37,7 +37,7 @@ func (s *mcpProjectReadCompletion) ReadSnapshot(ctx context.Context, operation f
 func (s *mcpProjectReadCompletion) ProjectDAO() store.ProjectReader { return s }
 func (s *mcpProjectReadCompletion) ScopedProjects(ctx context.Context, p model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
 	s.queries++
-	if ctx != s.ctx || !reflect.DeepEqual(p, s.principal) || !reflect.DeepEqual(scope, store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: "22222222-2222-4222-8222-222222222222", MaxItemBytes: coreproject.MaxPageResponseJSONBytes}) || !reflect.DeepEqual(page, store.Page{Limit: 1}) || s.queries != 1 {
+	if ctx != s.ctx || !reflect.DeepEqual(p, s.principal) || !reflect.DeepEqual(scope, store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: "22222222-2222-4222-8222-222222222222"}) || !reflect.DeepEqual(page, store.Page{Limit: 50}) || s.queries != 1 {
 		s.t.Errorf("Project query principal/scope/page: %+v %+v %+v", p, scope, page)
 	}
 	return store.ProjectPage{Items: []model.Project{}}, nil
@@ -49,8 +49,8 @@ func TestMCPProjectReadDiscardsResultsAfterSnapshotCompletionFailure(t *testing.
 			failure := &store.TransactionError{Phase: "commit", Outcome: outcome, CommitAttempted: true, Cause: errors.New("snapshot completion failure")}
 			store := &mcpProjectReadCompletion{t: t, ctx: t.Context(), principal: principal, failure: failure}
 			team := "22222222-2222-4222-8222-222222222222"
-			result, err := NewProjects(store).ListAdmitted(t.Context(), principal, coreproject.ProjectListRequest{TeamID: &team, Page: model.PageRequest{Limit: 50}}, func([]model.Project, *string) error { t.Fatal("empty Project page measured"); return nil })
-			if err != failure || result.Items != nil || result.NextCursor != nil || store.snapshots != 1 || store.queries != 1 {
+			result, err := NewProjects(store).ListScoped(t.Context(), principal, coreproject.ProjectListRequest{TeamID: &team, Page: model.PageRequest{Limit: 50}})
+			if !errors.Is(err, failure) || result.Items != nil || result.NextCursor != nil || store.snapshots != 1 || store.queries != 1 {
 				t.Fatalf("Project completion = %+v / %v; snapshots=%d queries=%d", result, err, store.snapshots, store.queries)
 			}
 		})

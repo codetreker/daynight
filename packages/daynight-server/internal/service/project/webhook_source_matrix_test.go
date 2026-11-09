@@ -89,7 +89,7 @@ func TestWebhookSourceMatrixAndSharedCreatorIndependence(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertAll("active", 1)
-	if _, err = teams.RemoveMemberBounded(ctx, owner, team.ID, creator.UserID, coreteam.ChangeTeamMember{Version: demoted.Membership.Version, ExpectedUserID: owner.UserID}, 1<<20); err != nil {
+	if _, err = teams.RemoveMember(ctx, owner, team.ID, creator.UserID, coreteam.ChangeTeamMember{Version: demoted.Membership.Version, ExpectedUserID: owner.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	assertAll("active", 1)
@@ -115,7 +115,7 @@ func TestWebhookSourceMatrixAndSharedCreatorIndependence(t *testing.T) {
 	assertAll("confirmation_required", 2)
 	joined = inviteTeam()
 	assertAll("confirmation_required", 2)
-	promoted, err = teams.SetMemberRoleBounded(ctx, owner, team.ID, creator.UserID, coreteam.ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: owner.UserID}, 1<<20)
+	promoted, err = teams.SetMemberRole(ctx, owner, team.ID, creator.UserID, coreteam.ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: owner.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}

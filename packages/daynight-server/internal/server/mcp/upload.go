@@ -92,7 +92,7 @@ func RegisterUploadTools(e *Entry, uploads uploadOperations) error {
 	}, "projectId", "taskId", "action", "path", "contentType", "transferId", "chunkId", "offset", "contentBase64", "sha256", "totalBytes")
 	// Transfer transactions are distinct from the target attachment write.
 	// Only the upload service can classify the latter's outcome.
-	return e.registerToolFor(definitions[0], uploadBudget, handler, false)
+	return e.registerToolFor(definitions[0], uploadBudget, handler, false, true)
 }
 
 func uploadBudget(raw json.RawMessage) BudgetClass {

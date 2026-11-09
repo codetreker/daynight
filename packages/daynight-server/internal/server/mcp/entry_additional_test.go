@@ -544,3 +544,61 @@ func TestMCPHTTPTypedToolUnicodeAndDecode(t *testing.T) {
 		t.Fatalf("handler invoked %d times", invoked.Load())
 	}
 }
+
+func TestMCPReadResultsTrustProjectionAndPreserveEncodingErrors(t *testing.T) {
+	f := newEntryFixture(t)
+	output := map[string]any{"type": "object", "properties": map[string]any{"data": map[string]any{"type": "string"}}}
+	projection := func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		return ToolResult{Data: map[string]any{"value": 3}, Outcome: "changed", WriteOutcome: "confirmed"}, nil
+	}
+	if err := f.entry.RegisterTool(simpleTestTool("write_projection", testObjectSchema(), output), BudgetControl, projection); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.entry.registerReadTool(simpleTestTool("read_projection", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		return ToolResult{Data: map[string]any{"value": 3}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.entry.registerReadTool(simpleTestTool("read_encoding", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		return ToolResult{Data: make(chan int)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.entry.registerToolFor(simpleTestTool("transfer_projection", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		return ToolResult{Data: map[string]any{"value": 3}}, nil
+	}, false, true); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	for _, tc := range []struct {
+		name    string
+		failure bool
+		outcome string
+	}{{"read_projection", false, ""}, {"write_projection", true, "confirmed"}, {"read_encoding", true, ""}, {"transfer_projection", true, ""}} {
+		result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: tc.name, Arguments: map[string]any{}})
+		if err != nil || result.IsError != tc.failure {
+			t.Fatalf("%s: %#v %v", tc.name, result, err)
+		}
+		raw, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value struct {
+			Data  map[string]int `json:"data"`
+			Error struct {
+				Code         string `json:"code"`
+				WriteOutcome string `json:"writeOutcome"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &value); err != nil {
+			t.Fatal(err)
+		}
+		if tc.failure {
+			if value.Error.Code != "internal_error" || value.Error.WriteOutcome != tc.outcome {
+				t.Fatalf("%s: %s", tc.name, raw)
+			}
+		} else if value.Data["value"] != 3 {
+			t.Fatalf("%s: %s", tc.name, raw)
+		}
+	}
+}

@@ -91,11 +91,11 @@ type deletedDownloadOpener struct {
 	calls int
 }
 
-func (o *deletedDownloadOpener) OpenBounded(ctx context.Context, principal model.Principal, project, task, path string, limit int) (model.Attachment, filestorage.Object, error) {
+func (o *deletedDownloadOpener) Open(ctx context.Context, principal model.Principal, project, task, path string) (model.Attachment, filestorage.Object, error) {
 	o.t.Helper()
 	o.calls++
-	if o.calls > o.want || ctx != o.ctx || principal != o.actor.Principal || project != o.input.ProjectID || task != o.input.TaskID || path != "content.txt" || limit != MaxContentTypeBytes {
-		o.t.Fatalf("unexpected attachment operation: calls=%d project=%s task=%s path=%s limit=%d", o.calls, project, task, path, limit)
+	if o.calls > o.want || ctx != o.ctx || principal != o.actor.Principal || project != o.input.ProjectID || task != o.input.TaskID || path != "content.txt" {
+		o.t.Fatalf("unexpected attachment operation: calls=%d project=%s task=%s path=%s", o.calls, project, task, path)
 	}
 	return model.Attachment{}, filestorage.Object{}, model.ErrNotFound
 }

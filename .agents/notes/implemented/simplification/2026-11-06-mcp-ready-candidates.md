@@ -20,7 +20,9 @@ The tool has no cursor input or continuation output. Its successful result
 contains `items` and `projection`; summary retains marked title previews and
 selection fields, while full retains complete descriptions and properties.
 Candidate selection depends on the count limit without a per-result encoded-byte
-budget. The shared MCP response limit and admission policy remain applicable.
+budget. MCP input checks, deadlines and the large-object permit remain; shared
+read-output schema and byte admission are absent, as recorded in the
+[ordinary resource-read decision](2026-11-09-canonical-resource-pages.md).
 
 The single-batch query does not calculate the project traversal fence or encode
 item cursors. The [task-query decision](../architecture/2026-11-06-mcp-task-queries.md)
@@ -51,8 +53,7 @@ projection. Increasing descriptions or properties does not cause the ready query
 to silently return fewer selected candidates. A result containing fewer than the
 limit means fewer matching tasks were found in that read snapshot.
 
-The count limit does not bound encoded response bytes. Shared transport limits
-can still reject an oversized response, and full reads retain the large-object
-admission policy. A returned Task can stop being ready after the query. Callers
+The count limit does not bound encoded response bytes. Client transport policies
+remain independent, and full reads retain the large-object permit. A returned Task can stop being ready after the query. Callers
 that need all ready task identities use paginated `task_list(ready: true)` and
 read current details separately when needed.

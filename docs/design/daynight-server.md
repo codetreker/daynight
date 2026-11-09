@@ -190,7 +190,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 Project 删除在 Read Committed 事务内先锁活跃 Project，再按 UUID 锁全部 Task，包括已删除 Task；锁等待后以新语句锁定并复核 owner Team admin、普通解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
 
-删除预览在同一只读快照验证权限、计数并扫描 Worker 事实；按 Task UUID 分页，并以响应字节预算限制返回内容。Worker 连通性取关联报告时间，不扩展账号级权限。预览不产生删除前提；DELETE 仍以锁内当前状态决定。
+删除预览在同一只读快照验证权限、计数并扫描 Worker 事实；按 Task UUID 和请求条数分页，完整投影阻塞项，不按标题或响应字节缩短页面。Worker 连通性取关联报告时间，不扩展账号级权限。预览不产生删除前提；DELETE 仍以锁内当前状态决定。
 
 项目与任务相关表不建立 foreign key。引用存在性、同 project 限制和图规则由获得 project 写锁后的
 service 写入路径校验；所有写入都必须经过该路径。`017_task_soft_delete.sql` 增加可空

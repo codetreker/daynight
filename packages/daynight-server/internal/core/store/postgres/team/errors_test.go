@@ -45,7 +45,7 @@ func TestTeamListRowFailuresPreserveCauses(t *testing.T) {
 					return err
 				},
 				"bounded Teams": func(reader store.TeamReader) error {
-					_, err := reader.TeamsBounded(t.Context(), "user", store.Page{Limit: 2}, 10)
+					_, err := reader.Teams(t.Context(), "user", store.Page{Limit: 2})
 					return err
 				},
 				"members": func(reader store.TeamReader) error { _, err := reader.TeamMembers(t.Context(), "team"); return err },

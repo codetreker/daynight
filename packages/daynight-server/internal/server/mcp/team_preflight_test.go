@@ -33,10 +33,10 @@ func TestTeamWritePreflightFailuresAreNotCommitted(t *testing.T) {
 					mocks.expect("Identity.PersonalTeamID")
 					mocks.identities.PersonalTeamIDFunc = func(context.Context, model.Principal) (string, error) { return "", failure }
 				} else if tc.name == "team_rename" || tc.name == "team_delete" {
-					mocks.expect("Teams.GetBounded")
-					mocks.teams.GetBoundedFunc = func(_ context.Context, _ model.Principal, id string, limit int) (model.Team, error) {
-						if id != unknownTeam || limit != 1<<20 {
-							t.Errorf("GetBounded(%s, %d)", id, limit)
+					mocks.expect("Teams.Get")
+					mocks.teams.GetFunc = func(_ context.Context, _ model.Principal, id string) (model.Team, error) {
+						if id != unknownTeam {
+							t.Errorf("Get(%s)", id)
 						}
 						return model.Team{}, failure
 					}

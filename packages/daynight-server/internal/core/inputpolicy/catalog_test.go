@@ -30,14 +30,7 @@ func TestResponseAndRangePolicies(t *testing.T) {
 		max  int64
 		unit string
 	}{
-		{"attachment.metadataPage", 2 << 20, "bytes"},
 		{"bot.cwd", 4096, "bytes"},
-		{"identity.invitation.page", 256 << 10, "bytes"},
-		{"identity.pat.page", 256 << 10, "bytes"},
-		{"project.page", 4 << 20, "bytes"},
-		{"project.member.page", 4 << 20, "bytes"},
-		{"team.page", 4 << 20, "bytes"},
-		{"team.member.page", 4 << 20, "bytes"},
 		{"task.resource", 512 << 10, "bytes"},
 		{"search.expression", 8192, "bytes"},
 		{"search.terms", 128, "items"},

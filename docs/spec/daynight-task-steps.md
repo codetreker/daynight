@@ -58,7 +58,7 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 
 单项结果具有相同 `projectId`、`taskId` 和 `version`，以 `step` 字段返回一个完整记录。空集合必须为 `steps: []`，不能为 `null`、缺失或读取失败的替代结果。Task 的 show/list/ready/graph/task-sync 不内嵌完整 Steps。
 
-MCP Step 列表保留 `summary` 和 `full` 视图及绑定父版本和位置的 cursor，按请求条数一次读取 `limit+1` 项；有后续项时从最后返回项继续。读取只投影保存的规范字段，不重复结构、容量或领域响应字节检查，summary 不读取完整说明，full 保留完整内容。单项的显式父版本条件仍比较，共享 MCP 入口的 128 MiB 结果限制独立适用。
+MCP Step 列表保留 `summary` 和 `full` 视图及绑定父版本和位置的 cursor，按请求条数一次读取 `limit+1` 项；有后续项时从最后返回项继续。读取只投影保存的规范字段，不重复结构、容量或领域响应字节检查，summary 不读取完整说明，full 保留完整内容。单项的显式父版本条件仍比较，MCP 的输入、并发和期限规则继续适用；读取响应不执行共享 schema 或字节准入。
 
 ## Web 阅读
 

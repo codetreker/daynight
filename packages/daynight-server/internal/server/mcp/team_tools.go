@@ -7,13 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/measure"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,18 +22,18 @@ var teamToolsJSON []byte
 
 type teamOperations interface {
 	Create(context.Context, model.Principal, coreteam.CreateTeam) (model.Team, error)
-	ListAdmitted(context.Context, model.Principal, model.PageRequest, func([]model.Team, *string) error) (coreteam.TeamPage, error)
-	GetBounded(context.Context, model.Principal, string, int) (model.Team, error)
-	RenameBounded(context.Context, model.Principal, string, coreteam.ChangeTeam, int) (model.Team, error)
-	DeleteBounded(context.Context, model.Principal, string, coreteam.ChangeTeam, int) error
-	MembersAdmitted(context.Context, model.Principal, string, model.PageRequest, func([]model.TeamMemberProfile, *string) error) (coreteam.MemberPage, error)
+	List(context.Context, model.Principal, model.PageRequest) (coreteam.TeamPage, error)
+	Get(context.Context, model.Principal, string) (model.Team, error)
+	Rename(context.Context, model.Principal, string, coreteam.ChangeTeam) (model.Team, error)
+	Delete(context.Context, model.Principal, string, coreteam.ChangeTeam) error
+	MembersPage(context.Context, model.Principal, string, model.PageRequest) (coreteam.MemberPage, error)
 	Member(context.Context, model.Principal, string, string) (model.TeamMember, error)
-	SetMemberRoleBounded(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember, int) (coreteam.TeamMemberResult, error)
-	RemoveMemberBounded(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember, int) (coreteam.TeamMemberResult, error)
+	SetMemberRole(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error)
+	RemoveMember(context.Context, model.Principal, string, string, coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error)
 }
 
 type teamProjectOperations interface {
-	ListAdmitted(context.Context, model.Principal, coreproject.ProjectListRequest, func([]model.Project, *string) error) (coreproject.ProjectPage, error)
+	ListScoped(context.Context, model.Principal, coreproject.ProjectListRequest) (coreproject.ProjectPage, error)
 }
 
 type teamArguments struct {
@@ -181,10 +179,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 			}
 			return page
 		}
-		result, err := teams.ListAdmitted(ctx, p, a.page(), func(items []model.Team, cursor *string) error {
-			_, err := measure.JSON(io.Discard, "team.page", coreteam.MaxPageResponseJSONBytes, envelope{Data: project(items, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
-			return err
-		})
+		result, err := teams.List(ctx, p, a.page())
 		if err != nil {
 			return ToolResult{}, err
 		}
@@ -204,13 +199,13 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 	}
 	switch name {
 	case "team_show":
-		t, err := teams.GetBounded(ctx, p, id, httpx.MaxJSONBody)
+		t, err := teams.Get(ctx, p, id)
 		if err != nil {
 			return ToolResult{}, err
 		}
 		return ToolResult{Data: MapTeam(t)}, nil
 	case "team_rename", "team_delete":
-		t, err := teams.GetBounded(ctx, p, id, httpx.MaxJSONBody)
+		t, err := teams.Get(ctx, p, id)
 		if err != nil {
 			return preflight, err
 		}
@@ -222,7 +217,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 			if err := checkTeamBody(api.ChangeTeamRequest{Name: a.Name, Version: version, ExpectedUserID: p.UserID}); err != nil {
 				return ToolResult{WriteOutcome: "not_committed"}, err
 			}
-			result, err := teams.RenameBounded(ctx, p, id, coreteam.ChangeTeam{Name: a.Name, Version: version, ExpectedUserID: p.UserID}, httpx.MaxJSONBody)
+			result, err := teams.Rename(ctx, p, id, coreteam.ChangeTeam{Name: a.Name, Version: version, ExpectedUserID: p.UserID})
 			if err != nil {
 				return ToolResult{Refs: map[string]any{"teamId": id}}, err
 			}
@@ -242,7 +237,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		if err := checkTeamBody(api.ChangeTeamRequest{Name: expected, Version: version, ExpectedUserID: p.UserID}); err != nil {
 			return ToolResult{WriteOutcome: "not_committed"}, err
 		}
-		err = teams.DeleteBounded(ctx, p, id, coreteam.ChangeTeam{Name: expected, Version: version, ExpectedUserID: p.UserID}, httpx.MaxJSONBody)
+		err = teams.Delete(ctx, p, id, coreteam.ChangeTeam{Name: expected, Version: version, ExpectedUserID: p.UserID})
 		if err != nil {
 			return ToolResult{Refs: map[string]any{"teamId": id}}, err
 		}
@@ -256,10 +251,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 			return page
 		}
 		scope := coreproject.ProjectListRequest{Page: a.page(), TeamID: &id}
-		result, err := projects.ListAdmitted(ctx, p, scope, func(items []model.Project, cursor *string) error {
-			_, err := measure.JSON(io.Discard, "project.page", coreproject.MaxPageResponseJSONBytes, envelope{Data: project(items, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
-			return err
-		})
+		result, err := projects.ListScoped(ctx, p, scope)
 		if err != nil {
 			return ToolResult{}, err
 		}
@@ -273,10 +265,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 			}
 			return page
 		}
-		result, err := teams.MembersAdmitted(ctx, p, id, a.page(), func(members []model.TeamMemberProfile, cursor *string) error {
-			_, err := measure.JSON(io.Discard, "team.members.page", coreteam.MaxPageResponseJSONBytes, envelope{Data: project(members, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}}, false)
-			return err
-		})
+		result, err := teams.MembersPage(ctx, p, id, a.page())
 		if err != nil {
 			return ToolResult{}, err
 		}
@@ -300,7 +289,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 			if err := checkTeamBody(api.SetTeamMemberRoleRequest{Version: version, Role: string(a.Role), ExpectedUserID: p.UserID}); err != nil {
 				return ToolResult{WriteOutcome: "not_committed"}, err
 			}
-			result, err := teams.SetMemberRoleBounded(ctx, p, id, target, input, httpx.MaxJSONBody)
+			result, err := teams.SetMemberRole(ctx, p, id, target, input)
 			if err != nil {
 				return ToolResult{Refs: map[string]any{"teamId": id, "userId": target}}, err
 			}
@@ -313,7 +302,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		if err := checkTeamBody(api.RemoveTeamMemberRequest{Version: version, ExpectedUserID: p.UserID}); err != nil {
 			return ToolResult{WriteOutcome: "not_committed"}, err
 		}
-		result, err := teams.RemoveMemberBounded(ctx, p, id, target, input, httpx.MaxJSONBody)
+		result, err := teams.RemoveMember(ctx, p, id, target, input)
 		if err != nil {
 			return ToolResult{Refs: map[string]any{"teamId": id, "userId": target}}, err
 		}

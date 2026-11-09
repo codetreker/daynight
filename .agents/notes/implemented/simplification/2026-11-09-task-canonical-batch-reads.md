@@ -57,8 +57,10 @@ versions remain checked before page reads. Task MCP lists keep their existing
 priority selection and fence; full views retain their ordinary selected-item
 materialization. Task graph summary and full views both return the complete
 selected graph. These domain paths have no read-byte slicing or admission; the
-shared MCP entry's 128 MiB result limit and resource permits remain independent.
-Other resource-list budgets are unaffected.
+shared MCP entry has no read-output schema or byte admission. Input checks,
+deadlines and resource permits remain independent. The
+[ordinary resource-read decision](2026-11-09-canonical-resource-pages.md)
+removes the remaining resource-list admission and preserves their count pages.
 
 Task sync retains current access, people versions and its complete lightweight
 Session state map. Task, Worker and persisted Session sources share the existing

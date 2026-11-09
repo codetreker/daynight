@@ -157,8 +157,6 @@ func (m *mgmtWebhookDAO) LatestAttempt(p0 context.Context, p1 string) (*store.We
 type mgmtTeamDAO struct {
 	mgmtMockBase
 	TeamFn                 func(context.Context, string, string) (model.Team, error)
-	TeamBoundedFn          func(context.Context, string, string, int) (model.Team, bool, error)
-	TeamsBoundedFn         func(context.Context, string, store.Page, int) (store.TeamPage, error)
 	TeamAccessFn           func(context.Context, string, string) error
 	TeamsFn                func(context.Context, string, store.Page) (store.TeamPage, error)
 	TeamMembersFn          func(context.Context, string) ([]model.TeamMemberProfile, error)
@@ -173,14 +171,6 @@ type mgmtTeamDAO struct {
 func (m *mgmtTeamDAO) Team(p0 context.Context, p1 string, p2 string) (model.Team, error) {
 	m.need("Team", m.TeamFn != nil)
 	return m.TeamFn(p0, p1, p2)
-}
-func (m *mgmtTeamDAO) TeamBounded(p0 context.Context, p1 string, p2 string, p3 int) (model.Team, bool, error) {
-	m.need("TeamBounded", m.TeamBoundedFn != nil)
-	return m.TeamBoundedFn(p0, p1, p2, p3)
-}
-func (m *mgmtTeamDAO) TeamsBounded(p0 context.Context, p1 string, p2 store.Page, p3 int) (store.TeamPage, error) {
-	m.need("TeamsBounded", m.TeamsBoundedFn != nil)
-	return m.TeamsBoundedFn(p0, p1, p2, p3)
 }
 func (m *mgmtTeamDAO) TeamAccess(p0 context.Context, p1 string, p2 string) error {
 	m.need("TeamAccess", m.TeamAccessFn != nil)

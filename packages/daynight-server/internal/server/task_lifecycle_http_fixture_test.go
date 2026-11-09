@@ -347,7 +347,7 @@ func (d *stepHTTPAttachmentReader) Attachment(ctx context.Context, project, task
 
 func (d *stepHTTPAttachmentReader) Attachments(ctx context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
 	d.plan.Called("metadata")
-	expected := store.AttachmentQuery{Limit: 1, MaxPathBytes: attachmentcore.MaxMetadataPageResponseJSONBytes, MaxFieldBytes: attachmentcore.MaxMetadataPageResponseJSONBytes}
+	expected := store.AttachmentQuery{Limit: 50}
 	if project != d.item.ProjectID || task != d.item.TaskID || !reflect.DeepEqual(query, expected) || ctx.Err() != nil {
 		unexpectedHTTPCall(d.t, "referenced attachment page")
 	}

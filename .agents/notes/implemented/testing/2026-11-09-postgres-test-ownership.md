@@ -26,6 +26,8 @@ construction, transaction completion, shared snapshots and cross-DAO atomicity.
 A root fixture or scope used to reach a DAO does not determine ownership.
 Database-independent interface capabilities and pure error contracts remain in
 `core/store`; core and service business decisions use their required mocks.
+The [canonical resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md)
+owns current read/write semantics; test ownership follows those contracts.
 
 Mixed files retain actual root mechanisms and move independent DAO or business
 matrices to their owners. Necessary data assertions inside a root rollback,
