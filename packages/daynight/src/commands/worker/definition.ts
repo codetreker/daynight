@@ -11,15 +11,26 @@ export const workerDefinition: CommandDefinition = {
   name: "worker",
   description: "Run automatically claimed tasks in dedicated worktrees and Herdr",
   commands: [{
+    name: "list",
+    description: "List the signed-in account's recently reported remote Workers",
+    options: [{ names: ["--json"], description: "Print all Worker summaries and the service observation time as JSON" }, help],
+    details: "Read every page before printing a result. The service lists Workers reported within the last 72 hours.\nOnline means the last report was less than two minutes before the service observation. Unknown or stale task inventory is not idle capacity.\nWorks outside Git without a project, local Worker configuration or runner lock.",
+  }, {
+    name: "show",
+    description: "Show a remote Worker's telemetry and authorized task observations",
+    arguments: [{ name: "worker-id", description: "Worker UUID" }],
+    options: [{ names: ["--json"], description: "Print the complete Worker detail and service observation time as JSON" }, help],
+    details: "Read the explicit Worker from the configured service, including outside Git.\nProbe failures, missing software and stale or unavailable inventory remain visible. Online is an observation, not a promise of capacity or Agent availability.\nThis command does not start, attach to or lock the local Worker.",
+  }, {
     name: "setup",
-    description: "Check prerequisites and select an agent and existing Daynight Projects",
+    description: "Check prerequisites and prepare the initial local runtime configuration",
     options: [help],
-    details: "Use an interactive terminal to check the environment, choose Copilot or Codex, and select one or more accessible Projects.\nReview the selection before saving agent and repository settings together.\nMissing prerequisites remain visible with repair instructions; setup can save configuration before they are repaired.\nExisting transports, paths and compatible native settings are retained. The selected agent applies to every selected Project.\nChanges apply at the next worker startup. Run daynight worker run after completing setup.",
+    details: "Use an interactive terminal to check the environment, choose Copilot, Codex or Claude, and select accessible Projects before the Worker first connects.\nReview the selection before saving agent and repository settings together.\nMissing prerequisites remain visible with repair instructions; setup can save configuration before they are repaired.\nExisting transports, paths and compatible native settings are retained.\nAfter enrollment, edit runtime settings in My Workers. Paths and agentControlMode remain local.",
   }, {
     name: "run",
     description: "Run the foreground task worker until interrupted",
     options: [help],
-    details: "Read worker settings from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml) at startup.\nWith no configured repositories, select existing remote Projects interactively before startup.\nFor noninteractive configuration, run daynight worker repo add --project <project-id>.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
+    details: "Read local identity, service settings, paths and agentControlMode from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml).\nFetch cloud configuration before scheduling. The first connection imports local runtime settings; later starts always use the cloud target.\nAn empty Project selection keeps heartbeats and configuration synchronization running.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
   }, {
     name: "attach",
     description: "Attach an interactive terminal to an existing task runtime",
@@ -27,23 +38,39 @@ export const workerDefinition: CommandDefinition = {
     details: "Connect to an existing private Herdr runtime without starting a daemon. On macOS, select a task when multiple recorded runtimes exist; the original daemon identity must be verified. Paused tasks remain available for human input. Installations without a lifecycle journal use the existing shared worker session. Requires an interactive terminal. Detaching leaves the worker and its agents running.",
   }, {
     name: "repo",
-    description: "Manage repositories selected from existing Daynight Projects",
+    description: "Prepare local repository selections before cloud management",
     commands: [{
       name: "list",
-      description: "List configured worker repositories",
-      options: [{ names: ["--json"], description: "Print configured repository summaries as JSON" }, help],
+      description: "List local repositories before cloud enrollment",
+      options: [{ names: ["--json"], description: "Print local repository summaries as JSON" }, help],
     }, {
       name: "add",
-      description: "Select existing remote Projects for the next worker startup",
+      description: "Select existing remote Projects for the first cloud import",
       options: [{ names: ["--project"], description: "Add this existing accessible Project without prompting", value: { name: "project-id", kind: "text" } }, help],
-      details: "Without --project, select one or more accessible remote Projects interactively.\nRepository paths use worker.repositoryRoot (default: ~/daynights).\nChanges apply at the next worker startup; this command does not clone or start tasks.",
+      details: "Without --project, select one or more accessible remote Projects interactively.\nRepository paths use worker.repositoryRoot (default: ~/daynights).\nThe selection is imported on the first cloud connection; this command does not clone or start tasks.\nAfter enrollment, edit Project selection in My Workers.",
     }, {
       name: "remove",
       description: "Remove configured repositories using existing remote Projects",
       options: [{ names: ["--project"], description: "Remove this existing accessible Project without prompting", value: { name: "project-id", kind: "text" } }, help],
-      details: "Without --project, select one or more configured, accessible remote Projects interactively.\nChanges apply at the next worker startup. Existing claims, files and running tasks are retained.",
+      details: "Without --project, select one or more configured, accessible remote Projects interactively.\nThe local selection is imported on the first cloud connection. Existing claims, files and running tasks are retained.\nAfter enrollment, edit Project selection in My Workers.",
     }],
     options: [help],
+  }, {
+    name: "resources",
+    description: "Inspect and explicitly dispose stopped Herdr recording resources",
+    options: [help],
+    details: "Stop worker run first. These commands use the original worker lock and never start an Agent. Inspection reports original Session, claim, stop evidence, worktree, source and archive disposition as JSON.",
+    commands: [{
+      name: "list", description: "Inspect retained original execution resources", options: [help],
+    }, {
+      name: "retry", description: "Explicitly retry a stopped original archive after fixing its cause", arguments: task,
+      options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, help],
+      details: "Retain the original owner, source and operation. This schedules archive reconciliation only; it cannot recover an Agent or repair corrupt source.",
+    }, {
+      name: "dispose", description: "Record an explicit abandonment or delete stopped original resources", arguments: task,
+      options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, { names: ["--operation-id"], description: "Stable UUID for this explicit disposal decision", value: { name: "operation-id", kind: "text" }, required: true }, { names: ["--action"], description: "abandon retains files; delete removes the selected worktree and recording source", value: { name: "action", kind: "text" }, required: true }, { names: ["--confirm"], description: "Confirm this exact disposal and its loss of local recording data", required: true }, help],
+      details: "Read resources list first. Only the matching terminal claim with confirmed original stop may be disposed. Abandon stops archive retry and keeps files. Delete removes only the original source and worktree through ownership checks. Neither action manufactures ready/unavailable or changes remote archive history. Reuse the same operation ID to reconcile an interrupted decision.",
+    }],
   }, {
     name: "retry",
     description: "Attempt recovery once for an active original claim",

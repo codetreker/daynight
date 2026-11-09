@@ -1,6 +1,6 @@
 # Task 预定义属性设计
 
-状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)。
+状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-rows.md)保存存储取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)；[Task 数据归属决策](../../.agents/notes/implemented/architecture/2026-11-05-task-data-ownership.md)记录值、写策略与编码的分工。
 
 ## 职责与数据流
 
@@ -19,11 +19,11 @@ flowchart LR
   Read --> Client
 ~~~
 
-core 使用通用 TaskProperties map。internal/taskproperties 依赖 core 并拥有静态注册表、值 codec、规范化与 typed business accessors；core 不反向依赖 codec。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
+core 使用通用 TaskProperties map。internal/core/model/taskproperty 拥有静态注册表、值 codec、规范化与 typed reader；internal/core/task/properties 使用同一注册表执行公开写权限与 Worker/sessionStartup 关联规则。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
 
-定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused 与 worker。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
+定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused、worker 与 sessionStartup。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
 
-properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，paused 必须是布尔值，worker 必须是合法归属对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
+properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，paused 必须是布尔值，worker 必须是合法归属对象，sessionStartup 必须是合法执行观察对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
 
 ## 值解析与规范化
 
@@ -31,7 +31,7 @@ properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组�
 
 JSON 对象的重复键与未知字段在普通 unmarshal 前被拒绝。PR 字符串只使用原有 JSON 字符串解码，不复用标题、仓库 URL 或 Worker 文本限制；空值、控制字符、NUL、顺序和重复项均保留。规范化只统一值的 JSON 表示，保留旧系统已经解码的字符串语义，包括错误 surrogate 的既有替换行为。
 
-存储读取同样通过定义的 native decoder/normalizer，语义比较和 DTO 输出使用规范值。不能把旧 JSON 原始片段直接透传，从而改变客户端看到的字符。属性名和结构非法产生可识别的属性校验错误；数据库故障保持原错误链。
+写入先按定义执行结构规范化，再对每个完整值独立执行 8 KiB 准入；PR 的 url/title 和 worker 自由文本另有各自字节上限。公共与生命周期写入使用相同策略，但不改变只读权限。存储读取直接将已规范化的完整 JSON 文本装入 `json.RawMessage` map，不调用 registry 的 Normalize/Validate/Admit，也不执行容量复查、substring 分块解析或历史格式解释。领域消费者仅在需要身份或状态比较时普通解码相应属性；自然解码及输出错误和数据库故障保持原错误链。写入候选的语义比较仍使用写入规范化规则。
 
 TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更值，不原地修改当前任务或共享快照。属性 map 的存在键参与比较，缺失与 [] 不相等；对象键序、缩进和等价转义不构成值变化，有序数组仍按顺序比较。
 
@@ -39,7 +39,7 @@ TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更
 
 paused 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
 
-CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示周期 ping 未暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在实际周期输入递交前读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
+CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
 ## 独立表与读取
 
@@ -56,7 +56,7 @@ task ID 已是全局 UUID 主键，属性行不重复 project_id。授权先定�
 
 value 保存完整 JSON 文本，PR 数组和 worker 对象各占一行，不继续拆分嵌套字段。NUL 以 JSON 转义存在，不把 NUL 字节送入 PostgreSQL text。[PostgreSQL JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)解释了 JSONB 与 JSON 处理函数的 Unicode 转换限制；存储和读取都不对既有 opaque 字符串做 SQL JSON 转换。
 
-完整单项、分页和事务读取先取得所需任务，再关闭 pgx rows，批量加载 task_id = ANY($1::uuid[]) 的属性并组装 map。任务与属性使用同一 REPEATABLE READ snapshot，版本与内容属于同一状态。LIMIT 作用于任务筛选结果，不能在一对多属性 JOIN 后分页。空集合得到 {}，非法值使整个读取失败。
+完整单项、分页和事务读取先取得所需任务，再关闭 pgx rows，批量加载 task_id = ANY($1::uuid[]) 的属性并组装 map。任务与属性使用同一 REPEATABLE READ snapshot，版本与内容属于同一状态。LIMIT 作用于任务筛选结果，不能在一对多属性 JOIN 后分页。空集合得到 {}，查询、扫描或正常编码失败使整个读取失败。一次任务页使用一次属性批量查询，查询次数不随该页任务或属性数量线性增长。
 
 Worker inventory 在原 keyset 顺序中读取唯一 worker 属性并匹配 active/userId/workerId，之后才应用最终 page limit/lookahead；选中任务再批量载入完整属性。Worker reporting 对其引用的 task IDs 批量读取 worker 值并核对项目、当前 owner、worker、claim 和状态，不扫描其他项目，也不把观察快照当作认领权威。
 
@@ -102,11 +102,11 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 ## 客户端与现有入口
 
-CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused 与 Worker reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 键。
+CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
 
-CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/implemented/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
+CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/archived/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 
-Web PR 卡、分页、链接策略及焦点保持不变，缺失与空 PR 都显示已有空态。PR 引用按全局下标保留独立条目，不能以 URL 去重或作为吞掉重复项的唯一键。一次合法写入可包含数万条短引用，因此每页最多挂载 100 行，为 DOM/accessibility tree 提供独立上限；完整数组仍留存，原生前后页与页码控件使全部项可访问，不依赖可变行高或额外请求。
+Web PR 卡、分页、链接策略及焦点保持不变，缺失与空 PR 都显示已有空态。PR 引用按全局下标保留独立条目，不能以 URL 去重或作为吞掉重复项的唯一键。新写入的完整规范化数组受 8 KiB 属性值上限约束；服务端读取完整保存的数组，不重复结构或写入额度检查，不设置领域读取响应字节预算；客户端传输与缓存限制仍由各自所有者维护。Web 对返回的完整数组每页最多挂载 100 行，为 DOM/accessibility tree 提供独立上限；原生前后页与页码控件使返回的全部项可访问，不依赖可变行高或额外请求。
 
 task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一只读快照中取得完整 properties。每条摘要携带当前完整对象，按任务 version 替换；缺失键自然删除，无独立属性水位或 tombstone。Web 以通用 JSON 比较覆盖全部属性，schema 2→3 及直接 1→3 重建项目/摘要/详情、轮换 user fence 并清掉旧水位，避免把旧摘要缺字段解释为 {}。
 
@@ -114,7 +114,7 @@ task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一
 
 ## 错误与观测
 
-非法输入与非法存储属性值统一映射为 400 invalid_input；数据库连接、查询、事务和其他内部故障为 500 internal_error。服务层通过可识别的属性校验错误区分两类原因，store 包装保留错误链。批量读取不返回部分结果，修改不因坏值部分提交，迁移错误则中止启动迁移。
+写入输入校验失败映射为 400 invalid_input；读取保存的属性不新增校验分类。正常解码或输出失败、数据库连接、查询、事务和其他内部故障保留原错误链。批量读取不返回部分结果，修改的既有校验与原子提交保持；既有迁移错误仍中止启动迁移。本次读取职责不新增历史扫描或迁移。
 
 复用 request context 与 slog JSON 的 request_id/user_id/project_id/task_id、route pattern 和阶段。属性操作记录 component=task_property、phase=schema|get|set|remove；写成功的 outcome 为 changed/unchanged。property_name 只在定义匹配后记录，错误包含固定分类和受限的路径/规则，不记录值、PR 内容或令牌。
 
@@ -124,4 +124,8 @@ task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一
 
 每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义，当前没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
 
-验证由需求 TP-V1–TP-V9 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/race/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。
+验证由需求 TP-V1–TP-V9 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，Go race 采用[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)的本地默认/main 开启、PR 关闭，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。
+
+## 启动观察属性
+
+只读 sessionStartup 由 registry 定义并使用严格 Session startup decoder 验证。通用 codec 的允许键来自 registry，普通 create/PATCH 与单属性写仍依据 readOnly 拒绝，内部 Worker 更新在原任务事务内保存该属性。其 generation/revision fence、current 协商投影及旧版本边界由[Session 协议](task-session-protocol.md#启动观察的独立上报)拥有。

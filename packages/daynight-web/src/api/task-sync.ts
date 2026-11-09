@@ -1,16 +1,28 @@
 import { parseProfileVersion } from "./profile-version";
 import { parseProjectAccess } from "./auth-parse";
 import { isTaskVersion } from "./json";
-import { parseTaskProperties, readTaskPaused } from "./task-properties";
+import { parseTaskProperties, readTaskPaused, readWorkerClaim } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
 import type { ProjectPersonVersion } from "./auth-types";
-import type { TaskSummary, TaskSync } from "./types";
-import { nullableId } from "./validation";
+import type { TaskListSessionState, TaskSummary, TaskSync } from "./types";
+import { nullableId, taskStatusFields } from "./validation";
 
 const ids = (value: unknown): string[] => {
   const result = array(value, id);
   if (new Set(result).size !== result.length) return malformed();
   return result;
+};
+
+const parseTaskSessions = (value: unknown): Readonly<Record<string, TaskListSessionState>> => {
+  const data = record(value);
+  if (Object.getPrototypeOf(data) !== Object.prototype && Object.getPrototypeOf(data) !== null) return malformed();
+  const entries = Object.entries(data);
+  const sessions: Record<string, TaskListSessionState> = {};
+  for (const [taskId, state] of entries) {
+    if (id(taskId) !== taskId || state !== "working" && state !== "notice" && state !== "warning" && state !== "pending") return malformed();
+    sessions[taskId] = state;
+  }
+  return sessions;
 };
 
 export const parseTaskSummary = (value: unknown): TaskSummary => {
@@ -22,13 +34,14 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   const dependsOn = ids(data.dependsOn);
   const externalDependsOn = ids(data.externalDependsOn);
   if (externalDependsOn.some((dependency) => !dependsOn.includes(dependency))) return malformed();
-  if (data.status !== "todo" && data.status !== "in_progress" && data.status !== "done") return malformed();
   const properties = parseTaskProperties(data.properties);
   readTaskPaused(properties);
+  const worker = readWorkerClaim(properties);
+  if (worker?.state === "active" && data.status !== "in_progress" || worker?.state === "released" && data.status !== "todo" && data.status !== "cancelled") return malformed();
   return {
     id: id(data.id), version, properties,
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
-    status: data.status, dependsOn, externalDependsOn,
+    ...taskStatusFields(data), dependsOn, externalDependsOn,
     allowAgents: boolean(data.allowAgents),
     assignedTo: nullableId(data.assignedTo),
     requiredPlatform: data.requiredPlatform === null ? null : executionPlatform(data.requiredPlatform),
@@ -50,11 +63,11 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
     actorAccess: parseProjectAccess(data.actorAccess, projectId, userId),
     mode: data.mode, epoch: id(data.epoch), project: project(data.project),
     observedAt: timestamp(data.observedAt), tasks: array(data.tasks, parseTaskSummary),
+    sessions: parseTaskSessions(data.sessions),
   };
   if (new Set(result.assigneeVersions.map((person) => person.userId)).size !== result.assigneeVersions.length ||
     result.project.id !== projectId || result.actorAccess.ownership.teamId !== result.project.ownership.teamId ||
-    result.actorAccess.ownership.version !== result.project.ownership.version || result.tasks.length > 1000 ||
-    new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length ||
-    result.tasks.reduce((count, task) => count + task.dependsOn.length, 0) > 5000) return malformed();
+    result.actorAccess.ownership.version !== result.project.ownership.version ||
+    new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length) return malformed();
   return result;
 };

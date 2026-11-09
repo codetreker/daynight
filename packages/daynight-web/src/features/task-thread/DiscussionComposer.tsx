@@ -6,7 +6,7 @@ import { accountLabel, authorLabel, excerpt, ThreadAvatar, ThreadErrorDetails, T
 
 export const DiscussionComposer = ({ controller, view, account, active, inputRef, messages }: { readonly controller: ThreadController; readonly view: ThreadView; readonly account: CurrentAccount; readonly active: boolean; readonly inputRef: RefObject<HTMLTextAreaElement | null>; readonly messages: DiscussionMessages }) => {
   const [dismissedError, setDismissedError] = useState<Error | null>(null);
-  const disabled = !active || view.loading || view.authPaused || view.retired || view.readError !== null;
+  const disabled = !active || view.loading || view.authPaused && !view.initialized || view.retired || view.readError !== null;
   const name = accountLabel(account.user.name, account.user.id, messages);
   const send = () => { if (view.canSend) void controller.send(); };
   return <div className="thread-composer-wrap"><div className="thread-composer-inner">

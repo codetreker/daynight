@@ -8,7 +8,7 @@ export type ProjectNativeDraft = {
   readonly argsMode: 'inherit' | 'clear' | 'custom'; readonly args: string;
 };
 export type ConfigurationDraft = {
-  readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly native: NativeDraft;
+  readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly preferPlatformSpecificTasks: boolean; readonly native: NativeDraft;
   readonly projects: readonly { readonly projectId: string; readonly native: ProjectNativeDraft }[];
 };
 export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project';
@@ -16,7 +16,7 @@ export type ParsedConfigurationDraft = { readonly value: WorkerConfigurationValu
 const agents: readonly string[] = ['codex', 'claude', 'copilot'];
 export const emptyProjectDraft = (projectId: string): ConfigurationDraft['projects'][number] => ({ projectId, native: { agent: 'inherit', modelMode: 'inherit', model: '', argsMode: 'inherit', args: '[]' } });
 export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDraft => ({
-  maxConcurrent: String(value.maxConcurrent), pollIntervalMs: String(value.pollIntervalMs), recoveryLimit: String(value.recoveryLimit),
+  maxConcurrent: String(value.maxConcurrent), pollIntervalMs: String(value.pollIntervalMs), recoveryLimit: String(value.recoveryLimit), preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
   native: { agent: value.native.agent, model: value.native.model === null ? '' : value.native.model, args: JSON.stringify(value.native.args) },
   projects: value.projects.map(project => ({ projectId: project.projectId, native: {
     agent: project.nativeOverrides.agent === undefined ? 'inherit' : project.nativeOverrides.agent,
@@ -62,11 +62,29 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft): ParsedConfig
     };
     return { projectId: project.projectId, nativeOverrides };
   });
-  return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, native, projects }) : null, errors };
+  return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks, native, projects }) : null, errors };
 };
 export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue): boolean =>
   JSON.stringify(parseWorkerConfigurationValue(left)) === JSON.stringify(parseWorkerConfigurationValue(right));
 export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft): boolean => JSON.stringify(left) === JSON.stringify(right);
+export const configurationFieldChanges = (draft: ConfigurationDraft, desired: WorkerConfigurationValue, errors: ParsedConfigurationDraft['errors']) => {
+  // Isolate each native tuple so an unrelated invalid field cannot hide its saved state.
+  const baseline = { ...draftFromValue(desired), projects: [] };
+  const native = parseConfigurationDraft({ ...baseline, native: draft.native }).value?.native;
+  const projects = new Map(desired.projects.map(project => [project.projectId, project.nativeOverrides]));
+  return {
+    maxConcurrent: errors.maxConcurrent !== undefined || Number(draft.maxConcurrent) !== desired.maxConcurrent,
+    pollIntervalMs: errors.pollIntervalMs !== undefined || Number(draft.pollIntervalMs) !== desired.pollIntervalMs,
+    recoveryLimit: errors.recoveryLimit !== undefined || Number(draft.recoveryLimit) !== desired.recoveryLimit,
+    preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks,
+    native: native === undefined || JSON.stringify(native) !== JSON.stringify(desired.native),
+    projects: new Map(draft.projects.map(project => {
+      const expected = projects.get(project.projectId);
+      const overrides = parseConfigurationDraft({ ...baseline, projects: [project] }).value?.projects[0]?.nativeOverrides;
+      return [project.projectId, expected === undefined || overrides === undefined || JSON.stringify(overrides) !== JSON.stringify(expected)];
+    })),
+  };
+};
 export const resolvedProjectNative = (global: WorkerConfigurationNative, overrides: WorkerConfigurationOverrides): WorkerConfigurationNative => {
   const sameAgent = overrides.agent === undefined || overrides.agent === global.agent;
   return { agent: overrides.agent === undefined ? global.agent : overrides.agent,

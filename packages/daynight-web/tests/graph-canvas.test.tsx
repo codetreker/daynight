@@ -31,14 +31,14 @@ vi.mock('../src/features/task-graph/TaskNode', async (importOriginal) => {
 const time = '2026-10-20T00:00:00Z';
 const graph: TaskGraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
-  summary: { total: 6, todo: 3, inProgress: 1, done: 2, ready: 2, blocked: 1 },
+  summary: { total: 6, todo: 3, inProgress: 1, done: 2, cancelled: 0, ready: 2, blocked: 1 },
   tasks: [
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'E', titlePreview: '独立任务', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
-    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, cancelledAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, cancelledAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'E', titlePreview: '独立任务', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
   ],
 };
 const index = buildGraphIndex(graph);
@@ -46,6 +46,8 @@ const noop = () => {};
 const nodeButton = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}，(?:已完成|待处理|进行中)`) });
 const detailsButton = (name: string) => screen.getByRole('button', { name: `${name}，详情` });
 const nodeShell = (name: string) => nodeButton(name).closest<HTMLElement>('.task-node')!;
+const toolbarActions = (container: HTMLElement) => within(container.querySelector<HTMLElement>('.graph-toolbar-actions')!);
+const viewportActions = (container: HTMLElement) => within(container.querySelector<HTMLElement>('.react-flow__controls')!);
 const viewport = (container: HTMLElement) => container.querySelector<HTMLElement>('.react-flow__viewport')!;
 const zoom = (container: HTMLElement) => Number(/scale\(([^)]+)\)/.exec(viewport(container).style.transform)![1]);
 const ready = async (container: HTMLElement) => {
@@ -56,13 +58,14 @@ const ready = async (container: HTMLElement) => {
 beforeEach(installGraphMeasurements);
 
 describe('task dependency canvas', () => {
-  it('omits the entire expansion footer for fully visible tasks and sizes every card to its body', async () => {
+  it('sizes visible ordinary cards to their bodies and external cards to their navigation footers', async () => {
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await ready(view.container);
-    expect(view.container.querySelector('.task-node-expansions')).toBeNull();
+    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(2);
+    expect(view.container.querySelector('.task-node-expand[data-direction]')).toBeNull();
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
       expect(node.style.width).toBe('220px');
-      expect(node.style.height).toBe('96px');
+      expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '96px' : '136px');
     }
   });
 
@@ -87,27 +90,47 @@ describe('task dependency canvas', () => {
     expect(within(external).queryByText('被阻塞')).toBeNull();
   });
 
+  it('changes direction with keyboard, retains inspection, and restores a saved choice after reopening', async () => {
+    const user = userEvent.setup();
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    await ready(view.container);
+    const horizontal = toolbarActions(view.container).getByRole('radio', { name: '水平' });
+    const vertical = toolbarActions(view.container).getByRole('radio', { name: '垂直' });
+    expect(horizontal).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(nodeButton('合流实现…'));
+    const canvas = view.container.querySelector('.react-flow');
+    horizontal.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(vertical).toHaveFocus();
+    expect(vertical).toHaveAttribute('aria-checked', 'true');
+    expect(nodeShell('合流实现…')).toHaveClass('task-node-selected');
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    view.unmount();
+    const reopened = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    expect(toolbarActions(reopened.container).getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('switches the same modal canvas to fullscreen and back without changing its viewport or layout', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(dialog).toHaveClass('task-chain-dialog');
     expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
     const initialZoom = zoom(view.container);
-    fireEvent.click(screen.getByRole('button', { name: '放大' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '放大' }));
     await waitFor(() => { expect(zoom(view.container)).toBeGreaterThan(initialZoom); });
     const canvas = view.container.querySelector('.task-graph-canvas');
     const nodes = [...view.container.querySelectorAll('.react-flow__node')];
     const paths = [...view.container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'));
     const positions = nodes.map((node) => (node as HTMLElement).style.transform);
     const transform = viewport(view.container).style.transform;
-    const enter = screen.getByRole('button', { name: '全屏查看' });
+    const enter = toolbarActions(view.container).getByRole('button', { name: '全屏查看' });
     fireEvent.click(enter);
     expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
-    expect(screen.getByRole('button', { name: '退出全屏' })).toBe(enter);
+    expect(toolbarActions(view.container).getByRole('button', { name: '退出全屏' })).toBe(enter);
     expect(enter).toHaveFocus();
     expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);
     [...view.container.querySelectorAll('.react-flow__node')].forEach((node, position) => { expect(node).toBe(nodes[position]); });
@@ -125,7 +148,7 @@ describe('task dependency canvas', () => {
     expect(layout).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(enter);
-    fireEvent.click(screen.getByRole('button', { name: '退出全屏' }));
+    fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '退出全屏' }));
     expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
     expect(viewport(view.container).style.transform).toBe(transform);
     fireEvent.keyDown(enter, { key: 'Escape' });
@@ -135,7 +158,7 @@ describe('task dependency canvas', () => {
   it('contains keyboard focus in the modal and handles only local Escape one layer at a time', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<><button type="button">图外按钮</button><TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
+    const view = render(<><button type="button">图外按钮</button><TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     expect(view.container.querySelector('.task-chain-close')).toHaveFocus();
@@ -147,8 +170,8 @@ describe('task dependency canvas', () => {
       await user.tab({ shift: true });
       expect(dialog).toContainElement(document.activeElement as HTMLElement);
     }
-    fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
-    const exit = screen.getByRole('button', { name: '退出全屏' });
+    fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '全屏查看' }));
+    const exit = toolbarActions(view.container).getByRole('button', { name: '退出全屏' });
     fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
     fireEvent.keyDown(exit, { key: 'Escape' });
@@ -161,7 +184,7 @@ describe('task dependency canvas', () => {
   it.each(['.task-chain-heading h2', '.graph-toolbar-summary', '.task-graph-canvas'])('closes with Escape after clicking noninteractive content at %s', async (target) => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     await user.click(view.container.querySelector<HTMLElement>(target)!);
@@ -174,12 +197,12 @@ describe('task dependency canvas', () => {
   it('leaves fullscreen before closing after clicking blank canvas content', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     const canvas = view.container.querySelector('.task-graph-canvas');
     const transform = viewport(view.container).style.transform;
-    const fullscreen = screen.getByRole('button', { name: '全屏查看' });
+    const fullscreen = toolbarActions(view.container).getByRole('button', { name: '全屏查看' });
     await user.click(fullscreen);
     await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
     expect(dialog).toHaveFocus();
@@ -196,13 +219,13 @@ describe('task dependency canvas', () => {
 
   it.each([false, true])('keeps Tab navigation inside the modal after clicking its canvas (shift: %s)', async (shift) => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
     expect(dialog).toHaveFocus();
     await user.tab({ shift });
-    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog).getByRole('combobox', { name: '语言 / Language' })).toHaveFocus();
+    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog.querySelector<HTMLElement>('.task-chain-header')!).getByRole('button', { name: '关闭依赖图' })).toHaveFocus();
   });
 
   it('inerts background ancestors for the whole modal and restores their original state without touching body portals', async () => {
@@ -212,7 +235,7 @@ describe('task dependency canvas', () => {
     document.body.append(portal);
     const Wrapper = () => {
       const [opened, setOpened] = useState(false);
-      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
+      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
     };
     const view = render(<Wrapper />);
     const background = [screen.getByTestId('outer-background'), screen.getByTestId('inner-background')];
@@ -223,8 +246,8 @@ describe('task dependency canvas', () => {
     background.forEach((element) => { expect(element).toHaveAttribute('inert'); });
     expect(document.body.style.overflow).toBe('hidden');
     expect(portal).not.toHaveAttribute('inert');
-    fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
-    fireEvent.click(screen.getByRole('button', { name: '退出全屏' }));
+    fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '全屏查看' }));
+    fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '退出全屏' }));
     background.forEach((element) => { expect(element).toHaveAttribute('inert'); });
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(view.container.querySelector('.task-chain-close')!);
@@ -245,7 +268,7 @@ describe('task dependency canvas', () => {
     const onClose = vi.fn();
     const originalRestore = vi.fn();
     const latestRestore = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     fireEvent.click(dialog);
@@ -263,7 +286,7 @@ describe('task dependency canvas', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     fireEvent.click(view.container.querySelector('.task-chain-close')!);
     expect(onClose).toHaveBeenCalledTimes(2);
-    view.rerender(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
+    view.rerender(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
     view.unmount();
     expect(originalRestore).not.toHaveBeenCalled();
     expect(latestRestore).toHaveBeenCalledOnce();
@@ -271,10 +294,10 @@ describe('task dependency canvas', () => {
 
   it('wraps both keyboard boundaries and recovers focus entering from outside the modal', async () => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
-    const first = within(dialog).getByRole('combobox', { name: '语言 / Language' });
+    const first = within(dialog.querySelector<HTMLElement>('.task-chain-header')!).getByRole('button', { name: '关闭依赖图' });
     first.focus();
     await user.tab({ shift: true });
     const last = document.activeElement as HTMLElement;
@@ -329,10 +352,10 @@ describe('task dependency canvas', () => {
     expect(screen.queryByRole('button', { name: /^独立任务，/ })).toBeNull();
   });
 
-  it('renders the entire external ancestor closure with its own count and keeps card details behavior', async () => {
+  it('renders direct external context and keeps its details separate from navigation', async () => {
     const completed = graph.tasks[1]!;
     const externalGraph: TaskGraphData = {
-      ...graph, summary: { total: 6, todo: 3, inProgress: 0, done: 3, ready: 2, blocked: 1 },
+      ...graph, summary: { total: 6, todo: 3, inProgress: 0, done: 3, cancelled: 0, ready: 2, blocked: 1 },
       tasks: [
         graph.tasks[0]!,
         { ...completed, id: 'P', titlePreview: '已完成外部祖先', dependsOn: [] },
@@ -344,16 +367,16 @@ describe('task dependency canvas', () => {
     };
     const onOpenTask = vi.fn();
     const { container } = render(<TaskGraph index={buildGraphIndex(externalGraph)} rootId="A" onOpenTask={onOpenTask} />);
-    await waitFor(() => { expect(container.querySelectorAll('.react-flow__node')).toHaveLength(5); });
-    expect(screen.getByText('链内 3 · 外部 2 · 任务 5/5 · 依赖 4/4')).toBeTruthy();
-    expect(nodeShell('已完成外部祖先')).toHaveClass('task-node-external', 'task-node-done');
+    await waitFor(() => { expect(container.querySelectorAll('.react-flow__node')).toHaveLength(4); });
+    expect(screen.getByText('链内 3 · 外部 1 · 任务 4/4 · 依赖 3/3')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /已完成外部祖先/ })).toBeNull();
     expect(nodeButton('已完成外部前置')).toHaveAccessibleName('已完成外部前置，已完成，外部前置');
     expect(screen.queryByRole('button', { name: /外部前置的无关后续/ })).toBeNull();
     const externalRoute = container.querySelector('[data-id="P->B"] .react-flow__edge-path');
-    expect(externalRoute).toHaveAttribute('data-external', 'false');
+    expect(externalRoute).toBeNull();
     expect(container.querySelector('[data-id="P->B"] .task-dependency-paint-piece')).toBeNull();
-    fireEvent.click(detailsButton('已完成外部祖先'));
-    expect(onOpenTask).toHaveBeenCalledWith('P', detailsButton('已完成外部祖先'));
+    fireEvent.click(detailsButton('已完成外部前置'));
+    expect(onOpenTask).toHaveBeenCalledWith('B', detailsButton('已完成外部前置'));
     expect(screen.getByText('实线：普通依赖 · 虚线：外部依赖 · 虚线卡片：链外前置')).toBeTruthy();
   });
 
@@ -362,12 +385,12 @@ describe('task dependency canvas', () => {
       { ...graph.tasks[0]!, id: 'A', titlePreview: 'A' },
       { ...graph.tasks[0]!, id: 'X', titlePreview: 'X' },
       { ...graph.tasks[0]!, id: 'Y', titlePreview: 'Y', dependsOn: ['X'] },
-      { ...graph.tasks[0]!, id: 'B', titlePreview: 'B', dependsOn: ['A', 'Y'], externalDependsOn: ['Y'] },
+      { ...graph.tasks[0]!, id: 'B', titlePreview: 'B', dependsOn: ['A', 'X', 'Y'], externalDependsOn: ['X', 'Y'] },
       { ...graph.tasks[5]!, id: 'C', titlePreview: 'C', dependsOn: ['A', 'B'], externalDependsOn: ['A'] },
     ];
-    const snapshot = { ...graph, tasks, summary: { total: 5, todo: 1, inProgress: 0, done: 4, ready: 1, blocked: 0 } };
+    const snapshot = { ...graph, tasks, summary: { total: 5, todo: 1, inProgress: 0, done: 4, cancelled: 0, ready: 1, blocked: 0 } };
     const view = render(<TaskGraph index={buildGraphIndex(snapshot)} rootId="A" onOpenTask={noop} />);
-    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__edge-path')).toHaveLength(5));
+    await waitFor(() => expect(view.container.querySelectorAll('.react-flow__edge-path')).toHaveLength(6));
     await waitFor(() => expect(viewport(view.container).style.transform).not.toBe('translate(0px,0px) scale(1)'));
     const edge = (id: string) => view.container.querySelector<SVGPathElement>(`[data-id="${id}"] .react-flow__edge-path`)!;
     expect(edge('A->C')).toHaveAttribute('data-external', 'true');
@@ -401,7 +424,7 @@ describe('task dependency canvas', () => {
     const expected = layoutModule.layoutGraph({ rootId: 'A', mainIds: new Set(['A', 'C', 'D']), externalIds: new Set(['B', 'F']), edges: [
       { source: 'A', target: 'C', external: false }, { source: 'B', target: 'C', external: true },
       { source: 'C', target: 'D', external: false }, { source: 'F', target: 'D', external: true },
-    ], completed: 1 });
+    ], completed: 1 }, new Map([['A', 96], ['B', 136], ['C', 96], ['D', 96], ['F', 136]]));
     const { container } = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await waitFor(() => { expect(container.querySelectorAll('.react-flow__edge-path')).toHaveLength(expected.edges.length); });
     const actualPaths = [...container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'));
@@ -505,7 +528,7 @@ describe('task dependency canvas', () => {
     const paths = [...svg.querySelectorAll('path.react-flow__edge-path')];
     const initialPaths = paths.map((path) => path.getAttribute('d'));
     const beforeZoom = viewport(view.container).style.transform;
-    fireEvent.click(screen.getByRole('button', { name: '放大' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '放大' }));
     await waitFor(() => { expect(viewport(view.container).style.transform).not.toBe(beforeZoom); });
     expect(view.container.querySelector('svg.task-dependency-edges')).toBe(svg);
     paths.forEach((path, position) => { expect(svg.querySelectorAll('path.react-flow__edge-path')[position]).toBe(path); });
@@ -517,7 +540,7 @@ describe('task dependency canvas', () => {
       ...graph,
       tasks: graph.tasks.map((task) => task.id === 'D' ? { ...task, dependsOn: ['C'], externalDependsOn: [], blockedBy: ['C'] } : task),
     });
-    const expected = layoutModule.layoutGraph(projectChain(updated, 'A'));
+    const expected = layoutModule.layoutGraph(projectChain(updated, 'A'), new Map([['A', 96], ['B', 136], ['C', 96], ['D', 96]]));
     const retainedPath = svg.querySelector('[data-id="A->C"] path');
     view.rerender(<TaskGraph index={updated} rootId="A" onOpenTask={noop} />);
     await waitFor(() => { expect(svg.querySelectorAll('.react-flow__edge-path')).toHaveLength(3); });
@@ -555,7 +578,7 @@ describe('task dependency canvas', () => {
       expect(node.getAttribute('tabindex')).toBeNull();
       expect(node.classList.contains('draggable')).toBe(false);
       expect(node.classList.contains('selectable')).toBe(false);
-      expect(node.querySelectorAll('button')).toHaveLength(2);
+      expect(node.querySelectorAll('button')).toHaveLength(node.querySelector('.task-node-external') === null ? 2 : 3);
     }
     for (const edge of container.querySelectorAll('.react-flow__edge')) {
       expect(edge.getAttribute('tabindex')).toBeNull();
@@ -563,10 +586,10 @@ describe('task dependency canvas', () => {
     }
     expect(container.querySelector('.react-flow__controls-interactive')).toBeNull();
     expect(container.querySelectorAll('.react-flow__handle.connectable')).toHaveLength(0);
-    expect(screen.getByRole('button', { name: '放大' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '缩小' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '适应画布' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'React Flow attribution' }).getAttribute('href')).toContain('reactflow.dev');
+    expect(viewportActions(container).getByRole('button', { name: '放大' })).toBeTruthy();
+    expect(viewportActions(container).getByRole('button', { name: '缩小' })).toBeTruthy();
+    expect(viewportActions(container).getByRole('button', { name: '适应画布' })).toBeTruthy();
+    expect(within(container.querySelector<HTMLElement>('.react-flow__attribution')!).getByRole('link', { name: 'React Flow attribution' }).getAttribute('href')).toContain('reactflow.dev');
   });
 
   it('zooms and fits without recomputing layout, and applies selected styling without moving nodes', async () => {
@@ -579,11 +602,11 @@ describe('task dependency canvas', () => {
     expect(timings[0]!.duration).toBeGreaterThanOrEqual(0);
     const initialZoom = zoom(view.container);
     const positions = [...view.container.querySelectorAll<HTMLElement>('.react-flow__node')].map((node) => node.style.transform);
-    fireEvent.click(screen.getByRole('button', { name: '放大' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '放大' }));
     await waitFor(() => { expect(zoom(view.container)).toBeGreaterThan(initialZoom); });
-    fireEvent.click(screen.getByRole('button', { name: '缩小' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '缩小' }));
     await waitFor(() => { expect(zoom(view.container)).toBeLessThan(1.2 * initialZoom); });
-    fireEvent.click(screen.getByRole('button', { name: '适应画布' }));
+    fireEvent.click(viewportActions(view.container).getByRole('button', { name: '适应画布' }));
     await waitFor(() => { expect(zoom(view.container)).toBeLessThanOrEqual(1); });
     expect(zoom(view.container)).toBeGreaterThanOrEqual(0.2);
     const userViewport = viewport(view.container).style.transform;
@@ -633,7 +656,7 @@ describe('task dependency canvas', () => {
       dependsOn: position === 0 ? [] : [`N${position - 1}`],
       blockedBy: position === 0 ? [] : [`N${position - 1}`], ready: position === 0,
     }));
-    const longChain = buildGraphIndex({ ...graph, tasks, summary: { total: 10, todo: 10, inProgress: 0, done: 0, ready: 1, blocked: 9 } });
+    const longChain = buildGraphIndex({ ...graph, tasks, summary: { total: 10, todo: 10, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 9 } });
     const { container } = render(<TaskGraph index={longChain} rootId="N0" onOpenTask={noop} />);
     await waitFor(() => { expect(container.querySelectorAll('.react-flow__edge')).toHaveLength(9); });
     await waitFor(() => { expect(zoom(container)).toBe(0.8); });
@@ -646,7 +669,7 @@ describe('task dependency canvas', () => {
     expect(sourceLeft + layoutModule.TASK_NODE_WIDTH * zoom(container)).toBeLessThanOrEqual(800);
     expect(sourceTop).toBeGreaterThanOrEqual(0);
     expect(sourceTop + layoutModule.TASK_NODE_COMPACT_HEIGHT * zoom(container)).toBeLessThanOrEqual(445);
-    fireEvent.click(screen.getByRole('button', { name: '适应画布' }));
+    fireEvent.click(viewportActions(container).getByRole('button', { name: '适应画布' }));
     await waitFor(() => { expect(zoom(container)).toBeLessThan(0.8); });
     expect(zoom(container)).toBeGreaterThanOrEqual(0.2);
     expect(container.querySelectorAll('.react-flow__node')).toHaveLength(10);
@@ -658,7 +681,7 @@ describe('task dependency canvas', () => {
       dependsOn: position === 0 ? [] : [`N${position - 1}`],
       blockedBy: position === 0 ? [] : [`N${position - 1}`], ready: position === 0,
     }));
-    const longChain = buildGraphIndex({ ...graph, tasks, summary: { total: 10, todo: 10, inProgress: 0, done: 0, ready: 1, blocked: 9 } });
+    const longChain = buildGraphIndex({ ...graph, tasks, summary: { total: 10, todo: 10, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 9 } });
     const view = render(<TaskGraph index={longChain} rootId="N0" onOpenTask={noop} />);
     await waitFor(() => { expect(zoom(view.container)).toBe(0.8); });
     const button = control === 'body' ? nodeButton('任务 9') : detailsButton('任务 9');
@@ -714,7 +737,7 @@ describe('progressive task visibility', () => {
     const taskBody = (title: string) => within(taskShell(title)).getByRole('button', { name: new RegExp(`^${title}，(?!详情$)`) });
     const taskDetails = (title: string) => within(taskShell(title)).getByRole('button', { name: `${title}，详情` });
     const expansion = (title: string, direction: string) => taskShell(title).querySelector<HTMLButtonElement>(`.task-node-expand[data-direction="${direction}"]`)!;
-    const resetControl = () => within(container.querySelector<HTMLElement>('.graph-toolbar')!).getByRole('button', { name: '收起到概览' });
+    const resetControl = () => toolbarActions(container).getByRole('button', { name: '收起到概览' });
     return { scope, taskShell, taskBody, taskDetails, expansion, resetControl };
   };
   const rendered = async (container: HTMLElement, nodes: number, edges: number) => {
@@ -752,6 +775,30 @@ describe('progressive task visibility', () => {
     expect([...view.container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'))).toEqual(routes);
     expect(viewport(view.container).style.transform).toBe(transform);
     expect(layout).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps expanded tasks and inspection when the direction changes', async () => {
+    const Example = () => {
+      const [direction, setDirection] = useState<'horizontal' | 'vertical'>('horizontal');
+      return <TaskGraph index={progressiveIndex} rootId={rootId} onOpenTask={noop} direction={direction} onDirectionChange={setDirection} />;
+    };
+    const view = render(<Example />);
+    const { taskBody, expansion } = controls(view.container);
+    await rendered(view.container, 50, 49);
+    fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
+    await rendered(view.container, 70, 69);
+    fireEvent.click(taskBody('合流任务 · 40 个外部前置'));
+    const ids = visibleIds(view.container);
+    const canvas = view.container.querySelector('.react-flow');
+    const vertical = toolbarActions(view.container).getByRole('radio', { name: '垂直' });
+    const horizontal = toolbarActions(view.container).getByRole('radio', { name: '水平' });
+    fireEvent.click(vertical);
+    expect(vertical).toHaveAttribute('aria-checked', 'true');
+    expect(visibleIds(view.container)).toEqual(ids);
+    expect(taskBody('合流任务 · 40 个外部前置')).toHaveAttribute('aria-pressed', 'true');
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    fireEvent.click(horizontal);
+    expect(visibleIds(view.container)).toEqual(ids);
   });
 
   it('expands direct neighbors with exact task, induced-edge and remaining counts, retains keyboard anchor focus, and resets deterministically', async ({ signal }) => {
@@ -795,11 +842,12 @@ describe('progressive task visibility', () => {
     expect(rootBody.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('96px');
     fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
     await rendered(view.container, 101, 100);
-    expect(view.container.querySelectorAll('.task-node-expand')).toHaveLength(0);
-    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.task-node-expand[data-direction]')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.task-node-navigate')).toHaveLength(40);
+    expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(40);
     await waitFor(() => { expect(joinBody).toHaveFocus(); });
-    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe('96px');
-    expect(progressiveIndex.components.get(rootId)!.progress).toEqual({ total: 61, done: 0, status: 'todo' });
+    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '96px' : '136px');
+    expect(progressiveIndex.components.get(rootId)!.progress).toEqual({ total: 61, done: 0, cancelled: 0, ended: 0, status: 'todo' });
     signal.throwIfAborted();
     await user.click(reset);
     await rendered(view.container, 50, 49);
@@ -828,7 +876,7 @@ describe('progressive task visibility', () => {
     view.rerender(<><button type="button">详情关闭控件</button><TaskGraph index={refreshed} rootId={rootId} onOpenTask={noop} /></>);
     await rendered(view.container, 70, 69);
     expect(visibleIds(view.container)).toEqual(retainedIds);
-    expect(scope.getByRole('button', { name: '更新后的直接后续，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
+    expect(within(view.container.querySelector<HTMLElement>(`.react-flow__node[data-id="${revised.id}"]`)!).getByRole('button', { name: '更新后的直接后续，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
     expect(outside).toHaveFocus();
     expect(viewport(view.container).style.transform).toBe(transform);
     expect(taskShell('合流任务 · 40 个外部前置')).toHaveClass('task-node-selected');
@@ -862,7 +910,7 @@ describe('progressive task visibility', () => {
 
   it('recovers graph focus when refresh removes a focused visible card', async () => {
     const view = render(<TaskGraph index={progressiveIndex} rootId={rootId} onOpenTask={noop} />);
-    const { scope, taskBody, expansion } = controls(view.container);
+    const { taskBody, expansion, resetControl } = controls(view.container);
     await rendered(view.container, 50, 49);
     fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
     await rendered(view.container, 70, 69);
@@ -872,7 +920,7 @@ describe('progressive task visibility', () => {
     const refreshed = buildGraphIndex({ ...fixture, tasks, summary: { ...fixture.summary, total: 100, done: 39 } });
     view.rerender(<TaskGraph index={refreshed} rootId={rootId} onOpenTask={noop} />);
     await rendered(view.container, 69, 68);
-    expect(scope.getByRole('button', { name: '收起到概览' })).toHaveFocus();
+    expect(resetControl()).toHaveFocus();
   });
 
   it('reveals an offscreen expansion control using intended viewport coordinates before native scroll resets', async () => {
@@ -896,6 +944,37 @@ describe('progressive task visibility', () => {
 });
 
 describe('initial task viewport policy', () => {
+  it('frames the first vertical rank using its centers even with mixed card heights', () => {
+    const geometry: layoutModule.CanvasLayout = {
+      direction: 'vertical',
+      nodes: [
+        { id: 'root', kind: 'main', width: 220, height: 96, position: { x: 300, y: 52 } },
+        { id: 'peer', kind: 'external', width: 220, height: 136, position: { x: 32, y: 32 } },
+        { id: 'tail', kind: 'main', width: 220, height: 96, position: { x: 300, y: 5000 } },
+      ], edges: [], width: 552, height: 5128,
+    };
+    const actual = getInitialTaskViewport(geometry, 'root', 800, 445);
+    expect(actual.zoom).toBe(0.8);
+    expect((300 + 110) * actual.zoom + actual.x).toBeCloseTo(400);
+    expect(32 * actual.zoom + actual.y).toBe(32);
+    const folded = getInitialTaskViewport(geometry, 'root', 800, 445, true);
+    expect(52 * folded.zoom + folded.y).toBe(32);
+    expect((300 + 110) * folded.zoom + folded.x).toBeCloseTo(400);
+  });
+
+  it('frames upstream vertical context before a later root', () => {
+    const geometry: layoutModule.CanvasLayout = {
+      direction: 'vertical',
+      nodes: [
+        { id: 'root', kind: 'main', width: 220, height: 96, position: { x: 800, y: 5000 } },
+        { id: 'external', kind: 'external', width: 220, height: 96, position: { x: 32, y: 32 } },
+      ], edges: [], width: 1052, height: 5128,
+    };
+    const actual = getInitialTaskViewport(geometry, 'root', 320, 445);
+    expect(32 * actual.zoom + actual.x).toBe(32);
+    expect(32 * actual.zoom + actual.y).toBe(32);
+  });
+
   it('fits and centers the actual mixed-height card bounds', () => {
     const geometry: layoutModule.CanvasLayout = {
       nodes: [
@@ -978,20 +1057,20 @@ describe('task chain dialog entries', () => {
       const dependsOn = id === 'C' ? ['A'] : id === 'D' ? ['B'] : id.startsWith('leaf-') ? ['D'] : [];
       return { ...graph.tasks[0]!, id, titlePreview: id, status: 'todo', ready: dependsOn.length === 0, dependsOn, blockedBy: dependsOn };
     });
-    const before = { ...graph, tasks, summary: { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, ready: 2, blocked: tasks.length - 2 } };
+    const before = { ...graph, tasks, summary: { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, cancelled: 0, ready: 2, blocked: tasks.length - 2 } };
     const after = { ...before, tasks: tasks.map((task) => task.id === 'D' ? { ...task, dependsOn: ['B', 'C'], blockedBy: ['B', 'C'] } : task) };
     return { before: buildGraphIndex(before), after: buildGraphIndex(after) };
   };
 
   it.each(['body', 'footer', 'fullscreen'] as const)('keeps %s focus inside the modal when a merge changes the representative', async (control) => {
     const { before, after } = mergingGraphs();
-    const list = (index: typeof before, openChainId: string) => <ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index}
+    const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
       allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50));
     const card = view.container.querySelector<HTMLElement>('.react-flow__node[data-id="D"]')!;
-    if (control === 'fullscreen') fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
-    const focused = control === 'fullscreen' ? screen.getByRole('button', { name: '退出全屏' })
+    if (control === 'fullscreen') fireEvent.click(toolbarActions(view.container).getByRole('button', { name: '全屏查看' }));
+    const focused = control === 'fullscreen' ? toolbarActions(view.container).getByRole('button', { name: '退出全屏' })
       : card.querySelector<HTMLButtonElement>(control === 'footer' ? '.task-node-expand[data-direction="successors"]' : '.task-node-body')!;
     focused.focus();
     expect(focused).toHaveFocus();
@@ -1006,15 +1085,15 @@ describe('task chain dialog entries', () => {
   it('recovers focus to the labeled empty list when the final ordinary edge becomes external', async () => {
     const tasks: TaskGraphData['tasks'] = ['A', 'B'].map((id) => ({ ...graph.tasks[0]!, id, titlePreview: id, status: 'todo',
       dependsOn: id === 'B' ? ['A'] : [], blockedBy: id === 'B' ? ['A'] : [], ready: id === 'A' }));
-    const before = buildGraphIndex({ ...graph, tasks, summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 } });
+    const before = buildGraphIndex({ ...graph, tasks, summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
     const after = buildGraphIndex({ ...graph, tasks: tasks.map((task) => task.id === 'B' ? { ...task, externalDependsOn: ['A'] } : task),
-      summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 } });
-    const view = render(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={false} onShowAllChange={noop} index={before} allRepresentativeIds={['A']}
+      summary: { total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={before} allRepresentativeIds={['A']}
       representativeIds={['A']} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(2));
     const focused = view.container.querySelector<HTMLButtonElement>('.react-flow__node[data-id="B"] .task-node-body')!;
     focused.focus();
-    view.rerender(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={false} onShowAllChange={noop} index={after} allRepresentativeIds={[]}
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={after} allRepresentativeIds={[]}
       representativeIds={[]} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     expect(view.container.querySelector('.completed-chain-control')).toBeNull();
@@ -1027,7 +1106,7 @@ describe('task chain dialog entries', () => {
     const outside = document.createElement('button');
     outside.textContent = '详情关闭控件';
     document.body.append(outside);
-    const list = (index: typeof before, openChainId: string) => <ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index}
+    const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
       allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50));
@@ -1042,17 +1121,17 @@ describe('task chain dialog entries', () => {
 
   it('renders the presented root order without changing the complete graph index', () => {
     const representativeIds = index.representativeIds.toReversed();
-    const view = render(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect([...view.container.querySelectorAll('.root-toggle')].map((root) => root.id)).toEqual(['task-root-F', 'task-root-E', 'task-root-B', 'task-root-A']);
     expect(index.representativeIds).toEqual(['A', 'B', 'E', 'F']);
     expect(index.successors.get('A')).toEqual(['C']);
-    expect(index.components.get('A')!.progress).toEqual({ total: 3, done: 1, status: 'in_progress' });
+    expect(index.components.get('A')!.progress).toEqual({ total: 3, done: 1, cancelled: 0, ended: 1, status: 'in_progress' });
     expect(screen.getByLabelText('显示 4 条，共 4 条任务链')).toHaveTextContent('4 / 4');
   });
 
   it('retains collapsed root renders during selection and still applies their new snapshot progress', async () => {
     const progressReads = vi.spyOn(index.components, 'get');
-    const view = render(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await ready(view.container);
     const originalRoots = [...view.container.querySelectorAll('.root-toggle')];
     const originalCanvas = view.container.querySelector('.task-graph-canvas');
@@ -1079,22 +1158,21 @@ describe('task chain dialog entries', () => {
     const refreshed = buildGraphIndex({
       ...graph,
       tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })),
-      summary: { total: 6, todo: 0, inProgress: 0, done: 6, ready: 0, blocked: 0 },
+      summary: { total: 6, todo: 0, inProgress: 0, done: 6, cancelled: 0, ready: 0, blocked: 0 },
     });
-    view.rerender(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(originalRoots[2]!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
     expect(originalRoots[2]!.parentElement!.querySelector('.root-status')).toHaveTextContent('已完成');
     expect(originalRoots[0]!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
     expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveTextContent('已完成');
     expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveClass('graph-status-done');
-    expect(screen.getByRole('checkbox', { name: '显示所有' })).toBeChecked();
     expect(view.container.querySelectorAll('.root-toggle')[2]).toBe(originalRoots[2]);
   });
 
   it('opens one graph through its explicit action while preserving the task disclosure and list identity', async () => {
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
-      return <ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)} onOpenTask={noop} />;
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)} onOpenTask={noop} />;
     };
     const { container } = render(<Wrapper />);
     const roots = container.querySelectorAll<HTMLButtonElement>('.root-toggle');
@@ -1139,7 +1217,7 @@ describe('task chain dialog entries', () => {
   it('renders task previews as plain text in the list, modal title and graph nodes', () => {
     const untrusted = '<img src=x onerror=alert(1)>'.repeat(6);
     const snapshot = { ...graph, tasks: graph.tasks.map((task) => task.id === 'A' ? { ...task, titlePreview: untrusted, titleTruncated: true } : task) };
-    const { container } = render(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={buildGraphIndex(snapshot)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const { container } = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={buildGraphIndex(snapshot)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(screen.getAllByText(`${untrusted}…`)).toHaveLength(3);
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('script')).toBeNull();

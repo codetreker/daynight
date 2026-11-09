@@ -4,6 +4,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
 import { createLocaleRender } from './helpers/renderWithLocale';
+import { personalTeamPage } from './helpers/team';
 const render = createLocaleRender('en');
 const owner = '00000009-1111-4111-8111-111111111111';
 const sessionId = '00000001-1111-4111-8111-111111111111';
@@ -38,7 +39,8 @@ it('renders the shared session after authentication and removes it on sign-out',
     if (url.endsWith('/commands')) throw new Error('lost acknowledgement');
     if (url === '/api/v1/auth/logout') return new Response(null, { status: 204 });
     if (url === '/api/v1/auth/providers') return json({ providers: ['github'] });
-    if (url === '/api/v1/projects?limit=50') return json({ items: [{ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: '00000020-1111-4111-8111-111111111111', name: 'Session test project', repoUrl: 'https://github.com/example/session-test', settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-28T01:00:00Z', updatedAt: '2026-10-28T01:00:00Z' }], nextCursor: null });
+    if (url.startsWith('/api/v1/teams?')) return json(personalTeamPage(owner));
+    if (url.startsWith('/api/v1/projects?')) return json({ items: [{ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: '00000020-1111-4111-8111-111111111111', name: 'Session test project', repoUrl: 'https://github.com/example/session-test', settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-28T01:00:00Z', updatedAt: '2026-10-28T01:00:00Z' }], nextCursor: null });
     throw new Error(`Unexpected request ${url}`);
   }));
   render(<AuthenticatedApp />);
@@ -56,7 +58,8 @@ it('renders the shared session after authentication and removes it on sign-out',
   window.sessionStorage.setItem(closedDraft, 'private draft from another page');
   const otherDraft = 'daynight:session-draft:another-principal:closed-session';
   window.sessionStorage.setItem(otherDraft, 'other principal');
-  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Account menu:/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
   await waitFor(() => expect(screen.queryByText('Private test conversation')).toBeNull());
   expect(Object.keys(window.sessionStorage).filter(key => key.includes(sessionId))).toEqual([]);
   expect(window.sessionStorage.getItem(closedDraft)).toBeNull();
@@ -94,7 +97,8 @@ function focusSession() {
     if (url === `/api/v1/test-sessions/${sessionId}`) return principal === owner ? response({ session: snapshot }) : response({ error: { code: 'forbidden', message: 'Unavailable', requestId: 'request' } }, 403);
     if (url.includes('/timeline?')) return response({ sessionId, historyEpoch: snapshot.historyEpoch, items: [{ kind: 'assistant_message', entryId: '00000012-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Private focus conversation' }] }], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
     if (url === '/api/v1/auth/providers') return response({ providers: ['github'] });
-    if (url === '/api/v1/projects?limit=50') return response({ items: [], nextCursor: null });
+    if (url.startsWith('/api/v1/teams?')) return response(personalTeamPage(principal));
+    if (url.startsWith('/api/v1/projects?')) return response({ items: [], nextCursor: null });
     throw new Error(`Unexpected request ${url}`);
   });
   vi.stubGlobal('fetch', fetcher);
@@ -172,6 +176,6 @@ it.each(['changed', 'expired'] as const)('clears the retained Test Session when 
   expect(textbox.isConnected).toBe(false);
   expect(f.sockets[0]!.close).toHaveBeenCalled();
   expect(Object.keys(window.sessionStorage).filter(key => key.startsWith(`daynight:session-draft:${owner}:`))).toEqual([]);
-  if (outcome === 'changed') expect(await screen.findByRole('link', { name: 'Account settings: Other' })).toBeVisible();
+  if (outcome === 'changed') expect(await screen.findByRole('button', { name: 'Account menu: Other' })).toBeVisible();
   else expect(await screen.findByRole('button', { name: /GitHub/ })).toBeVisible();
 });

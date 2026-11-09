@@ -1,8 +1,10 @@
+import { ChildProcess } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandCleanupError, HerdrCommandError } from "../../../src/commands/worker/herdr/command.js";
+import { hasHerdrCommandCleanupFailure, HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { createAssistantHostCollector } from "../../../src/commands/worker/bots/host-capabilities.js";
 import { createWorkerTelemetryCollector } from "../../../src/commands/worker/telemetry.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -17,7 +19,7 @@ vi.mock("../../../src/commands/worker/herdr/instance.js", async (original) => ({
 const operations: Operation[] = [];
 const operation = (): Operation => { const result = createOperation({ limits: { totalMs: 15_000 } }); operations.push(result); return result; };
 const cwd = path.resolve("startup-volume");
-const collector = () => createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux" });
+const collector = () => createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example" });
 const finish = async <T>(pending: Promise<T>, milliseconds = 210): Promise<T> => { await vi.advanceTimersByTimeAsync(milliseconds); return pending; };
 
 beforeEach(() => {
@@ -51,7 +53,7 @@ describe("Worker telemetry", () => {
   it("includes explicitly supplied assistant observations and preserves cleanup failures privately", async () => {
     const failure = new HerdrCommandCleanupError([new Error("private-token")], undefined);
     const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "unavailable" as const, model: null, args: [] })) };
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: async () => ({ assistantHost, issues: [{ provider: "copilot" as const, reason: "unavailable" as const, error: failure }] }) } });
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: async () => ({ assistantHost, issues: [{ provider: "copilot" as const, reason: "unavailable" as const, error: failure }] }) } });
     const sample = await finish(instance.collect(operation()));
     expect(sample.telemetry.assistantHost).toEqual(assistantHost);
     expect(sample.issues).toEqual([{ component: "assistantHost_copilot", code: "unavailable", error: failure }]);
@@ -60,7 +62,7 @@ describe("Worker telemetry", () => {
 
   it("keeps a bounded assistant timeout report when the resource sampling deadline has elapsed", async () => {
     const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "timeout" as const, model: null, args: [] })) };
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: async parent => {
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: async parent => {
       await new Promise(resolve => setTimeout(resolve, 5_001)); parent.check(); return { assistantHost, issues: [] };
     } } });
     const pending = instance.collect(operation());
@@ -169,7 +171,7 @@ describe("Worker telemetry", () => {
     mocks.version.mockImplementation(({ agent }: { agent: string }) => new Promise((resolve, reject) => {
       completions.set(agent, error => error === undefined ? resolve("1.0.0") : reject(error));
     }));
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: () => {
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: () => {
       if (mode === "synchronous throw") throw assistantFailure;
       return Promise.reject(assistantFailure);
     } } });
@@ -196,7 +198,7 @@ describe("Worker telemetry", () => {
     mocks.version.mockImplementation(() => new Promise((resolve, reject) => {
       completions.push(error => error === undefined ? resolve("1.0.0") : reject(error));
     }));
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: parent => new Promise((_, reject) => {
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: parent => new Promise((_, reject) => {
       const abort = () => reject(parent.signal.reason);
       parent.signal.addEventListener("abort", abort, { once: true });
       if (parent.signal.aborted) abort();
@@ -217,5 +219,161 @@ describe("Worker telemetry", () => {
     expect(stoppedBeforeLastProbe).toBe(false);
     expect(hasHerdrCommandCleanupFailure(failure)).toBe(true);
     expect(sent).toBe(0);
+  });
+});
+
+
+describe("native version cleanup recovery", () => {
+  beforeEach(() => { vi.spyOn(performance, "now").mockImplementation(() => Date.now()); });
+
+  const timedOutProbe = async (terminationFailure = false) => {
+    const child = new ChildProcess();
+    if (terminationFailure) Object.defineProperty(child, "pid", { get: () => { throw new Error("Cannot terminate the owned process"); } });
+    const parent = createOperation({ limits: { totalMs: 100, requestMs: 20 } });
+    try {
+      const result = runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, parent, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+      const failure = await finish(result, 110);
+      expect(failure).toBeInstanceOf(HerdrCommandCleanupError);
+      return { child, failure };
+    } finally { parent.dispose(); }
+  };
+
+  it("blocks replacements across expired caches and retries immediately after the original close", async () => {
+    const original = await timedOutProbe();
+    let attempts = 0;
+    mocks.version.mockImplementation(async ({ agent }: { agent: string }) => {
+      if (agent === "codex" && ++attempts === 1) throw original.failure;
+      return "2.0.0";
+    });
+    const instance = collector();
+    const first = await finish(instance.collect(operation()));
+    expect(first.telemetry.versions.codex.state).toBe("error");
+    const closeListeners = original.child.listenerCount("close");
+    for (const elapsed of [1, 60_001, 120_001]) {
+      await vi.advanceTimersByTimeAsync(elapsed);
+      const blocked = await finish(instance.collect(operation()));
+      expect(blocked.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
+    }
+    original.child.emit("exit", 0, null);
+    new ChildProcess().emit("close", 0, null);
+    await finish(instance.collect(operation()));
+    expect(attempts).toBe(1);
+    expect(original.child.listenerCount("close")).toBe(closeListeners);
+    original.child.emit("close", 0, null);
+    const sampledAt = new Date().toISOString();
+    const recovered = await finish(instance.collect(operation()));
+    expect(recovered.telemetry.versions.codex).toEqual({ state: "ok", value: "2.0.0", checkedAt: sampledAt });
+    expect(recovered.telemetry.sampledAt).toBe(sampledAt);
+    expect(recovered.telemetry.versions.codex.checkedAt).not.toBe(first.telemetry.versions.codex.checkedAt);
+    expect(recovered.issues.find(issue => issue.component === "codex")).toBeUndefined();
+    expect(attempts).toBe(2);
+    await finish(instance.collect(operation()));
+    expect(attempts).toBe(2);
+  });
+
+  it("invalidates a recent unavailable cache only for its confirmed provider and round", async () => {
+    const codex = await timedOutProbe(); const copilot = await timedOutProbe(); const nextCodex = await timedOutProbe();
+    const attempts = { codex: 0, copilot: 0 };
+    mocks.version.mockImplementation(async ({ agent }: { agent: "codex" | "copilot" }) => {
+      const count = ++attempts[agent];
+      if (agent === "codex" && count <= 2) throw count === 1 ? codex.failure : nextCodex.failure;
+      if (agent === "copilot" && count === 1) throw copilot.failure;
+      return "2.0.0";
+    });
+    const instance = collector();
+    await finish(instance.collect(operation()));
+    codex.child.emit("close", 0, null);
+    let sample = await finish(instance.collect(operation()));
+    expect(sample.telemetry.versions.codex.state).toBe("error");
+    expect(sample.telemetry.versions.copilot.state).toBe("error");
+    expect(attempts).toEqual({ codex: 2, copilot: 1 });
+    codex.child.emit("close", 0, null);
+    await finish(instance.collect(operation()));
+    expect(attempts).toEqual({ codex: 2, copilot: 1 });
+    copilot.child.emit("close", 0, null);
+    sample = await finish(instance.collect(operation()));
+    expect(sample.telemetry.versions.copilot).toMatchObject({ state: "ok", value: "2.0.0" });
+    expect(sample.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
+    nextCodex.child.emit("close", 0, null);
+    sample = await finish(instance.collect(operation()));
+    expect(sample.telemetry.versions.codex).toMatchObject({ state: "ok", value: "2.0.0" });
+    expect(attempts).toEqual({ codex: 3, copilot: 2 });
+  });
+
+  it("does not discard a nested unconfirmed cleanup when another aggregate member closes", async () => {
+    const first = await timedOutProbe(); const second = await timedOutProbe();
+    const failure = new AggregateError([first.failure], "Combined probes", { cause: new Error("Second probe", { cause: second.failure }) });
+    let attempts = 0;
+    mocks.version.mockImplementation(async ({ agent }: { agent: string }) => {
+      if (agent === "codex" && ++attempts === 1) throw failure;
+      return "2.0.0";
+    });
+    const instance = collector();
+    await finish(instance.collect(operation()));
+    first.child.emit("close", 0, null);
+    const blocked = await finish(instance.collect(operation()));
+    expect(blocked.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
+    expect(blocked.issues.find(issue => issue.component === "codex")?.error).toBe(failure);
+    expect(attempts).toBe(1);
+    second.child.emit("close", 0, null);
+    expect((await finish(instance.collect(operation()))).telemetry.versions.codex.state).toBe("ok");
+    expect(attempts).toBe(2);
+  });
+
+  it.each(["termination failure", "legacy cleanup"])("keeps %s unavailable after a close and cache expiry", async mode => {
+    const original = await timedOutProbe(mode === "termination failure");
+    const failure = mode === "legacy cleanup" ? new HerdrCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
+    let attempts = 0;
+    mocks.version.mockImplementation(async ({ agent }: { agent: string }) => {
+      if (agent === "codex") { attempts++; throw failure; }
+      return "2.0.0";
+    });
+    const instance = collector();
+    await finish(instance.collect(operation()));
+    original.child.emit("close", 0, null);
+    await vi.advanceTimersByTimeAsync(120_001);
+    const blocked = await finish(instance.collect(operation()));
+    expect(blocked.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
+    expect(blocked.issues.find(issue => issue.component === "codex")?.error).toBe(failure);
+    expect(attempts).toBe(1);
+  });
+
+  it("confirms assistant and version probes independently and reports the retry's current failure", async () => {
+    const host = await timedOutProbe(); const version = await timedOutProbe();
+    const currentFailure = new HerdrCommandError("Retry failed", 2, null, "private diagnostic");
+    let hostAttempts = 0; let versionAttempts = 0;
+    mocks.access.mockResolvedValue(undefined);
+    const assistantHost = createAssistantHostCollector({ workingDirectory: process.cwd(), environment: {},
+      configuration: { agent: "codex", agentControlMode: "web", args: [], model: null, recoveryLimit: 3 },
+      resolveExecutable: provider => provider,
+      runCommand: async command => {
+        if (command.file === "codex" && ++hostAttempts === 1) throw host.failure;
+        return { stderr: "", stdout: command.args.includes("--version")
+          ? command.file === "codex" ? "codex-cli 0.1.0" : command.file === "claude" ? "2.1.247 (Claude Code)" : "GitHub Copilot CLI 1.0.83"
+          : command.file === "codex" ? "app-server --stdio" : command.file === "claude" ? "--input-format --output-format --include-partial-messages" : "--no-auto-update" };
+      },
+    });
+    mocks.version.mockImplementation(async ({ agent }: { agent: string }) => {
+      if (agent === "codex") { versionAttempts++; throw versionAttempts === 1 ? version.failure : currentFailure; }
+      return "2.0.0";
+    });
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost });
+    await finish(instance.collect(operation()));
+    host.child.emit("close", 0, null);
+    let sample = await finish(instance.collect(operation()));
+    expect(sample.telemetry.assistantHost?.providers[0]!.available).toBe(true);
+    expect(sample.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
+    expect(hostAttempts).toBe(3); expect(versionAttempts).toBe(1);
+    version.child.emit("close", 0, null);
+    const checkedAt = new Date().toISOString();
+    sample = await finish(instance.collect(operation()));
+    expect(sample.telemetry.versions.codex).toEqual({ state: "error", code: "command_failed", checkedAt });
+    expect(sample.issues.find(issue => issue.component === "codex")?.error).toBe(currentFailure);
+    expect(versionAttempts).toBe(2);
+    const cancellation = new AbortController(); const parent = createOperation({ signal: cancellation.signal });
+    cancellation.abort();
+    try { await expect(instance.collect(parent)).rejects.toBe(parent.signal.reason); }
+    finally { parent.dispose(); }
+    expect(versionAttempts).toBe(2); expect(hostAttempts).toBe(5);
   });
 });

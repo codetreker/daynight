@@ -42,7 +42,7 @@ it("clears persisted null-ownership details before admitting the same task versi
   await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
   expect((await connection.get("details", [userId, projectId, taskId]))!.detail.properties).toHaveProperty("worker", null);
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(6);
+  expect(TASK_CACHE_SCHEMA).toBe(9);
   expect(await current.getAll("details")).toEqual([]);
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
 });
@@ -110,13 +110,13 @@ it.each([1, 2, 3, 4])("rebuilds schema %i project and task formats before admitt
   expect((await connection.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownership");
   if (oldVersion < 4) expect((await connection.get("details", [userId, projectId, taskId]))!.detail).not.toHaveProperty("assignedTo");
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(6);
+  expect(TASK_CACHE_SCHEMA).toBe(9);
   expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
   for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
 });
 
-it("adds persistent profiles to the shipped ownership-bearing schema 5 without rebuilding task data or fences", async () => {
+it("adds profiles and rebuilds schema 5 Task data while preserving identity fences", async () => {
   const old = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 5, { upgrade(database) {
     database.createObjectStore("userScopes", { keyPath: "userId" });
     database.createObjectStore("projects", { keyPath: ["userId", "projectId"] }).createIndex("by-user", "userId");
@@ -143,7 +143,86 @@ it("adds persistent profiles to the shipped ownership-bearing schema 5 without r
   const current = await cache().open();
   expect([...current.objectStoreNames]).toContain("profiles");
   expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
-  expect(await current.get("projects", [userId, projectId])).toEqual(manifest);
-  expect(await current.get("summaries", [userId, projectId, taskId])).toEqual(summary);
-  expect(await current.get("details", [userId, projectId, taskId])).toEqual(detailRecord);
+  expect(await current.get("projects", [userId, projectId])).toBeUndefined();
+  expect(await current.get("summaries", [userId, projectId, taskId])).toBeUndefined();
+  expect(await current.get("details", [userId, projectId, taskId])).toBeUndefined();
+});
+
+it("adds session history and rebuilds schema 6 Task data while preserving profiles", async () => {
+  const old = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 6, { upgrade(database) {
+    database.createObjectStore("userScopes", { keyPath: "userId" });
+    database.createObjectStore("projects", { keyPath: ["userId", "projectId"] }).createIndex("by-user", "userId");
+    for (const name of ["summaries", "details"] as const) {
+      const store = database.createObjectStore(name, { keyPath: ["userId", "projectId", "taskId"] });
+      store.createIndex("by-user", "userId"); store.createIndex("by-project", ["userId", "projectId"]);
+    }
+    const profiles = database.createObjectStore("profiles", { keyPath: ["userId", "projectId", "profileUserId"] });
+    profiles.createIndex("by-user", "userId"); profiles.createIndex("by-project", ["userId", "projectId"]);
+  } });
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001", taskId = "40000000-0000-4000-8000-000000000001";
+  const detail = detailFixture(projectId, taskId);
+  const detailRow = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 10, lastUsedAt: 1 };
+  const profileRow = { userId, projectId, profileUserId: taskId, userFence, profile: { userId: taskId, version: "a".repeat(64), name: null, avatarUrl: null } };
+  await old.put("userScopes", { userId, userFence }); await old.put("details", detailRow); await old.put("profiles", profileRow);
+  old.close();
+  const current = await cache().open();
+  expect([...current.objectStoreNames]).toContain("sessionHistory");
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("details", [userId, projectId, taskId])).toBeUndefined();
+  expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profileRow);
+});
+
+it("discards schema 7 history and rebuilds Task data while preserving profiles", async () => {
+  const old = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 7, { upgrade(database) {
+    database.createObjectStore("userScopes", { keyPath: "userId" });
+    database.createObjectStore("projects", { keyPath: ["userId", "projectId"] }).createIndex("by-user", "userId");
+    for (const name of ["summaries", "details", "sessionHistory"] as const) {
+      const store = database.createObjectStore(name, { keyPath: ["userId", "projectId", "taskId"] });
+      store.createIndex("by-user", "userId"); store.createIndex("by-project", ["userId", "projectId"]);
+    }
+    const profiles = database.createObjectStore("profiles", { keyPath: ["userId", "projectId", "profileUserId"] });
+    profiles.createIndex("by-user", "userId"); profiles.createIndex("by-project", ["userId", "projectId"]);
+  } });
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001", taskId = "40000000-0000-4000-8000-000000000001";
+  const detail = detailFixture(projectId, taskId);
+  const project = { ownership: { teamId: "50000000-0000-4000-8000-000000000001", version: 1n }, id: projectId, name: "Project",
+    repoUrl: "https://example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: detail.createdAt, updatedAt: detail.updatedAt };
+  const manifest: TaskCacheSchema["projects"]["value"] = { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null,
+    epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 };
+  const { projectId: _owner, title, description: _description, ready: _ready, blockedBy: _blockedBy, ...summaryFields } = detail;
+  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, titlePreview: title, titleTruncated: false } };
+  const detailRow = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 10, lastUsedAt: 1 };
+  const profileRow = { userId, projectId, profileUserId: taskId, userFence, profile: { userId: taskId, version: "a".repeat(64), name: null, avatarUrl: null } };
+  await old.put("userScopes", { userId, userFence }); await old.put("projects", manifest); await old.put("summaries", summary);
+  await old.put("details", detailRow); await old.put("profiles", profileRow);
+  await old.put("sessionHistory", { userId, projectId, taskId, userFence, cacheGeneration: userFence, requestToken: userFence, clearedToken: null,
+    leaseExpiresAt: null, settled: "saved", page: { items: [], nextCursor: "next" }, byteSize: 0, lastUsedAt: 1 } as unknown as TaskCacheSchema["sessionHistory"]["value"]);
+  old.close();
+  const current = await cache().open();
+  expect(await current.getAll("sessionHistory")).toEqual([]);
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("projects", [userId, projectId])).toBeUndefined();
+  expect(await current.get("summaries", [userId, projectId, taskId])).toBeUndefined();
+  expect(await current.get("details", [userId, projectId, taskId])).toBeUndefined();
+  expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profileRow);
+});
+
+it("rebuilds schema 8 Task stores for required cancellation time while preserving profile and session history formats", async () => {
+  const old = cache(vi.fn(), 8);
+  const connection = await old.open();
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001", taskId = "40000000-0000-4000-8000-000000000001";
+  const { cancelledAt: _cancelledAt, ...legacyDetail } = detailFixture(projectId, taskId);
+  const profile = { userId, projectId, profileUserId: taskId, userFence, profile: { userId: taskId, version: "a".repeat(64), name: "Member", avatarUrl: null } };
+  const history: TaskCacheSchema["sessionHistory"]["value"] = { userId, projectId, taskId, userFence, cacheGeneration: userFence, requestToken: userFence, clearedToken: null, leaseExpiresAt: null, settled: "saved", paginationToken: null, page: { items: [], nextCursor: null }, confirmedCompleteEmpty: true, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 };
+  await connection.put("userScopes", { userId, userFence });
+  await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail: legacyDetail, byteSize: 100, lastUsedAt: 1 } as unknown as TaskCacheSchema["details"]["value"]);
+  await connection.put("profiles", profile); await connection.put("sessionHistory", history);
+  const current = await cache().open();
+  expect(await current.getAll("details")).toEqual([]);
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profile);
+  expect(await current.get("sessionHistory", [userId, projectId, taskId])).toEqual(history);
 });

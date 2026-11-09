@@ -22,6 +22,35 @@ function Menu({ initialIssue = null, failSave = false, onEscape = () => {} }: {
 const open = () => { fireEvent.click(screen.getByRole('button', { name: 'Display' })); };
 
 describe('Session display menu', () => {
+  it('keeps an open menu inside the changing visual viewport without moving focus', () => {
+    const viewport = Object.assign(new EventTarget(), { width: 240, height: 190, offsetLeft: 20, offsetTop: 40 });
+    const original = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const menu = this.getAttribute('role') === 'menu';
+      const left = menu ? Number.parseFloat(this.style.left) || 0 : 100;
+      const top = menu ? Number.parseFloat(this.style.top) || 0 : 180;
+      const width = menu ? Math.min(240, Number.parseFloat(this.style.maxWidth) || 240) : 70;
+      const height = menu ? Math.min(160, Number.parseFloat(this.style.maxHeight) || 160) : 40;
+      return { x: left, y: top, left, top, right: left + width, bottom: top + height, width, height, toJSON() {} };
+    });
+    try {
+      const mounted = render(<Menu />); open(); const menu = screen.getByRole('menu');
+      const selected = screen.getByRole('menuitemradio', { name: 'Conversation' });
+      expect(menu.getBoundingClientRect().left).toBeGreaterThanOrEqual(28);
+      expect(menu.getBoundingClientRect().bottom).toBeLessThanOrEqual(222);
+      viewport.height = 140; viewport.offsetTop = 90;
+      act(() => viewport.dispatchEvent(new Event('resize')));
+      expect(menu.getBoundingClientRect().top).toBeGreaterThanOrEqual(98);
+      expect(menu.getBoundingClientRect().bottom).toBeLessThanOrEqual(222);
+      expect(selected).toHaveFocus();
+      viewport.offsetLeft = 40; act(() => viewport.dispatchEvent(new Event('scroll')));
+      expect(menu.getBoundingClientRect().left).toBeGreaterThanOrEqual(48);
+      mounted.unmount();
+    } finally {
+      if (original) Object.defineProperty(window, 'visualViewport', original); else Reflect.deleteProperty(window, 'visualViewport');
+    }
+  });
   it('reflects both selections without closing the menu or changing the available modes', () => {
     render(<Menu />); open();
     expect(screen.getAllByRole('menuitemradio')).toHaveLength(2);

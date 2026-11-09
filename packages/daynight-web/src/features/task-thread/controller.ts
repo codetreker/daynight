@@ -1,17 +1,13 @@
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { getThreadPage, isThreadScopeLoss, postThreadMessage, ThreadPostError } from './api';
-import { compareThreadPositions, encodedMessageBytes, isThreadBody, mergeThreadMessage, type PostThreadInput, type ThreadMessage, type ThreadPage, type ThreadQuery, type ThreadScope } from './contract';
+import { compareThreadPositions, isThreadBody, mergeThreadMessage, type PostThreadInput, type ThreadMessage, type ThreadPage, type ThreadQuery, type ThreadScope } from './contract';
 
-export const THREAD_LIMITS = { visibleCount: 200, visibleBytes: 2_097_152, incomingCount: 100, incomingBytes: 1_048_576, referenceCount: 16, referenceBytes: 1_048_576 } as const;
-const RESERVATION_BYTES = 65_536;
+export const THREAD_LIMITS = { visibleCount: 200, incomingCount: 100, referenceCount: 16 } as const;
 const compare = compareThreadPositions;
 const ordered = (messages: Iterable<ThreadMessage>): readonly ThreadMessage[] => [...messages].sort(compare);
 const protocol = (): never => { throw new ApiError('protocol'); };
 const aborted = (): never => { throw new DOMException('The discussion request was released.', 'AbortError'); };
 const failure = (error: unknown): Error => error instanceof Error ? error : new Error('The discussion request failed.', { cause: error });
-const messageSizes = new WeakMap<ThreadMessage, number>();
-const messageBytes = (message: ThreadMessage): number => { const known = messageSizes.get(message); if (known !== undefined) return known; const size = encodedMessageBytes(message); messageSizes.set(message, size); return size; };
-const bytes = (messages: Iterable<ThreadMessage>): number => [...messages].reduce((total, item) => total + messageBytes(item), 0);
 const combine = (a: ThreadMessage | undefined, b: ThreadMessage): ThreadMessage => a === undefined ? b : mergeThreadMessage(a, b);
 
 type ReadKind = 'forward' | 'history' | 'reference';
@@ -26,6 +22,7 @@ export type ThreadView = {
   readonly consumedAfterId: string | null;
   readonly hasMoreBefore: boolean;
   readonly hasMoreAfter: boolean;
+  readonly initialized: boolean;
   readonly loading: boolean;
   readonly refreshing: boolean;
   readonly loadingOlder: boolean;
@@ -130,7 +127,7 @@ export class ThreadController {
   private live = (): void => { if (this.retired || this.lifetime.signal.aborted || this.options.lifetime.aborted) aborted(); };
   private makeView = (): ThreadView => ({
     visible: ordered(this.visible.values()), incomingCount: [...this.incoming.keys()].filter(id => !this.visible.has(id)).length, consumedAfterId: this.cursor?.id ?? null,
-    hasMoreBefore: this.hasMoreBefore, hasMoreAfter: this.hasMoreAfter,
+    hasMoreBefore: this.hasMoreBefore, hasMoreAfter: this.hasMoreAfter, initialized: this.initialized,
     loading: !this.initialized && this.forwardTask !== null, refreshing: this.initialized && this.forwardTask !== null,
     loadingOlder: this.historyDirection === 'older', loadingNewer: this.historyDirection === 'newer', referenceLoading: this.referenceTarget,
     readError: this.readError, historyError: this.historyError, referenceError: this.referenceError, postError: this.postError,
@@ -187,8 +184,8 @@ export class ThreadController {
   private enrich = (items: readonly ThreadMessage[]): void => {
     for (const item of items) for (const map of [this.visible, this.incoming, this.references]) if (map.has(item.id)) map.set(item.id, item);
   };
-  private fitsVisible = (messages: Map<string, ThreadMessage>, reserve = this.reserved): boolean => messages.size + Number(reserve) <= this.limits.visibleCount && bytes(messages.values()) + (reserve ? RESERVATION_BYTES : 0) <= this.limits.visibleBytes;
-  private fitsIncoming = (messages: Map<string, ThreadMessage>): boolean => messages.size <= this.limits.incomingCount && bytes(messages.values()) <= this.limits.incomingBytes;
+  private fitsVisible = (messages: Map<string, ThreadMessage>, reserve = this.reserved): boolean => messages.size + Number(reserve) <= this.limits.visibleCount;
+  private fitsIncoming = (messages: Map<string, ThreadMessage>): boolean => messages.size <= this.limits.incomingCount;
   private pinned = (id: string): boolean => id === this.readingAnchor || id === this.latestReceipt;
   private consumed = (item: ThreadMessage): boolean => this.cursor !== null && compare(item, this.cursor) <= 0;
   private rangeMessages = (): readonly ThreadMessage[] => ordered([...this.windowIds].flatMap(id => this.visible.has(id) ? [this.visible.get(id)!] : []));
@@ -266,13 +263,13 @@ export class ThreadController {
   setDocumentVisible = (visible: boolean): void => {
     if (this.retired || this.documentVisible === visible) return;
     this.documentVisible = visible;
-    if (!visible) { this.cancelReads(); this.detailsId = null; }
+    if (!visible) this.cancelReads();
     this.emit(); if (this.readable()) void this.refresh();
   };
   setAdmissionBlocked = (blocked: boolean): void => {
     if (this.retired || this.admissionBlocked === blocked) return;
     this.admissionBlocked = blocked;
-    if (blocked) { this.cancelReads(); this.detailsId = null; }
+    if (blocked) this.cancelReads();
     this.emit();
     if (!blocked) { if (this.confirmed !== null) void this.publishConfirmed(); if (this.readable()) void this.refresh(); }
   };
@@ -324,7 +321,7 @@ export class ThreadController {
         this.readError = null; this.emit();
         if (!page.hasMoreAfter || page.items.length === 0) break;
       } while (this.readable());
-    } catch (error) { this.handle(error, 'read'); }
+    } catch (error) { if (this.currentTicket(ticket)) this.handle(error, 'read'); }
     finally {
       if (this.generations.forward === ticket.generation) { this.forwardTask = null; this.tickets.delete('forward'); this.emit(); this.schedule(); }
     }
@@ -375,10 +372,10 @@ export class ThreadController {
   private cacheReference = (message: ThreadMessage): void => {
     const next = new Map(this.references); next.delete(message.id); next.set(message.id, message);
     for (const [id] of next) {
-      if (next.size <= this.limits.referenceCount && bytes(next.values()) <= this.limits.referenceBytes) break;
+      if (next.size <= this.limits.referenceCount) break;
       if (id !== this.replyTo && id !== this.detailsId && id !== message.id) next.delete(id);
     }
-    if (next.size > this.limits.referenceCount || bytes(next.values()) > this.limits.referenceBytes) throw new ApiError('protocol', null, 'reference_capacity');
+    if (next.size > this.limits.referenceCount) throw new ApiError('protocol', null, 'reference_capacity');
     this.references = next;
   };
   showReference = (id: string): Promise<void> => this.resolveReference(id, true);
@@ -403,7 +400,7 @@ export class ThreadController {
       if (page.items.length !== 1 || page.items[0]!.id !== id) protocol();
       const item = this.normalize(page.items)[0]!;
       this.cacheReference(item); this.presentReference(item, this.referenceReveal);
-    } catch (error) { this.handle(error, 'reference'); }
+    } catch (error) { if (this.currentTicket(ticket)) this.handle(error, 'reference'); }
     finally { if (this.generations.reference === ticket.generation) { this.referenceTask = null; this.referenceTarget = null; this.tickets.delete('reference'); this.emit(); } }
   };
   private presentReference = (message: ThreadMessage, reveal: boolean): void => {

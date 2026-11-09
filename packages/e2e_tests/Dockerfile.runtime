@@ -1,0 +1,5 @@
+FROM node:24-bookworm-slim
+RUN apt-get update && apt-get install --yes --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/e2e
+COPY . ./
+ENTRYPOINT ["node", "runtime/src/runtime.js"]

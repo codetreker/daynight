@@ -23,12 +23,13 @@ it.each([
 });
 it.each([
   { invalidatedBy: "corrupt" }, { epoch: null }, { project: null }, { project: { ...project, id: userId } },
-  { taskCount: 0 }, { taskCount: 1001 }, { edgeCount: 5001 }, { maxUpdatedAt: null }, { maxUpdatedAt: "bad" },
+  { taskCount: 0 }, { taskCount: Number.MAX_SAFE_INTEGER + 1 }, { edgeCount: 0.1 }, { maxUpdatedAt: null }, { maxUpdatedAt: "bad" },
 ])("rejects malformed active lifecycle metadata %#", (change) => {
   expect(() => validateProjectManifest({ ...active, ...change }, userId, projectId, userFence)).toThrow(expect.objectContaining({ category: "corrupt" }));
 });
 it("preserves complete active and invalidated manifest contracts", () => {
   expect(validateProjectManifest(invalidated, userId, projectId, userFence)).toEqual(invalidated);
-  expect(validateProjectManifest(active, userId, projectId, userFence)).toEqual(active);
+  const complete = { ...active, taskCount: 1001, edgeCount: 5001 };
+  expect(validateProjectManifest(complete, userId, projectId, userFence)).toEqual(complete);
   expect(validateProjectManifest({ ...active, taskCount: 0, maxUpdatedAt: null }, userId, projectId, userFence).maxUpdatedAt).toBeNull();
 });

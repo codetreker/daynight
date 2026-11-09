@@ -396,10 +396,8 @@ SQLite 或审查运行时。引导完成后以原参数调用原操作一次，�
 服务命令从配置读取开始共享五分钟业务期限，设备登录拥有独立十分钟期限。
 [客户端 C6](../spec/daynight.md#c6-按需配置引导)拥有行为，
 [配置引导决策](../../.agents/notes/archived/feature/2026-10-21-guided-configuration-setup.md)
-保留配置事务理由，[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
-拥有默认服务、登录和退出的生命周期；
-[顶层 setup 移除决策](../../.agents/notes/implemented/simplification/2026-10-25-remove-top-level-setup.md)
-拥有配置入口收敛。
+保留配置事务理由，[设备登录决策](../../.agents/notes/archived/architecture/2026-10-25-cli-device-login.md)记录了默认服务、登录和退出的生命周期的历史取舍；
+[顶层 setup 移除决策](../../.agents/notes/archived/simplification/2026-10-25-remove-top-level-setup.md)记录了配置入口收敛的历史取舍。
 
 ## 配置与持久化
 
@@ -514,7 +512,7 @@ PR 的 Linux CLI 任务还检查包版本；main push 保留全量应用门禁�
 发布在验证 CLI 与安装项目依赖前检查精确版本的 tag 和 npm 记录；任一存在则成功跳过。
 新版本在冻结的源码提交上独立执行 `@codetreker/daynight` 的类型检查、测试、安装验收和
 发布包安装检查。发布不依赖全仓 `checks.yml` 的结果，Go server 与 Web 检查不会阻止
-npm 发布；[CLI 发布验证决策](../../.agents/notes/implemented/process/2026-10-22-cli-publication-validation.md)
+npm 发布；[CLI 发布验证决策](../../.agents/notes/archived/process/2026-10-22-cli-publication-validation.md)
 维护验证范围。
 npm 元数据统一由固定版本的 npm 12.2.0 执行 `npm view <package>@<version> --json`
 读取完整包记录并选择版本，仅 JSON `E404` 表示版本不存在。鉴权、网络、超时和格式
@@ -526,18 +524,18 @@ npm 元数据统一由固定版本的 npm 12.2.0 执行 `npm view <package>@<ver
 开发、构建、CI 与 Docker 统一使用 pnpm 11.28.6；`pnpm-workspace.yaml` 维护
 `engineStrict`、`storeDir` 和依赖构建权限。npm 12.2.0 继续负责元数据查询。`setup-node` 配置 npmjs
 registry，发布子进程继承其配置与 GitHub OIDC 环境。公开仓库保留 provenance。
-[pnpm OIDC 发布决策](../../.agents/notes/implemented/process/2026-10-22-pnpm-oidc-publication.md)
+[pnpm OIDC 发布决策](../../.agents/notes/archived/process/2026-10-22-pnpm-oidc-publication.md)
 维护客户端选择与配置职责。
 新上传仍要求同一份产物、源码和公共字节验证成功后才创建不可变 tag，元数据与 tarball
 共用十分钟验证期限。npm 查询限制三十秒，GitHub 与 tarball HTTP 请求限制二十秒，
 并受剩余总期限约束。
-[npm CLI 发布检查决策](../../.agents/notes/implemented/process/2026-10-22-npm-cli-publication-checks.md)
+[npm CLI 发布检查决策](../../.agents/notes/archived/process/2026-10-22-npm-cli-publication-checks.md)
 维护查询、跳过与重复发布规则；发布授权、npm OIDC、产物身份及公共验证的选择依据
 记录在[发布决策](../../.agents/notes/archived/process/2026-10-20-npm-trusted-publishing.md)。
 
 ## 验证与交付
 
-使用手册验收对实际 npm pack 与安装后的 `daynight`、`dn` 比较原始字节，覆盖仓库外、无配置、无 launcher 与非交互终端，确认额外参数先于文件读取拒绝，以及缺失、读取错误和非法 UTF-8 的原因链。手册 frontmatter、独立内容和实际命令用法需要核验；字节一致不代表模型遵循指令。[使用手册决策](../../.agents/notes/implemented/feature/2026-11-03-cli-skill-reading.md)拥有单文件输出的选择与代价。
+安装入口须对实际 npm pack 与安装后的 `daynight`、`dn` 比较使用手册原始字节。CLI 模块验证仓库外、无配置、无 launcher 与非交互终端，以及额外参数先于文件读取拒绝、缺失、读取错误和非法 UTF-8 的原因链。当前安装入口保留双 launcher 和资源字节检查，模块现有覆盖尚需逐项核对。手册 frontmatter、独立内容和实际命令用法需要核验；字节一致不代表模型遵循指令。[使用手册决策](../../.agents/notes/archived/feature/2026-11-03-cli-skill-reading.md)拥有单文件输出的选择与代价。
 
 根入口与每个命令的参数验证需覆盖正常调用、裸组、帮助、版本、使用手册输出和错误结果；构建后入口
 必须保留 shebang、bin 路径和版本输出。依赖隔离验证通过不可用的 SQLite 加载、缺失的
@@ -546,38 +544,30 @@ review 工具、无效或缺失配置，观察帮助、版本、使用手册输�
 引导验证覆盖 TTY 与重定向 stdout、按能力提问、一次恢复、非交互诊断、取消与 EOF、
 全部收集后保存、锁内重读及失败保留，并确认输入时间不消耗业务期限。
 
-review 的原生 Git、SQLite、进程终止、APFS、调度与安装后完整生命周期工作负载保持
-原有验收标准。独立构造的既有 YAML/SQLite fixture 验证命令重组后继续使用原有数据；
+review 的原生 Git、SQLite、进程终止、APFS、调度与完整生命周期保持原有验收标准，
+这些行为由 CLI 模块验证；安装入口负责发行物接入。独立构造的既有 YAML/SQLite
+fixture 验证命令重组后继续使用原有数据；
 fixture 不能通过当前 store 生成基线，从而避免现有实现为自己证明兼容。具体业务验证
 见[review 设计](daynight-review.md#验证与交付)。
 
-自更新验收使用真实 npm、任务内隔离全局 prefix 和受控 HTTP registry，将 fixture 包从
-`1.0.0` 更新为 `1.0.1`，检查安装归属、默认 prefix 改变、调用目录配置隔离、确切目标、
-当前或领先版本、错误及 review 配置/状态保留。仅 fixture 安装被替换；不更改操作者的
+安装入口使用真实 npm、任务内隔离全局 prefix 和受控 HTTP registry，将 fixture 包从
+`1.0.0` 更新为 `1.0.1`。CLI 模块验证安装归属、默认 prefix 改变、调用目录配置隔离、
+确切目标、当前或领先版本、错误及 review 配置/状态保留。仅 fixture 安装被替换；不更改操作者的
 全局 CLI。必须观测启动器、清单和新进程版本，验证搬迁后的 updater 仍从稳定入口接收
-正确包目录。registry 访问和安装错误保持可见。
+正确包目录。registry 访问和安装错误保持可见。当前安装入口检查一次真实 npm 全局更新；旧版、错误和状态矩阵归模块验证，现有覆盖尚需逐项核对。
 
-补全验证包括共享语法回归、编译后入口依赖隔离、脚本语法检查和真实 shell 交互。
-`pnpm completion:acceptance` 在隔离启动文件的 PTY 中驱动 Bash 4.2、现代 Bash 和 zsh
-的 Tab，检查实际插入文本、引号、后缀、描述和光标位置。它独立于 review 与自更新
-安装验收。`completion setup` 验收在独立主目录中安装真实启动文件，检查 Bash 登录文件优先级、
-zsh 目录选择、重复安装及启动后的注册与 Tab；使用任务内的 fixture，不修改
-操作者的 shell 配置或全局安装。
+补全验证须覆盖共享语法回归、编译后入口依赖隔离、脚本语法和真实 shell 交互，
+包括插入文本、引号、后缀、描述、光标、启动文件选择和重复安装。当前
+`pnpm completion:acceptance` 在隔离启动文件的 PTY 中驱动 Bash 4.2、现代 Bash
+和 zsh 的基本 Tab 与启动加载；参数及配置边界归模块测试，现有覆盖尚需逐项核对。
 
-GitHub Actions 保留原生 Linux、macOS、Windows 的普通测试与既有 review/update
-安装验收，并在独立 Linux 作业中执行补全的真实 shell 验收。独立
-project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台的仓库选择与
-文件行为；真实 Go/PostgreSQL 流程复用独立 Go 测试包 `cmd/e2e_tests` 的 fresh
-race binary。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
-直接调用内部函数的测试，两边各自管理测试辅助设施。
-服务验证分为并行的覆盖率与 E2E 作业，各自准备安装后的 CLI；本地完整入口依次运行
-两部分。覆盖率作业保留生产包的 build/vet/race 与严格 coverage gate，随后在 Go 默认
-10 分钟计时器之外运行预算套件；E2E 作业独立执行完整 `cmd/e2e_tests`。常规 CI
-运行两个期限场景，通过测试侧 preload 使用
-1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；四个完整字节场景通过
-显式本地 `pnpm test:stress:budgets` 运行，保留真实 128/256 MiB 边界和 +1 字节拒绝，
-并在 CI 环境中拒绝。职责与证据见
-[project/task 设计](daynight-project-task.md#验证与交付证据)。
+GitHub Actions 在 Linux、macOS、Windows 执行普通 CLI 测试与安装产物检查，
+并在独立 Linux 作业执行真实 shell 接入。当前入口不运行 project/task 安装
+行为矩阵或跨产品服务验收。Go 模块检查独立执行 build、vet 和覆盖率门槛，
+其当前关键代码块配置未满足既有要求；详见
+[服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)。
+期限和字节边界的完整要求及证据分工由
+[project/task 设计](daynight-project-task.md#验证与交付证据)与相应需求拥有。
 [仓库验证说明](../../README.md#validation)定义本地及原生 receipt 的源码身份、
 受控 GitHub/Copilot 行为与真实服务验收的证据边界。运行结果随对应 PR 与 CI 保存；
 历史通过记录不能代替当前源码的验证结果。

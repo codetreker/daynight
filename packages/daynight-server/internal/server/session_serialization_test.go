@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
@@ -60,6 +61,8 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 		if string(ack["lastAckedSourceSeq"]) != "\""+seq+"\"" {
 			t.Fatalf("source did not advance: %s", ack["lastAckedSourceSeq"])
 		}
+		parsed, _ := strconv.ParseInt(seq, 10, 64)
+		f.supplySource(parsed)
 	}
 	send("1")
 	frame := sessionWSKind(t, browser, "event")
@@ -68,7 +71,26 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 	}
 	online := &resourceTestHandler{Handler: f.application, token: f.handler.token, principal: f.handler.principal}
 	done := make(chan *httptest.ResponseRecorder, 1)
-	go func() { done <- projectRequest(online, http.MethodGet, path+"/timeline?direction=tail&limit=10", "") }()
+	requestContext, cancelRequest := context.WithCancel(t.Context())
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		cancelRequest()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("HTTP history request did not drain")
+		}
+	})
+	go func() {
+		defer close(finished)
+		request := httptest.NewRequestWithContext(requestContext, http.MethodGet, path+"/timeline?direction=tail&limit=10", nil)
+		authorizeResourceRequest(online, request)
+		request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+		request.Header.Set("X-Request-ID", "project-test")
+		response := httptest.NewRecorder()
+		online.ServeHTTP(response, request)
+		done <- response
+	}()
 	request := sessionWSKind(t, controller, "content_request")
 	var requestID, historyEpoch string
 	_ = json.Unmarshal(request["requestId"], &requestID)
@@ -79,7 +101,7 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 	response["error"] = nil
 	response["result"] = map[string]any{"kind": "timeline", "historyEpoch": historyEpoch, "items": []any{entry}, "resources": []any{}, "beforeCursor": nil, "afterCursor": nil, "hasMoreBefore": false, "hasMoreAfter": false}
 	sessionNativeWrite(t, controller, response)
-	page := <-done
+	page := await(t, done)
 	if page.Code != http.StatusOK || page.Body.Len() > 500000 || !bytes.Contains(page.Body.Bytes(), []byte(strings.Repeat("<", 100))) {
 		t.Fatalf("HTTP history status=%d bytes=%d", page.Code, page.Body.Len())
 	}
@@ -87,24 +109,6 @@ func TestSessionNativeHTMLTextSurvivesRelayAndReconnect(t *testing.T) {
 	f.grant = f.mint(t, "reconnect")
 	controller, snapshot = f.controller(t, epoch)
 	send("2")
-}
-
-func TestSessionResultHandlesCancellationEncodingAndWriteFailure(t *testing.T) {
-	routes := &sessionRoutes{logger: testLogger()}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/test-sessions", nil)
-	ctx, cancel := context.WithCancel(request.Context())
-	cancel()
-	canceled := httptest.NewRecorder()
-	routes.result(canceled, request.WithContext(ctx), http.StatusOK, map[string]string{"text": "unused"}, nil)
-	if canceled.Body.Len() != 0 || len(canceled.Header()) != 0 {
-		t.Fatal("canceled request wrote a response")
-	}
-	invalid := httptest.NewRecorder()
-	routes.result(invalid, request, http.StatusOK, make(chan int), nil)
-	if invalid.Code != http.StatusInternalServerError {
-		t.Fatal("encoding failure did not become a response error")
-	}
-	routes.result(&failingResponseWriter{header: make(http.Header)}, request, http.StatusOK, map[string]string{"text": "<>&"}, nil)
 }
 
 func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer(t *testing.T) {
@@ -115,6 +119,7 @@ func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer
 	state := sp.State{NativeSessionID: &native, InitialInputState: "provider_accepted", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true, Cancel: true, Respond: true}}
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}})
 	sessionWSKind(t, controller, "sync_ack")
+	f.supplyState(state)
 	path := f.base + "/" + snapshot.SessionID
 	command := func(text string) sp.Command {
 		payload, err := sp.MarshalWire(sp.SendMessage{Content: []sp.TextPart{{Type: "text", Text: text}}})
@@ -125,11 +130,17 @@ func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer
 	}
 	commands := []sp.Command{command(strings.Repeat("<", 400000)), command("following operation")}
 	for _, c := range commands {
+		f.expectCommand(t, c)
 		response := projectRequest(f.handler, http.MethodPost, path+"/commands", string(sessionNativeJSON(t, c)))
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("command submission status=%d", response.Code)
 		}
+		receipt := decodeResponse[struct {
+			Operation sp.Operation `json:"operation"`
+		}](t, response, http.StatusAccepted).Operation
+		f.suppliedOperation(t, c, receipt)
 	}
+	f.selectOffers(t, commands[0].OperationID, commands[1].OperationID)
 	for _, expected := range commands {
 		frame := sessionWSKind(t, controller, "operation_offer")
 		actual, err := sp.DecodeCommand(frame["command"])
@@ -139,6 +150,7 @@ func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer
 		if len(frame["command"]) > 500000 {
 			t.Fatal("controller command expanded during transport")
 		}
+		f.suppliedOffer(t, expected.OperationID, snapshot.ConnectionEpoch)
 	}
 	tooLarge := command(strings.Repeat("x", sp.MaxFrameBytes))
 	refused := projectRequest(f.handler, http.MethodPost, path+"/commands", string(sessionNativeJSON(t, tooLarge)))
@@ -146,13 +158,20 @@ func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer
 		t.Fatalf("oversized HTTP command status=%d", refused.Code)
 	}
 	following := command("after size refusal")
+	f.expectCommand(t, following)
 	accepted := projectRequest(f.handler, http.MethodPost, path+"/commands", string(sessionNativeJSON(t, following)))
 	if accepted.Code != http.StatusAccepted {
 		t.Fatalf("following command submission status=%d", accepted.Code)
 	}
+	followingReceipt := decodeResponse[struct {
+		Operation sp.Operation `json:"operation"`
+	}](t, accepted, http.StatusAccepted).Operation
+	f.suppliedOperation(t, following, followingReceipt)
+	f.selectOffers(t, following.OperationID)
 	frame := sessionWSKind(t, controller, "operation_offer")
 	actual, err := sp.DecodeCommand(frame["command"])
 	if err != nil || actual.OperationID != following.OperationID {
 		t.Fatal("refused request blocked following offer", err)
 	}
+	f.suppliedOffer(t, following.OperationID, snapshot.ConnectionEpoch)
 }

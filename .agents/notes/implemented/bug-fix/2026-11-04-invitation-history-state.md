@@ -9,7 +9,7 @@ its exact URL before the authentication child removed the fragment from the
 address. Authentication preserved that state while scrubbing the address, so
 canceling or leaving cleared temporary storage but left a recoverable credential
 in browser-managed history. The admitted location also retained the old fragment.
-The [navigation admission decision](../architecture/2026-11-04-draft-navigation-admission.md)
+The [navigation admission decision](../../archived/architecture/2026-11-04-draft-navigation-admission.md)
 introduced exact URL matching to distinguish copied native fragment markers;
 that distinction remains necessary.
 

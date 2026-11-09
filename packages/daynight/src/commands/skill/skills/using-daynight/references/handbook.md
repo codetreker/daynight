@@ -26,7 +26,14 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Shell completion | `completion setup` | [Setup](setup.md) |
 | Create, list, or inspect projects | `project create`, `project list`, `project show` | [Project management](project-management.md) |
 | Read Team context and projects | `team list`, `team show`, `team projects`, `team default show` | [Project management](project-management.md#team-context) |
-| Query tasks | `task list`, `task ready`, `task show` | [Task management](task-management.md#task-queries) |
+| Save the current account's default Team | `team default set` | [Project management](project-management.md#team-context) |
+| Transfer a Project | `project transfer` | [Project management](project-management.md#team-context), [write safety](write-safety.md#project-transfers) |
+| Delete a Project | `project delete` | [Project management](project-management.md#project-deletion), [write safety](write-safety.md#project-deletion) |
+| Manage ordinary Teams | `team create`, `team rename`, `team delete` | [Project management](project-management.md#team-context), [write safety](write-safety.md#team-writes) |
+| Read and manage Team members | `team member list`, `team member set-role`, `team member remove`, `team leave` | [Project management](project-management.md#team-context), [write safety](write-safety.md#team-writes) |
+| Preview or accept a Project or Team invitation | `invitation inspect`, `invitation accept` | [Write safety](write-safety.md#invitation-acceptance) |
+| Manage Webhooks and inspect deliveries | `webhook` | [Webhook management](webhooks.md) |
+| Query tasks | `task list`, `task search`, `task ready`, `task show` | [Task management](task-management.md#task-queries) |
 | Read or maintain Task Steps | `task step list/show/add/update/set-status/move/delete` | [Task Steps](task-management.md#task-steps) |
 | Read task dependency graphs | `task graph <task-id>` | [Verify dependency changes](task-management.md#verify-dependency-changes) |
 | Create tasks | `task create` | [Create task](create-task.md) |

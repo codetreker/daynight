@@ -1,0 +1,300 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"testing"
+	"time"
+
+	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+)
+
+func TestTaskTimingMigrationPreservesUnknownHistoricalIntervals(t *testing.T) {
+	ctx := context.Background()
+	pool := emptyPool(t)
+	if err := migrate(ctx, pool, schemaMigrations[:8]); err != nil {
+		t.Fatal(err)
+	}
+	database := &Store{Pool: pool}
+	project := projectBeforeSettings(t, database, 1)
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+	var historical []model.Task
+	for index, status := range []model.TaskStatus{model.TaskStatus("proposed"), model.TaskTodo, model.TaskInProgress, model.TaskDone} {
+		id := queryID(index + 10)
+		mustQueryExec(t, database, `INSERT INTO tasks (id, project_id, title, description, status, version, created_at, updated_at)
+			VALUES ($1, $2, 'Historical execution', 'Preserved', $3, $4, $5, $6)`, id, project.ID, status, index+17, stamp, stamp.Add(time.Hour))
+		historical = append(historical, snapshotTaskBeforeTiming(t, database, project.ID, id))
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:12]); err != nil {
+		t.Fatal(err)
+	}
+	for _, before := range historical {
+		after := snapshotHistoricalTask(t, database, project.ID, before.ID)
+		if !reflect.DeepEqual(after, before) || after.StartedAt != nil || after.CompletedAt != nil {
+			t.Fatalf("historical timing or metadata was invented: before %#v after %#v", before, after)
+		}
+	}
+	var applied time.Time
+	if err := pool.QueryRow(ctx, "SELECT applied_at FROM schema_migrations WHERE version=9").Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:12]); err != nil {
+		t.Fatal(err)
+	}
+	var repeated time.Time
+	if err := pool.QueryRow(ctx, "SELECT applied_at FROM schema_migrations WHERE version=9").Scan(&repeated); err != nil || !repeated.Equal(applied) {
+		t.Fatalf("timing migration changed on restart: %v, %v", repeated, err)
+	}
+}
+
+func TestTaskStartAndSnapshotClockFollowTheActualLockWait(t *testing.T) {
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	task := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var releaseAt time.Time
+	var started model.Task
+	result := make(chan error, 1)
+	if err := writeProjectForTest(database, ctx, project.ID, func(holder ProjectWriteScope) error {
+		go func() {
+			result <- writeProjectForTest(database, ctx, project.ID, func(waiter ProjectWriteScope) error {
+				var err error
+				started, err = waiter.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: task.Title, Status: model.TaskInProgress})
+				return err
+			})
+		}()
+		waitForQueryLock(t, database, "SELECT id::text FROM projects WHERE")
+		return holder.(*ProjectTx).tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&releaseAt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiveQueryResult(t, ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	if started.StartedAt == nil || started.StartedAt.Before(releaseAt) || !started.StartedAt.Equal(started.UpdatedAt) {
+		t.Fatalf("claim used pre-lock transaction time: released %v, task %#v", releaseAt, started)
+	}
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, task.ID, testGraphSelection(), 160)
+		if err != nil {
+			return err
+		}
+		var lower, upper time.Time
+		if err := snapshot.(*Snapshot).tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&lower); err != nil {
+			return err
+		}
+		observed, err := snapshot.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		if err := snapshot.(*Snapshot).tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&upper); err != nil {
+			return err
+		}
+		if len(tasks) != 1 || !reflect.DeepEqual(tasks[0].StartedAt, started.StartedAt) || observed.Before(lower) || observed.After(upper) || observed.Before(*started.StartedAt) || observed.Location() != time.UTC {
+			t.Fatalf("snapshot clock is not a fresh DB sample: %v <= %v <= %v, %#v", lower, observed, upper, tasks)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const taskStoreSyncOverlap = 20 * time.Millisecond
+
+func readTaskSyncStoreSnapshot(ctx context.Context, database *Store, projectID string, lower *time.Time) ([]model.TaskViewRecord, time.Time, error) {
+	var tasks []model.TaskViewRecord
+	var observedAt time.Time
+	err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		var err error
+		tasks, err = snapshot.TaskDAO().TaskSyncTasks(ctx, projectID, lower, 160)
+		if err != nil {
+			return err
+		}
+		observedAt, err = snapshot.ObservedAt(ctx)
+		return err
+	})
+	return tasks, observedAt, err
+}
+
+func waitForTaskStoreLock(ctx context.Context, database *Store, blocker uint32) error {
+	poll, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		if err := database.Pool.QueryRow(poll, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+  WHERE wait_event_type='Lock' AND $1::integer=ANY(pg_blocking_pids(pid)))`, blocker).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting {
+			return nil
+		}
+		select {
+		case <-poll.Done():
+			return fmt.Errorf("Task writer did not reach the held Project lock: %w", poll.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForTaskStoreDatabaseTime(ctx context.Context, database *Store, boundary time.Time) (time.Time, error) {
+	poll, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var observed time.Time
+		if err := database.Pool.QueryRow(poll, "SELECT clock_timestamp()").Scan(&observed); err != nil {
+			return time.Time{}, err
+		}
+		if observed.After(boundary) {
+			return observed, nil
+		}
+		select {
+		case <-poll.Done():
+			return time.Time{}, fmt.Errorf("database clock did not cross the TaskSync overlap: %w", poll.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
+	verifyTaskSyncLockWatermarks(t, false)
+}
+
+func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) {
+	verifyTaskSyncLockWatermarks(t, true)
+}
+
+func verifyTaskSyncLockWatermarks(t *testing.T, writeBeforeWait bool) {
+	t.Helper()
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	a := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	b := queryTask(t, database, project.ID, 12, model.TaskTodo)
+	ctx, cancel := context.WithTimeout(t.Context(), 35*time.Second)
+	defer cancel()
+	// Both initial rows belong in the window regardless of fixture setup latency.
+	mustQueryExec(t, database, `UPDATE tasks SET updated_at=statement_timestamp() WHERE project_id=$1`, project.ID)
+	a, b = snapshotTask(t, database, project.ID, a.ID), snapshotTask(t, database, project.ID, b.ID)
+	baseline, _, err := readTaskSyncStoreSnapshot(ctx, database, project.ID, nil)
+	if err != nil || len(baseline) != 2 {
+		t.Fatalf("initial sync rows: %#v, %v", baseline, err)
+	}
+	lower := baseline[1].UpdatedAt.Add(-taskStoreSyncOverlap)
+	result := make(chan error, 1)
+	var waiterDone chan struct{}
+	defer func() {
+		cancel()
+		if waiterDone != nil {
+			<-waiterDone
+		}
+	}()
+	var first, later model.Task
+	var afterWait time.Time
+	err = writeProjectForTest(database, ctx, project.ID, func(holder ProjectWriteScope) error {
+		writeFirst := func() error {
+			var err error
+			first, err = holder.TaskDAO().UpdateTask(ctx, a.ID, TaskWrite{Title: "First", Status: model.TaskTodo})
+			return err
+		}
+		if writeBeforeWait {
+			if err := writeFirst(); err != nil {
+				return err
+			}
+		}
+		waiterDone = make(chan struct{})
+		go func() {
+			defer close(waiterDone)
+			result <- writeProjectForTest(database, ctx, project.ID, func(waiter ProjectWriteScope) error {
+				stored, err := waiter.TaskDAO().Task(ctx, b.ID)
+				if err != nil {
+					return err
+				}
+				if stored.Version != b.Version {
+					return fmt.Errorf("waiter read a changed Task version: %d", stored.Version)
+				}
+				later, err = waiter.TaskDAO().UpdateTask(ctx, b.ID, TaskWrite{Title: "Later", Status: model.TaskTodo})
+				return err
+			})
+		}()
+		if err := waitForTaskStoreLock(ctx, database, holder.(*ProjectTx).tx.Conn().PgConn().PID()); err != nil {
+			return err
+		}
+		var waitingSince time.Time
+		if err := database.Pool.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&waitingSince); err != nil {
+			return err
+		}
+		var err error
+		afterWait, err = waitForTaskStoreDatabaseTime(ctx, database, waitingSince.Add(taskStoreSyncOverlap))
+		if err != nil {
+			return err
+		}
+		if writeBeforeWait {
+			old, observedAt, err := readTaskSyncStoreSnapshot(ctx, database, project.ID, &lower)
+			if err != nil {
+				return err
+			}
+			if len(old) != 2 || old[0].Version != a.Version || old[1].Version != b.Version || old[0].UpdatedAt != a.UpdatedAt || old[1].UpdatedAt != b.UpdatedAt || !observedAt.After(first.UpdatedAt.Add(taskStoreSyncOverlap)) {
+				return fmt.Errorf("uncommitted Task leaked into an old snapshot: %#v, observed %v", old, observedAt)
+			}
+		} else if err := writeFirst(); err != nil {
+			return err
+		}
+		select {
+		case err := <-result:
+			return fmt.Errorf("second writer crossed the held Project lock: %v", err)
+		default:
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := receiveQueryResult(t, ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	if !writeBeforeWait && !first.UpdatedAt.After(afterWait) {
+		t.Fatalf("holder used a timestamp before its delayed write: observed %v first %v", afterWait, first.UpdatedAt)
+	}
+	if !later.UpdatedAt.After(first.UpdatedAt) {
+		t.Fatalf("waiter used an earlier transaction timestamp: first %v later %v", first.UpdatedAt, later.UpdatedAt)
+	}
+	if !writeBeforeWait {
+		lower = first.UpdatedAt.Add(-taskStoreSyncOverlap)
+	}
+	delta, _, err := readTaskSyncStoreSnapshot(ctx, database, project.ID, &lower)
+	if err != nil || len(delta) != 2 || delta[0].ID != a.ID || delta[0].Version != first.Version || delta[1].ID != b.ID || delta[1].Version != later.Version {
+		t.Fatalf("lock-delayed committed Task skipped by window: %#v, %v", delta, err)
+	}
+}
+
+func TestTaskTimingCallbackFailureRollsBackInterval(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := t.Context()
+	project := queryProject(t, database, 1)
+	task := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: "Latest attempt", Status: model.TaskInProgress})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	beforeRollback := snapshotTask(t, database, project.ID, task.ID)
+	failure := errors.New("reject transaction after status update")
+	err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		if _, err := tx.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: "Must roll back", Status: model.TaskDone}); err != nil {
+			return err
+		}
+		return failure
+	})
+	if !errors.Is(err, failure) || !reflect.DeepEqual(snapshotTask(t, database, project.ID, task.ID), beforeRollback) {
+		t.Fatalf("failed transaction partially committed timing: %v", err)
+	}
+}

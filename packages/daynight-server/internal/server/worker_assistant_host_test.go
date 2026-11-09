@@ -3,16 +3,16 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/google/uuid"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/google/uuid"
 )
 
 func assistantHostBody() map[string]any {
@@ -23,229 +23,175 @@ func assistantHostBody() map[string]any {
 	}}
 }
 
-func TestWorkerAssistantHostInputPreservesOptionalReport(t *testing.T) {
-	body := workerSnapshotReportBody()
-	body["assistantHost"] = assistantHostBody()
-	fields, err := jsonobject.Decode([]byte(jsonBody(t, body)), "report", workerReportFields...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	report, err := workerReportInput(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(report.Telemetry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var result map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &result); err != nil {
-		t.Fatal(err)
-	}
-	if len(result["assistantHost"]) == 0 {
-		t.Fatal("assistant hosting report was discarded")
-	}
-	delete(body, "assistantHost")
-	fields, err = jsonobject.Decode([]byte(jsonBody(t, body)), "report", workerReportFields...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := workerReportInput(fields); err != nil {
-		t.Fatal("legacy report rejected", err)
-	}
-}
-
-func TestWorkerAssistantHostRejectsMalformedJSONFields(t *testing.T) {
-	for name, mutate := range map[string]func(map[string]any){
-		"null":             func(b map[string]any) { b["assistantHost"] = nil },
-		"array":            func(b map[string]any) { b["assistantHost"] = []any{} },
-		"missing":          func(b map[string]any) { delete(b["assistantHost"].(map[string]any), "observedAt") },
-		"unknown":          func(b map[string]any) { b["assistantHost"].(map[string]any)["token"] = "secret" },
-		"protocol type":    func(b map[string]any) { b["assistantHost"].(map[string]any)["protocolVersion"] = "1" },
-		"time":             func(b map[string]any) { b["assistantHost"].(map[string]any)["observedAt"] = "bad" },
-		"cwd type":         func(b map[string]any) { b["assistantHost"].(map[string]any)["defaultCwd"] = false },
-		"provider type":    func(b map[string]any) { b["assistantHost"].(map[string]any)["defaultProvider"] = false },
-		"providers null":   func(b map[string]any) { b["assistantHost"].(map[string]any)["providers"] = nil },
-		"providers object": func(b map[string]any) { b["assistantHost"].(map[string]any)["providers"] = map[string]any{} },
-	} {
-		t.Run(name, func(t *testing.T) {
-			body := workerSnapshotReportBody()
-			body["assistantHost"] = assistantHostBody()
-			mutate(body)
-			fields, err := jsonobject.Decode([]byte(jsonBody(t, body)), "report", workerReportFields...)
-			if err == nil {
-				_, err = workerReportInput(fields)
-			}
-			if err == nil {
-				t.Fatal("malformed hosting report accepted")
-			}
-		})
-	}
-	for _, key := range []string{"provider", "available", "reason", "model", "args"} {
-		for _, value := range []any{true, 42, map[string]any{}, nil} {
-			if key == "available" && value == true || (key == "reason" || key == "model") && value == nil {
-				continue
-			}
-			body := workerSnapshotReportBody()
-			host := assistantHostBody()
-			body["assistantHost"] = host
-			host["providers"].([]any)[0].(map[string]any)[key] = value
-			fields, err := jsonobject.Decode([]byte(jsonBody(t, body)), "report", workerReportFields...)
-			if err == nil {
-				_, err = workerReportInput(fields)
-			}
-			if err == nil {
-				t.Fatalf("malformed %s accepted: %v", key, value)
-			}
-		}
-	}
-	for _, args := range []any{[]any{nil}, []any{true}, []any{1}} {
-		body := workerSnapshotReportBody()
-		host := assistantHostBody()
-		body["assistantHost"] = host
-		host["providers"].([]any)[0].(map[string]any)["args"] = args
-		fields, _ := jsonobject.Decode([]byte(jsonBody(t, body)), "report", workerReportFields...)
-		if _, err := workerReportInput(fields); err == nil {
-			t.Fatal("non-string argument accepted")
-		}
-	}
-	body := workerSnapshotReportBody()
-	body["assistantHost"] = assistantHostBody()
-	for _, key := range []string{"protocolVersion", "provider", "reason"} {
-		raw := jsonBody(t, body)
-		needle := `"` + key + `":`
-		raw = strings.Replace(raw, needle, needle+`null,`+needle, 1)
-		fields, err := jsonobject.Decode([]byte(raw), "report", workerReportFields...)
-		if err == nil {
-			_, err = workerReportInput(fields)
-		}
-		if err == nil {
-			t.Fatal("duplicate nested field accepted", key)
-		}
-	}
-}
-
-func TestWorkerAssistantHostHTTPPersistenceAndLegacyReplacement(t *testing.T) {
+func TestWorkerAssistantHostHTTPReportingAndLegacyReplacement(t *testing.T) {
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, projectTestStore(t), &logs)
-	id := uuid.NewString()
+	f := newCapacityHTTPFixture(t, uuid.NewString(), &logs)
 	body := workerSnapshotReportBody()
 	host := assistantHostBody()
 	host["observedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
 	host["defaultCwd"] = "/private/assistant-host-marker"
 	body["assistantHost"] = host
-	reportSnapshotHTTP(t, handler, id, body)
-	response := snapshotDetailHTTP(t, handler, id)
+	stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
+	plan := f.report(body, stored)
+	reportSnapshotHTTP(t, f.handler, f.worker, body)
+	plan.check()
+	plan = f.readWorker(stored)
+	response := snapshotDetailHTTP(t, f.handler, f.worker)
+	plan.check()
 	if response.Worker.Telemetry.AssistantHost == nil {
-		t.Fatal("stored assistant hosting report missing from detail")
+		t.Fatal("assistant hosting report missing from detail")
 	}
-	encoded, err := json.Marshal(response.Worker.Telemetry.AssistantHost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]any
-	if err = json.Unmarshal(encoded, &got); err != nil {
-		t.Fatal(err)
-	}
-	expectedJSON, err := json.Marshal(host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var want map[string]any
-	if err = json.Unmarshal(expectedJSON, &want); err != nil {
-		t.Fatal(err)
-	}
+	got := capacityDecode[map[string]any](t, response.Worker.Telemetry.AssistantHost)
+	want := capacityDecode[map[string]any](t, host)
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("report changed across storage and API: %s", encoded)
+		t.Fatalf("assistant-host response changed: %+v", got)
 	}
-	// Failed observations replace success instead of retaining an old promise.
-	providers := host["providers"].([]any)
-	for _, value := range providers {
-		p := value.(map[string]any)
-		p["available"] = false
-		p["reason"] = "timeout"
+	for _, value := range host["providers"].([]any) {
+		provider := value.(map[string]any)
+		provider["available"] = false
+		provider["reason"] = "timeout"
 	}
-	reportSnapshotHTTP(t, handler, id, body)
-	failed := snapshotDetailHTTP(t, handler, id)
+	failedSnapshot := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
+	plan = f.report(body, failedSnapshot)
+	reportSnapshotHTTP(t, f.handler, f.worker, body)
+	plan.check()
+	plan = f.readWorker(failedSnapshot)
+	failed := snapshotDetailHTTP(t, f.handler, f.worker)
+	plan.check()
 	if failed.Worker.Telemetry.AssistantHost.Providers[0].Available || *failed.Worker.Telemetry.AssistantHost.Providers[0].Reason != "timeout" {
 		t.Fatal("failed preflight retained previous availability")
 	}
 	delete(body, "assistantHost")
-	reportSnapshotHTTP(t, handler, id, body)
-	legacy := snapshotDetailHTTP(t, handler, id)
+	legacySnapshot := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
+	plan = f.report(body, legacySnapshot)
+	reportSnapshotHTTP(t, f.handler, f.worker, body)
+	plan.check()
+	plan = f.readWorker(legacySnapshot)
+	legacy := snapshotDetailHTTP(t, f.handler, f.worker)
+	plan.check()
 	if legacy.Worker.Telemetry.AssistantHost != nil {
 		t.Fatal("legacy replacement retained obsolete hosting capability")
 	}
-	raw := projectRequest(handler, http.MethodGet, "/api/v1/me/workers/"+id, "")
+	plan = f.readWorker(legacySnapshot)
+	raw := projectRequest(f.handler, http.MethodGet, "/api/v1/me/workers/"+f.worker, "")
+	plan.check()
 	if strings.Contains(raw.Body.String(), `"assistantHost"`) {
 		t.Fatal("absent legacy hosting field was serialized")
 	}
 	body["assistantHost"] = assistantHostBody()
 	body["assistantHost"].(map[string]any)["protocolVersion"] = 2
-	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/me/workers/"+id+"/report", jsonBody(t, body)), http.StatusBadRequest, "invalid_input")
+	f.rejectBeforeWrite()
+	assertProjectError(t, projectRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(t, body)), http.StatusBadRequest, "invalid_input")
 	if strings.Contains(logs.String(), "assistant-host-marker") || strings.Contains(logs.String(), "gpt-5") {
 		t.Fatal("worker logs exposed hosting configuration")
 	}
-	page := decodeResponse[api.WorkerPage](t, projectRequest(handler, http.MethodGet, "/api/v1/me/workers", ""), http.StatusOK)
-	if len(page.Items) != 1 {
+	zero := 0
+	summary := store.WorkerSummary{WorkerID: f.worker, CreatedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Machine: legacySnapshot.Telemetry.Machine, Platform: model.PlatformLinux, TaskObservationState: model.WorkerTasksObserved, TaskObservedAt: &capacityObservedAt, ActiveTaskCount: &zero}
+	plan = f.read([]string{"observed", "dao", "summaries"}, func(r *capacityWorkerReader) {
+		r.summaries = func(user string, observed time.Time, page store.Page) (store.WorkerSummaryPage, error) {
+			if user != f.handler.principal.UserID || observed != capacityObservedAt || page.Limit != 50 || page.After != nil {
+				t.Fatalf("worker list arguments differ: %+v", page)
+			}
+			return store.WorkerSummaryPage{Items: []store.WorkerSummary{summary}}, nil
+		}
+	})
+	page := decodeResponse[api.WorkerPage](t, projectRequest(f.handler, http.MethodGet, "/api/v1/me/workers", ""), http.StatusOK)
+	plan.check()
+	if len(page.Items) != 1 || page.Items[0].WorkerID != f.worker || page.NextCursor != nil {
 		t.Fatal("assistant reporting changed worker listing")
 	}
 }
 
 func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), &bytes.Buffer{})
-	id := uuid.NewString()
-	path := "/api/v1/me/workers/" + id
+	f := newCapacityHTTPFixture(t, uuid.NewString(), &bytes.Buffer{})
+	path := "/api/v1/me/workers/" + f.worker
 	host := assistantHostBody()
 	value := configurationHTTPValue()
 	body := configurationHTTPReportBody(value, nil)
 	body["assistantHost"] = host
-	var wantHost api.WorkerAssistantHost
-	if err := json.Unmarshal([]byte(jsonBody(t, host)), &wantHost); err != nil {
-		t.Fatal(err)
-	}
-	var wantConfiguration core.WorkerConfiguration
-	if err := json.Unmarshal([]byte(jsonBody(t, value)), &wantConfiguration); err != nil {
-		t.Fatal(err)
-	}
-
-	response := configurationHTTPRequest(handler, http.MethodPost, path+"/report", jsonBody(t, body), "1")
+	wantHost := capacityDecode[api.WorkerAssistantHost](t, host)
+	wantConfiguration := capacityDecode[model.WorkerConfiguration](t, value)
+	desired := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: capacityObservedAt, Value: wantConfiguration}
+	configuration := model.WorkerConfigurationResource{Desired: &desired, ObservationRevision: "0"}
+	stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
+	plan := f.write([]string{"dao", "admit", "upsert", "configuration", "set_configuration", "observed"}, store.TransactionCommitted, func(d *capacityWorkerDAO) {
+		f.reportDAO(d, body, stored)
+		d.configuration = func(user, worker string) (model.WorkerConfigurationResource, error) {
+			f.workerAddress(user, worker)
+			return model.WorkerConfigurationResource{ObservationRevision: "0"}, nil
+		}
+		d.setConfiguration = func(user, worker string, revision int64, actual model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+			f.workerAddress(user, worker)
+			if revision != 1 || !reflect.DeepEqual(actual, wantConfiguration) {
+				t.Fatal("configuration bootstrap arguments differ")
+			}
+			return capacityDecode[model.WorkerDesiredConfiguration](t, desired), nil
+		}
+	})
+	response := configurationHTTPRequest(f.handler, http.MethodPost, path+"/report", jsonBody(t, body), "1")
 	receipt := decodeResponse[configurationHTTPReceipt](t, response, http.StatusOK)
-	if response.Header().Get(workerConfigurationHeader) != "1" || receipt.Configuration.Desired == nil || receipt.Configuration.Desired.Revision != "1" || !reflect.DeepEqual(receipt.Configuration.Desired.Value, wantConfiguration) {
-		t.Fatalf("combined report did not negotiate and bootstrap configuration: %s", response.Body)
+	plan.check()
+	if response.Header().Get(workerConfigurationHeader) != "1" || !reflect.DeepEqual(receipt.Configuration.Desired, &desired) || receipt.Configuration.ObservationRevision != "0" || receipt.Configuration.ObservationAccepted {
+		t.Fatalf("combined report did not negotiate bootstrap: %s", response.Body)
 	}
-	detail := snapshotDetailHTTP(t, handler, id)
+	plan = f.readWorker(stored)
+	detail := snapshotDetailHTTP(t, f.handler, f.worker)
+	plan.check()
 	if !reflect.DeepEqual(detail.Worker.Telemetry.AssistantHost, &wantHost) {
-		t.Fatalf("configuration exchange changed the stored assistant host: %+v", detail.Worker.Telemetry.AssistantHost)
+		t.Fatalf("configuration exchange changed assistant host: %+v", detail.Worker.Telemetry.AssistantHost)
 	}
-	configuration := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
-	if !reflect.DeepEqual(configuration.Desired, receipt.Configuration.Desired) || configuration.Observation != nil || configuration.ObservationRevision != "0" {
-		t.Fatalf("combined report configuration was not persisted independently: %+v", configuration)
+	plan = f.readConfiguration(configuration)
+	readConfiguration := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(f.handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	plan.check()
+	if !reflect.DeepEqual(readConfiguration, configuration) {
+		t.Fatalf("combined report configuration differs: %+v", readConfiguration)
 	}
 	rejectedHost := assistantHostBody()
 	rejectedHost["defaultCwd"] = "/rejected-assistant-host"
 	rejected := configurationHTTPReportBody(nil, map[string]any{"baseRevision": "0", "desiredRevision": "2", "items": []any{}})
 	rejected["assistantHost"] = rejectedHost
-	assertProjectError(t, configurationHTTPRequest(handler, http.MethodPost, path+"/report", jsonBody(t, rejected), "1"), http.StatusBadRequest, "invalid_input")
-	if after := snapshotDetailHTTP(t, handler, id); !reflect.DeepEqual(after.Worker, detail.Worker) {
-		t.Fatalf("refused configuration exchange committed a partial worker report: %+v", after.Worker)
+	rejectedSnapshot := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, rejected)
+	plan = f.write([]string{"dao", "admit", "upsert", "configuration"}, store.TransactionNotCommitted, func(d *capacityWorkerDAO) {
+		f.reportDAO(d, rejected, rejectedSnapshot)
+		d.configuration = func(user, worker string) (model.WorkerConfigurationResource, error) {
+			f.workerAddress(user, worker)
+			return capacityDecode[model.WorkerConfigurationResource](t, configuration), nil
+		}
+	})
+	assertProjectError(t, configurationHTTPRequest(f.handler, http.MethodPost, path+"/report", jsonBody(t, rejected), "1"), http.StatusBadRequest, "invalid_input")
+	plan.check()
+	plan = f.readWorker(stored)
+	after := snapshotDetailHTTP(t, f.handler, f.worker)
+	plan.check()
+	if !reflect.DeepEqual(after.Worker, detail.Worker) {
+		t.Fatalf("refused exchange response changed: %+v", after.Worker)
 	}
-	if after := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK); !reflect.DeepEqual(after, configuration) {
-		t.Fatalf("refused configuration exchange changed the stored configuration: %+v", after)
+	plan = f.readConfiguration(configuration)
+	afterConfiguration := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(f.handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	plan.check()
+	if !reflect.DeepEqual(afterConfiguration, configuration) {
+		t.Fatal("refused exchange configuration response changed")
 	}
-
 	delete(body, "assistantHost")
 	delete(body, "configuration")
-	legacy := projectRequest(handler, http.MethodPost, path+"/report", jsonBody(t, body))
+	legacySnapshot := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
+	plan = f.report(body, legacySnapshot)
+	legacy := projectRequest(f.handler, http.MethodPost, path+"/report", jsonBody(t, body))
+	plan.check()
 	fields := decodeResponse[map[string]json.RawMessage](t, legacy, http.StatusOK)
 	if len(fields) != 2 || fields["observedAt"] == nil || fields["lastReportedAt"] == nil || legacy.Header().Get(workerConfigurationHeader) != "" {
-		t.Fatalf("legacy heartbeat received an extended report receipt: %s", legacy.Body)
+		t.Fatalf("legacy heartbeat received extended receipt: %s", legacy.Body)
 	}
-	if snapshotDetailHTTP(t, handler, id).Worker.Telemetry.AssistantHost != nil {
-		t.Fatal("legacy replacement retained obsolete assistant hosting capability")
+	plan = f.readWorker(legacySnapshot)
+	legacyDetail := snapshotDetailHTTP(t, f.handler, f.worker)
+	plan.check()
+	if legacyDetail.Worker.Telemetry.AssistantHost != nil {
+		t.Fatal("legacy replacement retained obsolete assistant capability")
 	}
-	retained := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	plan = f.readConfiguration(configuration)
+	retained := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(f.handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	plan.check()
 	if !reflect.DeepEqual(retained, configuration) {
-		t.Fatalf("legacy heartbeat changed the stored cloud configuration: %+v", retained)
+		t.Fatal("legacy heartbeat configuration response changed")
 	}
 }

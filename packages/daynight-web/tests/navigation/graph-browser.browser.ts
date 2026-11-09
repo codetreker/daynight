@@ -1,0 +1,53 @@
+import { expect, test } from '@playwright/test';
+import { checkDependencyGeometry, expectedDependencyTopology } from '../helpers/dependency-geometry';
+import { completeContextGraph } from '../helpers/graphData';
+
+const rootId = '00000000-0000-4000-8000-000000000030';
+const expected = expectedDependencyTopology(completeContextGraph.tasks, rootId);
+
+test('retains real dependency geometry and viewport through direction, zoom, pan and fullscreen', async ({ page }, info) => {
+  await page.goto('/tests/navigation/graph-browser.html');
+  await page.getByRole('button', { name: 'Open graph' }).click();
+  const dialog = page.locator('.task-chain-dialog');
+  const viewport = page.locator('.react-flow__viewport');
+  await expect(page.locator('.react-flow__node')).toHaveCount(expected.nodes.length);
+  await expect(page.locator('.react-flow__edge')).toHaveCount(expected.edges.length);
+  const geometry = async (direction: 'horizontal' | 'vertical') => {
+    expect(await checkDependencyGeometry(page, expected, info, undefined, direction)).toEqual({ total: 0, examples: [] });
+  };
+  await geometry('horizontal');
+  const node = page.locator('.react-flow__node').first().locator('button.task-node-body');
+  await node.click();
+  await expect(node).toHaveAttribute('aria-pressed', 'true');
+  const vertical = page.getByRole('radio', { name: '垂直', exact: true });
+  await page.getByRole('radio', { name: '水平', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(vertical).toBeFocused();
+  await expect(vertical).toHaveAttribute('aria-checked', 'true');
+  await expect(node).toHaveAttribute('aria-pressed', 'true');
+  await geometry('vertical');
+  const beforeZoom = await viewport.getAttribute('style');
+  await page.getByRole('button', { name: '放大', exact: true }).click();
+  await expect.poll(() => viewport.getAttribute('style')).not.toBe(beforeZoom);
+  await geometry('vertical');
+  const bounds = (await page.locator('.react-flow').boundingBox())!;
+  const beforePan = await viewport.getAttribute('style');
+  await page.mouse.move(bounds.x + 20, bounds.y + 20); await page.mouse.down();
+  await page.mouse.move(bounds.x + 80, bounds.y + 55, { steps: 4 }); await page.mouse.up();
+  await expect.poll(() => viewport.getAttribute('style')).not.toBe(beforePan);
+  await geometry('vertical');
+  const beforeFullscreen = await viewport.getAttribute('style');
+  const element = await viewport.elementHandle();
+  await page.getByRole('button', { name: '全屏查看', exact: true }).click();
+  await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
+  const fullscreen = (await dialog.boundingBox())!;
+  expect(fullscreen).toEqual({ x: 0, y: 0, width: 1600, height: 1100 });
+  await expect(viewport).toHaveAttribute('style', beforeFullscreen!);
+  expect(await element!.evaluate(el => el === document.querySelector('.react-flow__viewport'))).toBe(true);
+  await geometry('vertical');
+  await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+  await expect(viewport).toHaveAttribute('style', beforeFullscreen!);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open graph' })).toBeFocused();
+});

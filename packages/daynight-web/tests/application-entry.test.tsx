@@ -5,6 +5,7 @@ import { navigate } from "../src/app/router";
 import { browserNavigation } from "../src/app/navigation";
 import { invitationStorageKey, teamInvitationStorageKey } from "../src/features/auth/invitation";
 import { renderWithLocale } from "./helpers/renderWithLocale";
+import { personalTeamPage } from "./helpers/team";
 
 vi.mock("../src/features/landing/LandingPage", () => ({ LandingPage: () => <main><h1>Public product introduction</h1></main> }));
 
@@ -14,6 +15,7 @@ const anonymous = () => json({ error: { code: "unauthenticated", message: "Sign 
 const mount = (navigateToLogin = vi.fn()) => renderWithLocale(<Application navigateToLogin={navigateToLogin} />, { locale: "en" });
 const defaultResponse = (url: string) => {
   if (url === "/api/v1/me") return json(user);
+  if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(user.id));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url.startsWith("/api/v1/projects")) return json({ items: [], nextCursor: null });
   throw new Error(`Unexpected entry request: ${url}`);
@@ -29,6 +31,20 @@ beforeEach(() => {
 });
 
 describe("public and authenticated entry ownership", () => {
+  it("shows a local bilingual OAuth error without logging in or retaining request parameters", () => {
+    window.history.replaceState(null, "", "/oauth/authorize?client_id=bad&state=private&redirect_uri=https%3A%2F%2Fevil.example%2Fcallback");
+    const fetcher = vi.fn(() => { throw new Error("Error page must not fetch or authenticate"); });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    expect(screen.getByRole("heading", { name: "Cannot authorize this client" })).toBeVisible();
+    expect(screen.getByText("No authorization information was sent to this return address.")).toBeVisible();
+    expect(window.location.pathname).toBe("/oauth/authorize");
+    expect(window.location.search).toBe("");
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "zh-CN" } });
+    expect(screen.getByRole("heading", { name: "无法授权此客户端" })).toBeVisible();
+    expect(screen.getByText("未向此返回地址发送授权信息。")).toBeVisible();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it("reacts to public navigation and history without mounting an authenticated lifecycle", async () => {
     window.history.replaceState(null, "", "/");
     const fetcher = vi.fn(() => { throw new Error("Public reading must not mount the authenticated application"); });
@@ -306,12 +322,12 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(defaultResponse(url))));
     mount();
     await act(async () => navigate("/login"));
-    await screen.findByRole("heading", { name: "Projects" });
+    await screen.findByRole("heading", { name: "Personal" });
     expect(window.location.pathname).toBe("/projects");
     await historyMove("back");
     expect(screen.getByRole("heading", { name: "Public product introduction" })).toBeVisible();
     await historyMove("forward");
-    await screen.findByRole("heading", { name: "Projects" });
+    await screen.findByRole("heading", { name: "Personal" });
   });
 
   it("retains invitation context after a failed callback reaches the explicit login page", async () => {
@@ -330,11 +346,12 @@ describe("public and authenticated entry ownership", () => {
   it("returns successful normal logout to the public homepage", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/auth/logout" ? new Response(null, { status: 204 }) : defaultResponse(url))));
     mount();
-    await screen.findByRole("heading", { name: "Projects" });
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByRole("heading", { name: "Personal" });
+    fireEvent.click(screen.getByRole("button", { name: /^Account menu:/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     await screen.findByRole("heading", { name: "Public product introduction" });
     expect(window.location.pathname).toBe("/");
-    expect(screen.queryByRole("heading", { name: "Projects" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Personal" })).toBeNull();
   });
 
   it.each(["invitation", "device"])("keeps the %s target and temporary context while switching accounts", async (flow) => {

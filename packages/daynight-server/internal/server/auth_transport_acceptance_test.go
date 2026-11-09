@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
+
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
@@ -102,7 +105,7 @@ func newIdentityResultWireCut(t *testing.T, origin string) *identityResultWireCu
 }
 
 func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
-	database := projectTestStore(t)
+	database, plan := newIdentityHTTPPlan(t)
 	product := httptest.NewUnstartedServer(nil)
 	t.Cleanup(product.Close)
 	origin := "http://" + product.Listener.Addr().String()
@@ -122,15 +125,20 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 	config.UniAuthAppID, config.UniAuthAppSecret, config.UniAuthCallbackURL = gateway.AppID, gateway.AppSecret, origin+callbackPath
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	handler, err := New(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal("compose the production authenticated handler failed")
 	}
-	product.Config.Handler = RequestLogging(logger, handler)
+	product.Config.Handler = httpx.RequestLogging(logger, handler)
 	product.Start()
-	integration := &identityIntegration{server: product, gateway: cut.server.URL, logs: logs,
+	integration := &identityIntegration{plan: plan, server: product, gateway: cut.server.URL, logs: logs,
 		sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{gateway.AppSecret}}
 	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := handler.(Handler).Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
 		product.Close()
 		cut.server.Close()
 		cut.transport.CloseIdleConnections()
@@ -159,6 +167,8 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 		integration.secrets = append(integration.secrets, cookie.Value)
 	}
 	cut.armed.Store(true)
+	binding := identityCookie(t, browser, origin, identityHTTPBinding(callback.Query().Get("state")))
+	plan.consume(callback.Query().Get("state"), binding, true)
 	response, _ := identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusSeeOther)
 	if response.Header.Get("Location") != "/login?authError=login_failed&returnPath=%2Fprojects%3Fview%3Dtasks" || response.Header.Get("Cache-Control") != "no-store" {
 		t.Fatal("lost identity response did not safely return to the login UI")
@@ -180,24 +190,15 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 	if !errors.As(err, &unavailable) || unavailable.StatusCode != http.StatusGone || unavailable.Code != "result_unavailable" {
 		t.Fatal("the real gateway retained the result after its response was lost")
 	}
-	assertEmptyIdentity := func() {
-		t.Helper()
-		var pending, users, sessions int
-		if err := database.Pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM login_transactions), (SELECT count(*) FROM users), (SELECT count(*) FROM sessions)`).Scan(&pending, &users, &sessions); err != nil {
-			t.Fatal("inspect failed-login persistence failed")
-		}
-		if pending != 0 || users != 0 || sessions != 0 {
-			t.Fatal("a lost one-time result left a reusable pending login or issued a local identity/session")
-		}
-	}
-	assertEmptyIdentity()
+	plan.assertPublications(0, 0)
 	identityRequest(t, browser, http.MethodGet, origin+"/api/v1/me", "", nil, http.StatusUnauthorized)
 	browser.Jar.SetCookies(mainURL, bindings)
+	plan.consume(callback.Query().Get("state"), binding, false)
 	identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusUnauthorized)
 	if cut.requests.Load() != 1 {
 		t.Fatal("replaying a consumed callback retrieved the one-time identity again")
 	}
-	assertEmptyIdentity()
+	plan.assertPublications(0, 0)
 	if !logs.contains(`"cause":"network"`) {
 		t.Fatal("lost SDK connection did not retain sanitized network diagnostics")
 	}
@@ -205,9 +206,6 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 	if user.ID == "" || cut.requests.Load() != 2 || cut.consumed.Load() != 1 || cut.closed.Load() != 1 {
 		t.Fatal("fresh normal PKCE login did not recover after the one-time wire failure")
 	}
-	var sessions int
-	if err := database.Pool.QueryRow(t.Context(), `SELECT count(*) FROM sessions`).Scan(&sessions); err != nil || sessions != 1 {
-		t.Fatal("fresh login did not persist exactly one session")
-	}
-	t.Log("wire-loss evidence: upstream_result=200 downstream_socket_closed=1 upstream_replay=410 callback_replay=401 failed_login_sessions=0 fresh_login_sessions=1")
+	plan.assertPublications(1, 1)
+	t.Log("wire-loss evidence: upstream_result=200 downstream_socket_closed=1 upstream_replay=410 callback_replay=401 failed_login_session_writes=0 fresh_login_session_writes=1")
 }

@@ -3,6 +3,7 @@ import { once } from "node:events";
 import WebSocket, { WebSocketServer } from "ws";
 import registrationFixture from "../../session/fixtures/v2/valid-registration.json" with { type: "json" };
 import dispatchFixture from "../../session/fixtures/v2/valid-control-dispatch.json" with { type: "json" };
+import snapshotFixture from "../../session/fixtures/v2/valid-snapshot.json" with { type: "json" };
 import operationFixture from "../../session/fixtures/v2/valid-keys.json" with { type: "json" };
 import type { SessionV2Message } from "../../../src/session/v2/types.js";
 import { createHerdrInputBridge } from "../../../src/commands/worker/herdr/input-bridge.js";
@@ -159,4 +160,16 @@ test("refuses publishing to a different fence without writing it", async () => {
   const result: Message<"operation_result"> = { ...f.operation, claimId: "11111111-1111-4111-8111-111111111111", type: "operation_result", payload: { operationId: f.operation.payload.operationId, state: "unknown", errorCode: "input_unknown" } };
   await expect(f.bridge.send(result)).rejects.toThrow("fence");
   expect(f.incoming).toHaveLength(1); expect(f.bridge.connected()).toBe(true);
+});
+
+
+test("publishes full recording snapshots and accepts their receipt on the original channel", async () => {
+  const f = await setup(); await f.accept();
+  const snapshot = structuredClone(snapshotFixture) as Message<"snapshot">;
+  await expect(f.bridge.send(snapshot)).resolves.toBeUndefined();
+  await vi.waitFor(() => expect(f.incoming.at(-1)).toEqual(snapshot));
+  f.frame(snapshot);
+  await vi.waitFor(() => expect(f.receipts.at(-1)).toEqual(snapshot));
+  expect(f.disconnects).toHaveLength(0);
+  await expect(f.bridge.send({ ...snapshot, payload: { ...snapshot.payload, connectionEpoch: "2" } })).rejects.toThrow(/epoch/);
 });

@@ -19,7 +19,7 @@ CLI 不生成另一种提交身份，不自动重试或按相同正文合并。
 | `src/api/client.ts` | 认证传输、原始来源解码、响应主体验证与提交确认 |
 | `src/api/json-source.ts` | 有界 JSON 区间扫描与重复成员拒绝 |
 | `src/api/thread.ts` | 浏览器安全的Thread字段与原始区间解析，供CLI与Web消费 |
-| `src/commands/task/thread-rendering.ts` | 完整正文编码、连续页选择和实际文本预算 |
+| `src/commands/task/thread-rendering.ts` | 完整正文编码、条数页面输出和服务方向标记 |
 | `src/commands/task/thread-diagnostics.ts` | 受控诊断及远端结果分类 |
 | `src/commands/server/runtime.ts` | Operation、取消、确认回执与清理生命周期 |
 
@@ -74,10 +74,10 @@ exchange 的 Thread JSON 模式在受限读取、fatal UTF-8 和媒体类型检�
 execution 和错误 envelope，先于完整文档的 parseApiJson。扫描循环检查 EOF，限制
 深度为 64，损坏/截断输入不能导致无界等待。
 
-GET 的每项原始消息区间都必须不超过 65,536 UTF-8 字节，页面完整传输不超过
-262,144；POST 默认消息不超过 65,536。J 的编码所有者是服务 internal/taskthreadjson，
-使用 Go HTML 转义 `<>&`、U+2028/U+2029 和无尾随 LF 的实际资源缓冲。CLI 测量原始
-区间，不以 JSON.stringify 重编码长度代替。页内逗号和外层空白只计入页面预算。
+GET 和 POST 成功响应沿用共享 Operation 的单响应 128 MiB、累计 256 MiB 默认传输
+预算，不执行 Thread 专用的页面或单消息字节准入。来源解析保留实际 Go HTML 转义
+JSON 的字段、字符串和无尾随 LF 表示；普通解码、身份、顺序与请求条数检查继续适用。
+单消息 64 KiB 编码容量由服务端写入入口在提交前检查，客户端正文输入仍限制原始 UTF-8 64 KiB。
 
 decoder 拒绝未知字段、缺失必填字段、错误类型、重复 Id、无效顺序和不规范响应 UUID。
 displayName 是必填 nullable string，空字符串也合法；Agent 是必填 boolean。replyTo
@@ -107,34 +107,24 @@ hasMoreBefore 为 true 时仅顶部显示 `... Has more messages before`，hasMo
 为 true 时仅底部显示 `Has more messages after...`。空 latest/before 页显示
 `No messages.`；空 after 页显示 `No new messages.`。
 
-## 完整文本预算与连续位置
+## 完整页面输出与连续位置
 
-262,144 字节上限包含最终 stdout 的字段、缩进、分隔线、详情、提示和 LF。先校验全部
-响应并渲染完整 block，再以实际 UTF-8 字节选择连续集合。after 取前缀，before/latest
-取后缀，最终都升序展示。遗漏前部/后部分别与服务两侧标记作 OR，不截断或跳过消息，
-不补发请求。实际输出第一项供历史继续，最后完整消费项供增量继续。
+CLI 完整校验响应并渲染所有服务端按 count 选中的消息，保持升序，不追加本地字节截页、
+前后缀选择或方向标记。hasMoreBefore/hasMoreAfter 直接使用服务端值；实际第一项供历史
+继续，最后完整消费项供增量继续。读取仍只有一次请求，不自动补页。
 
-Thread读取在完整校验、渲染和计字节后等待现有stdoutBytes写入确认，使用本次网络与读取
-Operation的取消信号；输出失败由Thread安全诊断出口报告，不能将部分输出视为已消费页。
-
-单消息保证依赖逐项 64 KiB 验证与固定包装约束。可变正文/名字最多为服务 JSON 对应
-内容的四倍：最坏 DEL 从一字节变四字节，C1 从两字节变六字节。固定资源部分至少
-183 字节，最大全部终端包装为 473 字节，因而：
-
-```text
-stdoutBytes <= 4 * (J - 183) + 473 = 4J - 259 <= 261885
-```
-
-生产编码器测试将最短 wire fixture 精确断言为 183、最长包装精确断言为 473，并检查
-各模式上下界。增加包装超出 473 必须让测试失败，再重新证明容量。合法单消息能够
-完整显示；每页按实际字节选取更多消息。
+Thread 读取在完整校验与渲染后等待现有 stdoutBytes 写入确认，使用本次网络与读取
+Operation 的取消信号；输出失败由 Thread 安全诊断出口报告，不能将部分输出视为已消费页。
+正文的可见控制字符编码仍可逆，完整消息不会因终端包装增长而被省略。
+[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)
+记录移除读取和输出字节准入的职责；原容量证明由历史决策保留。
 
 POST 回执不能推进已连续读取位置。已经读 A、别人写 B、自己写 C 后仍从 A 查询，
 完整消费 B/C 后再推进；历史合并也不推进。CLI 不持久化该位置，空页保留原边界。
 
 ## 提交事实与诊断
 
-只有完整验证 201、身份、JSON 来源、消息内容和字节预算才确认提交。body/replyTo 必须
+只有完整验证 201、身份、JSON 来源和消息内容才确认提交。body/replyTo 必须
 与输入一致，Agent 标记必须对应是否给定 claim。成功只输出 Message posted.、完整 Id
 及可选 ReplyTo，不重复正文。
 
@@ -157,13 +147,12 @@ PublicDiagnosticError 保留内部 cause 和安全 publicText/exitCode；最终 
 
 ## 验证与文档入口
 
-验证覆盖命令发现、零 I/O 拒绝、一次 Thread 请求、严格来源/字段、账号准入、真实服务
-响应一致性、精确资源/输出边界、DEL/C1/LF/TAB 可逆性、连续双向读取、提交结果和确认后
-本地失败。真实服务契约验收由
-[acceptance_thread_cli_test.go](../../packages/daynight-server/cmd/e2e_tests/acceptance_thread_cli_test.go)
-持有，与 `cmd/e2e_tests` 的进程及证据 harness 共用真实认证、隔离PostgreSQL、已构建服务、
-安装包归属和资源清理证明。单元 fixture 不替代该验收。CLI 使用仓库现有
-typecheck/test/build、版本门禁和安装包检查，安装包 help 与 `daynight --skill` 必须能发现 Thread。
+验证须覆盖命令发现、零 I/O 拒绝、一次 Thread 请求、严格来源/字段、账号准入、真实服务
+响应一致性、完整条数页和共享传输边界、DEL/C1/LF/TAB 可逆性、连续双向读取、提交结果和确认后
+本地失败。CLI 模块测试使用受控服务；真实认证、隔离 PostgreSQL、构建服务和安装产物的
+互操作证据须独立提供，单元 fixture 不替代该验收。当前入口不执行独立跨产品进程验收。
+CLI 使用仓库现有 typecheck/test/build 和安装包检查，安装包 help 与 `daynight --skill`
+必须能发现 Thread。
 
 [CLI 指南](../../packages/daynight/README.md#task-discussion-threads)和独立 usage.md 手册
 拥有操作说明；using-daynight 源技能持有用途与写入安全规则。实际字节与调用数可以测量，

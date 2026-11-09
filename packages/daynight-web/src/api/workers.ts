@@ -1,3 +1,4 @@
+import { parseWorkerRuntimeConfiguration, type WorkerRuntimeConfiguration } from './worker-runtime-configuration';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 import { array, executionPlatform, id, malformed, record, string, timestamp } from './parse';
 import type { ExecutionPlatform, TaskStatus, WorkerAgent, WorkerPhase } from './types';
@@ -12,6 +13,7 @@ export type WorkerMachine = { readonly id: string; readonly name: string };
 export type WorkerAssistantHostReason = 'unsupported_arguments' | 'invalid_cwd' | 'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'unavailable';
 export type WorkerAssistantHost = {
   readonly protocolVersion: 1;
+  readonly creationConfigurationVersion?: 1;
   readonly observedAt: string;
   readonly defaultCwd: string;
   readonly defaultProvider: WorkerAgent;
@@ -21,6 +23,7 @@ export type WorkerAssistantHost = {
   }[];
 };
 export type WorkerTelemetry = {
+  readonly runtimeConfiguration?: WorkerRuntimeConfiguration;
   readonly assistantHost?: WorkerAssistantHost;
   readonly machine: WorkerMachine;
   readonly platform: ExecutionPlatform;
@@ -101,7 +104,8 @@ const software = <T extends 'not_installed' | 'not_running'>(value: unknown, abs
   return { state: absent, checkedAt: timestamp(data.checkedAt) };
 };
 const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssistantHost => {
-  const data = fields(value, ['protocolVersion', 'observedAt', 'defaultCwd', 'defaultProvider', 'providers']);
+  const data = fields(value, ['protocolVersion', 'observedAt', 'defaultCwd', 'defaultProvider', 'providers', ...(Object.hasOwn(record(value), 'creationConfigurationVersion') ? ['creationConfigurationVersion'] : [])]);
+  if (Object.hasOwn(data, 'creationConfigurationVersion') && data.creationConfigurationVersion !== 1) return malformed();
   const boundedText = (value: unknown, maxBytes: number): string => {
     const parsed = text(value);
     if (/\p{Cc}/u.test(parsed) || new TextEncoder().encode(parsed).length > maxBytes) return malformed();
@@ -125,14 +129,15 @@ const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssis
     return { provider: choice(entry.provider, providerNames), available: entry.available, reason, model, args };
   });
   if (providers.length !== 3 || new Set(providers.map(entry => entry.provider)).size !== 3) return malformed();
-  return { protocolVersion: 1, observedAt: timestamp(data.observedAt), defaultCwd,
+  return { protocolVersion: 1, ...(data.creationConfigurationVersion === 1 ? { creationConfigurationVersion: 1 as const } : {}), observedAt: timestamp(data.observedAt), defaultCwd,
     defaultProvider: choice(data.defaultProvider, providerNames), providers };
 };
 const telemetry = (value: unknown): WorkerTelemetry => {
-  const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...(Object.hasOwn(record(value), 'assistantHost') ? ['assistantHost'] : [])]);
+  const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...['assistantHost', 'runtimeConfiguration'].filter(key => Object.hasOwn(record(value), key))]);
   const versions = fields(data.versions, ['daynight', 'herdr', 'codex', 'copilot']);
   return {
     ...(Object.hasOwn(data, 'assistantHost') ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
+    ...(Object.hasOwn(data, 'runtimeConfiguration') ? { runtimeConfiguration: parseWorkerRuntimeConfiguration(data.runtimeConfiguration) } : {}),
     machine: machine(data.machine), platform: executionPlatform(data.platform), workingDirectory: text(data.workingDirectory), sampledAt: timestamp(data.sampledAt),
     os: probe(data.os, value => {
       const os = fields(value, ['type', 'release', 'version', 'arch']);
@@ -183,7 +188,7 @@ export const parseWorkerPage = (value: unknown): WorkerPage => {
 const task = (value: unknown): WorkerTaskSnapshot => {
   const data = fields(value, ['projectId', 'taskId', 'claimId', 'title', 'projectName', 'status', 'phase', 'agent']);
   return { projectId: id(data.projectId), taskId: id(data.taskId), claimId: id(data.claimId), title: text(data.title), projectName: text(data.projectName),
-    status: choice<TaskStatus>(data.status, ['todo', 'in_progress', 'done']), phase: choice<WorkerPhase>(data.phase, ['preparing', 'executing', 'verifying', 'completing', 'waiting', 'paused']), agent: choice<WorkerAgent>(data.agent, ['codex', 'copilot', 'claude']) };
+    status: choice<TaskStatus>(data.status, ['todo', 'in_progress', 'done', 'cancelled']), phase: choice<WorkerPhase>(data.phase, ['preparing', 'executing', 'verifying', 'completing', 'waiting', 'paused']), agent: choice<WorkerAgent>(data.agent, ['codex', 'copilot', 'claude']) };
 };
 export const parseWorkerDetail = (value: unknown, workerId: string): WorkerDetailResponse => {
   const data = fields(value, ['observedAt', 'worker']);

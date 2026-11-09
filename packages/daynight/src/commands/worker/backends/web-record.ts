@@ -1,3 +1,4 @@
+import { parseSessionStartupReport } from "../../../session/startup.js";
 import path from "node:path";
 import { canonicalId } from "../../../api/parse.js";
 import { normalizeServerUrl } from "../../../config/server.js";
@@ -41,11 +42,13 @@ const version = (value: unknown): string => {
   return value;
 };
 const parseConfiguration = (value: unknown): FrozenExecutionConfiguration => {
-  const data = record(value, ["agent", "agentControlMode", "model", "args", "recoveryLimit"], "Frozen execution configuration");
+  const selection = typeof value === "object" && value !== null && Object.hasOwn(value, "validateNativeSelection");
+  const data = record(value, ["agent", "agentControlMode", "model", "args", "recoveryLimit", ...(selection ? ["validateNativeSelection"] : [])], "Frozen execution configuration");
+  if (selection && data.validateNativeSelection !== true) throw new Error("Native selection validation must be enabled when present.");
   if (!Array.isArray(data.args)) throw new Error("Agent arguments must be an array.");
   const agentControlMode = oneOf(data.agentControlMode, ["web"], "Web agent control mode");
   return { agent: oneOf(data.agent, ["copilot", "codex", "claude"], "Web execution agent"), agentControlMode, model: nullable(data.model, (entry) => text(entry, "Model")),
-    args: data.args.map((entry) => text(entry, "Agent argument", true)), recoveryLimit: integer(data.recoveryLimit, "Recovery limit") };
+    args: data.args.map((entry) => text(entry, "Agent argument", true)), recoveryLimit: integer(data.recoveryLimit, "Recovery limit"), ...(selection ? { validateNativeSelection: true as const } : {}) };
 };
 const parseWorktree = (value: unknown): WorktreeBinding => {
   const data = record(value, ["repositoryPath", "commonDirectory", "worktreePath", "branch"], "Worktree binding");
@@ -53,7 +56,7 @@ const parseWorktree = (value: unknown): WorktreeBinding => {
 };
 const parseExecutionSummary = (value: unknown): ExecutionSummary => { if (value !== null) throw new Error("Web execution summaries are derived from fresh remote inventory."); return value as never; };
 const parseWebExecution = (value: unknown): WebExecutionState => {
-  const data = record(value, ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "sessionId", "executionGeneration", "initialOperationId", "initialPrompt", "launchSubmission", "controllerProcess", "nativeProcesses", "cleanupOperationId", "ticketPath", ...["summary", "initialInputState", "activity", "nativeHome", "restartAfterShutdown"].filter(key => typeof value === "object" && value !== null && Object.hasOwn(value,key))], "Web execution");
+  const data = record(value, ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "sessionId", "executionGeneration", "initialOperationId", "initialPrompt", "launchSubmission", "controllerProcess", "nativeProcesses", "cleanupOperationId", "ticketPath", ...["summary", "initialInputState", "activity", "nativeHome", "restartAfterShutdown", "startupReport"].filter(key => typeof value === "object" && value !== null && Object.hasOwn(value,key))], "Web execution");
   for (const key of ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "initialOperationId"]) id(data[key], key);
   for (const key of ["sessionId", "cleanupOperationId"]) nullable(data[key], entry => id(entry, key));
   version(data.executionGeneration); oneOf(data.launchSubmission, ["not-submitted", "unknown", "acknowledged"], "Controller launch submission");
@@ -65,6 +68,10 @@ const parseWebExecution = (value: unknown): WebExecutionState => {
   data.nativeHome ??= null; nullable(data.nativeHome, entry => absolutePath(entry, "Native profile home"));
   data.summary ??= null; data.initialInputState ??= "unknown"; data.activity ??= "unknown";
   nullable(data.summary, parseExecutionSummary);
+  if (data.startupReport !== undefined) {
+    const report = parseSessionStartupReport(data.startupReport);
+    if (report.sessionId !== data.sessionId || report.executionGeneration !== data.executionGeneration || report.controllerInstanceId !== data.controllerInstanceId) throw new Error("Startup report does not match the Web execution.");
+  }
   oneOf(data.initialInputState, ["not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"], "Initial input state");
   oneOf(data.activity, ["initializing", "idle", "working", "waiting_input", "stopped", "unknown"], "Controller activity");
   return data as WebExecutionState;
@@ -88,7 +95,9 @@ const validate = (task: LocalTask): LocalTask => {
   record(task.resources, ["mode", "worktree", "herdr", "nativeSession"], "Web resources");
   if (task.resources.mode !== "web" || task.resources.herdr !== null || task.nativeExecution !== null || task.control !== null) throw new Error("Web execution contains incompatible backend resources.");
   if (task.resources.nativeSession !== null) { const native = record(task.resources.nativeSession, ["source", "sessionId"], "Native session"); if (native.source !== "controller") throw new Error("The native session does not belong to the Controller."); id(native.sessionId, "Native session ID"); }
-  record(task.recovery, ["count", "pauseReason", "retryAuthorized"], "Recovery state"); integer(task.recovery.count, "Recovery count"); nullable(task.recovery.pauseReason, value => text(value, "Recovery pause")); bool(task.recovery.retryAuthorized, "Recovery authorization");
+  record(task.recovery, ["count", "pauseReason", "retryAuthorized", ...(Object.hasOwn(task.recovery, "reasonCode") ? ["reasonCode"] : [])], "Recovery state"); integer(task.recovery.count, "Recovery count"); nullable(task.recovery.pauseReason, value => text(value, "Recovery pause")); bool(task.recovery.retryAuthorized, "Recovery authorization");
+  if (task.recovery.reasonCode !== undefined) oneOf(task.recovery.reasonCode, ["native_identity_missing", "recovery_limit", "recovery_blocked"], "Recovery reason");
+  if (task.webExecution?.startupReport !== undefined && task.webExecution.startupReport.claimId !== task.claimId) throw new Error("Startup report belongs to another claim.");
   oneOf(task.status, ["pending", "active", "done"], "Web execution state");
   nullable(task.resources.worktree, parseWorktree); nullable(task.cleanup, parseCleanup); nullable(task.webExecution, parseWebExecution);
   return task;

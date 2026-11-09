@@ -1,45 +1,65 @@
-# 任务三状态与统一设置需求
+# 任务状态与取消终态需求
 
-状态：已实现。本文拥有任务三状态与统一设置的当前行为。
+状态：已实现。本文拥有 Task 状态、依赖、计时及统一状态设置的当前行为。[架构设计](../design/daynight-task-status.md)拥有机制与执行边界。
 
-[架构设计](../design/daynight-task-status.md)拥有机制、选型和执行边界。
+## TS1：状态与统一入口
 
-## TS1：三状态与统一入口
+Task 状态为 `todo`、`in_progress`、`done`、`cancelled`。`todo` 表示待办，`in_progress` 表示执行中，`done` 表示完成交付，`cancelled` 表示不再需要执行。后两者均为已结束，但取消不证明交付、验收或成果保存成功。新建任务默认 todo，初始版本为 1，`startedAt`、`completedAt`、`cancelledAt` 均为 null；依赖决定 ready，不存在任务审批阶段。
 
-任务仅有 `todo`、`in_progress`、`done`。新建任务默认 `todo`，初始版本为 1，起止时间为 null；依赖决定是否 ready，不存在任务审批阶段或另一套批准字段。状态与任务记录不自动授予执行、部署或交付权限。
+CLI 提供 `daynight task set-status <task-id> <status>` 与等价 `dn`，保留项目发现、`--project`、精确 `--if-version` 和补全。`cancelled` 通过同一入口设置。显式 `--claim-id <claim-id>` 仅用于 done，经本地 UUID 校验和规范化后调用现有 claim-bound 完成；其他目标在配置、Git 和网络前拒绝。省略不从任务或环境推断 claim。普通 task update 保持元数据职责，不接受 status。
 
-CLI 提供 `daynight task set-status <task-id> <status>` 与等价 `dn`，保留项目发现、`--project`、精确 `--if-version` 和补全。显式 `--claim-id <claim-id>` 仅用于 done，经本地 UUID 校验和规范化后调用现有 claim-bound 完成；其他目标在配置、Git 和网络前拒绝。省略不从任务或环境推断 claim，普通 setter 不变。旧 approve/unapprove/claim/complete 公开入口删除；普通 task update 保持元数据职责，不接受 status。
+状态与任务记录不授予执行、部署、交付、重开或强制撤回权限。同状态请求先核验权限与精确版本，再返回完整 Task；不修改字段、版本、updatedAt 或计时。过期同状态请求仍冲突，实际状态改变只递增一次版本。
 
-没有 active/released 执行归属的普通任务支持任意状态对，包括退回和直接完成；worker 管理中的任务还受[认领规则](../design/daynight-worker-claims.md)约束。同状态请求先核验权限与精确版本，再返回当前完整任务；不修改持久化字段、版本、updatedAt 或计时。过期同状态请求仍冲突。实际改变只递增一次任务版本。
+## TS2：状态转换与数据保留
 
-## TS2：历史数据迁移
+没有 active/released 执行归属的普通任务在 todo、in_progress、done 之间保持既有转换规则。进入 cancelled 不要求前置满足，也不要求交付、验收或保留成果。todo、人工 in_progress、done 及保留 released 历史的任务可以取消；done→cancelled 不撤回已有代码或外部交付，也不受已启动后继限制。
 
-所有历史 `proposed` 任务转换为 `todo`。只对转换行增加一次 version 并以真实数据库时间更新 updatedAt，保留其标题、Markdown、属性、PR、allowAgents、requiredPlatform、依赖端点与外部分类、附件、createdAt 和已有起止时间；其他状态行保持原值。迁移是旧状态归类，不是重新开始或退回一次执行，不重置时间。
+cancelled 不可恢复，不能通过普通 setter、认领、resume、withdraw 或 claim-bound 完成改回 todo、in_progress 或 done。同状态 cancelled 请求仍遵守精确版本 no-op。既有 completed/released 归属历史保持真实，不改写成新一次执行。
 
-数据库默认值与约束同时切换为三状态。已应用迁移保持不变，新增迁移执行转换；失败回滚默认值、数据、约束与迁移记录。再次启动迁移不重复修改数据。运行时和客户端拒绝 `proposed`，不增加兼容别名或读取回退。
+active Worker 持有任务时不能取消，必须先完成现有 release 或其他已授权的解除 active 归属操作，再读取最新版本取消。仅停止原生进程不证明 active claim 已解除。released→cancelled 是放弃继续任务，不要求先恢复一次执行。
 
-## TS3：依赖与计时
+取消保留 assignedTo、allowAgents、平台要求、全部 properties、依赖、描述、Steps、Thread、执行历史和附件。底层数据保留及资源清理沿用删除的既有边界；取消记录和全部资料继续正常可读，并受项目权限与身份隔离保护。取消不设置删除标记、不返回 task_deleted、不解除依赖、不删除图节点，不自动关闭 PR 或删除 Git 分支。[软删除](daynight-task-deletion.md)仍是独立操作。
 
-实际进入 in_progress/done 时，全部直接前置必须完成，包括外部依赖。done 退回 todo/in_progress 时，若任一直接后继进行中或完成则拒绝，不级联修改任何后继。普通和外部边使用同样约束。
+数据库以新增迁移扩展状态约束并加入 nullable cancelledAt。历史三态记录保持状态、版本、时间和全部资料，取消时间为 null，不根据标题或讨论推断历史取消。原 proposed→todo 迁移的历史语义保持；已应用迁移不可改写，运行时拒绝 proposed，不增加兼容别名或读取回退。
 
-ready 仍为 todo 且全部前置完成。统计满足 `total = todo + inProgress + done` 与 `todo = ready + blocked`，不返回 proposed 统计项。迁移后的原 proposed 任务按实际前置进入 ready 或 blocked；allowAgents 保留原值。任务链全部完成时为 done；否则只要存在 done 或 in_progress 任务即为 in_progress，其余为 todo。外部上下文不计入链进度。
+## TS3：依赖、就绪与计时
 
-时间描述当前一次执行区间：进入 in_progress 生成新起点并清空终点；实际退回 todo 清空两端；in_progress→done 保留可空起点并记录真实终点；todo→done 仅记录终点，耗时未知。普通编辑与同状态不改变时间，不从其他时间戳推算历史。
+普通和外部前置处于 done 或 cancelled 时均视为满足。实际进入 in_progress/done 要求全部直接前置满足；取消任务自身允许有未满足前置。取消保留真实依赖边，不级联修改前置或后继。取消 A 可以使依赖 A 的 B 成为 ready，但 B 仍须满足其余前置与自动执行条件。
 
-状态、时间、版本与依赖规则在同一项目写事务内完成。权限、版本、依赖、取消或存储失败不能留下部分结果。状态修改保留 assignedTo、全部其他资料和附件；claim-bound done 同一事务把当前归属置为 completed。
+done 退回 todo/in_progress 时，若任一直接后继为 in_progress 或 done 则拒绝。cancelled 后继不增加重开限制，因为取消无需前置持续满足。done→cancelled 保持依赖满足，不适用重开保护。
 
-## TS4：Web 交互
+ready 仍为 todo 且全部前置满足。cancelled 永不 ready，不参与自动认领或 released 恢复。保留 allowAgents 不使取消任务重新执行。统计满足：
 
-任务详情沿用已交付的紧凑头部：实际标题在共享头部，完整 ID 与复制在概览，标题下的公共状态行将当前状态按钮与平台切换相邻放置，状态在前，ready/blocked 提示在两者之后，自动执行控件保持右侧；状态按钮打开三项菜单，当前项明确标记且可选择。选择后确认完整任务名、当前→目标和计时后果；同状态也通过版本化请求确认无修改。取消/Escape 不提交，保留键盘焦点。
+```text
+total = todo + inProgress + done + cancelled
+todo = ready + blocked
+ended = done + cancelled
+```
 
-状态、allowAgents及requiredPlatform平台保存共用单任务写入会话；状态/许可共用互斥确认窗口，平台选择后明确保存而无额外确认。读取陈旧、pending、unknown、核对中或核对失败都阻止三类再次提交；冲突重读后重新决策，未知结果仅 GET 核对，不自动重发写入。关闭详情不代表请求回滚。
+Goal 全部普通成员为 done/cancelled 时表示全部已结束，同时区分完成数和取消数；8 done + 2 cancelled 表示 10 项结束、8 项交付完成、2 项取消。全部done的Goal汇总为done，全部cancelled汇总为cancelled，混合终态汇总为仅供UI使用的ended；ended不是第五种TaskStatus。全部取消不能标为全部交付成功。外部上下文不计入 Goal 进度。
 
-双语、桌面与 320px、长标题、加载/空结果/失败、依赖拒绝、冲突、丢响应及核对失败可操作。状态更新保留资料页签、附件选择与阅读、图布局和焦点。界面不提供旧状态或任务审批入口。任务软删除使用独立标记与确认操作，沿用[软删除需求](daynight-task-deletion.md)，不增加第四种业务状态。
+startedAt/completedAt 描述执行区间：进入 in_progress 生成新起点并清空完成时间；实际退回 todo 清空两端；in_progress→done 保留可空起点并记录真实终点；todo→done 只有终点，耗时未知。取消记录数据库实际 cancelledAt，保留原执行起止；done→cancelled 保留 completedAt。当前业务结束时间由状态选择 done 的 completedAt 或 cancelled 的 cancelledAt，不从 updatedAt 推算。普通编辑与同状态不刷新任何端点。
+
+状态、取消时间、版本及依赖规则在同一项目写事务内完成，Task 修改与 Session freeze 一致提交。拒绝、请求取消、存储或冻结失败不能留下部分结果。取消不轮换项目 epoch，也不伪造后继版本；后继就绪性由新图和查询派生。
+
+## TS4：Web 状态交互与读取
+
+Task 详情沿用紧凑头部及公共状态行。四种业务状态都有可区分的双语文字和视觉标识，不能只依赖颜色。未取消任务的状态菜单提供todo、in_progress、done、cancelled；已取消任务保留可读状态，不提供reopen、resume或withdraw恢复控制。取消记录的描述、附件、Steps、Thread和执行资料保持可读。
+
+选择cancelled使用现有状态确认窗，展示完整任务名、当前→目标，明确不可恢复、无需继续交付、资料保持可读，以及其他任务对本任务的依赖将视为满足。取消不要求填写原因。active Worker的取消项以aria-disabled表达不可提交，悬停或键盘聚焦可读取先完成release的说明；若执行归属在审阅后变化，服务端拒绝仍须准确呈现，不能将进程已停误当作claim已释放。
+
+放弃确认、关闭确认窗或Escape零写入，保留焦点。已接受操作绑定身份、源状态、目标、精确版本和审阅cacheGeneration，异步准备和发送前继续核验原所有者及历史；冲突重读后重新确认，不替换新版本静默提交。
+
+状态、allowAgents和requiredPlatform保存共用单任务写入会话。读取陈旧、pending、unknown、核对中或核对失败时阻止再次提交。取消保持普通status操作，不设置删除终态：成功须为精确+1、cancelledAt非空且原startedAt/completedAt和其他Task字段保留。同状态核对仍按+0及时间不变规则；无效字段或时间组合不能当作成功。未知结果只GET核对，不重发写入，也不把后来读到的取消值归因于原未知请求。关闭或重开详情不释放进行中的防重责任。
+
+项目状态筛选提供全部/todo/in_progress/done/cancelled，取消精确筛选可与负责人条件组合；完整分量、Goal分母及依赖不被筛选裁剪。默认未完成列表及页签数量排除done/cancelled，完整链、全状态和搜索结果保留取消节点。Goal的已结束进度与完成交付数使用不同标签，最近结束窗口使用当前终态时间及全部普通成员的最大值。
+
+取消更新沿普通摘要delta发布，不调用删除缓存路径、不清空仍可读的资料。后台核验、状态变化及错误核对保留菜单、页签、附件阅读、图布局、滚动和焦点。双语、桌面与320px、长标题、加载/空结果/失败、active拒绝、冲突、丢响应和核对失败均保持可操作。
 
 ## TS5：工作流与验收
 
-创建任务只登记工作，不启动执行。在用户已授权的任务或 Goal 范围内，明确指定的 ready todo 满足阶段资料后可设置 in_progress；实际验收和必要授权交付后设置 done。已有执行授权的范围持续有效，但普通 run-task 每次只处理一个指定任务，完成或等待后返回；状态与 ready 不触发后继选择，也不以其他字段重建审批机制。
+创建只登记工作，不启动执行。明确指定的 ready todo 满足输入与执行授权后可进入 in_progress；真实交付和验收成立后设置 done。取消是另一种结束结果，不代替交付接受。普通 run-task 每次只处理一个指定任务，取消任务只报告终态，不重开或选择后继。
 
-allowAgents 继续只约束自动发现选择；用户明确指定的任务可沿用手工状态操作，自动调度由 worker 承担。普通 setter 不停止进程或代替 release/withdraw。Worker 在启动 prompt 中显式指定 worker-managed 环境、using-daynight 技能和 autopilot-managed-task 模式，并提供原 claim/worktree 等 assignment；对应专属指令复用已认领执行，不重新开始或选择后继，全部交付与验收成立后最后以显式 --claim-id 和观察版本完成。普通指令不加载 managed 详细规则，不凭任务 worker 属性推断执行模式。active 执行实际完成须提供匹配 claimId 并由 owner 提交；退回 todo 须显式 release，或通过强制撤回同时清除归属、关闭自动执行并清空执行时间。released 未完成成果不能用普通状态设置开始或完成，原 owner/admin 通过显式人工 resume 开始新的 claim/worktree/native 执行；该入口保留人工执行许可/平台例外。当前版本同状态仍是 no-op。completed 历史不阻止普通重开，也不会因重开变为 active。PR 审查批准和文档提案生命周期独立于被删除的任务状态。
+allowAgents 仅约束自动发现选择。普通 setter 不停止进程或代替 release。active 执行完成要求匹配 claimId 与 owner；released 的继续执行使用既有受控认领或人工 resume，取消后这些恢复入口均拒绝。Worker 本地 pending/active/done 描述执行及清理，不新增 cancelled 本地状态。已解除归属的原资源由完整自有 inventory 和既有清理机制处理，保留停止、归档、资源归属、退避与重启责任；业务取消不证明远端资源已消失。
 
-验证覆盖九种状态组合、精确大版本与同状态、全部边类型的开始/退回竞争、时间/回滚、旧数据迁移及重复启动、旧状态拒绝、三状态统计和分页、权限、资料保全及 Web 会话。最终使用真实 PostgreSQL、打包安装 CLI 和生产 Web 验证跨端互读及重启持久化；原型检查只证明模拟交互。适用模块门禁与覆盖率要求保持。
+验证覆盖四态转换、不可恢复、released 取消与 withdraw 拒绝、active 拒绝、同状态与大版本、普通/外部依赖、认领/resume/withdraw 竞争、时间保全与回滚、迁移保全、所有查询/图/同步/MCP投影、资料读取与Web缓存。Web另验证取消确认、active项悬停/焦点说明与零派发、精确状态筛选、旧历史响应、超时/丢响应只GET及320px双语。使用真实 PostgreSQL、installed CLI 与生产 Web 验证跨端互读和重启；原型仅证明模拟交互。适用模块门禁与覆盖率要求保持。

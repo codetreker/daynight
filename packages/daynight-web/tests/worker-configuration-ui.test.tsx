@@ -3,20 +3,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '../src/api/types';
 import type { WorkerConfigurationKey, WorkerConfigurationOutcome, WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
 import { WorkerConfigurationPanel } from '../src/features/workers/configuration/WorkerConfigurationPanel';
+import { ConfigurationProjectsDialog } from '../src/features/workers/configuration/ConfigurationDialogs';
 import { WorkerDetailPage } from '../src/features/workers/WorkerDetailPage';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { TaskCacheError } from '../src/features/task-cache/database';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerResponse } from './helpers/workers';
 
-const flush = () => act(async () => { for (let n = 0; n < 60; n++) await Promise.resolve(); });
+const flush = () => act(async () => { for (let n = 0; n < 60; n++) { await Promise.resolve(); await new Promise<void>(resolve => setImmediate(resolve)); } });
 const advance = async () => { await act(async () => { vi.advanceTimersByTime(5_000); for (let n = 0; n < 60; n++) await Promise.resolve(); }); };
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; };
 const project = (value: number): Project => ({ id: workerId(value), name: `Project ${value}`, repoUrl: `https://example.test/project-${value}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: workerId(999), version: 1n }, createdAt: WORKER_TIME, updatedAt: WORKER_TIME });
 const projectPage = (items: readonly Project[] = [], nextCursor: string | null = null, userId = WORKER_USER) => wireResponse({ items, nextCursor }, { headers: { 'Daynight-User-ID': userId } });
 const item = (key: WorkerConfigurationKey, appliedValue: WorkerConfigurationOutcome['appliedValue'], targetRevision = '1'): WorkerConfigurationOutcome => ({ key, appliedValue, targetRevision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null });
-const globals = (value: WorkerConfigurationValue, revision = '1') => [item({ kind: 'maxConcurrent' }, value.maxConcurrent, revision), item({ kind: 'pollIntervalMs' }, value.pollIntervalMs, revision), item({ kind: 'recoveryLimit' }, value.recoveryLimit, revision), item({ kind: 'native' }, value.native, revision)];
+const globals = (value: WorkerConfigurationValue, revision = '1') => [item({ kind: 'maxConcurrent' }, value.maxConcurrent, revision), item({ kind: 'pollIntervalMs' }, value.pollIntervalMs, revision), item({ kind: 'recoveryLimit' }, value.recoveryLimit, revision), item({ kind: 'preferPlatformSpecificTasks' }, value.preferPlatformSpecificTasks, revision), item({ kind: 'native' }, value.native, revision)];
 const observed = (revision: string, value: WorkerConfigurationValue, items: readonly WorkerConfigurationOutcome[], observationRevision = '1'): WorkerConfigurationResource => ({ ...configurationResource(revision, value), observationRevision, observation: { baseRevision: String(BigInt(observationRevision) - 1n), desiredRevision: revision, items, reportedAt: WORKER_TIME } });
 const install = (handler: (url: string, init: RequestInit) => Response | Promise<Response>, projects: readonly Project[] = []) => {
   const fetch = vi.fn((url: string, init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? projectPage(projects) : handler(url, init));
@@ -31,6 +33,111 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useRealTimers(); });
 
 describe('Worker configuration form', () => {
+  it('saves the platform preference independently and reports actual false until the Worker applies it', async () => {
+    const value = configurationValue();
+    let resource = observed('1', value, globals(value));
+    const writes: unknown[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { revision: string; value: WorkerConfigurationValue };
+        writes.push(body);
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    const preference = screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' });
+    const feedback = document.getElementById('feedback-preferPlatformSpecificTasks')!;
+    expect(preference).not.toBeChecked(); expect(feedback).toHaveTextContent('Actual: Off');
+    fireEvent.click(preference);
+    expect(preference).toBeChecked(); expect(feedback).toHaveTextContent('Unsaved');
+    save(); await flush();
+    expect(writes).toEqual([{ revision: '1', value: { ...value, preferPlatformSpecificTasks: true } }]);
+    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: Off');
+    const applied = resource.desired!.value;
+    resource = observed('2', applied, globals(applied, '2'), '2'); await advance();
+    expect(feedback).toHaveTextContent('Applied'); expect(feedback).toHaveTextContent('Actual: On');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+  it('discards the platform preference draft without saving it', async () => {
+    const fetch = install(() => configurationResponse(configurationResource()));
+    mount(); await flush();
+    const preference = screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' });
+    fireEvent.click(preference); expect(preference).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(preference).not.toBeChecked(); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+  });
+  it('keeps healthy choices editable and reports a failed refresh after withdrawal', () => {
+    const apply = vi.fn(), target = workerId(3), healthy = project(4);
+    renderWithLocale(<ConfigurationProjectsDialog projects={[healthy]} selected={[target]} loading={false} error={new Error('offline')} refresh={vi.fn()} onClose={vi.fn()} onApply={apply} />, { locale: 'en' });
+    expect(screen.getByRole('alert')).toHaveTextContent('Available projects could not be loaded.');
+    expect(screen.queryByText('Project 3')).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Project 4/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' })); expect(apply).toHaveBeenCalledWith([target, healthy.id]);
+  });
+  it.each([['en', 'The local project cache could not be checked or cleared.'], ['zh-CN', '无法检查或清理本地项目缓存。']] as const)('shows cache failures in %s while allowing unavailable selections to be removed', (locale, message) => {
+    const apply = vi.fn(), id = workerId(3);
+    renderWithLocale(<ConfigurationProjectsDialog projects={[]} selected={[id]} loading={false} error={new TaskCacheError('storage')} refresh={vi.fn()} onClose={vi.fn()} onApply={apply} />, { locale });
+    expect(screen.getByText(new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(id) }));
+    fireEvent.click(screen.getByRole('button', { name: locale === 'en' ? 'Done' : '完成' })); expect(apply).toHaveBeenCalledWith([]);
+  });
+  it('keeps a newly selected Project removable if its metadata is withdrawn in the open dialog', () => {
+    const apply = vi.fn(), selected: string[] = [], refresh = vi.fn(), close = vi.fn();
+    const dialog = (projects: readonly Project[]) => <ConfigurationProjectsDialog projects={projects} selected={selected} loading={false} error={null} refresh={refresh} onClose={close} onApply={apply} />;
+    const view = renderWithLocale(dialog([project(3), project(4)]), { locale: 'en' });
+    fireEvent.click(screen.getByRole('checkbox', { name: /Project 3/ }));
+    view.rerender(dialog([project(4)]));
+    const unavailable = screen.getByRole('checkbox', { name: new RegExp(workerId(3)) });
+    expect(unavailable).toBeChecked(); fireEvent.click(unavailable); expect(screen.queryByRole('checkbox', { name: new RegExp(workerId(3)) })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' })); expect(apply).toHaveBeenCalledWith([]);
+  });
+  it('uses saved field values for feedback without rewriting formatted input or inventing application', async () => {
+    const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: { args: ['--project'] } }] };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'projectPreparation', projectId: workerId(3) }, true), item({ kind: 'projectNative', projectId: workerId(3) }, { ...value.native, args: ['--project'] })]);
+    install((_url, init) => {
+      if (init.method === 'PUT') resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: (JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }).value } };
+      return configurationResponse(resource);
+    }, [project(3)]);
+    mount(); await flush();
+    const row = screen.getByRole('heading', { name: 'Project 3' }).closest('article')!;
+    fireEvent.click(within(row).getByText(/Agent settings/));
+    change('Concurrent task limit', '004');
+    change('Startup arguments', '[\n  "--foo"\n]');
+    change('Project 3 · Custom arguments', '[ "--new" ]');
+    const args = input('Startup arguments'); args.focus(); args.setSelectionRange(2, 6);
+    save(); await flush();
+    const nativeFeedback = document.querySelector<HTMLElement>('.native-summary .application-feedback')!;
+    const projectFeedback = within(row).getByText('Project Agent').closest<HTMLElement>('.application-feedback')!;
+    expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Awaiting application')).toBeInTheDocument();
+    expect(within(nativeFeedback).getByText('Awaiting application')).toBeInTheDocument();
+    expect(within(projectFeedback).getByText('Awaiting application')).toBeInTheDocument();
+    expect(args).toHaveValue('[\n  "--foo"\n]'); expect(args).toHaveFocus(); expect(args.selectionStart).toBe(2); expect(args.selectionEnd).toBe(6);
+    expect(input()).toHaveValue('004'); expect(input('Project 3 · Custom arguments')).toHaveValue('[ "--new" ]');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    const saved = resource.desired!.value;
+    resource = observed('2', saved, [...globals(saved, '2'), item({ kind: 'projectPreparation', projectId: workerId(3) }, true, '2'), item({ kind: 'projectNative', projectId: workerId(3) }, { ...saved.native, args: ['--new'] }, '2')], '2');
+    await advance();
+    expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Applied')).toBeInTheDocument();
+    expect(within(nativeFeedback).getByText('Applied')).toBeInTheDocument(); expect(within(projectFeedback).getByText('Applied')).toBeInTheDocument();
+    change('Concurrent task limit', '-');
+    expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Unsaved')).toBeInTheDocument();
+    expect(within(nativeFeedback).getByText('Applied')).toBeInTheDocument(); expect(within(projectFeedback).getByText('Applied')).toBeInTheDocument();
+  });
+  it('retains edits made while a formatted submission is in flight', async () => {
+    const response = deferred<Response>(); let submitted: WorkerConfigurationValue | null = null;
+    install((_url, init) => {
+      if (init.method === 'PUT') { submitted = (JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }).value; return response.promise; }
+      return configurationResponse(configurationResource());
+    });
+    mount(); await flush(); change('Startup arguments', '[ "--foo" ]'); save(); await flush();
+    change('Startup arguments', '[ "--bar" ]'); const args = input('Startup arguments'); args.focus(); args.setSelectionRange(3, 5);
+    response.resolve(configurationResponse(configurationResource('2', submitted!))); await flush();
+    expect(args).toHaveValue('[ "--bar" ]'); expect(args).toHaveFocus(); expect(args.selectionStart).toBe(3); expect(args.selectionEnd).toBe(5);
+    expect(within(document.querySelector<HTMLElement>('.native-summary')!).getByText('Unsaved')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
   it('saves a target without presenting the old actual value as applied', async () => {
     let resource = observed('1', configurationValue(), globals(configurationValue()));
     const writes: unknown[] = [];
@@ -168,15 +275,31 @@ describe('Worker configuration form', () => {
       if (init?.method === 'PUT') resource = configurationResource('2', (JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }).value);
       return configurationResponse(resource);
     }, [project(3)]);
-    mount({ tasks: [task] }); await flush(); fireEvent.click(screen.getByRole('button', { name: 'Remove project Project 3' }));
+    const view = mount({ tasks: [task] }); await flush(); fireEvent.click(screen.getByRole('button', { name: 'Remove project Project 3' }));
     const opener = screen.getByRole('button', { name: 'Save configuration' }); opener.focus(); fireEvent.click(opener);
     let dialog = screen.getByRole('dialog', { name: 'Save configuration and stop execution?' });
     expect(within(dialog).getByRole('link', { name: 'Snapshot task' }).getAttribute('href')).toContain(`/projects/${task.projectId}/tasks/${task.taskId}`);
     expect(within(dialog).getByText(/Task status, claims, worktrees and history remain for manual handling/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole('combobox', { name: '语言 / Language' })).toBeNull();
+    const requests = fetch.mock.calls.length;
+    view.setLocale('zh-CN');
+    expect(screen.getByRole('dialog', { name: '保存配置并停止执行？' })).toBe(dialog);
+    expect(within(dialog).getByRole('link', { name: 'Snapshot task' }).getAttribute('href')).toContain(`/projects/${task.projectId}/tasks/${task.taskId}`);
+    expect(fetch).toHaveBeenCalledTimes(requests);
+    view.setLocale('en');
     fireEvent.keyDown(document, { key: 'Escape' }); expect(screen.queryByRole('dialog')).toBeNull(); expect(opener).toHaveFocus(); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
     fireEvent.click(opener); dialog = screen.getByRole('dialog'); fireEvent.click(within(dialog).getByRole('button', { name: 'Save configuration' })); await flush();
     expect(resource.desired!.value.projects).toEqual([]); expect(task.status).toBe('in_progress'); expect(task.claimId).toBe(workerDetail().worker.tasks[0]!.claimId);
     expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1); expect(fetch.mock.calls.some(([url]) => url.includes('/tasks/'))).toBe(false);
+  });
+  it('does not reopen an old Project dialog after a Worker becomes unavailable and recovers', async () => {
+    let missing = false;
+    install(() => missing ? configurationError(404, 'not_found') : configurationResponse(configurationResource()), [project(3)]);
+    mount(); await flush(); fireEvent.click(screen.getAllByRole('button', { name: /Choose projects/ })[0]!); await flush();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    missing = true; await advance(); expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.getByText('Worker configuration is unavailable')).toBeInTheDocument();
+    missing = false; fireEvent.click(screen.getByRole('button', { name: 'Retry' })); await flush();
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(input()).toHaveValue('2');
   });
   it('paginates Project choices and retains selected inaccessible IDs when choosing another Project', async () => {
     const inaccessible = workerId(30), second = deferred<Response>(); let projectReads = 0;
@@ -184,7 +307,7 @@ describe('Worker configuration form', () => {
     const fetch = vi.fn((url: string) => {
       if (url.startsWith('/api/v1/projects?')) {
         ++projectReads;
-        if (url.includes('cursor=')) return second.promise;
+        if (url.includes('cursor=')) return second.promise.then(response => response.clone());
         return projectPage([project(3)], 'second');
       }
       return configurationResponse(configurationResource('1', value));
@@ -198,6 +321,11 @@ describe('Worker configuration form', () => {
     fireEvent.click(within(dialog).getByRole('checkbox', { name: /Project 4/ })); fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
     expect(screen.getByRole('heading', { name: inaccessible })).toBeInTheDocument(); expect(screen.getByRole('heading', { name: 'Project 4' })).toBeInTheDocument(); expect(projectReads).toBeGreaterThanOrEqual(3);
     expect(fetch.mock.calls.some(([url]) => url === '/api/v1/projects?limit=100&cursor=second')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: /Choose projects/ })); await flush();
+    dialog = screen.getByRole('dialog'); const unavailable = within(dialog).getByRole('checkbox', { name: new RegExp(inaccessible) });
+    expect(unavailable).toBeChecked(); fireEvent.click(unavailable); expect(unavailable).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Done' })).toBeEnabled(); fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('heading', { name: inaccessible })).toBeNull(); expect(screen.getByRole('heading', { name: 'Project 4' })).toBeInTheDocument();
   });
 });
 
@@ -212,6 +340,32 @@ describe('Worker detail configuration integration', () => {
     fireEvent.keyDown(overview, { key: 'ArrowRight' }); await flush();
     expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveFocus(); expect(input('Startup arguments')).toBe(args); expect(args).toHaveValue('[unfinished'); expect(args).toBeVisible();
   });
+  it('keeps an open selection and its focus across background reads, and closes it on a real tab change', async () => {
+    const projectsRead = deferred<Response>(), configRead = deferred<Response>();
+    let projectReads = 0, configReads = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.startsWith('/api/v1/projects?')) return ++projectReads > 2 ? projectsRead.promise : projectPage([project(3), project(4)]);
+      if (url.endsWith('/configuration')) return ++configReads > 1 ? configRead.promise : configurationResponse(configurationResource());
+      return workerError(404);
+    }));
+    const view = renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    change('Startup arguments', '[invalid'); const args = input('Startup arguments');
+    fireEvent.click(screen.getAllByRole('button', { name: /Choose projects/ })[0]!); await flush();
+    const dialog = screen.getByRole('dialog', { name: 'Choose projects' });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Project 4/ }));
+    const search = within(dialog).getByRole('searchbox') as HTMLInputElement;
+    fireEvent.change(search, { target: { value: 'Project 4' } }); search.focus(); search.setSelectionRange(2, 6);
+    view.rerender(<WorkerDetailPage workerId={workerId(1)} readEnabled={false} />);
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(search).toHaveFocus(); expect(search.selectionStart).toBe(2); expect(search.selectionEnd).toBe(6);
+    expect(within(dialog).getByRole('checkbox', { name: /Project 4/ })).toBeChecked(); expect(args).toHaveValue('[invalid');
+    view.rerender(<WorkerDetailPage workerId={workerId(1)} readEnabled />); await flush();
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(search).toHaveFocus(); expect(within(dialog).queryByRole('status')).toBeNull();
+    projectsRead.resolve(projectPage([project(3), project(4)])); configRead.resolve(configurationResponse(configurationResource())); await flush();
+    expect(search).toHaveValue('Project 4'); expect(within(dialog).getByRole('checkbox', { name: /Project 4/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime overview' })); expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); expect(input('Startup arguments')).toBe(args); expect(args).toHaveValue('[invalid');
+  });
   it('preserves existing Task links while displaying a separate configuration panel', async () => {
     const detail = workerDetail(); install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerResponse(detail));
     renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
@@ -220,14 +374,15 @@ describe('Worker detail configuration integration', () => {
     expect(screen.getByText('Snapshot task')).toBe(taskLink); expect(taskLink.getAttribute('href')).toBe(href); expect(taskLink).not.toBeVisible();
     fireEvent.click(screen.getByRole('tab', { name: 'Runtime overview' })); expect(taskLink).toBeVisible();
   });
-  it('disables paused reads without losing raw input and removes private draft on account change', async () => {
+  it('keeps local editing while reads are paused and removes private draft on account change', async () => {
     const first = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }), nextUser = workerId(88), second = createTaskCacheScope({ userId: nextUser, onIdentityMismatch: vi.fn() }); scopes.push(first, second);
     let actor = WORKER_USER;
     vi.stubGlobal('fetch', vi.fn((url: string) => url.startsWith('/api/v1/projects?') ? projectPage([], null, actor) : configurationResponse(configurationResource('1', { ...configurationValue(), maxConcurrent: actor === WORKER_USER ? 2 : 8 }), 200, actor)));
     const ui = (scope: TaskCacheScope, enabled: boolean) => <TaskCacheProvider scope={scope}><WorkerConfigurationPanel workerId={workerId(1)} readEnabled={enabled} online tasks={[]} /></TaskCacheProvider>;
     const view = renderWithLocale(ui(first, true), { locale: 'en' }); await flush(); change('Startup arguments', '[private draft');
-    view.rerender(ui(first, false)); expect(input('Startup arguments')).toBeDisabled(); expect(input('Startup arguments')).toHaveValue('[private draft');
-    actor = nextUser; view.rerender(ui(second, true)); expect(screen.queryByDisplayValue('[private draft')).toBeNull(); await flush();
+    view.rerender(ui(first, false)); expect(input('Startup arguments')).toBeEnabled(); expect(input('Startup arguments')).toHaveValue('[private draft');
+    change('Startup arguments', '[still private'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    actor = nextUser; view.rerender(ui(second, true)); expect(screen.queryByDisplayValue('[still private')).toBeNull(); await flush();
     expect(input()).toHaveValue('8'); expect(input('Startup arguments')).toHaveValue('[]');
   });
 });

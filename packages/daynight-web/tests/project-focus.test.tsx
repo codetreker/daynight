@@ -1,4 +1,4 @@
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,10 +11,8 @@ import type { RefObject } from 'react';
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
-vi.mock('../src/api/client', async (original) => ({
-  ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), getTaskSync: vi.fn(),
-  listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
-}));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn(),
+  listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })), }; });
 vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, rootId, onOpenTask, fullscreen }: {
   index: GraphIndex; rootId: string; onOpenTask: (id: string, trigger: HTMLElement) => void;
   fullscreen?: { readonly active: boolean; readonly onToggle: () => void; readonly buttonRef: RefObject<HTMLButtonElement | null> };
@@ -30,7 +28,7 @@ const rootId = '20000000-0000-0000-0000-000000000001';
 const selectedId = '20000000-0000-0000-0000-000000000002';
 const remainingId = '20000000-0000-0000-0000-000000000003';
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const task = (id: string, titlePreview: string, dependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
+const task = (id: string, titlePreview: string, dependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   id, titlePreview, titleTruncated: false, status: 'todo', dependsOn, blockedBy: dependsOn,
   ready: dependsOn.length === 0, createdAt: timestamp, updatedAt: timestamp,
 });
@@ -40,7 +38,7 @@ const graph = (tasks = [task(rootId, '原任务链'), task(selectedId, '所选�
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '核心项目', repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp },
   tasks,
   summary: {
-    total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length, done: tasks.filter((item) => item.status === 'done').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
+    total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length, done: tasks.filter((item) => item.status === 'done').length, cancelled: 0, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
     ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length,
   },
 });
@@ -62,7 +60,7 @@ beforeEach(() => {
     const sync = syncFixture.toSync(value, query, replacementEpochs.get(value));
     servedGraphs.set(projectId, value);
     for (const task of sync.tasks) servedVersions.set(`${projectId}/${task.id}`, task.version);
-    return sync;
+    return taskSyncReadFixture(sync);
   });
 });
 
@@ -72,7 +70,7 @@ beforeEach(() => {
   document.body.append(root);
   previousOverflow = document.body.style.overflow;
   document.body.style.overflow = 'scroll';
-  graphRequest.mockReset();
+  graphRequest.mockReset().mockImplementation(async (id) => servedGraphs.get(id)!);
   detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id) => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id)!;
@@ -88,10 +86,11 @@ afterEach(() => {
   document.body.style.overflow = previousOverflow;
 });
 
-const openDialog = async (fullscreen = false) => {
+const openDialog = async (fullscreen = false, filterTodo = false) => {
   render(<ProjectPage projectId={projectId} />, { container: root });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
   await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toBeVisible());
+  if (filterTodo) fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
   fireEvent.click(document.getElementById(`task-chain-graph-${rootId}`)!);
   if (fullscreen) fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const trigger = await screen.findByRole('button', { name: '节点 所选任务' });
@@ -137,33 +136,25 @@ describe('project dialog focus restoration', () => {
     expectModalReleased();
   });
 
-  it('returns focus to the graph close control when refresh removes the selected node but retains its fullscreen graph', async () => {
+  it('retires the old graph and restores focus when history replacement removes the selected node', async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([task(rootId, '原任务链'), task('20000000-0000-0000-0000-000000000005', '保留图节点', [rootId]), ...remainingChain])));
     const { trigger, dialog } = await openDialog(true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    const fullscreen = document.querySelector<HTMLElement>('.task-chain-dialog-fullscreen')!;
-    await waitFor(() => expect(fullscreen.querySelector('.task-chain-close')).toHaveFocus());
+    await waitFor(() => expect(document.getElementById(`task-root-${remainingId}`)).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
     expect(document.querySelector('.task-detail-dialog')).toBeNull();
-    expect(root).not.toHaveAttribute('inert');
-    expect(document.body.style.overflow).toBe('hidden');
-    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
-    expect(document.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
-    expect(document.querySelector('.task-chain-dialog')).toBeVisible();
-    expect(document.body.style.overflow).toBe('hidden');
-    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expectModalReleased();
   });
 
-  it('keeps scrolling locked when refresh unmounts fullscreen while the dialog stays open', async () => {
-    const completed = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])].map((item) => ({
-      ...item, status: 'done' as const, ready: false, blockedBy: [],
-    }));
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...completed, ...remainingChain]));
-    const { trigger, dialog } = await openDialog(true);
+  it('keeps scrolling locked when a Goal split unmounts its fullscreen graph while task details remain open', async () => {
+    const split = [task(rootId, '原任务链'), task(selectedId, '所选任务')];
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...split, ...remainingChain]));
+    const { trigger, dialog } = await openDialog(true, true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(trigger.isConnected).toBe(false));
     expect(document.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expect(dialog).toBeVisible();
     expect(root).toHaveAttribute('inert');
     expect(document.body.style.overflow).toBe('hidden');
@@ -172,23 +163,36 @@ describe('project dialog focus restoration', () => {
     expectModalReleased();
   });
 
-  it.each([true, false])('retains details when completion hides their chain and restores visible focus (remaining=%s)', async (keepRemaining) => {
+  it.each([true, false])('retains both dialog layers when completion filters their Goal from the list and restores visible focus (remaining=%s)', async (keepRemaining) => {
     const completed = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])].map((item) => ({
       ...item, status: 'done' as const, ready: false, blockedBy: [],
     }));
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(keepRemaining ? graph([...completed, ...remainingChain]) : resetSnapshot(graph(completed)));
-    const { trigger, dialog } = await openDialog();
+    const initial = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId]), ...(keepRemaining ? remainingChain : [])];
+    graphRequest.mockResolvedValueOnce(graph(initial)).mockResolvedValueOnce(graph([...completed, ...(keepRemaining ? remainingChain : [])]));
+    const { trigger, dialog } = await openDialog(false, true);
+    const graphDialog = document.querySelector<HTMLElement>('.task-chain-dialog')!;
+    const graphClose = graphDialog.querySelector<HTMLButtonElement>('.task-chain-close')!;
+    const listOpener = document.getElementById(`task-chain-graph-${rootId}`)!;
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    await waitFor(() => expect(trigger.isConnected).toBe(false));
+    await waitFor(() => expect(listOpener.isConnected).toBe(false));
+    expect(trigger.isConnected).toBe(true);
     expect(dialog).toBeVisible();
+    expect(document.querySelector('.task-chain-dialog')).toBe(graphDialog);
     expect(document.getElementById(`task-root-${rootId}`)).toBeNull();
+    expect(within(dialog).getByRole('button', { name: '关闭任务详情' })).toHaveFocus();
+    expect(root).toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
-    await waitFor(() => expect(keepRemaining ? document.getElementById(`task-root-${remainingId}`)! : screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(document.querySelector('.task-chain-dialog')).toBe(graphDialog);
+    expect(root).not.toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.click(graphClose);
+    await waitFor(() => expect(document.getElementById(keepRemaining ? `task-root-${remainingId}` : 'project-chain-list')).toHaveFocus());
     expectModalReleased();
-    const checkbox = screen.getByRole('checkbox', { name: /^显示所有/ });
+    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
     if (!keepRemaining) {
-      fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
-      expect(checkbox).toHaveFocus();
+      fireEvent.change(await screen.findByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
       expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
       expect(document.querySelector('.task-chain-dialog')).toBeNull();
     }
@@ -212,10 +216,9 @@ describe('project dialog focus restoration', () => {
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(document.getElementById(`task-root-${remainingId}`)).toBeVisible());
-    const remainingRoot = document.getElementById(`task-root-${remainingId}`)!;
-    await waitFor(() => expect(remainingRoot).toHaveFocus());
+    await waitFor(() => expect(document.getElementById(`task-root-${remainingId}`)).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
-    expect(remainingRoot).toHaveAttribute('aria-expanded', 'false');
+    expect(document.getElementById(`task-root-${remainingId}`)).toHaveAttribute('aria-expanded', 'false');
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expectModalReleased();
   });

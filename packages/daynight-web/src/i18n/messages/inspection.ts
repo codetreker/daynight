@@ -16,7 +16,19 @@ export type InspectionMessages = {
     readonly conflict: string; readonly conflictReconciled: string; readonly unknown: string; readonly unknownReconciled: string; readonly checkState: string; readonly checking: string; readonly checkFailed: string;
     readonly statusRefused: string; readonly statusMissing: string; readonly statusDenied: string;
     readonly statusExhausted: string; readonly statusCapacity: string; readonly statusInvalid: string;
+    readonly moveMenu: (title: string) => string; readonly moveUnavailable: string; readonly moveUp: string; readonly moveDown: string; readonly moveFirst: string; readonly moveLast: string; readonly moveRelative: string;
+    readonly moveTitle: string; readonly target: string; readonly searchTargets: string; readonly targetPagination: string; readonly targetPage: string; readonly targetResults: string; readonly noTargets: string; readonly targetMissing: string; readonly placement: string; readonly before: string; readonly after: string; readonly cancelMove: string; readonly confirmMove: string;
+    readonly moveConflict: string; readonly moveConflictReconciled: string; readonly moveUnknown: string; readonly moveRefused: string; readonly moveMissing: string; readonly moveInvalid: string;
+    readonly deleteStep: string; readonly deleteTitle: string; readonly deleteQuestion: string; readonly deleteExplanation: string; readonly deleteDraft: string; readonly deleteUnknown: string; readonly deleteConflict: string; readonly deleteConflictReconciled: string; readonly deleteRefused: string; readonly deleteMissing: string; readonly deleteChanged: string;
     readonly capacityDetails: (encoded: string, maximum: string) => string;
+    readonly add: string; readonly addTitle: string; readonly description: string; readonly initialStatus: string;
+    readonly addBefore: string; readonly addAfter: string; readonly addEnd: string; readonly chooseTarget: string; readonly selectTarget: string; readonly confirmTarget: string; readonly addMissing: string;
+    readonly undoUnavailable: string; readonly editStep: string; readonly returnEditing: string; readonly discardEditQuestion: string; readonly editMissing: string; readonly editUnknown: string; readonly editRefused: string; readonly currentContent: string;
+    readonly edit: string; readonly preview: string; readonly save: string; readonly cancel: string; readonly titleRequired: string;
+    readonly discardTitle: string; readonly discardQuestion: string; readonly discardExplanation: string; readonly discard: string; readonly keep: string;
+    readonly addConflict: string; readonly addConflictReconciled: string; readonly addUnknown: string; readonly addUnknownReconciled: string;
+    readonly addRefused: string; readonly addInvalid: string; readonly addDenied: string;
+    readonly invalidText: string; readonly addedMissing: string; readonly duplicateId: string; readonly chooseId: string;
   };
   readonly draftNavigation: {
     readonly title: string; readonly question: string; readonly explanation: string; readonly discard: string; readonly keep: string; readonly close: string;
@@ -80,6 +92,7 @@ export type InspectionMessages = {
     readonly configuration: string;
     readonly unsupported: string;
     readonly tooLarge: string;
+    readonly complexity: string;
     readonly image: string;
   };
   readonly deletion: {
@@ -120,6 +133,10 @@ export type InspectionMessages = {
     readonly startTiming: string;
     readonly finishTiming: string;
     readonly directFinishTiming: string;
+    readonly cancelQuestion: string;
+    readonly confirmCancellation: string;
+    readonly cancelExplanation: string;
+    readonly releaseBeforeCancel: string;
     readonly pending: string;
     readonly confirmed: string;
     readonly currentState: string;
@@ -176,6 +193,7 @@ export type InspectionMessages = {
     readonly noBlockers: string;
     readonly successors: string;
     readonly successorsMissing: string;
+    readonly successorsPartial: string;
     readonly noSuccessors: string;
     readonly created: string;
     readonly updated: string;
@@ -185,7 +203,6 @@ export type InspectionMessages = {
     readonly copyTitleFailed: string;
     readonly copied: string;
     readonly copyFailed: string;
-    readonly footer: string;
     readonly countedHeading: (args: { label: string; count: string }) => string;
   };
   readonly pr: {

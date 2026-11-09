@@ -1,4 +1,5 @@
-import { pauseAuthRequests } from '../src/api/client';
+import { TaskDetailPanels } from '../src/features/task-detail/TaskDetailPanels';
+import { pauseAuthRequests, waitForAuthRequests } from '../src/api/client';
 import { sessionBinding } from '../../daynight/src/session/protocol';
 import type { TaskSessionSnapshot } from './helpers/session';
 import { readFileSync } from 'node:fs';
@@ -16,12 +17,12 @@ const scopes: TaskCacheScope[] = [];
 afterEach(() => scopes.splice(0).forEach((scope) => scope.dispose()));
 const userId = '00000009-1111-4111-8111-111111111111';
 const initial = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' });
-function fixture(snapshot = initial()) {
+function fixture(snapshot = initial(), ownerUserId = userId) {
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   let receive!: (message: BrowserMessage) => void;
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: snapshot })), timeline: vi.fn(async () => ({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' })), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _after, onMessage) => { receive = onMessage; return { close: vi.fn() }; }) };
   vi.mocked(createSessionApi).mockReturnValue(api);
-  const element = (current = true) => <TaskCacheProvider scope={scope}><TaskAgentSession projectId={snapshot.identity.projectId} taskId={snapshot.identity.taskId} claimId={snapshot.claimId} active current={current} /></TaskCacheProvider>;
+  const element = (current = true, active = true) => <TaskCacheProvider scope={scope}><TaskAgentSession ownerUserId={ownerUserId} projectId={snapshot.identity.projectId} taskId={snapshot.identity.taskId} claimId={snapshot.claimId} active={active} current={current} /></TaskCacheProvider>;
   return { scope, api, element, receive: (message: BrowserMessage) => act(() => receive(message)), snapshot };
 }
 describe('production task session panel', () => {
@@ -48,7 +49,7 @@ describe('production task session panel', () => {
     await screen.findByText('Ready', { exact: true });
     vi.mocked(f.api.command).mockRejectedValue(new Error('Lost acknowledgement'));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'do once' } }); fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    await screen.findByText('Outcome unknown');
+    await screen.findByText('Unable to confirm whether this operation completed. Check the original operation.');
     const command = vi.mocked(f.api.command).mock.calls[0]![1];
     vi.mocked(f.api.operation).mockResolvedValue({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'started', error: null });
     fireEvent.click(screen.getByRole('button', { name: 'Check original operation' }));
@@ -126,7 +127,7 @@ it('does not combine a new account with the previous client snapshot before its 
   vi.mocked(f.api.current).mockImplementation(() => new Promise(() => {}));
   const nextScope = createTaskCacheScope({ userId: '00000019-1111-4111-8111-111111111111', onIdentityMismatch: vi.fn() }); scopes.push(nextScope);
   const getItem = vi.spyOn(Storage.prototype, 'getItem');
-  rendered.rerender(<TaskCacheProvider scope={nextScope}><TaskAgentSession projectId={f.snapshot.identity.projectId} taskId={f.snapshot.identity.taskId} claimId={f.snapshot.claimId} active current /></TaskCacheProvider>);
+  rendered.rerender(<TaskCacheProvider scope={nextScope}><TaskAgentSession ownerUserId={userId} projectId={f.snapshot.identity.projectId} taskId={f.snapshot.identity.taskId} claimId={f.snapshot.claimId} active current /></TaskCacheProvider>);
   expect(getItem.mock.calls.filter(([key]) => key.startsWith('daynight.web.session.display.v1:'))).toEqual([]);
   expect(screen.queryByRole('button', { name: 'Display' })).toBeNull();
 });
@@ -156,4 +157,93 @@ it('retains the live client, channel and draft through Session fullscreen and la
   expect(f.api.channel).toHaveBeenCalledOnce();
   expect(close).not.toHaveBeenCalled();
   expect(f.api.command).not.toHaveBeenCalled();
+});
+
+it('shows live messages and disabled pending approval controls to another project member', async () => {
+  const s = { ...initial(), activity: 'waiting_input' as const, operations: { canSend: true, canCancel: true, canRespond: true } };
+  const f = fixture(s, '00000010-1111-4111-8111-111111111111');
+  vi.mocked(f.api.timeline).mockResolvedValue({ sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [
+    { kind: 'assistant_message', entryId: 'message', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Shared live output' }] },
+    { kind: 'interaction', entryId: 'request', entrySeq: '2', revision: '1', interaction: { interactionId: 'approval', revision: '1', kind: 'approval', state: 'pending', title: 'Approve Write', detail: 'notes/review.txt', actions: ['allow_once', 'reject'] } }
+  ], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+  render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+  f.receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot: s, cursor: 'zero' });
+  expect(await screen.findByText('Shared live output')).toBeVisible();
+  expect(screen.getByLabelText('Message')).toHaveAttribute('readonly');
+  for (const button of screen.getByRole('region', { name: 'Approve Write' }).querySelectorAll('button')) expect(button).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Display' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(f.api.current).toHaveBeenCalledTimes(2));
+  expect(f.api.command).not.toHaveBeenCalled();
+  expect(screen.getByText('Shared live output')).toBeVisible();
+});
+
+
+it('reads only the selected visible production Session panel and retains its channel on document return', async () => {
+  vi.useFakeTimers(); const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  try {
+    const f = fixture(); const view = render(f.element(true, false));
+    await act(async () => vi.advanceTimersByTimeAsync(9000)); expect(f.api.current).not.toHaveBeenCalled();
+    view.rerender(f.element(true, true)); await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(f.api.current).toHaveBeenCalledOnce();
+    f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: 'retained on return' } });
+    const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
+    visibility.mockReturnValue('hidden'); act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await act(async () => vi.advanceTimersByTimeAsync(9000));
+    expect(f.api.current).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
+    visibility.mockReturnValue('visible'); act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await act(async () => vi.advanceTimersByTimeAsync(2999)); expect(f.api.current).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(1)); expect(f.api.current).toHaveBeenCalledTimes(2);
+    expect(f.api.channel).toHaveBeenCalledOnce(); expect(screen.getByRole('textbox')).toBe(input); expect(input).toHaveValue('retained on return');
+  } finally { visibility.mockRestore(); vi.useRealTimers(); }
+});
+
+it('does not prefetch a selected Session while its document is initially hidden', async () => {
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  try {
+    const f = fixture(); render(f.element()); await act(async () => {});
+    expect(f.api.current).not.toHaveBeenCalled();
+    visibility.mockReturnValue('visible'); act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await waitFor(() => expect(f.api.current).toHaveBeenCalledOnce());
+  } finally { visibility.mockRestore(); }
+});
+
+it('cancels a current read queued behind identity admission when the production panel hides', async () => {
+  vi.useFakeTimers(); let resume: (() => void) | undefined;
+  try {
+    const f = fixture(); const view = render(f.element()); await act(async () => vi.advanceTimersByTimeAsync(0));
+    f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    const sent = vi.fn();
+    vi.mocked(f.api.current).mockImplementationOnce(async signal => { resume = pauseAuthRequests(); await waitForAuthRequests(signal); sent(); return { status: 'registered', session: f.snapshot }; });
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    view.rerender(f.element(true, false)); await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(vi.mocked(f.api.current).mock.calls[1]![0].aborted).toBe(true);
+    resume!(); resume = undefined; await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(sent).not.toHaveBeenCalled(); expect(f.api.current).toHaveBeenCalledTimes(2);
+    view.rerender(f.element(true, true)); await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(f.api.current).toHaveBeenCalledTimes(3); expect(f.api.channel).toHaveBeenCalledOnce();
+  } finally { resume?.(); vi.useRealTimers(); }
+});
+
+
+it('does not prefetch from Overview and restores a retained Session through the production tabs', async () => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture(); render(<TaskDetailPanels overview={<p>Task overview</p>} attachments={null} session={active => f.element(true, active)} />);
+    await act(async () => vi.advanceTimersByTimeAsync(9000)); expect(f.api.current).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Session' })); await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(f.api.current).toHaveBeenCalledOnce();
+    f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' }); await act(async () => vi.advanceTimersByTimeAsync(0));
+    const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: 'retained through Overview' } });
+    const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' })); await act(async () => vi.advanceTimersByTimeAsync(9000));
+    expect(f.api.current).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Session' })); await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole('textbox')).toBe(input); expect(input).toHaveValue('retained through Overview'); expect(f.api.current).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(3000)); expect(f.api.current).toHaveBeenCalledTimes(2); expect(f.api.channel).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
 });

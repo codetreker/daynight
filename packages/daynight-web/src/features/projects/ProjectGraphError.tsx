@@ -5,7 +5,6 @@ import { GraphDataError } from '../task-graph/model';
 
 export const projectGraphErrorTitle = (error: unknown, m: WorkspaceMessages["project"]): string => {
   if (error instanceof ApiError && error.code === "not_found") return m.notFound;
-  if (error instanceof ApiError && error.code === "graph_limit_exceeded") return m.graphLimit;
   if (error instanceof GraphDataError || error instanceof ApiError && error.kind === "protocol") return m.incomplete;
   return m.loadingFailed;
 };
@@ -19,13 +18,7 @@ export const ProjectGraphErrorDetail = ({ error }: { readonly error: unknown }) 
         ? m.protocolError
         : error instanceof ApiError && error.code === "not_found"
           ? m.notFoundDetail
-          : error instanceof ApiError && error.code === "graph_limit_exceeded"
-            ? m.graphLimitDetail
-            : m.readError}</p>
-    {error instanceof ApiError && error.graphLimit !== undefined && (
-      <p>{m.graphLimitCounts({ nodes: error.graphLimit.nodeCount, edges: error.graphLimit.edgeCount,
-        maxNodes: error.graphLimit.maxNodes, maxEdges: error.graphLimit.maxEdges })}</p>
-    )}
+          : m.readError}</p>
     {error instanceof ApiError && error.requestId !== null && (
       <p className="request-id">{common.requestId}<code>{error.requestId}</code></p>
     )}

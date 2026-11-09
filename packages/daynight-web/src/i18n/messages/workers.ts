@@ -18,6 +18,7 @@ export type WorkersMessages = {
   readonly refreshing: string;
   readonly retry: string;
   readonly readError: string;
+  readonly cacheStorageError: string;
   readonly networkError: string;
   readonly protocolError: string;
   readonly refreshFailed: string;

@@ -1,11 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { authRequestsPaused } from "../../../api/client";
 import type { StepStatus, TaskStep } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
 
 const statuses: readonly StepStatus[] = ["todo", "in_progress", "done", "skipped"];
 
-export const StepStatusMenu = ({ step, available, busy, onSelect }: {
-  readonly step: TaskStep; readonly available: boolean; readonly busy: boolean;
+export const StepStatusMenu = ({ step, available, selectionBlocked = false, busy, onSelect }: {
+  readonly step: TaskStep; readonly available: boolean; readonly selectionBlocked?: boolean; readonly busy: boolean;
   readonly onSelect: (status: StepStatus) => void;
 }) => {
   const { messages: { inspection: { steps: m } } } = useI18n();
@@ -64,8 +65,8 @@ export const StepStatusMenu = ({ step, available, busy, onSelect }: {
         setActive(event.key === "Home" ? 0 : event.key === "End" ? statuses.length - 1 : (active + (event.key === "ArrowDown" ? 1 : -1) + statuses.length) % statuses.length);
       } else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
       else if (event.key === "Tab") close(false);
-    }}>{statuses.map((value, index) => <button key={value} ref={(node) => { options.current[index] = node; }} type="button" role="menuitemradio" aria-checked={step.status === value} tabIndex={index === active ? 0 : -1}
-      className="task-status-option" onFocus={() => setActive(index)} onClick={() => { close(true); onSelect(value); }}>
+    }}>{statuses.map((value, index) => <button key={value} ref={(node) => { options.current[index] = node; }} type="button" role="menuitemradio" aria-checked={step.status === value} aria-disabled={selectionBlocked} tabIndex={index === active ? 0 : -1}
+      className="task-status-option" onFocus={() => setActive(index)} onClick={() => { if (!selectionBlocked && !authRequestsPaused()) { close(true); onSelect(value); } }}>
       <span>{m.status[value]}</span><span aria-hidden="true">{step.status === value ? "✓" : ""}</span>
     </button>)}</div>}
   </div>;

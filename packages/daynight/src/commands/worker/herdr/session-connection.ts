@@ -17,7 +17,7 @@ const stateIdentity = (record: HerdrLifecycleRecord) => ({ owner: record.owner, 
 
 /** Service history can lag a local stop or native-ID observation, but cannot replace it. */
 const assertHistory = (record: HerdrLifecycleRecord, observed: HerdrSessionState): void => {
-  if (observed.sessionId !== record.sessionId || observed.claimId !== record.claimId || !same(observed.owner, record.owner) || observed.ledger.finalizationId !== null || Object.values(observed.capabilities).some(Boolean)) reject();
+  if (observed.sessionId !== record.sessionId || observed.claimId !== record.claimId || !same(observed.owner, record.owner) || observed.ledger.finalizationId !== null) reject();
   const local = record.runs.map(run => run.run), remote = observed.ledger.runs;
   if (remote.length > local.length || local.length > remote.length + 1) reject();
   const registered = local.find(run => run.executionGeneration === observed.executionGeneration);
@@ -57,7 +57,7 @@ const reconcileLedger = async (store: HerdrLifecycleStore, record: HerdrLifecycl
 };
 
 /** A persisted pending request is read back, never automatically dispatched a second time. */
-export const connectHerdrSession = async (store: HerdrLifecycleStore, identity: ClaimIdentity, api: HerdrSessionApi, signal?: AbortSignal): Promise<HerdrLifecycleRecord> => {
+export const connectHerdrSession = async (store: HerdrLifecycleStore, identity: ClaimIdentity, api: HerdrSessionApi, signal?: AbortSignal, capabilities = { observe: false, control: false, archive: false }): Promise<HerdrLifecycleRecord> => {
   let record = need(store, identity);
   if (record.ledgerRequest !== null) record = await reconcileLedger(store, record, api, signal);
   if (record.registrationRequest !== null) return reconcileRegistration(store, record, api, signal);
@@ -74,7 +74,7 @@ export const connectHerdrSession = async (store: HerdrLifecycleStore, identity: 
     // A prepared successor is granted by the ledger only after reconnecting the registered generation.
     generation = observed.executionGeneration; binding = observed.binding;
   }
-  const request: Extract<SessionV2Message, { type: "registration" }> = { ...envelope(record, generation), type: "registration", payload: { registrationId: record.registrationId, mode: record.connectionEpoch === null ? "register" : "reconnect", connectionEpoch: record.connectionEpoch, owner: record.owner, binding, capabilities: { observe: false, control: false, archive: false } } };
+  const request: Extract<SessionV2Message, { type: "registration" }> = { ...envelope(record, generation), type: "registration", payload: { registrationId: record.registrationId, mode: record.connectionEpoch === null ? "register" : "reconnect", connectionEpoch: record.connectionEpoch, owner: record.owner, binding, capabilities } };
   record = store.update(record, draft => { draft.registrationRequest = request; });
   let epoch: string;
   try { epoch = (await api.register(request, signal)).payload.connectionEpoch; }

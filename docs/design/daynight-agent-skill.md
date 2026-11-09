@@ -1,9 +1,8 @@
 # using-daynight 项目任务 Skill 设计
 
 [需求](../spec/daynight-agent-skill.md)拥有公开行为，
-[入口隔离决策](../../.agents/notes/implemented/architecture/2026-10-26-managed-task-skill.md)
-拥有普通与 managed 执行的分工；[原模式决策](../../.agents/notes/archived/architecture/2026-10-21-using-daynight-modes.md)
-保留单一入口的原始理由；[内容与移交决策](../../.agents/notes/implemented/process/2026-10-25-task-content-handoff.md)
+[入口隔离决策](../../.agents/notes/archived/architecture/2026-10-26-managed-task-skill.md)记录普通与 managed 执行分工的历史取舍；[原模式决策](../../.agents/notes/archived/architecture/2026-10-21-using-daynight-modes.md)
+保留单一入口的原始理由；[内容与移交决策](../../.agents/notes/archived/process/2026-10-25-task-content-handoff.md)
 拥有内容单一所有权和审查后启用许可的取舍；[原分发决策](../../.agents/notes/archived/architecture/2026-10-21-public-agent-skill-design.md)
 保留安装机制的原始理由。[Project/Task CLI](daynight-project-task.md)与
 [附件设计](daynight-task-attachments.md)继续拥有服务访问、版本、依赖和文件操作。
@@ -130,25 +129,22 @@ controller。Skill、task、附件和完成规则均不授予合并等额外交�
 | `run-task.md` | 普通指定任务的开始、恢复、重开、普通 done 与返回；普通 Goal 的明确讨论转场 |
 | `autopilot-managed-task.md` | 显式 assignment 核验、原 active claim、指定工作区、按类型的必需附件和评审、单任务自主交付循环、交互信号与等待、claim-bound done 与交还 controller |
 | `task-execution.md` | 两种执行入口共用的真实任务输入、按项目规则维护 Steps、阶段资料、范围、交付、成果、验收准备与 session 等待检查点；不拥有开始或最终状态写入 |
-| `goal.md` | Goal 判断、顺序讨论与用户确认、阶段开始授权、确认后实际拆分、恢复和整体验收 |
+| `goal.md` | Goal 判断、顺序讨论与用户确认、阶段开始授权、交付任务四项内容及其 Goal 一致性、拆分整体质量、恢复和整体验收 |
 | `task-content.md` | 任务定义与成果、持久 Steps 与 session 内容分类、唯一内容所有者、引用读取和阶段适用性 |
-| `handoff.md` | 指定移交授权、充分性与本人负责人检查、许可更新、只读复审、状态与并发结果核对 |
+| `handoff.md` | 指定移交授权、内容充分性与适用 Goal 要求、本人负责人检查、许可更新、只读复审、状态与并发结果核对 |
 
 task description 明确当前任务、责任与资料入口。`task-content.md` 统一拥有 task/session
-边界：task 保存必须实现和交付什么，session 保存如何执行或讨论。创建、Goal 拆分、
+边界：task 保存目标、交付要求及必需的实施方案，session 保存执行或讨论的组织、命令安排和工具活动。创建、Goal 拆分、
 移交和执行通过既有引用读取同一标准，各模式拥有自身操作协议，不维护相互竞争的分类规则。
 边界覆盖 description、附件和引用任务材料；改名或迁移材料不能改变内容归属。
 
 共享标准按五类任务定义检查：目标与要求、范围与约束、输入与来源、交付物与契约、
 验收标准。当前需求或设计稿、最终交付物、验收结论及重要限制随产出保存；创建时无需
 预填成果。正文、实际引用和混合组织同样有效，未指定附件交付时正文完整无需主附件；Goal 协议拥有需求阶段的完整 `spec.md` 必需附件，managed 的按类型附件和独立 review 文件要求由其 Complete delivery standard 拥有，均不能由正文替代。每项详细说明
-只有一个拥有位置。执行必需的进一步引用实际读取，记录资源身份避免循环读取；不足、
+只有一个拥有位置。[Delivery task brief](../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#delivery-task-brief) 拥有 Goal 交付任务的目标、scope、实施方案和验收，以及按连贯成果和可审查性形成的拆分边界；Goal 协议核对各任务的 Goal 贡献及方案一致性和整组覆盖、责任与衔接；创建与 handoff 引用各自适用的检查，不复制另套标准。执行必需的进一步引用实际读取，记录资源身份避免循环读取；不足、
 不可读或冲突不能由链接存在掩盖。
 
-独立 solution、implementation plan、验证步骤、确认记录和 evidence location 不是通用
-内容前提。系统架构作为真实输入或设计交付物属于 task，session 的实现步骤和分工属于
-session。用户要求的迁移方案、操作手册或测试策略可以包含方法；检查点不能被执行者
-自行声明为额外交付物。已接受的成果及必要完成门槛保存在 task，操作授权、确认经过、
+单独方案文件、session 命令安排、确认记录和 evidence location 不是通用内容前提。Goal 交付任务仍必须具有具体实施方案，可直接提供或准确引用来源章节；只写“按架构实现”不能通过。普通任务按实际要求决定所需方案，需求和设计阶段仍产出自身设计。系统架构和任务实施方案属于 task，session 的命令日程、工具活动与分工属于 session。用户要求的迁移方案、操作手册或测试策略可以包含方法；检查点不能被执行者自行声明为额外交付物。已接受的成果及必要完成门槛保存在 task，操作授权、确认经过、
 进度、阻塞、CI/review/merge 过程与恢复上下文留在 session。最终 revision 可用于定位
 交付物，独立验收的结论保留所需对象身份、关键观察和限制，不积累工作流水。
 
@@ -233,8 +229,7 @@ task-management、project-management 与 write-safety 分别解释任务、项�
 
 终验收对整个已确认任务或 Goal 及其已确认变更给出需求对照结论，成果包含缺陷、
 未验证项、必要对象版本、支持结论所需的关键观察及重要限制。材料保存在所属任务，
-不要求增加机器回执 schema 或证据平台，managed 验收仍须上传证据附件。验证方法、执行命令历史和排障过程留在 session；
-用户明确要求交付的验证方案按其成果职责保存。人工、已有检查和临时辅助脚本按实际
+不要求增加机器回执 schema 或证据平台，managed 验收仍须上传证据附件。Goal 中的验收任务同样提供具体检查方法作为自身实施方案，说明如何核对需求与实际组合成果；执行命令历史、临时工具安排和排障过程留在 session。用户明确要求交付的验证方案按其成果职责保存。人工、已有检查和临时辅助脚本按实际
 需要组合，临时脚本遵守项目临时目录和资源清理规则。
 
 临时辅助脚本不进入仓库交付或形成 PR 门槛，因此辅助工具的维护和评审不能改变
@@ -244,18 +239,15 @@ task-management、project-management 与 write-safety 分别解释任务、项�
 
 ## 移交审查与许可
 
-`handoff.md` 只接受明确指定的移交对象。先读完整 task 和 worker 信息，再按共享内容
-标准读取必需资料与必要进一步引用，检查当前阶段的充分性、范围和上下游契约。它能
-依据已有确认信息整理尚未启用的 todo；没有来源的要求或决定作为具体缺项返回。
+`handoff.md` 只接受明确指定的移交对象。先读完整 task 和 worker 信息，再按共享内容标准读取真正必要的资料、来源任务和上下游契约，检查当前阶段的内容充分性；Goal 交付任务另按 Goal 协议复查四项内容、拆分边界及与 Goal 和方案的一致性。它能依据已有确认信息整理尚未启用的 todo；没有来源的要求或决定、责任重叠和交付衔接缺口作为具体问题返回。任务群逐项审核；这不重新证明整个 Goal 覆盖，不发现额外工作，也不授权重分任务或修改依赖。
 
 资料更新和内容核验先于许可更新。最终审查所依据的 task version 传给现有
 `task update --allow-agents true`；可在同一更新提交最终 description，不携带无关字段。
-负责人检查只读取显式目标的 `task show <task-id> --project <project-id> --json`，不枚举项目或账号任务集合。done 在归属检查前直接报告无需移交。其他状态将目标 assignedTo 与 setup 或当前 session 已独立确认的当前认证账号本地 user UUID 比较；未知身份、空值、不符或目标不可读时报告阻塞，不查询其他任务或改派。名称、邮箱、目标负责人和历史 worker 不是本人 UUID 的独立依据。目标版本变化须重读并重新判断，最终许可更新仍受精确版本保护。已启用任务检查失败保持只读并报告实际许可，既有 claim 恢复不重新执行本人候选资格检查。
+负责人检查只读取显式目标的 `task show <task-id> --project <project-id> --json`，不枚举项目或账号任务集合。done/cancelled在归属检查前直接报告实际终态、无需移交；取消不可恢复且不证明交付。其他状态将目标 assignedTo 与 setup 或当前 session 已独立确认的当前认证账号本地 user UUID 比较；未知身份、空值、不符或目标不可读时报告阻塞，不查询其他任务或改派。名称、邮箱、目标负责人和历史 worker 不是本人 UUID 的独立依据。目标版本变化须重读并重新判断，最终许可更新仍受精确版本保护。已启用任务检查失败保持只读并报告实际许可，既有 claim 恢复不重新执行本人候选资格检查。
 
 blocked todo 在设计和接口已清楚时可以预先移交，真实依赖继续阻止执行。已有 true 的
 任务只读复审，失败保留许可并报告调度风险；不会把复审假定为暂停。撤销或停止按
-另外明确的授权及现有控制流程执行。in_progress 的 false 不启用，done 按模式策略
-无需移交。Active worker 保留所有权和原资源；released 保留历史，由有权管理者显式 resume 开始新的 claim/worktree/native session，启用许可不代替该操作。
+另外明确的授权及现有控制流程执行。in_progress的false不启用，done/cancelled按模式策略无需移交。Active worker 保留所有权和原资源；released 保留历史，由有权管理者显式 resume 开始新的 claim/worktree/native session，启用许可不代替该操作。
 
 附件和跨任务文档不受目标 task version 保护。开启前核验所依赖的可变内容，执行时
 再次读取；资料变化后重新审查受影响部分。此边界只提供尽力核对，不引入审查令牌、
@@ -281,7 +273,7 @@ in_progress 是合法观察。结果报告实际 assignedTo、本人负责人检
 
 普通 run-task 以一个明确 ID 建立身份并读取共同资料。ready todo 在授权、前置与阶段
 输入齐备后，以观察版本 set-status in_progress 并核验后开始。已有 in_progress 根据
-实际工作与检查点恢复，清单不提供所有权。done 仅在明确重开范围内按依赖保护重开。
+实际工作与检查点恢复，清单不提供所有权。done仅在明确重开范围内按依赖保护重开；cancelled报告终态并返回，不能恢复。
 指定任务不要求 allowAgents=true 或自动平台匹配；已有固定队列授权可作为当前指定
 任务的范围来源，skill 不以此恢复连续调度或自动选择。
 
@@ -304,8 +296,11 @@ prompt 的实际组装、Herdr 递交与原生恢复由独立运行时负责；�
 
 `autopilot-managed-task` 的有效原 assignment 已有充分的单任务交付授权：实现与
 验证、提交和分支推送、聚焦 PR、CI 与 review 修复、合并和关闭。普通 pending
-CI/review 持续使用有界 watch 或轮询，超时只结束一次观察。失败先诊断，原样重跑限于
-已确认的临时基础设施原因。评审保留修复、延后、不成立三种处置，只在当前范围处理
+CI/review 持续使用有界 watch 或轮询，超时只结束一次观察。失败先查看日志；同一 commit
+上的同一失败检查最多额外重试 2 次，不含首次运行，无需先确认临时基础设施原因。
+次数跨 session、重启和 workflow 重跑累计；两次仍失败时先定位并修复原因后再验证。
+重试成功不代表根因已确认，不放宽必需检查或验收标准，并报告重试及实际结果。
+评审保留修复、延后、不成立三种处置，只在当前范围处理
 Critical/Major 和影响约定交付正确性的缺陷，逐线程回应并处理阻塞；最终一轮无新增
 Critical/Major 且远端评审满足才推进。合并前按当前远端 head 核对必需检查、实际
 approval、线程和可合并状态，保留保护规则及线性历史；平台确认 merged 并取得结果
@@ -347,9 +342,9 @@ PR URL/title 由 properties.pullRequests 拥有，任务材料保存真实成果
 
 ready 默认最多 10 项，必要时使用 1..100 的 --limit。服务按创建时间和 ID 升序排序，
 顺序不表达相关性；空页不证明 backlog 已完成。管理查询按实际范围读取清单、图与详情，
-区分范围完成、依赖阻塞、其他工作进行中及候选不足，不据此启动任务。Graph 读取目标的完整双向普通依赖连通分量及其中任务的一层外部前置，包含全部状态，不递归展开外部任务；完整依赖引用可能指向图外。达到
-1,000 节点 / 5,000 边限制时命令失败而不返回截断图，不等于项目未关联；详情使用 show，但不能替代完整关系核验。task list 穷尽匹配分页，
-默认排除 done，核对完整历史时显式包含已完成任务。状态/readiness 分组保留组内服务
+区分范围完成、依赖阻塞、其他工作进行中及候选不足，不据此启动任务。Graph 读取目标的完整双向普通依赖连通分量及其中任务的一层外部前置，包含全部状态，不递归展开外部任务；完整依赖引用可能指向图外。
+读取按实际保存的图完整返回，不复查存储节点或边容量；传输、取消和自然解码失败不等于项目未关联。详情使用 show，但不能替代完整关系核验。task list 穷尽匹配分页，
+默认排除done/cancelled，核对完整历史时显式包含已结束任务。状态/readiness 分组保留组内服务
 顺序，不表示相关性；文本为摘要，JSON 列表仅省略 description，详情和写入保留完整资源。
 
 在仓库内可省略 --project，由 CLI 按 Git origin URL 匹配；显式项目优先。project-management
@@ -360,7 +355,7 @@ https://daynight.cc，缺凭据或服务 401 提示 daynight login，不自动�
 所有基于已读内容的修改绑定精确 --if-version，保持完整 int64 十进制。默认临提交读取
 不保护较早决定；description、依赖与 PR 列表完整替换，冲突后重读并重新判断，不仅
 更换版本。附件独立核验，不受 task version 原子保护。update 不改状态；set-status
-是版本化状态设置，不提供独占锁、租约或新执行权。todo、in_progress、done 的同状态
+是版本化状态设置，不提供独占锁、租约或新执行权。todo、in_progress、done、cancelled的同状态
 请求 +0，实际改变 +1；未知结果先读实际事实，不自动提交重试。公开 --claim-id API
 继续由既有 CLI 与服务契约保护，普通调用背景不加载 managed 执行规则。
 
@@ -465,7 +460,9 @@ server/review 配置，不要求 origin 或项目关联。支持目录和重载�
 独立进程保证模块及资源都来自已安装包，避免旧进程模块缓存与新包混用。
 该内部进程的 Git 调用继承外层更新进程拥有的进程组；独立 Git 调用仍拥有自己的组。
 外层在中断、超时和内部进程退出时清理所拥有的组，避免内部 Git 逃离清理范围。
-Windows 沿用进程树终止机制。强制终止不能承诺 stage 清理或原子回滚。
+Windows 子进程保留调用者的控制台连接，使继承的标准输入、输出和错误句柄可用；
+中断和超时仍通过 `taskkill /PID /T /F` 终止其进程树。POSIX 子进程单独建立进程组。
+强制终止不能承诺 stage 清理或原子回滚。
 
 检测使用用户主目录和调用目录所属 Git worktree 根。先沿调用目录祖先检查 `.git`
 标记，存在时通过既有有界 Git 能力解析自身根；无标记只检查 User，读取错误继续抛出。
@@ -476,7 +473,7 @@ Windows 沿用进程树终止机制。强制终止不能承诺 stage 清理或�
 祖先冲突，预检完成后才使用完整替换器。每个结果保留相关 Agent、scope、物理路径、
 包版本和重载说明。失败停止后续目标并报告部分结果；父进程另外说明 npm 包已更新
 或保留，再以非零退出。重试 `update` 能从当前已安装包重新同步。
-[自动同步决策](../../.agents/notes/implemented/feature/2026-10-24-update-installed-agent-skills.md)
+[自动同步决策](../../.agents/notes/archived/feature/2026-10-24-update-installed-agent-skills.md)
 记录范围和失败边界。
 
 ## 调用成本
@@ -511,7 +508,7 @@ sibling 与另一 scope。迁移增加旧名称存在、leaf 链接、清理失�
 parent/leaf 链接、安装/清理路径嵌套、部分失败、监听清理和 completion 回归。Windows
 必须有原生结果；Linux 投影不能替代 `.cmd`、ConPTY 或平台链接证据。
 
-静态打包检查验证入口 frontmatter、资源清单、打包 allowlist，以及全部实际本地链接的存在和 bundle 内归属，不对指令规则、章节或措辞作断言。验证边界见 [skill 打包验证决策](../../.agents/notes/implemented/testing/2026-10-30-skill-packaging-validation.md)。围栏代码中的任务 Markdown 示例属于写作示例，不
+静态打包检查验证入口 frontmatter、资源清单、打包 allowlist，以及全部实际本地链接的存在和 bundle 内归属，不对指令规则、章节或措辞作断言。验证边界见 [skill 打包验证决策](../../.agents/notes/archived/testing/2026-10-30-skill-packaging-validation.md)。围栏代码中的任务 Markdown 示例属于写作示例，不
 作为 bundle 资源链接；打包产物和安装副本保留这些内容，并与源码完整字节比较。既有
 project/task/attachment 套件验证命令语义，创建、更新和 JSON 读取包含中英文、CRLF、
 围栏代码、GFM 与链接的描述，确认原始字符串及精确版本完整替换。独立情境演练另外核对
@@ -522,9 +519,9 @@ project/task/attachment 套件验证命令语义，创建、更新和 JSON 读�
 附件须重确认、方案正文直接索引需求来源且先读内容、确认后实际拆分、实质修订重确认、讨论与 PR 交付区分、部分登记恢复、Markdown
 自足内容的正文/引用/混合组织、必需引用实际读取、任务定义与成果所有权、前端原型、禁止 merge、阻塞和单任务返回。
 移交情境覆盖本人/未分配/他人负责人、归属查询失败和版本变化、授权启用、已有 true 的只读复审、失败保留许可并报告、blocked todo、运行锁、
-done 策略、worker 连续性、附件独立变化、冲突/未知写入及启用后立即被认领。指定子任务
+done/cancelled终态策略、worker连续性、附件独立变化、冲突/未知写入及启用后立即被认领。Goal 拆分情境覆盖交付任务四项内容、缺实施方案或验收不能证明 Goal 贡献、精确来源引用通过与笼统架构链接失败、无关目标混装、机械碎分、范围过大或过碎、缺失或重叠责任、未定义契约，以及集成和整体验收归属；允许有明确结果的基础能力、迁移、独立验收和已定义契约的 blocked todo。所选 Goal 交付任务移交发现拆分缺口时按实际许可状态报告，不扩大为全组重分或关系修改。指定子任务
 演练还核对执行与讨论的范围、跨任务阻塞和后续建议、必需共享输入读取，以及 Goal 级
-讨论和整体验收按当前任务已确认范围处理全局内容；managed 情境覆盖显式环境/技能/模式、普通不读取 managed 规则、上下文缺失/不匹配、原 claim 恢复及最终完成和系统工作区边界。任务/session 分类另覆盖混合请求、无执行计划、真实设计输入和成果、操作授权、结果身份、
+讨论和整体验收按当前任务已确认范围处理全局内容；managed 情境覆盖显式环境/技能/模式、普通不读取 managed 规则、上下文缺失/不匹配、原 claim 恢复及最终完成和系统工作区边界。任务/session 分类另覆盖混合请求、无 session 执行安排、真实设计输入和成果、操作授权、结果身份、
 恢复、用户要求的操作手册以及正文/附件/引用的一致边界。每例保留输入、应保留/排除项、
 允许/禁止操作、实际观察和结论，标明语义审查或 agent 演练及未验证行为；这些记录留在
 实施 session。保留正确规则再追加矛盾指令须由独立语义情境判断。自动化打包检查不包含指令文本变异测试，也不验证指令语义。这些情境是独立指令语义审查，不是自动化文本契约或对模型理解与执行的保证。review bundle 的快照、原生 Copilot 加载与配置隔离继续独立验证。

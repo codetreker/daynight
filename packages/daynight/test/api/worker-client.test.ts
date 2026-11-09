@@ -20,7 +20,7 @@ const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({
   id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
   allowAgents: true, requiredPlatform: null, assignedTo: null, version, startedAt: worker?.state === "active" ? time : null,
-  completedAt: worker?.state === "completed" ? time : null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined || worker.state === "released",
+  completedAt: worker?.state === "completed" ? time : null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined || worker.state === "released",
 });
 const cleanups: (() => void | Promise<void>)[] = [];
 const api = (serverUrl: string): ApiClient => {
@@ -68,6 +68,21 @@ describe("worker protocol negotiation", () => {
 });
 
 describe("in-process worker task API", () => {
+  it("requires the exact startup report in a confirmed update receipt", async () => {
+    const startupReport = { schemaVersion: 1 as const, source: "worker" as const, sessionId: taskId, claimId,
+      executionGeneration: "1", controllerInstanceId: workerId, revision: "1", observedAt: time,
+      startup: { state: "unknown" as const, reasonCode: "native_timeout" as const },
+      recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } };
+    let include = false;
+    const origin = await listen((_request, response) => {
+      const current = task({ ...claim(), agentControlMode: "web" });
+      respond(response, { ...current, properties: { ...current.properties, ...(include ? { sessionStartup: startupReport } : {}) } });
+    });
+    const client = api(origin);
+    await expect(client.updateWorkerClaim(projectId, taskId, { version: 1n, claimId, startupReport })).rejects.toMatchObject({ outcomeUnconfirmed: true });
+    include = true;
+    await expect(client.updateWorkerClaim(projectId, taskId, { version: 1n, claimId, startupReport })).resolves.toHaveProperty("properties.sessionStartup", startupReport);
+  });
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;
@@ -204,6 +219,25 @@ describe("in-process worker task API", () => {
     expect(urls[1]!.searchParams.get("cursor")).toBe("next+/=");
   });
 
+  it.each([true, false])("retains platformSpecific=%s through candidate pagination and rejects the opposite tier", async (platformSpecific) => {
+    const urls: URL[] = [];
+    let wrongTier = false;
+    const requiredPlatform = platformSpecific ? "macos" : null;
+    const origin = await listen((request, response) => {
+      const url = new URL(request.url!, "http://localhost"); urls.push(url);
+      const next = url.searchParams.has("cursor");
+      respond(response, { items: [{ ...task(undefined), id: next ? newClaimId : taskId, requiredPlatform: wrongTier ? (platformSpecific ? null : "macos") : requiredPlatform }], nextCursor: next || wrongTier ? null : "next-tier" });
+    });
+    const client = api(origin);
+    const filters = { limit: 1, compatiblePlatform: "macos", platformSpecific } as const;
+    const first = await client.listTaskPage(projectId, filters);
+    expect(first.nextCursor).toBe("next-tier");
+    await client.listTaskPage(projectId, { ...filters, cursor: first.nextCursor! });
+    expect(urls.map(url => url.searchParams.get("platformSpecific"))).toEqual([String(platformSpecific), String(platformSpecific)]);
+    wrongTier = true;
+    await expect(client.listTaskPage(projectId, filters)).rejects.toMatchObject({ phase: "protocol" });
+  });
+
   it("reads every worker inventory page without adding candidate eligibility filters", async () => {
     const canonicalWorkerId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     const first = { ...task({ ...claim(), workerId: canonicalWorkerId }), allowAgents: false, requiredPlatform: "windows" } as const;
@@ -313,7 +347,7 @@ describe("in-process worker task API", () => {
     const operation = createOperation();
     cleanups.push(() => operation.dispose());
     const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
-    for (const query of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: 1, cursor: "" }, { limit: 1, ready: 1 }, { limit: 1, allowAgents: "true" }, { limit: 1, compatiblePlatform: "win32" }, { limit: 1, status: "proposed" }]) {
+    for (const query of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: 1, cursor: "" }, { limit: 1, ready: 1 }, { limit: 1, platformSpecific: "false" }, { limit: 1, platformSpecific: null }, { limit: 1, allowAgents: "true" }, { limit: 1, compatiblePlatform: "win32" }, { limit: 1, status: "proposed" }]) {
       expect(() => client.listTaskPage(projectId, query as never)).toThrow();
     }
     expect(fetch).not.toHaveBeenCalled();

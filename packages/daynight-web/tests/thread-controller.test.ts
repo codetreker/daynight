@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import { ThreadPostError, type getThreadPage, type postThreadMessage } from '../src/features/task-thread/api';
-import { encodedMessageBytes, type ThreadMessage, type ThreadPage } from '../src/features/task-thread/contract';
+import { type ThreadMessage, type ThreadPage } from '../src/features/task-thread/contract';
 import { createThreadController, THREAD_LIMITS, type ThreadController, type ThreadControllerOptions } from '../src/features/task-thread/controller';
 
 const id = (number: number): string => `00000000-0000-0000-0000-${number.toString(16).padStart(12, '0')}`;
@@ -61,6 +61,24 @@ describe('Thread controller continuous reading', () => {
     expect(controller.snapshot().consumedAfterId).toBe(c.id);
   });
 
+  it.each([true, false])('accepts complete large pages within count windows while following=%s', async (following) => {
+    const { controller, list } = make();
+    const large = Array.from({ length: 40 }, (_, index) => {
+      const item = message(index + 10, '');
+      return { ...item, body: 'a'.repeat(65_536 - new TextEncoder().encode(JSON.stringify(item)).byteLength) };
+    });
+    list.mockResolvedValueOnce(page(large.slice(0, 20)));
+    await start(controller);
+    controller.setFollowing(following);
+    if (!following) controller.setReadingAnchor(large[0]!.id);
+    list.mockResolvedValueOnce(page(large.slice(20)));
+    await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ consumedAfterId: large[39]!.id, catchupPaused: false, readError: null, incomingCount: following ? 0 : 20 });
+    if (!following) controller.revealIncoming();
+    for (const item of large.slice(20)) expect(controller.snapshot().visible).toContainEqual(item);
+    expect(controller.snapshot().visible.length).toBeLessThanOrEqual(THREAD_LIMITS.visibleCount);
+  });
+
   it('uses fromBeginning after the initial empty page and consumes every returned page', async () => {
     const { controller, list } = make(); await start(controller);
     list.mockResolvedValueOnce(page([message(10)], false, true)).mockResolvedValueOnce(page([message(11)]));
@@ -104,6 +122,60 @@ describe('Thread controller continuous reading', () => {
     const count = list.mock.calls.length; await vi.advanceTimersByTimeAsync(20_000); expect(list).toHaveBeenCalledTimes(count);
     list.mockResolvedValueOnce(page([])); await controller.refresh(); await vi.advanceTimersByTimeAsync(5_000);
     expect(list).toHaveBeenCalledTimes(count + 2);
+  });
+
+  it('keeps details and reading state through hidden and blocked admission while rejecting stale reads', async () => {
+    const { controller, list, post } = make();
+    const original = message(20), late = deferred<ThreadPage>(), resumed = deferred<ThreadPage>();
+    list.mockResolvedValueOnce(page([original], true)); await start(controller);
+    controller.setDraft('draft'); controller.setReply(original.id); controller.setFollowing(false); controller.setReadingAnchor(original.id);
+    await controller.openDetails(original.id);
+    list.mockReturnValueOnce(late.promise); const oldRead = controller.loadOlder(); await flush();
+    const oldCall = list.mock.calls.at(-1)!;
+    controller.setDocumentVisible(false);
+    expect(oldCall[2].aborted).toBe(true); expect(() => oldCall[3].assertCurrent()).toThrow();
+    controller.setAdmissionBlocked(true); controller.setDocumentVisible(true);
+    await controller.refresh(); await controller.loadOlder(); await controller.send();
+    expect(list).toHaveBeenCalledTimes(2); expect(post).not.toHaveBeenCalled();
+    expect(controller.snapshot()).toMatchObject({ detailsMessage: original, draft: 'draft', replyTo: original.id, hasMoreBefore: true, consumedAfterId: original.id, canSend: false });
+    list.mockReturnValueOnce(resumed.promise); controller.setAdmissionBlocked(false); await flush();
+    expect(list).toHaveBeenCalledTimes(3);
+    late.resolve(page([message(19)], true, true)); await oldRead;
+    expect(controller.snapshot().visible).toEqual([original]);
+    expect(controller.snapshot().detailsMessage).toEqual(original);
+    resumed.resolve(page([])); await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ detailsMessage: original, draft: 'draft', replyTo: original.id, hasMoreBefore: true, consumedAfterId: original.id, canSend: true });
+    controller.retire();
+    expect(controller.snapshot()).toMatchObject({ retired: true, visible: [], detailsMessage: null, draft: '', replyTo: null, hasMoreBefore: false, consumedAfterId: null });
+  });
+
+  it('retains the open details while resumed requests wait for scope readiness', async () => {
+    const resume = deferred<void>(); let hold = false;
+    const ready = vi.fn(async (_signal: AbortSignal) => { if (hold) await resume.promise; });
+    const { controller, list, post } = make({ ready }); const original = message(10);
+    list.mockResolvedValueOnce(page([original], true)); await start(controller);
+    controller.setDraft('draft'); controller.setReply(original.id); await controller.openDetails(original.id);
+    controller.setAdmissionBlocked(true); hold = true; controller.setAdmissionBlocked(false); await flush();
+    const sending = controller.send(); await flush();
+    expect(list).toHaveBeenCalledTimes(1); expect(post).not.toHaveBeenCalled();
+    expect(controller.snapshot()).toMatchObject({ detailsMessage: original, draft: 'draft', replyTo: original.id, hasMoreBefore: true, postOutcome: 'waiting_auth' });
+    const sent = { ...message(11, 'draft'), replyTo: original.id };
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(sent); return sent; });
+    hold = false; resume.resolve(); await sending; await flush();
+    expect(list).toHaveBeenCalledTimes(2); expect(post).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot().detailsMessage).toEqual(original);
+  });
+
+  it.each(['forward', 'reference'] as const)('ignores a late %s scope-loss error after admission is cancelled', async (kind) => {
+    const { controller, list } = make(); const original = message(20), late = deferred<ThreadPage>();
+    list.mockResolvedValueOnce(page([original], true)); await start(controller);
+    controller.setDraft('draft'); controller.setReply(original.id); await controller.openDetails(original.id);
+    list.mockReturnValueOnce(late.promise);
+    const old = kind === 'forward' ? controller.refresh() : controller.showReference(id(10)); await flush();
+    controller.setAdmissionBlocked(true); controller.setAdmissionBlocked(false); await flush();
+    late.reject(new ApiError('server', 403, 'forbidden')); await old;
+    expect(controller.snapshot()).toMatchObject({ retired: false, readError: null, referenceError: null, detailsMessage: original, draft: 'draft', replyTo: original.id });
+    expect(controller.snapshot().visible).toEqual([original]);
   });
 });
 
@@ -177,6 +249,24 @@ describe('Thread sending', () => {
     expect(controller.snapshot().draft).toBe(''); expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11)); expect(post).toHaveBeenCalledTimes(1);
   });
 
+  it('does not replay a dispatched post hidden during admission and publishes its confirmed result only after ready', async () => {
+    const result = deferred<ThreadMessage>(), resume = deferred<void>(); let hold = false;
+    const ready = vi.fn(async (_signal: AbortSignal) => { if (hold) await resume.promise; });
+    const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    post.mockImplementationOnce(async (_scope, _input, signal, admission) => {
+      admission.onDispatch?.(); const item = await result.promise; expect(signal.aborted).toBe(false); admission.onConfirmed?.(item); return item;
+    });
+    controller.setDraft('submitted'); const sending = controller.send(); await flush();
+    controller.setDocumentVisible(false); controller.setAdmissionBlocked(true); hold = true;
+    result.resolve(message(11, 'submitted')); await flush();
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', postOutcome: 'confirmed', draft: 'submitted' });
+    expect(controller.snapshot().visible.map(item => item.id)).not.toContain(id(11));
+    await vi.advanceTimersByTimeAsync(20_000); expect(post).toHaveBeenCalledTimes(1);
+    controller.setDocumentVisible(true); controller.setAdmissionBlocked(false); hold = false; resume.resolve(); await sending; await flush();
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', draft: '' });
+    expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11)); expect(post).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves unknown drafts without replay and distinguishes confirmed refusal', async () => {
     const { controller, list, post } = make(); await start(controller); controller.setDraft('not lost');
     post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); throw new ThreadPostError('unknown', new ApiError('network')); });
@@ -195,7 +285,7 @@ describe('Thread sending', () => {
 });
 
 it('bounds own-receipt pins and releases a full incoming buffer for the next forward page', async () => {
-  const { controller, list, post } = make({ limits: { ...THREAD_LIMITS, visibleCount: 8, visibleBytes: 600_000, incomingCount: 3, incomingBytes: 150_000 } });
+  const { controller, list, post } = make({ limits: { ...THREAD_LIMITS, visibleCount: 8, incomingCount: 3 } });
   const a = message(10), body = 'x'.repeat(59_000), b = [message(11, body), message(12, body)], later = [message(13, body), message(14, body)];
   list.mockImplementation(async (_scope, query) => query.afterId === a.id ? page(b, false, true) : query.afterId === id(12) ? page(later) : page([a]));
   await start(controller); controller.setFollowing(false); controller.setReadingAnchor(a.id); await controller.refresh();
@@ -207,7 +297,6 @@ it('bounds own-receipt pins and releases a full incoming buffer for the next for
   controller.revealIncoming(); await controller.refresh();
   expect(controller.snapshot().incomingCount).toBe(0); expect(controller.snapshot().consumedAfterId).toBe(id(14));
   expect(controller.snapshot().visible.map(item => item.id)).toEqual([a.id, ...b.map(item => item.id), ...later.map(item => item.id), id(106)]);
-  expect(controller.snapshot().visible.reduce((sum, item) => sum + encodedMessageBytes(item), 0)).toBeLessThan(600_000);
   expect(controller.snapshot().visible.length).toBeLessThanOrEqual(8);
   expect(post).toHaveBeenCalledTimes(7);
 });

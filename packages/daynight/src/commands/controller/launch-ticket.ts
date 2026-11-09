@@ -58,7 +58,8 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   const config = data.configuration;
   if (typeof config !== "object" || config === null || Array.isArray(config)) throw new Error("Controller frozen configuration is missing.");
   const fields = config as Record<string, unknown>;
-  if (Object.keys(fields).sort().join() !== ["agent", "agentControlMode", "args", "model", "recoveryLimit"].sort().join() || fields.agent !== data.provider || fields.agentControlMode !== "web" || !Array.isArray(fields.args) || fields.args.some((arg) => typeof arg !== "string" || /[\0\r\n]/.test(arg)) || !(fields.model === null || typeof fields.model === "string" && fields.model.trim() !== "") || !Number.isSafeInteger(fields.recoveryLimit) || (fields.recoveryLimit as number) < 0) throw new Error("Controller frozen configuration is invalid.");
+  const selection = Object.hasOwn(fields, "validateNativeSelection");
+  if (selection && fields.validateNativeSelection !== true || Object.keys(fields).sort().join() !== ["agent", "agentControlMode", "args", "model", "recoveryLimit", ...(selection ? ["validateNativeSelection"] : [])].sort().join() || fields.agent !== data.provider || fields.agentControlMode !== "web" || !Array.isArray(fields.args) || fields.args.some((arg) => typeof arg !== "string" || /[\0\r\n]/.test(arg)) || !(fields.model === null || typeof fields.model === "string" && fields.model.trim() !== "") || !Number.isSafeInteger(fields.recoveryLimit) || (fields.recoveryLimit as number) < 0) throw new Error("Controller frozen configuration is invalid.");
   return value as ControllerLaunchTicket;
 };
 export const readLaunchTicket = async (home: string, launchId: string): Promise<ControllerLaunchTicket> => {

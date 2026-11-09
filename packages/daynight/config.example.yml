@@ -11,6 +11,13 @@ serverUrl: https://daynight.cc
 # Remove or replace an old token before changing serverUrl manually. Keep secrets
 # out of repositories and logs; files containing a token need POSIX mode 0600.
 
+# Optional default Team per normalized service origin and account UUID. Prefer
+# `daynight team default set <uuid|personal>` to validate and save a selection.
+# An absent entry uses the account's Personal Team; a saved value is a Team UUID.
+# teamDefaults:
+#   https://daynight.cc:
+#     80be22c3-96d8-4ed1-bcd3-b820f2508c62: b95baeff-1522-4d99-a9b4-dfcb58392eca
+
 # Optional Agent-only CLI mappings (macOS/Linux), disabled when omitted or {}.
 # Keys are commands the Agent uses; values are executable names or absolute paths.
 # Only new Worker/Controller Agent environments receive these aliases.
@@ -39,29 +46,48 @@ review:
       # directory, and do not expand ~. Keep review clones outside that directory.
       path: ../daynights/github.com/owner/repo
 
-# Worker configuration. Run daynight worker setup to inspect prerequisites,
-# choose a native agent and select existing Projects before worker run.
-# Omitted values use these defaults; an empty selection also makes interactive
-# worker run guide Project registration. Native credentials and the official
-# Herdr integration must be configured explicitly. Every fresh/resumed native
-# agent uses fixed full access and task-folder trust; args cannot lower that
-# policy or re-enable permission prompts. Global native configuration is unchanged.
+# Worker local settings and first-import seed. Optional daynight worker setup
+# inspects prerequisites and selects an agent and existing Projects before the
+# first connection. The seed is imported only when the cloud target is absent.
+# Afterwards, My Workers owns concurrency, polling/recovery limits, platform
+# preference, Project selection and global/per-Project agent/model/args. Local
+# managed values cannot overwrite that target. Normal worker run accepts an empty
+# selection and does not open a Project picker.
+# Paths, identity, service credentials, agentControlMode and the optional
+# agentModel/agentReasoningEffort overrides remain local. Native
+# credentials and the official Herdr integration must be configured explicitly.
+# Every fresh/resumed native agent uses fixed full access and task-folder trust;
+# args cannot lower that policy or re-enable permission prompts. The fixed launch
+# policy does not edit provider global settings.
 worker:
-  # Used only for new worker repo registrations; independent of review's root.
+  # Root for new Worker repository paths; independent of review's root.
+  # Changing it does not relocate an existing local binding.
   repositoryRoot: ~/daynights
+  # Initial cloud values. maxConcurrent and pollIntervalMs are positive integers;
+  # pollIntervalMs uses milliseconds, and recoveryLimit is nonnegative.
   maxConcurrent: 1
   pollIntervalMs: 60000
   recoveryLimit: 3
-  # Choose herdr for terminal control or web for the Task Session page.
-  # The service freezes this mode per claim.
+  # Initial acquisition policy; later edits belong to this Worker in My Workers.
+  # Prefer tasks requiring this host platform across all selected Projects.
+  preferPlatformSpecificTasks: false
+  # Local choice: herdr for terminal control or web for the Task Session page.
+  # The service freezes this mode per claim; it is not a cloud-managed setting.
   agentControlMode: herdr
+  # Initial global native values. Later changes belong in My Workers.
   agent: copilot
   model: null
   args: []
-  # maxConcurrent and pollIntervalMs are positive integers; pollIntervalMs uses
-  # milliseconds. recoveryLimit is nonnegative; automatic recovery counts are
-  # process-local and reset when the worker restarts. Restarted agents use current
-  # settings for their recorded agent type, while native session IDs remain saved.
+  # Persistent local overrides for new executions, including enrolled Workers.
+  # Omit either field to follow its cloud value, then the native Agent default.
+  # Empty strings and null are invalid; remove the key to restore inheritance.
+  # A non-null legacy model must agree with agentModel when both are present.
+  # agentModel: MODEL_ID
+  # agentReasoningEffort: high
+  # Initial Project selection and native overrides become cloud configuration.
+  # Local transports/paths remain bindings; they do not choose the cloud scope.
+  # New claims freeze their native configuration for Web and Herdr recovery.
+  # Local or cloud default changes apply only to subsequent new executions.
   repositories:
     - remote: https://github.com/OWNER/REPO.git
       # Paths follow the same config-directory-relative rule as review paths.
@@ -70,9 +96,10 @@ worker:
       # The matching Daynight project must exist. Set its actual UUID when remote
       # discovery matches more than one project.
       # projectId: REPLACE_WITH_MATCHING_PROJECT_UUID
-      # Repository overrides inherit fields independently for the same agent.
+      # Native overrides inherit fields independently for the same agent.
       # Switching agent clears inherited model and args unless set here. Explicit
       # null model or [] args clears that field; args replaces the entire list.
+      # Omission remains inheritance when the first-import seed is projected.
       # agent: codex
       # model: null
       # args: []

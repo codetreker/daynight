@@ -27,10 +27,23 @@ export class HerdrCommandCleanupError extends AggregateError {
   }
 }
 
+// Only the original runner can acknowledge its child and output streams. Legacy
+// cleanup errors, including other cleanup owners, have no such acknowledgement.
+const cleanupConfirmations = new WeakMap<HerdrCommandCleanupError, () => boolean>();
+
 export const hasHerdrCommandCleanupFailure = (error: unknown): boolean => error instanceof Error && (
   error instanceof HerdrCommandCleanupError || hasHerdrCommandCleanupFailure(error.cause) ||
   (error instanceof AggregateError && error.errors.some(hasHerdrCommandCleanupFailure))
 );
+
+/** Current cleanup responsibility, independent of the historical failure category. */
+export const hasUnconfirmedHerdrCommandCleanup = (error: unknown, seen = new Set<unknown>()): boolean => {
+  if (!(error instanceof Error) || seen.has(error)) return false;
+  seen.add(error);
+  return (error instanceof HerdrCommandCleanupError && cleanupConfirmations.get(error)?.() !== true) ||
+    hasUnconfirmedHerdrCommandCleanup(error.cause, seen) ||
+    (error instanceof AggregateError && error.errors.some((item: unknown) => hasUnconfirmedHerdrCommandCleanup(item, seen)));
+};
 
 export const terminateOwnedHerdrProcess = (child: ChildProcess, timeoutMs = 2_000): void => {
   if (child.pid === undefined) return;
@@ -68,10 +81,11 @@ export const runHerdrCommand = async (
   const stderr: Buffer[] = [];
   let bytes = 0;
   let terminating = false;
+  let terminationFailed = false;
   const terminate = (): void => {
     if (closed || terminating) return;
     terminating = true;
-    try { terminateOwnedHerdrProcess(child, cleanupDeadline === null ? 2_000 : Math.max(1, cleanupDeadline - performance.now())); } catch (error) { cleanupErrors.push(error); }
+    try { terminateOwnedHerdrProcess(child, cleanupDeadline === null ? 2_000 : Math.max(1, cleanupDeadline - performance.now())); } catch (error) { terminationFailed = true; cleanupErrors.push(error); }
   };
   const interrupt = (reason: unknown): void => { if (failure === undefined) failure = reason; terminate(); };
   const accept = (parts: Buffer[], chunk: Buffer): void => {
@@ -98,7 +112,12 @@ export const runHerdrCommand = async (
       while (!closed && performance.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 10));
       if (!closed) cleanupErrors.push(new Error("The owned prerequisite process and output streams did not close after termination."));
     }
-    if (cleanupErrors.length !== 0) throw new HerdrCommandCleanupError(cleanupErrors, failure);
+    if (cleanupErrors.length !== 0) {
+      const error = new HerdrCommandCleanupError(cleanupErrors, failure);
+      // The existing close listener outlives this bounded wait; exit alone is insufficient.
+      if (!terminationFailed) cleanupConfirmations.set(error, () => closed);
+      throw error;
+    }
     if (failure !== undefined) throw failure;
     if (spawnError !== null) throw new HerdrCommandError("Cannot execute the Herdr prerequisite command.", exitCode, exitSignal, "", { cause: spawnError });
     const errorOutput = Buffer.concat(stderr).toString("utf8");

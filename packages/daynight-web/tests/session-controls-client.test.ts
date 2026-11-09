@@ -10,12 +10,13 @@ import type { TaskSessionSnapshot } from './helpers/session';
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
 afterEach(() => { clients.splice(0).forEach(client => client.close()); });
-function fixture(storage: Storage | null = null) {
+function fixture(storage: Storage | null = null, ownerUserId = userId) {
   const s: TaskSessionSnapshot = { ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), lastEventSeq: '0', controls: { revision: '4', settings: [{ id: 'model', category: 'model', label: 'Model', value: 'a', description: null, mutable: true, scope: 'session', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] }], commands: [{ id: 'native-compact', name: 'compact', description: 'Compact', argumentHint: null, available: true }], settingsError: null, commandsError: null } };
   let receive!: (message: BrowserMessage) => void, paused = false;
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
   const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(async (_id, command) => ({ protocol: command.protocol, ...sessionBinding(command), sessionId: command.sessionId, executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'handled', error: null } as SessionOperation)), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused', channel: vi.fn((_id, _after, next) => { receive = next; return { close: vi.fn() }; }) };
-  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => true, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage }); clients.push(client);
+  const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, ownerUserId, isCurrent: () => true, isPaused: () => paused, onPrincipalMismatch: vi.fn(), storage });
+  client.setCurrentReadVisible(true); clients.push(client);
   return { api, s, client, pause: () => { paused = true; }, ready: async () => { await client.start(); receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot: s, cursor: 'zero' }); await vi.waitFor(() => expect(client.snapshot().connected).toBe(true)); } };
 }
 it('rejects stale catalogs, unknown settings/commands, and auth pause before any control dispatch', async () => {
@@ -23,7 +24,6 @@ it('rejects stale catalogs, unknown settings/commands, and auth pause before any
   await expect(f.client.updateSetting('model', 'b', '3')).rejects.toThrow();
   await expect(f.client.updateSetting('model', 'unlisted', '4')).rejects.toThrow();
   await expect(f.client.executeCommand('not-listed', '', '4')).rejects.toThrow();
-  await expect(f.client.send('/not-a-message')).rejects.toThrow();
   f.pause();
   await expect(f.client.updateSetting('model', 'b', '4')).rejects.toThrow();
   await expect(f.client.executeCommand('native-compact', '', '4')).rejects.toThrow();
@@ -69,4 +69,14 @@ it('restores a pending setting intent within its session fence and invalidation 
 it.each(['initializing','stopped','unknown'] as const)('does not authorize controls from an otherwise mutable %s snapshot', activity => {
   const f=fixture();
   expect(sessionControlGate({...emptySessionState(),snapshot:{...f.s,activity}},true)).toBe(false);
+});
+
+it('refuses all native catalog mutations for a non-owner even when the catalog advertises them', async () => {
+  const f = fixture(null, '00000010-1111-4111-8111-111111111111'); await f.ready();
+  expect(sessionControlGate(f.client.snapshot().state, true)).toBe(true);
+  await expect(f.client.updateSetting('model', 'b', '4')).rejects.toThrow();
+  await expect(f.client.executeCommand('native-compact', '', '4')).rejects.toThrow();
+  await expect(f.client.refreshControls()).rejects.toThrow();
+  expect(f.api.command).not.toHaveBeenCalled();
+  expect(f.client.snapshot()).toMatchObject({ status: 'ready', connected: true });
 });

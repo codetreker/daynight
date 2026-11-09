@@ -5,10 +5,12 @@ export type SessionV2Owner = { projectId: string; taskId: string; workerId: stri
 export type TerminalStyledRun = { text: string; foreground: string | null; background: string | null; bold: boolean; italic: boolean; underline: boolean; inverse: boolean };
 export type TerminalFrame = { frameSeq: string; capturedAt: string; elapsedMs: string; width: number; height: number; full: true; rows: TerminalStyledRun[][] };
 export type SessionV2ProcessProof = { role: "shell" | "agent"; pid: number; birthToken: string; bootId: string };
-export type SessionV2StopProof = { recordId: string; executionGeneration: string; binding: TerminalBinding; bootId: string; stoppedAt: string; method: "instances_exited" | "boot_changed"; terminalStopped: true; processes: SessionV2ProcessProof[] };
+export type SessionV2NativeStopProof = { recordId: string; executionGeneration: string; binding: TerminalBinding; bootId: string; stoppedAt: string; method: "instances_exited" | "boot_changed"; terminalStopped: true; processes: SessionV2ProcessProof[] };
+export type SessionV2PreparedStopProof = Omit<SessionV2NativeStopProof, "processes"> & { nativeLaunch: "not_submitted"; daemon: Omit<SessionV2ProcessProof, "role">; processes: [SessionV2ProcessProof & { role: "shell" }] };
+export type SessionV2StopProof = SessionV2NativeStopProof | SessionV2PreparedStopProof;
 export type SessionV2Run = { executionGeneration: string; owner: SessionV2Owner; binding: TerminalBinding; startedAt: string; stoppedAt: string | null; stopProof: SessionV2StopProof | null; segmentIds: string[] };
 export type SessionV2Lease = { leaseId: string; holderUserId: string; browserClientId: string; controlEpoch: string; expiresAt: string };
-export type SessionV2Action = "acquire_control" | "renew_control" | "release_control" | "resume_automation" | "paste" | "keys";
+export type SessionV2Action = "acquire_control" | "renew_control" | "release_control" | "resolve_initial_assignment" | "resume_automation" | "paste" | "keys";
 export type SessionV2Key = "Enter" | "Escape" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Tab" | "Backspace" | "Delete" | "Home" | "End" | "PageUp" | "PageDown" | "Ctrl+C" | "Ctrl+D" | "Ctrl+U";
 export type SessionV2Completeness = "complete" | "partial";
 export type SessionV2UnavailableReason = "recording_not_enabled" | "ended_before_first_sample";
@@ -22,7 +24,7 @@ export type SessionV2Payloads = {
   registration_ack: { registrationId: string; connectionEpoch: string };
   snapshot: { connectionEpoch: string; segmentId: string; segmentOrdinal: string; binding: TerminalBinding; frame: TerminalFrame; recorded: boolean };
   control_state: { connectionEpoch: string; controlEpoch: string; state: "automation" | "manual" | "suspended" | "closing" | "closed"; lease: SessionV2Lease | null; initialAssignment: "pending" | "dispatching" | "transport_completed" | "unknown" | "unconfirmed"; availableActions: SessionV2Action[]; unavailableReason: SessionV2ErrorCode | null };
-  control_request: { operationId: string; connectionEpoch: string; controlEpoch: string; action: "acquire_control" | "renew_control" | "release_control" | "resume_automation"; browserClientId: string; leaseId: string | null; draftHandled: boolean; initialUnknownDisposition: "delivered_continue" | null };
+  control_request: { operationId: string; connectionEpoch: string; controlEpoch: string; action: "acquire_control" | "renew_control" | "release_control" | "resolve_initial_assignment" | "resume_automation"; browserClientId: string; leaseId: string | null; draftHandled: boolean; initialUnknownDisposition: "delivered_continue" | null };
   control_dispatch: { actorUserId: string; requestDigest: string; request: SessionV2Payloads["control_request"] };
   control_ack: { requestDigest: string; durable: true; controlState: SessionV2Payloads["control_state"]; result: SessionV2Payloads["operation_result"] };
   recording_responsibility: { responsibilityId: string; recordingEnabled: boolean };

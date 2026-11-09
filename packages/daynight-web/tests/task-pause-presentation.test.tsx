@@ -1,5 +1,8 @@
+import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { Project, TaskSummary } from '../src/api/types';
 import { projectSummaries } from '../src/features/task-cache/projection';
@@ -17,25 +20,29 @@ const time = '2026-11-04T00:00:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const summary = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({
   id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true,
-  version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null,
+  version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   createdAt: time, updatedAt: time, ...changes,
 });
 const seeds = [summary(1, { status: 'done', properties: { paused: true } }), summary(2, { dependsOn: [id(1)], properties: { paused: true } }),
   summary(3, { status: 'in_progress', properties: { paused: true } }), summary(4, { properties: { paused: false } }), summary(5)];
 const snapshot = (tasks = seeds): GraphSnapshot => ({ ...projectSummaries(project, tasks, time), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
+let sessionScope: TaskCacheScope;
+let sessionStore: TaskSessionSummaryStore;
+beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
+afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
-const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace projectId={project.id} snapshot={value} activeView={activeView}
+const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView={activeView}
   unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
-  chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop, showAll: true, onShowAllChange: noop }}
-  standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop, showAll: true, onShowAllChange: noop }} />;
+  chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
+  standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop }} />;
 
 describe('paused task discovery', () => {
   it('derives only true pause flags without changing status statistics or graph node shape', () => {
     const value = snapshot();
     expect(value.pausedTaskIds).toEqual(new Set([id(1), id(2), id(3)]));
-    expect(value.graph.summary).toEqual({ total: 5, todo: 3, inProgress: 1, done: 1, ready: 3, blocked: 0 });
+    expect(value.graph.summary).toEqual({ total: 5, todo: 3, inProgress: 1, done: 1, cancelled: 0, ready: 3, blocked: 0 });
     expect(value.graph.tasks[0]).not.toHaveProperty('properties');
     expect(value.index.nodes.get(id(1))).not.toHaveProperty('paused');
     expect(snapshot(seeds.map((task) => ({ ...task, properties: { paused: false } }))).pausedTaskIds.size).toBe(0);

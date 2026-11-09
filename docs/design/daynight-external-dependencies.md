@@ -1,7 +1,7 @@
 # 任务外部依赖与任务链边界架构
 
 本设计落实[外部依赖需求 ED-R1–ED-R8](../spec/daynight-external-dependencies.md)。
-[决策记录](../../.agents/notes/implemented/architecture/2026-10-23-external-dependency-design.md)保存方案取舍。
+[决策记录](../../.agents/notes/archived/architecture/2026-10-23-external-dependency-design.md)保存方案取舍。
 依赖性质存储、完整读取和 Web 普通分量消费已实现。图的虚线箭头来自显式外部性质，
 链外卡片由上下文角色决定；详情按关系方向显示性质。公开 API 接受显式分类创建及部分 PATCH，CLI 声明普通/外部完整集合；
 Web 读取和呈现这些性质，不提供依赖编辑器。
@@ -18,7 +18,7 @@ Web 读取和呈现这些性质，不提供依赖编辑器。
 | [写事务](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/core/store/project_tx.go#L29-L44)锁定项目行；[任务更新](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/core/store/project_tx.go#L97-L129)删除并重建完整依赖。 | 性质必须进入完整候选及重建路径，普通编辑也不能丢失它。 |
 | [生命周期](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/service/task_lifecycle.go#L38-L56)从当前任务重建 `TaskWrite`；[验证](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/service/task_policy.go#L11-L54)检查全部引用、可达性和未完成前置。 | 新字段必须随生命周期候选保留，执行检查继续使用全边图。 |
 | [Web 模型](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/src/features/task-graph/model.ts#L115-L159)用 `reachable(successors, root)` 得到主集合，并按 `!mainIds.has(source)` 推导边的 `external`。 | 当前“外部”是投影角色，不是关系性质；成员算法和边性质需要分别重构。 |
-| [概览](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/src/features/task-graph/visibility.ts#L3-L48)具有 50/100 初始预算和 20 邻居批次。 | 普通分量及祖先闭包连通，可复用现有方向展开，不增加组成员展开机制。 |
+| [概览](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/src/features/task-graph/visibility.ts#L3-L48)具有 50/100 初始预算和 20 邻居批次。 | 普通分量及其直接 external 上下文连通，可复用有界概览与普通成员的方向展开；外部卡片提供独立资源跳转。 |
 
 此前按根可达性计算，同一后续任务可属于多个根投影。
 2026-10-23 的历史 worker 样本含六个重复成员，来源是处理角色任务同时依赖 worker 架构、认证和审批成果。
@@ -41,9 +41,9 @@ flowchart LR
   All --> Execution[环、阻塞、就绪与执行]
   Normal --> Components[普通弱连通分量]
   Components --> Main[链成员与进度]
-  All --> Ancestors[完整前置闭包]
-  Main --> Projection[完整投影 P]
-  Ancestors --> Projection
+  Main --> Context[成员直接 external 前置]
+  Main --> Projection[一层上下文投影 P]
+  Context --> Projection
   Projection --> Canvas[有界概览与显式展开]
 ```
 
@@ -81,7 +81,7 @@ core、`TaskWrite`、完整任务与图任务增加 `ExternalDependsOn`。
 `taskCandidate`、普通编辑及 `task_lifecycle.go` 的 `TaskWrite` 重建都必须携带 `E`，
 包括 set-status 的全部生命周期写入。
 分类变化参与语义比较；仅排序变化不增加版本，过期同值仍先冲突。
-状态不变时沿现有 SQL 保持 `startedAt`、`completedAt`；分类写入不成为新的执行起点。
+状态不变时沿现有 SQL 保持 `startedAt`、`completedAt`、`cancelledAt`；分类写入不成为新的执行起点。
 
 ## API 契约
 
@@ -125,7 +125,7 @@ core、`TaskWrite`、完整任务与图任务增加 `ExternalDependsOn`。
 
 HTTP 严格对象解析在创建和 PATCH 白名单中接受 externalDependsOn，并校验数组类型及内容。
 未知或重复字段、显式 `null`、非法或重复 ID、自引用、外部子集越界、缺失或跨项目前置返回 `invalid_input` / 400。
-任意普通、外部或混合环返回 `dependency_cycle` / 409；未完成真实前置返回 `dependency_unsatisfied` / 409；
+任意普通、外部或混合环返回 `dependency_cycle` / 409；未满足真实前置返回 `dependency_unsatisfied` / 409；
 过期版本返回 `version_conflict` / 409。现有身份、成员隐藏与权限结果保持原样。
 数据库、取消和响应失败沿现有错误链处理，不变成空分类或成功结果。
 
@@ -168,7 +168,7 @@ GraphTask 和完整详情保留必填 `externalDependsOn`，共享 API 解码器
 随后仅时钟样本变化仍复用身份。完整依赖用于验证与上下文，普通子集决定成员分量。
 
 先验证完整资源的唯一任务、全部引用、外部子集、状态、阻塞、就绪、全边无环和图上限。
-构造全边有向邻接供执行一致性、前置检查和方向展开使用；
+构造全边有向邻接供执行一致性和完整前置检查使用；方向展开只读取当前投影内的邻居。
 另对普通边建立无向邻接，以线性遍历计算弱连通分量。
 每个任务恰好进入一个分量，不再存储可重叠的根成员集合或共享成员标记。
 
@@ -188,13 +188,18 @@ X ─外部→ C             X 不加入该分量
 独立任务行复用现有 `graph-blocked-badge` 显示“被阻塞” / “Blocked”，
 避免只有状态和 ready 标签时无法看出外部前置正在阻塞它。详情继续提供具体阻塞关系。
 分量状态沿当前全成员聚合规则计算，统计成员一次；
-外部上下文不改变该链的完成数、状态或筛选，项目统计继续按完整任务集合计数。
+全部普通成员为 done/cancelled 时进度计为已结束，并保留两种结果的数量；全部 done、
+全部 cancelled 与混合终态分别汇总为 done、cancelled 和仅供 UI 使用的 ended。
+外部上下文不改变该链的完成数、取消数、状态或筛选，项目统计继续按完整任务集合计数。
+普通和外部前置均以 done/cancelled 作为满足状态，取消自身不要求前置满足；
+[任务状态设计](daynight-task-status.md)拥有共享谓词与生命周期规则。
 
 ## 投影、样式与局部交互
 
-对分量 C，主集合 `M=C`，完整数据投影 `P=M ∪ ancestors_all(M)`，上下文为 `P−M`。
-从每个成员沿全部依赖迭代加入祖先，保留终点在 P 的全部真实关系。
-闭包保证其前置也属于 P，无关外部后续不会进入。
+对分量 C，主集合 `M=C`，上下文 `X=union(E(m), m∈M)−M`，投影 `P=M∪X`。
+`projectChain` 只从普通成员读取直接 external 前置并按 ID 去重，不从 X 继续遍历。
+保留两端均属于 P 的全部真实关系；X 中任务的其他普通或 external 前置及无关后续不进入 P。
+完整项目索引仍保存所有关系，依赖检查的完整祖先 H 独立于当前投影。
 一条标为外部的边可以通过另一条普通路径使两端处于同一分量；分类仍保留，不能因当前成员关系改写。
 
 节点角色和边性质是不同输入。卡片为上下文时使用虚线边框及“外部前置”；
@@ -208,21 +213,33 @@ X ─外部→ C             X 不加入该分量
 详情新鲜度描述与图等价比较纳入外部子集，性质单独变化能刷新标签和路线。
 Details 继续与检查主体分离，导航只改变所读资源；本范围没有 Web 依赖编辑器。
 
-普通分量通过普通边连通，所有补入祖先通过某条前置路径连接到成员，所以 P 连通。
-复用现有稳定、后续优先的无向 BFS 概览、50 任务/100 诱导边限制和 20 直接邻居展开即可访问全部 P。
-不引入无连线组成员或第二种展开入口。诱导边必须包含所有可见真实关系，不能仅画遍历树。
-选择只改高亮，不重排、不移动视口；展开、reset、全屏、模态、附件和焦点继续使用现有生命周期。
-保留当前卡片 220×96/136 几何、双语和任务计时字段，不新增计时 UI。
+普通分量通过普通边连通，每个 X 中任务直接连接到成员，因此 P 连通。
+复用稳定、后续优先的无向 BFS 概览及 50 任务/100 诱导边限制。普通成员的方向展开
+每次加入最多 20 个 P 内隐藏直接邻居，诱导边包含所有可见真实关系，不能仅画遍历树。
+
+链外卡片的独立“展开”按钮传递实际 task ID，由 ProjectPage 通过 `componentByTask`
+解析到完整项目索引中的当前普通分量。多成员目标直接更新 `openChainWitness` 为该实际 task ID，
+替换打开的图并使用自身代表的布局方向偏好；图资源不要求目标出现在当前筛选或分页中。
+状态和负责人筛选、分页、列表条目、子任务展开及共享列表滚动均由列表 owner 保留，
+外部导航不使用概览的 `listTarget` 定位路径。[列表状态决策](../../.agents/notes/implemented/bug-fix/2026-11-07-external-graph-list-state.md)
+保存图资源独立于列表显示的取舍。单成员目标关闭原图并调用既有任务详情入口。
+上下文卡片不提供原地的前置/后续展开，原画布不会追加外部祖先。
+
+选择从完整索引计算 H，只改高亮并按 ID 计算 `H−S`，不重排、不移动视口；
+Details、reset、全屏、模态、附件和焦点继续使用现有生命周期。卡片宽 220px；
+普通紧凑卡片高 96px，含方向控件的卡片和含独立展开入口的链外卡片高 136px。
+双语、任务计时字段与现有计时 UI 保持一致。
 
 ## 刷新、合并拆分与偏好
 
 `ProjectView` 持有初始为 null 的图浮层临时定位任务，不再读写 `{expandedRootId}` 存储。
-条目操作打开后，重建索引先查该任务所属分量，再选择该可见多成员分量的当前代表，
+条目操作打开后，重建索引先从完整 `componentByTask` 查该任务所属分量，再选择该多成员分量的当前代表，
 不用要求定位任务仍是代表，也不因代表改变而覆盖仍有效的原任务。
 因此普通边合并或拆分后，仍存在的定位任务可保留所关注的那部分。
-不存在、成为单成员或已被完成筛选隐藏时关闭浮层并清除定位任务；
+图有效性要求定位任务存在且 `component.memberIds.size > 1`，不依赖列表筛选及当前页。
+不存在或成为单成员时关闭浮层并清除定位任务；
 离开任务列表或任务链类别也清除打开状态，返回和重载均不自动打开。
-独立的类别、完成显示和页面位置记录继续保持原格式。
+类别和共享页面位置记录保持原格式；状态与负责人筛选在本次访问中共享，不持久化。
 
 只有状态或同一拓扑内容刷新时继续保留可见集合、视口和检查。
 `VisibleTaskGraph` 只按代表 rootId 保持呈现生命周期，`GraphVisibility.topologyKey` 则记录有序主成员集合。
@@ -230,8 +247,11 @@ Details 继续与检查主体分离，导航只改变所读资源；本范围没
 TaskCanvas、ReactFlow 和 TaskChainDialog 保持挂载，因此全屏、活动详情及各自的 inert/滚动锁不被退出。
 有效定位任务的代表变化初始化对应图，TaskChainDialog 仍保持打开；由稳定列表层处理已脱离控件的焦点。
 派生身份不保证合并拆分前后保留相同的 S 或视口，但同代表的拓扑重置不重建呈现所有者。
-ChainList 在按代表 ID 重建的行之外持有焦点记录。索引或代表变化后，只有记录控件已脱离 DOM
-且 document.activeElement 为 BODY 时，才依次恢复到当前链入口、首个可见入口、现有筛选控件，最后回退到带可访问名称且 tabIndex=-1 的列表区域。
+ChainList 在按代表 ID 重建的行之外分别持有最初列表按钮 `opener` 和最初列表 task witness `openedTask`；
+当前图的 `openChainWitness` 可跨 Goal 改变，但这两项在同一图浮层会话中保留。关闭时以 `preventScroll`
+聚焦仍连接且可见的原按钮；入口失效时通过原 `openedTask` 解析最新代表，优先使用其当前页入口，
+再使用首个可见 Goal 展开控件、列表区域或当前类别页签。索引或代表变化后，只有记录控件已脱离 DOM
+且 document.activeElement 为 BODY 时，才按相同的可见列表回退顺序恢复焦点；列表区域保留可访问名称和 tabIndex=-1。
 图浮层内 TaskGraph 的焦点恢复先行；已有详情或链列表之外的有效焦点不被抢走。
 打开的详情由 task ID 持有；原触发节点消失时，关闭详情优先聚焦存活图浮层的关闭按钮，
 再使用可见链入口或页面回退点。图浮层的尺寸、单一模态所有者与关闭行为见[Web 设计](daynight-web.md#项目详情-projectsprojectid)。
@@ -257,8 +277,9 @@ Go 服务与嵌入 Web 一起部署；
 ## 资源与模型工具开销
 
 本设计不增加远程请求轮次或公开命令组，只增加一个关系子集字段及声明选项。
-图仍一次读取完整的 1,000/5,000 有界快照；任务列表继续当前完整分页。
-分类不增加任务或真实边，普通分量索引为 O(V+E)，单链祖先闭包仍为 O(V+E)。
+图一次读取实际保存的完整选定集合，不复查存储节点或边容量；任务列表继续当前按条数的完整分页。
+分类不增加任务或真实边，普通分量索引为 O(V+E)。单链投影扫描成员直接 external 前置并
+筛选两端属于 P 的真实边，不递归遍历上下文；完整上游检查仍为 O(V+E)。
 
 以本次已捕获的真实图 JSON 紧凑序列化测量字段开销，不重新请求服务：
 
@@ -284,9 +305,10 @@ Go 服务与嵌入 Web 一起部署；
 成功读写使用现有 `type=resource`、`component=task`、`phase=get/create/update` 和 request ID。
 任务链图查询保持 `component=task_graph` 及返回任务、依赖引用数；计数继续包括外部边与
 外部节点指向投影外任务的引用。其一层 external 选择由
-[服务端图查询](../spec/daynight-server.md#任务链图查询)拥有，Web 的完整上游闭包不变。
+[服务端图查询](../spec/daynight-server.md#任务链图查询)拥有。Web 仍从完整项目快照验证全边及计算完整上游检查，
+画布独立选择普通成员与一层直接 external 前置。
 新校验失败使用现有 Fault 代码和安全消息，数据库与取消保留可解包原因。
-[错误管线](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/server/logging.go#L86-L116)
+[错误管线](../../packages/daynight-server/internal/server/httpx/logging.go)
 通过 `type=operation_error` 记录 `component`、`phase`、`cause`、`error_code`、安全 `diagnostic` 和 `request_id`；
 HTTP 错误响应携带同一 request ID。分类没有新的秘密输入，不记录 token、描述、附件内容、SQL 文本或整份请求。
 
@@ -311,11 +333,15 @@ jq -c --arg rid "$REQUEST_ID" \
 
 下表的容量、几何和性能规则固定于源码 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`；
 功能场景清单采用包含撤销批准、项目设置、执行耗时和自动执行许可场景的源码
-`d02994b22b744ae23eb67965679fb5d9edc84525`。Web 实现和独立整体验收共同引用这些基线。当前[看板验收](daynight-web.md#生产浏览器验收工具)另包含两个目标各自的 task-platform、task-detail-page、task-assignment、task-assignment-layout 与 task-pause 功能场景；下表保留固定源码的 59 场景基线，当前常规 inventory 为两目标各 32 个功能场景，共 64 个；显式本地压力验收另有五个原生容量场景，共 69 个（原生 37、容器 32）。两种模式都保留独立的 22 项 combined-auth 检查。下表的固定规模、预算和断言在本地压力入口保持，历史 59 场景基线不改写为当前 CI 结果。
-实现需要按新普通分量和显式性质更新预期值，
-但不能通过减少场景、样本、输入规模、可见边断言或放宽阈值完成本目标。
+`d02994b22b744ae23eb67965679fb5d9edc84525`。下表保留固定源码的 59 场景、规模、
+预算和断言作为历史基线，历史结果不能表述为当前 CI 或当前源码证据。原跨产品 runner
+已删除；当前模块浏览器验证见[Web 设计](daynight-web.md#验证与-ci)，产品组合验证另有
+独立职责。当前 1 MiB 上传正文未完成期间的撤权完成、后续访问拒绝与已准入上传完成
+由 Go built-binary HTTP/PostgreSQL 测试验证；Web 受控浏览器不能替代真实组合结果。
+实现需要按新普通分量和显式性质更新预期值，不能以较小展示样本替代完整输入；当前
+支持目标、完整输入规模、可见边断言和性能阈值仍由需求及[看板设计](daynight-web.md#验证与-ci)拥有。
 
-| 基线 | 必须满足的具体条件与固定来源 |
+| 历史基线 | 当时的具体条件与固定来源 |
 |---|---|
 | 浏览器场景清单 | 保留 27 个 native 功能场景加 5 个 native 容量/超限场景，共 32 个 native；另有同一组 27 个 container 功能场景，总计 59 个。功能清单包含 `task-unapproval`、`project-settings`、`task-execution-time` 和 `task-agent-permission`。场景名由 [`functionalScenarios` / `capacityScenarios`](https://github.com/codetreker/daynight/blob/d02994b22b744ae23eb67965679fb5d9edc84525/packages/daynight-web/scripts/acceptance/runner.mts#L27-L33)拥有；[报告验证器](https://github.com/codetreker/daynight/blob/d02994b22b744ae23eb67965679fb5d9edc84525/packages/daynight-web/scripts/acceptance/report.mts#L13-L64)拒绝缺失、额外、重复、skipped、flaky 或重试结果，每个场景需要真实截图。 |
 | 独立认证组合回执 | 在 59 个场景之外，native 和 container 各有一个 `auth-combined` 回执；每份包含[既有 11 个检查](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/auth-combined.mts#L36-L38)，并通过[源码、目标、浏览器、安装 CLI、重启及清理身份验证](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/auth-combined.mts#L133-L146)。[聚合器](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/runner.mts#L925-L936)要求两个目标均通过，不能以其中一个替代另一份。 |
@@ -324,12 +350,12 @@ jq -c --arg rid "$REQUEST_ID" \
 | 局部反馈时延 | 每个样本的 `openMs ≤ 3000`，`selectMs`、`detailMs`、`zoomMs`、`panMs` 各 `≤ 300`；[执行断言](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/capacity.spec.ts#L494-L503)和[回执校验](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/performance.mts#L53-L63)均须满足。保留普通与高亮状态中的较差值，分别记录网络、布局、渲染时间；[Details 关闭后立即缩放和平移，再选择检查](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/README.md#L847-L857)不能插入 reset、fit 或额外等待来改变测量。 |
 | 独立拓扑与几何 | 依据完整 API 数据独立求新 M/P/S，保留[概览、真实诱导边、96/136 高度和 20 邻居批次的独立预期](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/visible-topology.ts#L4-L37)。对每条实际可见边保留节点/边精确覆盖、固定左右端口、水平切向、避开卡片、原生箭头、显式外部 `5/4` 虚线及真实弧长相位检查；[当前贝塞尔路线设计](daynight-task-inspection.md)使用限制在列间空隙的完整三次曲线及水平自由通道，独立检查实际曲线和精确子曲线的完整覆盖。[检查、展开及 reset](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/capacity.spec.ts#L430-L488)继续证明选择不改几何/视口、展开绘制全部新增诱导边、reset 恢复确定概览及焦点。 |
 | CLI 有界操作 | [操作预算](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight/src/api/operation.ts#L10-L15)保持命令总时限 300,000ms、单请求 30,000ms、单响应解码 128MiB、累计 256MiB。新增数组须经过实际安装 CLI 的容量、超限和超时验收，不提高预算来容纳该字段。 |
-| 服务检查与覆盖率 | 运行[现有服务 gate](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/check.sh#L1-L27)，包括构建、vet、真实数据库及安装 CLI 验收。保留 [go-cov 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/.go-cov.toml)的 race、package 85%、function 80%、critical blocks 阻断和 10 分钟测试时限；[最终精确比较](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/coverage.mts#L53-L57)要求未舍入总语句覆盖率严格 `>90%`。 |
+| 服务检查与覆盖率 | 运行[当时的服务 gate](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/check.sh#L1-L27)，包括构建、vet、真实数据库及安装 CLI 验收。保留 [go-cov 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/.go-cov.toml)的 package 85%、function 80%、critical blocks 阻断和 10 分钟测试时限；race 采用[当时的验证策略](../../.agents/notes/archived/testing/2026-11-04-go-validation-timing.md)的本地默认/main 开启、PR 关闭；[最终精确比较](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/coverage.mts#L53-L57)要求未舍入总语句覆盖率严格 `>90%`。 |
 | 执行和证据身份 | [Playwright 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/playwright.config.ts#L11-L30)保留单 worker、零重试、单场景 180,000ms、总 900,000ms、断言 10,000ms、动作 15,000ms、导航 30,000ms；[回执约定](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/README.md#L899-L934)要求准确源码/tree、浏览器、安装产物、进程/容器身份和所有目标清理通过。局部或原型结果不替代这些回执。 |
 
-上述来源拥有完整的数值容差、数据集身份和字段校验。本设计保留其强度，
-只把与普通根可达性、上下文推断的旧预期替换为本文的普通分量和显式边性质预期。
-新增外部行为应扩充既有命名场景的步骤与数据断言，不能用较小的展示样本替代固定完整输入。
+上述固定来源记录当时的数值容差、数据集身份和字段校验。当前性能及界面行为要求由
+[Web 规范](../spec/daynight-web.md#验收)和[检查规范](../spec/daynight-task-inspection.md)拥有；
+模块测试与产品组合验证按各自职责承接，历史 runner 和场景清单不作为当前入口。
 
 ### 验收责任
 
@@ -338,10 +364,10 @@ jq -c --arg rid "$REQUEST_ID" \
 | 迁移与 store | 旧边全普通、字段与端点保持、幂等账本、读子集正确、更新及生命周期不丢性质、事务取消与错误链。新 store 逻辑有直接包内测试。 |
 | 服务与 HTTP | 部分 PATCH 表、性质单独更新、无变化、过期版本、并发与锁后权限、外部/混合环、外部阻塞、严格字段及错误身份。 |
 | CLI 与安装产物 | 两类依赖编译为完整替换、外部单独选项语义、清空互斥、重复拒绝、所有读取保留性质、精确版本、预算、help/completion 和六份 skill。 |
-| Web 模型与交互 | 多普通根一链、外部边分隔、链内外部捷径仍虚线、完整前置闭包、进度、独立任务行的外部阻塞徽标、合并拆分定位、性质刷新、Details 各方向标签及现有局部交互。 |
-| 独立整体验收 | 真实 PostgreSQL、构建进程、打包安装 CLI、生产嵌入 Web、重启、故障与并发、native/container/capacity 以及当前既有边的只读审计。 |
+| Web 模型与交互 | 多普通根一链、外部边分隔、链内外部捷径仍虚线、一层直接 external 上下文、外部卡片的 Goal/独立任务跳转、被筛选隐藏或跨页目标独立打开、列表状态保留及连续跳转后的原入口焦点/失效回退、完整隐藏上游计数、进度、独立任务行的外部阻塞徽标、合并拆分定位、性质刷新、Details 各方向标签及现有局部交互。 |
+| 独立整体验收 | 真实 PostgreSQL、构建进程、打包安装 CLI、生产嵌入 Web、重启、故障与并发、完整容量以及当前既有边的只读审计。 |
 
 原型覆盖混合图、多普通起点、显式链内外部边、外部阻塞的独立任务、完成链、加载、空、错误、禁用、长内容和 320px 视口。
 它用于审阅目标行为，不替代生产浏览器证据。
-实施任务及独立验收共同遵守上述固定验收基线。
+实施与独立验收按当前需求核对容量、几何及性能目标，并保留可比较的源码绑定结果。
 每份运行结果绑定真实源码、构建产物与运行目标；当前文件不声称运行时功能已通过这些未来验收。

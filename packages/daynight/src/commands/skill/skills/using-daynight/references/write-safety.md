@@ -1,6 +1,6 @@
 # Write safety
 
-Applies to creation, metadata updates, property setting and removal, status changes, deletion, Thread posts, and attachment operations.
+Applies to Project, Team and task creation and changes, property setting and removal, status changes, deletion, Thread posts, and attachment operations.
 See the corresponding `--help` for command syntax.
 
 ## Decisions and versions
@@ -23,6 +23,79 @@ Preserve confirmed IDs and resume missing operations on the original resources, 
 If verification is impossible, report the actual error and unconfirmed items without claiming success.
 Even if the expected value is readable, an unconfirmed response does not establish that this operation caused the change.
 See [task management](task-management.md#task-deletion) and [managed task execution](autopilot-managed-task.md#complete-the-original-claim) for reconciliation specific to deletion and worker completion.
+
+## Team writes
+
+With authorization, use `team create`, `team rename` and `team delete` for
+ordinary Team lifecycle changes. Rename and delete resolve the explicit or
+default Team and read its real name and version. Supply the exact positive int64
+through `--if-version` when a decision depends on an earlier observation; a
+default pre-submit read cannot protect that earlier decision. Conflict requires
+a fresh observation and decision, not a substituted version and replay. A
+specified version that differs from the read Team version is rejected locally.
+
+Writes need interactive confirmation or the boolean `--confirm` flag. Delete's
+interactive challenge is the displayed JSON string literal, decoded and matched
+exactly against the raw Team name. `--confirm` skips the challenge but still
+submits the real name and version; it does not waive authorization or service
+preconditions. Without confirmation, a non-interactive call does not write.
+Personal Teams cannot be renamed or deleted, and deletion requires an empty Team.
+
+Use `team member list` to observe the target's real membership version before
+changing its role or removing it; `team leave` uses the current user's membership
+version. Supply the exact positive int64 through `--if-version` for a decision
+based on an earlier observation. A Team version or Project grant version is not
+a membership version. A mismatch with the current observation fails before the
+write; a conflict requires a fresh observation and decision. Membership writes
+also require interactive confirmation or `--confirm`. The service retains an
+admin in ordinary Teams and refuses Personal membership changes. A confirmed
+receipt reports the actor's remaining Team role; self-exit consumes that receipt
+without an additional permission-sensitive Team read.
+
+A lost, cancelled or malformed response can follow a commit. Do not repeat the
+write automatically. Read current facts before another decision, but do not
+claim the original operation succeeded merely because current state matches;
+Team names can be duplicated and a read cannot restore a lost receipt.
+
+## Invitation acceptance
+
+Use `invitation inspect` to preview a same-service Project or Team link for the
+current account without consuming it. Enter the link at the hidden terminal
+prompt or use `--stdin` (up to 4096 bytes, read to EOF, with at most one
+trailing LF or CRLF); never place the link or token in arguments,
+flags, shell history, task content or logs. These commands do not resolve the
+configured default Team and cannot accept for another account.
+
+Accept only with authorization and explicit confirmation. Non-interactive
+`invitation accept` requires the boolean `--confirm`; without it no write is
+sent. An existing direct relationship preserves its role without consuming the
+invitation; inherited-only Project access still receives a direct member grant.
+A lost, cancelled or malformed acceptance response can follow a commit. Do not
+replay it automatically or claim success from a later membership read: current
+facts cannot recover the original receipt.
+
+## Project transfers
+
+With authorization, use `project transfer` with a target Team UUID or an exact
+same-service Team link. The preview identifies the Project, source and destination
+and the actor's expected access. Confirm the decision interactively or use the
+boolean `--confirm` flag. The command submits the observed ownership and destination
+versions with the current identity; a conflict requires a new preview and decision.
+The receipt can confirm success with no remaining actor access. Do not replay an
+unknown submission automatically: a later Project read, including 404, cannot
+prove whether the transfer committed. Grants and invitations remain independent.
+
+## Project deletion
+
+Delete only with explicit authorization for the target Project. Interactive
+deletion requires the displayed JSON string literal of its name, including when
+`--confirm` is supplied. Noninteractive deletion requires `--confirm`. The
+complete preview is an observation, not a version or identity condition on the
+DELETE; current permissions and active claims are checked by the service.
+The command sends at most one DELETE. A validated receipt confirms deletion; a
+lost or malformed response leaves the outcome unknown and must not be replayed
+automatically. A later 404 cannot establish the original outcome. A local output
+or cleanup failure after a confirmed receipt does not undo that confirmation.
 
 ## Task Step writes
 

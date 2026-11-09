@@ -11,14 +11,14 @@ const start = "2026-10-23T00:00:00Z";
 const epoch = Date.parse(start);
 const projectId = "10000000-0000-4000-8000-000000000001";
 const otherProjectId = "10000000-0000-4000-8000-000000000002";
-const running: ExecutionTask = { allowAgents: true, status: "in_progress", startedAt: start, completedAt: null };
+const running: ExecutionTask = { allowAgents: true, status: "in_progress", startedAt: start, completedAt: null, cancelledAt: null };
 const input = (warningMinutes = 60): ClockInput => ({ observedAt: start, receivedMonotonic: 100, warningMinutes });
 const snapshot = (observedAt = start, receivedMonotonic = 0, warningMinutes = 60, id = projectId): GraphSnapshot => {
   const graph: TaskGraph = {
     observedAt, project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id, name: "Project", repoUrl: "https://example.com/repo", settings: { version: 1n, executionWarningMinutes: warningMinutes }, createdAt: start, updatedAt: start },
-    tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 },
+    tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 },
   };
-  return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), observedAt, receivedMonotonic, receivedAt: 123456, revision: 1 };
+  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt, receivedMonotonic, receivedAt: 123456, revision: 1 };
 };
 
 const environment = () => {
@@ -58,10 +58,10 @@ describe("execution intervals", () => {
   });
 
   it.each([
-    { allowAgents: false, status: "todo", startedAt: start, completedAt: null },
-    { allowAgents: true, status: "in_progress", startedAt: null, completedAt: null },
-    { allowAgents: true, status: "done", startedAt: null, completedAt: start },
-    { allowAgents: true, status: "done", startedAt: start, completedAt: null },
+    { allowAgents: false, status: "todo", startedAt: start, completedAt: null, cancelledAt: null },
+    { allowAgents: true, status: "in_progress", startedAt: null, completedAt: null, cancelledAt: null },
+    { allowAgents: true, status: "done", startedAt: null, completedAt: start, cancelledAt: null },
+    { allowAgents: true, status: "done", startedAt: start, completedAt: null, cancelledAt: null },
   ] satisfies ExecutionTask[])("omits timing without a measurable $status execution", (task) => {
     expect(taskExecution(task, { serverMilliseconds: epoch, warningMinutes: 60 })).toBeNull();
   });
@@ -212,4 +212,12 @@ describe("execution clock provider", () => {
     expect(result.current?.elapsedMilliseconds).toBe(5_000); expect(vi.getTimerCount()).toBe(1);
     unmount(); expect(vi.getTimerCount()).toBe(0);
   });
+});
+
+it("stops cancellation reminders and preserves only a known historical execution interval", () => {
+  const cancelled: ExecutionTask = { ...running, status: "cancelled", cancelledAt: "2026-10-23T02:00:00Z" };
+  const clock = { serverMilliseconds: epoch + 7_200_000, warningMinutes: 1 };
+  expect(taskExecution(cancelled, clock)).toBeNull();
+  expect(taskExecution({ ...cancelled, completedAt: "2026-10-23T01:00:00Z" }, clock))
+    .toMatchObject({ kind: "completed", elapsedMilliseconds: 3_600_000, completedAt: "2026-10-23T01:00:00Z", overdue: false });
 });

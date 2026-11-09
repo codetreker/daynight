@@ -1,9 +1,9 @@
 ---
 name: daynight
-description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads, additions, updates, status changes, movement and deletions with version-safe writes and explicit write outcomes.
+description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments, ordered Steps and Webhooks with version-safe writes and explicit write outcomes.
 ---
 
-# Daynight Project and Task Usage
+# Daynight CLI Usage
 
 `daynight` and `dn` accept the same commands. Replace angle-bracket placeholders
 with actual IDs or values. Use `daynight --help` for other capabilities and each
@@ -13,19 +13,85 @@ subcommand's `--help` for its exact options.
 
 ```bash
 daynight project create "Example project"
-daynight project create "Example project" --repo https://github.com/owner/repo.git
+daynight project create "Example project" --repo https://github.com/owner/repo.git --team personal --confirm
 daynight project list --json
 daynight project show <project-id> --json
 ```
 
 Creation uses the current Git worktree's origin unless `--repo` is supplied;
-an explicit repository works outside Git. A unique equivalent repository returns
-its existing project; multiple matches require choosing the intended project ID.
+an explicit repository works outside Git. It searches all accessible projects.
+A unique equivalent repository returns its existing project without resolving a
+Team or asking for confirmation; multiple matches require choosing the intended
+project ID. Only a new project uses explicit `--team <uuid|personal>`, the current
+service/account default, or Personal if no default is configured. Invalid or
+inaccessible defaults fail. New creation asks for confirmation unless `--confirm`
+is supplied; noninteractive creation requires `--confirm`.
 Task commands normally resolve the current origin to its project. Add
 `--project <project-id>` to a task operation to select one explicitly, including
 outside Git. Project and task IDs are complete UUIDs. A Step ID is exactly eight hexadecimal
 characters; input is case-insensitive and output is lowercase, with leading
 zeros preserved.
+
+## Webhooks
+
+```bash
+daynight webhook catalog --json
+daynight webhook list --personal --json
+daynight webhook create --personal --file ./endpoint.json --confirm --json
+daynight webhook update <endpoint-id> --team <team-id> --if-version <version> --file ./patch.json --confirm --json
+daynight webhook subscription reconfirm <endpoint-id> --personal --if-version <version> --project <project-id> --confirm
+daynight webhook secret show <endpoint-id> --personal --reveal
+daynight webhook delivery list <endpoint-id> --personal --json
+daynight webhook delivery payload <endpoint-id> <delivery-id> --personal --output ./payload.json
+daynight webhook delivery redeliver <endpoint-id> <delivery-id> --personal --if-version <version> --if-generation <generation> --confirm
+daynight webhook operation show <operation-id> --personal --json
+```
+
+Use each leaf's `--help` for the complete command and option list. Every leaf
+except `catalog` requires exactly one explicit `--personal` User owner or
+`--team <team-id>` UUID. Git and the default Team do not select an owner.
+IDs are canonical UUIDs; versions are positive decimal int64 values and must
+not be rounded. Except for create, writes require the observed `--if-version`;
+redelivery also requires `--if-generation`. The CLI does not implicitly read
+the latest version or retry a conflict.
+
+Create, update and subscription replacement require exactly one `--file` or
+`--stdin`, containing strict UTF-8 JSON with no duplicate or unknown keys,
+up to 32 levels and 256 KiB. The final request is also limited to 256 KiB.
+Supply URL and adapter configuration in this input rather than arguments.
+Update is a nonempty partial object; replacement supplies the complete array.
+Use `--confirm` for noninteractive and stdin writes. Interactive confirmation
+shows safe scope and version details, not the input or secrets.
+
+Writes use one operation ID and original issued time. Supply both
+`--operation-id` and `--issued-at`, or let the CLI generate both after
+confirmation. `--operation-out <path>` exclusively creates a private prepared
+record before sending; it contains identity, scope, versions and request hash,
+not body or secrets. Private prepared-file creation is unavailable on Windows
+and fails before sending. Ordinary writes are not automatically replayed. An unknown
+outcome retains the original identity; inspect it with `operation show`. Missing
+receipts or matching current values do not prove rollback or success.
+
+Resume using `--resume-operation <path>` on the original write leaf, with the
+same owner, targets, versions, mode and input. The CLI verifies the record and
+exact request hash before reading the receipt. A receipt at or past its expiry
+according to the local clock cannot confirm the operation. A matching receipt confirms the
+original operation without another write. If the receipt is missing, complete
+original input, explicit `--confirm` and an issued time within the admission
+window (five minutes past, sixty seconds future) permit at most one identical
+submission. Inaccessible receipts or an expired window leave the outcome unknown.
+A prepared record alone cannot reconstruct the body. A confirmed operation stays
+confirmed when local rendering, output or cleanup fails.
+
+Endpoint list validates all pages before output. Delivery and attempt history
+return one page, with `--limit` 1–100 (default 50) and an explicit `--cursor`;
+retention can leave history incomplete. Secret show returns metadata unless
+`--reveal` is explicit; rotation does not reveal the new secret. Redelivery
+success confirms registration, not delivery. Payload defaults to exact bytes
+without LF; `--json` returns the validated Base64 wrapper and `--output` publishes
+a private file without overwriting an existing target. File publication requires
+Linux with procfs and glibc; these options conflict.
+The service independently enforces payload authorization and retention.
 
 ## Create and Query Tasks
 

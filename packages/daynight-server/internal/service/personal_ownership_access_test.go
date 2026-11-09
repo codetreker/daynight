@@ -1,13 +1,22 @@
 package service
 
 import (
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
+
 	"context"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
@@ -16,35 +25,35 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 	project := f.project(t, owner, "  Personal inherited resources  ")
 	ctx := context.Background()
 	grant := f.member(t, owner, project.ID).Grant
-	if err := f.memberships.Remove(ctx, owner, project.ID, owner.UserID, RemoveProjectMember{Version: grant.Version, ExpectedUserID: owner.UserID}); err != nil {
+	if err := f.memberships.Remove(ctx, owner, project.ID, owner.UserID, coreproject.RemoveProjectMember{Version: grant.Version, ExpectedUserID: owner.UserID}); err != nil {
 		t.Fatal("last direct administrator could not remove its grant", err)
 	}
 	access, err := f.projects.Access(ctx, owner, project.ID)
-	if err != nil || access.Role != core.ProjectAdmin || access.DirectGrant != nil {
+	if err != nil || access.Role != model.ProjectAdmin || access.DirectGrant != nil {
 		t.Fatalf("Personal owner did not retain independent inherited access: %#v %v", access, err)
 	}
 	actual, err := f.projects.Get(ctx, owner, project.ID)
 	if err != nil || actual != project {
 		t.Fatalf("inherited project read changed its raw data: %#v %v", actual, err)
 	}
-	page, err := f.projects.List(ctx, owner, PageRequest{Limit: 1})
+	page, err := f.projects.List(ctx, owner, model.PageRequest{Limit: 1})
 	if err != nil || len(page.Items) != 1 || page.Items[0] != project || page.NextCursor != nil {
 		t.Fatalf("inherited project pagination: %#v %v", page, err)
 	}
-	if _, err := f.projects.UpdateSettings(ctx, owner, project.ID, UpdateProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: 45}); err != nil {
+	if _, err := f.projects.UpdateSettings(ctx, owner, project.ID, coreproject.UpdateProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: 45}); err != nil {
 		t.Fatal("inherited administrator could not edit project settings", err)
 	}
 	participants, err := f.memberships.List(ctx, owner, project.ID)
-	if err != nil || len(participants) != 1 || participants[0].UserID != owner.UserID || participants[0].EffectiveRole != core.ProjectAdmin || participants[0].DirectGrant != nil {
+	if err != nil || len(participants) != 1 || participants[0].UserID != owner.UserID || participants[0].EffectiveRole != model.ProjectAdmin || participants[0].DirectGrant != nil {
 		t.Fatalf("inherited participant was omitted or given a synthetic grant: %#v %v", participants, err)
 	}
 
-	tasks := NewTasks(f.database)
-	task, err := tasks.Create(ctx, owner, project.ID, CreateTask{Title: "Inherited task", AssignedTo: &owner.UserID})
+	tasks := taskservice.NewTasks(f.database)
+	task, err := tasks.Create(ctx, owner, project.ID, taskcore.CreateTask{Title: "Inherited task", AssignedTo: &owner.UserID})
 	if err != nil {
 		t.Fatal("inherited owner could not create or assign a task", err)
 	}
-	task, err = tasks.Update(ctx, owner, project.ID, task.ID, UpdateTask{Version: task.Version, Description: pointer("Owned through the Personal Team")})
+	task, err = tasks.Update(ctx, owner, project.ID, task.ID, taskcore.UpdateTask{Version: task.Version, Description: pointer("Owned through the Personal Team")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,17 +64,17 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 	if read, err := tasks.Get(ctx, owner, project.ID, task.ID); err != nil || read.Version != task.Version {
 		t.Fatalf("inherited task read: %#v %v", read, err)
 	}
-	if page, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 10}}); err != nil || len(page.Items) != 1 || page.Items[0].ID != task.ID {
+	if page, err := tasks.List(ctx, owner, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}}); err != nil || len(page.Items) != 1 || page.Items[0].ID != task.ID {
 		t.Fatalf("inherited task list: %#v %v", page, err)
 	}
 	if _, err := tasks.Graph(ctx, owner, project.ID, task.ID); err != nil {
 		t.Fatal("inherited graph access", err)
 	}
-	sync, err := NewTaskSync(f.database, 10*time.Second).Get(ctx, owner, project.ID, TaskSyncRequest{})
-	if err != nil || sync.ActorAccess.Role != core.ProjectAdmin || sync.ActorAccess.DirectGrant != nil || len(sync.Tasks) != 1 {
+	sync, err := taskservice.NewTaskSync(f.database, sessioncore.NewEngine(nil), 10*time.Second).Get(ctx, owner, project.ID, taskservice.TaskSyncRequest{})
+	if err != nil || sync.ActorAccess.Role != model.ProjectAdmin || sync.ActorAccess.DirectGrant != nil || len(sync.Tasks) != 1 {
 		t.Fatalf("sync did not publish actual inherited access: %#v %v", sync, err)
 	}
-	assignees, err := tasks.Assignees(ctx, owner, project.ID, TaskAssigneesRequest{UserIDs: []string{owner.UserID}})
+	assignees, err := tasks.Assignees(ctx, owner, project.ID, taskservice.TaskAssigneesRequest{UserIDs: []string{owner.UserID}})
 	if err != nil || len(assignees.Items) != 1 || !assignees.Items[0].HasProjectAccess || len(assignees.UnresolvedUserIDs) != 0 {
 		t.Fatalf("inherited assignee qualification: %#v %v", assignees, err)
 	}
@@ -78,9 +87,9 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	attachments := NewAttachments(f.database, files)
+	attachments := attachmentservice.NewAttachments(f.database, f.database, files)
 	putAttachment(t, attachments, owner, task, "inherited.txt", "Inherited attachment")
-	if page, err := attachments.List(ctx, owner, project.ID, task.ID, PageRequest{Limit: 10}); err != nil || len(page.Items) != 1 {
+	if page, err := attachments.List(ctx, owner, project.ID, task.ID, model.PageRequest{Limit: 10}); err != nil || len(page.Items) != 1 {
 		t.Fatalf("inherited attachment metadata: %#v %v", page, err)
 	}
 	_, object, err := attachments.Open(ctx, owner, project.ID, task.ID, "inherited.txt")
@@ -95,17 +104,17 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 	if err := attachments.Delete(ctx, owner, project.ID, task.ID, "inherited.txt"); err != nil {
 		t.Fatal(err)
 	}
-	threads := NewTaskThreads(f.database)
-	message := postThread(t, threads, owner, task, CreateThreadMessage{Body: "Inherited discussion"})
-	if page := listThread(t, threads, owner, task, ThreadListRequest{}); len(page.Page.Items) != 1 || page.Page.Items[0].ID != message.Message.ID {
+	threads := taskservice.NewTaskThreads(f.database)
+	message := postThread(t, threads, owner, task, taskservice.CreateThreadMessage{Body: "Inherited discussion"})
+	if page := listThread(t, threads, owner, task, taskservice.ThreadListRequest{}); len(page.Page.Items) != 1 || page.Page.Items[0].ID != message.Message.ID {
 		t.Fatal("inherited Thread access returned different messages")
 	}
 
 	descriptor := workerDescriptor()
 	claimed := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	workers := NewWorkers(f.database)
+	workers := workerservice.NewWorkers(f.database)
 	report := serviceWorkerReport()
-	report.TaskInventory = &core.WorkerTaskInventory{ObservedAt: time.Now().UTC(), Claims: []core.WorkerTaskReference{{ProjectID: project.ID, TaskID: claimed.ID, ClaimID: descriptor.ClaimID}}}
+	report.TaskInventory = &model.WorkerTaskInventory{ObservedAt: time.Now().UTC(), Claims: []model.WorkerTaskReference{{ProjectID: project.ID, TaskID: claimed.ID, ClaimID: descriptor.ClaimID}}}
 	if _, err := workers.Report(ctx, owner, descriptor.WorkerID, report); err != nil {
 		t.Fatal("inherited worker task inventory admission", err)
 	}
@@ -116,10 +125,10 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 	external := workerMember(t, f.database, project.ID)
 	externalDescriptor := workerDescriptor()
 	externalTask := claimWorkerTask(t, tasks, external, claimableTask(t, tasks, external, project.ID), externalDescriptor)
-	if _, err := tasks.WithdrawWorker(ctx, owner, project.ID, externalTask.ID, WithdrawWorker{Version: externalTask.Version, ClaimID: externalDescriptor.ClaimID}); err != nil {
+	if _, err := tasks.WithdrawWorker(ctx, owner, project.ID, externalTask.ID, taskcore.WithdrawWorker{Version: externalTask.Version, ClaimID: externalDescriptor.ClaimID}); err != nil {
 		t.Fatal("inherited administrator could not withdraw another worker", err)
 	}
-	if err := tasks.Delete(ctx, owner, project.ID, task.ID, DeleteTask{Version: task.Version}); err != nil {
+	if err := tasks.Delete(ctx, owner, project.ID, task.ID, taskcore.DeleteTask{Version: task.Version}); err != nil {
 		t.Fatal("inherited task deletion", err)
 	}
 	var grants int
@@ -147,7 +156,7 @@ func TestOrdinaryTaskAdmissionDoesNotHoldThreadSourceFences(t *testing.T) {
 	}
 	result := make(chan taskResult, 1)
 	go func() {
-		changed, err := tasks.Update(ctx, owner, project.ID, task.ID, UpdateTask{Version: task.Version, Title: pointer("Admitted task write")})
+		changed, err := tasks.Update(ctx, owner, project.ID, task.ID, taskcore.UpdateTask{Version: task.Version, Title: pointer("Admitted task write")})
 		result <- taskResult{task: changed, err: err}
 	}()
 	ticker := time.NewTicker(5 * time.Millisecond)
@@ -189,5 +198,23 @@ func TestOrdinaryTaskAdmissionDoesNotHoldThreadSourceFences(t *testing.T) {
 	changed := receiveTaskResult(t, ctx, result)
 	if changed.err != nil || changed.task.Title != "Admitted task write" || changed.task.Version != task.Version+1 {
 		t.Fatalf("ordinary admitted Task write: %#v %v", changed.task, changed.err)
+	}
+}
+
+func TestTaskGraphProjectsSavedSettings(t *testing.T) {
+	f := newMembershipFixture(t)
+	owner, member := f.user(t), f.user(t)
+	project := f.project(t, owner, "Settings context")
+	f.join(t, owner, member, project.ID)
+	ctx := context.Background()
+	saved, err := f.projects.UpdateSettings(ctx, owner, project.ID, coreproject.UpdateProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := taskservice.NewTasks(f.database)
+	task := createTask(t, tasks, member, project.ID, "Settings context")
+	graph, err := tasks.Graph(ctx, member, project.ID, task.ID)
+	if err != nil || !reflect.DeepEqual(graph.Project, saved) {
+		t.Fatalf("graph project projection lost settings: %#v, %v", graph, err)
 	}
 }

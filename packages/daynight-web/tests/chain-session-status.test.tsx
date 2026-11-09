@@ -19,7 +19,7 @@ vi.mock('../src/features/task-session-summary/TaskSessionSummaryProvider', () =>
 const time = '2026-11-04T10:00:00Z';
 const task = (id: string, status: GraphTask['status'], dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({
   id, titlePreview: id, titleTruncated: false, assignedTo: null, status, dependsOn, externalDependsOn,
-  blockedBy: [], ready: false, requiredPlatform: null, allowAgents: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
+  blockedBy: [], ready: false, requiredPlatform: null, allowAgents: true, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time,
 });
 const graph: TaskGraph = {
   observedAt: time,
@@ -27,13 +27,13 @@ const graph: TaskGraph = {
   tasks: [task('Goal', 'done'), task('Working', 'in_progress', ['Goal', 'External'], ['External']),
     task('Waiting', 'in_progress', ['Goal']), task('Idle', 'in_progress', ['Goal']), task('Initializing', 'in_progress', ['Goal']),
     task('Unknown', 'in_progress', ['Goal']), task('Completed', 'done', ['Goal']), task('External', 'done')],
-  summary: { total: 8, todo: 0, inProgress: 5, done: 3, ready: 0, blocked: 0 },
+  summary: { total: 8, todo: 0, inProgress: 5, done: 3, cancelled: 0, ready: 0, blocked: 0 },
 };
 const index = buildGraphIndex(graph);
 const noop = () => {};
-const content = (onOpenSession = vi.fn(), onOpenTask = vi.fn()) => <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index}
+const content = (onOpenSession = vi.fn(), onOpenTask = vi.fn()) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
   representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null} onOpenChain={noop} onCloseChain={noop}
-  onOpenTask={onOpenTask} onOpenSession={onOpenSession} showAll onShowAllChange={noop} />;
+  onOpenTask={onOpenTask} onOpenSession={onOpenSession} />;
 const child = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!.closest('.goal-task-row')!;
 const expand = () => fireEvent.click(document.getElementById('task-root-Goal')!);
 beforeEach(() => {

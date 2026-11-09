@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createHerdrSessionApi } from "../../../src/commands/worker/herdr/session-api.js";
 import type { SessionV2Message, SessionV2Run } from "../../../src/session/v2/types.js";
 
@@ -124,12 +125,38 @@ describe("Herdr Session v2 client", () => {
     raw = "x".repeat(2048); await expect(api.register(registration(origin))).rejects.toThrow(/limit|large|size/i);
   });
 
-  it("bounds unresponsive requests and rejects redirects without forwarding credentials", async () => {
-    let redirect = false, calls = 0;
-    const origin = await listen((_req, res) => { calls++; if (redirect) { res.statusCode = 307; res.setHeader("location", "/elsewhere"); res.end(); } });
-    const api = createHerdrSessionApi(origin, "token", { timeoutMs: 30 });
-    await expect(api.register(registration(origin))).rejects.toThrow(); expect(calls).toBe(1);
-    redirect = true; await expect(api.register(registration(origin))).rejects.toThrow(); expect(calls).toBe(2);
+  it("aborts an unresponsive registration at its deadline without replaying it", async () => {
+    vi.useFakeTimers();
+    const requests: RequestInit[] = [];
+    const pendingFetch: typeof fetch = async (_url, init) => new Promise((_resolve, reject) => {
+      requests.push(init!);
+      init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+    });
+    // We control the deadline after dispatch; a wall-clock deadline cannot guarantee server arrival.
+    let settled = false;
+    const origin = "https://daynight.example";
+    const result = createHerdrSessionApi(origin, "token", { fetch: pendingFetch, timeoutMs: 30 }).register(registration(origin)).then(
+      () => { settled = true; return undefined; },
+      (error: unknown) => { settled = true; return error; },
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.method).toBe("POST");
+    expect(JSON.parse(requests[0]!.body as string)).toEqual(registration(origin));
+    await vi.advanceTimersByTimeAsync(29);
+    expect(settled).toBe(false); expect(requests[0]!.signal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toBe(requests[0]!.signal!.reason);
+    expect(requests[0]!.signal!.reason).toMatchObject({ message: "The Herdr Session request deadline elapsed; its result must be reconciled." });
+    expect(requests).toHaveLength(1); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects redirects without sending the Worker credential to the destination", async () => {
+    const destinationRequests: (string | undefined)[] = [], originRequests: (string | undefined)[] = [];
+    const destination = await listen((req, res) => { destinationRequests.push(req.headers.authorization); req.resume(); res.end(); });
+    const origin = await listen((req, res) => { originRequests.push(req.headers.authorization); req.resume(); res.statusCode = 307; res.setHeader("location", `${destination}/elsewhere`); res.end(); });
+    await expect(createHerdrSessionApi(origin, "worker-redirect-token").register(registration(origin))).rejects.toThrow();
+    expect(originRequests).toEqual(["Bearer worker-redirect-token"]);
+    expect(destinationRequests).toEqual([]);
   });
 
   it("preserves HTTP status for readback decisions without reporting response bodies", async () => {
@@ -199,4 +226,30 @@ it("does not replay an unconfirmed consume or infer a missing permit", async () 
   const message = { ...base, executionGeneration: "2", type: "automation_recovery" as const, payload: { recoveryId: uuid(30), connectionEpoch: "3", controlEpoch: "5", previousGeneration: "1", stopOperationId: uuid(31), binding: { ...prepared.payload.binding, instanceId: "second", terminalId: "second" } } };
   await expect(api.recoverAutomation(recoveryIdentity(base), message)).rejects.toThrow(); expect(calls).toBe(1);
   missing = true; await expect(api.readRecovery(recoveryIdentity(base), uuid(30))).rejects.toMatchObject({ status: 404 }); expect(calls).toBe(2);
+});
+
+
+it("registers the implemented combined terminal capabilities without altering their intent", async () => {
+  const origin = await listen((req, res) => {
+    const chunks: Buffer[] = []; req.on("data", chunk => chunks.push(Buffer.from(chunk)));
+    req.on("end", () => { const body = JSON.parse(Buffer.concat(chunks).toString()) as Registration; send(res, ack(body)); });
+  });
+  const message = registration(origin); message.payload.capabilities = { observe: true, control: true, archive: true };
+  await expect(createHerdrSessionApi(origin, "token").register(message)).resolves.toEqual(ack(message));
+});
+
+
+it("reads archive state through the original-owner endpoint after task deletion", async () => {
+  const paths: string[] = [];
+  let original!: Registration;
+  const origin = await listen((req, res) => {
+    paths.push(req.url!);
+    if (!req.url?.endsWith("/archive/state")) { res.statusCode = 410; res.end("deleted"); return; }
+    send(res, state(original));
+  });
+  original = registration(origin);
+  const expected = { owner: original.payload.owner, sessionId: original.sessionId, claimId: original.claimId, executionGeneration: "1" };
+  await expect(createHerdrArchiveApi(origin, "original-token").state(expected)).resolves.toMatchObject({ sessionId: original.sessionId });
+  expect(paths).toEqual([`/api/v1/projects/${uuid(4)}/tasks/${uuid(5)}/sessions/${uuid(1)}/archive/state`]);
+  await expect(createHerdrSessionApi(origin, "original-token").state(expected)).rejects.toMatchObject({ status: 410 });
 });

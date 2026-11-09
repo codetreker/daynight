@@ -8,7 +8,7 @@ const otherProjectId = "33333333-3333-3333-3333-333333333333";
 const taskId = "22222222-2222-2222-2222-222222222222";
 const time = "2026-10-20T01:02:03.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
+const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const attachment = { path: "reports/result.bin", contentType: "application/octet-stream", sizeBytes: 5, createdAt: time, updatedAt: time };
 const token = "opaque.+/_~=-token";
 const creationReceipt = <T extends { id: string; ownership: { teamId: string; version: bigint }; createdAt: string; updatedAt: string }>(value: T, userId: string) => ({ ...value, access: { projectId: value.id, ownerTeam: { id: value.ownership.teamId, kind: "personal", name: null }, ownership: value.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: value.id, userId, role: "admin", version: 1n, createdAt: value.createdAt, updatedAt: value.updatedAt } } });
@@ -160,9 +160,9 @@ describe("API bearer authentication", () => {
   });
 
   it.each(["valid JSON", "malformed JSON", "non-JSON"])("gives login guidance for a 401 with %s and never retries", async (body) => {
-    let requests = 0;
-    const url = await server((_request, response) => {
-      requests++;
+    const authorizations: (string | undefined)[] = [];
+    const url = await server((request, response) => {
+      authorizations.push(request.headers.authorization);
       if (body === "valid JSON") json(response, { error: { code: "unauthorized", message: "Authentication required.", requestId: "req-401" } }, 401);
       else {
         response.writeHead(401, { "Content-Type": body === "malformed JSON" ? "application/json" : "text/plain" });
@@ -175,7 +175,7 @@ describe("API bearer authentication", () => {
     expect(error).toMatchObject({ status: 401, message: expect.stringContaining("daynight login") });
     expect((error as Error).message).not.toContain(token);
     if (body === "valid JSON") expect(error).toMatchObject({ code: "unauthorized", requestId: "req-401", confirmedRefusal: true, outcomeUnconfirmed: false });
-    expect(requests).toBe(1);
+    expect(authorizations).toEqual([`Bearer ${token}`]);
   });
 
   it.each([{ status: 403, code: "forbidden" }, { status: 404, code: "not_found" }, { status: 409, code: "version_conflict" }])("preserves the $status API refusal without authentication guidance or retry", async ({ status, code }) => {
