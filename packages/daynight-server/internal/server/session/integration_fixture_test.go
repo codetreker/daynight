@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
@@ -23,21 +22,18 @@ type resourceTestHandler struct {
 	application    sessionApplication
 }
 
-func newResourceTestHandler(t *testing.T, backend *routeBackend, auth *routeAuthentication, principal model.Principal, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+func newResourceTestHandler(t *testing.T, backend *routeBackend, auth *routeAuthentication, principal model.Principal, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	application := newRouteApplication(t, backend, auth, files, logger, 0)
+	application := newRouteApplication(t, backend, auth, logger, 0)
 	return &resourceTestHandler{Handler: httpx.RequestLogging(logger, application), token: auth.Credential(principal), principal: principal, backend: backend, authentication: auth, application: application}
 }
 
-func projectRequest(handler http.Handler, method, path, body string, plans ...string) *httptest.ResponseRecorder {
+func projectRequest(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	request.Header.Set("X-Request-ID", "project-test")
-	if len(plans) != 0 {
-		request.Header.Set(routePlanHeader, strings.Join(plans, ","))
-	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response

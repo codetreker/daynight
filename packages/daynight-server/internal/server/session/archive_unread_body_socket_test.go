@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
@@ -22,32 +21,53 @@ func TestArchiveDownloadDoesNotDrainIncompleteRequestBody(t *testing.T) {
 	t.Run("v1", func(t *testing.T) {
 		f := archiveHTTPSetup(t)
 		base := f.base + "/" + f.snapshot.SessionID + "/archive"
-		f.UseEndedTaskInput()
-		f.Declare("preflight", archivePreflightCounts(), false)
-		f.Declare("upload", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveReady": 1}), false)
-		f.Declare("read", archiveScopeCounts(false, map[string]int{"SessionArchive": 1}), false)
-		doc := sp.ArchiveDocument{Fence: f.snapshot.Fence, SchemaVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}}
-		raw := jsonBody(t, doc)
-		if response := f.Request(http.MethodPut, base, raw, "preflight", "upload"); response.Code != http.StatusOK {
-			t.Fatalf("upload: %d %s", response.Code, response.Body.String())
-		}
-		f.AcceptReady(t, []byte(raw))
+		raw := nativeArchiveBody(t, f)
+		f.SetNativeContent([]byte(raw))
 		expected := append(append([]byte(`{"archive":`), []byte(raw)...), '}')
-		verifyUnreadArchiveDownload(t, f.handler.Handler, f.auth, f.handler.token, base+"/content", "", expected, []string{"preflight", "read"}, func() *httptest.ResponseRecorder {
-			return f.Request(http.MethodGet, base+"/content", "", "preflight", "read")
-		})
+		before := func(content, authenticated bool) {
+			calls := map[string]int{"TryReserveArchivePreflight": 1}
+			if content {
+				calls["ArchiveContentReserved"] = 1
+			}
+			f.Expect(calls)
+			count := 0
+			if authenticated {
+				count = 1
+			}
+			f.auth.ExpectCalls(count)
+		}
+		next := func() *httptest.ResponseRecorder {
+			f.AssertReleased(t)
+			response := f.Request(http.MethodGet, base+"/content", "", archiveContentCalls())
+			f.AssertReleased(t)
+			return response
+		}
+		verifyUnreadArchiveDownload(t, f.handler.Handler, f.auth, f.handler.token, base+"/content", "", expected, before, next)
 	})
 	t.Run("v2", func(t *testing.T) {
 		f, base, data, _ := terminalArchiveReady(t)
-		f.declareTerminal("unread-preflight", map[string]int{"ReadCredential": 1, "ProjectAccess": 1, "ArchiveMetadata": 1}, false)
-		f.declareTerminal("unread-content", terminalReadCounts(map[string]int{"TerminalArchive": 1}), false)
-		verifyUnreadArchiveDownload(t, f.h.Handler, f.h.authentication, f.h.token, base+"/content", v2.Protocol, data, []string{"unread-preflight", "unread-content"}, func() *httptest.ResponseRecorder {
-			return terminalRequest(f.h, http.MethodGet, base+"/content", "", v2.Protocol, "unread-preflight", "unread-content")
-		})
+		before := func(content, authenticated bool) {
+			f.calls.ExpectCalls("TryReserveArchivePreflight", f.calls.Called("TryReserveArchivePreflight")+1)
+			count := 0
+			if content {
+				count = 1
+			}
+			f.calls.ExpectCalls("TerminalArchiveContentReserved", f.calls.Called("TerminalArchiveContentReserved")+count)
+			count = 0
+			if authenticated {
+				count = 1
+			}
+			f.authentication.ExpectCalls(count)
+		}
+		next := func() *httptest.ResponseRecorder {
+			before(true, true)
+			return terminalRequest(f.h, http.MethodGet, base+"/content", "", v2.Protocol)
+		}
+		verifyUnreadArchiveDownload(t, f.h.Handler, f.authentication, f.h.token, base+"/content", v2.Protocol, data, before, next)
 	})
 }
 
-func verifyUnreadArchiveDownload(t *testing.T, handler http.Handler, auth *routeAuthentication, token, path, protocol string, expected []byte, plans []string, next func() *httptest.ResponseRecorder) {
+func verifyUnreadArchiveDownload(t *testing.T, handler http.Handler, auth *routeAuthentication, token, path, protocol string, expected []byte, before func(bool, bool), next func() *httptest.ResponseRecorder) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -78,12 +98,9 @@ func verifyUnreadArchiveDownload(t *testing.T, handler http.Handler, auth *route
 			if protocol != "" {
 				selector = v2.ProtocolHeader + ": " + protocol + "\r\n"
 			}
-			plan := ""
-			if tc.status == http.StatusOK {
-				plan = routePlanHeader + ": " + strings.Join(plans, ",") + "\r\n"
-			}
+			before(tc.status == http.StatusOK, tc.authorized)
 			authCalls := auth.Count()
-			if _, err = fmt.Fprintf(conn, "GET %s%s HTTP/1.1\r\nHost: localhost\r\n%s%s%s%s", path, tc.suffix, authHeader, selector, plan, tc.framing); err != nil {
+			if _, err = fmt.Fprintf(conn, "GET %s%s HTTP/1.1\r\nHost: localhost\r\n%s%s%s", path, tc.suffix, authHeader, selector, tc.framing); err != nil {
 				t.Fatal(err)
 			}
 			response, err := http.ReadResponse(bufio.NewReader(conn), nil)

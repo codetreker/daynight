@@ -27,12 +27,12 @@ expected refusal does not acknowledge a pending callback or erase its lifetime.
 
 The initial implementation shared mutable expectations with the bounded
 application cleanup callback. The
-[Session HTTP isolation decision](2026-11-09-server-session-test-dao-mocks.md)
-replaces that full-application dependency with real routes and engine using
-strict dependency mocks. Current cleanup drains the routes, stops the engine
-and validates expected callbacks. Explicit background disconnect contracts
-account for the late operation, while the same exact cause matcher handles its
-intentional domain refusal.
+[Session HTTP use-case decision](2026-11-09-session-http-use-cases.md)
+replaces that full-application dependency with actual routes and direct service
+operation mocks. Current cleanup drains routes, verifies background disconnect
+completion and validates expected calls. The same exact cause matcher handles
+an explicitly supplied intentional refusal. Normal shutdown permits post-drain
+HTTP `429` checks; fixture cleanup releases the remaining request lifetime.
 
 Production Session admission and drain error propagation retain their behavior.
 The [application lifecycle decision](../architecture/2026-11-06-server-application-lifecycle.md)
@@ -48,7 +48,7 @@ could discard a database or timeout failure in the same error tree.
 
 **Wait until the sockets close.** This is already the deletion test's observable
 requirement. Socket closure does not acknowledge completion of the server's
-subsequent disconnect transaction, so more client reads do not establish the
+subsequent disconnect callback, so more client reads do not establish the
 missing ordering.
 
 **Add a delay before fixture shutdown.** A delay changes the likelihood of the

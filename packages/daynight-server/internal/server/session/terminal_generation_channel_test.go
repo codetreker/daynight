@@ -2,25 +2,26 @@ package session_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
+	"errors"
+	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/google/uuid"
 )
 
-func TestTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T) {
-	testTerminalWorkerChannelAdvancesStoppedGeneration(t, false)
+func TestTerminalWorkerChannelUsesReturnedGenerationFence(t *testing.T) {
+	testTerminalWorkerChannelGenerationWire(t, false)
 }
 
-func TestTerminalWorkerChannelRecoversNativeIdentityLearnedAtStop(t *testing.T) {
-	testTerminalWorkerChannelAdvancesStoppedGeneration(t, true)
+func TestTerminalWorkerChannelEncodesReturnedStopIdentity(t *testing.T) {
+	testTerminalWorkerChannelGenerationWire(t, true)
 }
 
-func testTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T, learnedAtStop bool) {
+func testTerminalWorkerChannelGenerationWire(t *testing.T, learnedAtStop bool) {
 	t.Helper()
 	f := terminalHTTPSetup(t)
 	native := "native-conversation"
@@ -29,73 +30,93 @@ func testTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T, learnedAtS
 		registration.Binding.NativeSessionID = &native
 	}
 	f.message.Payload = registration
-	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
-	defer cancel()
-	path := f.base + "/" + f.message.SessionID
-	worker, _, err := websocket.Dial(ctx, f.server.URL+path+"/worker-channel", &websocket.DialOptions{HTTPHeader: f.workerHeaders("terminal-generation"), Subprotocols: []string{v2.Protocol}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.CloseNow()
-	f.handshake(t, worker)
-	send := func(generation, kind string, payload v2.Payload, scope string) map[string]json.RawMessage {
-		t.Helper()
-		message := f.message
-		message.ExecutionGeneration = generation
-		message.Type = kind
-		message.Payload = payload
-		return f.workerMessage(t, worker, message, scope)
-	}
 	first := v2.Run{ExecutionGeneration: "1", Owner: registration.Owner, Binding: registration.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}
-	send("1", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first}}, "terminal-socket-write")
 	stopped := "2026-01-01T00:00:01Z"
 	first.StoppedAt = &stopped
 	first.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: first.Binding, BootID: "boot", StoppedAt: stopped, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent", BootID: "boot"}}}
 	first.StopProof.Binding.NativeSessionID = &native
-	send("1", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first}}, "terminal-socket-write")
 	next := v2.Run{ExecutionGeneration: "2", Owner: registration.Owner, Binding: registration.Binding, StartedAt: "2026-01-01T00:00:02Z", SegmentIDs: []string{uuid.NewString()}}
 	next.Binding.TerminalID = "term_recovered"
 	next.Binding.NativeSessionID = &native
-	pollIndex := f.writeIndex()
-	ack := send("2", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first, next}}, "terminal-generation")
-	if string(ack["executionGeneration"]) != `"2"` {
-		t.Fatal("ledger acknowledgement did not advance the channel generation", ack)
+	input := f.message
+	input.Type = "generation_ledger"
+	input.Payload = v2.GenerationLedger{Runs: []v2.Run{first}}
+	result := input
+	result.ExecutionGeneration = "2"
+	result.Payload = v2.GenerationLedger{Runs: []v2.Run{first, next}}
+	disconnected := terminalWireWorker(t, f, result.Envelope)
+	var returned atomic.Bool
+	polledNewFence := make(chan struct{}, 1)
+	f.calls.AllowRepeated("PollTerminal")
+	f.calls.RequireCalls("PollTerminal", 1)
+	f.calls.Funcs.PollTerminal = func(ctx context.Context, principal model.Principal, project, task, id string, fence v2.Envelope, epoch string) ([]v2.Message, error) {
+		if err := terminalWireScope(t, f, ctx, principal, project, task, id); err != nil {
+			return nil, err
+		}
+		want := f.message.Envelope
+		if returned.Load() {
+			want = result.Envelope
+		}
+		if fence != want || epoch != "1" {
+			err := errors.New("terminal poll did not use the acknowledged service generation fence")
+			t.Error(err)
+			return nil, err
+		}
+		if returned.Load() {
+			select {
+			case polledNewFence <- struct{}{}:
+			default:
+			}
+		}
+		return []v2.Message{}, nil
 	}
-	f.awaitSaved(t, pollIndex, func(record terminalRouteRecord) bool {
-		return record.Envelope.ExecutionGeneration == "2" && record.ChannelEpoch == "1" && record.LastSeen != nil
-	})
-	assertConnected := func(want bool) {
-		t.Helper()
-		response := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol, "terminal-state")
-		var state struct {
-			Connected           bool                `json:"connected"`
-			ExecutionGeneration string              `json:"executionGeneration"`
-			Ledger              v2.GenerationLedger `json:"ledger"`
+	f.calls.Funcs.UpdateTerminalLedger = func(ctx context.Context, principal model.Principal, project, task, id, epoch string, message v2.Message) (v2.Message, error) {
+		if err := terminalWireScope(t, f, ctx, principal, project, task, id); err != nil {
+			return v2.Message{}, err
 		}
-		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &state) != nil || state.Connected != want || state.ExecutionGeneration != "2" || len(state.Ledger.Runs) != 2 {
-			t.Fatalf("generation channel state connected=%t: %d %s", want, response.Code, response.Body.String())
+		if epoch != "1" || !reflect.DeepEqual(message, input) {
+			err := errors.New("generation ledger changed before the service call")
+			t.Error(err)
+			return v2.Message{}, err
 		}
-		originalProof := state.Ledger.Runs[0].StopProof
-		binding := state.Ledger.Runs[1].Binding
-		if originalProof == nil || originalProof.Binding.NativeSessionID == nil || *originalProof.Binding.NativeSessionID != native || binding.NativeSessionID == nil || *binding.NativeSessionID != native || binding.TerminalID != next.Binding.TerminalID {
-			t.Fatal("generation transition lost the original stop identity or replacement terminal binding", state)
-		}
+		returned.Store(true)
+		return result, nil
 	}
-	assertConnected(true)
-	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: next.SegmentIDs[0], SegmentOrdinal: "2", Binding: next.Binding, Frame: v2.Frame{FrameSeq: "1", CapturedAt: "2026-01-01T00:00:02Z", ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{}}}}
-	send("2", "snapshot", snapshot, "terminal-socket-state")
-	stale := f.message
-	stale.Type = "snapshot"
-	stale.Payload = snapshot
-	drainIndex := f.writeIndex()
+	snapshot := f.message
+	snapshot.Type = "snapshot"
+	snapshot.ExecutionGeneration = "2"
+	snapshot.Payload = v2.Snapshot{ConnectionEpoch: "1", SegmentID: next.SegmentIDs[0], SegmentOrdinal: "2", Binding: next.Binding, Frame: v2.Frame{FrameSeq: "1", CapturedAt: "2026-01-01T00:00:02Z", ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{}}}}
+	f.calls.Funcs.HandleTerminalControl = func(ctx context.Context, principal model.Principal, project, task, id, epoch string, message v2.Message) (v2.Message, error) {
+		if err := terminalWireScope(t, f, ctx, principal, project, task, id); err != nil {
+			return v2.Message{}, err
+		}
+		if epoch != "1" || !reflect.DeepEqual(message, snapshot) {
+			err := errors.New("generation channel forwarded an unselected snapshot")
+			t.Error(err)
+			return v2.Message{}, err
+		}
+		return snapshot, nil
+	}
+	worker := terminalWireDial(t, f)
+	ack := f.workerMessage(t, worker, input)
+	if !reflect.DeepEqual(ack, result) {
+		t.Fatalf("generation ledger acknowledgement changed the supplied result: %#v", ack)
+	}
+	if ack := f.workerMessage(t, worker, snapshot); !reflect.DeepEqual(ack, snapshot) {
+		t.Fatal("new-generation snapshot acknowledgement changed its wire payload", ack)
+	}
+	select {
+	case <-polledNewFence:
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal channel did not poll with its returned generation fence")
+	}
+	stale := snapshot
+	stale.ExecutionGeneration = "1"
 	sessionWSWrite(t, worker, stale)
-	closeCtx, cancelClose := context.WithTimeout(ctx, 3*time.Second)
-	defer cancelClose()
-	if _, _, err = worker.Read(closeCtx); err == nil || closeCtx.Err() != nil {
-		t.Fatalf("old-generation snapshot did not close the Worker channel: %v", err)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if _, _, err := worker.Read(ctx); err == nil || ctx.Err() != nil {
+		t.Fatalf("old-generation snapshot did not close the worker channel before its deadline: %v", err)
 	}
-	f.awaitSaved(t, drainIndex, func(record terminalRouteRecord) bool {
-		return record.Envelope.ExecutionGeneration == "2" && record.ChannelEpoch == "1" && record.LastSeen == nil
-	})
-	assertConnected(false)
+	terminalWireDisconnected(t, f, disconnected)
 }

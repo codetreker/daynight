@@ -543,11 +543,11 @@ persistence and database recheck mechanisms. The
 [server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
 owns focused commands and failure expectations. The complete
 `internal/core/session` and `internal/service/webhook` suites execute without a
-database URL. The regular `internal/server/session` transport selection composes
-actual Session service, engine, authentication and routes with controlled identity
-and DAO facts, retaining HTTP, WebSocket, TCP and local files. Its
+database URL. The regular `internal/server/session` unit suite controls directly
+called Session use cases and executes actual routing, credential middleware,
+HTTP, WebSocket and TCP behavior. Its
 [guide](../packages/daynight-server/README.md#session-http-tests) owns the standalone
-command and current dependency boundary. Producer, service, HTTP/protocol and
+command, opaque archive capabilities and call/lifecycle expectations. Producer, service, HTTP/protocol and
 PostgreSQL owners retain distinct proofs. Task HTTP's `!stress` TestMain clears
 the database and UniAuth fixture variables in its test binary even when the
 complete module check supplies them to other packages. It executes the whole
@@ -555,7 +555,12 @@ regular suite with that boundary; stress workloads use their separate fixture.
 The complete module check still includes isolated real PostgreSQL.
 
 The explicitly tagged `cmd/integration_tests` suite runs normal API flows through
-a production Server process and Go HTTP client. Build production Web resources
+a production Server process and Go HTTP client. Its runner selects
+`TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`. The Session flow
+checks an authenticated Worker claim, registration and grant, Controller
+WebSocket hello/synchronization, current-state readback, browser snapshot and
+exact timeline content delivery through the assembled services and PostgreSQL.
+Build production Web resources
 once, then run `bash scripts/integration.sh` from the Go module. The runner owns
 a fresh PostgreSQL container when `DAYNIGHT_TEST_DATABASE_URL` is unset; an
 explicit URL must identify the invoking test environment's isolated instance.

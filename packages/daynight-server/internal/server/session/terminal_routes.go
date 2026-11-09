@@ -213,7 +213,7 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 			httpx.CloseUnreadBody(w, r)
 			break
 		}
-		var op *sessioncore.ArchiveOperation
+		var op archiveOperation
 		op, err = h.service.BeginArchiveReserved(r.Context(), p, project, task, id, sessioncore.ArchiveV2Upload, archiveReservation(r))
 		if err != nil {
 			httpx.CloseUnreadBody(w, r)

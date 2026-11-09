@@ -6,16 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/google/uuid"
 )
 
 type completedAttachmentBody struct {
@@ -58,25 +67,70 @@ func (w *attachmentBodyCompletionObserver) WriteHeader(status int) {
 }
 
 func TestAttachmentConsumedBodyMetadataFailureKeepsSocketReusable(t *testing.T) {
-	f := newAttachmentFixture(t, attachmentTestFiles(t), io.Discard)
+	task := api.Task{ID: uuid.NewString(), ProjectID: uuid.NewString()}
+	principal := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	token := "dnpat_" + strings.Repeat("A", 43)
 	path := "metadata-failure"
-	metadataError := &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("injected metadata failure")}
-	f.expectPut(f.task, path, "text/plain", 3, model.Attachment{}, false)
-	f.dao.putFn = func(_ context.Context, item model.Attachment) (model.Attachment, bool, error) {
-		f.called("put attachment")
-		expected := model.Attachment{ProjectID: f.task.ProjectID, TaskID: f.task.ID, Path: path, ContentType: "text/plain", SizeBytes: 3}
-		if !reflect.DeepEqual(item, expected) {
-			t.Errorf("metadata write = %+v, want %+v", item, expected)
+	metadataError := errors.New("injected metadata failure")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var authentications, uploads, lists atomic.Int32
+	var listAllowed atomic.Bool
+	auth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, credential string) (model.Principal, error) {
+		if authentications.Add(1) > 2 || ctx.Err() != nil || kind != model.PATCredential || credential != token {
+			t.Error("unexpected body-completion authentication")
+			return model.Principal{}, errors.New("unexpected authentication")
 		}
-		return model.Attachment{}, false, metadataError
+		return principal, nil
+	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	if err != nil {
+		t.Fatal(err)
 	}
+	operations := attachmenthttp.AttachmentOperationsForTest{
+		PutRetained: func(ctx context.Context, p model.Principal, project, id, actualPath, contentType string, content io.Reader) (model.Attachment, bool, io.Closer, error) {
+			if uploads.Add(1) != 1 || ctx.Err() != nil || p != principal || project != task.ProjectID || id != task.ID || actualPath != path || contentType != "text/plain" {
+				t.Error("unexpected attachment upload arguments")
+				return model.Attachment{}, false, nil, errors.New("unexpected upload")
+			}
+			if _, ok := content.(*httpx.DeadlineBody); !ok {
+				t.Error("attachment upload did not receive the real deadline body")
+			}
+			data, err := io.ReadAll(content)
+			if err != nil || string(data) != "abc" || ctx.Err() != nil {
+				t.Errorf("attachment body = %q, read = %v, context = %v", data, err, ctx.Err())
+			}
+			return model.Attachment{}, false, nil, metadataError
+		},
+		ListREST: func(ctx context.Context, p model.Principal, project, id string, request model.PageRequest) (attachmentcore.Page, error) {
+			if lists.Add(1) != 1 || !listAllowed.Load() || ctx.Err() != nil || p != principal || project != task.ProjectID || id != task.ID || !reflect.DeepEqual(request, model.PageRequest{Limit: 50}) {
+				t.Error("unexpected attachment list arguments or ordering")
+				return attachmentcore.Page{}, errors.New("unexpected list")
+			}
+			return attachmentcore.Page{Items: []model.Attachment{}}, nil
+		},
+		Delete: func(context.Context, model.Principal, string, string, string) error {
+			t.Error("unexpected attachment deletion")
+			return errors.New("unexpected deletion")
+		},
+		Open: func(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error) {
+			t.Error("unexpected attachment open")
+			return model.Attachment{}, filestorage.Object{}, errors.New("unexpected open")
+		},
+	}
+	t.Cleanup(func() {
+		if authentications.Load() != 2 || uploads.Load() != 1 || lists.Load() != 1 {
+			t.Errorf("body-completion calls: authentication=%d upload=%d list=%d", authentications.Load(), uploads.Load(), lists.Load())
+		}
+	})
+	mux := http.NewServeMux()
+	attachmenthttp.RegisterRoutesWithOperationsForTest(mux, operations, auth.Require, logger, attachmenthttp.DefaultBodyReadTimeout())
+	handler := httpx.RequestLogging(logger, attachmenthttp.PathGuard(mux, logger))
 	before := make(chan attachmentResponseObservation, 2)
 	continueWrite := make(chan struct{}, 2)
 	defer close(continueWrite)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := &completedAttachmentBody{ReadCloser: r.Body}
 		r.Body = body
-		f.handler.ServeHTTP(&attachmentBodyCompletionObserver{ResponseWriter: w, request: r, body: body, before: before, continueWrite: continueWrite}, r)
+		handler.ServeHTTP(&attachmentBodyCompletionObserver{ResponseWriter: w, request: r, body: body, before: before, continueWrite: continueWrite}, r)
 	}))
 	t.Cleanup(server.Close)
 	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), 5*time.Second)
@@ -87,7 +141,7 @@ func TestAttachmentConsumedBodyMetadataFailureKeepsSocketReusable(t *testing.T) 
 	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: text/plain\r\nContent-Length: 3\r\n\r\nabc", attachmentFilePath(f.task, path), f.handler.token)
+	_, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: text/plain\r\nContent-Length: 3\r\n\r\nabc", attachmentFilePath(task, path), token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,9 +167,8 @@ func TestAttachmentConsumedBodyMetadataFailureKeepsSocketReusable(t *testing.T) 
 	if readError != nil || closeError != nil || response.StatusCode != http.StatusInternalServerError || response.Close || !strings.Contains(string(data), `"code":"internal_error"`) {
 		t.Fatalf("metadata status=%d close=%v body=%q read=%v closeError=%v", response.StatusCode, response.Close, data, readError, closeError)
 	}
-	f.verify()
-	f.expectList(f.task, store.AttachmentQuery{Limit: 50}, store.AttachmentPage{}, nil)
-	_, err = fmt.Fprintf(conn, "GET %s/attachments HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", taskPath(f.task), f.handler.token)
+	listAllowed.Store(true)
+	_, err = fmt.Fprintf(conn, "GET %s/attachments HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", taskPath(task), token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,5 +190,4 @@ func TestAttachmentConsumedBodyMetadataFailureKeepsSocketReusable(t *testing.T) 
 	if readError != nil || closeError != nil || response.StatusCode != http.StatusOK {
 		t.Fatalf("keep-alive status=%d read=%v close=%v", response.StatusCode, readError, closeError)
 	}
-	f.verify()
 }

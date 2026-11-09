@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
@@ -41,27 +44,37 @@ func (w *sessionDeadlineObserver) WriteHeader(status int) {
 }
 
 func TestSessionConsumedBodyRejectionKeepsSocketReusable(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	archive := archiveHTTPSetup(t)
-	archive.Declare("complete-body-preflight", archivePreflightCounts(), false)
+	f := archiveHTTPSetup(t)
 	for _, tc := range []struct {
 		name, method, path, headers, body, code string
-		handler                                 http.Handler
-		token                                   string
 		status                                  int
 	}{
-		{"session", "POST", f.base, "Content-Type: application/json\r\n", "{}", "invalid_input", f.server.Config.Handler, f.handler.token, 400},
-		{"session chunked", "POST", f.base, "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "2\r\n{}\r\n0\r\n\r\n", "invalid_input", f.server.Config.Handler, f.handler.token, 400},
-		{"terminal", "POST", f.base, "Content-Type: application/json\r\n" + v2.ProtocolHeader + ": " + v2.Protocol + "\r\n", "{}", "invalid_payload", f.server.Config.Handler, f.handler.token, 400},
-		{"archive", "PUT", archive.base + "/" + archive.snapshot.SessionID + "/archive", "Content-Type: application/json\r\n" + routePlanHeader + ": complete-body-preflight\r\n", "{}", "invalid_input", archive.handler.Handler, archive.handler.token, 400},
+		{"session", "POST", f.base, "Content-Type: application/json\r\n", "{}", "invalid_input", 400},
+		{"session chunked", "POST", f.base, "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "2\r\n{}\r\n0\r\n\r\n", "invalid_input", 400},
+		{"terminal", "POST", f.base, "Content-Type: application/json\r\n" + v2.ProtocolHeader + ": " + v2.Protocol + "\r\n", "{}", "invalid_payload", 400},
+		{"archive", "PUT", f.base + "/" + f.snapshot.SessionID + "/archive", "Content-Type: application/json\r\n", "{}", "invalid_input", 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testConsumedBodySocket(t, tc.handler, tc.token, tc.method, tc.path, tc.headers, tc.body, tc.code, tc.status, tc.name == "archive")
+			f.auth.ExpectCalls(2)
+			if tc.name == "archive" {
+				f.Expect(map[string]int{"TryReserveArchivePreflight": 1, "BeginArchiveReserved": 1})
+				f.SetUploadResult(sp.ArchiveStatus{}, &model.Fault{Code: "invalid_input", Message: "Invalid archive."})
+			}
+			testConsumedBodySocket(t, f.handler.Handler, f.handler.token, tc.method, tc.path, tc.headers, tc.body, tc.code, tc.status, tc.name == "archive")
+			if tc.name == "archive" {
+				f.AssertBody(t, []byte("{}"))
+				f.AssertReleased(t)
+			}
 		})
 	}
-	terminal := terminalHTTPSetup(t)
-	terminal.register(t)
-	testConsumedBodySocket(t, terminal.h.Handler, terminal.h.token, "PUT", terminal.base+"/"+terminal.message.SessionID+"/archive", "Content-Type: application/json\r\n"+v2.ProtocolHeader+": "+v2.Protocol+"\r\n"+routePlanHeader+": terminal-upload-preflight\r\n", "{}", "source_corrupt", 409, true)
+	terminal := archiveHTTPSetup(t)
+	terminal.ExpectedMode = sessioncore.ArchiveV2Upload
+	terminal.auth.ExpectCalls(2)
+	terminal.Expect(map[string]int{"TryReserveArchivePreflight": 1, "BeginArchiveReserved": 1})
+	terminal.SetUploadResult(sp.ArchiveStatus{}, &model.Fault{Code: "source_corrupt", Message: "Invalid terminal archive."})
+	testConsumedBodySocket(t, terminal.handler.Handler, terminal.handler.token, "PUT", terminal.base+"/"+terminal.snapshot.SessionID+"/archive", "Content-Type: application/json\r\n"+v2.ProtocolHeader+": "+v2.Protocol+"\r\n", "{}", "source_corrupt", 409, true)
+	terminal.AssertBody(t, []byte("{}"))
+	terminal.AssertReleased(t)
 }
 
 func testConsumedBodySocket(t *testing.T, handler http.Handler, token, method, path, headers, body, code string, status int, bounded bool) {

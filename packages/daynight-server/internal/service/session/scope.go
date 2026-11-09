@@ -62,7 +62,7 @@ func (s *Service) browser(ctx context.Context, principal model.Principal, projec
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		if project == "" && taskID == "" {
 			access, err := loadSession(ctx, op, scope, id)
 			if err != nil {
@@ -108,7 +108,7 @@ func (s *Service) controller(ctx context.Context, fence sp.ControllerFence, work
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		location, err := scope.SessionDAO().SessionLocation(ctx, fence.SessionID)
 		if err != nil {
 			if errors.Is(err, model.ErrNotFound) {

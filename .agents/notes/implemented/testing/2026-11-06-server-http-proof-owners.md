@@ -29,21 +29,19 @@ records the protocol and cleanup corrections made with that split.
 
 Task HTTP tests use the direct service/use-case boundary in the
 [Go test dependency decision](2026-11-08-go-test-dependency-boundaries.md), which
-partially supersedes full-application fixture retention for that suite. They
-retain real HTTP adaptation and credential middleware with controlled lower
-results. Representative normal Task API flows use the explicit production
-process integration runner; rule, response-loss and SQL observations retain
-their actual protocol, service/core or Store owners.
+partially supersedes full-application fixture retention for that suite. Session
+HTTP tests use the same responsibility rule through their
+[typed use-case binding](2026-11-09-session-http-use-cases.md). Both retain actual
+HTTP adaptation and credential middleware with controlled directly called
+operations. Session socket tests retain real frames, backpressure, cancellation
+and drain, while service, Core and Store tests retain their lower mechanisms.
 
-The [Session HTTP isolation decision](2026-11-09-server-session-test-dao-mocks.md)
-replaces the Session package's full-application fixture dependency. Its regular
-transport suite composes actual routes, authentication, Session service and
-engine using configured Identity and Session DAO facts. Actual HTTP, WebSocket,
-TCP and file observations remain in that transport owner; Store and service
-tests retain their physical and orchestration proofs. This composition and the
-Task HTTP direct-service mocks describe different current collaborator
-boundaries; the common test-writing policy remains the owner of unit-test
-responsibilities.
+Normal assembled API flows use the explicit production process integration
+runner. `TestServerAPINormalFlows` owns normal Task-related groups;
+`TestServerAPISessionNormalFlow` owns Session registration/grant, Controller
+synchronization, HTTP/browser identity readback and exact event content over
+WebSocket. Fault, boundary and concurrency matrices remain with their actual
+protocol, service/Core or Store owners.
 
 The root package retains scenarios needing private composition access, including
 runtime relay shutdown before dependency release and automation-recovery
@@ -73,12 +71,12 @@ fixtures retain their own composition owner.
 
 Initial consolidation reduced shared full-application scenarios to one database
 and authentication setup per case, preserving their failure, ordering,
-cancellation, isolation and cleanup observations. Task HTTP isolation changes
-its collaborator boundary to direct lower operations. Session transport
-isolation removes database and gateway setup while keeping its service/engine
-composition and real transport. Bot fixtures retain their own existing
-full-application arrangement. A historical reduction of duplicate scenario
-bodies does not require full-application preparation for every HTTP assertion.
+cancellation, isolation and cleanup observations. Task and Session HTTP unit
+isolation move the collaborator boundary to direct lower operations while
+retaining actual HTTP and socket mechanisms. Lower rules, physical storage and
+normal full-application collaboration have their own owners. A historical
+reduction of duplicate bodies does not require full-application preparation for
+every HTTP assertion.
 
 Root and domain packages still contain independent scenarios and can run
 concurrently. Compilation, remaining fixtures and other packages still cost

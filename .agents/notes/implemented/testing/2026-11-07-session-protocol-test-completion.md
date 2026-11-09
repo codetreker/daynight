@@ -31,9 +31,9 @@ The original terminal correction kept the Worker owner and used a separate
 Project member as browser viewer. Removing that member's grant revoked effective
 access without changing personal-Team ownership. An HTTP refusal and socket
 closure before the caller deadline established the transition while the Worker's
-owner retained access. The current isolated adapter fixtures supply those
-effective access results explicitly and retain the actual HTTP and socket
-observations. Their cleanup uses the exact clean fault matcher described in the
+owner retained access. Current HTTP units supply the lower use-case results and
+retain actual refusal and socket observations. Their cleanup uses the exact
+clean fault matcher described in the
 [shutdown decision](2026-11-07-session-deletion-shutdown-expectations.md).
 
 The initial ping correction used real business services, authentication and
@@ -42,12 +42,14 @@ for tests configured the private interval; other scenarios retained the full
 application. Cleanup drained the relay and stopped its engine before the outer
 fixture released its borrowed Store and files.
 
-The [complete Session HTTP isolation decision](2026-11-09-server-session-test-dao-mocks.md)
-replaces that fixture allocation. The regular package now assembles real Session
-service, engine, authentication and routes with configured DAO facts. Test-local
-ping construction still exercises actual Ping/Pong and subsequent events on the
-same connection. Route draining, engine shutdown and mock completion retain
-their separate lifecycle observations. The
+The [Session HTTP use-case decision](2026-11-09-session-http-use-cases.md)
+replaces that fixture allocation. Regular HTTP units execute actual routes and
+credential middleware with direct operation callbacks. Test-local ping
+construction still exercises Ping/Pong and subsequent published frames on the
+same live connection. Callback cancellation, route draining and expected-call
+validation retain separate lifecycle observations. The normal Session API flow
+uses real services and persistence for Controller synchronization, browser
+snapshot and exact timeline delivery. The
 [HTTP ownership decision](2026-11-06-server-http-proof-owners.md) and
 [validation guide](../../../../packages/daynight-server/README.md#session-http-tests)
 own the current scope and command.
@@ -55,7 +57,7 @@ own the current scope and command.
 ## Alternatives
 
 **Add a separate Timeline integration fixture.** The recovery scenario already
-performs the online read and Controller response. Strengthening it avoided
+performed the online read and Controller response. Strengthening it avoided
 another schema, identity and connection setup during the initial correction.
 
 **Expose runtime ping configuration through application assembly.** A public
@@ -70,9 +72,9 @@ access transition.
 
 ## Consequences
 
-The scenarios complete through Controller responses, effective permission
-revocation and an observed Ping/Pong exchange. Production content and ping
-intervals retain their existing values. Complete application composition and
-Store mechanisms keep their own witnesses; the Session adapter suite retains
-real transport with controlled dependency facts. Actual command and CI timing
-results remain source-bound validation artifacts.
+The scenarios complete through explicit Controller/use-case results, effective
+permission refusal and an observed Ping/Pong exchange. Production content and
+ping intervals retain their existing values. HTTP units prove mapping and
+actual transport; normal assembled API and lower service, Core and Store
+witnesses retain their own mechanisms. Actual command and CI timing results
+remain source-bound validation artifacts.

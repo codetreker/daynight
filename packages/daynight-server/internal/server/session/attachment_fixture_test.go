@@ -3,24 +3,7 @@ package session_test
 import (
 	"context"
 	"io"
-	"testing"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 )
-
-func attachmentTestFiles(t *testing.T) *local.Storage {
-	t.Helper()
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := files.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	return files
-}
 
 type attachmentFailingBody struct {
 	data     []byte

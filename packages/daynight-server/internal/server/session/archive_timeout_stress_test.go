@@ -15,8 +15,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
 type exactReadDeadlineObserver struct {
@@ -43,7 +41,6 @@ func TestStressArchiveUploadDeadlineReleasesCapacity(t *testing.T) {
 		t.Skip("set DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 to run the real 120-second deadline test")
 	}
 	f := archiveHTTPSetup(t)
-	f.Declare("preflight", archivePreflightCounts(), false)
 	base := f.base + "/" + f.snapshot.SessionID + "/archive"
 	deadline := make(chan time.Time, 1)
 	done := make(chan struct{})
@@ -60,7 +57,9 @@ func TestStressArchiveUploadDeadlineReleasesCapacity(t *testing.T) {
 	if err := conn.SetDeadline(time.Now().Add(140 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 2\r\nDaynight-Test-Scopes: preflight\r\n\r\n{", base, f.handler.token); err != nil {
+	f.Expect(archiveUploadCalls())
+	f.auth.ExpectCalls(1)
+	if _, err = fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{", base, f.handler.token); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -72,7 +71,8 @@ func TestStressArchiveUploadDeadlineReleasesCapacity(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("archive read deadline not set")
 	}
-	if response := f.Request(http.MethodPut, base, "{}"); response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"resource_busy"`) {
+	f.AssertHeld(t)
+	if response := busyArchiveRequest(f, http.MethodPut, base, "{}"); response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"resource_busy"`) {
 		t.Fatalf("capacity during upload: %d %s", response.Code, response.Body.String())
 	}
 	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
@@ -89,9 +89,14 @@ func TestStressArchiveUploadDeadlineReleasesCapacity(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed-out upload did not finish")
 	}
-	if response := f.Request(http.MethodPut, base, "{}", "preflight"); response.Code != http.StatusBadRequest {
+	f.AssertReleased(t)
+	assertNoArchiveBody(t, f)
+	raw := nativeArchiveBody(t, f)
+	if response := f.Request(http.MethodPut, base, raw, archiveUploadCalls()); response.Code != http.StatusOK {
 		t.Fatalf("capacity after timeout: %d %s", response.Code, response.Body.String())
 	}
+	f.AssertBody(t, []byte(raw))
+	f.AssertReleased(t)
 }
 
 type exactWriteDeadlineObserver struct {
@@ -124,17 +129,14 @@ func TestStressArchiveSendDeadlineReleasesCapacity(t *testing.T) {
 		t.Skip("set DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 to run the real 120-second deadline test")
 	}
 	f := archiveHTTPSetup(t)
-	f.Declare("preflight", archivePreflightCounts(), false)
-	f.Declare("upload", archiveScopeCounts(true, map[string]int{"SessionArchive": 1, "SetSessionArchiveReady": 1}), false)
-	f.Declare("read", archiveScopeCounts(false, map[string]int{"SessionArchive": 1}), false)
 	base := f.base + "/" + f.snapshot.SessionID + "/archive"
-	f.UseEndedTaskInput()
-	doc := sp.ArchiveDocument{Fence: f.snapshot.Fence, SchemaVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}}
-	raw := jsonBody(t, doc) + strings.Repeat(" ", 16*1024*1024)
-	if response := f.Request(http.MethodPut, base, raw, "preflight", "upload"); response.Code != http.StatusOK {
+	raw := nativeArchiveBody(t, f) + strings.Repeat(" ", 16*1024*1024)
+	if response := f.Request(http.MethodPut, base, raw, archiveUploadCalls()); response.Code != http.StatusOK {
 		t.Fatalf("upload: %d %s", response.Code, response.Body.String())
 	}
-	f.AcceptReady(t, []byte(raw))
+	f.AssertBody(t, []byte(raw))
+	f.AssertReleased(t)
+	f.SetNativeContent([]byte(raw))
 	started, done := make(chan struct{}), make(chan struct{})
 	deadline := make(chan time.Time, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -153,7 +155,9 @@ func TestStressArchiveSendDeadlineReleasesCapacity(t *testing.T) {
 	if err := conn.SetDeadline(time.Now().Add(145 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = fmt.Fprintf(conn, "GET %s/content HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nDaynight-Test-Scopes: preflight,read\r\n\r\n", base, f.handler.token); err != nil {
+	f.Expect(archiveContentCalls())
+	f.auth.ExpectCalls(1)
+	if _, err = fmt.Fprintf(conn, "GET %s/content HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\n\r\n", base, f.handler.token); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -170,7 +174,8 @@ func TestStressArchiveSendDeadlineReleasesCapacity(t *testing.T) {
 	default:
 		t.Fatal("archive send deadline not set")
 	}
-	if response := f.Request(http.MethodGet, base+"/content", ""); response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"resource_busy"`) {
+	f.AssertHeld(t)
+	if response := busyArchiveRequest(f, http.MethodGet, base+"/content", ""); response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"resource_busy"`) {
 		t.Fatalf("capacity during send: %d %s", response.Code, response.Body.String())
 	}
 	select {
@@ -178,6 +183,7 @@ func TestStressArchiveSendDeadlineReleasesCapacity(t *testing.T) {
 	case <-time.After(130 * time.Second):
 		t.Fatal("non-reading peer did not release timed-out send")
 	}
+	f.AssertReleased(t)
 	if err := conn.(*net.TCPConn).SetReadBuffer(1024 * 1024); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +199,8 @@ func TestStressArchiveSendDeadlineReleasesCapacity(t *testing.T) {
 	if !errors.Is(readErr, io.ErrUnexpectedEOF) {
 		t.Fatalf("interrupted response did not close: %v", readErr)
 	}
-	if got := f.Request(http.MethodGet, base+"/content", "", "preflight", "read"); got.Code != http.StatusOK {
+	if got := f.Request(http.MethodGet, base+"/content", "", archiveContentCalls()); got.Code != http.StatusOK {
 		t.Fatalf("capacity after timeout: %d", got.Code)
 	}
+	f.AssertReleased(t)
 }

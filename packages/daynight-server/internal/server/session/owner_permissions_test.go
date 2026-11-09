@@ -1,17 +1,23 @@
 package session_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
 )
+
+type ownerPermissionContextKey struct{}
 
 func sessionReaderHandler(t *testing.T, handler *resourceTestHandler) *resourceTestHandler {
 	t.Helper()
@@ -19,106 +25,188 @@ func sessionReaderHandler(t *testing.T, handler *resourceTestHandler) *resourceT
 	return &resourceTestHandler{Handler: handler.Handler, token: handler.authentication.Credential(viewer), principal: viewer, backend: handler.backend, authentication: handler.authentication, application: handler.application}
 }
 
-func TestNativeSessionHTTPAndBrowserKeepOtherProjectMembersReadOnly(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	epoch := uuid.NewString()
-	controller, snapshot := f.controller(t, epoch)
-	native, turn, value := "native", "turn", "model"
-	state := sp.State{NativeSessionID: &native, InitialInputState: "confirmed", Synchronized: true, Activity: "working", CurrentTurnID: &turn, Capabilities: sp.Capabilities{Send: true, Steer: true, Cancel: true, Respond: true}, Controls: &sp.Controls{Revision: "1", Settings: []sp.Setting{{ID: "model", Category: "model", Label: "Model", Value: &value, Options: []sp.SettingOption{{Value: value, Label: "Model"}}, Mutable: true, Scope: "session"}}, Commands: []sp.NativeCommand{{ID: "compact", Name: "compact", Description: "Compact", Available: true}}}}
-	f.ControllerWrite(t, controller, sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}})
-	sessionWSKind(t, controller, "sync_ack")
-	f.SelectNativeState(t, epoch, 0, &state)
-	path := f.base + "/" + snapshot.SessionID
+func ownerPermissionRequest(t *testing.T, handler *resourceTestHandler, method, path, body, marker string, headers http.Header) *httptest.ResponseRecorder {
+	t.Helper()
+	handler.authentication.ExpectCalls(1)
+	before := handler.authentication.Count()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request = request.WithContext(context.WithValue(request.Context(), ownerPermissionContextKey{}, marker))
+	authorizeResourceRequest(handler, request)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Request-ID", "project-test")
+	for key, values := range headers {
+		request.Header[key] = append([]string(nil), values...)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if handler.authentication.Count() != before+1 {
+		t.Fatal("permission adapter changed its authentication call count")
+	}
+	return response
+}
+
+func TestNativeSessionHTTPAndBrowserEncodeSuppliedReaderPermissions(t *testing.T) {
 	for _, role := range []string{"member", "admin"} {
 		t.Run(role, func(t *testing.T) {
+			f := sessionHTTPSetup(t)
 			reader := sessionReaderHandler(t, f.handler)
-			f.SetInput(func(input *nativeRouteInput) {
-				input.Credentials[reader.principal.CredentialID] = reader.principal
-				input.ProjectAccess[reader.principal.UserID] = model.ProjectAccess{UserID: reader.principal.UserID, ProjectID: f.task.ProjectID, Role: model.ProjectRole(role)}
-			})
-			current := decodeResponse[struct {
-				Session sp.Snapshot `json:"session"`
-			}](t, projectRequest(reader, http.MethodGet, f.base+"/current", "", "native.current"), http.StatusOK)
-			if current.Session.Lifecycle != "active" || current.Session.Operations != (sp.Operations{}) || current.Session.Controls == nil || len(current.Session.Controls.Settings) != 1 || len(current.Session.Controls.Commands) != 1 || current.Session.Controls.Settings[0].Mutable || current.Session.Controls.Commands[0].Available {
-				t.Fatal("reader current snapshot lost live state or retained interaction authority")
+			marker := uuid.NewString()
+			native, turn, value := "native", "turn", "model"
+			supplied := routeCopy(f.snapshot)
+			supplied.ConnectionEpoch = "1"
+			supplied.ConnectionState, supplied.Activity, supplied.InitialInputState = "connected", "working", "confirmed"
+			supplied.Synchronized = true
+			supplied.Identity.NativeSessionID, supplied.CurrentTurnID = &native, &turn
+			supplied.Capabilities = sp.Capabilities{Send: true, Steer: true, Cancel: true, Respond: true}
+			supplied.Operations = sp.Operations{}
+			supplied.Controls = &sp.Controls{Revision: "1", Settings: []sp.Setting{{ID: "model", Category: "model", Label: "Model", Value: &value, Options: []sp.SettingOption{{Value: value, Label: "Model"}}, Mutable: false, Scope: "session"}}, Commands: []sp.NativeCommand{{ID: "compact", Name: "compact", Description: "Compact", Available: false}}}
+			owner := routeCopy(supplied)
+			owner.Operations = sp.Operations{CanSend: true, CanCancel: true, CanRespond: true}
+			owner.Controls.Settings[0].Mutable, owner.Controls.Commands[0].Available = true, true
+			currentCalls := 0
+			var expectedCommand sp.Command
+			var expectedActor model.Principal
+			var commandResult sp.Operation
+			var commandError error
+			scope := func(ctx context.Context, principal model.Principal, project, task, session string, actor model.Principal, foreground bool) {
+				t.Helper()
+				if ctx.Err() != nil || principal != actor || project != f.task.ProjectID || task != f.task.ID || session != supplied.SessionID {
+					t.Errorf("permission use-case scope changed: actor=%+v project=%s task=%s session=%s context=%v", principal, project, task, session, ctx.Err())
+				}
+				if foreground && ctx.Value(ownerPermissionContextKey{}) != marker {
+					t.Error("permission request context was not forwarded")
+				}
 			}
-			browser := sessionDial(t, f.server.URL, path+"/channel", reader.token, f.backend.PlanHeader("native.browser"))
-			defer browser.CloseNow()
+			f.backend.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+				calls.Current = func(ctx context.Context, principal model.Principal, project, task string) (map[string]any, error) {
+					currentCalls++
+					if currentCalls == 1 {
+						scope(ctx, principal, project, task, supplied.SessionID, reader.principal, true)
+						return map[string]any{"status": "registered", "session": routeCopy(supplied)}, nil
+					}
+					scope(ctx, principal, project, task, supplied.SessionID, f.handler.principal, true)
+					return map[string]any{"status": "registered", "session": routeCopy(owner)}, nil
+				}
+				calls.BrowserPoll = func(ctx context.Context, principal model.Principal, project, task, session, cursor string) (sp.Snapshot, []map[string]any, string, error) {
+					scope(ctx, principal, project, task, session, reader.principal, false)
+					if httpx.RequestID(ctx) != "project-test" || cursor != "" && cursor != "browser-cursor" {
+						t.Error("browser request context or cursor was not forwarded")
+					}
+					return routeCopy(supplied), []map[string]any{}, "browser-cursor", nil
+				}
+				calls.Submit = func(ctx context.Context, principal model.Principal, project, task, session string, command sp.Command) (sp.Operation, error) {
+					scope(ctx, principal, project, task, session, expectedActor, true)
+					if !reflect.DeepEqual(command, expectedCommand) {
+						t.Errorf("permission command body changed: got=%+v want=%+v", command, expectedCommand)
+					}
+					return commandResult, commandError
+				}
+			})
+			f.backend.ExpectCalls("Current", 2)
+			f.backend.ExpectCalls("Submit", 7)
+			f.backend.RequireCalls("BrowserPoll", 1)
+			path := f.base + "/" + supplied.SessionID
+			response := ownerPermissionRequest(t, reader, http.MethodGet, f.base+"/current", "", marker, nil)
+			current := decodeResponse[struct{ Session sp.Snapshot }](t, response, http.StatusOK)
+			if !reflect.DeepEqual(current.Session, supplied) {
+				t.Fatal("HTTP changed the supplied reader permission snapshot", current.Session)
+			}
+			f.authentication.ExpectCalls(1)
+			browser := sessionDial(t, f.server.URL, path+"/channel", reader.token, http.Header{"X-Request-ID": {"project-test"}})
 			frame := sessionWSKind(t, browser, "snapshot")
 			projected, err := sp.DecodeSnapshot(frame["snapshot"])
-			if err != nil || projected.Operations != (sp.Operations{}) || projected.Controls == nil || len(projected.Controls.Settings) != 1 || len(projected.Controls.Commands) != 1 || projected.Controls.Settings[0].Mutable || projected.Controls.Commands[0].Available {
-				t.Fatal("reader browser snapshot retained interaction authority", err)
+			var frameUser, cursor string
+			_ = json.Unmarshal(frame["userId"], &frameUser)
+			_ = json.Unmarshal(frame["cursor"], &cursor)
+			if err != nil || !reflect.DeepEqual(projected, supplied) || frameUser != reader.principal.UserID || cursor != "browser-cursor" {
+				t.Fatal("WebSocket changed the supplied reader snapshot or correlation", err)
 			}
+			_ = browser.CloseNow()
 			for _, item := range []struct {
 				kind    string
 				payload any
 			}{
 				{"send_message", sp.SendMessage{Content: []sp.TextPart{{Type: "text", Text: "reader input"}}, ExpectedTurnID: &turn}},
 				{"cancel", sp.Cancel{ExpectedTurnID: turn}},
-				{"interaction_response", sp.InteractionResponse{InteractionID: uuid.NewString(), InteractionRevision: "1", SubmissionID: uuid.NewString(), Response: json.RawMessage(`{"kind":"approval","action":"allow_once"}`)}},
+				{"interaction_response", sp.InteractionResponse{InteractionID: uuid.NewString(), InteractionRevision: "1", SubmissionID: uuid.NewString(), Response: json.RawMessage("{\"kind\":\"approval\",\"action\":\"allow_once\"}")}},
 				{"update_setting", sp.UpdateSetting{SettingID: "model", Value: value, ExpectedControlsRevision: "1"}},
 				{"execute_command", sp.ExecuteCommand{CommandID: "compact", ExpectedControlsRevision: "1"}},
 				{"refresh_controls", map[string]any{}},
 			} {
-				command := sp.Command{Fence: snapshot.Fence, Protocol: sp.Protocol, RequestID: uuid.NewString(), OperationID: uuid.NewString(), Kind: item.kind, Payload: json.RawMessage(jsonBody(t, item.payload))}
-				assertProjectError(t, projectRequest(reader, http.MethodPost, path+"/commands", jsonBody(t, command), "native.browser-request"), http.StatusForbidden, "forbidden")
+				expectedCommand = sp.Command{Fence: supplied.Fence, Protocol: sp.Protocol, RequestID: uuid.NewString(), OperationID: uuid.NewString(), Kind: item.kind, Payload: json.RawMessage(jsonBody(t, item.payload))}
+				expectedActor, commandError = reader.principal, &model.Fault{Code: "forbidden", Message: "Session interaction is unavailable."}
+				assertProjectError(t, ownerPermissionRequest(t, reader, http.MethodPost, path+"/commands", jsonBody(t, expectedCommand), marker, nil), http.StatusForbidden, "forbidden")
+			}
+			response = ownerPermissionRequest(t, f.handler, http.MethodGet, f.base+"/current", "", marker, nil)
+			current = decodeResponse[struct{ Session sp.Snapshot }](t, response, http.StatusOK)
+			if !reflect.DeepEqual(current.Session, owner) {
+				t.Fatal("HTTP changed the independently supplied owner permissions")
+			}
+			expectedCommand = sp.Command{Fence: supplied.Fence, Protocol: sp.Protocol, RequestID: uuid.NewString(), OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(jsonBody(t, sp.SendMessage{Content: []sp.TextPart{{Type: "text", Text: "owner input"}}, ExpectedTurnID: &turn}))}
+			expectedActor, commandError = f.handler.principal, nil
+			commandResult = sp.Operation{Fence: supplied.Fence, Protocol: sp.Protocol, OperationID: expectedCommand.OperationID, Kind: expectedCommand.Kind, State: "accepted"}
+			response = ownerPermissionRequest(t, f.handler, http.MethodPost, path+"/commands", jsonBody(t, expectedCommand), marker, nil)
+			accepted := decodeResponse[struct {
+				Operation    sp.Operation
+				OperationURL string
+			}](t, response, http.StatusAccepted)
+			location := path + "/operations/" + expectedCommand.OperationID
+			if !reflect.DeepEqual(accepted.Operation, commandResult) || accepted.OperationURL != location || response.Header().Get("Location") != location {
+				t.Fatal("HTTP changed the supplied accepted operation or its URL", accepted)
 			}
 		})
 	}
-	owner := decodeResponse[struct {
-		Session sp.Snapshot `json:"session"`
-	}](t, projectRequest(f.handler, http.MethodGet, f.base+"/current", "", "native.current"), http.StatusOK)
-	if owner.Session.Controls == nil || len(owner.Session.Controls.Settings) != 1 || len(owner.Session.Controls.Commands) != 1 || !owner.Session.Controls.Settings[0].Mutable || !owner.Session.Controls.Commands[0].Available || !owner.Session.Operations.CanSend {
-		t.Fatal("reader projection changed the owner's live controls")
-	}
-	command := sp.Command{Fence: snapshot.Fence, Protocol: sp.Protocol, RequestID: uuid.NewString(), OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(jsonBody(t, sp.SendMessage{Content: []sp.TextPart{{Type: "text", Text: "owner input"}}, ExpectedTurnID: &turn}))}
-	f.SetInput(func(input *nativeRouteInput) {
-		input.OperationID = command.OperationID
-		input.OperationError = model.ErrNotFound
-	})
-	accepted := decodeResponse[struct {
-		Operation sp.Operation `json:"operation"`
-	}](t, projectRequest(f.handler, http.MethodPost, path+"/commands", jsonBody(t, command), "native.submit"), http.StatusAccepted)
-	if accepted.Operation.OperationID != command.OperationID || accepted.Operation.State != "accepted" {
-		t.Fatalf("owner command lost its accepted identity: %+v", accepted.Operation)
-	}
 }
 
-func TestTerminalSessionHTTPKeepsOtherProjectMembersReadOnly(t *testing.T) {
-	f := terminalHTTPSetup(t)
-	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol, "terminal-register"))
-	f.state.mu.Lock()
-	if len(f.state.writes.insert) != 1 {
-		f.state.mu.Unlock()
-		t.Fatal("terminal registration did not propose one bound record")
-	}
-	inserted := f.state.writes.insert[0]
-	f.state.mu.Unlock()
-	f.selectInsert(t, inserted)
+func TestTerminalSessionHTTPEncodesReaderStateAndControlRefusals(t *testing.T) {
 	for _, role := range []string{"member", "admin"} {
 		t.Run(role, func(t *testing.T) {
-			reader := f.addViewer(t, model.ProjectRole(role))
-			for _, selection := range []struct{ path, plan string }{{f.base + "/current", "terminal-current"}, {f.base + "/" + f.message.SessionID + "/state", "terminal-state"}} {
-				view := decodeResponse[map[string]any](t, terminalRequest(reader, http.MethodGet, selection.path, "", v2.Protocol, selection.plan), http.StatusOK)
-				if view["sessionId"] != f.message.SessionID || view["connected"] != true {
-					t.Fatal("reader could not inspect live terminal", view)
+			f := terminalHTTPSetup(t)
+			reader := sessionReaderHandler(t, f.h)
+			marker, browserID := uuid.NewString(), uuid.NewString()
+			supplied := f.knownState("1")
+			supplied["control"] = v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{}}
+			want := routeCopy(supplied)
+			expected := f.message
+			expected.Type = "control_request"
+			expected.Payload = v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: browserID}
+			scope := func(ctx context.Context, principal model.Principal, project, task, session string) {
+				t.Helper()
+				owner := f.message.Payload.(v2.Registration).Owner
+				if ctx.Err() != nil || ctx.Value(ownerPermissionContextKey{}) != marker || principal != reader.principal || project != owner.ProjectID || task != owner.TaskID || session != f.message.SessionID {
+					t.Errorf("terminal reader scope changed: actor=%+v project=%s task=%s session=%s context=%v", principal, project, task, session, ctx.Err())
 				}
 			}
-			browserID := uuid.NewString()
-			message := f.message
-			message.Type = "control_request"
-			message.Payload = v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: browserID}
-			request := httptest.NewRequest(http.MethodPost, f.base+"/"+message.SessionID+"/commands", strings.NewReader(jsonBody(t, message)))
-			authorizeResourceRequest(reader, request)
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("X-Request-ID", "project-test")
-			request.Header.Set(v2.ProtocolHeader, v2.Protocol)
-			request.Header.Set("Daynight-Browser-Client", browserID)
-			plan := "owner.terminal." + role + ".refuse"
-			f.declareTerminal(plan, terminalReadCounts(nil), false)
-			request.Header.Set(routePlanHeader, plan)
-			response := httptest.NewRecorder()
-			reader.ServeHTTP(response, request)
+			f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
+				calls.CurrentTerminal = func(ctx context.Context, principal model.Principal, project, task string) (map[string]any, error) {
+					scope(ctx, principal, project, task, f.message.SessionID)
+					return routeCopy(want), nil
+				}
+				calls.TerminalState = func(ctx context.Context, principal model.Principal, project, task, session string) (map[string]any, error) {
+					scope(ctx, principal, project, task, session)
+					return routeCopy(want), nil
+				}
+				calls.SubmitTerminal = func(ctx context.Context, principal model.Principal, project, task, session, actualBrowser string, message v2.Message) (v2.Message, error) {
+					scope(ctx, principal, project, task, session)
+					if actualBrowser != browserID || !reflect.DeepEqual(message, expected) {
+						t.Error("terminal control request body or browser-client header changed")
+					}
+					return v2.Message{}, &model.Fault{Code: "forbidden", Message: "Session interaction is unavailable."}
+				}
+			})
+			f.calls.ExpectCalls("CurrentTerminal", 1)
+			f.calls.ExpectCalls("TerminalState", 1)
+			f.calls.ExpectCalls("SubmitTerminal", 1)
+			headers := http.Header{v2.ProtocolHeader: {v2.Protocol}}
+			for _, path := range []string{f.base + "/current", f.base + "/" + f.message.SessionID + "/state"} {
+				response := ownerPermissionRequest(t, reader, http.MethodGet, path, "", marker, headers)
+				view := decodeResponse[map[string]any](t, response, http.StatusOK)
+				if !reflect.DeepEqual(view, want) {
+					t.Fatal("HTTP changed the supplied terminal reader state", view)
+				}
+			}
+			headers.Set("Daynight-Browser-Client", browserID)
+			response := ownerPermissionRequest(t, reader, http.MethodPost, f.base+"/"+f.message.SessionID+"/commands", jsonBody(t, expected), marker, headers)
 			assertProjectError(t, response, http.StatusForbidden, "forbidden")
 		})
 	}

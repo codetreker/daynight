@@ -1,76 +1,150 @@
 package session_test
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"net/http/httptest"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
 )
 
-type archiveRouteInput struct {
-	Task        store.SessionTask
-	TaskDeleted bool
-	TaskError   error
-	Session     store.SessionRecord
-	Metadata    store.ArchiveMetadata
-	Archive     sp.ArchiveStatus
-	ArchivePath string
+type archiveLeaseSpy struct {
+	t      *testing.T
+	mu     sync.Mutex
+	calls  int
+	closed chan struct{}
 }
 
-type archiveRouteReady struct {
-	SessionID, Digest, Path string
-	Length                  int
+func newArchiveLeaseSpy(t *testing.T) *archiveLeaseSpy {
+	return &archiveLeaseSpy{t: t, closed: make(chan struct{})}
 }
-type archiveRouteWrites struct {
-	Ready   *archiveRouteReady
-	State   *sp.ArchiveStatus
-	Session *store.SessionRecord
+func (s *archiveLeaseSpy) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.calls != 1 {
+		s.t.Error("archive capability closed more than once")
+		return nil
+	}
+	close(s.closed)
+	return nil
 }
+func (s *archiveLeaseSpy) Closed() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.calls != 0 }
+func (s *archiveLeaseSpy) AssertHeld(t *testing.T) {
+	t.Helper()
+	if s == nil || s.Closed() {
+		t.Fatal("archive response released its capability before transport completion")
+	}
+}
+func (s *archiveLeaseSpy) AssertClosed(t *testing.T) {
+	t.Helper()
+	if s == nil {
+		t.Fatal("archive capability was never obtained")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calls != 1 {
+		t.Fatalf("archive capability close calls=%d, want1", s.calls)
+	}
+}
+
+type archiveUploadStub struct {
+	*archiveLeaseSpy
+	fixture  *archiveHTTPFixture
+	mu       sync.Mutex
+	putCalls int
+	terminal bool
+}
+
+func (op *archiveUploadStub) put(ctx context.Context, data []byte, terminal bool) (sp.ArchiveStatus, v2.Message, error) {
+	op.mu.Lock()
+	op.putCalls++
+	count := op.putCalls
+	op.mu.Unlock()
+	if count != 1 {
+		op.t.Error("archive upload capability received an extra body")
+	}
+	if terminal != op.terminal {
+		op.t.Error("archive upload used the wrong protocol capability")
+	}
+	f := op.fixture
+	f.mu.Lock()
+	f.rawBodies = append(f.rawBodies, bytes.Clone(data))
+	hook := f.BeforePut
+	native, statusError, term := f.UploadResult, f.UploadError, f.TerminalUploadResult
+	f.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, data); err != nil {
+			return sp.ArchiveStatus{}, v2.Message{}, err
+		}
+	}
+	if terminal {
+		return sp.ArchiveStatus{}, term, statusError
+	}
+	return native, v2.Message{}, statusError
+}
+func (op *archiveUploadStub) PutArchive(ctx context.Context, data []byte) (sp.ArchiveStatus, error) {
+	status, _, err := op.put(ctx, data, false)
+	return status, err
+}
+func (op *archiveUploadStub) PutTerminalArchive(ctx context.Context, data []byte) (v2.Message, error) {
+	_, result, err := op.put(ctx, data, true)
+	return result, err
+}
+
 type archiveHTTPFixture struct {
-	handler      *resourceTestHandler
-	backend      *routeBackend
-	auth         *routeAuthentication
-	application  sessionApplication
-	files        filestorage.Storage
-	task         api.Task
-	base         string
-	registration sp.Registration
-	snapshot     sp.Snapshot
-	mu           sync.Mutex
-	input        archiveRouteInput
-	writes       archiveRouteWrites
+	t                    *testing.T
+	handler              *resourceTestHandler
+	backend              *routeBackend
+	auth                 *routeAuthentication
+	application          sessionApplication
+	task                 api.Task
+	base                 string
+	registration         sp.Registration
+	snapshot             sp.Snapshot
+	mu                   sync.Mutex
+	reservation          *archiveLeaseSpy
+	operation            *archiveLeaseSpy
+	reservations         []*archiveLeaseSpy
+	operations           []*archiveLeaseSpy
+	rawBodies            [][]byte
+	Status               sp.ArchiveStatus
+	StatusError          error
+	UpdateResult         sp.ArchiveStatus
+	UpdateError          error
+	UploadResult         sp.ArchiveStatus
+	TerminalUploadResult v2.Message
+	UploadError          error
+	ExpectedMode         sessioncore.ArchiveMode
+	BeginError           error
+	NativeContent        []byte
+	TerminalContent      []byte
+	ContentError         error
+	BeforePut            func(context.Context, []byte) error
+	BeforeRead           func(context.Context) error
+	Updates              []sp.ArchiveUpdate
 }
 
 func archiveHTTPSetup(t *testing.T) *archiveHTTPFixture {
 	t.Helper()
-	return archiveHTTPSetupWithFiles(t, attachmentTestFiles(t))
-}
-
-func archiveHTTPSetupWithFiles(t *testing.T, files filestorage.Storage) *archiveHTTPFixture {
-	t.Helper()
-	f := &archiveHTTPFixture{backend: newRouteBackend(t), auth: newRouteAuthentication(t, "https://daynight.example"), files: files}
+	f := &archiveHTTPFixture{t: t, backend: newRouteBackend(t), auth: newRouteAuthentication(t, "https://daynight.example"), Status: sp.ArchiveStatus{State: "unavailable"}, UpdateResult: sp.ArchiveStatus{State: "pending"}, UploadResult: sp.ArchiveStatus{State: "ready"}, ExpectedMode: sessioncore.ArchiveV1Upload}
 	principal := model.Principal{UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: model.PATCredential}
-	f.handler = &resourceTestHandler{principal: principal}
 	f.task = api.Task{ID: uuid.NewString(), ProjectID: uuid.NewString(), Version: 1, Status: "in_progress"}
 	f.registration = sp.Registration{Protocol: sp.Protocol, RegistrationID: uuid.NewString(), ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), WorktreeID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex"}
-	f.snapshot = sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), ClaimID: f.registration.ClaimID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"}, Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, Identity: sp.Identity{ProjectID: f.task.ProjectID, TaskID: f.task.ID, WorkerID: f.registration.WorkerID, WorktreeID: f.registration.WorktreeID, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", AgentControlMode: "web"}, SessionRevision: "1", HistoryEpoch: uuid.NewString(), LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: "not_submitted", Lifecycle: "active", ConnectionState: "disconnected", Activity: "initializing"}
+	f.snapshot = sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), ClaimID: f.registration.ClaimID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"}, Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, Identity: sp.Identity{ProjectID: f.task.ProjectID, TaskID: f.task.ID, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex"}, SessionRevision: "1", HistoryEpoch: uuid.NewString(), LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: "not_submitted", Lifecycle: "active", ConnectionState: "disconnected", Activity: "initializing"}
 	f.base = taskPath(f.task) + "/sessions"
-	f.input = archiveRouteInput{Task: store.SessionTask{Status: "in_progress", Worker: &model.WorkerClaim{ClaimID: f.registration.ClaimID, UserID: principal.UserID, WorkerID: f.registration.WorkerID, WorktreeID: f.registration.WorktreeID, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, State: model.WorkerActive}}, Session: store.SessionRecord{Snapshot: f.snapshot, Owner: principal.UserID, Parent: principal.CredentialID, Registration: []byte(jsonBody(t, f.registration))}, Metadata: store.ArchiveMetadata{Owner: principal.UserID, Parent: principal.CredentialID, Project: f.task.ProjectID, Task: f.task.ID, Backend: "web", TaskExists: true, ProjectLive: true, BotValid: true}, Archive: sp.ArchiveStatus{State: "unavailable"}}
-	f.configure(t)
-	f.handler = newResourceTestHandler(t, f.backend, f.auth, principal, files, io.Discard)
+	f.configure(principal)
+	f.handler = newResourceTestHandler(t, f.backend, f.auth, principal, io.Discard)
 	f.application = f.handler.application
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -79,185 +153,162 @@ func archiveHTTPSetupWithFiles(t *testing.T, files filestorage.Storage) *archive
 			t.Error(err)
 		}
 	})
+	t.Cleanup(func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, spy := range f.reservations {
+			spy.AssertClosed(t)
+		}
+		for _, spy := range f.operations {
+			spy.AssertClosed(t)
+		}
+	})
 	return f
 }
-
-func (f *archiveHTTPFixture) configure(t *testing.T) {
-	t.Helper()
-	principal := f.handler.principal
-	checkCredential := func(ctx context.Context, actual model.Principal, now time.Time) error {
-		if actual != principal || now.IsZero() {
-			t.Fatal("archive credential arguments changed")
+func (f *archiveHTTPFixture) configure(principal model.Principal) {
+	check := func(actual model.Principal, project, task, id string) {
+		f.t.Helper()
+		if actual != principal || project != f.task.ProjectID || task != f.task.ID || id != f.snapshot.SessionID {
+			f.t.Error("archive usecase changed principal or resource address")
 		}
-		return ctx.Err()
 	}
-	f.backend.DAO.ReadCredentialFn = checkCredential
-	f.backend.DAO.LockCredentialFn = checkCredential
-	f.backend.DAO.ProjectAccessFn = func(ctx context.Context, user, project string) (model.ProjectAccess, error) {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if user != principal.UserID || project != in.Session.Snapshot.Identity.ProjectID {
-			t.Fatal("archive access changed its user or Project")
-		}
-		return model.ProjectAccess{UserID: user, ProjectID: project, Role: model.ProjectAdmin}, nil
-	}
-	f.backend.DAO.ArchiveMetadataFn = func(ctx context.Context, id string) (store.ArchiveMetadata, error) {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if id != in.Session.Snapshot.SessionID {
-			t.Fatal("archive metadata changed Session identity")
-		}
-		return in.Metadata, nil
-	}
-	f.backend.DAO.LockTaskFn = func(ctx context.Context, project, id string) (store.SessionTask, error) {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if project != f.task.ProjectID || id != f.task.ID {
-			t.Fatal("archive task lock changed scope")
-		}
-		return in.Task, in.TaskError
-	}
-	f.backend.DAO.LockArchiveTaskFn = func(ctx context.Context, project, id string) (store.SessionTask, bool, error) {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if project != f.task.ProjectID || id != f.task.ID {
-			t.Fatal("archive finalization lock changed scope")
-		}
-		return in.Task, in.TaskDeleted, nil
-	}
-	f.backend.DAO.SessionBotIDFn = func(ctx context.Context, id string) (*string, error) {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if id != in.Session.Snapshot.SessionID {
-			t.Fatal("archive Bot lookup changed Session identity")
-		}
-		return nil, nil
-	}
-	f.backend.DAO.LockSessionFn = func(ctx context.Context, id string) (store.SessionRecord, error) {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if id != in.Session.Snapshot.SessionID {
-			t.Fatal("archive lock changed Session identity")
-		}
-		return in.Session, nil
-	}
-	f.backend.DAO.SessionArchiveFn = func(ctx context.Context, id string) (sp.ArchiveStatus, string, error) {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if id != in.Session.Snapshot.SessionID {
-			t.Fatal("archive lookup changed Session identity")
-		}
-		return in.Archive, in.ArchivePath, nil
-	}
-	f.backend.DAO.SetSessionArchiveStateFn = func(ctx context.Context, id, state string, code *string) error {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if id != in.Session.Snapshot.SessionID {
-			t.Fatal("archive status write changed Session identity")
-		}
+	f.backend.Funcs.TryReserveArchivePreflight = func() (io.Closer, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.writes.State = &sp.ArchiveStatus{State: state, ErrorCode: code}
-		return nil
-	}
-	f.backend.DAO.SetSessionArchiveReadyFn = func(ctx context.Context, id, digest string, size int, path string) error {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if id != in.Session.Snapshot.SessionID {
-			t.Fatal("archive ready write changed Session identity")
+		if f.reservation != nil && !f.reservation.Closed() || f.operation != nil && !f.operation.Closed() {
+			return nil, &model.Fault{Code: "resource_busy", Message: "Archive admission is busy."}
 		}
+		token := newArchiveLeaseSpy(f.t)
+		f.reservation = token
+		f.reservations = append(f.reservations, token)
+		return token, nil
+	}
+	f.backend.Funcs.BeginArchiveReserved = func(ctx context.Context, p model.Principal, project, task, id string, mode sessioncore.ArchiveMode, token io.Closer) (sessionhttp.ArchiveOperationForTest, error) {
+		check(p, project, task, id)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.writes.Ready = &archiveRouteReady{SessionID: id, Digest: digest, Length: size, Path: path}
-		return nil
-	}
-	f.backend.DAO.SaveSessionFn = func(ctx context.Context, value store.SessionRecord) error {
-		in := routeInputFor[archiveRouteInput](ctx)
-		if value.Snapshot.SessionID != in.Session.Snapshot.SessionID {
-			t.Fatal("archive Session write changed identity")
+		if token != f.reservation || mode != f.ExpectedMode {
+			f.t.Error("archive upload lost its reservation or protocol mode")
 		}
+		if f.BeginError != nil {
+			return nil, f.BeginError
+		}
+		lease := newArchiveLeaseSpy(f.t)
+		f.operation = lease
+		f.operations = append(f.operations, lease)
+		return &archiveUploadStub{archiveLeaseSpy: lease, fixture: f, terminal: mode == sessioncore.ArchiveV2Upload}, nil
+	}
+	read := func(ctx context.Context, p model.Principal, project, task, id string, token io.Closer, terminal bool) (sessionhttp.ArchiveContentForTest, error) {
+		check(p, project, task, id)
+		f.mu.Lock()
+		if token != f.reservation {
+			f.t.Error("archive read replaced the preflight reservation")
+		}
+		hook := f.BeforeRead
+		givenError := f.ContentError
+		data := f.NativeContent
+		if terminal {
+			data = f.TerminalContent
+		}
+		f.mu.Unlock()
+		if hook != nil {
+			if err := hook(ctx); err != nil {
+				return sessionhttp.ArchiveContentForTest{}, err
+			}
+		}
+		if givenError != nil {
+			return sessionhttp.ArchiveContentForTest{}, givenError
+		}
+		lease := newArchiveLeaseSpy(f.t)
+		f.mu.Lock()
+		f.operation = lease
+		f.operations = append(f.operations, lease)
+		f.mu.Unlock()
+		return sessionhttp.ArchiveContentForTest{Data: bytes.Clone(data), Closer: lease}, nil
+	}
+	f.backend.Funcs.ArchiveContentReserved = func(ctx context.Context, p model.Principal, project, task, id string, token io.Closer) (sessionhttp.ArchiveContentForTest, error) {
+		return read(ctx, p, project, task, id, token, false)
+	}
+	f.backend.Funcs.TerminalArchiveContentReserved = func(ctx context.Context, p model.Principal, project, task, id string, token io.Closer) (sessionhttp.ArchiveContentForTest, error) {
+		return read(ctx, p, project, task, id, token, true)
+	}
+	f.backend.Funcs.ArchiveStatus = func(ctx context.Context, p model.Principal, project, task, id string) (sp.ArchiveStatus, error) {
+		check(p, project, task, id)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		copy := routeCopy(value)
-		f.writes.Session = &copy
-		return nil
+		return f.Status, f.StatusError
+	}
+	f.backend.Funcs.UpdateArchive = func(ctx context.Context, p model.Principal, project, task, id string, input sp.ArchiveUpdate) (sp.ArchiveStatus, error) {
+		check(p, project, task, id)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.Updates = append(f.Updates, input)
+		return f.UpdateResult, f.UpdateError
+	}
+	f.backend.Funcs.Current = func(ctx context.Context, p model.Principal, project, task string) (map[string]any, error) {
+		check(p, project, task, f.snapshot.SessionID)
+		return nil, &model.Fault{Code: "not_found", Message: "Session was not found."}
+	}
+	for _, name := range []string{"TryReserveArchivePreflight", "BeginArchiveReserved", "ArchiveContentReserved", "TerminalArchiveContentReserved", "ArchiveStatus", "UpdateArchive", "Current"} {
+		f.backend.ExpectCalls(name, 0)
 	}
 }
-
-func (f *archiveHTTPFixture) InputSnapshot() archiveRouteInput {
+func (f *archiveHTTPFixture) Expect(calls map[string]int) {
+	f.backend.mu.Lock()
+	for name, want := range f.backend.expected {
+		if f.backend.calls[name] != want {
+			f.t.Errorf("archive phase replaced before %s completed: got%d want%d", name, f.backend.calls[name], want)
+		}
+	}
+	f.backend.mu.Unlock()
+	for name, count := range calls {
+		f.backend.ExpectCalls(name, f.backend.Called(name)+count)
+	}
+}
+func (f *archiveHTTPFixture) Request(method, path, body string, calls map[string]int) *httptest.ResponseRecorder {
+	f.Expect(calls)
+	f.auth.ExpectCalls(1)
+	return projectRequest(f.handler, method, path, body)
+}
+func (f *archiveHTTPFixture) SetUploadResult(status sp.ArchiveStatus, cause error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	in := f.input
-	in.Task = routeCopy(in.Task)
-	in.Session = routeCopy(in.Session)
-	in.Archive = routeCopy(in.Archive)
-	return in
+	f.UploadResult = status
+	f.UploadError = cause
 }
-func (f *archiveHTTPFixture) SetInput(input archiveRouteInput) {
+func (f *archiveHTTPFixture) SetNativeContent(data []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.input = input
+	f.NativeContent = bytes.Clone(data)
 }
-func (f *archiveHTTPFixture) Declare(name string, calls map[string]int, repeat bool) {
-	f.backend.Declare(name, calls, func() any { return f.InputSnapshot() }, repeat)
+func (f *archiveHTTPFixture) SetTerminalContent(data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.TerminalContent = bytes.Clone(data)
 }
-func (f *archiveHTTPFixture) UseEndedTaskInput() {
-	in := f.InputSnapshot()
-	in.Task.Status = "done"
-	in.Task.Worker.State = model.WorkerCompleted
-	f.SetInput(in)
-}
-func (f *archiveHTTPFixture) UseDeletedTaskInput() {
-	in := f.InputSnapshot()
-	in.TaskDeleted = true
-	in.TaskError = model.ErrNotFound
-	in.Metadata.TaskDeleted = true
-	f.SetInput(in)
-}
-func (f *archiveHTTPFixture) Request(method, path, body string, names ...string) *httptest.ResponseRecorder {
-	return projectRequest(f.handler, method, path, body, names...)
-}
-func (f *archiveHTTPFixture) AcceptState(t *testing.T, state string) {
+func (f *archiveHTTPFixture) AssertBody(t *testing.T, expected []byte) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.writes.State == nil || f.writes.State.State != state {
-		t.Fatal("archive status phase did not propose the requested state")
+	if len(f.rawBodies) == 0 || !bytes.Equal(f.rawBodies[len(f.rawBodies)-1], expected) {
+		t.Fatal("archive upload changed the actual consumed body")
 	}
-	f.input.Archive = routeCopy(*f.writes.State)
-	f.writes.State = nil
 }
-func (f *archiveHTTPFixture) AcceptReady(t *testing.T, data []byte) {
+func (f *archiveHTTPFixture) AssertHeld(t *testing.T) {
 	t.Helper()
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	ready := f.writes.Ready
-	hash := sha256.Sum256(data)
-	digest := hex.EncodeToString(hash[:])
-	namespace, err := sessionarchive.NewNamespace(sessionarchive.Projects, f.task.ProjectID, f.snapshot.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path, err := namespace.ObjectPath(digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ready == nil || ready.SessionID != f.snapshot.SessionID || ready.Digest != digest || ready.Length != len(data) || ready.Path != path {
-		t.Fatal("archive ready proposal changed bytes or physical ownership")
-	}
-	size := strconv.Itoa(len(data))
-	f.input.Archive = sp.ArchiveStatus{State: "ready", SHA256: &digest, ByteLength: &size}
-	f.input.ArchivePath = path
-	f.writes.Ready = nil
+	reservation, operation := f.reservation, f.operation
+	f.mu.Unlock()
+	reservation.AssertHeld(t)
+	operation.AssertHeld(t)
 }
-func archivePreflightCounts() map[string]int {
-	return map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 1}
-}
-func archiveScopeCounts(finalize bool, work map[string]int) map[string]int {
-	lock := "LockTask"
-	if finalize {
-		lock = "LockArchiveTask"
+func (f *archiveHTTPFixture) AssertReleased(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	reservation, operation := f.reservation, f.operation
+	f.mu.Unlock()
+	reservation.AssertClosed(t)
+	if operation != nil {
+		operation.AssertClosed(t)
 	}
-	return mergeArchiveCounts(map[string]int{lock: 1, "LockCredential": 1, "ProjectAccess": 1, "SessionBotID": 1, "LockSession": 1}, work)
-}
-func mergeArchiveCounts(base, work map[string]int) map[string]int {
-	out := map[string]int{}
-	for key, value := range base {
-		out[key] = value
-	}
-	for key, value := range work {
-		out[key] = value
-	}
-	return out
 }
