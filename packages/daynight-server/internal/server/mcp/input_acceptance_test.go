@@ -123,7 +123,12 @@ func TestProductionInputBodyBoundaries(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/chunked=%v", input.name, chunked), func(t *testing.T) {
 				beforeUploads, beforeUpdates := uploads.Load(), updates.Load()
 				id := fmt.Sprintf("input-%s-over-%v", input.name, chunked)
-				response, data, contextErr := inputSocket(t, production.Listener.Addr().String(), token, completed, input.method, input.path, input.rejected+strings.Repeat(" ", input.limit+1-len(input.rejected)), chunked, true, id, !chunked)
+				overLimit := input.limit + 1
+				if chunked {
+					// Leave an unread payload byte so native chunked EOF cannot allow reuse.
+					overLimit++
+				}
+				response, data, contextErr := inputSocket(t, production.Listener.Addr().String(), token, completed, input.method, input.path, input.rejected+strings.Repeat(" ", overLimit-len(input.rejected)), chunked, true, id, !chunked)
 				if response.StatusCode != http.StatusRequestEntityTooLarge || (chunked && !response.Close) || !bytes.Contains(data, []byte(`"code":"payload_too_large"`)) || !bytes.Contains(data, []byte(id)) {
 					t.Fatalf("over limit: status=%d close=%v body=%q context=%v", response.StatusCode, response.Close, data, contextErr)
 				}
