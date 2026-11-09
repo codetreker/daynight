@@ -35,12 +35,15 @@ invoke complete service flows to reproduce an upper-layer rule matrix. The
 [test-writing rules](../../../../docs/writing_tests.md) own dependency isolation
 and the separate normal-flow scope of API integration and product E2E tests.
 
-The existing functional limits remain real. Step tests encode the fitting
-170-description collection and overflowing 171-description candidate through
-the production 64 MiB codec, then verify Add and Update reject before any write.
-Store Graph and Sync fixtures retain the accepted 1000-node, 5000-edge datasets
-and independent node and edge overflows; service mocks retain count admission
-before projection. Lock-window witnesses retain real PostgreSQL blockers and
+Step write tests encode the fitting 170-description collection and overflowing
+171-description candidate through the production 64 MiB codec, then verify Add
+and Update reject before any write. The
+[canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)
+removes Graph/Sync stored-size admission and their count-only matrices. Real
+ordinary Store graphs retain selection, dependency arrays, snapshots and
+cancellation; service mocks retain permission, projection and error chains. CLI
+and Web acceptance tests read complete responses beyond the former node/edge
+thresholds. Lock-window witnesses retain real PostgreSQL blockers and
 observations beyond their test-local overlap.
 
 The earlier [Task candidate isolation](2026-11-06-task-request-candidate-isolation.md)

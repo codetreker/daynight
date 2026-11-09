@@ -12,8 +12,7 @@ import (
 // Text contains the original task fields, including its canonical ID.
 type Text struct{ ID, Title, Description string }
 
-// Hit contains one atom's projected field matches.
-type Hit struct{ ID, Title, Description bool }
+type hit struct{ ID, Title, Description bool }
 
 // Evidence describes positive hits on branches that satisfy the expression.
 type Evidence struct {
@@ -43,23 +42,23 @@ func EvaluateContext(ctx context.Context, root *tasksearch.Node, text Text) (Evi
 			return Evidence{}, err
 		}
 	}
-	return evaluate(ctx, root, text.ID, func(atom tasksearch.Atom) (Hit, error) {
-		hit := Hit{ID: atom.Field.Includes(tasksearch.IDField) && strings.Contains(text.ID, atom.Term)}
+	return evaluate(ctx, root, text.ID, func(atom tasksearch.Atom) (hit, error) {
+		value := hit{ID: atom.Field.Includes(tasksearch.IDField) && strings.Contains(text.ID, atom.Term)}
 		if atom.Field.Includes(tasksearch.TitleField) {
 			i, err := index(ctx, text.Title, atom.Term)
 			if err != nil {
-				return Hit{}, err
+				return hit{}, err
 			}
-			hit.Title = i >= 0
+			value.Title = i >= 0
 		}
 		if atom.Field.Includes(tasksearch.DescriptionField) {
 			i, err := index(ctx, text.Description, atom.Term)
 			if err != nil {
-				return Hit{}, err
+				return hit{}, err
 			}
-			hit.Description = i >= 0
+			value.Description = i >= 0
 		}
-		return hit, nil
+		return value, nil
 	})
 }
 
@@ -96,7 +95,7 @@ func index(ctx context.Context, text, term string) (int, error) {
 	return -1, nil
 }
 
-func evaluate(ctx context.Context, n *tasksearch.Node, taskID string, resolve func(tasksearch.Atom) (Hit, error)) (Evidence, error) {
+func evaluate(ctx context.Context, n *tasksearch.Node, taskID string, resolve func(tasksearch.Atom) (hit, error)) (Evidence, error) {
 	if err := ctx.Err(); err != nil {
 		return Evidence{}, err
 	}
@@ -107,13 +106,6 @@ func evaluate(ctx context.Context, n *tasksearch.Node, taskID string, resolve fu
 		hit, err := resolve(n.Atom)
 		if err != nil {
 			return Evidence{}, err
-		}
-		f := n.Atom.Field
-		if !f.Valid() || hit.ID && !f.Includes(tasksearch.IDField) || hit.Title && !f.Includes(tasksearch.TitleField) || hit.Description && !f.Includes(tasksearch.DescriptionField) {
-			return Evidence{}, errors.New("search evidence contains an excluded field")
-		}
-		if hit.ID != (f.Includes(tasksearch.IDField) && strings.Contains(taskID, n.Atom.Term)) {
-			return Evidence{}, errors.New("search ID evidence differs from task ID")
 		}
 		matched := hit.ID || hit.Title || hit.Description
 		if n.Negated {
@@ -148,26 +140,6 @@ func evaluate(ctx context.Context, n *tasksearch.Node, taskID string, resolve fu
 			e.Description = e.Description || child.Description
 			e.DescriptionTerms = append(e.DescriptionTerms, child.DescriptionTerms...)
 		}
-	}
-	return e, nil
-}
-
-// EvaluateHits applies the same expression semantics to DAO-projected hits.
-func EvaluateHits(ctx context.Context, n *tasksearch.Node, taskID string, hits map[tasksearch.Atom]Hit) (Evidence, error) {
-	visited := make(map[tasksearch.Atom]struct{})
-	e, err := evaluate(ctx, n, taskID, func(atom tasksearch.Atom) (Hit, error) {
-		hit, ok := hits[atom]
-		if !ok {
-			return Hit{}, errors.New("search evidence is missing an atom")
-		}
-		visited[atom] = struct{}{}
-		return hit, nil
-	})
-	if err != nil {
-		return Evidence{}, err
-	}
-	if len(visited) != len(hits) {
-		return Evidence{}, errors.New("search evidence contains an extra atom")
 	}
 	return e, nil
 }

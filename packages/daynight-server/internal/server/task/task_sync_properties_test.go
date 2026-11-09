@@ -77,23 +77,18 @@ func TestTaskSyncHTTPPropertiesSnapshotDeltaAndRemoval(t *testing.T) {
 	}
 }
 
-func TestTaskSyncHTTPRejectsIllegalStoredPropertiesWithoutPartialTasks(t *testing.T) {
+func TestTaskSyncHTTPPropertyEncodingFailureDoesNotSendPartialTasks(t *testing.T) {
 	var logs bytes.Buffer
 	handler := newHTTPFixture(t, &logs)
-	handler.ExpectCalls("Sync", 2)
+	result := syncModel()
+	result.Tasks = []model.TaskViewRecord{{ID: testTaskID, TitlePreview: "Private sync task", Properties: model.TaskProperties{"pullRequests": json.RawMessage(`not JSON`)}, CreatedAt: testTime, UpdatedAt: testTime}}
 	handler.Sync = func(context.Context, model.Principal, string, taskservice.TaskSyncRequest) (model.TaskSync, error) {
-		return model.TaskSync{}, &model.Fault{Code: "invalid_input", Message: "Task properties are invalid."}
+		return result, nil
 	}
-	for _, suffix := range []string{"", "?epoch=" + testEpoch} {
-		response := projectRequest(handler, http.MethodGet, syncPath(testProjectID)+suffix, "")
-		assertProjectError(t, response, 400, "invalid_input")
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
-			t.Fatal(err)
-		}
-		if _, exists := fields["tasks"]; exists {
-			t.Fatalf("partial tasks=%s", response.Body)
-		}
+	response := projectRequest(handler, http.MethodGet, syncPath(testProjectID), "")
+	assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+	if strings.Contains(response.Body.String(), `"tasks"`) || strings.Contains(logs.String(), "not JSON") || strings.Contains(logs.String(), "Private sync task") {
+		t.Fatalf("partial tasks or values escaped: body=%s logs=%s", response.Body, &logs)
 	}
 }
 

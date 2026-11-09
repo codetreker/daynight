@@ -357,14 +357,12 @@ func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
 	}
 }
 
-func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
+func TestThreadSourceReadsOnlyWorkerAttribution(t *testing.T) {
 	database, principal, _, project := membershipFixture(t)
 	ctx := context.Background()
 	ordinary := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	reference := setSnapshotTaskClaim(t, database, project.ID, 11, principal.UserID, queryID(900))
-	// Unrelated properties are not source attribution inputs. Reading a worker
-	// must not parse them or make ordinary posting depend on their structure.
-	putTaskPropertyFixture(t, database, reference.TaskID, "unrelated", []byte(`not valid JSON`))
+	putTaskPropertyFixture(t, database, reference.TaskID, "paused", []byte(`false`))
 	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
 		if _, err := tx.TaskDAO().LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
 			return err
@@ -375,7 +373,7 @@ func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
 		}
 		worker := fixtureWorker(t, source.Properties)
 		if source.Status != model.TaskInProgress || len(source.Properties) != 1 || worker == nil || worker.ClaimID != reference.ClaimID || worker.WorkerID != queryID(900) || worker.UserID != principal.UserID || worker.Agent != model.AgentClaude {
-			t.Fatalf("validated worker source: %#v worker=%#v", source, worker)
+			t.Fatalf("worker source: %#v worker=%#v", source, worker)
 		}
 		if _, err := tx.TaskDAO().LockTaskPresence(ctx, project.ID, ordinary.ID); err != nil {
 			return err
@@ -388,18 +386,4 @@ func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	putTaskPropertyFixture(t, database, reference.TaskID, "worker", []byte(`{"claimId":"untrusted private attribution"}`))
-	err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
-		if _, err := tx.TaskDAO().LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
-			return err
-		}
-		_, err := tx.TaskDAO().SourceTask(ctx, project.ID, reference.TaskID)
-		return err
-	})
-	var transaction *ThreadTransactionError
-	var failure *Error
-	if !errors.As(err, &transaction) || transaction.CommitAttempted || !errors.As(err, &failure) || failure.Phase != "decode thread source" || strings.Contains(err.Error(), "untrusted") || errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("malformed source was hidden or exposed: %v", err)
-	}
-	assertMigrationPoolReusable(t, database.Pool)
 }

@@ -34,9 +34,9 @@ func TestTaskHTTPStatusCommittedResponseFailureAndReadback(t *testing.T) {
 					}
 					return result, nil
 				}
-				h.Tasks.ObserveRESTFunc = func(ctx context.Context, principal model.Principal, projectID, id string, extended bool) (taskservice.TaskObservation, error) {
-					if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID || extended {
-						t.Fatalf("reconcile input: %+v %s %s extended=%v", principal, projectID, id, extended)
+				h.Tasks.ObserveFunc = func(ctx context.Context, principal model.Principal, projectID, id string) (taskservice.TaskObservation, error) {
+					if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || id != testTaskID {
+						t.Fatalf("reconcile input: %+v %s %s", principal, projectID, id)
 					}
 					return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
 				}

@@ -25,10 +25,10 @@ const serverError = async (response: Response, signal: AbortSignal, admission: T
   try {
     error = parseServerError(decodeThreadError(source));
   } catch (cause) {
-    throw new ApiError('protocol', response.status, 'protocol', null, undefined, cause);
+    throw new ApiError('protocol', response.status, 'protocol', null, cause);
   }
   admission.assertCurrent();
-  throw new ApiError('server', response.status, error.code, error.requestId, error.graphLimit);
+  throw new ApiError('server', response.status, error.code, error.requestId);
 };
 const resource = (scope: ThreadScope): string => {
   assertThreadScope(scope);

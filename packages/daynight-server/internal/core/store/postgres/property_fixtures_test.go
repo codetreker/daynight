@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"testing"
 
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
@@ -47,8 +46,7 @@ func putTaskPropertyFixture(t *testing.T, database *Store, taskID, name string, 
 	}
 }
 
-// Historical assertions normalize only the schema they own; runtime readers
-// accept neither a legacy column nor an explicit null execution property.
+// Migration assertions normalize only the historical schema they own.
 func decodeHistoricalPropertiesFixture(data []byte) (model.TaskProperties, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {

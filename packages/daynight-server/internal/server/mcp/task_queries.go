@@ -125,14 +125,6 @@ func registerTaskListTool(entry *Entry, tool *sdk.Tool, handler ToolHandler) err
 }
 
 func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService) (ToolResult, error) {
-	budget := 128 << 20
-	if in.View == "" || in.View == "summary" {
-		budget = 16 << 10
-	}
-	return listToolWithBudget(ctx, actor, in, tasks, budget)
-}
-
-func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService, budget int) (ToolResult, error) {
 	if in.View == "" {
 		in.View = "summary"
 	}
@@ -140,9 +132,7 @@ func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, t
 		in.Limit = 50
 	}
 	data := listData{Items: make([]json.RawMessage, 0, in.Limit), Projection: in.View}
-	totalItemBytes := 0
 	var itemErr error
-	var failure ToolResult
 	err := tasks.MCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View}, func(value store.TaskPriorityItem, cursor string, more bool) bool {
 		task := value.Task
 		var item any
@@ -159,34 +149,18 @@ func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, t
 			itemErr = err
 			return false
 		}
-		candidate := listData{Items: []json.RawMessage{}, Projection: in.View}
-		if more {
-			candidate.NextCursor = &cursor
-		}
-		base, err := json.Marshal(envelope{Data: candidate, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-		if err != nil {
-			itemErr = err
-			return false
-		}
-		n := len(data.Items) + 1
-		size := len(base) + totalItemBytes + len(encodedItem) + n - 1
-		if size > budget {
-			if len(data.Items) == 0 {
-				failure.Refs = map[string]any{"projectId": in.ProjectID, "taskId": task.ID, "readWith": "task_show", "view": "full"}
-				itemErr = &model.Fault{Code: "payload_too_large", Message: "The first task exceeds the output budget; read it with task_show view full."}
-			}
-			return false
-		}
-		totalItemBytes += len(encodedItem)
 		data.Items = append(data.Items, encodedItem)
-		data.NextCursor = candidate.NextCursor
+		data.NextCursor = nil
+		if more {
+			data.NextCursor = &cursor
+		}
 		return true
 	})
 	if err != nil {
 		return ToolResult{}, err
 	}
 	if itemErr != nil {
-		return failure, itemErr
+		return ToolResult{}, itemErr
 	}
 	return ToolResult{Data: data}, nil
 }

@@ -145,9 +145,6 @@ func ScanTask(row pgx.Row, trailing ...any) (model.Task, error) {
 	if err != nil {
 		return model.Task{}, err
 	}
-	if !task.Status.Valid() {
-		return model.Task{}, fmt.Errorf("stored task status is invalid")
-	}
 	task.Properties = model.TaskProperties{}
 	task.CreatedAt = task.CreatedAt.UTC()
 	task.UpdatedAt = task.UpdatedAt.UTC()

@@ -360,7 +360,7 @@ export const parseTaskGraph = (value: unknown, projectId: string, taskId: string
   const data = record(value);
   const parsed = { observedAt: timestamp(data.observedAt), project: parseProject(data.project, projectId), summary: summary(data.summary), tasks: array(data.tasks, graphTask) };
   const byId = new Map(parsed.tasks.map((task) => [task.id, task]));
-  if (parsed.tasks.length > 1000 || byId.size !== parsed.tasks.length || parsed.tasks.reduce((sum, task) => sum + task.dependsOn.length, 0) > 5000) return malformed();
+  if (byId.size !== parsed.tasks.length) return malformed();
   const members = graphChainMembers(byId, taskId);
   const selected = new Set(members);
   for (const member of members) {
@@ -383,17 +383,6 @@ export const parseTaskGraph = (value: unknown, projectId: string, taskId: string
     }
   }
   for (const key of Object.keys(expected) as (keyof TaskGraphSummary)[]) if (expected[key] !== parsed.summary[key]) return malformed();
-  const visited = new Set<string>();
-  const active = new Set<string>();
-  const visit = (taskId: string): void => {
-    if (active.has(taskId)) return malformed();
-    if (visited.has(taskId)) return;
-    active.add(taskId);
-    for (const dependency of byId.get(taskId)!.dependsOn) if (byId.has(dependency)) visit(dependency);
-    active.delete(taskId);
-    visited.add(taskId);
-  };
-  for (const task of parsed.tasks) visit(task.id);
   return parsed;
 };
 
@@ -408,7 +397,6 @@ export const parseServerError = (value: unknown): ServerError => {
     const raw = record(data.details);
     if (raw.writeOutcome !== undefined) { fields(raw, ["writeOutcome"]); if (raw.writeOutcome !== "not_committed") return malformed(); }
     if (code === "invalid_search_expression") fields(raw, ["reason", "position", "length"]);
-    if (code === "search_context_limit_exceeded") fields(raw, ["nodeCount", "edgeCount", "maxNodes", "maxEdges"]);
     details = {
       ...(raw.writeOutcome === undefined ? {} : { writeOutcome: "not_committed" as const }),
       ...(raw.reason === undefined ? {} : { reason: text(raw.reason, true) }),
@@ -417,15 +405,9 @@ export const parseServerError = (value: unknown): ServerError => {
       ...(raw.taskIds === undefined ? {} : { taskIds: ids(raw.taskIds) }),
       ...(raw.encodedBytes === undefined ? {} : { encodedBytes: count(raw.encodedBytes) }),
       ...(raw.maxEncodedBytes === undefined ? {} : { maxEncodedBytes: count(raw.maxEncodedBytes) }),
-      ...(raw.nodeCount === undefined ? {} : { nodeCount: count(raw.nodeCount) }),
-      ...(raw.edgeCount === undefined ? {} : { edgeCount: count(raw.edgeCount) }),
-      ...(raw.maxNodes === undefined ? {} : { maxNodes: count(raw.maxNodes) }),
-      ...(raw.maxEdges === undefined ? {} : { maxEdges: count(raw.maxEdges) }),
     };
   }
   if (code === "invalid_search_expression" && (details?.reason === undefined || !["empty_phrase", "empty_query", "expected_operand", "field_group_not_supported", "invalid_escape", "missing_field_value", "nesting_too_deep", "query_too_large", "too_many_terms", "unclosed_group", "unclosed_quote", "unexpected_closing_group", "unexpected_token", "unknown_field"].includes(details.reason) || details.position === undefined || details.position < 1 || details.length === undefined)) return malformed();
-  if (code === "search_context_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 20000 || details.maxEdges !== 100000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
-  if (code === "graph_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 1000 || details.maxEdges !== 5000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
   if (code === "steps_limit_exceeded" && (details?.encodedBytes === undefined || details.maxEncodedBytes !== 67_108_864 || details.encodedBytes <= details.maxEncodedBytes)) return malformed();
   return { code, message, requestId, ...(details === undefined ? {} : { details }) };
 };

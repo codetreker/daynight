@@ -5,8 +5,8 @@ const uuid = (value: unknown): string => {
   if (typeof value !== "string" || canonicalId(value) !== value) throw new Error("Invalid cache lifecycle identifier.");
   return value;
 };
-const count = (value: unknown, maximum: number): number => {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > maximum) throw new Error("Invalid cache manifest count.");
+const count = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Invalid cache manifest count.");
   return value;
 };
 
@@ -31,8 +31,8 @@ export const validateProjectManifest = (value: unknown, userId: string, projectI
     })();
     if (data.unknownAncestors !== undefined && typeof data.unknownAncestors !== "boolean") throw new Error("Invalid generation history.");
     const history = { ...(ancestors === undefined ? {} : { generationAncestors: ancestors }), ...(data.unknownAncestors === undefined ? {} : { unknownAncestors: data.unknownAncestors as boolean }) };
-    const taskCount = count(data.taskCount, 1000);
-    const edgeCount = count(data.edgeCount, 5000);
+    const taskCount = count(data.taskCount);
+    const edgeCount = count(data.edgeCount);
     if (data.state === "invalidated") {
       if (data.invalidatedBy !== "access" && data.invalidatedBy !== "corrupt" && data.invalidatedBy !== "user" ||
         data.epoch !== null || data.project !== null || data.maxUpdatedAt !== null || taskCount !== 0 || edgeCount !== 0) throw new Error("Invalid invalidated cache baseline.");

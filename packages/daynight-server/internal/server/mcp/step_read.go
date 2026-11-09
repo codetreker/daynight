@@ -9,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -18,7 +16,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
-	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -27,9 +24,9 @@ import (
 var stepReadToolsJSON []byte
 
 type stepReadOperations interface {
-	ListPageAdmitted(context.Context, model.Principal, string, string, int64, int, *int64, bool, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error)) (taskservice.StepsPage, error)
+	ListPage(context.Context, model.Principal, string, string, int64, int, *int64, bool) (taskservice.StepsPage, error)
 	GetSummary(context.Context, model.Principal, string, string, string) (taskservice.StepSummary, error)
-	GetBounded(context.Context, model.Principal, string, string, string) (taskservice.StepDocument, error)
+	Get(context.Context, model.Principal, string, string, string) (taskservice.StepDocument, error)
 }
 type stepReadInput struct {
 	ProjectID string  `json:"projectId"`
@@ -108,7 +105,7 @@ func decodeStepCursor(raw string, expected stepCursor) (stepCursor, int64, error
 	return c, version, nil
 }
 
-// RegisterStepReadTools exposes bounded, version-fenced Step reads.
+// RegisterStepReadTools exposes version-fenced Step reads.
 func RegisterStepReadTools(e *Entry, steps stepReadOperations) error {
 	var tools []*sdk.Tool
 	if err := json.Unmarshal(stepReadToolsJSON, &tools); err != nil {
@@ -143,23 +140,6 @@ func RegisterStepReadTools(e *Entry, steps stepReadOperations) error {
 	return nil
 }
 
-// stepResponseSize measures an individual SDK JSON-RPC success response. The
-// SDK disables HTML escaping for single-response IDs, whereas batch responses
-// re-encode IDs with the default escaping.
-func stepResponseSize(actor RequestActor, data any) (int64, error) {
-	if actor.rpcResponseID == nil {
-		return 0, &model.Fault{Code: "resource_limit_exceeded", Message: "Step response could not be bounded."}
-	}
-	n, err := taskprotocol.EncodeMCPDataResponse(io.Discard, data, actor.RequestID, "", actor.rpcResponseID, actor.rpcModern, math.MaxInt64)
-	if err != nil {
-		return 0, err
-	}
-	if id, ok := actor.rpcResponseID.(string); ok && !actor.rpcBatch {
-		n -= int64(5 * (strings.Count(id, "<") + strings.Count(id, ">") + strings.Count(id, "&")))
-	}
-	return n, nil
-}
-
 func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations, in stepReadInput) (ToolResult, error) {
 	project, err := model.CanonicalID(in.ProjectID)
 	if err != nil {
@@ -188,10 +168,7 @@ func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations
 		after = parsed.Position
 		version = &v
 	}
-	budget := 16 << 10
-	if view == "full" {
-		budget = 4 << 20
-	}
+
 	out := struct {
 		ProjectID  string  `json:"projectId"`
 		TaskID     string  `json:"taskId"`
@@ -200,69 +177,19 @@ func listSteps(ctx context.Context, actor RequestActor, steps stepReadOperations
 		Items      []any   `json:"items"`
 		NextCursor *string `json:"nextCursor"`
 	}{project, task, "", view, make([]any, 0, limit), nil}
-	// Compute the SDK wrapper once; the structured content uses the same JSON
-	// settings as the final handler, while the RPC ID can itself be large.
-	baseEnvelope, err := json.Marshal(envelope{Data: struct{}{}, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-	if err != nil {
-		return ToolResult{}, err
-	}
-	baseResponse, err := stepResponseSize(actor, struct{}{})
-	if err != nil {
-		return ToolResult{}, err
-	}
-	wrapperBytes := baseResponse - int64(len(baseEnvelope))
-	itemsBytes := 0
-	page, err := steps.ListPageAdmitted(ctx, actor.Principal, project, task, after, limit, version, view == "summary", func(header model.TaskHeader, item store.TaskStepProjection, more bool) (bool, error) {
-		cursor.Version = Decimal(header.Version)
-		out.Version = cursor.Version
-		previousCursor := out.NextCursor
-		projected := projectStep(item, view == "summary")
-		if more {
-			cursor.Position = item.Step.Position
-			next := encodeStepCursor(cursor)
-			out.NextCursor = &next
-		} else {
-			out.NextCursor = nil
-		}
-		// Measure the same envelope and individual item encoding used by the
-		// final output without re-encoding the entire growing page each time.
-		empty := out
-		empty.Items = []any{}
-		encoded, err := json.Marshal(envelope{Data: empty, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-		if err != nil {
-			return false, err
-		}
-		encodedItem, err := json.Marshal(projected)
-		if err != nil {
-			return false, err
-		}
-		candidateBytes := itemsBytes + len(encodedItem)
-		if len(out.Items) > 0 {
-			candidateBytes++
-		}
-		if item.Oversized || wrapperBytes+int64(len(encoded)+candidateBytes) > int64(budget) {
-			out.NextCursor = previousCursor
-			if len(out.Items) == 0 {
-				return false, &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the page budget."}
-			}
-			return false, nil
-		}
-		itemsBytes = candidateBytes
-		out.Items = append(out.Items, projected)
-		return true, nil
-	})
+	page, err := steps.ListPage(ctx, actor.Principal, project, task, after, limit, version, view == "summary")
 	if err != nil {
 		return ToolResult{}, err
 	}
 	out.Version = Decimal(page.Header.Version)
-	if len(out.Items) == 0 {
-		encoded, err := json.Marshal(envelope{Data: out, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-		if err != nil {
-			return ToolResult{}, err
-		}
-		if wrapperBytes+int64(len(encoded)) > int64(budget) {
-			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the page budget."}
-		}
+	for _, item := range page.Items {
+		out.Items = append(out.Items, projectStep(item, view == "summary"))
+	}
+	if page.HasMore {
+		cursor.Version = out.Version
+		cursor.Position = page.Items[len(page.Items)-1].Step.Position
+		next := encodeStepCursor(cursor)
+		out.NextCursor = &next
 	}
 	return ToolResult{Data: out}, nil
 }
@@ -272,7 +199,7 @@ func showStep(ctx context.Context, actor RequestActor, steps stepReadOperations,
 	var err error
 	if in.View == "full" {
 		var doc taskservice.StepDocument
-		doc, err = steps.GetBounded(ctx, actor.Principal, in.ProjectID, in.TaskID, in.StepID)
+		doc, err = steps.Get(ctx, actor.Principal, in.ProjectID, in.TaskID, in.StepID)
 		if err == nil {
 			data = map[string]any{"projectId": doc.Resource.ProjectID, "taskId": doc.Resource.TaskID, "version": Decimal(doc.Resource.Version), "projection": "full", "step": doc.Resource.Step}
 		}
@@ -289,15 +216,6 @@ func showStep(ctx context.Context, actor RequestActor, steps stepReadOperations,
 			refs["version"] = Decimal(absence.Version)
 		}
 		return ToolResult{Refs: refs}, err
-	}
-	if in.View == "full" {
-		size, encodeErr := stepResponseSize(actor, data)
-		if encodeErr != nil {
-			return ToolResult{}, encodeErr
-		}
-		if size > 512<<10 {
-			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the single resource budget."}
-		}
 	}
 	return ToolResult{Data: data}, nil
 }

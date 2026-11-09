@@ -2,9 +2,8 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -34,63 +33,21 @@ func TestSessionReaderPreservesQueryAndRowFailures(t *testing.T) {
 	}
 }
 
-func readerStateFields() [14]*string {
-	var fields [14]*string
-	for _, i := range []int{0, 1, 2, 3, 4, 5, 8, 9, 10, 11} {
-		value := fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)
-		fields[i] = &value
-	}
-	for i, value := range map[int]string{6: "1", 7: "0", 12: "web", 13: "active"} {
-		fields[i] = &value
-	}
-	return fields
-}
-
-func TestSessionReaderMetadataRequiresAllSelectedFields(t *testing.T) {
-	for i := range 14 {
-		t.Run(fmt.Sprint(i), func(t *testing.T) {
-			fields := readerStateFields()
-			fields[i] = nil
-			if err := decodeTaskSessionState(fields, &store.TaskSessionStateSource{}); err == nil {
-				t.Fatalf("missing field %d accepted", i)
-			}
-		})
-	}
-	for _, i := range []int{0, 1, 2, 3, 4, 5, 8, 9, 10, 11} {
-		t.Run("canonical "+fmt.Sprint(i), func(t *testing.T) {
-			fields := readerStateFields()
-			value := "00000000-0000-4000-8000-00000000000A"
-			fields[i] = &value
-			if err := decodeTaskSessionState(fields, &store.TaskSessionStateSource{}); err == nil {
-				t.Fatalf("noncanonical field %d accepted", i)
-			}
-		})
-	}
-	for _, test := range []struct {
-		index int
-		value string
-	}{{6, "-1"}, {6, "1.0"}, {7, "+1"}, {7, "00"}, {12, "invalid"}, {13, "invalid"}} {
-		t.Run(fmt.Sprintf("%d %s", test.index, test.value), func(t *testing.T) {
-			fields := readerStateFields()
-			fields[test.index] = &test.value
-			if err := decodeTaskSessionState(fields, &store.TaskSessionStateSource{}); err == nil {
-				t.Fatalf("invalid field %d accepted", test.index)
-			}
-		})
-	}
-	fields := readerStateFields()
-	mode, lifecycle := "herdr", "archived"
-	fields[12], fields[13] = &mode, &lifecycle
+func TestSessionReaderMetadataDecodesSelectedFields(t *testing.T) {
 	var state store.TaskSessionStateSource
-	if err := decodeTaskSessionState(fields, &state); err != nil || state.Identity.AgentControlMode != mode || state.Lifecycle != lifecycle {
-		t.Fatalf("supported durable metadata refused: %#v %v", state, err)
+	raw := []byte(`{"sessionId":"session","claimId":"claim","executionGeneration":"1","connectionEpoch":"0","identity":{"projectId":"project","taskId":"task","workerId":"worker","worktreeId":"worktree","agentControlMode":"herdr"},"lifecycle":"archived"}`)
+	if err := decodeTaskSessionState(raw, &state); err != nil || state.Fence.SessionID != "session" || state.Fence.ExecutionGeneration != "1" || state.Identity.TaskID != "task" || state.Identity.AgentControlMode != "herdr" || state.Lifecycle != "archived" {
+		t.Fatalf("selected metadata changed: %#v %v", state, err)
+	}
+	var invalid *json.UnmarshalTypeError
+	if err := decodeTaskSessionState([]byte(`{"executionGeneration":1}`), &state); !errors.As(err, &invalid) {
+		t.Fatalf("typed decode cause lost: %v", err)
 	}
 }
 
-func TestSessionReaderWorkerRejectsUnboundedAndInvalidValues(t *testing.T) {
-	for _, raw := range []string{strings.Repeat(" ", 8193), `{"claimId":"invalid"}`, `null`} {
-		if _, err := taskSessionWorker(raw); err == nil {
-			t.Fatalf("invalid worker accepted: %q", raw[:min(len(raw), 60)])
-		}
+func TestSessionReaderWorkerPreservesJSONDecodeFailure(t *testing.T) {
+	var invalid *json.UnmarshalTypeError
+	if _, err := taskSessionWorker(`{"claimId":1}`); !errors.As(err, &invalid) {
+		t.Fatalf("typed decode cause lost: %v", err)
 	}
 }

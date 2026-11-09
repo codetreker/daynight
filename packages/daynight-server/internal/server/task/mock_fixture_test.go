@@ -98,7 +98,7 @@ type taskServiceMock struct {
 	DeleteFunc         func(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetStatusFunc      func(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	GetFunc            func(context.Context, model.Principal, string, string) (model.Task, error)
-	ObserveRESTFunc    func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error)
+	ObserveFunc        func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error)
 	ListFunc           func(context.Context, model.Principal, string, taskservice.TaskListRequest) (taskservice.TaskPage, error)
 	GraphFunc          func(context.Context, model.Principal, string, string) (model.TaskGraph, error)
 	AssigneesFunc      func(context.Context, model.Principal, string, taskservice.TaskAssigneesRequest) (model.TaskAssignees, error)
@@ -150,12 +150,12 @@ func (mock *taskServiceMock) Get(arg0 context.Context, arg1 model.Principal, arg
 	return mock.GetFunc(arg0, arg1, arg2, arg3)
 }
 
-func (mock *taskServiceMock) ObserveREST(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 bool) (taskservice.TaskObservation, error) {
-	if err := mock.check("ObserveREST", mock.ObserveRESTFunc != nil); err != nil {
+func (mock *taskServiceMock) Observe(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string) (taskservice.TaskObservation, error) {
+	if err := mock.check("Observe", mock.ObserveFunc != nil); err != nil {
 		var result taskservice.TaskObservation
 		return result, err
 	}
-	return mock.ObserveRESTFunc(arg0, arg1, arg2, arg3, arg4)
+	return mock.ObserveFunc(arg0, arg1, arg2, arg3)
 }
 
 func (mock *taskServiceMock) List(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 taskservice.TaskListRequest) (taskservice.TaskPage, error) {
@@ -351,8 +351,8 @@ func newTaskServiceMock(t *testing.T) *taskServiceMock {
 		if mock.GetFunc != nil {
 			methods = append(methods, "Get")
 		}
-		if mock.ObserveRESTFunc != nil {
-			methods = append(methods, "ObserveREST")
+		if mock.ObserveFunc != nil {
+			methods = append(methods, "Observe")
 		}
 		if mock.ListFunc != nil {
 			methods = append(methods, "List")

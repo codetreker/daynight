@@ -12,7 +12,6 @@ import (
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -224,23 +223,5 @@ func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
 	}
 	if actual = snapshotTask(t, database, project.ID, task.ID); len(actual.Properties) != 0 {
 		t.Fatalf("property deletion left a default: %#v", actual.Properties)
-	}
-}
-
-func TestPropertyRowsInvalidStoredValuePreservesValidationError(t *testing.T) {
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 2, model.TaskTodo)
-	for _, value := range []struct{ name, raw string }{{"unknown", "[]"}, {"pullRequests", "null"}, {"worker", "{}"}} {
-		mustQueryExec(t, database, `DELETE FROM task_properties WHERE task_id=$1`, task.ID)
-		mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)`, task.ID, value.name, value.raw)
-		err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-			_, err := snapshot.TaskDAO().Task(context.Background(), project.ID, task.ID)
-			return err
-		})
-		var validation *taskproperties.ValidationError
-		if !errors.As(err, &validation) {
-			t.Fatalf("invalid stored property lost validation type: %v", err)
-		}
 	}
 }

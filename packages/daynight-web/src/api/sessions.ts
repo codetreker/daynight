@@ -9,7 +9,7 @@ import { assertSessionFence, parseSessionCommand, type SessionCommand, type Sess
 export type SessionChannel = { close(): void };
 /** An authenticated independent-current read rejected continued access, not an operation fence. */
 export class IndependentSessionReadDenied extends ApiError {
-  constructor(error: ApiError) { super('server', error.status, error.code, error.requestId, undefined, error); this.name = 'IndependentSessionReadDenied'; }
+  constructor(error: ApiError) { super('server', error.status, error.code, error.requestId, error); this.name = 'IndependentSessionReadDenied'; }
 }
 export type BotSessionBinding = {
   readonly ownerUserId: string;

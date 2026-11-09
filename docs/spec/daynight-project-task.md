@@ -439,14 +439,14 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 只依赖本链的外部任务不进入结果，补充的外部节点不继续展开。原始依赖、外部子集、
 阻塞及 ready 保持服务事实，外部节点的依赖 ID 可以指向结果之外；不能裁剪为诱导边集合。
 同一链的任意成员得到同一节点集合。无参数调用属于语法错误，不读取全项目图。
-查询范围、返回集合的节点及依赖引用上限由
+查询范围、返回集合和依赖引用语义由
 [服务端需求](daynight-server.md#任务链图查询)拥有。
 
 普通 graph 输出呈现所选节点的四种状态、依赖、阻塞和汇总。summary 统计本链与补充的
 外部节点；文本汇总包含四态，JSON summary 为 total、todo、inProgress、done、cancelled、ready、blocked，满足
 `total = todo + inProgress + done + cancelled` 与 `todo = ready + blocked`。ready只来自全部前置为done或cancelled的todo；
-列表、show、graph 均拒绝旧状态，状态写入只通过 set-status。标题预览、快照边界、
-节点和边上限均继承服务要求。完整任务和图节点严格读取必填布尔 allowAgents、必填nullable requiredPlatform 与必填nullable assignedTo；后者只接受null或规范用户UUID。缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any；负责人显示 Assigned to: UUID 或 unassigned，不查询姓名。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`、`cancelledAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。超限时报告数量及上限，不返回部分图。
+列表、show、graph 均拒绝旧状态，状态写入只通过 set-status。标题预览和快照边界继承服务合同。
+图读取不复查保存集合的节点或边容量，现有客户端传输字节和取消期限继续适用。完整任务和图节点严格读取必填布尔 allowAgents、必填nullable requiredPlatform 与必填nullable assignedTo；后者只接受null或规范用户UUID。缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any；负责人显示 Assigned to: UUID 或 unassigned，不查询姓名。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`、`cancelledAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。自然读取、解码或传输预算失败时不返回部分图。
 
 附件 `put/list/read/remove` 继承相同的 project 选择，逐文件处理完整相对路径。
 目标 basename、MIME 推导、目录拒绝与原始内容输出的完整要求由

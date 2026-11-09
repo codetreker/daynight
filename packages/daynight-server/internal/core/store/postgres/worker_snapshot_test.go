@@ -429,17 +429,7 @@ func TestWorkerSnapshotErrorsRollbackAndPreserveCauses(t *testing.T) {
 	if err := writeWorkerForTest(database, canceled, func(WorkerScope) error { t.Error("canceled transaction entered"); return nil }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled transaction: %v", err)
 	}
-	project := queryProject(t, database, 10)
-	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, worker.UserID)
-	reference := setSnapshotTaskClaim(t, database, project.ID, 20, worker.UserID, worker.WorkerID)
-	putTaskPropertyFixture(t, database, reference.TaskID, "worker", []byte(`not JSON`))
-	err = writeWorkerForTest(database, ctx, func(tx WorkerScope) error {
-		_, err := tx.WorkerDAO().ReportTaskSnapshots(ctx, worker.UserID, model.WorkerTaskInventory{Claims: []model.WorkerTaskReference{reference}})
-		return err
-	})
-	if err == nil || errors.Unwrap(err) == nil {
-		t.Fatalf("invalid opaque task properties were hidden: %v", err)
-	}
+
 }
 
 func TestWorkerSnapshotReadCancellationAndCorruptStorageStayVisible(t *testing.T) {

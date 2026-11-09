@@ -9,7 +9,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
@@ -42,7 +41,7 @@ func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
 			request.Since = &since
 			wantLower = pointer(since.Add(-10 * time.Second))
 		}
-		sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 1}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+		sync := f.sync(epoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
 			if !model.EqualOptional(lower, wantLower) {
 				t.Fatalf("property delta lower=%v want=%v", lower, wantLower)
 			}
@@ -64,16 +63,13 @@ func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
 	}
 }
 
-func TestTaskSyncWindowOnlyValidatesReturnedProperties(t *testing.T) {
+func TestTaskSyncWindowPreservesReturnedRowsAndDecodeErrors(t *testing.T) {
 	f := newTaskReadFixture(t)
 	epoch := taskReadID(90)
 	recent := taskReadView(taskReadID(2), "Inside delta", 1, f.observed)
-	_, invalid := taskproperties.ParseInput("unknown-property", "[]")
-	if invalid == nil {
-		t.Fatal("corrupt property fixture was accepted")
-	}
+	invalid := errors.New("decode task property")
 	since := recent.UpdatedAt
-	sync := f.sync(epoch, store.TaskGraphSize{NodeCount: 2}, func(lower *time.Time) ([]model.TaskViewRecord, error) {
+	sync := f.sync(epoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
 		if lower == nil {
 			return nil, invalid
 		}
@@ -88,8 +84,7 @@ func TestTaskSyncWindowOnlyValidatesReturnedProperties(t *testing.T) {
 		t.Fatalf("selected properties changed: %#v %v", delta, err)
 	}
 	snapshot, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
-	fault := requireFault(t, err, "invalid_input")
-	if !errors.Is(fault, invalid) || !reflect.DeepEqual(snapshot, model.TaskSync{}) {
+	if !errors.Is(err, invalid) || !reflect.DeepEqual(snapshot, model.TaskSync{}) {
 		t.Fatalf("corrupt snapshot leaked partial rows or cause: %#v %v", snapshot, err)
 	}
 }

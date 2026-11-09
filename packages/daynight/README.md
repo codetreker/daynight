@@ -1228,8 +1228,9 @@ the complete definition catalog. Human output prints identifiers, exact version
 and property JSON sorted by name; successful writes return the current property
 resource, including unchanged versions for no-ops. Terminal control characters
 remain safely escaped, and missing keys are not filled. Invalid or read-only
-values and invalid stored properties remain service 400 invalid_input failures;
-database/internal faults remain 500 internal_error.
+write values remain service 400 invalid_input failures. Stored properties are
+read as canonical values without repeated normalization or capacity checks;
+natural decoding, database and internal faults retain their causes.
 
 The version/valueText JSON envelope shares the server's 1 MiB request limit.
 Extra escaping counts toward that limit, so it is not a property-content
@@ -1275,8 +1276,10 @@ timestamp strings. They preserve array order and time spelling without sorting,
 rounding or filling missing values. Malformed or mismatched resources, duplicate
 IDs and read failures remain errors rather than empty collections. Reads retain
 the shared request/operation deadlines, cancellation and response-byte budgets.
-The endpoint body cap is 64 MiB, inclusive, and is combined with the configured
-response budget by taking the smaller bound. Stricter configured limits still
+The client Steps body safety cap is 64 MiB, inclusive, and is combined with the
+configured response budget by taking the smaller bound. Server reads use pure
+field projection and ordinary encoding without repeating write-candidate
+capacity checks. Stricter configured limits still
 win, total-operation bytes remain charged, and shared defaults do not change;
 no partial resource reaches stdout before full validation and rendering. An
 output failure can still leave partial stdout and is reported as a failure.

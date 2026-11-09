@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -416,20 +415,13 @@ func synchronizeFixture(t *testing.T, f fixture, v sp.Snapshot) {
 	f.SelectTouchWrite(t)
 }
 
-func TestSessionReadsRejectInvalidStoredProperties(t *testing.T) {
-	for _, input := range []struct{ name, value string }{{"worker", "null"}, {"pullRequests", "["}, {"pullRequests", "null"}, {"unknown", "{}"}} {
-		t.Run(input.name+"/"+input.value, func(t *testing.T) {
-			f := setup(t)
-			_, expected := taskproperties.Normalize(model.TaskProperties{input.name: json.RawMessage(input.value)})
-			if expected == nil {
-				t.Fatal("invalid property fixture accepted")
-			}
-			f.dao.LockTaskFn = func(context.Context, string, string) (store.SessionTask, error) { return store.SessionTask{}, expected }
-			f.dao.Expect("LockTask", 1)
-			_, err := f.s.Current(f.dao.ContextPhase(context.Background(), map[string]int{"LockTask": 1}), f.p, f.project, f.task)
-			if !errors.Is(err, expected) {
-				t.Fatalf("DAO property failure lost cause: %v", err)
-			}
-		})
+func TestSessionReadsPreserveTaskReadFailure(t *testing.T) {
+	f := setup(t)
+	expected := errors.New("task read failed")
+	f.dao.LockTaskFn = func(context.Context, string, string) (store.SessionTask, error) { return store.SessionTask{}, expected }
+	f.dao.Expect("LockTask", 1)
+	_, err := f.s.Current(f.dao.ContextPhase(context.Background(), map[string]int{"LockTask": 1}), f.p, f.project, f.task)
+	if !errors.Is(err, expected) {
+		t.Fatalf("DAO failure lost cause: %v", err)
 	}
 }

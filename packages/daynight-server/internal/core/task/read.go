@@ -77,8 +77,8 @@ func SelectList(projectID, principalUserID string, request ListRequest) (ListSel
 
 // ReadFault classifies a task read refusal without hiding unrelated failures.
 func ReadFault(err error) *model.Fault {
-	if fault := PropertyFault(err); fault != nil {
-		return fault
+	if errors.Is(err, model.ErrTaskDeleted) {
+		return &model.Fault{Code: "task_deleted", Message: "Task was deleted.", Cause: err}
 	}
 	if errors.Is(err, model.ErrNotFound) {
 		return NotFound(err)
@@ -102,9 +102,6 @@ func ReadTask(ctx context.Context, reader ReadDAO, projectID, taskID string) (mo
 
 func ReadList(ctx context.Context, reader ReadDAO, projectID string, selection ListSelection) (store.TaskPage, *model.Fault, error) {
 	result, err := reader.Tasks(ctx, projectID, selection.Query)
-	if fault := PropertyFault(err); fault != nil {
-		return store.TaskPage{}, fault, nil
-	}
 	return result, nil, err
 }
 

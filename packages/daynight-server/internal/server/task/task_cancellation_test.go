@@ -32,7 +32,7 @@ func TestTaskHTTPCancellationProjectsTerminalTimingAndReadableMaterials(t *testi
 		}
 		return result, nil
 	}
-	h.Tasks.ObserveRESTFunc = func(context.Context, model.Principal, string, string, bool) (taskservice.TaskObservation, error) {
+	h.Tasks.ObserveFunc = func(context.Context, model.Principal, string, string) (taskservice.TaskObservation, error) {
 		return taskservice.TaskObservation{Task: result, Epoch: testEpoch}, nil
 	}
 	h.Tasks.GraphFunc = func(context.Context, model.Principal, string, string) (model.TaskGraph, error) {

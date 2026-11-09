@@ -231,7 +231,7 @@ func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
 		case "/api/v1/projects/" + f.project.ID + "/members":
 			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "members", nil, nil)
 		case taskCollection(f.project.ID):
-			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 1}, BoundedText: true, LegacyProjection: true}}, []store.TaskPage{{Items: []model.Task{f.target}}})
+			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{f.target}}})
 		case path:
 			f.expectRead(f.target)
 		case graph:

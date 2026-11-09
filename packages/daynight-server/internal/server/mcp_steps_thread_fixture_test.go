@@ -84,6 +84,12 @@ func (r *mcpStepsReader) TaskStepPage(ctx context.Context, taskID string, after 
 	return slices.Clone(p.Rows), nil
 }
 
+func (r *mcpStepsReader) TaskStep(ctx context.Context, taskID, stepID string) (model.TaskStep, error) {
+	r.p.plan.Called("step")
+	mcpStepsCheck(r.p.t, ctx.Err() == nil && taskID == r.p.Header.ID && stepID == r.p.SummaryID, "Step read scope: %s/%s", taskID, stepID)
+	return r.p.Summary.Step, r.p.SummaryError
+}
+
 func (r *mcpStepsReader) TaskStepSummary(ctx context.Context, taskID, stepID string) (store.TaskStepProjection, error) {
 	r.p.plan.Called("summary")
 	mcpStepsCheck(r.p.t, ctx.Err() == nil && taskID == r.p.Header.ID && stepID == r.p.SummaryID, "Step summary scope: %s/%s", taskID, stepID)

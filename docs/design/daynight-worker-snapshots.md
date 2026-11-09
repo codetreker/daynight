@@ -32,7 +32,7 @@ flowchart LR
 
 准入通过后，DAO 按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `ProjectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，计算当前 owner Team role 与 direct grant role 的最大值；只有继承访问也具有相同可见资格。Worker 不另行解释授权来源，不改写任何 grant。
 
-按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码；core 使用 Task 的 claim 规则匹配引用。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
+按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中普通解码；core 使用 Task 的 claim 规则匹配引用。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性写入 codec 负责完整 claim 格式及 Agent/控制模式；读取不重复结构或容量校验，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；自然属性解码及数据库故障保留原错误链并使请求失败。
 
 UPSERT 同时写锁后采集的 last_seen_at、telemetry、task_snapshot，目标原有时间位于未来也使用本次成功时间。已知清单完整替换任务快照；null 清单根据旧状态保留 observed/stale 的任务与原时刻，并变为 stale，旧 unavailable 保持 unavailable。在 UPSERT 后、提交前计量最终合并的 Worker，包括 null 清单保留的旧任务；超过完整资源预算时拒绝并回滚。配置交换与这些写入同属事务；取消、SQL 错误或后续配置错误回滚全部结果并释放锁。事务辅助保留操作、提交与回滚错误链。
 

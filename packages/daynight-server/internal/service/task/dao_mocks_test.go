@@ -218,26 +218,24 @@ var _ store.ThreadScope = (*taskThreadScopeMock)(nil)
 
 type taskReaderMock struct {
 	taskMockBase
-	TaskFn                    func(context.Context, string, string) (model.Task, error)
-	TasksFn                   func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
-	TaskListFenceFn           func(context.Context, string) (store.TaskListFence, error)
-	TaskPriorityListFn        func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
-	TaskPresenceFn            func(context.Context, string, string) (store.TaskPresence, error)
-	TaskHeaderFn              func(context.Context, string, string) (model.TaskHeader, error)
-	TaskStepFn                func(context.Context, string, string) (model.TaskStep, error)
-	TaskStepsFn               func(context.Context, string) ([]model.TaskStep, error)
-	TaskStepPageFn            func(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error)
-	TaskStepSummaryFn         func(context.Context, string, string) (store.TaskStepProjection, error)
-	ThreadMessageFn           func(context.Context, string, string) (model.ThreadMessage, error)
-	ThreadCandidatesFn        func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
-	ThreadSidesFn             func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
-	TaskAssigneesFn           func(context.Context, string) ([]model.TaskAssigneeFact, error)
-	ResolveTaskAssigneesFn    func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
-	TaskGraphSizeFn           func(context.Context, string) (store.TaskGraphSize, error)
-	TaskGraphProjectionSizeFn func(context.Context, string, string, store.TaskGraphSelection) (store.TaskGraphSize, error)
-	TaskGraphTasksFn          func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
-	TaskCacheEpochFn          func(context.Context, string) (string, error)
-	TaskSyncTasksFn           func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskFn                 func(context.Context, string, string) (model.Task, error)
+	TasksFn                func(context.Context, string, store.TaskQuery) (store.TaskPage, error)
+	TaskListFenceFn        func(context.Context, string) (store.TaskListFence, error)
+	TaskPriorityListFn     func(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error)
+	TaskPresenceFn         func(context.Context, string, string) (store.TaskPresence, error)
+	TaskHeaderFn           func(context.Context, string, string) (model.TaskHeader, error)
+	TaskStepFn             func(context.Context, string, string) (model.TaskStep, error)
+	TaskStepsFn            func(context.Context, string) ([]model.TaskStep, error)
+	TaskStepPageFn         func(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error)
+	TaskStepSummaryFn      func(context.Context, string, string) (store.TaskStepProjection, error)
+	ThreadMessageFn        func(context.Context, string, string) (model.ThreadMessage, error)
+	ThreadCandidatesFn     func(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
+	ThreadSidesFn          func(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)
+	TaskAssigneesFn        func(context.Context, string) ([]model.TaskAssigneeFact, error)
+	ResolveTaskAssigneesFn func(context.Context, string, []string) ([]model.TaskAssigneeFact, error)
+	TaskGraphTasksFn       func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
+	TaskCacheEpochFn       func(context.Context, string) (string, error)
+	TaskSyncTasksFn        func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
 }
 
 func (mock *taskReaderMock) Task(p0 context.Context, p1 string, p2 string) (model.Task, error) {
@@ -313,16 +311,6 @@ func (mock *taskReaderMock) TaskAssignees(p0 context.Context, p1 string) ([]mode
 func (mock *taskReaderMock) ResolveTaskAssignees(p0 context.Context, p1 string, p2 []string) ([]model.TaskAssigneeFact, error) {
 	mock.need("ResolveTaskAssignees", mock.ResolveTaskAssigneesFn != nil)
 	return mock.ResolveTaskAssigneesFn(p0, p1, p2)
-}
-
-func (mock *taskReaderMock) TaskGraphSize(p0 context.Context, p1 string) (store.TaskGraphSize, error) {
-	mock.need("TaskGraphSize", mock.TaskGraphSizeFn != nil)
-	return mock.TaskGraphSizeFn(p0, p1)
-}
-
-func (mock *taskReaderMock) TaskGraphProjectionSize(p0 context.Context, p1 string, p2 string, p3 store.TaskGraphSelection) (store.TaskGraphSize, error) {
-	mock.need("TaskGraphProjectionSize", mock.TaskGraphProjectionSizeFn != nil)
-	return mock.TaskGraphProjectionSizeFn(p0, p1, p2, p3)
 }
 
 func (mock *taskReaderMock) TaskGraphTasks(p0 context.Context, p1 string, p2 string, p3 store.TaskGraphSelection, p4 int) ([]model.GraphTask, error) {

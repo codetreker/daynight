@@ -2,7 +2,7 @@
 
 ## 职责
 
-[候选限额规范](../spec/daynight-api-input-limits.md)定义单位和数值。各 core 领域拥有自己的常量和纯候选检查；`internal/core/model/taskproperty` 保留结构 `NormalizeValue`，独立准入检查每个规范化值。Worker/Bot 读取直接消费写入入口生成的规范存储数据，不重复候选结构、字段或容量检查；正常解码和输出错误仍会传播。这些领域按条数分页，不引入读取字节计量、历史兼容、扫描或迁移，也不将撤销的读取预算转为新写入配额。其他读取额度由各自当前合同拥有。Task 和 Step 共用文字策略，原有集合 codec 继续拥有 Steps 与 Thread 的编码额度。
+[候选限额规范](../spec/daynight-api-input-limits.md)定义单位和数值。各 core 领域拥有自己的常量和纯候选检查；`internal/core/model/taskproperty` 保留结构 `NormalizeValue`，独立准入检查每个规范化值。Task、属性、sync、graph、search、Step 和 Worker/Bot 读取直接消费写入入口生成的规范存储数据，不重复候选结构、字段或容量检查；正常解码和输出错误仍会传播。可分页资源按条数分页，这些领域不引入读取字节计量、历史兼容、扫描或迁移，也不将撤销的读取预算转为新写入配额。其他领域列表与共享 MCP 入口的读取额度由各自当前合同拥有。Task 和 Step 共用文字策略，原有集合 codec 继续拥有 Steps 与 Thread 的编码额度。
 
 `internal/core/inputpolicy` 以版本和稳定标识列出候选领域限额，供消费者识别规则。类型化容量失败携带字段、实际值、上限和单位，不保存输入。预算编码在首个超额字节停止时，报告已观察下界并明确标识，不能将它当作完整编码长度。结构错误及原有权限判断仍由各自所有者处理。
 

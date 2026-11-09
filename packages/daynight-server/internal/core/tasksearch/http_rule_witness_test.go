@@ -72,21 +72,13 @@ func (f *httpRuleSearchFixture) Fence(ctx context.Context, project string) (stor
 	return f.searchFixture.Fence(ctx, project)
 }
 
-func (f *httpRuleSearchFixture) MatchesEach(ctx context.Context, project string, input store.TaskSearchQuery, accept func(int64, store.TaskSearchRow) (bool, error)) (int64, bool, error) {
+func (f *httpRuleSearchFixture) Matches(ctx context.Context, project string, input store.TaskSearchQuery) (store.TaskSearchPage, error) {
 	f.called(ctx, project, "matches")
 	if input.Expression == nil || input.Expression.Kind != searchmodel.Leaf || input.Expression.Atom != (searchmodel.Atom{Term: "cache"}) || input.Expression.Negated ||
 		input.AssignedTo != (model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}) || input.Status != nil || input.Ready != nil || input.AllowAgents != nil || input.CompatiblePlatform != nil || input.Limit != f.limit || !reflect.DeepEqual(input.After, f.after) {
 		f.t.Fatalf("search changed its expression, filters, limit or continuation: %#v", input)
 	}
-	return f.searchFixture.MatchesEach(ctx, project, input, accept)
-}
-
-func (f *httpRuleSearchFixture) ContextSize(ctx context.Context, project string, ids []string) (store.TaskSearchSize, error) {
-	f.called(ctx, project, "size")
-	if !slices.Equal(ids, []string{f.rows.Items[0].ID}) {
-		f.t.Fatalf("context counted a different matching task: %v", ids)
-	}
-	return f.searchFixture.ContextSize(ctx, project, ids)
+	return f.searchFixture.Matches(ctx, project, input)
 }
 
 func (f *httpRuleSearchFixture) ContextGraph(ctx context.Context, project string, ids []string) (store.TaskSearchGraph, error) {
@@ -97,11 +89,6 @@ func (f *httpRuleSearchFixture) ContextGraph(ctx context.Context, project string
 	return f.searchFixture.ContextGraph(ctx, project, ids)
 }
 
-func (f *httpRuleSearchFixture) ContextRepresentative(ctx context.Context, project, id string) (string, bool, error) {
-	f.called(ctx, project, "representative")
-	return f.searchFixture.ContextRepresentative(ctx, project, id)
-}
-
 func (f *httpRuleSearchFixture) Titles(ctx context.Context, project string, ids []string) (map[string]string, error) {
 	f.called(ctx, project, "titles")
 	if !slices.Equal(ids, []string{root}) {
@@ -110,60 +97,33 @@ func (f *httpRuleSearchFixture) Titles(ctx context.Context, project string, ids 
 	return f.searchFixture.Titles(ctx, project, ids)
 }
 
-func TestSearchProjectedHitsPreserveRankingSnippetAndContinuation(t *testing.T) {
-	atom := searchmodel.Atom{Term: "cache"}
-	f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "size", "graph", "titles")
-	f.rows.Items[0].Hits = []store.TaskSearchHit{{Atom: atom, Title: true}}
-	f.rows.Items[0].Description = "Description outside the bounded projection"
+func TestSearchPreservesRankingSnippetAndContinuation(t *testing.T) {
+	f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "graph", "titles")
+	f.rows.Items[0].Description = "Description without matching text"
 	first, err := Search(f.ctx, f, principal(), projectID, Request{Query: "cache", Limit: 1})
 	if err != nil || first.ProjectID != projectID || first.Total != 2 || len(first.Items) != 1 || first.Items[0].ID != child || first.NextCursor == nil ||
 		!reflect.DeepEqual(first.Items[0].Context, &Context{TaskID: root, Title: "Goal"}) || !slices.Equal(first.Items[0].Match.Fields, []string{"title"}) || first.Items[0].Match.DescriptionSnippet != nil {
-		t.Fatalf("title-ranked projected search: %#v %v", first, err)
+		t.Fatalf("title-ranked search: %#v %v", first, err)
 	}
 
 	secondID := "55555555-5555-4555-8555-555555555555"
 	snippet := "raw **cache** markdown"
-	next := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "size", "graph")
+	next := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "graph")
 	next.after = &store.TaskSearchPosition{TitlePriority: true, UpdatedAt: f.rows.Items[0].UpdatedAt, ID: child}
 	next.rows = store.TaskSearchPage{Total: 2, Items: []store.TaskSearchRow{{ID: secondID, Title: "Other", Status: model.TaskDone, UpdatedAt: f.rows.Items[0].UpdatedAt.Add(-time.Second),
-		Hits: []store.TaskSearchHit{{Atom: atom, Description: true, Snippet: &snippet}}}}}
-	next.size = store.TaskSearchSize{NodeCount: 1}
+		Description: snippet}}}
 	next.graph = store.TaskSearchGraph{Nodes: []store.TaskSearchNode{{ID: secondID}}}
 	page, err := Search(next.ctx, next, principal(), projectID, Request{Query: "cache", Limit: 1, Cursor: first.NextCursor})
 	if err != nil || page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != secondID || page.NextCursor != nil || page.Items[0].Context != nil ||
 		!slices.Equal(page.Items[0].Match.Fields, []string{"description"}) || page.Items[0].Match.DescriptionSnippet == nil || *page.Items[0].Match.DescriptionSnippet != snippet {
-		t.Fatalf("description continuation lost bounded evidence: %#v %v", page, err)
+		t.Fatalf("description continuation lost description evidence: %#v %v", page, err)
 	}
 }
-
-func TestSearchProjectedEvidenceFailuresDiscardThePage(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		hits []store.TaskSearchHit
-		want string
-	}{
-		{"missing atom", []store.TaskSearchHit{}, "search evidence is missing an atom"},
-		{"missing snippet", []store.TaskSearchHit{{Atom: searchmodel.Atom{Term: "cache"}, Description: true}}, "missing search description snippet"},
-		{"inconsistent rank", []store.TaskSearchHit{{Atom: searchmodel.Atom{Term: "cache"}, Description: true, Snippet: httpRuleSearchString("cache")}}, "search evidence differs from database result"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches")
-			f.rows.Items[0].Hits = test.hits
-			page, err := Search(f.ctx, f, principal(), projectID, Request{Query: "cache", Limit: 1})
-			var fault *model.Fault
-			if err == nil || err.Error() != test.want || errors.As(err, &fault) || !reflect.DeepEqual(page, Page{}) {
-				t.Fatalf("invalid DAO evidence became search results or a caller refusal: %#v %v", page, err)
-			}
-		})
-	}
-}
-
-func httpRuleSearchString(value string) *string { return &value }
 
 func TestSearchCompletionFailurePrecedesLateCallerCancellation(t *testing.T) {
 	for _, phase := range []string{"commit", "cleanup", "caller cancellation"} {
 		t.Run(phase, func(t *testing.T) {
-			f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "size", "graph", "titles")
+			f := newHTTPRuleSearchFixture(t, "snapshot", "access", "fence", "matches", "graph", "titles")
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			f.ctx = ctx

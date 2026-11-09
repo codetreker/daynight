@@ -210,7 +210,7 @@ func TestPropertyValidationHTTPErrorClassification(t *testing.T) {
 	}{
 		{"direct", validation, http.StatusBadRequest, "invalid_input"},
 		{"wrapped", fmt.Errorf("private-wrapper-secret: %w", validation), http.StatusBadRequest, "invalid_input"},
-		{"stored", &store.Error{Phase: "read properties", Cause: validation}, http.StatusBadRequest, "invalid_input"},
+		{"property write", &store.Error{Phase: "validate task properties", Cause: validation}, http.StatusBadRequest, "invalid_input"},
 		{"joined database failure", errors.Join(validation, &store.Error{Phase: "query", DatabaseFailure: true, SQLState: "08006", Cause: errors.New("private-database-secret")}), http.StatusInternalServerError, "internal_error"},
 		{"fault with database failure", &model.Fault{Code: "not_found", Message: "not found", Cause: &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("private-database-secret")}}, http.StatusInternalServerError, "internal_error"},
 		{"thread rollback with fault", &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true, Cause: &model.Fault{Code: "not_found", Message: "not found"}}, http.StatusInternalServerError, "internal_error"},

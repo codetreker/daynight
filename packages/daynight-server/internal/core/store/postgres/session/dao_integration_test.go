@@ -447,7 +447,7 @@ func TestSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T) {
 	}
 }
 
-func TestSessionDAOTaskArchiveLocksAndCorruptProperties(t *testing.T) {
+func TestSessionDAOTaskArchiveLocksAndDeletion(t *testing.T) {
 	ctx := context.Background()
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
@@ -476,14 +476,7 @@ func TestSessionDAOTaskArchiveLocksAndCorruptProperties(t *testing.T) {
 		}
 		return nil
 	})
-	mustQueryExec(t, db, `UPDATE task_properties SET value='{' WHERE task_id=$1 AND name='paused'`, task.ID)
-	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-		_, _, err := dao.LockArchiveTask(ctx, project.ID, task.ID)
-		if err == nil {
-			t.Fatal("corrupt task property accepted")
-		}
-		return nil
-	})
+
 }
 
 func isolatedStore(t *testing.T) *postgres.Store {

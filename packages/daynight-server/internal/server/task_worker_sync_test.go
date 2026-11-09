@@ -12,7 +12,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func workerHTTPSummary(task model.Task) model.TaskViewRecord {
@@ -26,7 +25,7 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	f := newTaskHTTPFixture(t)
 	current := workerHTTPTask(t)
 	path := taskCollection(current.ProjectID) + "/" + current.ID
-	f.expectSync([]model.TaskViewRecord{workerHTTPSummary(current)}, []model.TaskAssigneeFact{}, nil, store.TaskGraphSize{NodeCount: 1})
+	f.expectSync([]model.TaskViewRecord{workerHTTPSummary(current)}, []model.TaskAssigneeFact{}, nil)
 	baseline := decodeResponse[api.TaskSync](t, projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID), ""), http.StatusOK)
 	epoch, observed := baseline.Epoch, baseline.ObservedAt
 	if epoch != taskHTTPEpoch || !observed.Equal(f.observed) {
@@ -52,7 +51,7 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 		query := "?epoch=" + epoch + "&since=" + url.QueryEscape(observed.Format(time.RFC3339Nano))
 		lower := observed.Add(-10 * time.Second)
 		f.observed = f.observed.Add(time.Second)
-		f.expectSync([]model.TaskViewRecord{workerHTTPSummary(expected)}, []model.TaskAssigneeFact{}, &lower, store.TaskGraphSize{NodeCount: 1})
+		f.expectSync([]model.TaskViewRecord{workerHTTPSummary(expected)}, []model.TaskAssigneeFact{}, &lower)
 		response := projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID)+query, "")
 		window := decodeResponse[api.TaskSync](t, response, http.StatusOK)
 		if window.Mode != "delta" || window.Epoch != epoch || !window.ObservedAt.Equal(f.observed) {

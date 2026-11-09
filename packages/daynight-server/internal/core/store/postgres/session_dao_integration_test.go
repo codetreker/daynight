@@ -739,7 +739,7 @@ func TestSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T) {
 	}
 }
 
-func TestSessionDAOTaskArchiveLocksAndCorruptProperties(t *testing.T) {
+func TestSessionDAOTaskArchiveLocksAndWorkerDecodeFailure(t *testing.T) {
 	ctx := context.Background()
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
@@ -768,11 +768,12 @@ func TestSessionDAOTaskArchiveLocksAndCorruptProperties(t *testing.T) {
 		}
 		return nil
 	})
-	mustQueryExec(t, db, `UPDATE task_properties SET value='{' WHERE task_id=$1 AND name='paused'`, task.ID)
+	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','{"claimId":1}')`, task.ID)
 	sessionDAOTransaction(t, db, func(scope store.SessionScope) error {
 		_, _, err := scope.SessionDAO().LockArchiveTask(ctx, project.ID, task.ID)
-		if err == nil {
-			t.Fatal("corrupt task property accepted")
+		var invalid *json.UnmarshalTypeError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("worker decode cause lost: %v", err)
 		}
 		return nil
 	})

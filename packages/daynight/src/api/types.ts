@@ -439,10 +439,6 @@ export type ErrorDetails = {
   readonly encodedBytes?: number;
   readonly maxEncodedBytes?: number;
   readonly taskIds?: readonly string[];
-  readonly nodeCount?: number;
-  readonly edgeCount?: number;
-  readonly maxNodes?: number;
-  readonly maxEdges?: number;
 };
 export type ServerError = {
   readonly code: string;

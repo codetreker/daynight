@@ -224,7 +224,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusUnauthorized
 		case "permission_denied", "forbidden":
 			status = http.StatusForbidden
-		case "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_search_expression", "search_context_limit_exceeded":
+		case "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_search_expression":
 			status = http.StatusBadRequest
 		case "search_timeout", "timeout":
 			status = http.StatusGatewayTimeout
@@ -254,7 +254,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusServiceUnavailable
 		case "configuration_not_initialized", "search_changed":
 			status = http.StatusConflict
-		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "resource_limit_exceeded":
+		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "resource_limit_exceeded":
 			status = http.StatusConflict
 		}
 		if status != http.StatusInternalServerError {
@@ -266,11 +266,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 				limits := fault.StepsLimit
 				response.Details = &api.ErrorDetails{EncodedBytes: &limits.EncodedBytes, MaxEncodedBytes: &limits.MaxEncodedBytes}
 			}
-			if fault.GraphLimit != nil {
-				limits := fault.GraphLimit
-				response.Details = &api.ErrorDetails{NodeCount: &limits.NodeCount, EdgeCount: &limits.EdgeCount,
-					MaxNodes: &limits.MaxNodes, MaxEdges: &limits.MaxEdges}
-			}
+
 			if fault.SearchExpression != nil {
 				details := fault.SearchExpression
 				response.Details = &api.ErrorDetails{Reason: &details.Reason, Position: &details.Position, Length: &details.Length}

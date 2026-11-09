@@ -11,7 +11,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/text"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
@@ -61,16 +60,12 @@ func Catalog() []Entry {
 		{ID: "search.expression", Max: query.MaxBytes, Unit: "bytes"},
 		{ID: "search.terms", Max: query.MaxTerms, Unit: "items"},
 		{ID: "search.depth", Max: query.MaxDepth, Unit: "levels"},
-		{ID: "search.page", Max: tasksearch.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "step.title", Max: text.MaxTitleBytes, Unit: "bytes"},
 		{ID: "step.description", Max: text.MaxDescriptionBytes, Unit: "bytes"},
 		{ID: "step.collection", Max: codec.MaxEncodedBytes, Unit: "bytes"},
 		{ID: "step.mcp.cursor", Max: codec.MaxMCPStepCursorBytes, Unit: "bytes"},
 		{ID: "terminal.history.cursor", Max: sessionv2.MaxHistoryCursorBytes, Unit: "bytes"},
 		{ID: "task.resource", Max: task.MaxTaskResponseJSONBytes, Unit: "bytes"},
-		{ID: "task.sync", Max: task.MaxSyncResponseJSONBytes, Unit: "bytes"},
-		{ID: "task.page", Max: task.MaxPageResponseJSONBytes, Unit: "bytes"},
-		{ID: "task.assignee.page", Max: task.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "task.dependencies", Max: task.MaxDependencies, Unit: "items"},
 		{ID: "task.description", Max: text.MaxDescriptionBytes, Unit: "bytes"},
 		{ID: "task.property", Max: taskproperty.MaxValueBytes, Unit: "bytes"},

@@ -76,9 +76,7 @@ func TestTaskSearchRejectsInvalidDAOInputs(t *testing.T) {
 				t.Errorf("accepted invalid query %+v", input)
 			}
 		}
-		if _, err := s.Titles(context.Background(), uuid.NewString(), []string{uuid.NewString()}); err == nil {
-			t.Error("missing representative title accepted")
-		}
+
 		return nil
 	})
 	if err != nil {
@@ -172,7 +170,7 @@ func TestTaskSearchReadFailuresDoNotBecomeResults(t *testing.T) {
 	for _, read := range []func(store.TaskSearchSnapshot) error{
 		func(s store.TaskSearchSnapshot) error { _, err := s.Fence(ctx, uuid.NewString()); return err },
 		func(s store.TaskSearchSnapshot) error {
-			_, err := s.ContextSize(ctx, "not-a-uuid", []string{a})
+			_, err := s.ContextGraph(ctx, "not-a-uuid", []string{a})
 			return err
 		},
 	} {
