@@ -8,6 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	pgproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 )
@@ -54,6 +55,42 @@ func testProjectOwnershipCreationAndRequiredReads(t *testing.T, missing string) 
 	} {
 		if err := s.ReadSnapshot(ctx, read); err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("project read %d accepted missing ownership or hid corruption: %v", index, err)
+		}
+	}
+}
+
+func TestProjectCreationPersonalTeamFactsExposeCorruptMembershipSources(t *testing.T) {
+	for _, damage := range []struct {
+		name                 string
+		members, ownerAdmins int64
+	}{{"missing-owner", 0, 0}, {"wrong-role", 1, 0}, {"additional-member", 2, 1}} {
+		for _, lock := range []bool{false, true} {
+			t.Run(damage.name+map[bool]string{false: "/unlocked", true: "/locked"}[lock], func(t *testing.T) {
+				database := testutil.OpenStore(t, postgres.Open)
+				user, _, _ := testutil.AuthRecords(t, database)
+				var teamID string
+				if err := database.Pool.QueryRow(t.Context(), `SELECT id::text FROM teams WHERE personal_user_id=$1`, user.ID).Scan(&teamID); err != nil {
+					t.Fatal(err)
+				}
+				switch damage.name {
+				case "missing-owner":
+					testutil.MustExec(t, database.Pool, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, user.ID)
+				case "wrong-role":
+					testutil.MustExec(t, database.Pool, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, teamID, user.ID)
+				case "additional-member":
+					other, _, _ := testutil.AuthRecords(t, database)
+					testutil.MustExec(t, database.Pool, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, teamID, other.ID)
+				}
+				tx, err := database.Pool.Begin(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(context.Background())
+				facts, err := pgproject.NewCreation(tx, user.ID).CreationPersonalTeam(t.Context(), lock)
+				if err != nil || facts.ID != teamID || facts.MemberCount != damage.members || facts.OwnerAdminCount != damage.ownerAdmins {
+					t.Fatalf("Project creation Personal facts hid %s: got=%#v team=%s members=%d ownerAdmins=%d error=%v", damage.name, facts, teamID, damage.members, damage.ownerAdmins, err)
+				}
+			})
 		}
 	}
 }

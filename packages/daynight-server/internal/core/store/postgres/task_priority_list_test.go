@@ -17,7 +17,7 @@ func TestTaskPrioritySnapshotRetainsPredecessorOrderingAndFence(t *testing.T) {
 	dependent := queryTask(t, db, project.ID, 11, model.TaskTodo, predecessor.ID)
 	queryTask(t, db, project.ID, 12, model.TaskTodo, predecessor.ID)
 	ready := false
-	query := TaskPriorityQuery{Limit: 1, Ready: &ready}
+	query := TaskPriorityQuery{Limit: 1, Ready: &ready, ExcludeTerminal: true}
 	var fence TaskListFence
 	if err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
