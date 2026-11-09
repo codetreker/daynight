@@ -21,6 +21,16 @@ var schemaManagement struct {
 	err  error
 }
 
+var rootDatabasePermits = make(chan struct{}, 2)
+
+func parallelRootDatabaseTest(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	rootDatabasePermits <- struct{}{}
+	// Registered first, the permit cleanup runs after all fixture cleanups.
+	t.Cleanup(func() { <-rootDatabasePermits })
+}
+
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if schemaManagement.pool != nil {

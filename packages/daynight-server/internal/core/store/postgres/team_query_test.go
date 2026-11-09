@@ -13,6 +13,7 @@ import (
 )
 
 func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, team := storeTeamFixture(t)
 	ctx := context.Background()
 	var changed model.Team
@@ -48,6 +49,7 @@ func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 }
 
 func TestTeamRenameAndDeleteSQLFailuresRollbackCompleteLifecycle(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, operation := range []string{"rename", "delete members", "delete Team"} {
 		t.Run(operation, func(t *testing.T) {
 			s, actor, team := storeTeamFixture(t)

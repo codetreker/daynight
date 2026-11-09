@@ -20,6 +20,7 @@ import (
 const taskSyncIndexColumnsQuery = `SELECT pg_get_indexdef(format('%I.%I', current_schema(), 'tasks_project_updated_id')::regclass) LIKE '%(project_id, updated_at, id)%'`
 
 func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, _, reader, project := membershipFixture(t)
 	ctx := context.Background()
 	a := queryTask(t, database, project.ID, 11, model.TaskTodo)
@@ -231,6 +232,7 @@ func TestTaskSyncIndexCheckStaysInFixtureSchema(t *testing.T) {
 }
 
 func TestTaskSyncSnapshotCannotEscapeCallback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	var expired SnapshotScope
 	if err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error { expired = snapshot; return nil }); err != nil {

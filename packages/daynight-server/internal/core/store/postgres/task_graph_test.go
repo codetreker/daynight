@@ -16,6 +16,7 @@ func testGraphSelection() TaskGraphSelection {
 }
 
 func TestTaskGraphProjectionKeepsSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, s, 1)

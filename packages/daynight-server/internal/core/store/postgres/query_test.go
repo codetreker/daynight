@@ -37,6 +37,7 @@ func mustQueryExec(t *testing.T, s *Store, sql string, args ...any) {
 }
 
 func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	if err := writeProjectForTest(s, ctx, queryID(999), func(ProjectWriteScope) error {
@@ -48,6 +49,7 @@ func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 }
 
 func TestQueriesPartialWriteRollbackRestoresResource(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, s, 1)
@@ -82,6 +84,7 @@ func TestQueriesPartialWriteRollbackRestoresResource(t *testing.T) {
 }
 
 func TestQueriesSnapshotRetainsCompleteOldGraph(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, s, 1)

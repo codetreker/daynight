@@ -12,6 +12,7 @@ import (
 )
 
 func TestTaskStepsConfirmedCommitSurvivesCallerCancellation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	for index, operation := range []string{"add", "change", "status", "delete", "move"} {

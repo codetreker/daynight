@@ -85,6 +85,7 @@ func (tracer *stepWriteCancelTracer) TraceQueryEnd(ctx context.Context, _ *pgx.C
 }
 
 func TestTaskStepsConfirmedRollbackAfterEachActualSQLWrite(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
@@ -133,6 +134,7 @@ func TestTaskStepsConfirmedRollbackAfterEachActualSQLWrite(t *testing.T) {
 }
 
 func TestTaskStepsPartialWritesAndSuppressedRowsRollBack(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)

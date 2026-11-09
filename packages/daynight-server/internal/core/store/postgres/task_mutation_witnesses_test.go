@@ -48,6 +48,7 @@ func taskMutationProjectFacts(t *testing.T, database *Store, projectID string) s
 }
 
 func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
@@ -116,6 +117,7 @@ func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
 }
 
 func TestTaskStatusPartialWriteFailureRollsBackTimingAndMaterials(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
@@ -184,6 +186,7 @@ func taskMutationTracedStore(t *testing.T, database *Store, trace taskMutationTr
 }
 
 func TestTaskQueryCancellationPreservesCauseAndCompleteState(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	predecessor := queryTask(t, database, project.ID, 11, model.TaskDone)
@@ -233,6 +236,7 @@ func TestTaskQueryCancellationPreservesCauseAndCompleteState(t *testing.T) {
 }
 
 func TestTaskDeletionAndDependencyRemovalFailuresRollBackAllFacts(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, failure := range []string{"epoch", "source-overflow"} {
 		t.Run(failure, func(t *testing.T) {
 			database := isolatedStore(t)
@@ -262,6 +266,7 @@ func TestTaskDeletionAndDependencyRemovalFailuresRollBackAllFacts(t *testing.T) 
 }
 
 func TestTaskDependencyReadScopeRefusalPreservesFacts(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)

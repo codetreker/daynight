@@ -14,6 +14,7 @@ import (
 )
 
 func TestAuthorizationScopeCommitsAndRollsBackAllDAOsTogether(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, commit := range []bool{true, false} {
 		t.Run(fmt.Sprintf("commit=%t", commit), func(t *testing.T) {
 			database := isolatedStore(t)
@@ -96,6 +97,7 @@ func TestAuthorizationScopeCommitsAndRollsBackAllDAOsTogether(t *testing.T) {
 }
 
 func TestAuthorizationScopeCanceledBeginDoesNotInvokeCallback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

@@ -60,6 +60,7 @@ func taskPropertyFacts(t *testing.T, database *Store) map[string]string {
 }
 
 func TestTaskPropertiesPartialWritesRollBackMetadataAndEdges(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	old := queryTask(t, database, project.ID, 2, model.TaskDone)
@@ -114,6 +115,7 @@ func TestTaskPropertiesPartialWritesRollBackMetadataAndEdges(t *testing.T) {
 }
 
 func TestTaskPropertiesReadSharesTaskSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	target := queryTask(t, database, project.ID, 2, model.TaskTodo)
@@ -149,6 +151,7 @@ func TestTaskPropertiesReadSharesTaskSnapshot(t *testing.T) {
 }
 
 func TestTaskPropertyWritesPreserveWorkerAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	target := queryTask(t, database, project.ID, 2, model.TaskTodo)
@@ -206,6 +209,7 @@ func TestTaskPropertyWritesPreserveWorkerAndRollback(t *testing.T) {
 }
 
 func TestTaskResponseAdmissionRollsBackActualWrites(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	prerequisite := queryTask(t, database, project.ID, 2, model.TaskTodo)

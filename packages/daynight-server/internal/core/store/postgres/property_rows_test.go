@@ -223,6 +223,7 @@ func TestPropertyRowsMigrationLedgerFailureRollsBack(t *testing.T) {
 }
 
 func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := context.Background()
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)

@@ -12,6 +12,7 @@ import (
 )
 
 func TestProjectMembersAndActorAccessShareSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, actor, _, project := membershipFixture(t)
 	ctx := t.Context()
 	team := uuid.NewString()
@@ -51,6 +52,7 @@ func TestProjectMembersAndActorAccessShareSnapshot(t *testing.T) {
 }
 
 func TestProjectOwnershipAndAccessShareSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, actor, _, project := membershipFixture(t)
 	ctx := t.Context()
 	team := uuid.NewString()
