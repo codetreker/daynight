@@ -32,14 +32,15 @@ func (e *DeletionCleanupError) Unwrap() error { return e.Cause }
 type liveSessions interface{ DiscardBotSession(string) }
 
 type Deletions struct {
-	writer store.SessionWriter
-	files  filestorage.Storage
-	live   liveSessions
-	now    func() time.Time
+	writer     store.SessionWriter
+	files      filestorage.Storage
+	live       liveSessions
+	operations deletionOperations
+	now        func() time.Time
 }
 
 func NewDeletions(writer store.SessionWriter, files filestorage.Storage, live liveSessions) *Deletions {
-	return &Deletions{writer: writer, files: files, live: live, now: time.Now}
+	return &Deletions{writer: writer, files: files, live: live, now: time.Now, operations: defaultDeletionOperations()}
 }
 
 func deletionFault(code, message string) error { return &model.Fault{Code: code, Message: message} }
@@ -86,7 +87,7 @@ func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p mod
 	if err != nil {
 		return bot, err
 	}
-	if err := botcore.RequireDeletionOwner(bot, p); err != nil {
+	if err := s.operations.owner(bot, p); err != nil {
 		return bot, err
 	}
 	return bot, nil
@@ -104,7 +105,7 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		if err != nil {
 			return err
 		}
-		replay, err := botcore.DeletionRequest(bot, input)
+		replay, err := s.operations.request(bot, input)
 		if err != nil {
 			return err
 		}
@@ -120,7 +121,7 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 			return err
 		}
 		bot.Deletion = botcore.NewDeletion(input)
-		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
+		out, err = s.operations.save(ctx, scope.BotDAO(), bot)
 		if err != nil {
 			return err
 		}
@@ -166,7 +167,7 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 		if err != nil {
 			return err
 		}
-		change, needsStopProof, err := botcore.PrepareWorkerCleanup(bot, workerID, input.DeletionID, input.Result, digest)
+		change, needsStopProof, err := s.operations.worker(bot, workerID, input.DeletionID, input.Result, digest)
 		if err != nil {
 			return err
 		}
@@ -201,7 +202,7 @@ func (s *Deletions) CompleteBotDeletion(ctx context.Context, p model.Principal, 
 			}
 		}
 		botcore.ApplyWorkerCleanup(&bot, input.Result, digest)
-		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
+		out, err = s.operations.save(ctx, scope.BotDAO(), bot)
 		return err
 	})
 	if err != nil {
@@ -225,7 +226,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 		if err != nil {
 			return err
 		}
-		change, err := botcore.PrepareServerCleanup(bot, deletionID)
+		change, err := s.operations.server(bot, deletionID)
 		if err != nil {
 			return err
 		}
@@ -264,7 +265,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 			return err
 		}
 		botcore.CompleteServerCleanup(&bot)
-		out, err = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
+		out, err = s.operations.save(ctx, scope.BotDAO(), bot)
 		return err
 	})
 	if completion.Outcome == store.TransactionCommitted {
@@ -287,7 +288,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 		if e != nil {
 			return e
 		}
-		change, e := botcore.FailServerCleanup(&bot, deletionID)
+		change, e := s.operations.fail(&bot, deletionID)
 		if e != nil {
 			return e
 		}
@@ -295,7 +296,7 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 			out = bot
 			return nil
 		}
-		out, e = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
+		out, e = s.operations.save(ctx, scope.BotDAO(), bot)
 		return e
 	})
 	if failure != nil {

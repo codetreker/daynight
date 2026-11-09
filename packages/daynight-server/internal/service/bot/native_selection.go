@@ -19,7 +19,9 @@ type modelRequester interface {
 
 // NewWithNativeDiscovery shares the authenticated Worker broker with creation.
 func NewWithNativeDiscovery(database botStore, requester modelRequester) *Bots {
-	return &Bots{store: database, models: requester}
+	service := New(database)
+	service.models = requester
+	return service
 }
 
 func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, input botcore.CreateBot) (*botcore.CreationResolution, error) {
@@ -28,7 +30,7 @@ func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, i
 	var selectionFault *model.Fault
 	existing := false
 	err := s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
-		_, err := botcore.Get(ctx, scope, principal, input.ID)
+		_, err := s.operations.get(ctx, scope, principal, input.ID)
 		if err == nil {
 			existing = true
 			return nil
@@ -37,7 +39,7 @@ func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, i
 		if !errors.As(err, &fault) || fault.Code != "not_found" {
 			return err
 		}
-		defaults, resolved, err = botcore.CreationDefaults(ctx, scope.BotDAO(), principal.UserID, input.Overrides)
+		defaults, resolved, err = s.operations.creationDefaults(ctx, scope.BotDAO(), principal.UserID, input.Overrides)
 		if fault, ok := err.(*model.Fault); ok {
 			selectionFault = fault
 			return nil
@@ -64,7 +66,7 @@ func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, i
 	if !botcore.RequiresNativeDiscovery(base, preference) {
 		return nil, nil
 	}
-	baseline, err := botcore.WorkerNativeDefaults(defaults, input.Overrides, base.WorkerID)
+	baseline, err := s.operations.workerDefaults(defaults, input.Overrides, base.WorkerID)
 	if err != nil {
 		return nil, err
 	}
@@ -168,5 +170,5 @@ func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, bas
 	if botcore.NativeDelegationFallback(baseline, overrides, catalog, selected) {
 		return baseline, nil
 	}
-	return botcore.ResolveNativeSelection(base, overrides, preference, catalog, selected)
+	return s.operations.nativeSelection(base, overrides, preference, catalog, selected)
 }

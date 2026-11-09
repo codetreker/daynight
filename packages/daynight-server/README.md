@@ -1099,6 +1099,31 @@ with `go test ./internal/core/store/postgres/identity ./internal/core/store/post
 
 The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
 
+### Bot management service tests
+
+The `internal/service/bot` suite executes actual snapshot/write callbacks,
+normalization, native catalog transport, deletion stop-proof validation and
+Session/file cleanup. Private instance operations supply direct core creation,
+read and selection results and deletion decisions. Production constructors bind
+the real implementations and retain `time.Now`; strict unit expectations verify
+context, principal, identifiers, inputs, current-scope capabilities, call order,
+completion outcomes and error chains. Ordinary tests clear database and UniAuth
+fixture variables and do not simulate persisted state.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/bot
+```
+
+Core Bot tests own replay, configuration/default/native and deletion rules.
+PostgreSQL Bot/Session tests retain real locks, credential rechecks, preferences,
+rollback, cleanup visibility and precise persisted versions. Local archive tests
+retain actual orphan-file removal. The independent API integration suite owns representative normal flows
+through the assembled server.
+See the [Bot service test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-bot-service-test-boundary.md).
+
 ### Bot runtime service tests
 
 The `internal/service/bot/runtime` suite executes the Runtime transaction and
