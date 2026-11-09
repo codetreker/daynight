@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	promptservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/prompt"
 )
 
 type workerStore interface {
@@ -17,14 +18,54 @@ type workerStore interface {
 	store.WorkerWriter
 }
 
-type Workers struct{ store workerStore }
+type Workers struct {
+	store   workerStore
+	prompts store.PromptSnapshotReader
+}
 
 func NewWorkers(database workerStore) *Workers { return &Workers{store: database} }
+
+func NewWorkersWithPrompts(database workerStore, prompts store.PromptSnapshotReader) *Workers {
+	return &Workers{store: database, prompts: prompts}
+}
 
 type WorkerReportResult struct {
 	Configuration  *model.WorkerConfigurationReceipt
 	ObservedAt     time.Time
 	LastReportedAt time.Time
+}
+
+type ConfigurationSyncResult struct {
+	Native  WorkerReportResult
+	Prompts []model.PromptResult
+}
+
+// ReportSync commits the native report before querying the independent prompt snapshot.
+func (s *Workers) ReportSync(ctx context.Context, principal model.Principal, workerID string, input model.WorkerReport, selectors []model.PromptSelector) (ConfigurationSyncResult, error) {
+	if s.prompts == nil {
+		return ConfigurationSyncResult{}, fmt.Errorf("report worker: prompt snapshot reader is not configured")
+	}
+	native, err := s.Report(ctx, principal, workerID, input)
+	if err != nil {
+		return ConfigurationSyncResult{}, err
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	results, err := promptservice.Batch(readCtx, s.prompts, principal, workerID, selectors)
+	if err != nil {
+		code := "unavailable"
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(readCtx.Err(), context.DeadlineExceeded) {
+			code = "timeout"
+		}
+		results = make([]model.PromptResult, 0, len(selectors))
+		for _, selector := range selectors {
+			results = append(results, model.PromptResult{Key: selector.Key, Status: "error", Error: code})
+		}
+	}
+	if results == nil {
+		results = []model.PromptResult{}
+	}
+	return ConfigurationSyncResult{Native: native, Prompts: results}, nil
 }
 
 type WorkerPage struct {

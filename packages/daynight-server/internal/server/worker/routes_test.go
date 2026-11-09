@@ -14,6 +14,7 @@ import (
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	promptservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/prompt"
 	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"github.com/google/uuid"
 )
@@ -24,7 +25,7 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	})
 	cookie := h.Login(t, "worker")
 	mux := http.NewServeMux()
-	RegisterRoutes(mux, workerservice.NewWorkers(h.Database), h.Auth, slog.Default())
+	RegisterRoutes(mux, workerservice.NewWorkersWithPrompts(h.Database, promptservice.NewPostgresReader(h.Database)), h.Auth, slog.Default())
 	request := func(method, path, body string, version ...string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
@@ -98,6 +99,40 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	check(request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": "1", "value": config})), 409, "configuration_not_initialized")
 	observed["configuration"] = map[string]any{"bootstrap": config, "observation": nil}
 	check(request("POST", path+"/report", jsonBody(t, observed), "1"), 200, "")
+	syncRequest := func(selectors string, padded bool) *httptest.ResponseRecorder {
+		t.Helper()
+		body := jsonBody(t, observed)
+		if padded {
+			body += strings.Repeat(" ", (1<<20)-len(body))
+		}
+		r := httptest.NewRequest("POST", path+"/report", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", h.Origin)
+		r.Header.Set(workerConfigurationHeader, "2")
+		r.Header.Set(workerPromptsHeader, selectors)
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+	w = syncRequest(`[{"key":{"scope":"user"},"knownRevision":null},{"key":{"scope":"worker"},"knownRevision":"0"}]`, true)
+	check(w, 200, "")
+	var syncReceipt struct {
+		Configuration struct {
+			Desired             *model.WorkerDesiredConfiguration `json:"desired"`
+			ObservationRevision string                            `json:"observationRevision"`
+			ObservationAccepted bool                              `json:"observationAccepted"`
+			Prompts             []model.PromptResult              `json:"prompts"`
+		} `json:"configuration"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &syncReceipt); err != nil || w.Header().Get(workerConfigurationHeader) != "2" || syncReceipt.Configuration.Desired == nil || syncReceipt.Configuration.ObservationRevision != "0" || len(syncReceipt.Configuration.Prompts) != 2 || syncReceipt.Configuration.Prompts[0].Status != "value" || syncReceipt.Configuration.Prompts[0].Value == nil || syncReceipt.Configuration.Prompts[0].Value.Revision != "0" || syncReceipt.Configuration.Prompts[1].Status != "unchanged" || syncReceipt.Configuration.Prompts[1].Revision != "0" {
+		t.Fatalf("protocol 2 receipt: %s (%v)", w.Body, err)
+	}
+	w = syncRequest(`[]`, false)
+	check(w, 200, "")
+	if err := json.Unmarshal(w.Body.Bytes(), &syncReceipt); err != nil || syncReceipt.Configuration.Prompts == nil || len(syncReceipt.Configuration.Prompts) != 0 {
+		t.Fatalf("empty protocol 2 receipt: %s (%v)", w.Body, err)
+	}
 	w = request("GET", path+"/configuration", "")
 	resource := testsupport.DecodeResponse[model.WorkerConfigurationResource](t, w, 200)
 	if resource.Desired == nil || resource.Desired.Revision != "1" || w.Header().Get(workerConfigurationHeader) != "1" {

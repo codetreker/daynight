@@ -5,15 +5,16 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/internal/transaction"
 )
 
 // TransactionOutcome states what is known about a transaction's durable result.
-type TransactionOutcome string
+type TransactionOutcome = transaction.Outcome
 
 const (
-	TransactionCommitted    TransactionOutcome = "committed"
-	TransactionNotCommitted TransactionOutcome = "not_committed"
-	TransactionUnknown      TransactionOutcome = "unknown"
+	TransactionCommitted    = transaction.Committed
+	TransactionNotCommitted = transaction.NotCommitted
+	TransactionUnknown      = transaction.Unknown
 )
 
 // Completion records the durable outcome independently of any operation or
@@ -33,16 +34,7 @@ func (e *Error) Unwrap() error { return e.Cause }
 
 // TransactionError preserves completion facts separately from the original
 // operation and cleanup causes. An unsuccessful COMMIT is not proof of rollback.
-type TransactionError struct {
-	Phase           string
-	Cause           error
-	Outcome         TransactionOutcome
-	CommitAttempted bool
-	CleanupFailed   bool
-}
-
-func (err *TransactionError) Error() string { return "transaction " + err.Phase + " failed" }
-func (err *TransactionError) Unwrap() error { return err.Cause }
+type TransactionError = transaction.Error
 
 // ThreadTransactionError records local write stages without inventing a durable
 // submission identity. An unsuccessful COMMIT is not proof of rollback.

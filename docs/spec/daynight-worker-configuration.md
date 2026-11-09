@@ -39,7 +39,7 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 ## 心跳扩展
 
-配置客户端对原报告端点发送 Daynight-Worker-Configuration: 1。该标记只选择配置交换格式，不改变任务或 inventory 协议。未携带标记的报告继续原精确字段及 {observedAt,lastReportedAt} 回执。
+配置客户端对原报告端点发送 Daynight-Worker-Configuration: 1。该标记只选择配置交换格式，不改变任务或 inventory 协议。未携带标记的报告继续原精确字段及 {observedAt,lastReportedAt} 回执。协议 2 在同一报告回执中附带有限的个人 prompt 结果；selector、权限和错误由[个人 prompt 接口](worker-prompts.md#配置报告同步)拥有。
 
 扩展正文增加 configuration，含显式 nullable bootstrap 和 observation。bootstrap 为完整候选；没有候选时为 null。observation 包含 baseRevision、desiredRevision 和完整 items；尚无结果时为 null。
 

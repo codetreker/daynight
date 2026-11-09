@@ -7,6 +7,7 @@ import (
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+	prompthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/prompt"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
@@ -14,6 +15,7 @@ import (
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	promptservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/prompt"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
@@ -54,7 +56,8 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(dependencies.Store), auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(dependencies.Store), auth, logger)
 	teamhttp.RegisterRoutes(mux, teamservice.NewTeams(dependencies.Store), auth, logger)
-	workerhttp.RegisterRoutes(mux, workerservice.NewWorkers(dependencies.Store), auth, logger)
+	workerhttp.RegisterRoutes(mux, workerservice.NewWorkersWithPrompts(dependencies.Store, promptservice.NewPostgresReader(dependencies.Store)), auth, logger)
+	prompthttp.RegisterRoutes(mux, promptservice.NewPostgres(dependencies.Store), auth, logger)
 	taskhttp.TaskRoutes(mux, taskservice.NewTasks(dependencies.Store), auth, logger)
 	taskhttp.TaskSearchRoutes(mux, taskservice.NewTaskSearch(dependencies.Store), auth, logger)
 	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(dependencies.Store), auth, logger)
