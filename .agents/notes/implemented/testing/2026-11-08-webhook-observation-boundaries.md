@@ -12,7 +12,10 @@ the test inspected its recorded write. An earlier request count or confirmation
 notice also cannot identify completion of a later operation. Team directory
 refresh, management denial and receipt denial each publish authorization or
 operation state asynchronously; request dispatch does not prove those decisions
-have reached their consumers.
+have reached their consumers. A freshly rendered endpoint heading also does not
+prove that its passive effects have settled. Starting a secret read at that
+point lets the endpoint effect advance the secret generation after dispatch,
+so the valid reply is correctly discarded as obsolete.
 
 ## Decision
 
@@ -26,7 +29,11 @@ Returning to a restricted Team retains the immediate private-data absence checks
 the cached owner-role label does not prove that fresh endpoint detail has arrived.
 Tests acquire the actual restricted detail controls and immediately verify they
 are disabled. Clearing a retained list error has its own DOM readiness predicate.
-Team selection waits for the named option in the current selector. Management
+Team selection waits for the named option in the current selector. The malformed
+owner-list response cases use the shared Team-selection helper: it holds the
+initial endpoint detail response and releases it within async `act` before the
+first secret read. The heading identifies the endpoint; the settled response
+establishes completion of the effects that invalidate older secrets. Management
 and receipt-denial cases hold each response until the request is admitted, then
 release it within async `act` before checking private-data withdrawal, retained
 drafts or the original operation result. Late-denial cases publish a newer Team
@@ -61,6 +68,11 @@ also covered creation, rotation, CAS review, secrets and background responses.
 Keeping it there would preserve the same failure mechanism under other schedules.
 The repair stays within this fixture's observation responsibility.
 
+**Wait only for the initial endpoint heading.** DOM insertion can precede the
+passive effect that invalidates earlier secret reads. Holding detail admission
+and releasing it within async `act` establishes that effect boundary before the
+next interaction.
+
 **Increase the microtask count or timer delay.** Native cryptographic completion
 is independent of either count or elapsed timer interval. A larger delay adds
 idle work without proving the intended operation reached dispatch or admission.
@@ -79,6 +91,9 @@ Preparation delays no longer determine whether tests inspect a missing write.
 The fixture catches rejected restrictive cleanup and omitted same-version private
 projection withdrawal while preserving real fingerprint validation. Controlled
 response release also keeps negative assertions tied to the response they reject.
+The malformed owner-list response cases reveal their initial secret only after
+endpoint initialization settles, so secret retention assertions exercise the
+error response rather than an initialization race.
 Authorization and receipt tests preserve their current-owner data, draft, secret,
 original-operation and no-replay assertions after the relevant response settles.
 The tests model frontend API behavior; they do not establish server transaction

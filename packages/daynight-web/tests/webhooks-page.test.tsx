@@ -163,11 +163,34 @@ describe("Webhook configuration page", () => {
   });
 
   it.each([403, 404] as const)("retains scope, drafts and secrets for a malformed %s response until a validated retry", async status => {
-    const teamEndpoint = { ...endpoint(), owner: { kind: "team" as const, id: teamId } }; const view = await mount({ initial: [teamEndpoint] }); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Team shared" })); }); await within(screen.getByRole("combobox", { name: "Choose a team" })).findByRole("option", { name: "Engineering" }); fireEvent.change(screen.getByRole("combobox", { name: "Choose a team" }), { target: { value: teamId } }); await screen.findByRole("heading", { name: "Endpoint 5", level: 2 }); fireEvent.click(screen.getByRole("button", { name: "Show secret" })); await screen.findByText(/^whsec_[A-Za-z]/); openEdit(); const input = setName("Retained draft"), dialog = screen.getByRole("dialog");
+    const teamEndpoint = { ...endpoint(), owner: { kind: "team" as const, id: teamId } };
+    const view = await mount({ initial: [teamEndpoint] });
+    await selectTeamEndpoint(view, teamEndpoint);
+    fireEvent.click(screen.getByRole("button", { name: "Show secret" }));
+    await screen.findByText(/^whsec_[A-Za-z]/);
+    openEdit();
+    const input = setName("Retained draft"), dialog = screen.getByRole("dialog");
+
     view.intercept(url => url.startsWith(`/api/v1/teams/${teamId}/webhooks?`) ? Promise.resolve(new Response(JSON.stringify({ error: { code: status === 403 ? "forbidden" : "not_found", message: "Failure", requestId: "media-test" } }), { status, headers: { "Content-Type": "text/html", "Daynight-User-ID": userId } })) : null);
-    fireEvent.focus(window); await screen.findByRole("alert"); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Retained draft"); expect(document.body.textContent).toContain("private=hidden"); expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible(); expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    view.intercept(url => url.startsWith(`/api/v1/teams/${teamId}/webhooks?`) ? Promise.resolve(new Response('{"error":{"code":"forbidden"}}', { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } })) : null); await act(async () => { fireEvent.focus(window); }); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Retained draft");
-    view.intercept(null); fireEvent.click(screen.getByRole("button", { name: "Retry" })); await waitFor(() => expect(screen.queryByRole("alert")).toBeNull()); expect(screen.getByRole("dialog")).toBe(dialog); expect(input).toHaveValue("Retained draft"); expect(view.writes).toHaveLength(0);
+    fireEvent.focus(window);
+    await screen.findByRole("alert");
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(input).toHaveValue("Retained draft");
+    expect(document.body.textContent).toContain("private=hidden");
+    expect(screen.getByText(/^whsec_[A-Za-z]/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+
+    view.intercept(url => url.startsWith(`/api/v1/teams/${teamId}/webhooks?`) ? Promise.resolve(new Response('{"error":{"code":"forbidden"}}', { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } })) : null);
+    await act(async () => { fireEvent.focus(window); });
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(input).toHaveValue("Retained draft");
+
+    view.intercept(null);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(input).toHaveValue("Retained draft");
+    expect(view.writes).toHaveLength(0);
   });
 
   it.each(["secret", "patch"] as const)("withdraws administrator URL, secret and editor after validated %s management denial before directory recovery", async request => {
