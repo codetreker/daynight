@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -18,7 +19,7 @@ var taskQueryToolDefinitions []byte
 
 type taskQueryService interface {
 	graphReader
-	MCPList(context.Context, model.Principal, string, taskcore.MCPListRequest, func(store.TaskPriorityItem, string, bool) bool) error
+	ObservedMCPList(context.Context, model.Principal, string, taskcore.MCPListRequest) (taskservice.ObservedMCPPage, error)
 	MCPReady(context.Context, model.Principal, string, taskcore.MCPReadyRequest) ([]store.TaskPriorityItem, error)
 }
 
@@ -60,8 +61,11 @@ type taskListFull struct {
 }
 
 // RegisterTaskQueryTools publishes only fully implemented task query tools.
-func RegisterTaskQueryTools(entry *Entry, tasks *taskservice.Tasks) error {
-	return registerTaskQueryTools(entry, tasks)
+func RegisterTaskQueryTools(entry *Entry, tasks *taskservice.Tasks, observations *taskservice.Observations) error {
+	return registerTaskQueryTools(entry, struct {
+		*taskservice.Tasks
+		*taskservice.Observations
+	}{tasks, observations})
 }
 
 func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
@@ -132,37 +136,35 @@ func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQ
 		in.Limit = 50
 	}
 	data := listData{Items: make([]json.RawMessage, 0, in.Limit), Projection: in.View}
-	var itemErr error
-	err := tasks.MCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View}, func(value store.TaskPriorityItem, cursor string, more bool) bool {
-		task := value.Task
-		var item any
-		if in.View == "summary" {
-			summary := MapTaskSummary(task)
-			summary.BlockedByCount = value.BlockedByCount
-			summary.TitleTruncated = summary.TitleTruncated || value.TitleTruncated
-			item = summary
-		} else {
-			item = taskListFull{TaskFull: MapTaskFull(task)}
-		}
-		encodedItem, err := json.Marshal(item)
-		if err != nil {
-			itemErr = err
-			return false
-		}
-		data.Items = append(data.Items, encodedItem)
-		data.NextCursor = nil
-		if more {
-			data.NextCursor = &cursor
-		}
-		return true
-	})
+	page, err := tasks.ObservedMCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View})
 	if err != nil {
 		return ToolResult{}, err
 	}
-	if itemErr != nil {
-		return ToolResult{}, itemErr
+	for _, value := range page.Items {
+		task := value.Item.Task
+		var item any
+		if in.View == "summary" {
+			summary := MapTaskSummary(task)
+			summary.BlockedByCount = value.Item.BlockedByCount
+			summary.TitleTruncated = summary.TitleTruncated || value.Item.TitleTruncated
+			item = struct {
+				TaskSummary
+				Session sp.TaskSessionObservation `json:"session"`
+			}{summary, value.Session}
+		} else {
+			item = struct {
+				taskListFull
+				Session sp.TaskSessionObservation `json:"session"`
+			}{taskListFull{TaskFull: MapTaskFull(task)}, value.Session}
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		data.Items = append(data.Items, encoded)
 	}
-	return ToolResult{Data: data}, nil
+	data.NextCursor = page.NextCursor
+	return ToolResult{Data: data, Observation: &ReadObservation{ObservedAt: page.ObservedAt, Partial: page.Partial}, Refs: map[string]any{"projectId": in.ProjectID}}, nil
 }
 
 func readyTool(ctx context.Context, actor RequestActor, in readyInput, tasks taskQueryService) (ToolResult, error) {

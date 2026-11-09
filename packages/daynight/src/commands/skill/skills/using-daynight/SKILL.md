@@ -20,7 +20,7 @@ Use the `daynight` CLI to operate it and [Daynight](https://daynight.cc) to brow
 | Attachment | A task's independent attachment area for inputs and results such as documents, prototypes, and images. |
 | worker-managed | An execution environment assigned and managed by `daynight worker`; the agent executes only its explicit assignment. |
 
-The CLI supports project registration and lookup, task creation, search and filtering, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, Webhook management, and worker-managed execution.
+The CLI supports project registration and lookup, task creation, search and filtering, Task and chain Session observations, grouped in-progress work, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, Webhook management, and worker-managed execution.
 Creation, execution, and handoff are separate operations; see [authorization and scope](references/authorization.md).
 
 ## Setup and CLI
@@ -43,6 +43,7 @@ Read only the files and required references for the current operation, not every
 | Discover, select, or register projects | [Project management](references/project-management.md): project identity and reuse |
 | Read and maintain ordered Task Steps | [Task management](references/task-management.md#task-steps): operations and identities; [task execution](references/task-execution.md#maintain-steps): project-defined maintenance |
 | Query tasks, edit metadata, properties, status, or dependencies, or delete tasks | [Task management](references/task-management.md): fields, lifecycle, and relationship semantics |
+| Locate Sessions and assess Task or chain activity | [Session observations](references/task-management.md#session-observations): independent status and send eligibility, freshness, partial results and grouped pagination |
 | Read or post task discussion | [Task management](references/task-management.md#discussion-threads): bounded pages, author attribution, replies and read continuity |
 | Submit and reconcile writes safely | [Write safety](references/write-safety.md): versions, conflicts, uncertain results, and attachment concurrency |
 | Write or read descriptions, attachments, and shared inputs | [Task content standard](references/task-content.md): boundaries, ownership, references, and sufficiency |

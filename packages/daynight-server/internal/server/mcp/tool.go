@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"sync"
+	"time"
 
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
@@ -31,12 +32,23 @@ type ToolResult struct {
 	WriteOutcome string
 	Phase        string
 	Refs         map[string]any
+	Observation  *ReadObservation
+}
+
+// ReadObservation describes a read's freshness and completeness independently
+// of mutation receipts. A partial observation still retains its usable data.
+type ReadObservation struct {
+	ObservedAt time.Time
+	Partial    bool
 }
 type ToolHandler func(context.Context, RequestActor, json.RawMessage) (ToolResult, error)
 
 type envelopeMeta struct {
-	RequestID string `json:"requestId"`
-	Outcome   string `json:"outcome,omitempty"`
+	RequestID  string         `json:"requestId"`
+	Outcome    string         `json:"outcome,omitempty"`
+	ObservedAt *time.Time     `json:"observedAt,omitempty"`
+	Partial    *bool          `json:"partial,omitempty"`
+	Refs       map[string]any `json:"refs,omitempty"`
 }
 type envelopeError struct {
 	Code         string         `json:"code"`
@@ -443,8 +455,14 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return e.errorResult(output, actor, failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
+		if result.Observation != nil {
+			stamp := result.Observation.ObservedAt.UTC()
+			value.Meta.ObservedAt = &stamp
+			value.Meta.Partial = &result.Observation.Partial
+			value.Meta.Refs = result.Refs
+		}
 		var encoded []byte
-		if task, ok := result.Data.(TaskFull); ok {
+		if task, ok := result.Data.(TaskFull); ok && result.Observation == nil {
 			var output bytes.Buffer
 			_, err = taskprotocol.EncodeMCPProjection(&output, task, actor.RequestID, result.Outcome, math.MaxInt64)
 			encoded = output.Bytes()

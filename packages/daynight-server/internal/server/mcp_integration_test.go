@@ -119,6 +119,9 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 			if name == "task_ready" && view == "full" && items[0].(map[string]any)["description"] != "Complete description" {
 				t.Fatalf("ready full: %#v", value)
 			}
+			if name == "task_list" {
+				assertMCPUnstartedObservation(t, items[0].(map[string]any))
+			}
 		}
 	}
 	for _, view := range []string{"summary", "full"} {
@@ -128,10 +131,16 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		if data["projection"] != view || len(data["tasks"].([]any)) != 1 {
 			t.Fatalf("graph %s: %#v", view, value)
 		}
+		assertMCPUnstartedObservation(t, data["tasks"].([]any)[0].(map[string]any))
 	}
 	bobQueries := mcpPATClient(t, production.URL, tokens[1])
-	denyCounts := newHTTPCallPlan(t, map[string]int{"denied snapshot": 1, "denied access": 1})
+	denyCounts := newHTTPCallPlan(t, map[string]int{"denied snapshot": 1, "denied credential": 1, "denied access": 1})
 	deniedSnapshot := newHTTPTestSnapshot(t)
+	deniedSnapshot.Credentials = &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "MCP denied observation credential"), CredentialFn: func(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
+		denyCounts.Called("denied credential")
+		mcpAttachmentCheck(t, p, principals[1])
+		return store.ThreadCredential{}, nil
+	}}
 	deniedSnapshot.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
 		denyCounts.Called("denied access")
 		mcpAttachmentCheck(t, p, principals[1])

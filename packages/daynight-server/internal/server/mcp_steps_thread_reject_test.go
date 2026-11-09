@@ -349,3 +349,12 @@ func (d mcpStepsRejectedWebhookCaptureDAO) SaveCapture(context.Context, store.We
 	unexpectedHTTPCall(d.t, "WebhookCaptureDAO.SaveCapture")
 	panic("unreachable")
 }
+
+func (d mcpStepsRejectedTaskReader) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskWorkGroups")
+	panic("unreachable")
+}
+func (d mcpStepsRejectedTaskReader) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskWorkTargets")
+	panic("unreachable")
+}

@@ -20,7 +20,7 @@ func TestInvitationInspectionOmitsMissingAccess(t *testing.T) {
 
 func TestPublicTaskQueryRegistrationPublishesQueryTools(t *testing.T) {
 	f := newEntryFixture(t)
-	if err := RegisterTaskQueryTools(f.entry, nil); err != nil {
+	if err := RegisterTaskQueryTools(f.entry, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	client := f.client(t, "2026-07-28", "alice")

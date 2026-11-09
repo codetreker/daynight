@@ -6,6 +6,8 @@ import { UsageError } from "../../../src/cli/context.js";
 import { runTaskCommand } from "../../../src/commands/task/command.js";
 import type { TaskCommandDependencies } from "../../../src/commands/task/command.js";
 import { renderTask, renderTaskList } from "../../../src/commands/task/rendering.js";
+import { notApplicableObservation as session } from "../../fixtures/task-observation.js";
+import type { ObservedTaskGraph } from "../../../src/api/task-observation.js";
 
 const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const taskId = "abcdefab-2222-4222-8333-123456789abc";
@@ -19,12 +21,18 @@ const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.exa
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
+const observe = (task: Task) => ({ ...task, session });
+const observeGraph = (value: TaskGraph): ObservedTaskGraph => ({ ...value, tasks: value.tasks.map(task => ({ ...task, session, relation: "member" })), sessionSummary: { indicator: null, workingCount: 0, noticeCount: 0, warningCount: 0, unknownCount: 0, complete: true, observedAt: time }, partial: false });
 const propertySchema = { properties: { future: { description: "Future definition", readOnly: false, schema: { type: "string", custom: { version: 7 } } } } };
 const operations: Operation[] = [];
 afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose()); });
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    inspectTaskSession: vi.fn<ApiClient["inspectTaskSession"]>(), listTaskWork: vi.fn<ApiClient["listTaskWork"]>(),
+    getObservedTask: vi.fn<ApiClient["getObservedTask"]>().mockResolvedValue(observe(task)),
+    listObservedTasks: vi.fn<ApiClient["listObservedTasks"]>().mockResolvedValue({ items: [observe(task)], partial: false, unsupported: false }),
+    getObservedTaskGraph: vi.fn<ApiClient["getObservedTaskGraph"]>().mockResolvedValue(observeGraph(graph)),
     previewProjectTransfer: vi.fn(), transferProject: vi.fn(), previewProjectDeletion: vi.fn(), deleteProject: vi.fn(),
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
@@ -351,7 +359,7 @@ describe("task request contracts", () => {
     const f = fixture();
     await runTaskCommand(["list", "--compatible-platform", compatiblePlatform, "--allow-agents", "true", "--ready", "--project", projectId], f.context, f.dependencies);
     await runTaskCommand(["ready", `--compatible-platform=${compatiblePlatform}`, "--allow-agents", "false", "--limit", "1", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { ready: true, allowAgents: true, compatiblePlatform });
+    expect(f.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, { ready: true, allowAgents: true, compatiblePlatform });
     expect(f.api.listReadyTasks).toHaveBeenCalledExactlyOnceWith(projectId, 1, { allowAgents: false, compatiblePlatform });
   });
 
@@ -377,9 +385,9 @@ describe("task request contracts", () => {
   it.each([null, "windows", "linux", "macos"] as const)("renders platform %s in complete, inventory and graph output", async (requiredPlatform) => {
     const f = fixture();
     const value = { ...task, requiredPlatform };
-    f.api.getTask.mockResolvedValue(value);
-    f.api.listTasks.mockResolvedValue([value]);
-    f.api.getTaskGraph.mockResolvedValue({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, requiredPlatform })) });
+    f.api.getObservedTask.mockResolvedValue(observe(value));
+    f.api.listObservedTasks.mockResolvedValue({ items: [observe(value)], partial: false, unsupported: false });
+    f.api.getObservedTaskGraph.mockResolvedValue(observeGraph({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, requiredPlatform })) }));
     for (const args of [["show", taskId], ["list"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
     for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`Required platform: ${requiredPlatform === null ? "any" : requiredPlatform}\n`);
   });
@@ -388,7 +396,7 @@ describe("task request contracts", () => {
     const f = fixture();
     await runTaskCommand(["list", "--allow-agents", String(allowAgents), "--ready", "--project", projectId], f.context, f.dependencies);
     await runTaskCommand(["ready", "--allow-agents", String(allowAgents), "--limit", "1", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { ready: true, allowAgents });
+    expect(f.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, { ready: true, allowAgents });
     expect(f.api.listReadyTasks).toHaveBeenCalledExactlyOnceWith(projectId, 1, { allowAgents });
   });
 
@@ -432,10 +440,10 @@ describe("task request contracts", () => {
   it("combines status and ready filters without inventing absent fields", async () => {
     const f = fixture();
     await runTaskCommand(["list", "--status", "todo", "--ready", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { status: "todo", ready: true });
+    expect(f.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, { status: "todo", ready: true });
     const unfiltered = fixture();
     await runTaskCommand(["list", "--project", projectId], unfiltered.context, unfiltered.dependencies);
-    expect(unfiltered.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, {});
+    expect(unfiltered.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, {});
   });
 
   it.each([{ args: [], limit: 10 }, { args: ["--limit", "1"], limit: 1 }, { args: ["--limit=100"], limit: 100 }, { args: ["--limit=002"], limit: 2 }])("requests a bounded ready page with limit $limit", async ({ args, limit }) => {
@@ -514,7 +522,7 @@ describe("task output contracts", () => {
   it.each(["create", "show", "update"])("renders every task field in %s human output", async (command) => {
     const f = fixture();
     const current = { ...task, properties: { pullRequests: [{ title: "First", url: "arbitrary text" }, { title: "First", url: "arbitrary text" }, { title: "", url: "" }] }, dependsOn: [dependencyId], externalDependsOn: [dependencyId], blockedBy: [dependencyId], ready: false };
-    f.api.createTask.mockResolvedValue(current); f.api.getTask.mockResolvedValue(current); f.api.updateTask.mockResolvedValue(current);
+    f.api.createTask.mockResolvedValue(current); f.api.getTask.mockResolvedValue(current); f.api.getObservedTask.mockResolvedValue(observe(current)); f.api.updateTask.mockResolvedValue(current);
     const base = command === "create" ? [command, "--title", "Title"] : command === "update" ? [command, taskId, "--description="] : [command, taskId];
     await runTaskCommand([...base, "--project", projectId], f.context, f.dependencies);
     const output = f.context.stdout.mock.calls[0]![0];
@@ -530,7 +538,7 @@ describe("task output contracts", () => {
     expect(output.endsWith("\n")).toBe(true);
     const parsed = parseApiJson(output);
     const { description: _description, ...listItem } = task;
-    expect(parsed).toEqual(command === "list" ? [listItem] : command === "ready" ? [task] : command === "graph" ? graph : task);
+    expect(parsed).toEqual(command === "list" ? [{ ...listItem, session }] : command === "ready" ? [task] : command === "graph" ? observeGraph(graph) : observe(task));
     if (command === "list") expect(parsed).not.toHaveProperty("0.description");
     if (command === "ready") expect(parsed).toHaveProperty("0.description", task.description);
     if (command !== "graph") expect(output).toContain('"version":9007199254740993');
@@ -541,7 +549,7 @@ describe("task output contracts", () => {
     await runTaskCommand(["graph", taskId, "--project", projectId], f.context, f.dependencies);
     const output = f.context.stdout.mock.calls[0]![0];
     for (const field of [`Project: ${projectId}`, "Name: Project", `Repository: ${project.repoUrl}`, "Summary:", "Total: 1", "Todo: 1", "In progress: 0", "Done: 0", "Ready: 1", "Blocked: 0", `ID: ${taskId}`, "Title preview: Task title", "Title truncated: true", "Depends on: none", "External dependencies (0): none", "Blocked by: none"]) expect(output).toContain(field);
-    expect(f.api.getTaskGraph).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.api.getObservedTaskGraph).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
   });
 
   it.each([false, true])("prints only complete dependency declarations in graph audit mode with JSON=%s", async (json) => {
@@ -564,17 +572,17 @@ describe("task output contracts", () => {
   it("keeps terminal control characters visible and preserves raw JSON strings", async () => {
     const f = fixture();
     const raw = { ...task, title: "First\nSecond\u001b[2J", description: "Tab\tReturn\r\u0085", properties: { pullRequests: [{ title: "\0\n\u001b[2J", url: "Tab\tReturn\r\u0085" }, { title: "", url: "" }] } };
-    f.api.getTask.mockResolvedValue(raw);
+    f.api.getObservedTask.mockResolvedValue(observe(raw));
     await runTaskCommand(["show", taskId, "--project", projectId], f.context, f.dependencies);
     expect(f.context.stdout.mock.calls[0]![0]).toContain("First\\nSecond\\u001b[2J");
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Tab\\tReturn\\r\\u0085");
     expect(f.context.stdout.mock.calls[0]![0]).toContain('"title":"\\u0000\\n\\u001b[2J"');
     await runTaskCommand(["show", taskId, "--project", projectId, "--json"], f.context, f.dependencies);
-    expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(raw);
+    expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(observe(raw));
   });
 
   it("renders an empty task list explicitly", async () => {
-    const f = fixture(); f.api.listTasks.mockResolvedValue([]);
+    const f = fixture(); f.api.listObservedTasks.mockResolvedValue({ items: [], partial: false, unsupported: false });
     await runTaskCommand(["list", "--project", projectId], f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenLastCalledWith("No tasks.\n");
   });
@@ -669,15 +677,15 @@ describe("task responsibility options", () => {
   it.each([dependencyId, "me", "unassigned"])("passes responsibility filter %s before pagination without another identity request", async (assignedTo) => {
     const f = fixture();
     await runTaskCommand(["list", "--assigned-to", assignedTo, "--ready", "--allow-agents", "true", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { assignedTo, ready: true, allowAgents: true });
+    expect(f.api.listObservedTasks).toHaveBeenCalledExactlyOnceWith(projectId, { assignedTo, ready: true, allowAgents: true });
     expect(f.api.getCurrentUser).not.toHaveBeenCalled();
   });
 
   it.each([null, dependencyId])("renders current assignment %s without changing dependency-only JSON", async (assignedTo) => {
     const f = fixture();
     const value = { ...task, assignedTo };
-    f.api.getTask.mockResolvedValue(value); f.api.listTasks.mockResolvedValue([value]); f.api.listReadyTasks.mockResolvedValue([value]);
-    f.api.getTaskGraph.mockResolvedValue({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, assignedTo })) });
+    f.api.getObservedTask.mockResolvedValue(observe(value)); f.api.listObservedTasks.mockResolvedValue({ items: [observe(value)], partial: false, unsupported: false }); f.api.listReadyTasks.mockResolvedValue([value]);
+    f.api.getObservedTaskGraph.mockResolvedValue(observeGraph({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, assignedTo })) }));
     for (const args of [["show", taskId], ["list"], ["ready"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
     for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`Assigned to: ${assignedTo === null ? "unassigned" : assignedTo}\n`);
     f.context.stdout.mockClear();

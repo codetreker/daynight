@@ -295,7 +295,15 @@ func TestMCPTaskCancellationPreservesReadabilityAndSatisfiesDependencies(t *test
 		taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": original.ID, "status": status, "ifVersion": "2"}, "invalid_transition")
 	}
 	expectTaskGet(t, f, cancelled, nil)
-	if show := taskData(t, f.client, "task_show", map[string]any{"projectId": f.project, "taskId": original.ID, "view": "full"}); !reflect.DeepEqual(show, resource) {
+	show := taskData(t, f.client, "task_show", map[string]any{"projectId": f.project, "taskId": original.ID, "view": "full"})
+	if _, present := show["session"]; !present {
+		t.Fatal("observed show omitted session")
+	}
+	if _, present := resource["session"]; present {
+		t.Fatal("mutation acquired a live observation")
+	}
+	delete(show, "session")
+	if !reflect.DeepEqual(show, resource) {
 		t.Fatalf("cancelled read projection: %#v", show)
 	}
 	dependent := taskFixtureTask()

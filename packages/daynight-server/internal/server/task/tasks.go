@@ -21,15 +21,18 @@ import (
 )
 
 type taskHandler struct {
-	tasks  TaskService
-	sync   SyncOperation
-	window time.Duration
-	logger *slog.Logger
+	tasks        TaskService
+	observations ObservationService
+	sync         SyncOperation
+	window       time.Duration
+	logger       *slog.Logger
 }
 
-func TaskRoutes(mux *http.ServeMux, tasks TaskService, auth RouteAuthentication, logger *slog.Logger) {
-	handler := &taskHandler{tasks: tasks, logger: logger}
+func TaskRoutes(mux *http.ServeMux, tasks TaskService, observations ObservationService, auth RouteAuthentication, logger *slog.Logger) {
+	handler := &taskHandler{tasks: tasks, observations: observations, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", auth.Require(handler.create))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-work", auth.Require(handler.work))
+	mux.HandleFunc("/api/v1/projects/{projectId}/task-work", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", auth.Require(handler.list))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.get))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.update))
@@ -198,12 +201,15 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "workerId", "assignedTo")
+	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "workerId", "assignedTo", "include")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
 	page, err := httpx.PageValues(values)
 	if err != nil {
+		return service.TaskListRequest{}, err
+	}
+	if _, err := sessionIncluded(request); err != nil {
 		return service.TaskListRequest{}, err
 	}
 	result := service.TaskListRequest{PageRequest: page}
@@ -286,6 +292,10 @@ func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, princip
 		httpx.WriteError(w, request, logger, "task", "list", err)
 		return
 	}
+	if included, _ := sessionIncluded(request); included {
+		h.observedList(w, request, principal, projectID, input)
+		return
+	}
 	page, err := h.listWorkerCompatibleTasks(request, principal, projectID, input)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "list", err)
@@ -317,6 +327,15 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "get", err)
+		return
+	}
+	included, err := sessionIncluded(request)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "task", "get", err)
+		return
+	}
+	if included {
+		h.observedGet(w, request, principal, projectID, id)
 		return
 	}
 	observation, err := h.tasks.Observe(request.Context(), principal, projectID, id)

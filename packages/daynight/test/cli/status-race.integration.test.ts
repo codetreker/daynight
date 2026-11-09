@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
+import { withTaskObservation } from "../fixtures/task-observation.js";
 
 const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const taskId = "b1b2c3d4-1111-4222-8333-123456789abc";
@@ -163,7 +164,7 @@ it("keeps returned external classification on a task read after a property write
   const classified = { ...task, properties, dependsOn: [prerequisite], externalDependsOn: [prerequisite] };
   const f = await fixture((request, response) => {
     if (request.method === "PUT" && request.path === `/api/v1/projects/${projectId}/tasks/${taskId}/properties/pullRequests`) respond(response, { projectId, taskId, version: classified.version, properties });
-    else if (request.method === "GET" && request.path === `/api/v1/projects/${projectId}/tasks/${taskId}`) respond(response, classified);
+    else if (request.method === "GET" && request.path === `/api/v1/projects/${projectId}/tasks/${taskId}?include=session`) respond(response, withTaskObservation(classified));
     else respond(response, { error: { code: "not_found", message: "Unexpected request", requestId: "unexpected" } }, 404);
   });
   try {
@@ -174,11 +175,11 @@ it("keeps returned external classification on a task read after a property write
     const shown = await f.run(["show", taskId, "--json"], false);
     expect(shown.code, shown.stderr).toBe(0);
     expect(shown.stderr).toBe("");
-    expect(parseApiJson(shown.stdout)).toEqual(classified);
+    expect(parseApiJson(shown.stdout)).toEqual(withTaskObservation(classified));
     expect(f.requests).toEqual([
       { method: "PUT", path: `/api/v1/projects/${projectId}/tasks/${taskId}/properties/pullRequests`, body: { version: 9_007_199_254_740_993n, valueText: value } },
       { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
-      { method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}`, body: null },
+      { method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}?include=session`, body: null },
     ]);
   } finally { await f.close(); }
 }, 60_000);
@@ -190,7 +191,7 @@ it.each(["property", "metadata", "status"] as const)("preserves nonempty PRs and
   const returned = action === "property" ? original : action === "metadata" ? { ...original, description: "Updated metadata", version: original.version + 1n } : { ...original, status: "done", completedAt: time, version: original.version + 1n };
   const resourcePath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
   const f = await fixture((request, response) => {
-    if (request.method === "GET" && request.path === resourcePath) respond(response, returned);
+    if (request.method === "GET" && request.path === `${resourcePath}?include=session`) respond(response, withTaskObservation(returned));
     else if (action === "property" && request.method === "PUT" && request.path === `${resourcePath}/properties/pullRequests`) respond(response, { projectId, taskId, version: original.version, properties });
     else if (action === "metadata" && request.method === "PATCH" && request.path === resourcePath) respond(response, returned);
     else if (action === "status" && request.method === "PUT" && request.path === `${resourcePath}/status`) respond(response, returned);
@@ -206,7 +207,7 @@ it.each(["property", "metadata", "status"] as const)("preserves nonempty PRs and
     expect(changed.stdout).toContain(`Version: ${returned.version}\n`);
     const shown = await f.run(["show", taskId, "--json"], false);
     expect(shown.code, shown.stderr).toBe(0);
-    expect(parseApiJson(shown.stdout)).toEqual(returned);
+    expect(parseApiJson(shown.stdout)).toEqual(withTaskObservation(returned));
     const write = action === "property"
       ? { method: "PUT", path: `${resourcePath}/properties/pullRequests`, body: { version: original.version, valueText: raw } }
       : action === "metadata"
@@ -215,7 +216,7 @@ it.each(["property", "metadata", "status"] as const)("preserves nonempty PRs and
     expect(f.requests).toEqual([
       ...(action === "property" ? [] : [{ method: "GET", path: `/api/v1/projects/${projectId}`, body: null }]), write,
       { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
-      { method: "GET", path: resourcePath, body: null },
+      { method: "GET", path: `${resourcePath}?include=session`, body: null },
     ]);
   } finally { await f.close(); }
 }, 60_000);

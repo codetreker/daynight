@@ -36,8 +36,9 @@ through `List` or `ListWorker`. The DAO uses ordinary Go JSON decoding; fields,
 normalization and existing capacity checks belong to write ingress. Bot pages
 continue by item count without domain read-byte admission or candidate callbacks.
 Normal decoding and output errors propagate. Successful MCP reads have no
-output-schema or byte admission; input checks, deadlines and resource permits
-remain independent.
+shared output-schema or byte admission; input checks, deadlines and resource
+permits remain independent. Work overviews apply their own page budget before
+the shared encoder.
 
 A name-only create resolves a fresh compatible Worker report and freezes its
 configuration. Older Workers without `assistantHost` remain unsupported, even
@@ -197,6 +198,28 @@ pages with real ordinary-dependency context, and rejects continuation when the
 project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
 include successful pages and typed failures.
 
+The [Task Session observation requirements](../../docs/spec/task-session-observation.md)
+and [design](../../docs/design/task-session-observation.md) define ephemeral
+Session summaries on Task list, show and graph reads negotiated with
+`include=session`. The summary separates activity, the existing Web indicator,
+freshness and ordinary-message eligibility; the persisted Session owner governs
+eligibility. Observation failures retain Task data and mark the result partial,
+while credential and Project access failures reject the entire read. Ready
+queries, mutation responses, dependency-only reads and Web task-sync retain
+their existing projections.
+
+`GET /api/v1/projects/{projectId}/task-work` groups ongoing work by ordinary
+dependency components. A matching in-progress child selects its component even
+when its roots are done. External dependencies do not expand groups or contribute
+to their summaries. Pages default to 20 groups (maximum 50), with five root
+previews and twenty target previews per group. Group `cursor` and
+`groupId` plus `targetsCursor` continuations are separate; Task graph changes
+return `reset_required`, while Session changes do not invalidate membership.
+Each page has a dedicated 256 KiB complete-response budget, including the HTTP
+newline or MCP JSON-RPC envelope. MCP batch admission is per result. Continuation
+uses the last returned group or target; a result that cannot fit refuses with
+`resource_limit_exceeded`.
+
 The [task-summary synchronization requirements](../../docs/spec/daynight-task-sync.md)
 and [architecture](../../docs/design/daynight-task-sync.md) define the implemented
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
@@ -276,6 +299,14 @@ the authenticated actor to match the persisted Session owner. Project and Team
 administrators receive the same read-only access as other non-owner members.
 Admission, dispatch, reconnection reconciliation and terminal lease/ACK checks
 apply this rule without changing the wire format or Controller ownership.
+
+`GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/inspection`
+reads an explicit Session's original identity, fence, `currentBinding`, readable
+source and observation. It performs no lifecycle writes and never substitutes
+the current Session for a historical one. Task observation permits effective
+PAT, OAuth and browser Session principals through a dedicated authorization
+purpose; it does not extend Controller, Test, Bot or command admission. OAuth
+tokens continue to enter through the MCP resource's audience and scope checks.
 
 Herdr Task Sessions use explicit `daynight.session.v2` selection with the shared
 Session registry and archive storage. The [terminal server design](../../docs/design/terminal-session-server.md)
@@ -495,8 +526,13 @@ view to a snapshot fence; `list_changed` requires restarting traversal when
 project task versions change. Task list pages use item-count continuation, and
 Task graph summary and full views return the complete selected graph. They do
 not apply domain read-byte or graph-size admission. Successful MCP reads use
-ordinary encoding without output-schema or result-byte admission; input,
-concurrency and deadline rules remain.
+ordinary encoding without runtime output-schema validation or shared result-byte
+admission; advertised schemas are verified by protocol tests. Input, concurrency
+and deadline rules remain. `task_list`, `task_show` and normal `task_graph` reads
+include Session observations with `meta.observedAt`, `partial` and resource
+references. `task_work_list` calls the work-overview use case, including its
+dedicated response budget. Session module registration advertises only
+implemented capabilities.
 
 `task_ready` returns the first matching ready Tasks ordered by creation time and
 UUID. Its `limit` defaults to 5 and accepts 1 through 20; permission and platform

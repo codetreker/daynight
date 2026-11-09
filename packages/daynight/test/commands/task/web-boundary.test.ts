@@ -4,6 +4,7 @@ import type { Project, Task } from "../../../src/api/types.js";
 import { runCli } from "../../../src/cli/application.js";
 import type { CliContext } from "../../../src/cli/context.js";
 import { runTaskCommand } from "../../../src/commands/task/command.js";
+import { withTaskObservation } from "../../fixtures/task-observation.js";
 import type { TaskCommandDependencies } from "../../../src/commands/task/command.js";
 
 const projectId = "aaaaaaaa-1111-4111-8111-111111111111";
@@ -72,13 +73,13 @@ describe("task CLI protocol outcomes", () => {
   it("writes Markdown unchanged and reads it back through JSON", async () => {
     const markdown = "# 中文\n\n  indented\r\n```ts\nconst x = '<>&';\n```\n";
     let stored = task;
-    const f = fixture((_url, init) => {
+    const f = fixture((url, init) => {
       if (init.method === "PATCH") {
         const body = parseApiJson(String(init.body)) as { version: bigint; description: string };
         expect(body).toEqual({ version: task.version, description: markdown });
         stored = { ...task, description: body.description, version: task.version + 1n };
       }
-      return json(stored);
+      return json(new URL(url).searchParams.get("include") === "session" ? withTaskObservation(stored) : stored);
     });
     expect(await f.run(["update", taskId, "--if-version", String(task.version), "--description", markdown, "--project", projectId])).toBe(0);
     expect(f.context.stderr).not.toHaveBeenCalled();

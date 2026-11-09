@@ -28,28 +28,30 @@ import (
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
-	Identity       *identity.Identity
-	OAuth          *oauth.Authenticator
-	OAuthGrants    *oauthcore.GrantLifecycle
-	Memberships    *project.Memberships
-	Projects       *project.Projects
-	Teams          *team.Teams
-	Workers        *worker.Workers
-	Prompts        *prompt.Prompts
-	WorkerReadOnly *workerreadonly.Broker
-	Bots           *bot.Bots
-	BotDeletions   *bot.Deletions
-	Tasks          *task.Tasks
-	TaskSearch     store.TaskSearchReader
-	TaskSteps      *task.TaskSteps
-	TaskThreads    *task.TaskThreads
-	TaskSync       *task.TaskSync
-	Attachments    *attachment.Attachments
-	PrivateContent *mcptransfer.Lifecycle
-	Downloads      *mcpdownload.Service
-	Uploads        *mcptransfer.Uploads
-	Engine         *sessioncore.Engine
-	Sessions       *session.Service
+	Identity         *identity.Identity
+	OAuth            *oauth.Authenticator
+	OAuthGrants      *oauthcore.GrantLifecycle
+	Memberships      *project.Memberships
+	Projects         *project.Projects
+	Teams            *team.Teams
+	Workers          *worker.Workers
+	Prompts          *prompt.Prompts
+	WorkerReadOnly   *workerreadonly.Broker
+	Bots             *bot.Bots
+	BotDeletions     *bot.Deletions
+	Tasks            *task.Tasks
+	TaskObservations *task.Observations
+	TaskInspection   *session.Inspection
+	TaskSearch       store.TaskSearchReader
+	TaskSteps        *task.TaskSteps
+	TaskThreads      *task.TaskThreads
+	TaskSync         *task.TaskSync
+	Attachments      *attachment.Attachments
+	PrivateContent   *mcptransfer.Lifecycle
+	Downloads        *mcpdownload.Service
+	Uploads          *mcptransfer.Uploads
+	Engine           *sessioncore.Engine
+	Sessions         *session.Service
 }
 
 type constructors struct {
@@ -78,24 +80,26 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 	engine := sessioncore.NewEngine(files)
 	workerReadOnly := worker.NewReadOnly(database)
 	return &Application{
-		Identity:       identity.New(database, client, callbackURL),
-		OAuth:          oauth.NewAuthenticator(database),
-		OAuthGrants:    oauthcore.NewGrantLifecycle(database),
-		Memberships:    project.NewMemberships(database),
-		Projects:       construct.projects(database, engine),
-		Teams:          team.NewTeams(database),
-		Workers:        worker.NewWorkersWithPrompts(database, database),
-		Prompts:        prompt.New(database),
-		WorkerReadOnly: workerReadOnly,
-		Bots:           bot.NewWithNativeDiscovery(database, workerReadOnly),
-		BotDeletions:   bot.NewDeletions(database, files, engine),
-		Tasks:          construct.tasks(database, capturer),
-		TaskSearch:     database,
-		TaskSteps:      task.NewTaskSteps(database, capturer),
-		TaskThreads:    task.NewTaskThreads(database, capturer),
-		TaskSync:       task.NewTaskSync(database, engine, overlap),
-		Attachments:    construct.attachments(database, database, files),
-		Engine:         engine,
-		Sessions:       session.New(database, engine),
+		Identity:         identity.New(database, client, callbackURL),
+		OAuth:            oauth.NewAuthenticator(database),
+		OAuthGrants:      oauthcore.NewGrantLifecycle(database),
+		Memberships:      project.NewMemberships(database),
+		Projects:         construct.projects(database, engine),
+		Teams:            team.NewTeams(database),
+		Workers:          worker.NewWorkersWithPrompts(database, database),
+		Prompts:          prompt.New(database),
+		WorkerReadOnly:   workerReadOnly,
+		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly),
+		BotDeletions:     bot.NewDeletions(database, files, engine),
+		Tasks:            construct.tasks(database, capturer),
+		TaskObservations: task.NewObservations(database, engine),
+		TaskInspection:   session.NewInspection(database, engine),
+		TaskSearch:       database,
+		TaskSteps:        task.NewTaskSteps(database, capturer),
+		TaskThreads:      task.NewTaskThreads(database, capturer),
+		TaskSync:         task.NewTaskSync(database, engine, overlap),
+		Attachments:      construct.attachments(database, database, files),
+		Engine:           engine,
+		Sessions:         session.New(database, engine),
 	}
 }

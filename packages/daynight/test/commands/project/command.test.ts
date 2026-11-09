@@ -19,6 +19,7 @@ const context = () => ({
 const fixture = (projects: readonly Project[] = []) => {
   const unavailable = async (): Promise<never> => { throw new Error("Unexpected task API"); };
   const api = {
+    inspectTaskSession: unavailable, getObservedTask: unavailable, listObservedTasks: unavailable, getObservedTaskGraph: unavailable, listTaskWork: unavailable,
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: unavailable,

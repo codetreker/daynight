@@ -28,6 +28,12 @@ methods and natural decoding or serialization without repeated Validate,
 Normalize, Admit, field limits or byte budgets. No historical compatibility,
 scan or migration is added, and removed read budgets do not become write quotas.
 
+The [Task Session work overview](../feature/2026-11-10-task-session-observation.md)
+is a scoped exception: its independent summary pages retain a dedicated 256 KiB
+complete-response budget and resumable group/target prefixes. Ordinary Task
+list, show and graph remain complete. This exception does not restore shared
+MCP runtime output validation or generic read admission.
+
 Project, Team, member, invitation and attachment page operations select their
 requested count plus one lookahead in a batch, after current authorization and
 scope filtering. The next cursor follows the last returned item. Existing

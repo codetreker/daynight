@@ -56,7 +56,7 @@ func TestProjectDeletionHTTPDurableResources(t *testing.T) {
 		h.Auth.RegisterRoutes(mux)
 		projecthttp.RegisterRoutes(mux, app.Projects, h.Auth, logger)
 		attachmenthttp.RegisterRoutes(mux, app.Attachments, h.Auth, logger)
-		taskhttp.TaskRoutes(mux, app.Tasks, h.Auth, logger)
+		taskhttp.TaskRoutes(mux, app.Tasks, app.TaskObservations, h.Auth, logger)
 		taskhttp.TaskStepsRoutes(mux, app.TaskSteps, h.Auth, logger)
 		taskhttp.TaskThreadRoutes(mux, app.TaskThreads, h.Auth, logger)
 		sessionhttp.NewRoutes(app.Sessions, h.Auth, logger).RegisterRoutes(mux)
