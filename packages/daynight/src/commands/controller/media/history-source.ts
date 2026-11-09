@@ -46,7 +46,8 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
     budget.assert(bytes.length + 16_384, true);
     const syncId = randomUUID(), filename = path.join(root, `${syncId}.json`), next: ImageHistorySyncIntent = { syncId, filename, historyEpoch, sourceThrough: source.through, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") };
     writeDurableJson(filename, body);
-    chmodSync(filename, 0o400); const fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); } syncDirectory();
+    // Acquire write access before sealing: Windows cannot flush a read-only handle.
+    const fd = openSync(filename, constants.O_RDWR | constants.O_NOFOLLOW); try { chmodSync(filename, 0o400); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory();
     db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(key, JSON.stringify(next));
     return next;
   });

@@ -145,7 +145,9 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         const validated = await decoder({ version: 1, policy: "image-validation-v1", inputPath: path.join(root, p.filename), expectedByteLength: p.spec.byteLength, expectedSha256: p.spec.sha256 }, controller.signal);
         if (validated.mediaType !== p.spec.mediaType || validated.byteLength !== p.spec.byteLength || validated.sha256 !== p.spec.sha256) throw new Error("Image validation differs from the declared original.");
         if (controller.signal.aborted) throw controller.signal.reason;
-        chmodSync(path.join(root, p.filename), 0o400); const fd = openPreparation(p); try { fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
+        // Windows FlushFileBuffers requires a handle opened for writing, even
+        // after the file becomes read-only. Keep that handle only for sealing.
+        const fd = openPreparation(p, true); try { chmodSync(path.join(root, p.filename), 0o400); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
         p.decoding = false; p.receipt = { ...p.receipt, state: "validated", validated, error: null }; put(p); return p.receipt;
       } catch (error) {
         p.decoding = false; p.receipt = { ...p.receipt, state: "failed", validated: null, error: { code: String(error).includes("component_unsupported") ? "component_unsupported" : "image_decode_failed", message: "The complete image could not be validated." } }; put(p); return p.receipt;
@@ -203,7 +205,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         syncDirectory(root);
         const validated = await decoder({ version: 1, policy: "image-validation-v1", inputPath: targetPath, expectedByteLength: input.byteLength, expectedSha256: input.sha256 }, controller.signal);
         if (controller.signal.aborted) throw controller.signal.reason;
-        chmodSync(targetPath, 0o400); const fd = openSync(targetPath, constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
+        const fd = openSync(targetPath, constants.O_RDWR | constants.O_NOFOLLOW); try { chmodSync(targetPath, 0o400); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
         transactions.write(() => { captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId, input.imageId); metadataBudget.assert(16384, true); db.prepare("INSERT INTO image_captures VALUES(?,?,?,?)").run(captureKey, input.imageId, filename, JSON.stringify(validated)); });
         retained = true; return validated;
       } finally { if (!retained && existsSync(targetPath)) { unlinkSync(targetPath); syncDirectory(root); } decoderCount--; captureInFlight.delete(captureKey); }
@@ -264,7 +266,11 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         linkSync(source.path, filename); created.push(filename); chmodSync(filename, 0o400);
         const fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW), linked = fstatSync(fd);
         if (linked.dev !== original.dev || linked.ino !== original.ino) { closeSync(fd); throw new Error("Native image original identity changed."); }
-        nativeHandles.push({ filename, fd, sha256: image.sha256, byteLength: image.byteLength }); fsyncSync(fd); syncDirectory(nativeRoot);
+        nativeHandles.push({ filename, fd, sha256: image.sha256, byteLength: image.byteLength });
+        // publishBytes already flushed the original bytes through its writer.
+        // POSIX can also flush chmod metadata through this read-only lease;
+        // Windows requires write access and does not use mode bits for admission.
+        if (process.platform !== "win32") fsyncSync(fd); syncDirectory(nativeRoot);
         const reference = `operation:${operationId}:${image.imageId}`;
         pendingPins.push({ resourceId: image.resourceId, reference, filename });
         native.push({ type: "image", imageId: image.imageId, resourceId: image.resourceId, mediaType: metadata.mediaType, byteLength: image.byteLength, sha256: image.sha256, localPath: filename });

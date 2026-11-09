@@ -29,4 +29,13 @@ func TestResourceNamespacePreservesScopeAndRejectsPaths(t *testing.T) {
 	if _, err := NewNamespace("../project", owner, session); err == nil {
 		t.Fatal("accepted a path as owner")
 	}
+	if _, err := n.ChunkPath(blob, -1); err == nil {
+		t.Fatal("accepted a negative chunk offset")
+	}
+	if _, err := n.ChunkPath("../upload", 0); err == nil {
+		t.Fatal("accepted an unsafe upload identity")
+	}
+	if path, err := n.ChunkPath(blob, 262144); err != nil || path != "users/"+owner+"/22/"+session+"/uploads/"+blob+"/262144" {
+		t.Fatalf("chunk path=%q err=%v", path, err)
+	}
 }

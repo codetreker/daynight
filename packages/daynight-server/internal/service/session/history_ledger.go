@@ -11,10 +11,24 @@ import (
 // revalidates the current owner, parent authority and fence without consuming a
 // grant again or exposing the owner's credential material to the Controller.
 func (s *Service) BeginHistoryLedgerReserved(ctx context.Context, project, taskID, id string, writer sessioncore.ActiveHistoryWriter, reservation *sessioncore.ArchivePreflightReservation) (*sessioncore.ArchiveOperation, error) {
+	return beginHistoryLedgerReserved(ctx, project, taskID, id, writer, reservation, historyLedgerOperations{
+		controller: s.controller,
+		principal:  (*sessioncore.Access).ActiveHistoryPrincipal,
+		begin:      s.Execution.BeginArchiveReserved,
+	})
+}
+
+type historyLedgerOperations struct {
+	controller sessioncore.ControllerRunner
+	principal  func(*sessioncore.Access, string, string, string, sessioncore.ActiveHistoryWriter) (model.Principal, error)
+	begin      func(context.Context, model.Principal, string, string, string, sessioncore.ArchiveMode, *sessioncore.ArchivePreflightReservation) (*sessioncore.ArchiveOperation, error)
+}
+
+func beginHistoryLedgerReserved(ctx context.Context, project, taskID, id string, writer sessioncore.ActiveHistoryWriter, reservation *sessioncore.ArchivePreflightReservation, operations historyLedgerOperations) (*sessioncore.ArchiveOperation, error) {
 	var principal model.Principal
-	e := s.controller(ctx, writer.Fence, func(access *sessioncore.Access) error {
+	e := operations.controller(ctx, writer.Fence, func(access *sessioncore.Access) error {
 		var err error
-		principal, err = access.ActiveHistoryPrincipal(project, taskID, id, writer)
+		principal, err = operations.principal(access, project, taskID, id, writer)
 		return err
 	})
 	if e != nil {
@@ -23,5 +37,5 @@ func (s *Service) BeginHistoryLedgerReserved(ctx context.Context, project, taskI
 		}
 		return nil, e
 	}
-	return s.Execution.BeginArchiveReserved(ctx, principal, project, taskID, id, sessioncore.ArchiveV1Upload, reservation)
+	return operations.begin(ctx, principal, project, taskID, id, sessioncore.ArchiveV1Upload, reservation)
 }

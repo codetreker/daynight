@@ -76,6 +76,10 @@ func (s *Deletions) credential(ctx context.Context, dao store.SessionDAO, p mode
 	return nil
 }
 func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p model.Principal, id string) (model.Bot, error) {
+	return s.lockBotUsing(ctx, scope, p, id, botcore.RequireDeletionOwner)
+}
+
+func (s *Deletions) lockBotUsing(ctx context.Context, scope store.SessionScope, p model.Principal, id string, requireOwner func(model.Bot, model.Principal) error) (model.Bot, error) {
 	if err := s.credential(ctx, scope.SessionDAO(), p); err != nil {
 		return model.Bot{}, err
 	}
@@ -86,7 +90,7 @@ func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p mod
 	if err != nil {
 		return bot, err
 	}
-	if err := botcore.RequireDeletionOwner(bot, p); err != nil {
+	if err := requireOwner(bot, p); err != nil {
 		return bot, err
 	}
 	return bot, nil
@@ -300,13 +304,17 @@ func (s *Deletions) clean(ctx context.Context, p model.Principal, id, deletionID
 // The barrier and Worker receipt are durable. Record failure separately without
 // downgrading a successful retry or interpreting an uncertain transaction.
 func (s *Deletions) recordCleanupFailure(ctx context.Context, p model.Principal, id, deletionID string) (model.Bot, error) {
+	return s.recordCleanupFailureUsing(ctx, p, id, deletionID, resourceDeletionOperations)
+}
+
+func (s *Deletions) recordCleanupFailureUsing(ctx context.Context, p model.Principal, id, deletionID string, operations resourceCleanupOperations) (model.Bot, error) {
 	var out model.Bot
 	completion, failure := s.writer.WriteSession(ctx, func(scope store.SessionScope) error {
-		bot, e := s.lockBot(ctx, scope, p, id)
+		bot, e := s.lockBotUsing(ctx, scope, p, id, operations.requireOwner)
 		if e != nil {
 			return e
 		}
-		change, e := botcore.FailServerCleanup(&bot, deletionID)
+		change, e := operations.fail(&bot, deletionID)
 		if e != nil {
 			return e
 		}
@@ -314,7 +322,7 @@ func (s *Deletions) recordCleanupFailure(ctx context.Context, p model.Principal,
 			out = bot
 			return nil
 		}
-		out, e = botcore.SaveDeletion(ctx, scope.BotDAO(), bot)
+		out, e = operations.save(ctx, scope.BotDAO(), bot)
 		return e
 	})
 	if failure != nil {

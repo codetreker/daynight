@@ -17,19 +17,39 @@ type resourceCleanupFailure struct{ cause error }
 func (e *resourceCleanupFailure) Error() string { return e.cause.Error() }
 func (e *resourceCleanupFailure) Unwrap() error { return e.cause }
 
+type resourceCleanupOperations struct {
+	requireOwner func(model.Bot, model.Principal) error
+	prepare      func(model.Bot, string) (bool, error)
+	fail         func(*model.Bot, string) (bool, error)
+	save         func(context.Context, store.BotWriteDAO, model.Bot) (model.Bot, error)
+}
+
+var resourceDeletionOperations = resourceCleanupOperations{
+	requireOwner: botcore.RequireDeletionOwner,
+	prepare:      botcore.PrepareServerCleanup,
+	fail:         botcore.FailServerCleanup,
+	save:         botcore.SaveDeletion,
+}
+
 // cleanSessionResources commits the deletion epoch before waiting for I/O. It
 // retains rows and files after an uncertain transaction instead of inferring
 // rollback or a successful stop from lease age.
 func (s *Deletions) cleanSessionResources(ctx context.Context, p model.Principal, id, deletionID string, live interface {
 	CancelSessionMedia(context.Context, string) error
 }) error {
+	return s.cleanSessionResourcesUsing(ctx, p, id, deletionID, live, resourceDeletionOperations)
+}
+
+func (s *Deletions) cleanSessionResourcesUsing(ctx context.Context, p model.Principal, id, deletionID string, live interface {
+	CancelSessionMedia(context.Context, string) error
+}, operations resourceCleanupOperations) error {
 	var sessions []store.BotSession
 	completion, err := s.writer.WriteSession(ctx, func(scope store.SessionScope) error {
-		bot, e := s.lockBot(ctx, scope, p, id)
+		bot, e := s.lockBotUsing(ctx, scope, p, id, operations.requireOwner)
 		if e != nil {
 			return e
 		}
-		change, e := botcore.PrepareServerCleanup(bot, deletionID)
+		change, e := operations.prepare(bot, deletionID)
 		if e != nil || !change {
 			return e
 		}
