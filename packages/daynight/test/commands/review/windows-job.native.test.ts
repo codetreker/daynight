@@ -17,6 +17,10 @@ const until = async (check: () => boolean | Promise<boolean>): Promise<void> => 
   const deadline = performance.now() + 10_000;
   while (!await check()) { if (performance.now() >= deadline) throw new Error("Native Job fixture barrier did not complete."); await new Promise(resolve => setTimeout(resolve, 10)); }
 };
+// libuv adds non-detached children to the parent's kill-on-close Job. Detach
+// only the leaf so it survives middle exit while inheriting the held review Job;
+// detached spawn omits CREATE_BREAKAWAY_FROM_JOB. Membership is checked below.
+// https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/deps/uv/src/win/process.c#L1052-L1087
 const fixtureSource = String.raw`
 const {spawn}=require('node:child_process'),fs=require('node:fs'),path=require('node:path');
 const dir=process.argv[2],role=process.argv[3]||'root';
@@ -29,7 +33,7 @@ if(role==='root') {
   if(fs.existsSync(path.join(dir,'leave-root')))process.exit(0);
  },5);
 } else if(role==='middle') {
- spawn(process.execPath,[__filename,dir,'leaf'],{stdio:'ignore'});
+ spawn(process.execPath,[__filename,dir,'leaf'],{stdio:'ignore',detached:true});
  setInterval(()=>{if(fs.existsSync(path.join(dir,'leave-middle')))process.exit(0);},5);
 } else setInterval(()=>fs.writeFileSync(path.join(dir,role+'.heartbeat'),String(Date.now())),15);
 `;
@@ -85,6 +89,13 @@ describe.skipIf(process.platform !== "win32")("native Windows review Job ownersh
               expect(capturedBeforeTermination).not.toContain(leafPid);
               expect(api.contains(handle, leaf)).toBe(true);
               writeFileSync(path.join(root, "leave-middle"), "release"); wait(() => api.signaled(middle));
+              record("middle-exited-before-job");
+              expect(api.signaled(leaf)).toBe(false);
+              const heartbeat = path.join(root, "leaf.heartbeat"); let before = 0;
+              wait(() => existsSync(heartbeat) && (before = Number(readFileSync(heartbeat, "utf8"))) > 0);
+              wait(() => { expect(api.signaled(leaf)).toBe(false); return Number(readFileSync(heartbeat, "utf8")) > before; });
+              expect(api.contains(handle, leaf)).toBe(true);
+              expect(api.signaled(leaf)).toBe(false);
             }
             record("before-terminate-job"); api.terminate(handle); record("terminate-return");
           },
@@ -100,11 +111,19 @@ describe.skipIf(process.platform !== "win32")("native Windows review Job ownersh
       record("admitted-target");
       if (scenario === "root already exited") {
         writeFileSync(path.join(root, "spawn"), "release");
-        const middle = capture("middle", await declaration("middle")); capture("leaf", await declaration("leaf"));
+        const middle = capture("middle", await declaration("middle")), leaf = capture("leaf", await declaration("leaf"));
+        expect(api.contains(job, leaf)).toBe(true);
         writeFileSync(path.join(root, "leave-middle"), "release"); await until(() => api.signaled(middle));
+        expect(api.signaled(leaf)).toBe(false);
         writeFileSync(path.join(root, "leave-root"), "release"); await until(() => phaseClosed);
         expect(phase.result).toMatchObject({ code: 0, signal: null, failure: null });
-        expect(api.signaled(observed.find(member => member.role === "leaf")!.handle)).toBe(false);
+        expect(api.signaled(target)).toBe(true);
+        expect(api.signaled(leaf)).toBe(false);
+        const heartbeat = path.join(root, "leaf.heartbeat"); let before = 0;
+        await until(() => existsSync(heartbeat) && (before = Number(readFileSync(heartbeat, "utf8"))) > 0);
+        await until(() => { expect(api.signaled(leaf)).toBe(false); return Number(readFileSync(heartbeat, "utf8")) > before; });
+        expect(api.contains(job, leaf)).toBe(true);
+        expect(api.signaled(leaf)).toBe(false);
         record("root-close-with-live-leaf");
       }
       await phase.stop(); record("stop-return");

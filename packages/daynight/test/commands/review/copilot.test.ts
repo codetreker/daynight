@@ -456,7 +456,8 @@ describe("Copilot skill discovery and phase ownership", () => {
     });
     const excludeProcess = vi.fn(async () => proof);
     const outcome = await f.run("success", {}, { excludeProcess });
-    expect(outcome.processExclusionFailure).toBe(error);
+    expect(outcome.processExclusionFailure).toBeInstanceOf(AggregateError);
+    expect((outcome.processExclusionFailure as AggregateError).errors).toContain(error);
     expect(excludeProcess).not.toHaveBeenCalled();
     expect(f.store.getReview(f.review.id)).toMatchObject({ processId: expect.any(Number), processIdentity: expect.stringContaining(":skill-list") });
     expect(existsSync(f.report)).toBe(false);
