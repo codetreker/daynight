@@ -1,5 +1,6 @@
 import type { CommandDefinition, CommandOption } from "../../cli/schema.js";
 import { taskStatuses } from "../../task/status.js";
+import { taskSessionDefinitions } from "./session/registry.js";
 
 const helpOption: CommandOption = { names: ["-h", "--help"], description: "Show this help", action: "help" };
 const projectOption: CommandOption = { names: ["--project"], description: "Use this project UUID for this invocation", value: { name: "project-id", kind: "text" } };
@@ -25,6 +26,7 @@ export const taskDefinition: CommandDefinition = {
   name: "task",
   description: "Create, query, update, and delete project tasks on the configured server",
   commands: [
+    ...taskSessionDefinitions,
     {
       name: "create",
       description: "Create a todo task with optional dependencies",
@@ -34,8 +36,14 @@ export const taskDefinition: CommandDefinition = {
     {
       name: "list",
       description: "List unfinished tasks, with in-progress and ready tasks first",
-      options: [{ names: ["--all"], description: "Include completed tasks; conflicts with --status" }, statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, listJsonOption, helpOption],
-      details: "By default, exclude done and cancelled tasks. Use --all for every status or --status for a specific status.\nCombine --assigned-to, --ready, --allow-agents and --compatible-platform with the selected statuses using AND. --assigned-to accepts a user UUID, me or unassigned; me uses the authenticated response principal. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. All filters apply before pagination; read every page before printing.\nOrder in_progress first, then ready todo, blocked todo, and terminal tasks; preserve server order within each group.\nText lists omit description, version, and timestamps. --json omits description and preserves every other task field with the same filtering and ordering.",
+      options: [{ names: ["--all"], description: "Include completed tasks; conflicts with --status" }, statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption,
+        { names: ["--group-by"], description: "Return one page of ordinary chains and independent tasks", value: { name: "chain", kind: "text", choices: ["chain"] } },
+        { names: ["--limit"], description: "Groups per page, 1–50 (default: 20); requires --group-by chain", value: { name: "count", kind: "text" } },
+        { names: ["--cursor"], description: "Continue a group page; requires --group-by chain", value: { name: "cursor", kind: "text" } },
+        { names: ["--group-id"], description: "Group UUID for a target continuation", value: { name: "group-id", kind: "text" } },
+        { names: ["--targets-cursor"], description: "Continue at most 20 targets with --group-id", value: { name: "cursor", kind: "text" } },
+        projectOption, listJsonOption, helpOption],
+      details: "By default, exclude done and cancelled tasks. Use --all for every status or --status for a specific status.\nCombine --assigned-to, --ready, --allow-agents and --compatible-platform with the selected statuses using AND. --assigned-to accepts a user UUID, me or unassigned; me uses the authenticated response principal. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. Ordinary lists read every matching page before printing, in_progress first, then ready todo, blocked todo, and terminal tasks; preserve server order within each group.\nOrdinary text lists omit description, Task version, and Task timestamps. --json remains an array, omits description, and adds each Task's Session observation. Observations from different pages have separate observedAt/freshUntil values and may be stale by output time. A partial observation preserves Task data and exits 3; an old service reports unsupported with an upgrade instruction.\n--group-by chain requires --status in_progress; --assigned-to defaults to me and cannot be unassigned. Other list filters and --all do not apply. This mode returns one page, including chains whose roots are already done, and does not expand external prerequisites. --cursor continues groups; --group-id and --targets-cursor must be paired and cannot combine with --cursor. Target pages contain at most 20 in-progress members regardless of --limit. Each group aggregates all accessible in-progress members, with each target's assignee and independent send eligibility. A changed Task graph requires restarting pagination. Session changes do not change pagination membership.",
     },
     {
       name: "search",
@@ -56,6 +64,7 @@ export const taskDefinition: CommandDefinition = {
       description: "Show a task by its ID",
       arguments: [taskArgument],
       options: [projectOption, jsonOption, helpOption],
+      details: "Include a read-only Session observation with identity, activity, freshness and the caller's ordinary-message eligibility. Task status and indicator colors do not grant sending permission. Partial observations preserve Task data and exit 3.",
     },
     {
       name: "properties",
@@ -111,7 +120,7 @@ export const taskDefinition: CommandDefinition = {
       description: "Show a task's complete chain and direct external prerequisites",
       arguments: [taskArgument],
       options: [{ names: ["--depends-only"], description: "Print only task IDs and complete dependency sets" }, projectOption, jsonOption, helpOption],
-      details: "Include every task connected through ordinary dependencies, in either direction and in every status, plus the chain members' direct external prerequisites. Do not expand those external tasks or include external dependents.\n--depends-only preserves the same task set and prints only id, dependsOn and externalDependsOn with complete UUIDs and dependency references, including references outside the returned task set. With --json, print an array containing only those three fields; otherwise print three labeled lines per task.",
+      details: "Include every task connected through ordinary dependencies, in either direction and in every status, plus the chain members' direct external prerequisites. Do not expand those external tasks or include external dependents. Each node includes its Session observation and member/external relation. sessionSummary aggregates in-progress members only; its observedAt is independent of the graph snapshot time.\n--depends-only does not request Session observations. It preserves the same task set and prints only id, dependsOn and externalDependsOn with complete UUIDs and dependency references, including references outside the returned task set. With --json, print an array containing only those three fields; otherwise print three labeled lines per task.",
     },
     {
       name: "step",

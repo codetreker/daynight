@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -374,4 +375,22 @@ func TestTaskQueryRegistrationRejectsInvalidDefinitions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (s *queryStub) ObservedMCPList(ctx context.Context, principal model.Principal, project string, request taskcore.MCPListRequest) (taskservice.ObservedMCPPage, error) {
+	page := taskservice.ObservedMCPPage{Items: []taskservice.ObservedMCPItem{}, ObservedAt: time.Now().UTC()}
+	err := s.MCPList(ctx, principal, project, request, func(item store.TaskPriorityItem, cursor string, more bool) bool {
+		page.Items = append(page.Items, taskservice.ObservedMCPItem{Item: item, Session: observationFixture()})
+		if more {
+			page.NextCursor = &cursor
+		} else {
+			page.NextCursor = nil
+		}
+		return true
+	})
+	return page, err
+}
+func (s *queryStub) ObserveGraph(ctx context.Context, p model.Principal, project, id string) (taskservice.ObservedGraph, error) {
+	graph, err := s.Graph(ctx, p, project, id)
+	return observedGraphFixture(graph), err
 }

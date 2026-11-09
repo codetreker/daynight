@@ -852,3 +852,20 @@ func taskHTTPMockStep(id string, position int64) model.TaskStep {
 	observed := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	return model.TaskStep{ID: id, Position: position, Title: "Step", Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed}
 }
+
+func (mock *taskHTTPReaderMock) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+	mock.need("TaskWorkGroups", false)
+	panic("unreachable")
+}
+func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	mock.need("TaskWorkTargets", false)
+	panic("unreachable")
+}
+func (mock *taskHTTPSessionReaderMock) TaskSessionSources(context.Context, string, []string) ([]store.TaskSessionSource, error) {
+	mock.need("TaskSessionSources", false)
+	panic("unreachable")
+}
+func (mock *taskHTTPSessionReaderMock) TaskSessionInspectionSource(context.Context, string, string, string) (store.TaskSessionSource, error) {
+	mock.need("TaskSessionInspectionSource", false)
+	panic("unreachable")
+}

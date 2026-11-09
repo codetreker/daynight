@@ -852,3 +852,20 @@ func taskMockStep(id string, position int64) model.TaskStep {
 	observed := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	return model.TaskStep{ID: id, Position: position, Title: "Step", Status: model.TaskStepTodo, CreatedAt: observed, UpdatedAt: observed}
 }
+
+func (mock *sessionReaderMock) TaskSessionSources(context.Context, string, []string) ([]store.TaskSessionSource, error) {
+	mock.need("TaskSessionSources", false)
+	return nil, nil
+}
+func (mock *sessionReaderMock) TaskSessionInspectionSource(context.Context, string, string, string) (store.TaskSessionSource, error) {
+	mock.need("TaskSessionInspectionSource", false)
+	return store.TaskSessionSource{}, nil
+}
+func (mock *taskReaderMock) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+	mock.need("TaskWorkGroups", false)
+	return store.TaskWorkGroups{}, nil
+}
+func (mock *taskReaderMock) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	mock.need("TaskWorkTargets", false)
+	return store.TaskWorkTargets{}, nil
+}

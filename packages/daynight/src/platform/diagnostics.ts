@@ -1,7 +1,7 @@
 import { formatSqliteError, SqliteAccessError } from "./sqlite-error.js";
 
 export class PublicDiagnosticError extends Error {
-  constructor(readonly publicText: string, readonly exitCode: 1 | 2, options: ErrorOptions) {
+  constructor(readonly publicText: string, readonly exitCode: 1 | 2 | 3, options: ErrorOptions) {
     super(publicText, options);
     this.name = "PublicDiagnosticError";
   }

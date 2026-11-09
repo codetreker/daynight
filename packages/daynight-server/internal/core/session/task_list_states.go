@@ -13,7 +13,10 @@ type taskSessionLiveState struct {
 	Fence           sp.ControllerFence
 	ConnectionState string
 	Synchronized    bool
+	SourceSynced    bool
 	Activity        string
+	Capabilities    sp.Capabilities
+	CurrentTurnID   *string
 }
 
 func (s *Engine) TaskListSessionStates(ctx context.Context, sources []store.TaskSessionSource) (map[string]model.SessionListState, error) {
@@ -81,7 +84,7 @@ func (s *Engine) readTaskSessionLiveStates(ctx context.Context, op *Operation, s
 		cell.mu.Lock()
 		var state *taskSessionLiveState
 		if value := cell.value; value != nil {
-			state = &taskSessionLiveState{Fence: value.Snapshot.ControllerFence, ConnectionState: value.Snapshot.ConnectionState, Synchronized: value.Snapshot.Synchronized, Activity: value.Snapshot.Activity}
+			state = &taskSessionLiveState{Fence: value.Snapshot.ControllerFence, ConnectionState: value.Snapshot.ConnectionState, Synchronized: value.Snapshot.Synchronized, SourceSynced: value.Synced, Activity: value.Snapshot.Activity, Capabilities: value.Snapshot.Capabilities, CurrentTurnID: copyObservationPointer(value.Snapshot.CurrentTurnID)}
 		}
 		cell.mu.Unlock()
 		if err := taskSessionReadAdmission(ctx, op); err != nil {
@@ -120,6 +123,10 @@ func taskListSessionState(source store.TaskSessionSource, live *taskSessionLiveS
 	if durable.LastSeen == nil || now.Sub(*durable.LastSeen) > HeartbeatTimeout {
 		connection = "disconnected"
 	}
+	return taskSessionIndicator(lifecycle, connection, synchronized, activity)
+}
+
+func taskSessionIndicator(lifecycle, connection string, synchronized bool, activity string) (model.SessionListState, bool) {
 	if activity == "unknown" && lifecycle == "active" && connection != "disconnected" {
 		return "", false
 	}

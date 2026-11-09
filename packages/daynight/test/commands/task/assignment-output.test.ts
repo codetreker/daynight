@@ -7,6 +7,7 @@ import type { CliContext } from "../../../src/cli/context.js";
 import { runCli } from "../../../src/cli/application.js";
 import { runTaskCommand } from "../../../src/commands/task/command.js";
 import type { TaskCommandDependencies } from "../../../src/commands/task/command.js";
+import { withTaskObservation, withGraphObservations } from "../../fixtures/task-observation.js";
 
 const projectId = "aaaaaaaa-1111-4111-8111-111111111111";
 const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
@@ -20,7 +21,7 @@ const fixture = () => {
   const operation = createOperation(); operations.push(operation);
   const api = {
     getProject: vi.fn(async () => project),
-    getTask: vi.fn(async () => ({ ...task, version: 9_007_199_254_740_994n })),
+    getTask: vi.fn<ApiClient["getTask"]>(async () => ({ ...task, version: 9_007_199_254_740_994n })),
     createTask: vi.fn(async () => task),
     updateTask: vi.fn(async () => ({ ...task, version: 9_007_199_254_740_994n })),
     listTasks: vi.fn(async () => [] as Task[]),
@@ -31,10 +32,15 @@ const fixture = () => {
     getTaskPropertySchema: vi.fn<ApiClient["getTaskPropertySchema"]>(),
   };
   const context = { version: "0.0.0", packageDirectory: "unused", homeDirectory: () => { throw new Error("Unexpected home read"); }, workingDirectory: () => { throw new Error("Unexpected repository read"); }, stdout: vi.fn<(text: string) => void>(), stderr: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn(async () => {}) } satisfies CliContext;
+  const observedApi = { ...api,
+    getObservedTask: async (...args: Parameters<ApiClient["getObservedTask"]>) => withTaskObservation(await api.getTask(...args)),
+    listObservedTasks: async (...args: Parameters<ApiClient["listObservedTasks"]>) => ({ items: (await (api.listTasks as ApiClient["listTasks"])(...args)).map(withTaskObservation), partial: false, unsupported: false }),
+    getObservedTaskGraph: async (...args: Parameters<ApiClient["getObservedTaskGraph"]>) => withGraphObservations(await api.getTaskGraph(...args), args[1]),
+  };
   const dependencies = {
     resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>(),
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
-      const output = await command({ api: api as unknown as ApiClient, operation, serverUrl: "http://localhost", serverConfiguration: { serverUrl: "http://localhost" } });
+      const output = await command({ api: observedApi as unknown as ApiClient, operation, serverUrl: "http://localhost", serverConfiguration: { serverUrl: "http://localhost" } });
       operation.check();
       if (typeof output === "string") current.stdout(output); else if (output !== undefined) current.stdout(output.output);
     }),
@@ -91,7 +97,7 @@ it("keeps empty properties and the exact version in task show JSON", async () =>
   const returned: Task = { ...task, properties: {}, version: 1n };
   f.api.getTask.mockResolvedValue(returned);
   await runTaskCommand(["show", taskId, "--json", "--project", projectId], f.context, f.dependencies);
-  expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(returned);
+  expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withTaskObservation(returned));
 });
 
 it("renders only returned graph nodes and their summary", async () => {
@@ -107,7 +113,7 @@ it("renders only returned graph nodes and their summary", async () => {
   expect(output).not.toContain("Proposed:");
   expect(output.match(/^ID: /gm)).toHaveLength(2);
   await runTaskCommand(["graph", taskId, "--json", "--project", projectId], f.context, f.dependencies);
-  expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(graph);
+  expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(withGraphObservations(graph, taskId));
   expect(f.context.stdout.mock.calls[1]![0]).toContain('"version":9007199254740993');
 });
 
@@ -119,7 +125,7 @@ it.each([
   const returned: Task = { ...task, status, requiredPlatform, allowAgents, version, properties: { pullRequests: [{ url: "历史", title: "Preserved" }] } };
   f.api.getTask.mockResolvedValue(returned);
   await runTaskCommand(["show", taskId, "--json", "--project", projectId], f.context, f.dependencies);
-  expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(returned);
+  expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withTaskObservation(returned));
   expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
 });
 
@@ -131,8 +137,8 @@ it("preserves ready and blocked todo details from the returned resources", async
   f.api.getTask.mockResolvedValueOnce(ready).mockResolvedValueOnce(blocked).mockResolvedValueOnce(ready);
   await runTaskCommand(["show", taskId, "--json", "--project", projectId], f.context, f.dependencies);
   await runTaskCommand(["show", taskId, "--json", "--project", projectId], f.context, f.dependencies);
-  expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(ready);
-  expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(blocked);
+  expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withTaskObservation(ready));
+  expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(withTaskObservation(blocked));
   await runTaskCommand(["show", taskId, "--project", projectId], f.context, f.dependencies);
   const text = f.context.stdout.mock.calls[2]![0];
   for (const field of ["Status: todo\n", "Ready: true\n", "Description: Persistent todo description\n", "Version: 17\n"]) expect(text).toContain(field);
@@ -160,7 +166,7 @@ it("keeps external dependency classification across show, list and graph text", 
   for (const args of [["show", taskId], ["list"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
   for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`External dependencies (1): ${prerequisite}\n`);
   await runTaskCommand(["graph", taskId, "--json", "--project", projectId], f.context, f.dependencies);
-  expect(parseApiJson(f.context.stdout.mock.calls[3]![0])).toEqual(graph);
+  expect(parseApiJson(f.context.stdout.mock.calls[3]![0])).toEqual(withGraphObservations(graph, taskId));
 });
 
 it("keeps completed graph members and summary in JSON", async () => {
@@ -170,7 +176,7 @@ it("keeps completed graph members and summary in JSON", async () => {
   const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, todo: 0, inProgress: 0, done: 2, cancelled: 0, ready: 0, blocked: 0 }, tasks: [{ ...node, id: prerequisite, dependsOn: [] }, node] };
   f.api.getTaskGraph.mockResolvedValue(graph);
   await runTaskCommand(["graph", taskId, "--json", "--project", projectId], f.context, f.dependencies);
-  expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(graph);
+  expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withGraphObservations(graph, taskId));
 });
 
 it("prints an explicit empty JSON array for an empty me-assigned list", async () => {

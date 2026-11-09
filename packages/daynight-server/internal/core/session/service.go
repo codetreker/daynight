@@ -186,11 +186,8 @@ func permissions(r *record, write bool, now time.Time) sp.Snapshot {
 	if v.Lifecycle == "draining" {
 		return v
 	}
-	accepted := v.InitialInputState == "provider_accepted" || v.InitialInputState == "confirmed" || v.TestExecutionID != "" && v.InitialInputState == "not_required"
-	v.Operations.CanSend = v.Capabilities.Send && accepted && (v.Identity.NativeSessionID != nil || v.TestExecutionID != "" && v.InitialInputState == "not_required" && v.Activity == "idle") && (v.Activity == "idle" || v.Activity == "working" && v.Capabilities.Steer && v.CurrentTurnID != nil)
-	if v.TestExecutionID != "" && v.Identity.NativeSessionID == nil && r.FirstInputBlocked {
-		v.Operations.CanSend = false
-	}
+	_, sendReason := messageSendEligibility(v, r.FirstInputBlocked)
+	v.Operations.CanSend = sendReason == "allowed"
 	v.Operations.CanCancel = v.Capabilities.Cancel && v.CurrentTurnID != nil
 	v.Operations.CanRespond = v.Capabilities.Respond
 	return v

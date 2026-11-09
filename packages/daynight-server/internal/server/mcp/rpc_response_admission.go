@@ -94,7 +94,7 @@ func injectBatchMeta(params []byte, key, value string) ([]byte, bool, error) {
 
 func budgetedToolName(name string) bool {
 	switch name {
-	case "task_create", "task_update", "task_set_status", "task_set_property", "task_remove_property":
+	case "task_work_list", "task_create", "task_update", "task_set_status", "task_set_property", "task_remove_property":
 		return true
 	}
 	return false

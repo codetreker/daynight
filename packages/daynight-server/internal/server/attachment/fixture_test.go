@@ -743,3 +743,12 @@ func (s *unexpectedIdentityDAO) ConsumeDevice(context.Context, string) error {
 	s.reject("ConsumeDevice")
 	panic("unreachable")
 }
+
+func (s *unexpectedTaskReader) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+	s.reject("TaskWorkGroups")
+	panic("unreachable")
+}
+func (s *unexpectedTaskReader) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	s.reject("TaskWorkTargets")
+	panic("unreachable")
+}
