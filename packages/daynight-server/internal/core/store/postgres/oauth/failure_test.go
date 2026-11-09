@@ -67,6 +67,8 @@ func TestDAOFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 	expiredClient := databaseStep{values: []any{"client", []byte(`{}`), now.Add(-9 * 24 * time.Hour), now.Add(-8 * 24 * time.Hour), now.Add(-24 * time.Hour)}}
 	activeClient := databaseStep{values: []any{"client", []byte(`{}`), now, now, now.Add(7 * 24 * time.Hour)}}
 	fresh := databaseStep{values: []any{now}}
+	actor := model.Principal{Kind: model.OAuthCredential, UserID: "user", CredentialID: "access"}
+	lockedID := databaseStep{values: []any{"locked"}}
 	issue := store.OAuthFamilyIssue{Grant: store.OAuthGrant{CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, AccessHash: make([]byte, 32), RefreshHash: make([]byte, 32), AccessExpiresAt: now.Add(time.Minute)}
 	for _, test := range []struct {
 		name      string
@@ -106,6 +108,9 @@ func TestDAOFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 		{"revocation update", []databaseStep{grant, fail}, func(d *DAO) error { _, err := d.RevokeFamily(ctx, "grant", now); return err }},
 		{"revocation access delete", []databaseStep{grant, ok, fail}, func(d *DAO) error { _, err := d.RevokeFamily(ctx, "grant", now); return err }},
 		{"access authentication", []databaseStep{fail}, func(d *DAO) error { _, err := d.AuthenticateAccess(ctx, nil, "resource", "scope", now); return err }},
+		{"access grant lock", []databaseStep{fail}, func(d *DAO) error { return d.LockAccess(ctx, actor, "resource", "scope", now) }},
+		{"access token lock", []databaseStep{lockedID, fail}, func(d *DAO) error { return d.LockAccess(ctx, actor, "resource", "scope", now) }},
+		{"access recheck", []databaseStep{lockedID, lockedID, fail}, func(d *DAO) error { return d.LockAccess(ctx, actor, "resource", "scope", now) }},
 		{"grant inspection", []databaseStep{fail}, func(d *DAO) error { _, err := d.InspectGrant(ctx, "grant", true); return err }},
 		{"client references", []databaseStep{fail}, func(d *DAO) error { _, err := d.ActiveClientReferences(ctx, "client", now); return err }},
 	} {

@@ -81,15 +81,18 @@ func (d *DAO) ActiveClientReferences(ctx context.Context, clientID string, now t
 	return active, pg.AuthQueryError("read active OAuth client references", err)
 }
 
-// LockAccess reauthorizes the persisted actor under its access-token lock.
-// Revocation deletes that token before committing. Re-reading the grant after
-// the token wait observes scope, revocation and expiry without acquiring a grant
-// lock after a Session lock during dispatch.
+// LockAccess reauthorizes the persisted actor under shared grant and token locks.
+// The grant lock prevents revocation from deleting one token while waiting for
+// another admission in the same family. Compatible dispatch readers can join
+// the shared grant lock even when revocation is queued behind an admission.
 func (d *DAO) LockAccess(ctx context.Context, p model.Principal, resource, scope string, now time.Time) error {
 	if p.Kind != model.OAuthCredential {
 		return model.ErrNotFound
 	}
-	var tokenID string
+	var grantID, tokenID string
+	if err := d.tx.QueryRow(ctx, `SELECT g.id::text FROM oauth_grants g JOIN oauth_access_tokens a ON a.grant_id=g.id AND a.user_id=g.user_id WHERE a.id=$1 AND a.user_id=$2 FOR SHARE OF g`, p.CredentialID, p.UserID).Scan(&grantID); err != nil {
+		return pg.AuthQueryError("lock OAuth access grant", err)
+	}
 	if err := d.tx.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE id=$1 AND user_id=$2 FOR SHARE`, p.CredentialID, p.UserID).Scan(&tokenID); err != nil {
 		return pg.AuthQueryError("lock OAuth access", err)
 	}

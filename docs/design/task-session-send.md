@@ -31,6 +31,8 @@ CLI runtime 的 known-session-operation 输出与普通读取、confirmed-mutati
 
 原 Task operation 查询按原 project/task/session 读取持久 receipt，验证当前凭据与项目访问，计算 currentBinding；它不依赖原 claim 仍为当前，不执行过期归档写入或队列恢复。原生结果保持原 Session 身份，不能从新的 current 合成。
 
-OAuth 按操作用途进入 Task send_message 或 receipt 作用域。提交与派发均使用真实 Actor，派发还检查持久凭据当前的 token、grant、scope、有效期、撤销、项目成员与 owner。锁后重新观察凭据状态，保持既有 Task、credential 和 Session 的锁顺序；OAuth 撤销与 access-token 锁必须有真实 PostgreSQL 的并发证明。
+OAuth 按操作用途进入 Task send_message 或 receipt 作用域。提交与派发均使用真实 Actor，派发还检查持久凭据当前的 token、grant、scope、有效期、撤销、项目成员与 owner。每次凭据检查先取 grant 共享锁，再取 access-token 共享锁，最后用独立语句与数据库时钟重新检查完整凭据状态。准入仍先完成凭据与项目授权，再加载 Session；派发在持有 Session 锁时重新检查原 Actor。
+
+Refresh 轮换保留尚未过期的旧 access token。同一 family 内的共享 grant 锁让撤销在删除任何 token 前等待准入事务，避免撤销已经删除旧 token、等待新 token 时与 Session 锁形成循环。排队的撤销不阻止兼容的派发共享锁；撤销提交后，旧、新 token 均不得再次准入。并发回归通过真实轮换与 PostgreSQL 锁等待屏障验证这一协议，具体取舍由[锁决策](../../.agents/notes/implemented/bug-fix/2026-11-10-task-oauth-family-locks.md)记录。
 
 MCP 的发送成功元信息保留服务写入结果、阶段和 refs；原生状态仍位于 data.operation.state。读取 not_found 保留错误码和原 refs，明确它不能证明原操作未发送。HTTP 202、MCP committed 和 Provider 接受分别由自己的所有者证明。

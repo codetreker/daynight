@@ -31,6 +31,10 @@ connectionEpoch is retained as an inspection observation, not added to the
 existing command wire. Historical receipt reads preserve their original Session
 after a new claim and do not restore a command queue. OAuth is admitted by Task
 purpose, with the original Actor reauthorized before dispatch.
+Task OAuth admission and dispatch share the
+[grant-before-token lock protocol](../bug-fix/2026-11-10-task-oauth-family-locks.md)
+so revocation cannot partially delete a rotated family while waiting for another
+request that needs the same Session.
 
 ## Alternatives
 

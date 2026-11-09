@@ -118,7 +118,7 @@ func TestTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 						t.Error("revoker did not drain")
 					}
 				}()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "DELETE FROM oauth_access_tokens", submit.Conn().PgConn().PID())
+				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submit.Conn().PgConn().PID())
 			}
 			readCtx, readCancel := context.WithTimeout(ctx, time.Second)
 			defer readCancel()
@@ -174,7 +174,7 @@ func TestTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *te
 					t.Fatal(err)
 				}
 				go func() { _, err := pgoauth.NewDAO(waiter).RevokeFamily(ctx, grant.ID, time.Now()); done <- err }()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "DELETE FROM oauth_access_tokens", blocker.Conn().PgConn().PID())
+				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", blocker.Conn().PgConn().PID())
 			} else {
 				if _, err := blocker.Exec(ctx, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, actor.CredentialID); err != nil {
 					t.Fatal(err)
@@ -248,11 +248,69 @@ func TestTaskOAuthCredentialReadDoesNotWaitBehindQueuedRevocation(t *testing.T) 
 			t.Error("revoker did not drain")
 		}
 	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "DELETE FROM oauth_access_tokens", submit.Conn().PgConn().PID())
+	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submit.Conn().PgConn().PID())
 	readCtx, readCancel := context.WithTimeout(ctx, time.Second)
 	defer readCancel()
 	if err := pgsession.New(dispatch).LockOAuthCredential(readCtx, actor, grant.Resource, grant.Scope, time.Now()); err != nil {
 		t.Fatalf("compatible dispatch credential read waited behind revocation: %v", err)
+	}
+}
+
+func TestTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T) {
+	for _, change := range []string{"scope", "expiry", "revocation"} {
+		t.Run(change, func(t *testing.T) {
+			db := isolatedStore(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			_, owner, _ := testAuthRecords(t, db)
+			grant, access, _ := testutil.OAuthFamily(t, db, owner.UserID, time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond))
+			actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
+			if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
+				t.Fatal(err)
+			}
+			blocker, err := db.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer blocker.Rollback(context.Background())
+			waiter, err := db.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer waiter.Rollback(context.Background())
+			switch change {
+			case "scope":
+				_, err = blocker.Exec(ctx, `UPDATE oauth_grants SET scope='changed' WHERE id=$1`, grant.ID)
+			case "expiry":
+				_, err = blocker.Exec(ctx, `UPDATE oauth_grants SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, grant.ID)
+			case "revocation":
+				_, err = pgoauth.NewDAO(blocker).RevokeFamily(ctx, grant.ID, time.Now())
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				result <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, grant.Resource, grant.Scope, time.Now())
+			}()
+			defer func() {
+				cancel()
+				_ = blocker.Rollback(context.Background())
+				select {
+				case <-finished:
+				case <-time.After(time.Second):
+					t.Error("credential waiter did not drain")
+				}
+			}()
+			testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT g.id::text FROM oauth_grants", blocker.Conn().PgConn().PID())
+			if err := blocker.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("changed grant admitted after lock wait: %v", err)
+			}
+		})
 	}
 }
 
