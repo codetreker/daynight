@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../workflows/checks.yml", import.meta.url), "utf8");
@@ -39,7 +38,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-api-integration", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -91,7 +90,6 @@ test("ordinary CLI owns source checks while installed CLI owns the complete inst
 
 const uploadSteps = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)]
   .map((match) => match[0]).filter((step) => /uses: actions\/upload-artifact@/.test(step));
-const originalUploadSteps = (stage: string): string[] => uploadSteps(stage).filter((step) => !step.includes("name: daynight-image-test-pairs-"));
 const artifactName = (step: string): string => step.match(/^          name: (.+)$/m)![1]!;
 const artifactPaths = (step: string): string[] => {
   const value = step.match(/^          path: (.+)$/m)![1]!;
@@ -103,7 +101,7 @@ test("the ordinary Ubuntu producer alone supplies the runtime matrix package", (
   assert.match(runtime, /^    needs: \[detect-changes, verify\]$/m);
   const producers = [...jobs.entries()].filter(([, stage]) => stage.includes('pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"'));
   assert.deepEqual(producers.map(([name]) => name), ["verify"]);
-  const upload = originalUploadSteps(ordinary).find((step) => artifactName(step) === "daynight-runtime-package")!;
+  const upload = uploadSteps(ordinary).find((step) => artifactName(step) === "daynight-runtime-package")!;
   assert.ok(upload);
   assert.match(upload, /^        if: matrix.os == 'ubuntu-latest'$/m);
   assert.deepEqual(artifactPaths(upload), [".tmp/daynight-runtime.tgz"]);
@@ -112,8 +110,8 @@ test("the ordinary Ubuntu producer alone supplies the runtime matrix package", (
 });
 
 test("native stages retain phase-owned environment, acceptance and failure-probe artifacts without collisions", () => {
-  const ordinaryUploads = originalUploadSteps(ordinary);
-  const installedUploads = originalUploadSteps(installed);
+  const ordinaryUploads = uploadSteps(ordinary);
+  const installedUploads = uploadSteps(installed);
   assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}", "daynight-cli-tests-probes-${{ matrix.os }}", "daynight-cli-tests-termination-macos-15"]);
   assert.deepEqual(installedUploads.map(artifactName), ["daynight-cli-installed-${{ matrix.os }}", "daynight-cli-installed-probes-${{ matrix.os }}"]);
   const names = [...ordinaryUploads, ...installedUploads].map(artifactName);
@@ -187,7 +185,7 @@ test("macOS termination diagnostics use only the ordinary matrix and upload afte
   assert.doesNotMatch(installed, /observe-native-validation|tests-termination/);
   const observer = stepsOf(ordinary).find((step) => step.includes("observe-native-validation.mjs"))!;
   assert.match(observer, /^        if: matrix.os == 'macos-15'$/m);
-  const upload = originalUploadSteps(ordinary).find((step) => artifactName(step) === "daynight-cli-tests-termination-macos-15")!;
+  const upload = uploadSteps(ordinary).find((step) => artifactName(step) === "daynight-cli-tests-termination-macos-15")!;
   assert.match(upload, /^        if: \$\{\{ always\(\) && matrix.os == 'macos-15' \}\}$/m);
   assert.deepEqual(artifactPaths(upload), [".tmp/native-validation/"]);
   assert.match(upload, /^          include-hidden-files: true$/m);
@@ -197,7 +195,7 @@ test("macOS termination diagnostics use only the ordinary matrix and upload afte
 });
 
 test("matrix artifacts retain unique names across all three platforms", () => {
-  const names = nativeStages.flatMap((stage) => originalUploadSteps(stage).flatMap((step) => {
+  const names = nativeStages.flatMap((stage) => uploadSteps(stage).flatMap((step) => {
     const name = artifactName(step);
     if (name === "daynight-runtime-package") return [name];
     if (name === "daynight-cli-tests-termination-macos-15") return [name];
@@ -243,7 +241,7 @@ test("Web quality and browser jobs prepare independent runners after module sele
 test("Web quality owns types, production build, harness, coverage and evidence", () => {
   assert.match(webQuality, /run: node packages\/daynight-web\/scripts\/ci.mts quality/);
   assert.doesNotMatch(webQuality, /playwright|web-browser|bots-viewport/);
-  const uploads = originalUploadSteps(webQuality);
+  const uploads = uploadSteps(webQuality);
   assert.deepEqual(uploads.map(artifactName), ["daynight-web-coverage"]);
   assert.match(uploads[0]!, /^        if: \$\{\{ always\(\) && steps.web-quality.outcome != 'skipped' \}\}$/m);
   assert.deepEqual(artifactPaths(uploads[0]!), ["packages/daynight-web/.tmp/coverage/coverage-final.json", "packages/daynight-web/.tmp/coverage/summary.json"]);
@@ -254,7 +252,7 @@ test("Web browser owns the unchanged frontend Playwright regressions and evidenc
   const steps = [...webBrowser.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
   const install = steps.find((step) => step.includes("playwright install"))!;
   const browser = steps.find((step) => step.includes("id: web-browser"))!;
-  const uploads = originalUploadSteps(webBrowser);
+  const uploads = uploadSteps(webBrowser);
   const upload = uploads[0]!;
   assert.ok(install); assert.ok(browser); assert.ok(upload);
   assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser"]);
@@ -301,7 +299,7 @@ test("product E2E has an independent Linux runner selected by its own inputs", (
   assert.match(productE2E, /^    needs: detect-changes$/m);
   assert.match(productE2E, /^    if: \$\{\{ needs.detect-changes.outputs.e2e == 'true' \}\}$/m);
   assert.match(productE2E, /^    runs-on: ubuntu-latest$/m);
-  assert.match(productE2E, /^    timeout-minutes: 42$/m);
+  assert.match(productE2E, /^    timeout-minutes: 40$/m);
   assert.match(productE2E, /^          fetch-depth: 0$/m);
   assert.match(productE2E, /^          persist-credentials: false$/m);
   assert.match(productE2E, /^          node-version: 24$/m);
@@ -322,7 +320,7 @@ test("product E2E budgets every step and reserves cleanup time within the job", 
     assert.ok(match, `Product E2E step lacks a positive timeout: ${step.split("\n")[0]}`);
     return Number(match[1]);
   });
-  assert.deepEqual(stepMinutes, [2, 2, 1, 2, 1, 3, 3, 4, 1, 1, 15, 3, 1, 1]);
+  assert.deepEqual(stepMinutes, [2, 2, 2, 1, 3, 3, 4, 1, 1, 15, 3, 1]);
   assert.ok(stepMinutes.reduce((total, minutes) => total + minutes, 0) <= jobMinutes - 2);
 });
 
@@ -349,7 +347,7 @@ test("product E2E reconciles after failure and uploads only results and logs", (
   const steps = stepsOf(productE2E);
   const journey = steps.find((step) => step.includes("id: product-e2e"))!;
   const cleanup = steps.find((step) => step.includes("run: pnpm e2e:cleanup"))!;
-  const uploads = originalUploadSteps(productE2E);
+  const uploads = uploadSteps(productE2E);
   assert.equal(uploads.length, 1);
   const upload = uploads[0]!;
   assert.match(cleanup, /^        if: \$\{\{ always\(\) && steps.product-e2e.outcome != 'skipped' \}\}$/m);
@@ -384,233 +382,127 @@ test("unselected product E2E may skip while selected modules succeed", () => {
   assert.equal(runGate({ ...success, "verify-e2e": "skipped" }), 0);
 });
 
-const workflowSteps = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
-const pairStep = (stage: string): string | undefined => workflowSteps(stage).find((step) => step.includes("        id: image-pairs\n"));
 
-test("one main-protected manifest pin supplies every application job before candidate execution", () => {
-  assert.doesNotMatch(workflow, /vars\.|DAYNIGHT_IMAGE_TEST_PAIRS_COMMIT|refs\/heads\/ci\/image-test-pairs/);
-  const detect = jobs.get("detect-changes")!;
-  assert.ok(detect.includes("image_pair_manifest_commit: ${{ steps.image-pairs.outputs.manifest_commit }}"));
-  assert.ok(detect.includes("image_pair_combined_tree: ${{ steps.image-pairs.outputs.combined_tree }}"));
-  const detectionInput = pairStep(detect)!;
-  assert.ok(detectionInput);
-  assert.ok(detectionInput.includes("IMAGE_PAIR_MANIFEST_COMMIT: ${{ github.event_name == 'push' && github.sha || '' }}"), "PR detection resolves main once; push detection retains the event commit even when main later advances.");
-  assert.ok(!detectionInput.includes("IMAGE_PAIR_EXPECTED_COMBINED_TREE:"), "Only initial detection may select the manifest and composition.");
-  assert.ok(detect.includes("image_pair_combined_commit: ${{ steps.image-pairs.outputs.combined_commit }}"));
-  assert.ok(detect.indexOf("id: image-pairs") < detect.indexOf("Test module selection"));
-  assert.ok(detect.includes(".github/scripts/image-test-pairs.test.mts"));
-  for (const [name, stage] of jobs) {
-    if (name === "detect-changes") continue;
-    const step = pairStep(stage);
-    assert.ok(step, `${name} must validate its own checkout`);
-    assert.ok(step.includes("IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}"));
-    assert.ok(step.includes("IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}"));
-    assert.ok(step.includes("IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}"));
-    assert.ok(step.includes("IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}"));
-    assert.ok(step.includes("IMAGE_PAIR_EVENT: ${{ github.event_name }}"));
-    assert.ok(step.includes("working-directory: ${{ github.workspace }}"));
-    assert.ok(!step.includes("if:"), `${name} cannot skip input validation`);
-    const install = workflowSteps(stage).find((entry) => /(?:pnpm[^\n]*\binstall\b|npm install)/.test(entry));
-    if (install !== undefined) assert.ok(stage.indexOf(step) < stage.indexOf(install), `${name} installs only after validation`);
-    if (name !== "checks") {
-      const upload = uploadSteps(stage).find((entry) => artifactName(entry).startsWith("daynight-image-test-pairs-"));
-      assert.ok(upload, `${name} must retain its actual pairing evidence`);
-      assert.deepEqual(artifactPaths(upload), [".tmp/image-test-pairs.json"]);
-    }
-  }
-});
-
-test("Web and product E2E runners retain separate receipts for their own validated input", () => {
-  for (const [name, selector] of [["verify-web-quality", "web"], ["verify-web-browser", "web"], ["verify-e2e", "e2e"]] as const) {
-    const stage = jobs.get(name)!;
-    assert.match(stage, /^          fetch-depth: 0$/m);
-    const receipts = uploadSteps(stage).filter((entry) => artifactName(entry).startsWith("daynight-image-test-pairs-"));
-    assert.equal(receipts.length, 1);
-    assert.equal(artifactName(receipts[0]!), `daynight-image-test-pairs-${name}`);
-    assert.match(receipts[0]!, /^        if: \$\{\{ always\(\) && steps.image-pairs.outcome == 'success' \}\}$/m);
-    assert.match(receipts[0]!, /^          if-no-files-found: error$/m);
-    const download = workflowSteps(gate).find((entry) => entry.includes(`name: Download pairing evidence for ${name}\n`));
-    assert.ok(download);
-    assert.ok(download.includes(`        if: \${{ needs.detect-changes.outputs.${selector} == 'true' }}`));
-    assert.equal(artifactName(download), artifactName(receipts[0]!));
-  }
-});
-
-test("pair validation has read-only step-scoped credentials without checkout persistence", () => {
-  assert.match(workflow, /^permissions:\n  contents: read\n  pull-requests: read\n/m);
-  assert.doesNotMatch(workflow, /^\s+[a-z-]+: write$/m);
-  for (const stage of jobs.values()) {
-    for (const step of workflowSteps(stage)) {
-      if (step.includes("uses: actions/checkout@")) assert.ok(step.includes("persist-credentials: false"));
-      if (step.includes("GITHUB_TOKEN:")) assert.ok(step.includes("id: image-pairs"));
-    }
-    assert.doesNotMatch(stage.split("    steps:\n")[0]!, /GITHUB_TOKEN|GH_TOKEN/);
-  }
-});
-
-test("runtime validation binds the downloaded package to its producer's pairing evidence", () => {
-  const runtime = jobs.get("verify-runtime")!;
-  const step = pairStep(runtime)!;
-  assert.ok(step);
-  const runtimeVersion = runtime.indexOf("node-version: ${{ matrix.node }}");
-  assert.ok(runtime.indexOf(step) < runtimeVersion, "The validator runs on Node 24 before the compatibility version.");
-  assert.ok(runtime.includes("name: daynight-image-test-pairs-verify-ubuntu-latest"));
-  assert.ok(runtime.includes("name: Verify runtime package input identity"));
-  assert.ok(runtime.indexOf("Verify runtime package input identity") < runtime.indexOf("Strictly install the packed CLI"));
-});
-
-test("the final gate checks complete pairing evidence independently of Web selection", () => {
-  const step = workflowSteps(gate).find((entry) => entry.includes("name: Verify pairing evidence from every selected job"));
-  assert.ok(step);
-  assert.ok(!step.includes("if:"));
-  assert.ok(!gate.includes("pattern:"));
-  const downloads = workflowSteps(gate).filter((entry) => entry.includes("uses: actions/download-artifact@") && entry.includes("name: daynight-image-test-pairs-"));
-  assert.equal(downloads.length, 16);
-  assert.equal(new Set(downloads.map(artifactName)).size, 16);
-  assert.ok(step.includes("IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}"));
-  assert.ok(step.includes("IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}"));
-});
-
-const shellStep = (stage: string, name: string): string => {
-  const step = workflowSteps(stage).find((entry) => entry.includes(`name: ${name}\n`));
-  assert.ok(step);
-  return step.match(/^        run: \|\n((?:          .*\n)+)/m)![1]!
-    .split("\n").filter(Boolean).map((line) => line.slice(10)).join("\n");
-};
-const pairingIdentity = { schemaVersion: 1, manifestCommit: "1".repeat(40), combinedTree: "2".repeat(40), combinedCommit: "5".repeat(40), productionTree: "3".repeat(40), head: "4".repeat(40) };
-const pairingEnvironment = {
-  IMAGE_PAIR_MANIFEST_COMMIT: pairingIdentity.manifestCommit,
-  IMAGE_PAIR_EXPECTED_COMBINED_TREE: pairingIdentity.combinedTree,
-  IMAGE_PAIR_COMBINED_COMMIT: pairingIdentity.combinedCommit,
-  IMAGE_PAIR_PRODUCTION_TREE: pairingIdentity.productionTree,
-  IMAGE_PAIR_HEAD: pairingIdentity.head,
-  IMAGE_PAIR_CLI: "false", IMAGE_PAIR_SERVER: "false", IMAGE_PAIR_WEB: "false", IMAGE_PAIR_E2E: "false",
-};
-const withPairingEvidence = (body: (directory: string) => void): void => {
-  const temporary = fileURLToPath(new URL("../../.tmp/workflow-checks/", import.meta.url));
-  mkdirSync(temporary, { recursive: true });
-  const directory = mkdtempSync(`${temporary}pairing-`);
-  try { body(directory); } finally { rmSync(directory, { recursive: true, force: true }); }
-};
-const writePairingReceipt = (directory: string, name: string, evidence: unknown = pairingIdentity): void => {
-  const root = `${directory}/.tmp/image-pair-jobs/daynight-image-test-pairs-${name}`;
-  mkdirSync(root, { recursive: true });
-  writeFileSync(`${root}/image-test-pairs.json`, JSON.stringify(evidence));
-};
-const executePairingGate = (directory: string, environment: Record<string, string> = {}): number | null => {
-  const result = spawnSync("bash", ["-e", "-c", shellStep(gate, "Verify pairing evidence from every selected job")], {
-    cwd: directory, env: { ...process.env, ...pairingEnvironment, ...environment }, encoding: "utf8", timeout: 5_000,
-  });
-  if (result.error) throw result.error;
-  assert.equal(result.signal, null);
-  return result.status;
-};
-
-test("the actual pairing gate accepts documentation-only and all-module evidence sets", () => withPairingEvidence((directory) => {
-  writePairingReceipt(directory, "detect-changes");
-  assert.equal(executePairingGate(directory), 0);
-  const names = ["verify-ubuntu-latest", "verify-windows-latest", "verify-installed-ubuntu-latest", "verify-installed-windows-latest", "verify-macos-15", "verify-installed-macos-15", "verify-runtime-22.14.0", "verify-runtime-22", "verify-runtime-24", "verify-runtime-node", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser", "verify-e2e"];
-  for (const name of names) writePairingReceipt(directory, name);
-  assert.equal(executePairingGate(directory, { IMAGE_PAIR_CLI: "true", IMAGE_PAIR_SERVER: "true", IMAGE_PAIR_WEB: "true", IMAGE_PAIR_E2E: "true" }), 0);
-  assert.notEqual(executePairingGate(directory), 0, "Unselected or stale receipts must not be accepted.");
-}));
-
-test("the actual pairing gate requires both selected Web receipts and rejects unselected Web receipts", () => withPairingEvidence((directory) => {
-  writePairingReceipt(directory, "detect-changes");
-  writePairingReceipt(directory, "verify-web-quality");
-  assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_WEB: "true" }), 0, "A missing browser receipt cannot be replaced by quality evidence.");
-  writePairingReceipt(directory, "verify-web-browser");
-  assert.equal(executePairingGate(directory, { IMAGE_PAIR_WEB: "true" }), 0);
-  assert.notEqual(executePairingGate(directory), 0, "Unselected Web receipts must not be accepted.");
-}));
-
-for (const field of ["manifestCommit", "combinedTree", "combinedCommit", "productionTree", "head"]) {
-  test(`the actual pairing gate rejects browser ${field} drift`, () => withPairingEvidence((directory) => {
-    writePairingReceipt(directory, "detect-changes");
-    writePairingReceipt(directory, "verify-web-quality");
-    writePairingReceipt(directory, "verify-web-browser", { ...pairingIdentity, [field]: "f".repeat(40) });
-    assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_WEB: "true" }), 0);
-  }));
-}
-
-for (const field of ["manifestCommit", "combinedTree", "combinedCommit", "productionTree", "head"]) {
-  test(`the actual pairing gate rejects ${field} drift`, () => withPairingEvidence((directory) => {
-    writePairingReceipt(directory, "detect-changes", { ...pairingIdentity, [field]: "f".repeat(40) });
-    assert.notEqual(executePairingGate(directory), 0);
-  }));
-}
-
-test("the actual pairing gate rejects missing selected jobs and incomplete identities", () => withPairingEvidence((directory) => {
-  writePairingReceipt(directory, "detect-changes");
-  assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_SERVER: "true" }), 0);
-  assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_CLI: "" }), 0);
-  writePairingReceipt(directory, "detect-changes", { ...pairingIdentity, combinedTree: "" });
-  assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_EXPECTED_COMBINED_TREE: "" }), 0);
-}));
-
-test("the actual runtime guard rejects differing or absent input identity before installation", () => withPairingEvidence((directory) => {
-  mkdirSync(`${directory}/.tmp/runtime-pair`, { recursive: true });
-  const own = `${directory}/.tmp/image-test-pairs.json`;
-  const producer = `${directory}/.tmp/runtime-pair/image-test-pairs.json`;
-  const run = () => spawnSync("bash", ["-e", "-c", shellStep(jobs.get("verify-runtime")!, "Verify runtime package input identity")], { cwd: directory, encoding: "utf8", timeout: 5_000 });
-  writeFileSync(own, JSON.stringify(pairingIdentity)); writeFileSync(producer, JSON.stringify(pairingIdentity));
-  assert.equal(run().status, 0);
-  writeFileSync(producer, JSON.stringify({ ...pairingIdentity, combinedTree: "f".repeat(40) }));
-  assert.notEqual(run().status, 0);
-  writeFileSync(own, JSON.stringify({ schemaVersion: 1 })); writeFileSync(producer, JSON.stringify({ schemaVersion: 1 }));
-  assert.notEqual(run().status, 0);
-}));
-
-test("main-pinned combinations validate both Web jobs without restoring retired acceptance", () => {
+test("Web jobs validate the current checkout without restoring retired acceptance", () => {
   for (const [name, id] of [["verify-web-quality", "web-quality"], ["verify-web-browser", "web-browser"]]) {
     const stage = jobs.get(name!)!;
-    const validation = workflowSteps(stage).find((entry) => entry.includes(`id: ${id}\n`));
+    const validation = stepsOf(stage).find((entry) => entry.includes(`id: ${id}\n`));
     assert.ok(validation);
-    const pairing = pairStep(stage);
-    assert.ok(pairing);
-    assert.ok(stage.indexOf(pairing) < stage.indexOf(validation));
   }
   assert.doesNotMatch(workflow, /verify-web:|verify-web-[12]|WEB_SHARD_RESULT|daynight-web-summary|scripts\/acceptance|ci\.mts browser/);
   assert.doesNotMatch(workflow, /GITHUB_SHA=.*GITHUB_ENV|^\s+GITHUB_SHA:/m);
 });
 
-test("main-pinned combinations retain Go module coverage and its current artifact", () => {
-  const server = jobs.get("verify-server")!;
-  const validation = workflowSteps(server).find((entry) => entry.includes("id: server-validation\n"));
-  assert.ok(validation);
+const server = jobs.get("verify-server")!;
+const apiIntegration = jobs.get("verify-api-integration")!;
+const selectedAPIStep = stepsOf(gate).find((step) => step.includes("name: Require selected Go API integration to succeed\n"))!;
+const selectedAPICommand = selectedAPIStep.match(/^        run: (.+)$/m)![1]!;
+
+test("Go module coverage and API integration prepare independent runners", () => {
+  assert.match(apiIntegration, /^    needs: detect-changes$/m);
+  assert.match(apiIntegration, /^    if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);
+  for (const stage of [server, apiIntegration]) {
+    assert.match(stage, /^    runs-on: ubuntu-latest$/m);
+    assert.match(stage, /uses: actions\/checkout@/);
+    assert.match(stage, /^          persist-credentials: false$/m);
+    assert.match(stage, /^          go-version: 1\.27\.2$/m);
+    assert.match(stage, /^          node-version: 24$/m);
+    assert.match(stage, /^      DAYNIGHT_TEST_DATABASE_URL: postgres:\/\/daynight:daynight-test@127\.0\.0\.1:5432\/daynight\?sslmode=disable$/m);
+    assert.match(stage, /^        image: postgres:18\.6-bookworm@sha256:/m);
+    assert.doesNotMatch(stage, /download-artifact|continue-on-error|pnpm (?:web:test|test|e2e:test)|vitest|playwright/);
+  }
+  assert.doesNotMatch(server, /pnpm|integration\.sh|integration-runtime\.test\.mts|server-integration|integration-results/);
+  const moduleCheck = readFileSync(new URL("../../packages/daynight-server/scripts/check.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(moduleCheck, /integration-runtime\.test\.mts/);
+  const validation = stepsOf(server).find((entry) => entry.includes("id: server-validation\n"))!;
   assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
-  assert.ok(server.indexOf(pairStep(server)!) < server.indexOf(validation));
-  assert.doesNotMatch(server, /pnpm\/action-setup|Install frontend build dependencies|pnpm .*install/);
-  const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance");
-  assert.ok(coverage);
+  const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance")!;
   assert.deepEqual(artifactPaths(coverage), ["packages/daynight-server/coverage.out"]);
+  assert.doesNotMatch(apiIntegration, /scripts\/check\.sh|server-validation|coverage\.out/);
   assert.doesNotMatch(workflow, /verify-server-e2e|check\.sh --e2e|project-task-service-evidence|project-task-e2e-evidence|DAYNIGHT_TEST_RACE/);
 });
 
+test("API integration builds production Web resources and runs its explicit suite", () => {
+  assert.match(apiIntegration, /uses: pnpm\/action-setup@/);
+  assert.match(apiIntegration, /^          version: 11\.28\.6$/m);
+  const steps = stepsOf(apiIntegration);
+  const preparation = steps.find((entry) => entry.includes("name: Prepare production Web resources for API integration\n"))!;
+  const integration = steps.find((entry) => entry.includes("id: server-integration\n"))!;
+  assert.ok(preparation.includes("pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
+  assert.ok(preparation.includes("pnpm web:build"));
+  assert.ok(integration.includes("run: bash scripts/integration.sh\n"));
+  assert.doesNotMatch(integration, /if:|continue-on-error/);
+  assert.ok(steps.indexOf(preparation) < steps.indexOf(integration));
+});
 
-test("the pairing gate requires the selected product E2E receipt and rejects an unselected receipt", () => withPairingEvidence((directory) => {
-  writePairingReceipt(directory, "detect-changes");
-  assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_E2E: "true" }), 0);
-  writePairingReceipt(directory, "verify-e2e");
-  assert.equal(executePairingGate(directory, { IMAGE_PAIR_E2E: "true" }), 0);
-  assert.notEqual(executePairingGate(directory), 0);
-  assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_E2E: "" }), 0);
-}));
+test("Linux API integration runs its runtime tools once before production preparation", () => {
+  const command = "node --test scripts/integration-runtime.test.mts";
+  const tools = stepsOf(apiIntegration).filter((entry) => entry.includes(`run: ${command}\n`));
+  assert.equal(tools.length, 1);
+  assert.equal(workflow.split(`run: ${command}\n`).length - 1, 1);
+  const runtimeTools = tools[0]!;
+  assert.match(apiIntegration, /^    runs-on: ubuntu-latest$/m);
+  assert.match(runtimeTools, /^      - name: Validate API integration runtime tools$/m);
+  assert.match(runtimeTools, /^        timeout-minutes: 1$/m);
+  assert.match(runtimeTools, /^        run: node --test scripts\/integration-runtime\.test\.mts$/m);
+  assert.doesNotMatch(runtimeTools, /if:|continue-on-error/);
+  const steps = stepsOf(apiIntegration);
+  const nodeSetup = steps.find((entry) => entry.includes("uses: actions/setup-node@"))!;
+  const preparation = steps.find((entry) => entry.includes("name: Prepare production Web resources for API integration\n"))!;
+  const integration = steps.find((entry) => entry.includes("id: server-integration\n"))!;
+  assert.ok(steps.indexOf(nodeSetup) < steps.indexOf(runtimeTools));
+  assert.ok(steps.indexOf(runtimeTools) < steps.indexOf(preparation));
+  assert.ok(steps.indexOf(runtimeTools) < steps.indexOf(integration));
+});
 
-for (const field of ["manifestCommit", "combinedTree", "combinedCommit", "productionTree", "head"]) {
-  test(`the pairing gate rejects product E2E ${field} drift`, () => withPairingEvidence((directory) => {
-    writePairingReceipt(directory, "detect-changes");
-    writePairingReceipt(directory, "verify-e2e", { ...pairingIdentity, [field]: "f".repeat(40) });
-    assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_E2E: "true" }), 0);
-  }));
-}
+test("API integration budgets every step and reserves independent cleanup time", () => {
+  const jobMinutes = Number(apiIntegration.match(/^    timeout-minutes: (\d+)$/m)![1]);
+  const stepMinutes = stepsOf(apiIntegration).map((step) => {
+    const match = step.match(/^        timeout-minutes: ([1-9]\d*)$/m);
+    assert.ok(match, `API integration step lacks a positive timeout: ${step.split("\n")[0]}`);
+    return Number(match[1]);
+  });
+  assert.deepEqual(stepMinutes, [1, 1, 2, 1, 1, 1, 7, 20, 3, 1]);
+  assert.ok(stepMinutes.reduce((total, minutes) => total + minutes, 0) <= jobMinutes - 2);
+});
 
-for (const missing of ["verify-macos-15", "verify-installed-macos-15"]) {
-  test(`the pairing gate requires the independent ${missing} receipt`, () => withPairingEvidence((directory) => {
-    const names = ["detect-changes", "verify-ubuntu-latest", "verify-windows-latest", "verify-macos-15", "verify-installed-ubuntu-latest", "verify-installed-windows-latest", "verify-installed-macos-15", "verify-runtime-22.14.0", "verify-runtime-22", "verify-runtime-24", "verify-runtime-node", "verify-completion"];
-    for (const name of names.filter((name) => name !== missing)) writePairingReceipt(directory, name);
-    assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_CLI: "true" }), 0);
-    writePairingReceipt(directory, missing);
-    assert.equal(executePairingGate(directory, { IMAGE_PAIR_CLI: "true" }), 0);
-  }));
+test("API integration reconciles after failure and uploads only safe results and logs", () => {
+  const steps = stepsOf(apiIntegration);
+  const integration = steps.find((entry) => entry.includes("id: server-integration\n"))!;
+  const cleanup = steps.find((entry) => entry.includes("run: bash scripts/integration.sh --cleanup\n"))!;
+  const uploads = uploadSteps(apiIntegration);
+  assert.equal(uploads.length, 1);
+  const upload = uploads[0]!;
+  for (const step of [cleanup, upload]) {
+    assert.match(step, /^        if: \$\{\{ always\(\) && steps.server-integration.outcome != 'skipped' \}\}$/m);
+    assert.doesNotMatch(step, /continue-on-error/);
+  }
+  assert.equal(artifactName(upload), "daynight-server-api-integration");
+  assert.deepEqual(artifactPaths(upload), [
+    "packages/daynight-server/.tmp/integration-results/**/build.json",
+    "packages/daynight-server/.tmp/integration-results/**/result.json",
+    "packages/daynight-server/.tmp/integration-results/**/run.log",
+  ]);
+  assert.match(upload, /^          include-hidden-files: true$/m);
+  assert.match(upload, /^          if-no-files-found: error$/m);
+  assert.match(upload, /^          retention-days: 30$/m);
+  assert.ok(steps.indexOf(integration) < steps.indexOf(cleanup));
+  assert.ok(steps.indexOf(cleanup) < steps.indexOf(upload));
+});
+
+test("selected API integration requires actual success", () => {
+  assert.match(selectedAPIStep, /^        if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);
+  assert.match(selectedAPIStep, /API_INTEGRATION_RESULT: \$\{\{ needs.verify-api-integration.result \}\}/);
+});
+
+for (const outcome of ["success", "skipped", "failure", "cancelled"]) {
+  test(`selected API integration ${outcome} executes the workflow guard`, () => {
+    const result = spawnSync("bash", ["-e", "-c", selectedAPICommand], {
+      env: { ...process.env, API_INTEGRATION_RESULT: outcome },
+      encoding: "utf8", timeout: 5_000,
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, outcome === "success");
+  });
 }
