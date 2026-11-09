@@ -1293,6 +1293,11 @@ Ordinary discovery excludes stress-tagged files. With an isolated database,
 and refuses a nonempty `CI` environment. Direct command-package stress runs also
 need `startupshutdown` alongside their existing `stress` and, where required,
 `webhooktest` tags.
+The server runtime two-instance webhook takeover fixture (`-tags=stress,webhooktest`,
+`TestWebhookTwoInstanceTakeoverAndFencingStress`) is selected explicitly by the
+stress entry point. It uses a private deterministic capture
+stream and verifies its first-slot admission before testing second-slot recovery
+and late-result fencing; see the [fixture timing decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-takeover-fixture.md).
 
 Authentication integration prepares the pinned UniAuth gateway with
 `scripts/prepare-uniauth-fixture.mts`. The fixture runs on loopback with
