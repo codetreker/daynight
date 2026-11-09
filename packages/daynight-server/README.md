@@ -422,6 +422,15 @@ configuration, browser authorization and connection verification. A normal HEAD
 returns the same headers without a body. Reading the manual does not authenticate
 or invoke business operations.
 
+Authenticated MCP clients can list seven product manual Resources and read a
+complete topic at `daynight://manuals/<topic>.md`. The server instructions guide
+clients to the catalog; reading it does not select a Project or authorize work.
+The manuals are embedded with the server and require no Project membership.
+Their fixed URIs link related topics; a new server version serves its own content.
+Resource reads share the Control permit through response delivery and refuse
+immediately when it is exhausted. They do not change business data. The public
+installation manual remains a separate entry.
+
 Configure a client with the service's HTTPS URL ending in `/mcp`. Standard clients
 discover OAuth from the unauthenticated protocol challenge and request the
 `daynight:mcp` scope through the existing browser account. The account holder

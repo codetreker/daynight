@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -97,10 +98,24 @@ type Entry struct {
 
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
 func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator) (*Entry, error) {
+	return newWithManualSource(auth, publicOrigin, allowedOrigins, logger, oauth, productManualFS)
+}
+
+func newWithManualSource(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator, source fs.FS) (*Entry, error) {
 	if auth == nil || logger == nil {
 		return nil, errors.New("MCP authentication and logger are required")
 	}
 	if err := config.ValidateMCPOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
+		return nil, err
+	}
+	manuals, err := loadProductManuals(source)
+	if err != nil {
+		var loadErr *manualLoadError
+		key := "catalog"
+		if errors.As(err, &loadErr) {
+			key = loadErr.Key
+		}
+		logger.Error("MCP manual load failed", "type", "operation_error", "component", "mcp", "document", key, "phase", "manual_load")
 		return nil, err
 	}
 	resource := publicOrigin + "/mcp"
@@ -112,8 +127,9 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	sdkLogger := slog.New(safeSDKLog{handler: logger.Handler()})
-	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: sdkLogger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
+	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: sdkLogger, Instructions: manuals.Instructions, Capabilities: &sdk.ServerCapabilities{Logging: &sdk.LoggingCapabilities{}, Resources: &sdk.ResourceCapabilities{}}, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
 	e := &Entry{server: server, auth: auth, oauth: oauth, resource: resource, manual: manual, logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), input: make(chan struct{}, transport.MaxMCPInputOperations), bodyReadTimeout: transport.JSONBodyReadTimeout, ctx: ctx, cancel: cancel}
+	registerProductManuals(server, manuals, e.manualHandler)
 	// Raw input is limited before SDK dispatch. Batch correlation adds fewer
 	// than 80 bytes per Task call, each of which occupies over 50 input bytes.
 	// Four times the raw limit therefore bounds the transformed SDK input.

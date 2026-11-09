@@ -305,6 +305,13 @@ Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHead
 
 确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。附件实际字节超限由共享 reader 的 `ContentOverflowError` 标识并保留领域 Fault；分类器检查错误树中的每个发布结果均为 `not_published`、事务仅为未尝试提交且清理成功的 operation 拒绝，才将其映射为终止 413。一般 `payload_too_large` Fault 不授予独立响应资格。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
 
+MCP 产品手册以 Go embed 和固定七项目录随服务发布。Entry 在注册前校验目录、UTF-8
+正文、大小及内部 URI 引用，构造失败保留错误；SDK 原生 Resources 提供目录和完整正文，
+独立 instructions 同时供两版协议使用。静态 Resources capability 不承诺订阅或变更通知。
+每次读取创建独立结果，并在构造前非阻塞取得共享 Control 名额，直到 handler 与 HTTP 交付
+均结束才释放。饱和返回顶层协议内部错误；该限制不覆盖 SDK 内置列表或整个 batch 的内存。
+HTTP 保持 no-store，现代协议结果使用 private、零 TTL；未知 URI 沿用 SDK 协议错误净化。
+
 MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读并交给 SDK。名额持续到 HTTP 与 SDK handler 均不再持有输入，与 Control 和 Large 工具预算独立。失败、取消、初始化和关闭均释放名额。详细额度及适用状态见[输入规范](../spec/daynight-api-input-limits.md)。
 
 ## HTTP API

@@ -342,21 +342,12 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 		return errors.New("output schema must accept the common error envelope")
 	}
 	e.server.AddTool(tool, func(sdkctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-		scope, ok := sdkctx.Value(scopeKey{}).(*requestScope)
-		if !ok {
-			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: "request scope unavailable"}
+		call, err := e.beginInvocation(sdkctx)
+		if err != nil {
+			return nil, err
 		}
-		if !e.beginWork() {
-			return nil, context.Canceled
-		}
-		scope.begin()
-		defer e.active.Done()
-		defer scope.end()
-		ctx, cancel := context.WithCancel(sdkctx)
-		stop := context.AfterFunc(scope.actor.Context, cancel)
-		defer stop()
-		defer cancel()
-		actor := scope.actor
+		defer call.done()
+		ctx, actor, scope := call.ctx, call.actor, call.scope
 		ctx = attachmentservice.WithUploadLeaseRetainer(ctx, func(lease io.Closer) {
 			scope.hold(func() {
 				if err := lease.Close(); err != nil {
