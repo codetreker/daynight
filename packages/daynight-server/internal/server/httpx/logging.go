@@ -1,10 +1,12 @@
 package httpx
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"syscall"
@@ -147,26 +149,123 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 
 type ResponseRecorder struct {
 	http.ResponseWriter
-	Status int
+	Status       int
+	writeError   bool
+	sse          bool
+	hijacked     bool
+	serverWriter bool
 }
 
 func (w *ResponseRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+func (w *ResponseRecorder) committed(status int) {
+	if w.Status != 0 {
+		return
+	}
+	w.Status = status
+	mediaType, _, err := mime.ParseMediaType(w.Header().Get("Content-Type"))
+	w.sse = err == nil && mediaType == "text/event-stream"
+}
+
 func (w *ResponseRecorder) WriteHeader(status int) {
-	if w.Status == 0 {
-		w.Status = status
-		w.ResponseWriter.WriteHeader(status)
+	if w.Status != 0 {
+		return
+	}
+	w.ResponseWriter.WriteHeader(status)
+	if status == http.StatusSwitchingProtocols || status >= 200 {
+		w.committed(status)
 	}
 }
 
 func (w *ResponseRecorder) Write(data []byte) (int, error) {
-	if w.Status == 0 {
-		w.WriteHeader(http.StatusOK)
+	n, err := w.ResponseWriter.Write(data)
+	if n > 0 || err == nil || (w.serverWriter && !w.hijacked && !errors.Is(err, http.ErrHijacked)) {
+		w.committed(http.StatusOK)
 	}
-	return w.ResponseWriter.Write(data)
+	if err != nil || n < len(data) {
+		w.writeError = true
+	}
+	return n, err
+}
+
+func (w *ResponseRecorder) FlushError() error {
+	err := http.NewResponseController(w.ResponseWriter).Flush()
+	if err != nil {
+		w.writeError = true
+	}
+	if err == nil || (w.serverWriter && !w.hijacked && !errors.Is(err, http.ErrNotSupported)) {
+		w.committed(http.StatusOK)
+	}
+	return err
+}
+
+func (w *ResponseRecorder) hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil {
+		w.writeError = true
+	} else {
+		w.hijacked = true
+	}
+	return conn, rw, err
+}
+
+// Preserve capability checks while routing supported operations through the recorder.
+type flushRecorder struct{ *ResponseRecorder }
+
+func (w flushRecorder) Flush() { _ = w.FlushError() }
+
+type hijackRecorder struct{ *ResponseRecorder }
+
+func (w hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) { return w.hijack() }
+
+type flushHijackRecorder struct{ *ResponseRecorder }
+
+func (w flushHijackRecorder) Flush()                                       { _ = w.FlushError() }
+func (w flushHijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) { return w.hijack() }
+
+func (w *ResponseRecorder) capabilities() http.ResponseWriter {
+	var flush, hijack bool
+	for current := w.ResponseWriter; current != nil; {
+		if _, ok := current.(http.Flusher); ok {
+			flush = true
+		}
+		if _, ok := current.(http.Hijacker); ok {
+			hijack = true
+		}
+		unwrapper, ok := current.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		current = unwrapper.Unwrap()
+	}
+	switch {
+	case flush && hijack:
+		return flushHijackRecorder{w}
+	case flush:
+		return flushRecorder{w}
+	case hijack:
+		return hijackRecorder{w}
+	default:
+		return w
+	}
+}
+
+func (w *ResponseRecorder) mode() string {
+	if w.hijacked {
+		return "websocket"
+	}
+	if w.sse {
+		return "sse"
+	}
+	return "http"
 }
 
 func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
+	return RequestLoggingWithMetrics(logger, next, nil)
+}
+
+// RequestLoggingWithMetrics observes the same response and handler lifecycle as logging.
+func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *RequestMetrics) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		id := request.Header.Get("X-Request-ID")
 		if !ValidRequestID(id) {
@@ -178,8 +277,31 @@ func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 			request = request.WithContext(context.WithValue(request.Context(), bodyCompletionKey{}, body))
 			request.Body = body
 		}
+		// net/http commits an implicit 200 before attempting Write or Flush,
+		// including when the subsequent transport operation fails. Arbitrary
+		// ResponseWriters do not provide a way to inspect their commit state.
+		recorder := &ResponseRecorder{ResponseWriter: w, serverWriter: request.Context().Value(http.ServerContextKey) != nil}
+		start := time.Now()
+		if metrics != nil {
+			metrics.inFlight.Inc()
+		}
 		defer func() {
-			if value := recover(); value != nil {
+			value := recover()
+			if metrics != nil {
+				outcome := "returned"
+				switch {
+				case value != nil && value != http.ErrAbortHandler:
+					outcome = "panic"
+				case value == http.ErrAbortHandler:
+					outcome = "aborted"
+				case recorder.writeError:
+					outcome = "write_error"
+				case request.Context().Err() != nil:
+					outcome = "canceled"
+				}
+				metrics.observe(request, recorder, start, outcome)
+			}
+			if value != nil {
 				if value == http.ErrAbortHandler {
 					panic(value)
 				}
@@ -190,9 +312,7 @@ func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 			}
 		}()
 		w.Header().Set("X-Request-ID", id)
-		recorder := &ResponseRecorder{ResponseWriter: w}
-		start := time.Now()
-		next.ServeHTTP(recorder, request)
+		next.ServeHTTP(recorder.capabilities(), request)
 		status := recorder.Status
 		if status == 0 {
 			status = http.StatusOK
