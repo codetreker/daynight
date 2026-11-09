@@ -75,7 +75,9 @@ func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
 			return err
 		}
 		if metadata.Revision != revision || text != expected {
-			return fmt.Errorf("snapshot revision/text = %d/%q, want %d/%q", metadata.Revision, text, revision, expected)
+			mismatch := fmt.Errorf("snapshot revision/text = %d/%q, want %d/%q", metadata.Revision, text, revision, expected)
+			t.Error(mismatch)
+			return mismatch
 		}
 		return nil
 	}
