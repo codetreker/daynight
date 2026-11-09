@@ -117,17 +117,17 @@ func (w sessionDeletionProofWriter) WriteSession(ctx context.Context, fn func(st
 
 func sessionDeletionProofIdentity() (model.Principal, model.Bot, store.DeleteBot) {
 	p := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
-	bot := model.Bot{ID: uuid.NewString(), OwnerUserID: p.UserID, WorkerID: uuid.NewString(), Version: 2}
+	bot := model.Bot{ID: uuid.NewString(), OwnerUserID: p.UserID, WorkerID: uuid.NewString(), Version: 2, Name: "助手", CreationOrder: 41, CreatedAt: time.Date(2026, 11, 8, 1, 0, 0, 123456000, time.UTC), UpdatedAt: time.Date(2026, 11, 8, 2, 0, 0, 654321000, time.UTC)}
 	request := store.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
 	return p, bot, request
 }
 
-func sessionDeletionProofTransaction(scope store.SessionScope) sessionDeletionProofWriter {
-	return sessionDeletionProofWriter{write: func(_ context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
-		if err := fn(scope); err != nil {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, err
-		}
-		return store.Completion{Outcome: store.TransactionCommitted}, nil
+func sessionDeletionProofTransaction(t *testing.T, expectedContext context.Context, scope store.SessionScope, outcome store.TransactionOutcome, callbackError, finishError error) sessionDeletionProofWriter {
+	return sessionDeletionProofWriter{write: func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+		identical(t, ctx, expectedContext)
+		actual := fn(scope)
+		same(t, actual, callbackError)
+		return store.Completion{Outcome: outcome}, finishError
 	}}
 }
 
@@ -215,7 +215,13 @@ func TestSessionDeletionRechecksExpiryAfterBotOrSessionAdmissionBarrier(t *testi
 					return nil
 				}
 				live := &discardedSessions{}
-				svc := NewDeletions(sessionDeletionProofTransaction(sessionDeletionProofScope{dao: dao, bots: bots}), nil, live)
+				refusal := &model.Fault{Code: "unauthenticated", Message: "Credential expired or was revoked."}
+				svc := NewDeletions(sessionDeletionProofTransaction(t, ctx, sessionDeletionProofScope{dao: dao, bots: bots}, store.TransactionNotCommitted, refusal, refusal), nil, live)
+				operationCalls := map[string]int{"owner": 1, "request": 1}
+				if phase != "replay" {
+					operationCalls["save"] = 1
+				}
+				bindDeletionFacts(t, svc, bots, p, bot, request, deletionFacts{ctx: ctx, calls: operationCalls, replay: phase == "replay"})
 				svc.now = func() time.Time { return now }
 				result := make(chan error, 1)
 				finished := false
@@ -299,7 +305,18 @@ func TestSessionDeletionRejectsUnauthorizedActorsBeforeAnyProposedWrite(t *testi
 					return bot, nil
 				}}
 				live := &discardedSessions{}
-				svc := NewDeletions(sessionDeletionProofTransaction(sessionDeletionProofScope{dao: dao, bots: bots}), nil, live)
+				refusal := &model.Fault{Code: "unauthenticated", Message: "Credential expired or was revoked."}
+				if actor == "other_owner" {
+					refusal = &model.Fault{Code: "forbidden", Message: "not owner"}
+				}
+				svc := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, store.TransactionNotCommitted, refusal, refusal), nil, live)
+				operationCalls := map[string]int{}
+				var ownerError error
+				if actor == "other_owner" {
+					operationCalls["owner"] = 1
+					ownerError = refusal
+				}
+				bindDeletionFacts(t, svc, bots, principal, bot, request, deletionFacts{ctx: t.Context(), calls: operationCalls, ownerError: ownerError})
 				var err error
 				if phase == "intent" {
 					_, err = svc.DeleteBot(t.Context(), principal, bot.ID, request)
@@ -336,6 +353,7 @@ func sessionDeletionProofBound(p model.Principal, bot model.Bot, request store.D
 
 func TestSessionDeletionReceiptRejectsUnprovenConnectedExecution(t *testing.T) {
 	for name, change := range map[string]func(*sp.TestStop){
+		"missing proof":     func(*sp.TestStop) {},
 		"valid":             func(*sp.TestStop) {},
 		"generation":        func(s *sp.TestStop) { s.ExecutionGeneration = "2" },
 		"controller":        func(s *sp.TestStop) { s.ControllerID = uuid.NewString() },
@@ -347,8 +365,14 @@ func TestSessionDeletionReceiptRejectsUnprovenConnectedExecution(t *testing.T) {
 			p, bot, request := sessionDeletionProofIdentity()
 			bot, proof, receipt := sessionDeletionProofBound(p, bot, request)
 			change(receipt.Stop)
+			if name == "missing proof" {
+				receipt.Stop = nil
+			}
 			checks, saves := 0, 0
-			expected := map[string]int{"credential": 1, "bot": 1, "stop": 1}
+			expected := map[string]int{"credential": 1, "bot": 1}
+			if name != "missing proof" {
+				expected["stop"] = 1
+			}
 			if name == "valid" {
 				expected["save"] = 1
 			}
@@ -369,7 +393,18 @@ func TestSessionDeletionReceiptRejectsUnprovenConnectedExecution(t *testing.T) {
 				out.Deletion = value
 				return out, nil
 			}}
-			svc := NewDeletions(sessionDeletionProofTransaction(sessionDeletionProofScope{dao: dao, bots: bots}), nil, &discardedSessions{})
+			outcome := store.TransactionCommitted
+			var refusal error
+			if name != "valid" {
+				outcome = store.TransactionNotCommitted
+				refusal = &model.Fault{Code: "session_conflict", Message: "Session identity or state no longer matches."}
+			}
+			svc := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, outcome, refusal, refusal), nil, &discardedSessions{})
+			operationCalls := map[string]int{"owner": 1, "worker": 1}
+			if name == "valid" {
+				operationCalls["save"] = 1
+			}
+			bindDeletionFacts(t, svc, bots, p, bot, request, deletionFacts{ctx: t.Context(), calls: operationCalls, workerChange: true, needsProof: true, receipt: &receipt})
 			svc.now = func() time.Time { return time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC) }
 			out, err := svc.CompleteBotDeletion(t.Context(), p, bot.WorkerID, bot.ID, receipt)
 			if name == "valid" {
@@ -382,7 +417,11 @@ func TestSessionDeletionReceiptRejectsUnprovenConnectedExecution(t *testing.T) {
 					t.Fatal("invalid receipt proposed a write")
 				}
 			}
-			if checks != 1 {
+			wantChecks := 1
+			if name == "missing proof" {
+				wantChecks = 0
+			}
+			if checks != wantChecks {
 				t.Fatalf("receipt bypassed binding proof: checks=%d", checks)
 			}
 		})
@@ -419,8 +458,16 @@ func TestSessionDeletionChangedFailedReceiptAdvancesWhileExactReplayDoesNotWrite
 				out.Deletion = value
 				return out, nil
 			}}
-			svc := NewDeletions(sessionDeletionProofTransaction(sessionDeletionProofScope{dao: dao, bots: bots}), nil, &discardedSessions{})
+			svc := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, store.TransactionCommitted, nil, nil), nil, &discardedSessions{})
+			operationCalls := map[string]int{"owner": 1, "worker": 1}
+			if changed {
+				operationCalls["save"] = 1
+			}
+			bindDeletionFacts(t, svc, bots, p, bot, request, deletionFacts{ctx: t.Context(), calls: operationCalls, workerChange: changed, receipt: &input})
 			out, err := svc.CompleteBotDeletion(t.Context(), p, bot.WorkerID, bot.ID, input)
+			if !changed {
+				same(t, out, bot)
+			}
 			if err != nil || changed && (writes != 1 || out.Version != bot.Version+1) || !changed && (writes != 0 || out.Version != bot.Version) {
 				t.Fatalf("receipt result: changed=%v writes=%d out=%+v err=%v", changed, writes, out, err)
 			}
@@ -512,9 +559,15 @@ func TestSessionDeletionCleanupEnumeratesResidualsAndRetainsFailedResponsibility
 					t.Fatal("cleanup added an unexpected transaction")
 				}
 				err := fn(sessionDeletionProofScope{dao: dao, bots: bots})
-				if err != nil {
-					return store.Completion{Outcome: store.TransactionNotCommitted}, err
+				if transactions == 1 && invalid != "" {
+					var expected error = cause
+					if invalidOwnership {
+						expected = &model.Fault{Code: "session_conflict", Message: "Session identity or state no longer matches."}
+					}
+					same(t, err, expected)
+					return store.Completion{Outcome: store.TransactionNotCommitted}, expected
 				}
+				same(t, err, nil)
 				return store.Completion{Outcome: store.TransactionCommitted}, nil
 			}}
 			files := sessionDeletionProofFiles{remove: func(_ context.Context, namespace sessionarchive.Namespace) error {
@@ -542,6 +595,12 @@ func TestSessionDeletionCleanupEnumeratesResidualsAndRetainsFailedResponsibility
 			}}
 			live := &discardedSessions{}
 			svc := NewDeletions(writer, files, live)
+			operationCalls := map[string]int{"owner": 1, "server": 1, "save": 1}
+			if invalid != "" {
+				operationCalls["owner"] = 2
+				operationCalls["fail"] = 1
+			}
+			bindDeletionFacts(t, svc, bots, p, bot, request, deletionFacts{ctx: t.Context(), calls: operationCalls, serverChange: true, failChange: invalid != ""})
 			out, err := svc.clean(t.Context(), p, bot.ID, request.DeletionID)
 			if err != nil || saves != 1 {
 				t.Fatalf("cleanup result: out=%+v saves=%d err=%v", out, saves, err)
@@ -601,7 +660,14 @@ func TestSessionDeletionWriteErrorsRetainCauseAndDoNotPublishProposals(t *testin
 				return model.Bot{}, cause
 			}}
 			live := &discardedSessions{}
-			svc := NewDeletions(sessionDeletionProofTransaction(sessionDeletionProofScope{dao: dao, bots: bots}), nil, live)
+			svc := NewDeletions(sessionDeletionProofTransaction(t, t.Context(), sessionDeletionProofScope{dao: dao, bots: bots}, store.TransactionNotCommitted, cause, cause), nil, live)
+			operationCalls := map[string]int{"owner": 1, "save": 1}
+			if phase == "intent" {
+				operationCalls["request"] = 1
+			} else {
+				operationCalls["worker"] = 1
+			}
+			bindDeletionFacts(t, svc, bots, p, bot, request, deletionFacts{ctx: t.Context(), calls: operationCalls, workerChange: true, needsProof: true, receipt: &receipt})
 			svc.now = func() time.Time { return time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC) }
 			var out model.Bot
 			var err error
