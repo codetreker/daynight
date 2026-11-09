@@ -193,6 +193,25 @@ func TestStartupReportOrderingIdentityAndMissingEvidence(t *testing.T) {
 	assertProjectError(t, projectRequest(f.handler, http.MethodPatch, taskPath(f.task), jsonBody(t, map[string]any{"version": f.task.Version, "properties": map[string]any{"sessionStartup": report}})), http.StatusBadRequest, "invalid_input")
 }
 
+// The startup HTTP fixture supplies an explicit no-owner recovery result. The
+// actual service still performs recovery before changing the generation fence.
+func startupExpectEmptyMediaRecovery(t *testing.T, f *sessionHTTPFixture) {
+	t.Helper()
+	f.mu.Lock()
+	before := f.calls["ListSessionMediaLeases"]
+	f.mediaRecoveryRead = func(context.Context) ([]store.SessionResourceLease, error) {
+		return []store.SessionResourceLease{}, nil
+	}
+	f.mu.Unlock()
+	t.Cleanup(func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if actual := f.calls["ListSessionMediaLeases"] - before; actual != 1 {
+			t.Errorf("generation grant recovery listings=%d, want 1", actual)
+		}
+	})
+}
+
 func TestStartupReportGenerationSwitchFiltersOldEvidence(t *testing.T) {
 	f := sessionHTTPSetup(t)
 	report := startupBody(f)
@@ -200,6 +219,7 @@ func TestStartupReportGenerationSwitchFiltersOldEvidence(t *testing.T) {
 	previous := "1"
 	nextInstance := uuid.NewString()
 	grant := sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: nextInstance, ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
+	startupExpectEmptyMediaRecovery(t, f)
 	f.store.WriteSessionCall = f.store.run
 	f.mintGrant(t, grant)
 	nextRecord := f.record
@@ -349,6 +369,7 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("report did not reach its Session fence")
 	}
+	startupExpectEmptyMediaRecovery(t, f)
 	f.store.WriteSessionCall = f.store.run
 	decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", grantBody), http.StatusOK)
 	finishGrant()
