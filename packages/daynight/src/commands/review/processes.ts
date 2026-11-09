@@ -3,6 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import type { CopilotProcessOutcome } from "./adapters/copilot.js";
 import type { AttemptIdentity, ReviewState } from "./model.js";
 import { stopWindowsProcessTree } from "./windows-process-stop.js";
+import { windowsReviewPhase } from "./windows-phase.js";
 
 const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, milliseconds); });
 const command = (file: string, args: string[], timeout: number): Promise<string> => new Promise((resolve, reject) => {
@@ -59,7 +60,9 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
     }
     if (child.pid === undefined) throw new Error("Cannot supervise an agent before its process has spawned.");
     const entry: ManagedProcess = { child, pid: child.pid, closed: false, excluded: false };
-    child.once("close", () => { entry.closed = true; });
+    const phase = windowsReviewPhase(child);
+    if (phase === undefined) child.once("close", () => { entry.closed = true; });
+    else void phase.closed.then(() => { entry.closed = true; });
     managed.set(key, entry);
   };
   const waitForClose = async (entry: ManagedProcess): Promise<void> => {
@@ -105,7 +108,9 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
         if (process.platform === "win32") {
           const failures: unknown[] = [];
           try {
-            await stopWindowsProcessTree({ pid: entry.pid, graceMs: grace,
+            const phase = windowsReviewPhase(child);
+            if (phase !== undefined) await phase.stop();
+            else await stopWindowsProcessTree({ pid: entry.pid, graceMs: grace,
               assertCurrent: () => {
                 if (entry.closed || child.exitCode !== null || child.signalCode !== null) uncertain("The Windows agent exited before its current process tree could be terminated; operator recovery is required.");
               },
@@ -130,6 +135,7 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
       if (outcome !== undefined && !outcome.directProcessClosed) uncertain("The agent launch did not establish direct-process closure.");
       return { processesExcluded: true };
     }
+    if (windowsReviewPhase(entry.child) !== undefined) await stop(entry.child, { reviewId: review.id, attempt: review.attemptCount });
     if (entry.closed && outcome?.directProcessClosed && outcome.launchFailure === "command-not-found") {
       managed.delete(attemptKey({ reviewId: review.id, attempt: review.attemptCount }));
       return { processesExcluded: true };

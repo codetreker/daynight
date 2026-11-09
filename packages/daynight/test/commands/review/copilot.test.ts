@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
+import * as windowsJobs from "../../../src/commands/review/windows-job-scope.js";
 import type { CopilotRunOptions, CopilotRunnerOptions } from "../../../src/commands/review/adapters/copilot.js";
 import type { PreparedWorktree } from "../../../src/commands/review/adapters/worktrees.js";
 import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
@@ -443,6 +444,21 @@ describe("Copilot skill discovery and phase ownership", () => {
     const outcome = await f.run("success", {}, { excludeProcess: async () => { throw error; } });
     expect(outcome.processExclusionFailure).toBe(error);
     expect(f.store.getReview(f.review.id)).toMatchObject({ attemptCount: 1, processId: expect.any(Number), processIdentity: expect.stringContaining(":skill-list") });
+    expect(existsSync(f.report)).toBe(false);
+  });
+
+  it.skipIf(process.platform !== "win32")("retains discovery identity after its owned Job cleanup fails, even with an exclusion callback", async () => {
+    const f = fixture(), error = new Error("fixture Job cleanup remained unconfirmed");
+    const createScope = windowsJobs.createWindowsReviewJobScope;
+    vi.spyOn(windowsJobs, "createWindowsReviewJobScope").mockImplementation(async () => {
+      const scope = await createScope();
+      return { assignGuardian: scope.assignGuardian, stop: async grace => { await scope.stop(grace); throw error; } };
+    });
+    const excludeProcess = vi.fn(async () => proof);
+    const outcome = await f.run("success", {}, { excludeProcess });
+    expect(outcome.processExclusionFailure).toBe(error);
+    expect(excludeProcess).not.toHaveBeenCalled();
+    expect(f.store.getReview(f.review.id)).toMatchObject({ processId: expect.any(Number), processIdentity: expect.stringContaining(":skill-list") });
     expect(existsSync(f.report)).toBe(false);
   });
 

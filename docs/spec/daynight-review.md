@@ -21,11 +21,21 @@
 显示对应帮助。
 工具在 Linux、Windows 和 Apple Silicon（ARM64）macOS 上通过 `daynight review run` 以单个前台 CLI 启动，
 并持续运行直到被停止。平台范围遵守[客户端要求](daynight.md#c1-包与平台)，不支持 Intel macOS。
-CLI 负责轮询、维护 SQLite 状态、管理 worktree，并直接将
-Copilot 作为子进程启动。
+CLI 负责轮询、维护 SQLite 状态、管理 worktree，并以前台子进程执行 Copilot；
+Windows 可使用受信任的 guardian 建立启动前的进程归属。
 三个平台必须支持相同的仓库、监控、会话、worktree、完成判定和恢复行为。必须在每个
 平台上验证子进程调用、输出处理和正常退出。review agent 按前台程序契约执行，
 返回前必须结束自己启动的工具和服务；异常退出后不能仅凭保存的 PID 推断旧执行已停止。
+
+Windows 的 skill 发现和正式审查必须在放行目标代码前确认受信任 guardian 已归属
+独立、禁止 breakaway 且 kill-on-close 的 Job；准入失败、取消、IPC 断开或超时后
+不得再启动目标。目标保留原环境、stdin 背压、完整 stdout/stderr 和实际退出结果，
+guardian 自身退出不能替代目标结果。正常结束或停止均终止所持 Job，覆盖普通创建的
+继承成员后代，包括晚于盘点出生和中间父进程或根已退出的后代；不得退回按 PID 树终止。
+成功排除必须等待所有实际捕获的进程对象 signaled、Job 无 active 成员及直接进程和
+pipes 关闭；空清单或零 active count 不能替代已捕获对象的完成证明。无法观察、确认或
+释放归属时保留错误、执行状态和实例锁，不开始下一阶段或复用资源。此保证不宣称
+逐一观察全部历史成员，也不覆盖 WMI、外部 broker 或特权创建的 Job 外进程。
 
 ### R2. 仓库配置
 
@@ -358,7 +368,8 @@ skill 的方法不能取代本次审查目标、发布资格、远端结果对�
 | 使用重构前格式的 YAML 和独立构造的版本 1 SQLite fixture。 | 列表只读原位置和原有记录；运行显式迁移，保留永久边界、修订、会话、预算、进程证据、清理屏障及 worktree 身份，并记录完成与未完成轮次的旧身份来源。 | R2, R4, R8, R13, R14 |
 | 版本 1 未完成轮次已用带前缀的旧审查 token 发布 APPROVED 或带实际 thread 的 COMMENT，但丢失完成标记。 | 仅该迁移轮次按旧 token、捕获 head 和实际历史 actor 恢复对账；保留预算与会话，不重复发布或改用当前读取账户。 | R12, R13 |
 | 新建轮次或迁移轮次需要新发布。 | 新发布身份严格使用独立行或 HTML 注释；旧格式读取资格不能放宽其他新轮次的匹配规则。 | R10, R13 |
-| 在 Linux、macOS ARM64 或 Windows 上执行 `daynight review run`。 | 前台 CLI 通过直接启动 Copilot 子进程支持所需工作流程，并已验证命令执行、输出处理和正常退出。 | R1 |
+| 在 Linux、macOS ARM64 或 Windows 上执行 `daynight review run`。 | 前台 CLI 通过所持子进程支持所需工作流程，并已验证命令执行、输出处理和正常退出；Windows 两个阶段启动前均确认 Job 归属。 | R1 |
+| Windows 包装入口派生迟生后代、中间父进程或根退出、owner 丢失，以及准入失败。 | 真实 Job 终止成员，独立持有的代表进程对象均 signaled；无关进程继续运行；准入失败不执行目标代码。观察或清理失败保留执行归属。 | R1、R13 |
 | 从不同工作目录执行启动命令。 | 读取同一份 `~/.daynight/config.yml` YAML 配置，使用 `~/.daynight/` 中的同一份运行状态；仓库相对路径按配置目录解析。 | R1, R2, R13 |
 | 首次在 TTY 执行 `review run`、`review list` 或 `review ls`，缺少文件或仓库字段。 | 仅引导仓库登记，保存后继续原操作；无 server 地址也可使用 review。 | R2, R15 |
 | 非交互环境缺少 review 仓库，或已配置空列表、无效字段及损坏 YAML。 | 缺配置给出 `review add-repo` 命令；无效已有配置明确失败，不覆盖配置或启动运行时。 | R2 |
