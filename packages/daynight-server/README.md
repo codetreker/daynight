@@ -742,7 +742,7 @@ issuing SQL. It exposes the following families for the App's own pool:
 | `daynight_postgres_pool_empty_acquires_total` | Counter | Successful acquisitions that waited for an empty pool |
 | `daynight_postgres_pool_empty_acquire_wait_seconds_total` | Counter | Total empty-pool wait time for those successful acquisitions, in seconds |
 
-Only the connections family has labels. These acquisition durations are not SQL
+Among the pool families, only the connections family has labels. These acquisition durations are not SQL
 execution latency; the pool metrics do not describe the database server's CPU or
 resource use. Counters reset when the process restarts.
 
