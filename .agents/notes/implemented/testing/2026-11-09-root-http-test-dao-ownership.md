@@ -65,7 +65,10 @@ The [test-writing rules](../../../../docs/writing_tests.md) own dependency and
 integration restrictions. The
 [Worker Report capacity decision](2026-11-09-worker-report-capacity-test-owners.md)
 partially supersedes the DAO mock boundary for that HTTP matrix, preserving its
-lower validation and projection proofs with Core. Existing scenarios are
+lower validation and projection proofs with Core. The
+[Configuration capacity decision](2026-11-09-worker-configuration-capacity-test-owners.md)
+assigns its eight HTTP cases and receiving Core input/business proofs to the
+same direct operation boundary. Existing scenarios are
 corrected in place or consolidated with an existing mechanism owner; protocol
 matrices are not added to normal API integration or product E2E.
 

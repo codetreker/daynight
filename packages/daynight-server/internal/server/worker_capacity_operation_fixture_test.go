@@ -23,6 +23,7 @@ import (
 type capacityReportOperations struct {
 	t      *testing.T
 	report func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
+	put    func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
 }
 
 func (s *capacityReportOperations) unexpected(method string) error {
@@ -54,8 +55,11 @@ func (s *capacityReportOperations) Configuration(context.Context, model.Principa
 	return model.WorkerConfigurationResource{}, s.unexpected("Configuration")
 }
 
-func (s *capacityReportOperations) PutConfiguration(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
-	return model.WorkerConfigurationResource{}, s.unexpected("PutConfiguration")
+func (s *capacityReportOperations) PutConfiguration(ctx context.Context, principal model.Principal, worker, revision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
+	if s.put == nil {
+		return model.WorkerConfigurationResource{}, s.unexpected("PutConfiguration")
+	}
+	return s.put(ctx, principal, worker, revision, value)
 }
 
 func (s *capacityReportOperations) PutMonitoring(context.Context, model.Principal, string, *string, monitoring.Observation) (monitoring.Receipt, error) {
@@ -106,12 +110,19 @@ func newCapacityReportOperationFixture(t *testing.T, worker string) *capacityRep
 
 func (f *capacityReportOperationFixture) request(body map[string]any, calls int, refusal error) *httptest.ResponseRecorder {
 	f.t.Helper()
+	return f.reportRequest(body, calls, workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt}, refusal, "")
+}
+
+func (f *capacityReportOperationFixture) reportRequest(body map[string]any, calls int, result workerservice.WorkerReportResult, refusal error, protocol string) *httptest.ResponseRecorder {
+	f.t.Helper()
 	want := model.WorkerReport{
 		Telemetry:     capacityDecode[model.WorkerTelemetry](f.t, body),
 		TaskInventory: capacityDecode[*model.WorkerTaskInventory](f.t, body["taskInventory"]),
 		Configuration: nil,
 	}
-	f.authCalls = 0
+	if protocol == "1" {
+		want.Configuration = capacityDecode[*model.WorkerConfigurationExchange](f.t, body["configuration"])
+	}
 	used := 0
 	f.operations.report = func(ctx context.Context, principal model.Principal, worker string, input model.WorkerReport) (workerservice.WorkerReportResult, error) {
 		used++
@@ -121,15 +132,54 @@ func (f *capacityReportOperationFixture) request(body map[string]any, calls int,
 		if ctx != f.requestContext || principal != f.handler.principal || worker != f.worker || !reflect.DeepEqual(input, want) {
 			f.t.Errorf("Report arguments differ:\nactual: %+v\nwant: %+v", input, want)
 		}
-		return workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt}, refusal
+		return capacityDecode[workerservice.WorkerReportResult](f.t, result), refusal
 	}
 	defer func() { f.operations.report = nil }()
-	response := projectRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(f.t, body))
-	if used != calls || f.authCalls != 1 {
-		f.t.Fatalf("Report calls = %d, want %d; credential calls = %d, want 1", used, calls, f.authCalls)
+	response := f.dispatch(http.MethodPost, "/report", body, protocol)
+	if used != calls {
+		f.t.Fatalf("Report calls = %d, want %d", used, calls)
+	}
+	return response
+}
+
+func (f *capacityReportOperationFixture) dispatch(method, suffix string, body map[string]any, protocol string) *httptest.ResponseRecorder {
+	f.t.Helper()
+	f.authCalls = 0
+	path := "/api/v1/me/workers/" + f.worker + suffix
+	var response *httptest.ResponseRecorder
+	if protocol == "" {
+		response = projectRequest(f.handler, method, path, jsonBody(f.t, body))
+	} else {
+		response = configurationHTTPRequest(f.handler, method, path, jsonBody(f.t, body), protocol)
+	}
+	if f.authCalls != 1 {
+		f.t.Fatalf("credential calls = %d, want 1", f.authCalls)
 	}
 	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != f.handler.principal.UserID {
-		f.t.Fatalf("worker report private response headers differ: %v", response.Header())
+		f.t.Fatalf("worker private response headers differ: %v", response.Header())
+	}
+	return response
+}
+
+func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls int, result model.WorkerConfigurationResource) *httptest.ResponseRecorder {
+	f.t.Helper()
+	want := capacityDecode[model.WorkerConfiguration](f.t, body["value"])
+	revision := body["revision"].(string)
+	used := 0
+	f.operations.put = func(ctx context.Context, principal model.Principal, worker, actualRevision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
+		used++
+		if used > calls {
+			return model.WorkerConfigurationResource{}, f.operations.unexpected("PutConfiguration")
+		}
+		if ctx != f.requestContext || principal != f.handler.principal || worker != f.worker || actualRevision != revision || !reflect.DeepEqual(value, want) {
+			f.t.Errorf("PutConfiguration arguments differ: revision %q, want %q; value %+v, want %+v", actualRevision, revision, value, want)
+		}
+		return capacityDecode[model.WorkerConfigurationResource](f.t, result), nil
+	}
+	defer func() { f.operations.put = nil }()
+	response := f.dispatch(http.MethodPut, "/configuration", body, "")
+	if used != calls {
+		f.t.Fatalf("PutConfiguration calls = %d, want %d", used, calls)
 	}
 	return response
 }
