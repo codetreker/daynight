@@ -168,8 +168,9 @@ test('supports keyboard navigation, dismissal, native links and route changes', 
   const menu = page.locator('.team-options');
   await trigger.focus(); await page.keyboard.press('Enter');
   await expect(menu.getByRole('menuitemradio', { name: 'Personal', exact: true })).toBeFocused();
-  await page.keyboard.press('ArrowDown');
   const alphaLink = menu.locator(`a[href="/teams/${alpha}"]`);
+  await expect(alphaLink).toBeVisible();
+  await page.keyboard.press('ArrowDown');
   await expect(alphaLink).toBeFocused();
   await expect(alphaLink).toHaveAttribute('href', `/teams/${alpha}`);
   await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
