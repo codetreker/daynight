@@ -902,6 +902,37 @@ mocked outcomes cannot establish them. The
 [Runtime test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-bot-runtime-service-test-boundary.md)
 records the operation bindings and proof ownership.
 
+### Team service tests
+
+The `internal/service/team` suite executes Team scope callbacks, completion
+handling and invitation/eligibility orchestration with strict direct-operation
+mocks. `NewTeams` binds private, instance-owned Team admission, business and
+eligibility operations to their production implementations. Unit fixtures supply
+independent domain facts, errors and completion outcomes, checking principal,
+raw input, IDs, context, transaction capabilities, calls and required order.
+They do not run core business rules, construct an in-memory Store or prepare
+identity/database fixtures. The test binary clears database and UniAuth fixture
+variables before its ordinary suite.
+
+Run the module without PostgreSQL or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/team
+```
+
+Completion tests retain allocated-ID errors, staged snapshot refusals and the
+method-specific result contracts. Invitation acceptance uses a completed read
+snapshot followed by an independent Team write scope; eligibility refresh uses
+that write scope and runs only after the lower mutation succeeds. Core tests
+own lifecycle, last-admin, invitation and post-lock clock decisions. PostgreSQL
+owners verify current facts after Team/invitation locks, SQL failures, consumption,
+rollback and fresh persisted readback. `PersonalTeamID` belongs to Identity.
+The [Team test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-team-service-test-boundary.md)
+records these proof owners and the distinct read/completion behavior.
+
 ### Business rules and DAO mocks
 
 The [test-writing rules](../../docs/writing_tests.md) define the dependency

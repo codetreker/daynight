@@ -1,257 +1,260 @@
-package team_test
+package team
 
 import (
-	"context"
-	"errors"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"math"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
-
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func teamFault(t *testing.T, err error, code string) {
-	t.Helper()
-	fault, classified := coreteam.WriteFault(err)
-	if !classified {
-		_ = errors.As(err, &fault)
+func readPlan(operation string) []string {
+	return []string{"validateRead", "snapshot", "reader", operation, "snapshot_done"}
+}
+func listPlan() []string { return []string{"snapshot", "reader", "list", "snapshot_done"} }
+func writePlan(validation, operation string, refresh bool) []string {
+	result := []string{validation, "write", "writer", operation}
+	if refresh {
+		result = append(result, "eligibility", "refresh")
 	}
-	if fault == nil || fault.Code != code {
-		t.Fatalf("expected %s, got %v (%#v)", code, err, fault)
-	}
+	return append(result, "write_done")
 }
 
-func newTestTeam(t *testing.T, teams *teamservice.Teams, p model.Principal, name string) model.Team {
-	t.Helper()
-	team, err := teams.Create(context.Background(), p, coreteam.CreateTeam{Name: name, ExpectedUserID: p.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return team
-}
-
-func TestTeamLifecycleUsesRealMembershipAndExactMetadata(t *testing.T) {
-	_, db, _, actor := projectService(t)
-	teams := teamservice.NewTeams(db)
-	ctx := context.Background()
+func TestTeamLifecycleForwardsExactMetadata(t *testing.T) {
 	raw := " \t研发😀\u2003 " + strings.Repeat("x", 180)
-	team := newTestTeam(t, teams, actor, raw)
-	if team.Kind != "ordinary" || team.Name == nil || *team.Name != raw || team.Version != 1 || team.Membership.TeamID != team.ID || team.Membership.UserID != actor.UserID || team.Membership.Role != model.ProjectAdmin || team.Membership.Version < 1 || team.CreatedAt.IsZero() || !team.CreatedAt.Equal(team.UpdatedAt) {
-		t.Fatalf("incomplete Team %#v", team)
+	t.Run("create", func(t *testing.T) {
+		f := newTeamFixture(t, "validateCreate", "create_scope", "create", "create_done")
+		input := core.CreateTeam{Name: raw, ExpectedUserID: f.p.UserID}
+		want := fixtureTeam()
+		want.Name = fixturePointer(raw)
+		f.bindCreate(input, want, nil, nil)
+		got, err := f.service.Create(f.ctx, f.p, input)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("creation=%+v %v", got, err)
+		}
+	})
+	t.Run("get", func(t *testing.T) {
+		f := newTeamFixture(t, readPlan("get")...)
+		want := fixtureTeam()
+		want.Name = fixturePointer(raw)
+		f.bindGet(want, nil)
+		got, err := f.service.Get(f.ctx, f.p, f.rawID)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("read=%+v %v", got, err)
+		}
+	})
+	for _, name := range []string{raw, " Renamed "} {
+		t.Run("rename "+name, func(t *testing.T) {
+			f := newTeamFixture(t, writePlan("validateChange", "rename", false)...)
+			input := core.ChangeTeam{Name: name, Version: 1, ExpectedUserID: f.p.UserID}
+			want := fixtureTeam()
+			want.Name = fixturePointer(name)
+			f.bindRename(input, want, nil)
+			got, err := f.service.Rename(f.ctx, f.p, f.rawID, input)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("rename=%+v %v", got, err)
+			}
+		})
 	}
-	duplicate := newTestTeam(t, teams, actor, raw)
-	if duplicate.ID == team.ID {
-		t.Fatal("name resolved existing Team")
-	}
-	got, err := teams.Get(ctx, actor, team.ID)
-	if err != nil || !reflect.DeepEqual(got, team) {
-		t.Fatalf("get %#v %v", got, err)
-	}
-	same, err := teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: raw, Version: team.Version, ExpectedUserID: actor.UserID})
-	if err != nil || !reflect.DeepEqual(same, team) {
-		t.Fatalf("no-op %#v %v", same, err)
-	}
-	_, err = teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: raw, Version: 2, ExpectedUserID: actor.UserID})
-	teamFault(t, err, "version_conflict")
-	changed, err := teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: " Renamed ", Version: 1, ExpectedUserID: actor.UserID})
-	if err != nil || changed.Version != 2 || *changed.Name != " Renamed " || !changed.UpdatedAt.After(team.UpdatedAt) || !reflect.DeepEqual(changed.Membership, team.Membership) {
-		t.Fatalf("rename %#v %v", changed, err)
-	}
-	teamFault(t, teams.Delete(ctx, actor, team.ID, coreteam.ChangeTeam{Name: raw, Version: changed.Version, ExpectedUserID: actor.UserID}), "version_conflict")
-	if err := teams.Delete(ctx, actor, team.ID, coreteam.ChangeTeam{Name: *changed.Name, Version: changed.Version, ExpectedUserID: actor.UserID}); err != nil {
-		t.Fatal(err)
-	}
-	_, err = teams.Get(ctx, actor, team.ID)
-	teamFault(t, err, "not_found")
-	var count int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM team_members WHERE team_id=$1`, team.ID).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("orphan members %d %v", count, err)
-	}
-	teamFault(t, teams.Delete(ctx, actor, team.ID, coreteam.ChangeTeam{Name: *changed.Name, Version: changed.Version, ExpectedUserID: actor.UserID}), "not_found")
+	t.Run("delete", func(t *testing.T) {
+		f := newTeamFixture(t, writePlan("validateChange", "delete", true)...)
+		input := core.ChangeTeam{Name: raw, Version: 2, ExpectedUserID: f.p.UserID}
+		f.bindDelete(input, nil)
+		f.bindRefresh(store.WebhookEligibilityFilter{TeamID: f.id, TeamOwner: true}, nil)
+		if err := f.service.Delete(f.ctx, f.p, f.rawID, input); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
-	_, db, _, actor := projectService(t)
-	teams := teamservice.NewTeams(db)
-	ctx := context.Background()
-	team := newTestTeam(t, teams, actor, "Team")
-	member, outsider := servicePrincipal(t, db), servicePrincipal(t, db)
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, member.UserID); err != nil {
-		t.Fatal(err)
-	}
-	got, err := teams.Get(ctx, member, team.ID)
-	if err != nil || got.Membership.Role != model.ProjectMemberRole || got.Membership.UserID != member.UserID {
-		t.Fatalf("member read %#v %v", got, err)
-	}
-	for _, principal := range []model.Principal{member, outsider} {
-		code := "forbidden"
-		if principal.UserID == outsider.UserID {
-			code = "not_found"
-		}
-		_, err := teams.Rename(ctx, principal, team.ID, coreteam.ChangeTeam{Name: "other", Version: 1, ExpectedUserID: principal.UserID})
-		teamFault(t, err, code)
-		teamFault(t, teams.Delete(ctx, principal, team.ID, coreteam.ChangeTeam{Name: "Team", Version: 1, ExpectedUserID: principal.UserID}), code)
-	}
-	page, err := teams.List(ctx, actor, model.PageRequest{Limit: 100})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var personal model.Team
-	for _, item := range page.Items {
-		if item.Kind == "personal" {
-			personal = item
+	for _, operation := range []string{"rename", "delete"} {
+		for _, code := range []string{"forbidden", "not_found", "personal_team_immutable", "team_not_empty", "version_conflict"} {
+			t.Run(operation+"/"+code, func(t *testing.T) {
+				f := newTeamFixture(t, writePlan("validateChange", operation, false)...)
+				input := core.ChangeTeam{Name: "Team", Version: 1, ExpectedUserID: f.p.UserID}
+				refusal := fixtureFault(code)
+				if operation == "rename" {
+					f.bindRename(input, model.Team{}, refusal)
+					result, err := f.service.Rename(f.ctx, f.p, f.rawID, input)
+					if !reflect.DeepEqual(result, model.Team{}) || err != refusal {
+						t.Fatalf("rename refusal=%+v %v", result, err)
+					}
+				} else {
+					f.bindDelete(input, refusal)
+					if err := f.service.Delete(f.ctx, f.p, f.rawID, input); err != refusal {
+						t.Fatalf("delete refusal=%v", err)
+					}
+				}
+			})
 		}
 	}
-	if personal.ID == "" || personal.Name != nil || personal.Membership.Role != model.ProjectAdmin {
-		t.Fatalf("Personal %#v", personal)
-	}
-	_, err = teams.Rename(ctx, actor, personal.ID, coreteam.ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID})
-	teamFault(t, err, "personal_team_immutable")
-	teamFault(t, teams.Delete(ctx, actor, personal.ID, coreteam.ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID}), "personal_team_immutable")
-	project, err := projectservice.NewProjects(db).Create(ctx, actor, coreproject.CreateProject{ExpectedUserID: actor.UserID, Name: "Owned", RepoURL: "host:repo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, project.ID, team.ID); err != nil {
-		t.Fatal(err)
-	}
-	teamFault(t, teams.Delete(ctx, actor, team.ID, coreteam.ChangeTeam{Name: "Team", Version: 1, ExpectedUserID: actor.UserID}), "team_not_empty")
-	got, err = teams.Get(ctx, actor, team.ID)
-	if err != nil || !reflect.DeepEqual(got, team) {
-		t.Fatalf("nonempty refusal changed Team %#v %v", got, err)
-	}
-	if _, err := projectservice.NewProjects(db).Get(ctx, actor, project.ID); err != nil {
-		t.Fatal("nonempty deletion changed Project", err)
-	}
+	t.Run("member read", func(t *testing.T) {
+		f := newTeamFixture(t, readPlan("get")...)
+		f.p.UserID = teamFixtureTarget
+		want := fixtureTeam()
+		want.Membership.UserID = f.p.UserID
+		want.Membership.Role = model.ProjectMemberRole
+		f.bindGet(want, nil)
+		got, err := f.service.Get(f.ctx, f.p, f.rawID)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("member result=%+v %v", got, err)
+		}
+	})
 }
 
 func TestTeamPaginationBindsCurrentActorAndRealVersions(t *testing.T) {
-	_, db, _, actor := projectService(t)
-	teams := teamservice.NewTeams(db)
-	ctx := context.Background()
-	other := servicePrincipal(t, db)
-	newTestTeam(t, teams, other, "Invisible older Team")
-	first := newTestTeam(t, teams, actor, "Same")
-	second := newTestTeam(t, teams, actor, "Same")
-	const precise int64 = 9007199254740993
-	if _, err := db.Pool.Exec(ctx, `UPDATE teams SET version=$2 WHERE id=$1;`, first.ID, precise); err != nil {
+	first := fixtureTeam()
+	second := fixtureTeam()
+	second.ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	cursor, err := query.EncodeListCursor(query.ListScope{Kind: "teams", UserID: teamFixtureActor}, first.CreatedAt, first.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE team_members SET version=$3 WHERE team_id=$1 AND user_id=$2`, first.ID, actor.UserID, precise+2); err != nil {
-		t.Fatal(err)
+	for _, request := range []model.PageRequest{{Limit: 1}, {Limit: 1, Cursor: &cursor}, {Limit: 100}} {
+		t.Run("page", func(t *testing.T) {
+			f := newTeamFixture(t, listPlan()...)
+			want := core.TeamPage{Items: []model.Team{first, second}, NextCursor: &cursor}
+			f.bindList(request, want, nil)
+			got, err := f.service.List(f.ctx, f.p, request)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("Team page=%+v %v", got, err)
+			}
+		})
 	}
-	var ids []string
-	var cursor *string
-	for {
-		page, err := teams.List(ctx, actor, model.PageRequest{Limit: 1, Cursor: cursor})
-		if err != nil || len(page.Items) != 1 {
-			t.Fatalf("page %#v %v", page, err)
-		}
-		item := page.Items[0]
-		ids = append(ids, item.ID)
-		if item.ID == first.ID && (item.Version != precise || item.Membership.Version != precise+2) {
-			t.Fatalf("rounded versions %#v", item)
-		}
-		if page.NextCursor == nil {
-			break
-		}
-		if cursor == nil {
-			_, err := teams.List(ctx, other, model.PageRequest{Limit: 1, Cursor: page.NextCursor})
+	for _, request := range []model.PageRequest{{Limit: 0}, {Limit: 1, Cursor: fixturePointer("invalid")}, {Limit: 1, Cursor: &cursor}} {
+		t.Run("invalid page", func(t *testing.T) {
+			f := newTeamFixture(t)
+			if request.Cursor == &cursor {
+				f.p.UserID = teamFixtureTarget
+			}
+			got, err := f.service.List(f.ctx, f.p, request)
 			teamFault(t, err, "invalid_input")
-		}
-		cursor = page.NextCursor
+			if got.Items != nil || got.NextCursor != nil {
+				t.Error("invalid page exposed data")
+			}
+		})
 	}
-	if len(ids) != 3 || ids[1] != first.ID || ids[2] != second.ID {
-		t.Fatalf("membership pagination %#v", ids)
-	}
-	_, err := teams.List(ctx, actor, model.PageRequest{Limit: 0})
-	teamFault(t, err, "invalid_input")
-	_, err = teams.List(ctx, actor, model.PageRequest{Limit: 1, Cursor: pointer("invalid")})
-	teamFault(t, err, "invalid_input")
 }
 
-func TestTeamValidationAndIdentityGuardPrecedeSQL(t *testing.T) {
-	_, db, url, actor := projectService(t)
-	ctx := context.Background()
-	other := servicePrincipal(t, db)
-	var count atomic.Int32
-	traced := tracedTasks(t, url, taskQueryAction{match: func(string) bool { count.Add(1); return false }})
-	teams := teamservice.NewTeams(traced)
-	_, err := teams.Create(ctx, actor, coreteam.CreateTeam{Name: "Good", ExpectedUserID: other.UserID})
-	teamFault(t, err, "identity_mismatch")
-	_, err = teams.Rename(ctx, actor, uuid.NewString(), coreteam.ChangeTeam{Name: "Good", Version: 1, ExpectedUserID: other.UserID})
-	teamFault(t, err, "identity_mismatch")
-	teamFault(t, teams.Delete(ctx, actor, uuid.NewString(), coreteam.ChangeTeam{Name: "Good", Version: 1, ExpectedUserID: other.UserID}), "identity_mismatch")
-	if count.Load() != 0 {
-		t.Fatalf("identity mismatch executed %d SQL queries", count.Load())
-	}
-	teams = teamservice.NewTeams(nil)
-	for _, name := range []string{"", " \t\n\u2003\u0085", "bad\x00name", "bad\xffname"} {
-		_, err := teams.Create(ctx, actor, coreteam.CreateTeam{Name: name, ExpectedUserID: actor.UserID})
-		teamFault(t, err, "invalid_input")
-		_, err = teams.Rename(ctx, actor, uuid.NewString(), coreteam.ChangeTeam{Name: name, Version: 1, ExpectedUserID: actor.UserID})
-		teamFault(t, err, "invalid_input")
+func TestTeamValidationAndIdentityGuardPrecedeOperations(t *testing.T) {
+	for _, test := range []struct {
+		input core.CreateTeam
+		code  string
+	}{
+		{core.CreateTeam{Name: "Good", ExpectedUserID: teamFixtureTarget}, "identity_mismatch"},
+		{core.CreateTeam{Name: "", ExpectedUserID: teamFixtureActor}, "invalid_input"},
+		{core.CreateTeam{Name: " \t\n\u2003\u0085", ExpectedUserID: teamFixtureActor}, "invalid_input"},
+		{core.CreateTeam{Name: "bad\x00name", ExpectedUserID: teamFixtureActor}, "invalid_input"},
+		{core.CreateTeam{Name: "bad\xffname", ExpectedUserID: teamFixtureActor}, "invalid_input"},
+		{core.CreateTeam{Name: "valid", ExpectedUserID: ""}, "invalid_input"},
+		{core.CreateTeam{Name: "valid", ExpectedUserID: strings.ToUpper("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")}, "invalid_input"},
+	} {
+		t.Run("create "+test.code, func(t *testing.T) {
+			f := newTeamFixture(t, "validateCreate")
+			refusal := fixtureFault(test.code)
+			f.bindCreate(test.input, model.Team{}, nil, refusal)
+			got, err := f.service.Create(f.ctx, f.p, test.input)
+			if err != refusal || !reflect.DeepEqual(got, model.Team{}) {
+				t.Fatalf("admission=%+v %v", got, err)
+			}
+		})
 	}
 	for _, id := range []string{"invalid", strings.ToUpper("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")} {
-		_, err := teams.Get(ctx, actor, id)
-		teamFault(t, err, "invalid_input")
-		_, err = teams.Rename(ctx, actor, id, coreteam.ChangeTeam{Name: "valid", Version: 1, ExpectedUserID: actor.UserID})
-		teamFault(t, err, "invalid_input")
+		for _, operation := range []string{"get", "rename"} {
+			t.Run("ID "+operation+"/"+id, func(t *testing.T) {
+				call := "validateRead"
+				if operation == "rename" {
+					call = "validateChange"
+				}
+				f := newTeamFixture(t, call)
+				f.rawID = id
+				refusal := fixtureFault("invalid_input")
+				if operation == "get" {
+					f.validateRead(refusal)
+					_, err := f.service.Get(f.ctx, f.p, id)
+					if err != refusal {
+						t.Fatal(err)
+					}
+				} else {
+					input := core.ChangeTeam{Name: "valid", Version: 1, ExpectedUserID: f.p.UserID}
+					f.validateChange(input, refusal)
+					_, err := f.service.Rename(f.ctx, f.p, id, input)
+					if err != refusal {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
 	}
-	_, err = teams.Rename(ctx, actor, uuid.NewString(), coreteam.ChangeTeam{Name: "valid", Version: 0, ExpectedUserID: actor.UserID})
-	teamFault(t, err, "invalid_input")
-	for _, expected := range []string{"", strings.ToUpper("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")} {
-		_, err := teams.Create(ctx, actor, coreteam.CreateTeam{Name: "valid", ExpectedUserID: expected})
-		teamFault(t, err, "invalid_input")
+	for _, input := range []core.ChangeTeam{{Name: "Good", Version: 1, ExpectedUserID: teamFixtureTarget}, {Name: "", Version: 1, ExpectedUserID: teamFixtureActor}, {Name: " \t\n\u2003\u0085", Version: 1, ExpectedUserID: teamFixtureActor}, {Name: "bad\x00name", Version: 1, ExpectedUserID: teamFixtureActor}, {Name: "bad\xffname", Version: 1, ExpectedUserID: teamFixtureActor}, {Name: "valid", Version: 0, ExpectedUserID: teamFixtureActor}} {
+		for _, operation := range []string{"rename", "delete"} {
+			t.Run(operation, func(t *testing.T) {
+				f := newTeamFixture(t, "validateChange")
+				refusal := fixtureFault("invalid_input")
+				f.validateChange(input, refusal)
+				if operation == "rename" {
+					_, err := f.service.Rename(f.ctx, f.p, f.rawID, input)
+					if err != refusal {
+						t.Fatal(err)
+					}
+				} else if err := f.service.Delete(f.ctx, f.p, f.rawID, input); err != refusal {
+					t.Fatal(err)
+				}
+			})
+		}
 	}
-	_, err = teams.Create(ctx, model.Principal{}, coreteam.CreateTeam{Name: "valid", ExpectedUserID: actor.UserID})
-	teamFault(t, err, "unauthenticated")
-	_, err = teams.Get(ctx, model.Principal{}, uuid.NewString())
-	teamFault(t, err, "unauthenticated")
-	_, err = teams.List(ctx, model.Principal{}, model.PageRequest{Limit: 1})
-	teamFault(t, err, "unauthenticated")
+	t.Run("unauthenticated list", func(t *testing.T) {
+		f := newTeamFixture(t)
+		f.p = model.Principal{}
+		_, err := f.service.List(f.ctx, f.p, model.PageRequest{Limit: 1})
+		teamFault(t, err, "unauthenticated")
+	})
+	for _, operation := range []string{"create", "get"} {
+		t.Run("unauthenticated "+operation, func(t *testing.T) {
+			f := newTeamFixture(t, "validateRead")
+			f.p = model.Principal{}
+			refusal := fixtureFault("unauthenticated")
+			if operation == "get" {
+				f.validateRead(refusal)
+				_, err := f.service.Get(f.ctx, f.p, f.rawID)
+				if err != refusal {
+					t.Fatal(err)
+				}
+			} else {
+				f.want = []string{"validateCreate"}
+				input := core.CreateTeam{Name: "valid", ExpectedUserID: teamFixtureActor}
+				f.bindCreate(input, model.Team{}, nil, refusal)
+				_, err := f.service.Create(f.ctx, f.p, input)
+				if err != refusal {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 func TestTeamMetadataVersionExhaustionAndFaultPriority(t *testing.T) {
-	_, db, _, actor := projectService(t)
-	teams := teamservice.NewTeams(db)
-	ctx := context.Background()
-	team := newTestTeam(t, teams, actor, "Full")
-	if _, err := db.Pool.Exec(ctx, `UPDATE teams SET version=$2 WHERE id=$1`, team.ID, int64(math.MaxInt64)); err != nil {
-		t.Fatal(err)
-	}
-	same, err := teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: "Full", Version: math.MaxInt64, ExpectedUserID: actor.UserID})
-	if err != nil || same.Version != math.MaxInt64 {
-		t.Fatalf("exhausted no-op %#v %v", same, err)
-	}
-	_, err = teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: "Changed", Version: math.MaxInt64, ExpectedUserID: actor.UserID})
-	teamFault(t, err, "version_exhausted")
-	sentinel := &pgconn.PgError{Code: "08006", Message: "private database failure"}
-	refusal := &model.Fault{Code: "forbidden", Message: "refused"}
-	for _, test := range []struct {
-		tx   *store.TransactionError
-		code string
-	}{
-		{&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: sentinel}, "write_outcome_unknown"},
-		{&store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: errors.Join(refusal, sentinel)}, "internal_error"},
-		{&store.TransactionError{Phase: "commit", Outcome: store.TransactionNotCommitted, CommitAttempted: true, Cause: sentinel}, "internal_error"},
-	} {
-		fault, ok := coreteam.WriteFault(test.tx)
-		if !ok || fault.Code != test.code || !errors.Is(fault, sentinel) {
-			t.Fatalf("completion priority %#v %v", fault, ok)
-		}
-	}
-	if _, ok := coreteam.WriteFault(refusal); ok {
-		t.Fatal("plain refusal gained transaction evidence")
+	for _, code := range []string{"", "version_exhausted"} {
+		t.Run(code, func(t *testing.T) {
+			f := newTeamFixture(t, writePlan("validateChange", "rename", false)...)
+			input := core.ChangeTeam{Name: "Full", Version: math.MaxInt64, ExpectedUserID: f.p.UserID}
+			want := fixtureTeam()
+			want.Version = math.MaxInt64
+			var refusal error
+			if code != "" {
+				input.Name = "Changed"
+				refusal = fixtureFault(code)
+				want = model.Team{}
+			}
+			f.bindRename(input, want, refusal)
+			got, err := f.service.Rename(f.ctx, f.p, f.rawID, input)
+			if err != refusal || !reflect.DeepEqual(got, want) {
+				t.Fatalf("exhaustion result=%+v %v", got, err)
+			}
+		})
 	}
 }

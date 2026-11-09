@@ -3,13 +3,17 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	teamstore "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -35,6 +39,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	const directVersion int64 = 9007199254740993
 	mustQueryExec(t, s, `UPDATE project_grants SET version=$3 WHERE project_id=$1 AND user_id=$2`, project.ID, other.UserID, directVersion)
 	directGrant.Version = directVersion
+	var promoted model.TeamMember
 	err = s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		original, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 		if err != nil {
@@ -59,6 +64,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 			if err != nil || updated.Role != model.ProjectAdmin || updated.Version <= member.Version {
 				t.Fatalf("updated relation %#v %v", updated, err)
 			}
+			promoted = updated
 			return nil
 		})
 		if err != nil {
@@ -104,6 +110,90 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	var rejoined model.TeamMember
+	if err := testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error {
+		var err error
+		rejoined, err = tx.AddInvitedMember(ctx, other.UserID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rejoined.CreatedAt, rejoined.UpdatedAt = rejoined.CreatedAt.UTC(), rejoined.UpdatedAt.UTC()
+	if rejoined.UserID != other.UserID || rejoined.TeamID != team.ID || rejoined.Role != model.ProjectMemberRole || rejoined.Version <= promoted.Version {
+		t.Fatalf("rejoined membership reused its removed version: removed %#v rejoined %#v", promoted, rejoined)
+	}
+	if fresh := readStoreTeam(t, s, other.UserID, team.ID).Membership; !reflect.DeepEqual(fresh, rejoined) {
+		t.Fatalf("fresh rejoined membership differs: written %#v fresh %#v", rejoined, fresh)
+	}
+	for _, remove := range []bool{false, true} {
+		t.Run(map[bool]string{false: "serialized demotion", true: "serialized removal"}[remove], func(t *testing.T) {
+			s, first, team := storeTeamFixture(t)
+			_, second, _ := testAuthRecords(t, s)
+			mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, team.ID, second.UserID)
+			secondBefore := readStoreTeam(t, s, second.UserID, team.ID).Membership
+			var changed model.TeamMember
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			completion, err := s.WriteTeam(ctx, team.ID, func(scope TeamWriteScope) error {
+				dao := scope.TeamDAO()
+				count, err := dao.AdminCount(ctx)
+				if err != nil || count != 2 {
+					return fmt.Errorf("initial administrator count %d: %w", count, err)
+				}
+				if remove {
+					err = dao.RemoveMember(ctx, first.UserID)
+				} else {
+					changed, err = dao.SetMemberRole(ctx, first.UserID, model.ProjectMemberRole)
+				}
+				if err != nil {
+					return err
+				}
+				go func() {
+					_, err := s.WriteTeam(ctx, team.ID, func(waiter TeamWriteScope) error {
+						count, err := waiter.TeamDAO().AdminCount(ctx)
+						if err != nil || count != 1 {
+							return fmt.Errorf("serialized administrator count %d: %w", count, err)
+						}
+						member, err := waiter.TeamDAO().Member(ctx, first.UserID)
+						if remove {
+							if !errors.Is(err, model.ErrNotFound) {
+								return fmt.Errorf("removed administrator still present: %#v %v", member, err)
+							}
+						} else if err != nil || member.Role != model.ProjectMemberRole || member.Version <= team.Membership.Version {
+							return fmt.Errorf("demoted administrator is stale: %#v %v", member, err)
+						}
+						remaining, err := waiter.TeamDAO().Member(ctx, second.UserID)
+						if err != nil || remaining.Role != model.ProjectAdmin {
+							return fmt.Errorf("remaining administrator changed: %#v %v", remaining, err)
+						}
+						return nil
+					})
+					done <- err
+				}()
+				testutil.WaitTransferTeamLock(t, ctx, s.Pool, "SELECT id::text FROM teams WHERE", scope.(teamWriteScope).tx.Conn().PgConn().PID())
+				return nil
+			})
+			if err != nil || completion.Outcome != TransactionCommitted {
+				t.Fatalf("first mutation completion %#v %v", completion, err)
+			}
+			if err := receiveQueryResult(t, ctx, done); err != nil {
+				t.Fatal(err)
+			}
+			var admins, members int
+			if err := s.Pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE role='admin'),count(*) FROM team_members WHERE team_id=$1`, team.ID).Scan(&admins, &members); err != nil || admins != 1 || members != map[bool]int{false: 2, true: 1}[remove] {
+				t.Fatalf("fresh committed directory: admins=%d members=%d %v", admins, members, err)
+			}
+			if after := readStoreTeam(t, s, second.UserID, team.ID).Membership; !reflect.DeepEqual(after, secondBefore) {
+				t.Fatalf("remaining administrator changed: before %#v after %#v", secondBefore, after)
+			}
+			if !remove {
+				if after := readStoreTeam(t, s, first.UserID, team.ID).Membership; !reflect.DeepEqual(after, changed) {
+					t.Fatalf("fresh demotion differs from written row: %#v %#v", changed, after)
+				}
+			}
+		})
+	}
 }
 
 func TestTeamMemberMutationFailuresRollbackAndPreserveCauses(t *testing.T) {
@@ -134,6 +224,41 @@ func TestTeamMemberMutationFailuresRollbackAndPreserveCauses(t *testing.T) {
 			}
 		})
 	}
+	t.Run("orphaned subscribed Project", func(t *testing.T) {
+		s, _, team := storeTeamFixture(t)
+		_, member, _ := testAuthRecords(t, s)
+		ctx := t.Context()
+		mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, member.UserID)
+		before := readStoreTeam(t, s, member.UserID, team.ID).Membership
+		project, subscription := uuid.NewString(), uuid.NewString()
+		mustQueryExec(t, s, `INSERT INTO projects(id,name,repo_url) VALUES($1,'Orphaned subscribed Project','https://example.test/project')`, project)
+		mustQueryExec(t, s, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, project, team.ID)
+		mustQueryExec(t, s, `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'active',1,now(),now())`, subscription, uuid.NewString(), project, member.UserID)
+		mustQueryExec(t, s, `DELETE FROM project_ownership WHERE project_id=$1`, project)
+		var integrity error
+		completion, err := s.WriteTeam(ctx, team.ID, func(scope TeamWriteScope) error {
+			if err := scope.TeamDAO().RemoveMember(ctx, member.UserID); err != nil {
+				return err
+			}
+			rows, err := scope.EligibilityDAO().LockAffected(ctx, WebhookEligibilityFilter{TeamID: team.ID, UserID: member.UserID})
+			if err != nil || len(rows) != 1 || rows[0].ID != subscription || rows[0].State != "active" || rows[0].Epoch != 1 {
+				return fmt.Errorf("orphan subscription not locked: %#v %v", rows, err)
+			}
+			_, integrity = scope.EligibilityDAO().ReadEligibility(ctx, rows[0].Owner, rows[0].ProjectID, member.UserID)
+			return integrity
+		})
+		if integrity == nil || !strings.Contains(integrity.Error(), "ownership") || !errors.Is(err, integrity) || completion.Outcome != TransactionNotCommitted {
+			t.Fatalf("cross-DAO integrity rollback: %#v %v (cause %v)", completion, err, integrity)
+		}
+		if after := readStoreTeam(t, s, member.UserID, team.ID).Membership; !reflect.DeepEqual(after, before) {
+			t.Fatalf("cross-DAO failure persisted membership removal: before %#v after %#v", before, after)
+		}
+		var state string
+		var epoch int64
+		if err := s.Pool.QueryRow(ctx, `SELECT authorization_state,authorization_epoch FROM webhook_subscriptions WHERE id=$1`, subscription).Scan(&state, &epoch); err != nil || state != "active" || epoch != 1 {
+			t.Fatalf("cross-DAO failure changed subscription: %s %d %v", state, epoch, err)
+		}
+	})
 }
 
 func TestTeamMemberCancellationAndUnknownCommit(t *testing.T) {

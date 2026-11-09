@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -26,7 +29,7 @@ func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 		}
 		err = testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error {
 			var err error
-			changed, err = tx.Rename(ctx, actor.UserID, "Changed after snapshot")
+			changed, err = tx.Rename(ctx, actor.UserID, " Renamed ")
 			return err
 		})
 		if err != nil {
@@ -42,7 +45,7 @@ func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh := readStoreTeam(t, s, actor.UserID, team.ID)
-	if !reflect.DeepEqual(fresh, changed) || fresh.Version != team.Version+1 || *fresh.Name != "Changed after snapshot" {
+	if !reflect.DeepEqual(fresh, changed) || fresh.Version != team.Version+1 || fresh.Name == nil || *fresh.Name != " Renamed " || !fresh.UpdatedAt.After(team.UpdatedAt) || !reflect.DeepEqual(fresh.Membership, team.Membership) {
 		t.Fatalf("fresh snapshot missed committed rename %#v", fresh)
 	}
 }
@@ -75,6 +78,91 @@ func TestTeamRenameAndDeleteSQLFailuresRollbackCompleteLifecycle(t *testing.T) {
 			after := readStoreTeam(t, s, actor.UserID, team.ID)
 			if !reflect.DeepEqual(after, team) {
 				t.Fatalf("SQL failure partially changed Team/membership: before %#v after %#v", team, after)
+			}
+		})
+	}
+}
+
+func TestTeamMemberQueryCancellationPreservesFailure(t *testing.T) {
+	for _, test := range []struct {
+		name, fragment string
+	}{
+		{"snapshot team", "FROM teams t"},
+		{"write actor", "FROM teams t"},
+		{"target", "WHERE team_id=$1 AND user_id=$2 FOR UPDATE"},
+		{"count admins", "SELECT count(*) FROM team_members"},
+		{"remove", "DELETE FROM team_members"},
+		{"change role", "UPDATE team_members SET role"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := isolatedStore(t)
+			ctx := t.Context()
+			_, actor, _ := testAuthRecords(t, s)
+			_, other, _ := testAuthRecords(t, s)
+			team, err := testCreateTeam(s, ctx, actor.UserID, uuid.NewString(), "cancel")
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, other.UserID)
+			var before []model.TeamMemberProfile
+			if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+				var err error
+				before, err = snapshot.TeamDAO().TeamMembers(ctx, team.ID)
+				return err
+			}); err != nil || len(before) != 2 {
+				t.Fatalf("initial memberships: %#v %v", before, err)
+			}
+			opctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			var hit atomic.Bool
+			traced := taskMutationTracedStore(t, s, taskMutationTrace{
+				match: func(sql string) bool {
+					matched := strings.Contains(sql, test.fragment)
+					if matched {
+						hit.Store(true)
+					}
+					return matched
+				},
+				cancel: cancel,
+			})
+			if test.name == "snapshot team" {
+				err = traced.ReadSnapshot(opctx, func(snapshot SnapshotScope) error {
+					_, err := snapshot.TeamDAO().Team(opctx, actor.UserID, team.ID)
+					return err
+				})
+			} else {
+				_, err = traced.WriteTeam(opctx, team.ID, func(scope TeamWriteScope) error {
+					dao := scope.TeamDAO()
+					switch test.name {
+					case "write actor":
+						_, err := dao.Team(opctx, actor.UserID)
+						return err
+					case "target":
+						_, err := dao.Member(opctx, other.UserID)
+						return err
+					case "count admins":
+						_, err := dao.AdminCount(opctx)
+						return err
+					case "remove":
+						return dao.RemoveMember(opctx, other.UserID)
+					case "change role":
+						_, err := dao.SetMemberRole(opctx, other.UserID, model.ProjectAdmin)
+						return err
+					default:
+						panic("unhandled Team query cancellation target")
+					}
+				})
+			}
+			if !hit.Load() || !errors.Is(err, context.Canceled) {
+				t.Fatalf("query-start cancellation lost target or cause: hit=%t %v", hit.Load(), err)
+			}
+			var after []model.TeamMemberProfile
+			if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+				var err error
+				after, err = snapshot.TeamDAO().TeamMembers(ctx, team.ID)
+				return err
+			}); err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("query-start cancellation changed memberships: before %#v after %#v %v", before, after, err)
 			}
 		})
 	}

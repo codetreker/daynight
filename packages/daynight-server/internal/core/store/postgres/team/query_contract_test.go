@@ -3,6 +3,8 @@ package team_test
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,19 +13,40 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) {
 	s := testutil.OpenStore(t, postgres.Open)
-	actor, first := testutil.TeamFixture(t, s)
 	ctx := context.Background()
+	_, actor, _ := testutil.AuthRecords(t, s)
+	raw := " \t研发😀\u2003 " + strings.Repeat("x", 180)
+	first, err := testutil.CreateTeam(ctx, s, actor.UserID, uuid.NewString(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Kind != "ordinary" || first.Name == nil || *first.Name != raw || first.Version != 1 || first.Membership.TeamID != first.ID || first.Membership.UserID != actor.UserID || first.Membership.Role != model.ProjectAdmin || first.Membership.Version < 1 || first.CreatedAt.IsZero() || !first.CreatedAt.Equal(first.UpdatedAt) || first.Membership.CreatedAt.IsZero() || !first.Membership.CreatedAt.Equal(first.Membership.UpdatedAt) {
+		t.Fatalf("incomplete raw Team metadata: %#v", first)
+	}
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		got, err := snapshot.TeamDAO().Team(ctx, actor.UserID, first.ID)
+		if err == nil && !reflect.DeepEqual(got, first) {
+			t.Fatalf("Team creation and read differ: %#v %#v", first, got)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	_, other, _ := testutil.AuthRecords(t, s)
 	if _, err := testutil.CreateTeam(ctx, s, other.UserID, uuid.NewString(), "An invisible Team between visible rows"); err != nil {
 		t.Fatal(err)
 	}
-	second, err := testutil.CreateTeam(ctx, s, actor.UserID, uuid.NewString(), "Same visible name")
+	second, err := testutil.CreateTeam(ctx, s, actor.UserID, uuid.NewString(), raw)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if second.ID == first.ID || second.Name == nil || *second.Name != raw {
+		t.Fatalf("duplicate raw name resolved an existing Team: %#v %#v", first, second)
 	}
 	const metadataVersion int64 = 9007199254740993
 	const memberVersion int64 = 9007199254740995
@@ -50,6 +73,9 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 		}
 		if team.ID == first.ID && (team.Version != metadataVersion || team.Membership.Version != memberVersion) {
 			t.Fatalf("rounded versions %#v", team)
+		}
+		if (team.ID == first.ID || team.ID == second.ID) && (team.Name == nil || *team.Name != raw) {
+			t.Fatalf("joined page changed raw Team name: %#v", team)
 		}
 		if len(ids) == 0 && (team.Kind != "personal" || team.Name != nil || team.Membership.Role != model.ProjectAdmin) {
 			t.Fatalf("Personal projection %#v", team)
@@ -96,6 +122,17 @@ func TestTeamSnapshotAbsenceAndCancellation(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled list cause was lost %v", err)
+	}
+	testutil.MustExec(t, s.Pool, `DROP TABLE teams`)
+	var page TeamPage
+	err = s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		var err error
+		page, err = snapshot.TeamDAO().Teams(ctx, actor.UserID, Page{Limit: 10})
+		return err
+	})
+	var database *pgconn.PgError
+	if !errors.As(err, &database) || database.Code != "42P01" || len(page.Items) != 0 || page.HasMore {
+		t.Fatalf("missing Team table became an empty successful page: %#v %v", page, err)
 	}
 }
 

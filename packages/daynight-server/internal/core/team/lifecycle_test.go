@@ -1,15 +1,18 @@
 package team
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -20,7 +23,13 @@ func principal() model.Principal {
 }
 func namedTeam(p model.Principal) model.Team {
 	name := "Acme"
-	return model.Team{ID: uuid.NewString(), Name: &name, Kind: "ordinary", Version: 1, CreatedAt: time.Now().UTC(), Membership: model.TeamMember{UserID: p.UserID, Role: model.ProjectAdmin, Version: 1}}
+	id := uuid.NewString()
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	return model.Team{
+		TeamRef: model.TeamRef{ID: id, Name: &name, Kind: "ordinary"},
+		Version: 1, CreatedAt: now, UpdatedAt: now.Add(time.Second),
+		Membership: model.TeamMember{TeamID: id, UserID: p.UserID, Role: model.ProjectAdmin, Version: 1, CreatedAt: now, UpdatedAt: now.Add(time.Second)},
+	}
 }
 func faultCode(t *testing.T, err error, want string) {
 	t.Helper()
@@ -82,7 +91,15 @@ func (f *readerFake) InvitationTeamMember(context.Context, string, string) (mode
 type writerFake struct {
 	store.TeamWriteDAO
 	team                                        model.Team
+	renameResult                                model.Team
+	renameContext                               context.Context
+	renameActor, renameName                     string
+	renameCalls                                 int
 	member                                      model.TeamMember
+	roleResult, invitedMember                   model.TeamMember
+	memberContext, roleContext, removeContext   context.Context
+	memberID, changedMemberID, removedMemberID  string
+	roleCalls                                   int
 	invitation                                  model.TeamInvitation
 	ref                                         model.TeamRef
 	errs                                        map[string]error
@@ -90,35 +107,43 @@ type writerFake struct {
 	occupied, deleted, removed, consumed, added bool
 	changedRole                                 model.ProjectRole
 	revoke                                      bool
+	acceptCalls                                 []string
+	acceptContexts                              []context.Context
+	lockedHash                                  []byte
+	invitationMemberID, addedMemberID           string
+	consumedInvitationID, consumedMemberID      string
+	consumedAt                                  time.Time
 }
 
 func (f *writerFake) Team(context.Context, string) (model.Team, error) { return f.team, f.errs["team"] }
-func (f *writerFake) Rename(_ context.Context, _ string, name string) (model.Team, error) {
-	v := f.team
-	v.Name = &name
-	v.Version++
-	return v, f.errs["rename"]
+func (f *writerFake) Rename(ctx context.Context, actor, name string) (model.Team, error) {
+	f.renameContext, f.renameActor, f.renameName = ctx, actor, name
+	f.renameCalls++
+	return f.renameResult, f.errs["rename"]
 }
 func (f *writerFake) HasProjects(context.Context) (bool, error) {
 	return f.occupied, f.errs["projects"]
 }
 func (f *writerFake) Delete(context.Context) error { f.deleted = true; return f.errs["delete"] }
-func (f *writerFake) Member(context.Context, string) (model.TeamMember, error) {
+func (f *writerFake) Member(ctx context.Context, user string) (model.TeamMember, error) {
+	f.memberContext, f.memberID = ctx, user
 	return f.member, f.errs["member"]
 }
 func (f *writerFake) AdminCount(context.Context) (int64, error) { return f.count, f.errs["count"] }
-func (f *writerFake) SetMemberRole(_ context.Context, _ string, role model.ProjectRole) (model.TeamMember, error) {
-	f.changedRole = role
-	v := f.member
-	v.Role = role
-	v.Version++
-	return v, f.errs["role"]
+func (f *writerFake) SetMemberRole(ctx context.Context, user string, role model.ProjectRole) (model.TeamMember, error) {
+	f.roleContext, f.changedMemberID, f.changedRole = ctx, user, role
+	f.roleCalls++
+	return f.roleResult, f.errs["role"]
 }
-func (f *writerFake) RemoveMember(context.Context, string) error {
+func (f *writerFake) RemoveMember(ctx context.Context, user string) error {
+	f.removeContext, f.removedMemberID = ctx, user
 	f.removed = true
 	return f.errs["remove"]
 }
-func (f *writerFake) LockInvitation(context.Context, []byte) (model.TeamInvitation, error) {
+func (f *writerFake) LockInvitation(ctx context.Context, hash []byte) (model.TeamInvitation, error) {
+	f.acceptCalls = append(f.acceptCalls, "lock")
+	f.acceptContexts = append(f.acceptContexts, ctx)
+	f.lockedHash = append([]byte(nil), hash...)
 	return f.invitation, f.errs["lock"]
 }
 func (f *writerFake) CreateInvitation(_ context.Context, i model.TeamInvitation) error {
@@ -128,19 +153,51 @@ func (f *writerFake) CreateInvitation(_ context.Context, i model.TeamInvitation)
 func (f *writerFake) RevokeInvitation(context.Context, string, time.Time) (bool, error) {
 	return f.revoke, f.errs["revoke"]
 }
-func (f *writerFake) InvitationTeam(context.Context) (model.TeamRef, error) {
+func (f *writerFake) InvitationTeam(ctx context.Context) (model.TeamRef, error) {
+	f.acceptCalls = append(f.acceptCalls, "ref")
+	f.acceptContexts = append(f.acceptContexts, ctx)
 	return f.ref, f.errs["ref"]
 }
-func (f *writerFake) InvitationMember(context.Context, string) (model.TeamMember, error) {
+func (f *writerFake) InvitationMember(ctx context.Context, user string) (model.TeamMember, error) {
+	f.acceptCalls = append(f.acceptCalls, "member")
+	f.acceptContexts = append(f.acceptContexts, ctx)
+	f.invitationMemberID = user
 	return f.member, f.errs["inviteMember"]
 }
-func (f *writerFake) AddInvitedMember(context.Context, string) (model.TeamMember, error) {
+func (f *writerFake) AddInvitedMember(ctx context.Context, user string) (model.TeamMember, error) {
+	f.acceptCalls = append(f.acceptCalls, "add")
+	f.acceptContexts = append(f.acceptContexts, ctx)
+	f.addedMemberID = user
 	f.added = true
-	return f.member, f.errs["add"]
+	return f.invitedMember, f.errs["add"]
 }
-func (f *writerFake) ConsumeInvitation(context.Context, string, string, time.Time) error {
+func (f *writerFake) ConsumeInvitation(ctx context.Context, id, user string, now time.Time) error {
+	f.acceptCalls = append(f.acceptCalls, "consume")
+	f.acceptContexts = append(f.acceptContexts, ctx)
+	f.consumedInvitationID, f.consumedMemberID, f.consumedAt = id, user, now
 	f.consumed = true
 	return f.errs["consume"]
+}
+
+type ruleReadDAO struct {
+	store.TeamWriteDAO
+	team           func(context.Context, string) (model.Team, error)
+	member         func(context.Context, string) (model.TeamMember, error)
+	adminCount     func(context.Context) (int64, error)
+	lockInvitation func(context.Context, []byte) (model.TeamInvitation, error)
+}
+
+func (d *ruleReadDAO) Team(ctx context.Context, actor string) (model.Team, error) {
+	return d.team(ctx, actor)
+}
+func (d *ruleReadDAO) Member(ctx context.Context, target string) (model.TeamMember, error) {
+	return d.member(ctx, target)
+}
+func (d *ruleReadDAO) AdminCount(ctx context.Context) (int64, error) {
+	return d.adminCount(ctx)
+}
+func (d *ruleReadDAO) LockInvitation(ctx context.Context, hash []byte) (model.TeamInvitation, error) {
+	return d.lockInvitation(ctx, hash)
 }
 
 func TestValidationContracts(t *testing.T) {
@@ -230,7 +287,7 @@ func TestNameAdmissionBoundaries(t *testing.T) {
 	}
 }
 func TestTeamLifecycleDAO(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	p := principal()
 	item := namedTeam(p)
 	f := &creationFake{}
@@ -275,39 +332,117 @@ func TestTeamLifecycleDAO(t *testing.T) {
 	}
 	w := &writerFake{team: item, errs: map[string]error{}}
 	input := ChangeTeam{Name: *item.Name, Version: 1, ExpectedUserID: p.UserID}
-	same, err := Rename(ctx, w, p, input)
-	if err != nil || same.Version != 1 {
-		t.Fatal(same, err)
+	for _, tc := range []struct {
+		name    string
+		version int64
+	}{{name: "ordinary", version: 1}, {name: "maximum", version: math.MaxInt64}} {
+		t.Run("rename no-op "+tc.name, func(t *testing.T) {
+			current := item
+			current.Version = tc.version
+			snapshot := current
+			name := *current.Name
+			snapshot.Name = &name
+			reads := 0
+			dao := &ruleReadDAO{team: func(gotCtx context.Context, actor string) (model.Team, error) {
+				reads++
+				if gotCtx != ctx || actor != p.UserID || reads != 1 {
+					t.Fatalf("Team lookup: context=%v actor=%q calls=%d", gotCtx, actor, reads)
+				}
+				return snapshot, nil
+			}}
+			confirmed := ChangeTeam{Name: *current.Name, Version: tc.version, ExpectedUserID: p.UserID}
+			same, err := Rename(ctx, dao, p, confirmed)
+			if err != nil || !reflect.DeepEqual(same, current) || reads != 1 {
+				t.Fatalf("no-op changed Team: %#v, %v; reads=%d", same, err, reads)
+			}
+		})
 	}
-	input.Name = "New"
+	input.Name = " Renamed "
+	storedName, expectedName := " Renamed ", " Renamed "
+	w.renameResult = model.Team{
+		TeamRef: model.TeamRef{ID: item.ID, Name: &storedName, Kind: "ordinary"},
+		Version: 2, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt.Add(time.Second),
+		Membership: item.Membership,
+	}
+	wantRenamed := w.renameResult
+	wantRenamed.Name = &expectedName
 	renamed, err := Rename(ctx, w, p, input)
-	if err != nil || *renamed.Name != "New" {
-		t.Fatal(renamed, err)
+	if err != nil || !reflect.DeepEqual(renamed, wantRenamed) || *renamed.Name != " Renamed " || !renamed.UpdatedAt.After(item.UpdatedAt) || !reflect.DeepEqual(renamed.Membership, item.Membership) {
+		t.Fatalf("renamed Team: %#v %v; want %#v", renamed, err, wantRenamed)
 	}
-	w.team.Version = math.MaxInt64
-	input.Version = math.MaxInt64
-	_, err = Rename(ctx, w, p, input)
-	faultCode(t, err, "version_exhausted")
-	w.team = item
-	input.Version = 1
-	w.errs["team"] = fail
-	if _, err = Rename(ctx, w, p, input); !errors.Is(err, fail) {
-		t.Fatal(err)
+	if w.renameCalls != 1 || w.renameContext != ctx || w.renameActor != p.UserID || w.renameName != " Renamed " {
+		t.Fatalf("rename invocation: context=%v actor=%q name=%q calls=%d", w.renameContext, w.renameActor, w.renameName, w.renameCalls)
 	}
-	delete(w.errs, "team")
-	w.team.Membership.Role = model.ProjectMemberRole
-	_, err = Rename(ctx, w, p, input)
-	faultCode(t, err, "forbidden")
-	w.team = item
-	w.team.Kind = "personal"
-	_, err = Rename(ctx, w, p, input)
-	faultCode(t, err, "personal_team_immutable")
-	w.team = item
-	input.Version = 2
-	_, err = Rename(ctx, w, p, input)
-	faultCode(t, err, "version_conflict")
+	memberTeam, personalTeam := item, item
+	memberTeam.Membership.Role = model.ProjectMemberRole
+	personalTeam.Kind, personalTeam.Name = "personal", nil
+	exhausted := item
+	exhausted.Version = math.MaxInt64
+	oversized := strings.Repeat("a", 257)
+	for _, tc := range []struct {
+		name    string
+		team    model.Team
+		teamErr error
+		in      ChangeTeam
+		code    string
+	}{
+		{name: "read failure", team: item, teamErr: fail, in: ChangeTeam{Name: "New", Version: 1}},
+		{name: "missing before name limit", teamErr: model.ErrNotFound, in: ChangeTeam{Name: oversized, Version: 1}},
+		{name: "forbidden before name limit", team: memberTeam, in: ChangeTeam{Name: oversized, Version: 1}, code: "forbidden"},
+		{name: "personal", team: personalTeam, in: ChangeTeam{Name: "New", Version: 1}, code: "personal_team_immutable"},
+		{name: "version mismatch before name limit", team: item, in: ChangeTeam{Name: oversized, Version: 2}, code: "version_conflict"},
+		{name: "version exhausted before name limit", team: exhausted, in: ChangeTeam{Name: oversized, Version: math.MaxInt64}, code: "version_exhausted"},
+		{name: "name limit", team: item, in: ChangeTeam{Name: oversized, Version: 1}, code: "invalid_input"},
+	} {
+		t.Run("rename "+tc.name, func(t *testing.T) {
+			reads := 0
+			dao := &ruleReadDAO{team: func(gotCtx context.Context, actor string) (model.Team, error) {
+				reads++
+				if gotCtx != ctx || actor != p.UserID || reads != 1 {
+					t.Fatalf("Team lookup: context=%v actor=%q calls=%d", gotCtx, actor, reads)
+				}
+				return tc.team, tc.teamErr
+			}}
+			got, err := Rename(ctx, dao, p, tc.in)
+			if tc.teamErr != nil {
+				if err != tc.teamErr {
+					t.Fatalf("Team read error lost: %v; want %v", err, tc.teamErr)
+				}
+			} else {
+				faultCode(t, err, tc.code)
+			}
+			if !reflect.DeepEqual(got, model.Team{}) || reads != 1 {
+				t.Fatalf("rename refusal returned Team: %#v; reads=%d", got, reads)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		team model.Team
+		in   ChangeTeam
+		code string
+	}{
+		{name: "forbidden", team: memberTeam, in: ChangeTeam{Name: *item.Name, Version: 1}, code: "forbidden"},
+		{name: "personal", team: personalTeam, in: ChangeTeam{Name: "Personal", Version: 1}, code: "personal_team_immutable"},
+		{name: "version mismatch", team: item, in: ChangeTeam{Name: *item.Name, Version: 2}, code: "version_conflict"},
+		{name: "name mismatch", team: item, in: ChangeTeam{Name: "New", Version: 1}, code: "version_conflict"},
+	} {
+		t.Run("delete "+tc.name, func(t *testing.T) {
+			reads := 0
+			dao := &ruleReadDAO{team: func(gotCtx context.Context, actor string) (model.Team, error) {
+				reads++
+				if gotCtx != ctx || actor != p.UserID || reads != 1 {
+					t.Fatalf("Team lookup: context=%v actor=%q calls=%d", gotCtx, actor, reads)
+				}
+				return tc.team, nil
+			}}
+			faultCode(t, Delete(ctx, dao, p, tc.in), tc.code)
+			if reads != 1 {
+				t.Fatalf("Team reads=%d; want 1", reads)
+			}
+		})
+	}
 	input.Version = 1
-	faultCode(t, Delete(ctx, w, p, input), "version_conflict")
 	input.Name = "Acme"
 	w.errs["projects"] = fail
 	if err = Delete(ctx, w, p, input); !errors.Is(err, fail) {
@@ -338,11 +473,11 @@ func TestTeamLifecycleDAO(t *testing.T) {
 }
 
 func TestMemberAuthorizationAndMutation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	p := principal()
 	target := uuid.NewString()
 	item := namedTeam(p)
-	member := model.TeamMember{UserID: target, Role: model.ProjectAdmin, Version: 2}
+	member := model.TeamMember{TeamID: item.ID, UserID: target, Role: model.ProjectAdmin, Version: 2, CreatedAt: item.CreatedAt.Add(time.Second), UpdatedAt: item.UpdatedAt.Add(time.Second)}
 	in := ChangeTeamMember{Version: 2, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}
 	w := &writerFake{team: item, member: member, count: 2, errs: map[string]error{}}
 	w.errs["team"] = fail
@@ -375,24 +510,77 @@ func TestMemberAuthorizationAndMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "count")
-	w.count = 1
-	_, err = ChangeMember(ctx, w, p, target, in, false)
-	faultCode(t, err, "last_admin")
+	for _, remove := range []bool{false, true} {
+		name := "demote last administrator"
+		targetID, currentMember := p.UserID, item.Membership
+		currentInput := in
+		currentInput.Version = currentMember.Version
+		if remove {
+			name = "remove last administrator"
+		}
+		t.Run(name, func(t *testing.T) {
+			var calls []string
+			dao := &ruleReadDAO{
+				team: func(gotCtx context.Context, actor string) (model.Team, error) {
+					calls = append(calls, "team")
+					if gotCtx != ctx || actor != p.UserID {
+						t.Fatalf("Team lookup: context=%v actor=%q", gotCtx, actor)
+					}
+					return item, nil
+				},
+				member: func(gotCtx context.Context, user string) (model.TeamMember, error) {
+					calls = append(calls, "member")
+					if gotCtx != ctx || user != targetID {
+						t.Fatalf("member lookup: context=%v target=%q", gotCtx, user)
+					}
+					return currentMember, nil
+				},
+				adminCount: func(gotCtx context.Context) (int64, error) {
+					calls = append(calls, "count")
+					if gotCtx != ctx {
+						t.Fatalf("administrator count context=%v", gotCtx)
+					}
+					return 1, nil
+				},
+			}
+			result, err := ChangeMember(ctx, dao, p, targetID, currentInput, remove)
+			faultCode(t, err, "last_admin")
+			if !reflect.DeepEqual(result, TeamMemberResult{}) || !reflect.DeepEqual(calls, []string{"team", "member", "count"}) {
+				t.Fatalf("last-administrator refusal: result=%#v calls=%v", result, calls)
+			}
+		})
+	}
 	w.count = 2
 	w.errs["role"] = fail
 	if _, err = ChangeMember(ctx, w, p, target, in, false); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "role")
+	demoted := model.TeamMember{TeamID: item.ID, UserID: target, Role: model.ProjectMemberRole, Version: 3, CreatedAt: member.CreatedAt, UpdatedAt: member.UpdatedAt.Add(time.Second)}
+	w.roleResult = demoted
 	result, err := ChangeMember(ctx, w, p, target, in, false)
-	if err != nil || result.Membership.Role != model.ProjectMemberRole || *result.ActorRole != model.ProjectAdmin {
-		t.Fatal(result, err)
+	adminRole := model.ProjectAdmin
+	wantDemoted := TeamMemberResult{Membership: demoted, ActorRole: &adminRole}
+	if err != nil || !reflect.DeepEqual(result, wantDemoted) || w.memberContext != ctx || w.memberID != target || w.roleContext != ctx || w.changedMemberID != target || w.changedRole != model.ProjectMemberRole {
+		t.Fatalf("demoted membership: %#v %v; want %#v", result, err, wantDemoted)
 	}
+	w.member = demoted
+	in.Version = demoted.Version
 	in.Role = model.ProjectAdmin
+	promotedMember := model.TeamMember{TeamID: item.ID, UserID: target, Role: model.ProjectAdmin, Version: 4, CreatedAt: member.CreatedAt, UpdatedAt: demoted.UpdatedAt.Add(time.Second)}
+	w.roleResult = promotedMember
+	promoted, err := ChangeMember(ctx, w, p, target, in, false)
+	wantPromoted := TeamMemberResult{Membership: promotedMember, ActorRole: &adminRole}
+	if err != nil || !reflect.DeepEqual(promoted, wantPromoted) || promoted.Membership.Version <= demoted.Version || w.roleContext != ctx || w.changedMemberID != target || w.changedRole != model.ProjectAdmin {
+		t.Fatalf("promoted membership: %#v %v; want %#v", promoted, err, wantPromoted)
+	}
+	w.member = promotedMember
+	in.Version = promotedMember.Version
 	w.changedRole = ""
+	w.roleCalls = 0
 	result, err = ChangeMember(ctx, w, p, target, in, false)
-	if err != nil || w.changedRole != "" || result.Membership.Version != 2 {
-		t.Fatal(result, err)
+	if err != nil || w.changedRole != "" || w.roleCalls != 0 || !reflect.DeepEqual(result, promoted) {
+		t.Fatalf("no-op membership: %#v %v; want %#v; writes=%d", result, err, promoted, w.roleCalls)
 	}
 	w.errs["remove"] = fail
 	if _, err = ChangeMember(ctx, w, p, target, in, true); !errors.Is(err, fail) {
@@ -400,21 +588,29 @@ func TestMemberAuthorizationAndMutation(t *testing.T) {
 	}
 	delete(w.errs, "remove")
 	result, err = ChangeMember(ctx, w, p, target, in, true)
-	if err != nil || !w.removed || result.ActorRole == nil {
-		t.Fatal(result, err)
-	}
-	w.team.Membership.Role = model.ProjectMemberRole
-	w.member.Role = model.ProjectMemberRole
-	result, err = ChangeMember(ctx, w, p, p.UserID, in, true)
-	if err != nil || result.ActorRole != nil {
-		t.Fatal(result, err)
+	if err != nil || !w.removed || !reflect.DeepEqual(result, wantPromoted) || w.removeContext != ctx || w.removedMemberID != target {
+		t.Fatalf("removed membership: %#v %v; want %#v", result, err, wantPromoted)
 	}
 	w.team = item
-	w.member = member
+	w.member = item.Membership
+	in.Version = item.Membership.Version
 	in.Role = model.ProjectMemberRole
-	result, err = ChangeMember(ctx, w, p, p.UserID, in, false)
-	if err != nil || *result.ActorRole != model.ProjectMemberRole {
-		t.Fatal(result, err)
+	selfDemoted := model.TeamMember{TeamID: item.ID, UserID: p.UserID, Role: model.ProjectMemberRole, Version: 5, CreatedAt: item.Membership.CreatedAt, UpdatedAt: item.Membership.UpdatedAt.Add(2 * time.Second)}
+	w.roleResult = selfDemoted
+	demotedSelf, err := ChangeMember(ctx, w, p, p.UserID, in, false)
+	memberRole := model.ProjectMemberRole
+	wantSelfDemoted := TeamMemberResult{Membership: selfDemoted, ActorRole: &memberRole}
+	if err != nil || !reflect.DeepEqual(demotedSelf, wantSelfDemoted) || w.memberContext != ctx || w.memberID != p.UserID || w.roleContext != ctx || w.changedMemberID != p.UserID || w.changedRole != model.ProjectMemberRole {
+		t.Fatalf("self-demoted membership: %#v %v; want %#v", demotedSelf, err, wantSelfDemoted)
+	}
+	w.team.Membership = selfDemoted
+	w.member = selfDemoted
+	in.Version = selfDemoted.Version
+	w.removed = false
+	result, err = ChangeMember(ctx, w, p, p.UserID, in, true)
+	wantRemovedSelf := TeamMemberResult{Membership: selfDemoted}
+	if err != nil || !w.removed || result.ActorRole != nil || !reflect.DeepEqual(result, wantRemovedSelf) || !reflect.DeepEqual(result.Membership, demotedSelf.Membership) || w.memberContext != ctx || w.memberID != p.UserID || w.removeContext != ctx || w.removedMemberID != p.UserID {
+		t.Fatalf("self-removed membership: %#v %v; want %#v", result, err, wantRemovedSelf)
 	}
 }
 
@@ -422,6 +618,8 @@ func TestInvitationRules(t *testing.T) {
 	ctx := context.Background()
 	p := principal()
 	item := namedTeam(p)
+	teamName := " Team "
+	item.Name = &teamName
 	now := time.Now().UTC()
 	clock := func() time.Time { return now }
 	w := &writerFake{team: item, errs: map[string]error{}, revoke: true}
@@ -451,8 +649,11 @@ func TestInvitationRules(t *testing.T) {
 	}
 	delete(w.errs, "createInvite")
 	minted, err := CreateInvitation(ctx, w, p, item.ID, clock)
-	if err != nil || minted.Invitation.TokenHash != nil || len(w.invitation.TokenHash) == 0 || !minted.Invitation.ExpiresAt.Equal(now.Add(invitationLifetime)) {
-		t.Fatal(minted, err)
+	wantStored := model.TeamInvitation{ID: minted.Invitation.ID, TeamID: item.ID, CreatedBy: p.UserID, TokenHash: secretutil.Hash(minted.Secret), CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
+	wantMinted := wantStored
+	wantMinted.TokenHash = nil
+	if err != nil || !bytes.Equal(w.invitation.TokenHash, secretutil.Hash(minted.Secret)) || !reflect.DeepEqual(w.invitation, wantStored) || !reflect.DeepEqual(minted.Invitation, wantMinted) || !minted.Invitation.CreatedAt.Equal(now) || minted.Invitation.ExpiresAt.Sub(minted.Invitation.CreatedAt) != 7*24*time.Hour {
+		t.Fatalf("minted invitation: %#v %v; stored=%#v", minted, err, w.invitation)
 	}
 	if err := ValidateInvitation(p, minted.Secret); err != nil {
 		t.Fatal(err)
@@ -506,9 +707,11 @@ func TestInvitationRules(t *testing.T) {
 	_, err = InspectInvitation(ctx, r, p, r.invitation)
 	faultCode(t, err, "invitation_unavailable")
 	r.ref = model.TeamRef{ID: item.ID, Kind: "ordinary", Name: item.Name}
+	previewName := " Team "
+	wantTeam := model.TeamRef{ID: item.ID, Kind: "ordinary", Name: &previewName}
 	r.inviteMemberErr = model.ErrNotFound
 	preview, err := InspectInvitation(ctx, r, p, r.invitation)
-	if err != nil || preview.Membership != nil {
+	if err != nil || !reflect.DeepEqual(preview, TeamInvitationInspection{Team: wantTeam}) {
 		t.Fatal(preview, err)
 	}
 	r.inviteMemberErr = fail
@@ -518,62 +721,144 @@ func TestInvitationRules(t *testing.T) {
 	r.inviteMemberErr = nil
 	r.member = item.Membership
 	preview, err = InspectInvitation(ctx, r, p, r.invitation)
-	if err != nil || preview.Membership == nil {
-		t.Fatal(preview, err)
+	wantMember := item.Membership
+	if err != nil || !reflect.DeepEqual(preview, TeamInvitationInspection{Team: wantTeam, Membership: &wantMember}) || preview.Membership.UserID != p.UserID || preview.Membership.Role != model.ProjectAdmin {
+		t.Fatalf("existing-member preview: %#v %v; want membership %#v", preview, err, wantMember)
 	}
 }
 
 func TestInvitationAcceptanceRechecksAndFailures(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	p := principal()
 	item := namedTeam(p)
 	now := time.Now().UTC()
 	clock := func() time.Time { return now }
-	w := &writerFake{invitation: model.TeamInvitation{ID: uuid.NewString(), ExpiresAt: now.Add(time.Hour)}, ref: model.TeamRef{ID: item.ID, Kind: "ordinary", Name: item.Name}, member: model.TeamMember{UserID: p.UserID, Role: model.ProjectMemberRole}, errs: map[string]error{}}
+	w := &writerFake{
+		invitation: model.TeamInvitation{ID: uuid.NewString(), TeamID: item.ID, CreatedBy: p.UserID, TokenHash: secretutil.Hash("token"), CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)},
+		ref:        model.TeamRef{ID: item.ID, Kind: "ordinary", Name: item.Name},
+		member:     item.Membership,
+		errs:       map[string]error{},
+	}
+	actor := p
+	accept := func(want ...string) (TeamInvitationAcceptance, error) {
+		t.Helper()
+		w.acceptCalls, w.acceptContexts = nil, nil
+		result, err := AcceptInvitation(ctx, w, actor, "token", clock)
+		if !reflect.DeepEqual(w.acceptCalls, want) || err != nil && !reflect.DeepEqual(result, TeamInvitationAcceptance{}) {
+			t.Fatalf("acceptance: result=%#v error=%v calls=%v; want %v", result, err, w.acceptCalls, want)
+		}
+		for i, call := range w.acceptCalls {
+			if w.acceptContexts[i] != ctx {
+				t.Fatalf("%s context changed: %v", call, w.acceptContexts[i])
+			}
+			switch call {
+			case "lock":
+				if !reflect.DeepEqual(w.lockedHash, secretutil.Hash("token")) {
+					t.Fatalf("locked hash=%x", w.lockedHash)
+				}
+			case "member":
+				if w.invitationMemberID != actor.UserID {
+					t.Fatalf("invitation member=%q; want %q", w.invitationMemberID, actor.UserID)
+				}
+			case "add":
+				if w.addedMemberID != actor.UserID {
+					t.Fatalf("added member=%q; want %q", w.addedMemberID, actor.UserID)
+				}
+			case "consume":
+				if w.consumedInvitationID != w.invitation.ID || w.consumedMemberID != actor.UserID || !w.consumedAt.Equal(now) {
+					t.Fatalf("consumed invitation=%q member=%q at=%v", w.consumedInvitationID, w.consumedMemberID, w.consumedAt)
+				}
+			}
+		}
+		return result, err
+	}
 	w.errs["lock"] = model.ErrNotFound
-	_, err := AcceptInvitation(ctx, w, p, "token", clock)
+	_, err := accept("lock")
 	faultCode(t, err, "invitation_unavailable")
 	w.errs["lock"] = fail
-	if _, err = AcceptInvitation(ctx, w, p, "token", clock); !errors.Is(err, fail) {
+	if _, err = accept("lock"); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "lock")
-	w.invitation.ExpiresAt = now
-	_, err = AcceptInvitation(ctx, w, p, "token", clock)
-	faultCode(t, err, "invitation_unavailable")
-	w.invitation.ExpiresAt = now.Add(time.Hour)
+	expired, consumed, revoked, expiresWhileLocked := w.invitation, w.invitation, w.invitation, w.invitation
+	expired.ExpiresAt = now
+	prior := now.Add(-time.Minute)
+	consumed.ConsumedAt, consumed.ConsumedBy = &prior, &p.UserID
+	revoked.RevokedAt = &prior
+	expiresWhileLocked.ExpiresAt = now.Add(500 * time.Millisecond)
+	for _, tc := range []struct {
+		name       string
+		invitation model.TeamInvitation
+		lockedAt   time.Time
+	}{
+		{name: "expired", invitation: expired, lockedAt: now},
+		{name: "consumed", invitation: consumed, lockedAt: now},
+		{name: "revoked", invitation: revoked, lockedAt: now},
+		{name: "expires while locking", invitation: expiresWhileLocked, lockedAt: now.Add(time.Second)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := now
+			var calls []string
+			dao := &ruleReadDAO{lockInvitation: func(gotCtx context.Context, hash []byte) (model.TeamInvitation, error) {
+				calls = append(calls, "lock")
+				if gotCtx != ctx || !reflect.DeepEqual(hash, secretutil.Hash("token")) || len(calls) != 1 {
+					t.Fatalf("invitation lock: context=%v hash=%x calls=%v", gotCtx, hash, calls)
+				}
+				current = tc.lockedAt
+				return tc.invitation, nil
+			}}
+			lockedClock := func() time.Time {
+				if !reflect.DeepEqual(calls, []string{"lock"}) {
+					t.Fatalf("clock sampled before invitation lock: %v", calls)
+				}
+				calls = append(calls, "clock")
+				return current
+			}
+			result, err := AcceptInvitation(ctx, dao, p, "token", lockedClock)
+			faultCode(t, err, "invitation_unavailable")
+			if !reflect.DeepEqual(result, TeamInvitationAcceptance{}) || !reflect.DeepEqual(calls, []string{"lock", "clock"}) {
+				t.Fatalf("unavailable invitation: result=%#v calls=%v", result, calls)
+			}
+		})
+	}
 	w.errs["ref"] = fail
-	if _, err = AcceptInvitation(ctx, w, p, "token", clock); !errors.Is(err, fail) {
+	if _, err = accept("lock", "ref"); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "ref")
 	w.ref.Kind = "personal"
-	_, err = AcceptInvitation(ctx, w, p, "token", clock)
+	_, err = accept("lock", "ref")
 	faultCode(t, err, "invitation_unavailable")
 	w.ref.Kind = "ordinary"
 	w.errs["inviteMember"] = fail
-	if _, err = AcceptInvitation(ctx, w, p, "token", clock); !errors.Is(err, fail) {
+	if _, err = accept("lock", "ref", "member"); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "inviteMember")
-	result, err := AcceptInvitation(ctx, w, p, "token", clock)
-	if err != nil || result.Joined || result.Consumed || w.added {
-		t.Fatal(result, err)
+	result, err := accept("lock", "ref", "member")
+	wantExisting := TeamInvitationAcceptance{Team: item.TeamRef, Membership: item.Membership}
+	if err != nil || result.Joined || result.Consumed || w.added || !reflect.DeepEqual(result, wantExisting) || result.Membership.Role != model.ProjectAdmin || result.Membership.UserID != p.UserID {
+		t.Fatalf("existing-member acceptance: %#v %v; want %#v", result, err, wantExisting)
 	}
+	actor = principal()
+	joinedMember := model.TeamMember{TeamID: item.ID, UserID: actor.UserID, Role: model.ProjectMemberRole, Version: 7, CreatedAt: now, UpdatedAt: now}
+	w.member = model.TeamMember{}
+	w.invitedMember = joinedMember
 	w.errs["inviteMember"] = model.ErrNotFound
 	w.errs["add"] = fail
-	if _, err = AcceptInvitation(ctx, w, p, "token", clock); !errors.Is(err, fail) {
+	if _, err = accept("lock", "ref", "member", "add"); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "add")
 	w.errs["consume"] = fail
-	if _, err = AcceptInvitation(ctx, w, p, "token", clock); !errors.Is(err, fail) {
+	if _, err = accept("lock", "ref", "member", "add", "consume"); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "consume")
-	result, err = AcceptInvitation(ctx, w, p, "token", clock)
-	if err != nil || !result.Joined || !result.Consumed || !w.consumed {
-		t.Fatal(result, err)
+	result, err = accept("lock", "ref", "member", "add", "consume")
+	wantJoined := TeamInvitationAcceptance{Team: item.TeamRef, Membership: joinedMember, Joined: true, Consumed: true}
+	if err != nil || !result.Joined || !result.Consumed || !w.consumed || !reflect.DeepEqual(result, wantJoined) || result.Membership.UserID != actor.UserID || result.Membership.Role != model.ProjectMemberRole {
+		t.Fatalf("joining-member acceptance: %#v %v; want %#v", result, err, wantJoined)
 	}
 }
 

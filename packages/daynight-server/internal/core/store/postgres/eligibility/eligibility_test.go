@@ -2,6 +2,7 @@ package eligibility_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -115,8 +116,16 @@ func TestEligibilityReadsSourcesAndRefreshesLockedSubscriptions(t *testing.T) {
 	if _, err = tx.Exec(ctx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'Broken','https://example.test/b')`, broken); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = dao.ReadEligibility(ctx, personalOwner, broken, user); err == nil {
-		t.Fatal("missing ownership was treated as revoked")
+	orphan := uuid.NewString()
+	if _, err = tx.Exec(ctx, `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'active',1,now(),now())`, orphan, uuid.NewString(), broken, user); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = dao.LockAffected(ctx, store.WebhookEligibilityFilter{TeamID: team, UserID: user})
+	if err != nil || len(rows) != 1 || rows[0].ID != orphan || rows[0].ProjectID != broken || rows[0].Owner != personalOwner || rows[0].State != "active" || rows[0].Epoch != 1 {
+		t.Fatalf("Team member filter omitted orphan subscription: %#v %v", rows, err)
+	}
+	if _, err = dao.ReadEligibility(ctx, rows[0].Owner, rows[0].ProjectID, user); err == nil || !strings.Contains(err.Error(), "ownership") {
+		t.Fatalf("missing ownership was treated as revoked: %v", err)
 	}
 	if _, err = tx.Exec(ctx, `ALTER TABLE webhook_subscriptions ALTER COLUMN authorization_epoch DROP NOT NULL`); err != nil {
 		t.Fatal(err)
