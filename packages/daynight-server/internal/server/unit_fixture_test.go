@@ -23,6 +23,8 @@ type httpTestStore struct {
 	CreateTeamCall              func(ctx context.Context, owner string, fn func(store.TeamCreationDAO) error) (store.Completion, error)
 	WriteTeamCall               func(ctx context.Context, id string, fn func(store.TeamWriteScope) error) (store.Completion, error)
 	WriteWorkerCall             func(ctx context.Context, fn func(store.WorkerScope) error) (store.Completion, error)
+	ReadPromptSnapshotCall      func(ctx context.Context, fn func(store.PromptSnapshot) error) error
+	WritePromptCall             func(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error)
 	WriteBotCall                func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error)
 	WriteSessionCall            func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error)
 	WriteThreadCall             func(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error)
@@ -88,6 +90,20 @@ func (s *httpTestStore) WriteWorker(ctx context.Context, fn func(store.WorkerSco
 		unexpectedHTTPCall(s.t, "WriteWorker")
 	}
 	return s.WriteWorkerCall(ctx, fn)
+}
+
+func (s *httpTestStore) ReadPromptSnapshot(ctx context.Context, fn func(store.PromptSnapshot) error) error {
+	if s.ReadPromptSnapshotCall == nil {
+		unexpectedHTTPCall(s.t, "ReadPromptSnapshot")
+	}
+	return s.ReadPromptSnapshotCall(ctx, fn)
+}
+
+func (s *httpTestStore) WritePrompt(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error) {
+	if s.WritePromptCall == nil {
+		unexpectedHTTPCall(s.t, "WritePrompt")
+	}
+	return s.WritePromptCall(ctx, fn)
 }
 
 func (s *httpTestStore) WriteBot(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error) {

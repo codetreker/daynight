@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -17,8 +18,35 @@ import (
 )
 
 type workersHandler struct {
-	workers *service.Workers
+	workers workerService
 	logger  *slog.Logger
+}
+
+type workerService interface {
+	Report(context.Context, model.Principal, string, model.WorkerReport) (service.WorkerReportResult, error)
+	ReportSync(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (service.ConfigurationSyncResult, error)
+	List(context.Context, model.Principal, model.PageRequest) (service.WorkerPage, error)
+	Get(context.Context, model.Principal, string) (service.WorkerDetailResult, error)
+	Configuration(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+	PutConfiguration(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+}
+
+type configurationSyncReceipt struct {
+	ObservedAt     time.Time `json:"observedAt"`
+	LastReportedAt time.Time `json:"lastReportedAt"`
+	Configuration  struct {
+		*model.WorkerConfigurationReceipt
+		Prompts []model.PromptResult `json:"prompts"`
+	} `json:"configuration"`
+}
+
+func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult) configurationSyncReceipt {
+	var result configurationSyncReceipt
+	result.ObservedAt = native.ObservedAt.UTC()
+	result.LastReportedAt = native.LastReportedAt.UTC()
+	result.Configuration.WorkerConfigurationReceipt = native.Configuration
+	result.Configuration.Prompts = prompts
+	return result
 }
 
 func RegisterRoutes(mux *http.ServeMux, workers *service.Workers, auth *authhttp.Authentication, logger *slog.Logger) {
@@ -54,13 +82,13 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	allowed := append([]string(nil), workerReportFields...)
-	configurationAware := false
-	if values, exists := request.Header[workerConfigurationHeader]; exists {
-		if len(values) != 1 || values[0] != "1" {
-			httpx.WriteError(w, request, logger, "worker_report", "validate", httpx.InvalidInput("Unsupported Worker configuration protocol."))
-			return
-		}
-		configurationAware = true
+	protocol, selectors, err := promptProtocol(request.Header)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "worker_report", "validate", err)
+		return
+	}
+	configurationAware := protocol != ""
+	if configurationAware {
 		allowed = append(allowed, "configuration")
 	}
 	fields, err := httpx.DecodeObject(w, request, allowed...)
@@ -80,7 +108,15 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 			return
 		}
 	}
-	result, err := h.workers.Report(request.Context(), principal, id, input)
+	var result service.WorkerReportResult
+	var prompts []model.PromptResult
+	if protocol == "2" {
+		var syncResult service.ConfigurationSyncResult
+		syncResult, err = h.workers.ReportSync(request.Context(), principal, id, input, selectors)
+		result, prompts = syncResult.Native, syncResult.Prompts
+	} else {
+		result, err = h.workers.Report(request.Context(), principal, id, input)
+	}
 	if err != nil {
 		phase := "persist"
 		if fault, ok := httpx.KnownFault(err); ok && fault.Code == "invalid_input" {
@@ -90,6 +126,11 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	logger.InfoContext(request.Context(), "worker report saved", "type", "resource", "component", "worker_report", "phase", "persist", "request_id", httpx.RequestID(request.Context()))
+	if protocol == "2" {
+		w.Header().Set(workerConfigurationHeader, "2")
+		httpx.WriteJSON(w, request, logger, http.StatusOK, syncReceipt(result, prompts))
+		return
+	}
 	if configurationAware {
 		w.Header().Set(workerConfigurationHeader, "1")
 		httpx.WriteJSON(w, request, logger, http.StatusOK, struct {

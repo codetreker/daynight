@@ -13,6 +13,7 @@ import (
 	granthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/grants"
 	oauthtoken "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/token"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+	prompthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/prompt"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhookhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
@@ -79,6 +80,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)
+	prompthttp.RegisterRoutes(mux, app.Prompts, auth, logger)
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
 	workerReadOnly.RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, app.Tasks, auth, logger)

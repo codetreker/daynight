@@ -174,6 +174,9 @@ var workerPlatformPreferenceSQL string
 //go:embed migrations/055_member_terminal_indexes.sql
 var memberTerminalIndexesSQL string
 
+//go:embed migrations/056_worker_prompts.sql
+var workerPromptsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -237,6 +240,7 @@ var schemaMigrations = []migration{
 	{version: 53, sql: webhookSigningKeyExpirySQL},
 	{version: 54, sql: workerPlatformPreferenceSQL},
 	{version: 55, sql: memberTerminalIndexesSQL},
+	{version: 56, sql: workerPromptsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

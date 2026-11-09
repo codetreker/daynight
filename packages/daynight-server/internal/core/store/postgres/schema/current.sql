@@ -1,4 +1,4 @@
--- Schema snapshot version: 55
+-- Schema snapshot version: 56
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -982,6 +982,15 @@ CREATE TABLE "webhook_subscriptions" (
     CONSTRAINT "webhook_subscriptions_updated_at_check" CHECK ("isfinite"("updated_at"))
 );
 
+CREATE TABLE "worker_prompts" (
+    "user_id" "uuid" NOT NULL,
+    "scope" "text" NOT NULL,
+    "scope_id" "uuid" NOT NULL,
+    "revision" bigint NOT NULL,
+    "prompt_text" "text" NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL
+);
+
 CREATE TABLE "workers" (
     "user_id" "uuid" NOT NULL,
     "worker_id" "uuid" NOT NULL,
@@ -1250,6 +1259,9 @@ ALTER TABLE ONLY "webhook_signing_keys"
 
 ALTER TABLE ONLY "webhook_subscriptions"
     ADD CONSTRAINT "webhook_subscriptions_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "worker_prompts"
+    ADD CONSTRAINT "worker_prompts_pkey" PRIMARY KEY ("user_id", "scope", "scope_id");
 
 ALTER TABLE ONLY "workers"
     ADD CONSTRAINT "workers_pkey" PRIMARY KEY ("user_id", "worker_id");

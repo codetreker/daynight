@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/prompt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
@@ -34,6 +35,7 @@ type Application struct {
 	Projects       *project.Projects
 	Teams          *team.Teams
 	Workers        *worker.Workers
+	Prompts        *prompt.Prompts
 	WorkerReadOnly *workerreadonly.Broker
 	Bots           *bot.Bots
 	BotDeletions   *bot.Deletions
@@ -64,7 +66,8 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		Memberships:    project.NewMemberships(database),
 		Projects:       project.NewProjects(database, engine),
 		Teams:          team.NewTeams(database),
-		Workers:        worker.NewWorkers(database),
+		Workers:        worker.NewWorkersWithPrompts(database, database),
+		Prompts:        prompt.New(database),
 		WorkerReadOnly: workerReadOnly,
 		Bots:           bot.NewWithNativeDiscovery(database, workerReadOnly),
 		BotDeletions:   bot.NewDeletions(database, files, engine),
