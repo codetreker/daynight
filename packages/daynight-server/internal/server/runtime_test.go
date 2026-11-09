@@ -432,8 +432,8 @@ func TestServeFailureAndAlreadyClosed(t *testing.T) {
 			_ = runtime.listener.Close()
 		}
 		err := runtime.Run(context.Background())
-		if closed && err != nil {
-			t.Fatalf("normal server close: %v", err)
+		if closed && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("unexpected server close was not reported: %v", err)
 		}
 		if !closed && !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("unexpected serve failure: %v", err)

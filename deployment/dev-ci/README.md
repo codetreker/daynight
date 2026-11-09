@@ -53,6 +53,13 @@ that namespace, so both the browser and the Go server reach one fixture URL.
 The runner records the fixture's generated application credentials in a private
 environment file, starts the authenticated server and waits for `/readyz`.
 
+The gateway also publishes a separate ephemeral host-loopback port for metrics,
+forwarding TCP to the server's `127.0.0.1:8788` listener. Find it during a run
+with `docker compose port gateway 81` using that run's Compose project and
+private environment file. `/metrics` on the business port remains unavailable.
+The metrics endpoint has no application authentication; the loopback mapping
+limits host access. No Prometheus service is started.
+
 `/healthz` and `/readyz` are public database probes and do not call UniAuth. The
 server and gateway Compose health checks use `/readyz`. PostgreSQL, gateway and
 server use `start_interval: 250ms` during their existing startup grace periods;
@@ -220,6 +227,12 @@ daemon and UniAuth fixture. Fake-Docker checks verify orchestration and cleanup
 decisions; they do not establish authentication or browser behavior. The
 [authentication architecture](../../docs/design/daynight-auth.md) owns the
 cross-layer validation requirements.
+
+`bash deployment/dev-ci/tests/metrics.sh` uses the real production image and
+gateway to check both loopback mappings, independent routing and a scrape of the
+official Go and process collectors. It also checks the localhost Compose port
+configuration. The runner verifies the running image identity and removes its
+owned resources when the check exits.
 
 ## Attachment persistence check
 
