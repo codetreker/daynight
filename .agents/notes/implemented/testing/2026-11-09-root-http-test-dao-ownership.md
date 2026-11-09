@@ -72,8 +72,10 @@ same direct operation boundary. The
 [assistant-host HTTP decision](2026-11-09-worker-assistant-host-http-test-owners.md)
 assigns the first reporting/detail/list case to controlled operations and retains
 its validation, complete snapshot and service-stage observations separately.
-Existing scenarios are
-corrected in place or consolidated with an existing mechanism owner; protocol
+The [configuration compatibility HTTP decision](2026-11-09-worker-assistant-host-configuration-http-test-owners.md)
+assigns the second assistant-host case to controlled operations after its lower
+receivers exist, removing its unconsumed shared DAO/application fixture. Existing
+scenarios are corrected in place or consolidated with an existing mechanism owner; protocol
 matrices are not added to normal API integration or product E2E.
 
 ## Alternatives

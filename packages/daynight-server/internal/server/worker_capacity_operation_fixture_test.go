@@ -21,11 +21,12 @@ import (
 )
 
 type capacityReportOperations struct {
-	t      *testing.T
-	report func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
-	put    func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
-	get    func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
-	list   func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
+	t             *testing.T
+	report        func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
+	put           func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+	get           func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
+	list          func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
+	configuration func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
 }
 
 func (s *capacityReportOperations) unexpected(method string) error {
@@ -59,8 +60,11 @@ func (s *capacityReportOperations) Get(ctx context.Context, principal model.Prin
 	return s.get(ctx, principal, worker)
 }
 
-func (s *capacityReportOperations) Configuration(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error) {
-	return model.WorkerConfigurationResource{}, s.unexpected("Configuration")
+func (s *capacityReportOperations) Configuration(ctx context.Context, principal model.Principal, worker string) (model.WorkerConfigurationResource, error) {
+	if s.configuration == nil {
+		return model.WorkerConfigurationResource{}, s.unexpected("Configuration")
+	}
+	return s.configuration(ctx, principal, worker)
 }
 
 func (s *capacityReportOperations) PutConfiguration(ctx context.Context, principal model.Principal, worker, revision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
@@ -227,6 +231,30 @@ func (f *capacityReportOperationFixture) getRequest(result workerservice.WorkerD
 	response := f.dispatchRaw(http.MethodGet, "/api/v1/me/workers/"+f.worker, "", "")
 	if used != 1 {
 		f.t.Fatalf("Get calls = %d, want 1", used)
+	}
+	return response
+}
+
+func (f *capacityReportOperationFixture) configurationRequest(result model.WorkerConfigurationResource) *httptest.ResponseRecorder {
+	f.t.Helper()
+	used := 0
+	f.operations.configuration = func(ctx context.Context, principal model.Principal, worker string) (model.WorkerConfigurationResource, error) {
+		used++
+		if used > 1 {
+			return model.WorkerConfigurationResource{}, f.operations.unexpected("Configuration")
+		}
+		if ctx != f.requestContext || principal != f.handler.principal || worker != f.worker {
+			f.t.Errorf("Configuration arguments differ: principal=%+v worker=%s", principal, worker)
+		}
+		return capacityDecode[model.WorkerConfigurationResource](f.t, result), nil
+	}
+	defer func() { f.operations.configuration = nil }()
+	response := f.dispatchRaw(http.MethodGet, "/api/v1/me/workers/"+f.worker+"/configuration", "", "")
+	if used != 1 {
+		f.t.Fatalf("Configuration calls = %d, want 1", used)
+	}
+	if response.Header().Get(workerConfigurationHeader) != "1" {
+		f.t.Fatalf("configuration response lacks its protocol header: %v", response.Header())
 	}
 	return response
 }

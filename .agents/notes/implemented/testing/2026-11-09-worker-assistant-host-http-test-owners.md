@@ -71,10 +71,11 @@ configuration snapshot still verifies that the heartbeat preserved desired and
 observed configuration. This fresh Worker read strengthens the physical proof;
 it does not relocate persistence from the former HTTP mocks.
 
-The configuration-exchange HTTP compatibility test retains its existing shared
-DAO fixture and request sequence. Its eventual protocol isolation is a separate
-change; these receivers preserve the lower observations beforehand. Historical
-configuration repair, revoked-project access and JSONB readback remain intact.
+The reporting migration initially retained the configuration compatibility DAO
+fixture until these lower observations had separate receivers. The [configuration compatibility HTTP decision](2026-11-09-worker-assistant-host-configuration-http-test-owners.md)
+now assigns its original request sequence to direct operations and removes the
+unconsumed DAO/application fixture. Historical configuration repair,
+revoked-project access and JSONB readback remain intact.
 
 ## Alternatives
 
@@ -97,9 +98,9 @@ that observation without another schema or business workflow.
 ## Consequences
 
 The selected HTTP, Core and admission service proofs execute without database or
-UniAuth fixtures. Native parsing, encoding and logging remain real. The separate
-configuration compatibility HTTP case retains its existing fixture requirements.
-Store retains actual SQL, completion, rollback and fresh persisted observations.
+UniAuth fixtures. Native parsing, encoding and logging remain real. Configuration
+compatibility uses the same direct HTTP boundary, with independent supplied read
+facts. Store retains actual SQL, completion, rollback and fresh persisted observations.
 
 Source-bound comparisons include receiving Core, Service and Store costs. Added
 receivers can increase those costs before protocol migration; fewer upper-layer

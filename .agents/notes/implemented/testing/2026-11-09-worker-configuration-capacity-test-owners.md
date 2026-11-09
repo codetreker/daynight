@@ -54,8 +54,10 @@ The Configuration capacity HTTP and receiving Core selections execute without
 database or UniAuth fixtures. The existing thirteen Report capacity cases remain
 in the same shared operation fixture. The
 [assistant-host reporting decision](2026-11-09-worker-assistant-host-http-test-owners.md)
-uses that fixture for its first reporting case; configuration-exchange
-compatibility retains the existing shared DAO fixture and separate responsibility.
+uses that fixture for its first reporting case. The
+[configuration compatibility HTTP decision](2026-11-09-worker-assistant-host-configuration-http-test-owners.md)
+assigns the separate exchange sequence to strict operations while preserving its
+Core, Service and Store observations.
 
 Performance comparisons include the receiving Core package and complete
 validation. Matched semantic faults distinguish preserved detection from newly

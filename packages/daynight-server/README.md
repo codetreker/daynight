@@ -982,8 +982,8 @@ byte-field overflows arrive at the operation and receive a supplied service
 refusal; Report collection overflow is rejected by the actual wire parser.
 Configuration PUT and observation overflow inputs are parsed before any business
 call. Observation success additionally returns configuration protocol version 1
-and its complete accepted receipt. The assistant-host configuration-exchange
-compatibility test retains its separate DAO fixture.
+and its complete accepted receipt. Both assistant-host HTTP tests use the same
+strict operation fixture; their lower rules have separate receiving owners.
 
 `internal/core/worker` owns the original thirteen Report byte/count boundaries,
 normalization and full snapshot projection. Its Configuration capacity tests
@@ -1019,19 +1019,27 @@ Core tests retain actual validation and complete snapshot projection with fresh
 host values. Admission service fixtures use independently allocated input,
 normalized, proposed and stored hosts with distinguishable directories, so the
 existing full argument comparisons expose lost or bypassed normalization.
-The configuration-exchange compatibility test and shared DAO fixture retain their
-current scope. Run the selected owners without database or UniAuth fixtures:
+The configuration-exchange compatibility test preserves its nine requests through
+Report/Get/Configuration callbacks. Bootstrap and future-refusal inputs remain
+complete; subsequent reads supply independent facts. Legacy responses retain
+exactly two timestamps and no configuration header. Core executes the exact
+bootstrap/future-observation decisions; service verifies success, refusal and
+legacy sequencing. Store separately verifies real commits and fresh snapshots.
+The shared capacity fixture contains only pure expectation helpers. Run the
+selected HTTP/Core/Service owners without database or UniAuth fixtures:
 
 ```bash
 source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
-  -run '^(TestWorkerAssistantHostHTTPReportingAndLegacyReplacement|TestWorkerAssistantHostReportValidationAndSnapshot|TestWorkerAdmission)' \
+  -run '^(TestWorkerAssistantHostHTTP|TestWorkerAssistantHostReportValidationAndSnapshot|TestExchangeConfigurationAssistantHostCompatibility|TestWorkerAdmission)' \
   ./internal/server ./internal/core/worker ./internal/service/worker
 ```
 
 The [assistant-host test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-http-test-owners.md)
-records the protocol, Core and service proof owners. Other Root and Worker
+records the protocol, Core and service proof owners. The
+[configuration compatibility HTTP decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-configuration-http-test-owners.md)
+records its separate wire and lower observations. Other Root and Worker
 selections keep their own infrastructure requirements.
 
 ### Worker configuration service tests
