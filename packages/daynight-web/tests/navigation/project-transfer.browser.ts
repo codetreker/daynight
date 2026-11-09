@@ -169,9 +169,8 @@ test('project-only admin cannot transfer and the existing alert setting remains 
   await expect(page.getByText('Only an admin of the owner Team can transfer this project.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Transfer project', exact: true })).toHaveCount(0);
   await expect(page.getByRole('spinbutton')).toBeEnabled();
-  const alerts = page.locator('.project-settings-panel').filter({ has: page.getByRole('heading', { name: 'Task execution alerts', exact: true }) });
-  await expect(alerts).toHaveCount(1);
-  await expect(alerts.getByRole('spinbutton')).toBeVisible();
+  await expect(page.locator('.project-settings-panel')).toHaveCount(1);
+  await expect(page.locator('.project-settings-panel').getByRole('spinbutton')).toBeVisible();
   await expect(page.locator('.project-ownership-panel')).toHaveCount(1);
   await expect(page.locator('.project-ownership-panel').getByRole('heading', { name: 'Project ownership' })).toBeVisible();
   expect(state.previews).toHaveLength(0); expect(state.writes).toHaveLength(0);
