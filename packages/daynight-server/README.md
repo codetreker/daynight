@@ -914,6 +914,36 @@ and that normal connectivity prove different responsibilities. The
 [inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
 records the three bindings and the retained lifetime proof.
 
+### Identity service tests
+
+`internal/service/identity` tests mock the directly invoked Core Identity and
+Personal Team operations through private instance bindings. `New` binds the real
+operations and `time.Now`. The complete ordinary suite clears database and auth
+fixture variables and executes real service callbacks, completion handling and
+UniAuth SDK HTTP transport.
+
+Tests verify raw input and principal propagation, context and transaction-bound
+capability identity, login consumption before upstream retrieval, shared
+user/Personal Team/session scope, partial login results, secret suppression,
+completion precedence, device rate scopes and known-rollback collision retries.
+Actual SDK parsing, response errors, cancellation, provider discovery and profile
+encoding remain with the service adapter. Core Identity and Personal Team tests
+own business admission, credentials, expiry and device decisions; PostgreSQL
+Identity tests own SQL, current-row locks, uniqueness, persisted fields and
+cross-DAO rollback. Controlled completion does not prove persistence.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/identity ./internal/core/identity
+```
+
+PostgreSQL receivers use the documented isolated database configuration and run
+with `go test ./internal/core/store/postgres/identity ./internal/core/store/postgres`.
+
+The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
+
 ### Bot runtime service tests
 
 The `internal/service/bot/runtime` suite executes the Runtime transaction and

@@ -19,16 +19,98 @@ import (
 
 // Identity coordinates the identity module, upstream claims, and transactions.
 type Identity struct {
-	writer store.IdentityWriter
-	module *core.Identity
-	client *uniauth.Client
-	now    func() time.Time
+	writer      store.IdentityWriter
+	ops         identityOperations
+	client      *uniauth.Client
+	callbackURL string
+	now         func() time.Time
+}
+
+type identityOperations struct {
+	validateLogin            func(provider, returnPath string) error
+	startLogin               func(provider, returnPath string, now time.Time) (core.LoginStart, model.LoginTransaction, error)
+	createLogin              func(ctx context.Context, dao store.IdentityDAO, pending model.LoginTransaction, appNow time.Time) (time.Time, error)
+	consumeLogin             func(ctx context.Context, dao store.IdentityDAO, state, binding string, now time.Time) (model.LoginTransaction, error)
+	newSession               func(now time.Time) (model.Session, string)
+	completeLogin            func(ctx context.Context, dao store.IdentityDAO, user model.User, now time.Time) (model.User, error)
+	createSession            func(ctx context.Context, dao store.IdentityDAO, session model.Session) error
+	authenticate             func(ctx context.Context, dao store.IdentityDAO, kind model.CredentialKind, value string, now time.Time) (model.Principal, error)
+	user                     func(ctx context.Context, dao store.IdentityDAO, p model.Principal) (model.User, store.PersonalTeamFacts, error)
+	personalTeam             func(ctx context.Context, dao store.IdentityDAO, p model.Principal) (store.PersonalTeamFacts, error)
+	logout                   func(ctx context.Context, dao store.IdentityDAO, p model.Principal) error
+	createPAT                func(ctx context.Context, dao store.IdentityDAO, p model.Principal, input core.CreatePAT, now time.Time) (core.MintedPAT, error)
+	listPATs                 func(ctx context.Context, dao store.IdentityDAO, p model.Principal, now time.Time) ([]model.PersonalAccessToken, error)
+	revokePAT                func(ctx context.Context, dao store.IdentityDAO, p model.Principal, id string, now time.Time) error
+	updatePATExpiry          func(ctx context.Context, dao store.IdentityDAO, p model.Principal, id string, input core.UpdatePATExpiry, now time.Time) (model.PersonalAccessToken, error)
+	providers                func(providers []string, code string, cause error) ([]string, error)
+	deviceRate               func(ctx context.Context, dao store.IdentityDAO, operation, actor string, globalLimit, actorLimit int, now time.Time) error
+	startDevice              func(ctx context.Context, dao store.IdentityDAO, clientID string, now time.Time) (core.DeviceStart, error)
+	inspectDevice            func(ctx context.Context, dao store.IdentityDAO, p model.Principal, code string, now time.Time) (model.DeviceAuthorization, error)
+	deviceInspection         func(d model.DeviceAuthorization, now time.Time) core.DeviceInspection
+	decideDevice             func(ctx context.Context, dao store.IdentityDAO, p model.Principal, code, decision, expectedUserID string, now time.Time) error
+	redeemDevice             func(ctx context.Context, dao store.IdentityDAO, clientID, grantType, code, deviceName string, now time.Time) (core.MintedPAT, error)
+	logoutDevice             func(ctx context.Context, dao store.IdentityDAO, p model.Principal) error
+	validateCallback         func(query url.Values, binding string) error
+	validateProvider         func(expected, actual string, mismatch error) error
+	admitProfileFields       func(profile model.User) error
+	validateCredential       func(kind model.CredentialKind, value string) error
+	validateSession          func(p model.Principal) error
+	validateCreatePAT        func(p model.Principal, input core.CreatePAT, now time.Time) (*time.Time, error)
+	validateRevokePAT        func(p model.Principal, id string) (string, error)
+	validateUpdatePATExpiry  func(p model.Principal, id string, input core.UpdatePATExpiry, now time.Time) (string, *time.Time, error)
+	validateDeviceClient     func(id string) error
+	validateDeviceBrowser    func(p model.Principal) error
+	validateDeviceDecision   func(p model.Principal, code, decision, expectedUserID string) (string, string, error)
+	validateDeviceRedemption func(clientID, grantType, code, deviceName string) error
+	validateDeviceLogout     func(p model.Principal) error
+	bootstrapPersonalTeam    func(context.Context, store.PersonalTeamDAO, string, time.Time) (model.TeamRef, error)
+	validatePersonalTeam     func(store.PersonalTeamFacts) error
 }
 
 func New(writer store.IdentityWriter, client *uniauth.Client, callbackURL string) *Identity {
-	return &Identity{writer: writer, module: core.NewIdentity(callbackURL), client: client, now: time.Now}
+	module := core.NewIdentity(callbackURL)
+	return &Identity{writer: writer, client: client, callbackURL: callbackURL, now: time.Now, ops: identityOperations{
+		validateLogin:            module.ValidateLogin,
+		startLogin:               module.StartLogin,
+		createLogin:              module.CreateLogin,
+		consumeLogin:             module.ConsumeLogin,
+		newSession:               module.NewSession,
+		completeLogin:            module.CompleteLogin,
+		createSession:            module.CreateSession,
+		authenticate:             module.Authenticate,
+		user:                     module.User,
+		personalTeam:             module.PersonalTeam,
+		logout:                   module.Logout,
+		createPAT:                module.CreatePAT,
+		listPATs:                 module.ListPATs,
+		revokePAT:                module.RevokePAT,
+		updatePATExpiry:          module.UpdatePATExpiry,
+		providers:                module.Providers,
+		deviceRate:               module.DeviceRate,
+		startDevice:              module.StartDevice,
+		inspectDevice:            module.InspectDevice,
+		deviceInspection:         module.DeviceInspection,
+		decideDevice:             module.DecideDevice,
+		redeemDevice:             module.RedeemDevice,
+		logoutDevice:             module.LogoutDevice,
+		validateCallback:         core.ValidateCallback,
+		validateProvider:         core.ValidateProvider,
+		admitProfileFields:       core.AdmitProfileFields,
+		validateCredential:       core.ValidateCredential,
+		validateSession:          core.ValidateSession,
+		validateCreatePAT:        core.ValidateCreatePAT,
+		validateRevokePAT:        core.ValidateRevokePAT,
+		validateUpdatePATExpiry:  core.ValidateUpdatePATExpiry,
+		validateDeviceClient:     core.ValidateDeviceClient,
+		validateDeviceBrowser:    core.ValidateDeviceBrowser,
+		validateDeviceDecision:   core.ValidateDeviceDecision,
+		validateDeviceRedemption: core.ValidateDeviceRedemption,
+		validateDeviceLogout:     core.ValidateDeviceLogout,
+		bootstrapPersonalTeam:    team.BootstrapPersonalTeam,
+		validatePersonalTeam:     team.ValidatePersonalTeam,
+	}}
 }
-func (s *Identity) CallbackURL() string { return s.module.CallbackURL() }
+func (s *Identity) CallbackURL() string { return s.callbackURL }
 
 // A domain rejection can accompany useful writes (such as a poll delay). The
 // transaction must finish successfully before that rejection is returned.
@@ -60,12 +142,12 @@ func (s *Identity) run(ctx context.Context, operation func(store.IdentityScope) 
 	return rejection
 }
 func (s *Identity) ValidateLogin(provider, returnPath string) error {
-	return s.module.ValidateLogin(provider, returnPath)
+	return s.ops.validateLogin(provider, returnPath)
 }
 
 func (s *Identity) StartLogin(ctx context.Context, provider, returnPath, browserScope string) (core.LoginStart, error) {
 	now := s.now().UTC()
-	result, pending, err := s.module.StartLogin(provider, returnPath, now)
+	result, pending, err := s.ops.startLogin(provider, returnPath, now)
 	if err != nil {
 		return core.LoginStart{}, err
 	}
@@ -79,7 +161,7 @@ func (s *Identity) StartLogin(ctx context.Context, provider, returnPath, browser
 	}
 	err = s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result.ExpiresAt, err = s.module.CreateLogin(ctx, scope.IdentityDAO(), pending, s.now().UTC())
+		result.ExpiresAt, err = s.ops.createLogin(ctx, scope.IdentityDAO(), pending, s.now().UTC())
 		return err
 	})
 	if err != nil {
@@ -88,7 +170,7 @@ func (s *Identity) StartLogin(ctx context.Context, provider, returnPath, browser
 	return result, nil
 }
 func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding string) (core.LoginCompletion, error) {
-	if err := core.ValidateCallback(query, binding); err != nil {
+	if err := s.ops.validateCallback(query, binding); err != nil {
 		return core.LoginCompletion{}, err
 	}
 	code, callbackErr := uniauth.ParseCallback(query, query.Get("state"))
@@ -101,7 +183,7 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	var pending model.LoginTransaction
 	err := s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		pending, err = s.module.ConsumeLogin(ctx, scope.IdentityDAO(), query.Get("state"), binding, s.now().UTC())
+		pending, err = s.ops.consumeLogin(ctx, scope.IdentityDAO(), query.Get("state"), binding, s.now().UTC())
 		return err
 	})
 	if err != nil {
@@ -121,32 +203,32 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 		}
 		return partial, err
 	}
-	if err := core.ValidateProvider(pending.Provider, string(profile.Provider), &uniauth.ProtocolError{Reason: "provider_mismatch"}); err != nil {
+	if err := s.ops.validateProvider(pending.Provider, string(profile.Provider), &uniauth.ProtocolError{Reason: "provider_mismatch"}); err != nil {
 		return partial, err
 	}
 	normalized := profileprotocol.Profile{ID: profile.ID, Email: profile.Email, EmailVerified: profile.EmailVerified, Name: profile.Name, AvatarURL: profile.AvatarURL}
 	user := profileprotocol.User(normalized)
-	if err := core.AdmitProfileFields(user); err != nil {
+	if err := s.ops.admitProfileFields(user); err != nil {
 		return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
 	}
 	if _, err := profileprotocol.Encode(io.Discard, normalized, core.MaxProfileJSONBytes); err != nil {
 		return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
 	}
 	now := s.now().UTC()
-	session, value := s.module.NewSession(now)
+	session, value := s.ops.newSession(now)
 	result := core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, Secret: value, Session: session}
 	err = s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result.User, err = s.module.CompleteLogin(ctx, scope.IdentityDAO(), user, now)
+		result.User, err = s.ops.completeLogin(ctx, scope.IdentityDAO(), user, now)
 		if err != nil {
 			return err
 		}
-		result.User.PersonalTeam, err = team.BootstrapPersonalTeam(ctx, scope.PersonalTeamDAO(), result.User.ID, now)
+		result.User.PersonalTeam, err = s.ops.bootstrapPersonalTeam(ctx, scope.PersonalTeamDAO(), result.User.ID, now)
 		if err != nil {
 			return err
 		}
 		result.Session.UserID = result.User.ID
-		return s.module.CreateSession(ctx, scope.IdentityDAO(), result.Session)
+		return s.ops.createSession(ctx, scope.IdentityDAO(), result.Session)
 	})
 	if err != nil {
 		return partial, err
@@ -154,13 +236,13 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	return result, nil
 }
 func (s *Identity) Authenticate(ctx context.Context, kind model.CredentialKind, value string) (model.Principal, error) {
-	if err := core.ValidateCredential(kind, value); err != nil {
+	if err := s.ops.validateCredential(kind, value); err != nil {
 		return model.Principal{}, err
 	}
 	var result model.Principal
 	err := s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result, err = s.module.Authenticate(ctx, scope.IdentityDAO(), kind, value, s.now().UTC())
+		result, err = s.ops.authenticate(ctx, scope.IdentityDAO(), kind, value, s.now().UTC())
 		return err
 	})
 	if err != nil {
@@ -173,11 +255,11 @@ func (s *Identity) User(ctx context.Context, p model.Principal) (model.User, err
 	err := s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
 		var facts store.PersonalTeamFacts
-		result, facts, err = s.module.User(ctx, scope.IdentityDAO(), p)
+		result, facts, err = s.ops.user(ctx, scope.IdentityDAO(), p)
 		if err != nil {
 			return err
 		}
-		if err := team.ValidatePersonalTeam(facts); err != nil {
+		if err := s.ops.validatePersonalTeam(facts); err != nil {
 			return errors.New("user Personal Team is missing or invalid")
 		}
 		result.PersonalTeam.ID, result.PersonalTeam.Kind = facts.ID, "personal"
@@ -193,11 +275,11 @@ func (s *Identity) User(ctx context.Context, p model.Principal) (model.User, err
 func (s *Identity) PersonalTeamID(ctx context.Context, p model.Principal) (string, error) {
 	var id string
 	err := s.run(ctx, func(scope store.IdentityScope) error {
-		facts, err := s.module.PersonalTeam(ctx, scope.IdentityDAO(), p)
+		facts, err := s.ops.personalTeam(ctx, scope.IdentityDAO(), p)
 		if err != nil {
 			return err
 		}
-		if err := team.ValidatePersonalTeam(facts); err != nil {
+		if err := s.ops.validatePersonalTeam(facts); err != nil {
 			return errors.New("user Personal Team is missing or invalid")
 		}
 		id = facts.ID
@@ -206,20 +288,20 @@ func (s *Identity) PersonalTeamID(ctx context.Context, p model.Principal) (strin
 	return id, err
 }
 func (s *Identity) Logout(ctx context.Context, p model.Principal) error {
-	if err := core.ValidateSession(p); err != nil {
+	if err := s.ops.validateSession(p); err != nil {
 		return err
 	}
-	return s.run(ctx, func(scope store.IdentityScope) error { return s.module.Logout(ctx, scope.IdentityDAO(), p) })
+	return s.run(ctx, func(scope store.IdentityScope) error { return s.ops.logout(ctx, scope.IdentityDAO(), p) })
 }
 func (s *Identity) CreatePAT(ctx context.Context, p model.Principal, input core.CreatePAT) (core.MintedPAT, error) {
 	now := s.now().UTC()
-	if _, err := core.ValidateCreatePAT(p, input, now); err != nil {
+	if _, err := s.ops.validateCreatePAT(p, input, now); err != nil {
 		return core.MintedPAT{}, err
 	}
 	var result core.MintedPAT
 	err := s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result, err = s.module.CreatePAT(ctx, scope.IdentityDAO(), p, input, now)
+		result, err = s.ops.createPAT(ctx, scope.IdentityDAO(), p, input, now)
 		return err
 	})
 	if err != nil {
@@ -228,13 +310,13 @@ func (s *Identity) CreatePAT(ctx context.Context, p model.Principal, input core.
 	return result, nil
 }
 func (s *Identity) ListPATs(ctx context.Context, p model.Principal) ([]model.PersonalAccessToken, error) {
-	if err := core.ValidateSession(p); err != nil {
+	if err := s.ops.validateSession(p); err != nil {
 		return nil, err
 	}
 	var result []model.PersonalAccessToken
 	err := s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result, err = s.module.ListPATs(ctx, scope.IdentityDAO(), p, s.now().UTC())
+		result, err = s.ops.listPATs(ctx, scope.IdentityDAO(), p, s.now().UTC())
 		return err
 	})
 	if err != nil {
@@ -243,22 +325,22 @@ func (s *Identity) ListPATs(ctx context.Context, p model.Principal) ([]model.Per
 	return result, nil
 }
 func (s *Identity) RevokePAT(ctx context.Context, p model.Principal, id string) error {
-	if _, err := core.ValidateRevokePAT(p, id); err != nil {
+	if _, err := s.ops.validateRevokePAT(p, id); err != nil {
 		return err
 	}
 	return s.run(ctx, func(scope store.IdentityScope) error {
-		return s.module.RevokePAT(ctx, scope.IdentityDAO(), p, id, s.now().UTC())
+		return s.ops.revokePAT(ctx, scope.IdentityDAO(), p, id, s.now().UTC())
 	})
 }
 func (s *Identity) UpdatePATExpiry(ctx context.Context, p model.Principal, id string, input core.UpdatePATExpiry) (model.PersonalAccessToken, error) {
 	now := s.now().UTC()
-	if _, _, err := core.ValidateUpdatePATExpiry(p, id, input, now); err != nil {
+	if _, _, err := s.ops.validateUpdatePATExpiry(p, id, input, now); err != nil {
 		return model.PersonalAccessToken{}, err
 	}
 	var result model.PersonalAccessToken
 	err := s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result, err = s.module.UpdatePATExpiry(ctx, scope.IdentityDAO(), p, id, input, now)
+		result, err = s.ops.updatePATExpiry(ctx, scope.IdentityDAO(), p, id, input, now)
 		return err
 	})
 	if err != nil {
@@ -282,11 +364,11 @@ func (s *Identity) Providers(ctx context.Context) ([]string, error) {
 	for _, provider := range providers {
 		result = append(result, string(provider))
 	}
-	return s.module.Providers(result, code, err)
+	return s.ops.providers(result, code, err)
 }
 func (s *Identity) rate(ctx context.Context, operation, actor string, globalLimit, actorLimit int) error {
 	return s.run(ctx, func(scope store.IdentityScope) error {
-		return s.module.DeviceRate(ctx, scope.IdentityDAO(), operation, actor, globalLimit, actorLimit, s.now().UTC())
+		return s.ops.deviceRate(ctx, scope.IdentityDAO(), operation, actor, globalLimit, actorLimit, s.now().UTC())
 	})
 }
 
@@ -297,7 +379,7 @@ func deviceCollision(err error) bool {
 }
 
 func (s *Identity) StartDevice(ctx context.Context, clientID, source string) (core.DeviceStart, error) {
-	if err := core.ValidateDeviceClient(clientID); err != nil {
+	if err := s.ops.validateDeviceClient(clientID); err != nil {
 		return core.DeviceStart{}, err
 	}
 	if err := s.rate(ctx, "device-create", source, 120, 30); err != nil {
@@ -308,7 +390,7 @@ func (s *Identity) StartDevice(ctx context.Context, clientID, source string) (co
 		var result core.DeviceStart
 		err := s.run(ctx, func(scope store.IdentityScope) error {
 			var err error
-			result, err = s.module.StartDevice(ctx, scope.IdentityDAO(), clientID, now)
+			result, err = s.ops.startDevice(ctx, scope.IdentityDAO(), clientID, now)
 			return err
 		})
 		if deviceCollision(err) {
@@ -322,7 +404,7 @@ func (s *Identity) StartDevice(ctx context.Context, clientID, source string) (co
 	return core.DeviceStart{}, errors.New("device authorization code generation exhausted collision attempts")
 }
 func (s *Identity) browserRate(ctx context.Context, p model.Principal) error {
-	if err := core.ValidateDeviceBrowser(p); err != nil {
+	if err := s.ops.validateDeviceBrowser(p); err != nil {
 		return err
 	}
 	return s.rate(ctx, "device-lookup", p.UserID, 120, 12)
@@ -337,33 +419,33 @@ func (s *Identity) InspectDevice(ctx context.Context, p model.Principal, code st
 	var result model.DeviceAuthorization
 	err := s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result, err = s.module.InspectDevice(ctx, scope.IdentityDAO(), p, code, s.now().UTC())
+		result, err = s.ops.inspectDevice(ctx, scope.IdentityDAO(), p, code, s.now().UTC())
 		return err
 	})
 	if err != nil {
 		return core.DeviceInspection{}, err
 	}
-	return s.module.DeviceInspection(result, s.now().UTC()), nil
+	return s.ops.deviceInspection(result, s.now().UTC()), nil
 }
 func (s *Identity) DecideDevice(ctx context.Context, p model.Principal, code, decision, userID string) error {
 	if err := s.browserRate(ctx, p); err != nil {
 		return err
 	}
-	if _, _, err := core.ValidateDeviceDecision(p, code, decision, userID); err != nil {
+	if _, _, err := s.ops.validateDeviceDecision(p, code, decision, userID); err != nil {
 		return err
 	}
 	return s.run(ctx, func(scope store.IdentityScope) error {
-		return s.module.DecideDevice(ctx, scope.IdentityDAO(), p, code, decision, userID, s.now().UTC())
+		return s.ops.decideDevice(ctx, scope.IdentityDAO(), p, code, decision, userID, s.now().UTC())
 	})
 }
 func (s *Identity) RedeemDevice(ctx context.Context, clientID, grantType, code, name string) (core.MintedPAT, error) {
-	if err := core.ValidateDeviceRedemption(clientID, grantType, code, name); err != nil {
+	if err := s.ops.validateDeviceRedemption(clientID, grantType, code, name); err != nil {
 		return core.MintedPAT{}, err
 	}
 	var result core.MintedPAT
 	err := s.run(ctx, func(scope store.IdentityScope) error {
 		var err error
-		result, err = s.module.RedeemDevice(ctx, scope.IdentityDAO(), clientID, grantType, code, name, s.now().UTC())
+		result, err = s.ops.redeemDevice(ctx, scope.IdentityDAO(), clientID, grantType, code, name, s.now().UTC())
 		return err
 	})
 	if err != nil {
@@ -372,8 +454,8 @@ func (s *Identity) RedeemDevice(ctx context.Context, clientID, grantType, code, 
 	return result, nil
 }
 func (s *Identity) LogoutDevice(ctx context.Context, p model.Principal) error {
-	if err := core.ValidateDeviceLogout(p); err != nil {
+	if err := s.ops.validateDeviceLogout(p); err != nil {
 		return err
 	}
-	return s.run(ctx, func(scope store.IdentityScope) error { return s.module.LogoutDevice(ctx, scope.IdentityDAO(), p) })
+	return s.run(ctx, func(scope store.IdentityScope) error { return s.ops.logoutDevice(ctx, scope.IdentityDAO(), p) })
 }
