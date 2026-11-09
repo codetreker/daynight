@@ -71,10 +71,10 @@ Each independent proof remains with its implementation owner:
 
 Store receivers call the actual DAO and transaction mechanisms; they do not
 reconstruct last-admin or invitation acceptance algorithms. Core receivers
-execute those decisions over controlled DAO facts. Normal assembled Team flows
-remain in API integration, with abnormal rule and storage matrices at their
-module owners. Public behavior, supported inputs, production time defaults and
-validation gates retain their existing contracts.
+execute those decisions over controlled DAO facts. API integration owns
+representative normal flows through the assembled server. Team rule and storage
+matrices remain with their module owners. Public behavior, supported inputs,
+production time defaults and validation gates retain their existing contracts.
 
 The [Go dependency decision](2026-11-08-go-test-dependency-boundaries.md) owns the
 common direct-operation policy. The [service guide](../../../../packages/daynight-server/README.md#team-service-tests)
