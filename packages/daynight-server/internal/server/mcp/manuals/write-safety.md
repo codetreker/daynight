@@ -201,6 +201,60 @@ If the response is lost, read normal Thread pages before deciding whether to sen
 
 `clock_not_advanced` is a definite failed post when returned as the validated rejection. `message_outcome_unknown` explicitly retains uncertainty. More generally, preserve the reported write outcome rather than classifying every server error as a safe retry. A confirmed post receipt also does not move the reader's continuous read position past other participants' unread messages; see [Queries and lifecycle](daynight://manuals/queries-and-lifecycle.md).
 
+## Task Session messages retain their original intent
+
+`task_session_send` sends one authorized ordinary text message to an explicit
+Task Web Session. The caller must hold a new operationId and the exact observed
+execution fence before submission; the MCP transport request ID does not replace
+that identity. Required fields are projectId, taskId, sessionId, operationId,
+claimId, executionGeneration, expectedTurnId and text. expectedTurnId is required
+even for idle, where its value is null. Working requires the real current turn
+and actual steer support. connectionEpoch is a connection observation, not an
+accepted field or a command precondition.
+
+```json
+{
+  "name": "task_session_send",
+  "arguments": {
+    "projectId": "11111111-1111-4111-8111-111111111111",
+    "taskId": "22222222-2222-4222-8222-222222222222",
+    "sessionId": "33333333-3333-4333-8333-333333333333",
+    "operationId": "44444444-4444-4444-8444-444444444444",
+    "claimId": "55555555-5555-4555-8555-555555555555",
+    "executionGeneration": "1",
+    "expectedTurnId": null,
+    "text": "Please inspect the failing test."
+  }
+}
+```
+
+Use a new caller-chosen UUID only for a first submission. The service reuses the
+same Submit intent hash for HTTP and MCP: the original execution, operation ID,
+ordinary-message kind, exact text and expected turn are part of the intent.
+Repeating an identical retained intent returns its original receipt without a
+second dispatch; a different intent conflicts. After any unknown result, use
+`task_session_operation` with the original project, Task, Session and operation
+IDs. Do not retry send, change the ID, refresh current to guess the old turn or
+interpret not_found as permission to resend.
+
+The tool takes text directly, not a local file or stdin. It rejects NUL,
+malformed Unicode, whitespace-only text, more than 1 MiB of UTF-8 text and more
+than 2 MiB of the encoded command. Slash text remains ordinary text. Sending does
+not answer approvals, cancel a turn, queue future input, create a Session or
+write Herdr terminal keys. The current Session owner, connection and execution
+conditions must still permit the operation. OAuth is admitted only for these
+Task ordinary-message and receipt purposes, retaining actual scope, validity and
+revocation; the original Actor is authorized again before dispatch.
+
+Read `meta.writeOutcome`, `meta.phase` and `meta.refs` independently of
+`data.operation.state`. A confirmed service commit with state accepted is not
+Provider acceptance. accepted, offered and dispatching remain pending;
+provider_accepted and confirmed are distinct native facts, and neither means the
+Agent completed the text's requested work. rejected, failed, expired and unknown
+retain their meaning. Lost output does not undo a commit. Keep the original refs
+through all failures and query that operation; the read tool's not_found leaves
+the original outcome unknown and does not manufacture a write receipt.
+
 ## Attachments and multi-step changes
 
 Attachment writes do not advance the Task version, status or update time. An unchanged Task version does not prove that required files are unchanged, and it cannot freeze references to other Tasks.

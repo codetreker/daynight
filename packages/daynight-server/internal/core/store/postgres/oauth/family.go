@@ -80,3 +80,25 @@ func (d *DAO) ActiveClientReferences(ctx context.Context, clientID string, now t
 	err := d.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM oauth_grants WHERE client_id=$1 AND revoked_at IS NULL AND expires_at>GREATEST($2::timestamptz,clock_timestamp()))`, clientID, now).Scan(&active)
 	return active, pg.AuthQueryError("read active OAuth client references", err)
 }
+
+// LockAccess reauthorizes the persisted actor under its access-token lock.
+// Revocation deletes that token before committing. Re-reading the grant after
+// the token wait observes scope, revocation and expiry without acquiring a grant
+// lock after a Session lock during dispatch.
+func (d *DAO) LockAccess(ctx context.Context, p model.Principal, resource, scope string, now time.Time) error {
+	if p.Kind != model.OAuthCredential {
+		return model.ErrNotFound
+	}
+	var tokenID string
+	if err := d.tx.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE id=$1 AND user_id=$2 FOR SHARE`, p.CredentialID, p.UserID).Scan(&tokenID); err != nil {
+		return pg.AuthQueryError("lock OAuth access", err)
+	}
+	var valid bool
+	if err := d.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM oauth_access_tokens a JOIN oauth_grants g ON g.id=a.grant_id AND g.user_id=a.user_id WHERE a.id=$1 AND a.user_id=$2 AND g.resource=$3 AND g.scope=$4 AND g.revoked_at IS NULL AND LEAST(a.expires_at,g.expires_at)>GREATEST($5::timestamptz,clock_timestamp()))`, p.CredentialID, p.UserID, resource, scope, now).Scan(&valid); err != nil {
+		return pg.AuthQueryError("recheck OAuth access", err)
+	}
+	if !valid {
+		return model.ErrNotFound
+	}
+	return nil
+}

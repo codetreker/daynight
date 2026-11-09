@@ -23,6 +23,7 @@ type archiveContent struct {
 }
 
 type serviceCalls struct {
+	TaskOperation                  func(context.Context, model.Principal, string, string, string, string) (sessioncore.TaskOperationResult, error)
 	ArchiveContentReserved         func(context.Context, model.Principal, string, string, string, io.Closer) (archiveContent, error)
 	ArchiveStatus                  func(context.Context, model.Principal, string, string, string) (sp.ArchiveStatus, error)
 	AuthenticateController         func(context.Context, string) error
@@ -76,6 +77,7 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 		return serviceCalls{}
 	}
 	return serviceCalls{
+		TaskOperation:                  service.TaskOperation,
 		ArchiveContentReserved:         archiveContentCall(service.ArchiveContentReserved),
 		ArchiveStatus:                  service.ArchiveStatus,
 		AuthenticateController:         service.AuthenticateController,

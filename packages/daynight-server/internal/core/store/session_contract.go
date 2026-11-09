@@ -125,6 +125,7 @@ type ArchiveMetadata struct {
 // Callers acquire credential, Task and Bot locks before related Session locks.
 type SessionDAO interface {
 	LockCredential(context.Context, model.Principal, time.Time) error
+	LockOAuthCredential(context.Context, model.Principal, string, string, time.Time) error
 	ReadCredential(context.Context, model.Principal, time.Time) error
 	ArchiveMetadata(context.Context, string) (ArchiveMetadata, error)
 	ProjectAccess(context.Context, string, string) (model.ProjectAccess, error)

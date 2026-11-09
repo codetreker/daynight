@@ -269,6 +269,14 @@ func (c *listOperationCapability) Tasks(context.Context, string, store.TaskQuery
 	return store.TaskPage{}, c.fail("Tasks")
 }
 
+func (c *listOperationCapability) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+	return store.TaskWorkGroups{}, c.fail("TaskWorkGroups")
+}
+
+func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	return store.TaskWorkTargets{}, c.fail("TaskWorkTargets")
+}
+
 func (c *listOperationCapability) TaskListFence(context.Context, string) (store.TaskListFence, error) {
 	return store.TaskListFence{}, c.fail("TaskListFence")
 }

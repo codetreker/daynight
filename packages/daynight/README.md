@@ -1229,6 +1229,63 @@ instruction, with at most one plain Task traversal after an explicit
 negotiation refusal. `task ready`, `graph --depends-only`, write preflight and
 mutation receipts retain their original reads and output.
 
+### Task Session messages and recovery
+
+Send an authorized ordinary message to the selected Web Session, or query its
+original operation:
+
+```bash
+daynight task session send <task-id> <session-id> --project <project-id> --text 'Please inspect the failing test.' --json
+daynight task session send <task-id> <session-id> --project <project-id> --file ./message.txt --wait-seconds 0 --json
+daynight task session send <task-id> <session-id> --project <project-id> --stdin --json < ./message.txt
+daynight task session operation <task-id> <session-id> <operation-id> --project <project-id> --json
+daynight task session operation --operation-id <operation-id> --json
+```
+
+Choose exactly one of `--text`, `--file` and `--stdin`. Files must be regular
+files. Input preserves Unicode, BOM, LF/CRLF and trailing newlines. NUL,
+malformed Unicode, whitespace-only text, more than 1 MiB of UTF-8 text or more
+than 2 MiB of the complete command JSON fails before saving or submitting.
+Slash-prefixed text stays ordinary text. The command does not answer approvals,
+write Herdr terminal keys, cancel, queue, create or retarget a Session.
+
+The first send observes the explicit Session and freezes its execution fence and
+expectedTurnId. Idle uses null; working requires actual steer support and the
+same current turn. Session owner, credentials, connection and execution are
+checked again when accepting and dispatching. Inspection connectionEpoch remains
+a connection observation, not an additional command precondition.
+
+A private recovery record under
+`DN_CONFIG_DIR/session-operations/<originHash>/<actorId>/<operationId>.json`
+retains identity, intent hash and operation facts without the body or token.
+Real private permissions, a cross-process lock, file synchronization, atomic
+replacement and parent-directory synchronization precede POST. Any failure
+refuses before sending. The record is durably marked dispatch_unknown before
+the single POST; a crash before actual dispatch can therefore leave an operation
+unknown that was never sent. This conservative result does not permit replay.
+
+Every existing local record makes a repeated send verify the original target
+and body hash, then query only. It never refreshes current to reconstruct the
+turn. With no record, `--operation-id` is only for an explicitly chosen first
+submission: an existing receipt returns query guidance without accepting the new
+body. A prior unknown result or cross-machine recovery must use the explicit
+operation query. not_found does not prove unsent. The short operation form uses
+only the current actor and service's local record; another machine needs the
+original resource IDs. Historical receipts remain queryable under current
+permissions after a new claim, without restoring a queue.
+
+Wait defaults to 30 seconds, accepts 0–60, and polls only the original operation.
+accepted/offered/dispatching and unknown/not_found/wait expiry exit 3;
+provider_accepted/confirmed exit 0; rejected/failed/expired or
+protocol/authentication/output failures exit 1; invalid arguments exit 2; user
+interruption exits 130. Pending and interrupted operations retain their original
+identity in bounded output. Provider acceptance and confirmation do not mean the
+Agent completed the requested work. Local receipt-save or output failure does
+not undo service acceptance or authorize another POST.
+
+The [Session intervention reference](src/commands/skill/skills/using-daynight/references/session-intervention.md)
+describes authorized use, unknown recovery and the corresponding MCP tools.
+
 ## Task properties
 
 `task properties <task-id>` reads the task's complete current values;

@@ -1,0 +1,39 @@
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { vi } from "vitest";
+import type { CliContext } from "../../../../src/cli/context.js";
+import { runCli } from "../../../../src/cli/application.js";
+import { taskDefinition } from "../../../../src/commands/task/definition.js";
+import { runTaskCommand } from "../../../../src/commands/task/command.js";
+import { runServerCommand } from "../../../../src/commands/server/runtime.js";
+import type { SessionOperation } from "../../../../src/session/protocol.js";
+import { actorId, claimId, inspection, projectId, sessionId, taskId } from "../../../fixtures/task-observation.js";
+export { actorId, claimId, inspection, projectId, sessionId, taskId };
+export const operationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+export const origin = "http://127.0.0.1:8787";
+export const target = { projectId, taskId, sessionId, operationId };
+export const operationUrl = `/api/v1/projects/${projectId}/tasks/${taskId}/sessions/${sessionId}/operations/${operationId}`;
+export const receipt = (state: SessionOperation["state"] = "accepted", extra: Partial<Extract<SessionOperation, { claimId: string }>> = {}): SessionOperation => ({ protocol: "daynight.session.v1", sessionId, claimId, executionGeneration: inspection.fence.executionGeneration, operationId, kind: "send_message", state, providerResult: null, error: null, ...extra });
+export const response = (value: unknown, status = 200, principal = actorId, extra: Record<string, string> = {}): Response => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", "Daynight-User-ID": principal, ...extra } });
+export const missing = () => response({ error: { code: "not_found", message: "Operation does not exist.", requestId: operationId } }, 404);
+export const fixture = async (root: string) => {
+  const home = await mkdtemp(path.join(root, "home-")), state = path.join(home, ".daynight");
+  await mkdir(state); await writeFile(path.join(state, "config.yml"), `serverUrl: ${origin}\nserverToken: test-token\n`);
+  let output = "", errors = "";
+  const signals = new EventEmitter();
+  const context: CliContext = { version: "0.0.0", packageDirectory: "unused", homeDirectory: () => home, workingDirectory: () => { throw new Error("Unexpected Git discovery"); }, stdout: value => { output += value; }, stdoutBytes: async bytes => { output += Buffer.from(bytes).toString("utf8"); }, stderr: value => { errors += value; } };
+  const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+    if (String(url).endsWith("/me")) return response({ id: actorId, name: "User", email: null, emailVerified: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal", name: null } });
+    if (String(url).endsWith("/inspection")) return response(inspection);
+    if (init?.method === "POST") return response({ operation: receipt(), operationUrl }, 202, actorId, { Location: operationUrl });
+    return missing();
+  });
+  const run = async (args: string[]) => {
+    output = ""; errors = "";
+    return runCli(["task", "session", ...args], context, [{ ...taskDefinition, load: async () => ({ run: (args, context) => runTaskCommand(args, context, { resolveProject: async () => { throw new Error("Unexpected project resolution"); }, runServerCommand: (ctx, command) => runServerCommand(ctx, command, { fetch, signalEmitter: signals }) }) }) }]);
+  };
+  return { home, state, context, fetch, signals, run, output: () => output, errors: () => errors };
+};
+export const sendArgs = (text = "original message") => ["send", taskId, sessionId, "--project", projectId, "--operation-id", operationId, "--wait-seconds", "0", "--text", text, "--json"];
+export const queryArgs = ["operation", taskId, sessionId, operationId, "--project", projectId, "--json"];
