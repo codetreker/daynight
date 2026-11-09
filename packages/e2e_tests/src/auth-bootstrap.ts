@@ -21,19 +21,11 @@ export const registerAuth = async (
   const started = performance.now();
   let phase: Phase = "browser-launch";
   const observe = (event: ObservationDetail): void => observer({ timestamp: new Date().toISOString(), elapsedMs: performance.now() - started, phase, ...event });
-  const perform = async <T>(next: Phase, action: () => Promise<T>): Promise<T> => {
+  const begin = (next: Phase): void => {
     phase = next;
     observe({ event: "phase", state: "started" });
-    let result: T;
-    try { result = await action(); }
-    catch (error) {
-      try { observe({ event: "phase", state: "failed", error: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "error" }); }
-      catch (observationError) { throw new AggregateError([error, observationError], "OAuth bootstrap and diagnostic recording failed.", { cause: error }); }
-      throw error;
-    }
-    observe({ event: "phase", state: "completed" });
-    return result;
   };
+  const complete = (): void => observe({ event: "phase", state: "completed" });
   const authOrigin = new URL(environment.authURL).origin;
   const route = (value: string): Route => {
     const url = new URL(value);
@@ -53,13 +45,16 @@ export const registerAuth = async (
   let launched: Browser | undefined;
   let detach: (() => void) | undefined;
   try {
-    const browser = await perform("browser-launch", async () => {
-      const browser = await chromium.launch({ proxy: { server: environment.proxyURL, bypass: "127.0.0.1,localhost" } });
-      launched = browser;
-      return browser;
-    });
-    const context = await perform("browser-context", () => browser.newContext({ ignoreHTTPSErrors: true, locale: "en-US" }));
-    const page = await perform("browser-page", () => context.newPage());
+    begin("browser-launch");
+    const browser = await chromium.launch({ proxy: { server: environment.proxyURL, bypass: "127.0.0.1,localhost" } });
+    launched = browser;
+    complete();
+    begin("browser-context");
+    const context = await browser.newContext({ ignoreHTTPSErrors: true, locale: "en-US" });
+    complete();
+    begin("browser-page");
+    const page = await context.newPage();
+    complete();
     const requestIds = new WeakMap<Request, number>();
     let nextRequest = 1;
     const requestId = (request: Request): number => {
@@ -71,7 +66,7 @@ export const registerAuth = async (
     };
     // Only fixed route labels and transport outcomes enter retained diagnostics.
     const request = (value: Request): void => observe({ event: "request", request: requestId(value), route: route(value.url()), method: value.method() === "GET" || value.method() === "POST" ? value.method() as "GET" | "POST" : "other", navigation: value.isNavigationRequest() });
-    const response = (value: Response): void => observe({ event: "response", request: requestId(value.request()), route: route(value.url()), status: value.status() });
+    const receivedResponse = (value: Response): void => observe({ event: "response", request: requestId(value.request()), route: route(value.url()), status: value.status() });
     const finished = (value: Request): void => observe({ event: "request-finished", request: requestId(value), route: route(value.url()) });
     const failed = (value: Request): void => {
       const text = value.failure()!.errorText;
@@ -81,47 +76,59 @@ export const registerAuth = async (
       if (frame === page.mainFrame()) observe({ event: "navigation", route: route(frame.url()) });
     };
     page.on("request", request);
-    page.on("response", response);
+    page.on("response", receivedResponse);
     page.on("requestfailed", failed);
     page.on("requestfinished", finished);
     page.on("framenavigated", navigated);
     detach = () => {
       page.off("request", request);
-      page.off("response", response);
+      page.off("response", receivedResponse);
       page.off("requestfailed", failed);
       page.off("requestfinished", finished);
       page.off("framenavigated", navigated);
     };
     page.setDefaultTimeout(30_000);
-    await perform("console-load", () => page.goto(`${environment.authURL}/console/`));
-    await perform("github-initiate", () => page.getByRole("button", { name: "Continue with GitHub", exact: true }).click());
-    await perform("provider-submit", () => page.getByRole("button", { name: "Authorize local identity", exact: true }).click());
-    await perform("console-return", () => expect(page).toHaveURL(`${environment.authURL}/console/`));
-    const user = await perform("console-session", async () => {
-      const session = await context.request.get(`${environment.authURL}/console/api/session`);
-      if (session.status() !== 200) throw new Error(`UniAuth Console session failed (${session.status()}).`);
-      const value = await session.json() as { csrf_token: string };
-      if (typeof value.csrf_token !== "string") throw new Error("UniAuth did not return a Console CSRF token.");
-      return value;
+    begin("console-load");
+    await page.goto(`${environment.authURL}/console/`);
+    complete();
+    begin("github-initiate");
+    await page.getByRole("button", { name: "Continue with GitHub", exact: true }).click();
+    complete();
+    begin("provider-submit");
+    await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
+    complete();
+    begin("console-return");
+    await expect(page).toHaveURL(`${environment.authURL}/console/`);
+    complete();
+    begin("console-session");
+    const session = await context.request.get(`${environment.authURL}/console/api/session`);
+    if (session.status() !== 200) throw new Error(`UniAuth Console session failed (${session.status()}).`);
+    const user = await session.json() as { csrf_token: string };
+    if (typeof user.csrf_token !== "string") throw new Error("UniAuth did not return a Console CSRF token.");
+    complete();
+    begin("app-register");
+    const response = await context.request.post(`${environment.authURL}/console/api/apps`, {
+      headers: { Origin: environment.authURL, "X-CSRF-Token": user.csrf_token },
+      data: {
+        name: "Product E2E",
+        enabled: true,
+        redirect_uris: [`${environment.baseURL}/auth/callback`],
+        providers: ["github"],
+        initial_secret: { name: "E2E backend" },
+      },
     });
-    const credentials = await perform("app-register", async () => {
-      const response = await context.request.post(`${environment.authURL}/console/api/apps`, {
-        headers: { Origin: environment.authURL, "X-CSRF-Token": user.csrf_token },
-        data: {
-          name: "Product E2E",
-          enabled: true,
-          redirect_uris: [`${environment.baseURL}/auth/callback`],
-          providers: ["github"],
-          initial_secret: { name: "E2E backend" },
-        },
-      });
-      if (response.status() !== 201) throw new Error(`UniAuth App registration failed (${response.status()}): ${await response.text()}`);
-      const creation = await response.json() as { app: { id: string }; secret: string };
-      if (typeof creation.app.id !== "string" || typeof creation.secret !== "string") throw new Error("UniAuth did not return the registered App credentials.");
-      return { appId: creation.app.id, appSecret: creation.secret };
-    });
-    await perform("context-close", () => context.close());
-    return credentials;
+    if (response.status() !== 201) throw new Error(`UniAuth App registration failed (${response.status()}): ${await response.text()}`);
+    const creation = await response.json() as { app: { id: string }; secret: string };
+    if (typeof creation.app.id !== "string" || typeof creation.secret !== "string") throw new Error("UniAuth did not return the registered App credentials.");
+    complete();
+    begin("context-close");
+    await context.close();
+    complete();
+    return { appId: creation.app.id, appSecret: creation.secret };
+  } catch (error) {
+    try { observe({ event: "phase", state: "failed", error: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "error" }); }
+    catch (observationError) { throw new AggregateError([error, observationError], "OAuth bootstrap and diagnostic recording failed.", { cause: error }); }
+    throw error;
   } finally {
     detach?.();
     if (launched !== undefined) await launched.close();

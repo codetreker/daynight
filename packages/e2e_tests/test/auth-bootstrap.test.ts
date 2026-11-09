@@ -93,3 +93,24 @@ test("a launch-completion recording failure still closes the newly created brows
   }), (error) => error === failure);
   assert.equal(closed, 1);
 });
+
+test("bootstrap begins the next action before peer continuations queued by navigation", async (t) => {
+  const order: string[] = [];
+  const failure = new Error("Stop after observing the next action");
+  const page = Object.assign(new EventEmitter(), {
+    setDefaultTimeout: () => {},
+    goto: () => {
+      const completed = Promise.resolve();
+      void completed.then(() => { void Promise.resolve().then(() => { order.push("peer"); }); });
+      return completed;
+    },
+    getByRole: () => ({ click: () => { order.push("click"); throw failure; } }),
+  });
+  const browser = {
+    newContext: async () => ({ newPage: async () => page }),
+    close: async () => {},
+  } as unknown as Browser;
+  t.mock.method(chromium, "launch", async () => browser);
+  await assert.rejects(registerAuth(environment, () => {}), (error) => error === failure);
+  assert.deepEqual(order, ["click", "peer"]);
+});
