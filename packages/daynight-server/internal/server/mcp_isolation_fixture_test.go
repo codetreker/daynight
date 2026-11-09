@@ -14,6 +14,18 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
+func assertMCPUnstartedObservation(t *testing.T, item map[string]any) {
+	t.Helper()
+	observation, ok := item["session"].(map[string]any)
+	if !ok || observation["observation"] != "observed" || observation["registration"] != "not_applicable" || observation["reason"] != "not_started" {
+		t.Fatalf("unstarted Task observation: %#v", item)
+	}
+	send, ok := observation["send"].(map[string]any)
+	if !ok || send["allowed"] != false || send["reason"] != "not_started" {
+		t.Fatalf("unstarted Task send eligibility: %#v", observation)
+	}
+}
+
 func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, project model.Project, target model.Task, name, view string) {
 	want := map[string]int{"snapshot": 1, "access": 1, "priority": 1}
 	if name == "task_list" {
@@ -31,8 +43,28 @@ func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, pr
 		want["nodes"] = 1
 		want["clock"] = 1
 	}
+	if name != "task_ready" {
+		want["snapshot"] = 2
+		want["access"] = 2
+		want["credential"] = 2
+		want["sources"] = 2
+		want["clock"]++
+	}
 	counts := newHTTPCallPlan(t, want)
 	scope := newHTTPTestSnapshot(t)
+	if name != "task_ready" {
+		scope.Credentials = &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "MCP observation credential"), CredentialFn: func(ctx context.Context, actor model.Principal) (store.ThreadCredential, error) {
+			counts.Called("credential")
+			mcpAttachmentCheck(t, actor, p)
+			return store.ThreadCredential{}, nil
+		}}
+		scope.Sessions = &taskHTTPSessionReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "MCP observation sources"), TaskSessionSourcesFn: func(ctx context.Context, pid string, ids []string) ([]store.TaskSessionSource, error) {
+			counts.Called("sources")
+			mcpAttachmentCheck(t, pid, project.ID)
+			mcpAttachmentCheck(t, ids, []string{target.ID})
+			return []store.TaskSessionSource{{ProjectID: project.ID, TaskID: target.ID, TaskVersion: target.Version, TaskStatus: target.Status}}, nil
+		}}
+	}
 	scope.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		counts.Called("access")
 		mcpAttachmentCheck(t, actor, p)
@@ -78,7 +110,7 @@ func mcpIsolationTaskRead(t *testing.T, tx *httpTestStore, p model.Principal, pr
 		mcpAttachmentCheck(t, []string{pid, id}, []string{project.ID, target.ID})
 		mcpAttachmentCheck(t, q, selection)
 		mcpAttachmentCheck(t, n, 160)
-		return []model.GraphTask{{ID: target.ID, TitlePreview: target.Title, Status: target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, Ready: true, CreatedAt: target.CreatedAt, UpdatedAt: target.UpdatedAt}}, nil
+		return []model.GraphTask{{ID: target.ID, Version: target.Version, TitlePreview: target.Title, Status: target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, Ready: true, CreatedAt: target.CreatedAt, UpdatedAt: target.UpdatedAt}}, nil
 	}
 	scope.Tasks = reader
 	scope.ObservedAtCall = func(context.Context) (time.Time, error) { counts.Called("clock"); return target.UpdatedAt, nil }

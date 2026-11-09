@@ -627,6 +627,7 @@ var _ store.CredentialReader = (*taskHTTPCredentialReaderMock)(nil)
 type taskHTTPSessionReaderMock struct {
 	taskHTTPMockBase
 	CurrentTaskSessionSourcesFn func(context.Context, string) ([]store.TaskSessionSource, error)
+	TaskSessionSourcesFn        func(context.Context, string, []string) ([]store.TaskSessionSource, error)
 }
 
 func (mock *taskHTTPSessionReaderMock) CurrentTaskSessionSources(p0 context.Context, p1 string) ([]store.TaskSessionSource, error) {
@@ -861,9 +862,9 @@ func (mock *taskHTTPReaderMock) TaskWorkTargets(context.Context, string, []strin
 	mock.need("TaskWorkTargets", false)
 	panic("unreachable")
 }
-func (mock *taskHTTPSessionReaderMock) TaskSessionSources(context.Context, string, []string) ([]store.TaskSessionSource, error) {
-	mock.need("TaskSessionSources", false)
-	panic("unreachable")
+func (mock *taskHTTPSessionReaderMock) TaskSessionSources(ctx context.Context, project string, ids []string) ([]store.TaskSessionSource, error) {
+	mock.need("TaskSessionSources", mock.TaskSessionSourcesFn != nil)
+	return mock.TaskSessionSourcesFn(ctx, project, ids)
 }
 func (mock *taskHTTPSessionReaderMock) TaskSessionInspectionSource(context.Context, string, string, string) (store.TaskSessionSource, error) {
 	mock.need("TaskSessionInspectionSource", false)
