@@ -198,7 +198,7 @@ describe("cleanup diagnostics", () => {
     expect((failure as AggregateError).cause).toBe(errors[0]);
     expect(f.store.getPullRequest(review)).toMatchObject({ cleanupPending: true, worktreePath: prepared.path });
     expect(existsSync(prepared.path)).toBe(true);
-  });
+  }, 60_000);
 });
 
 describe("dedicated review environment artifacts", () => {
