@@ -15,6 +15,7 @@ import (
 )
 
 func TestTransferUpdateFailureRollsBackOwnershipAndProject(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, table := range []string{"project_ownership", "projects"} {
 		t.Run(table, func(t *testing.T) {
 			s, actor, _, project := membershipFixture(t)
@@ -56,6 +57,7 @@ func TestTransferUpdateFailureRollsBackOwnershipAndProject(t *testing.T) {
 }
 
 func TestTransferCommitResponseLossRemainsUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	_, actor, _ := testAuthRecords(t, s)

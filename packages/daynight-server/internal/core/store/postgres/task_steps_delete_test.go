@@ -13,6 +13,7 @@ import (
 )
 
 func TestTaskStepsDeleteStoreFailureCausesAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
@@ -91,6 +92,7 @@ func TestTaskStepsDeleteStoreFailureCausesAndRollback(t *testing.T) {
 }
 
 func TestTaskStepsDeleteLostCommitReceiptKeepsUnknownAndCurrentFacts(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)

@@ -73,6 +73,7 @@ func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T)
 }
 
 func TestTaskStepsParentAndRowsShareSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
@@ -129,6 +130,7 @@ func TestTaskStepsParentAndRowsShareSnapshot(t *testing.T) {
 }
 
 func TestTaskStepsCommitLostReceiptKeepsUnknownAndCurrentFacts(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
@@ -182,6 +184,7 @@ func TestTaskStepsCommitLostReceiptKeepsUnknownAndCurrentFacts(t *testing.T) {
 }
 
 func TestTaskStepsDeferredPositionFailureIsInternalAndRollsBack(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
@@ -210,6 +213,7 @@ func TestTaskStepsDeferredPositionFailureIsInternalAndRollsBack(t *testing.T) {
 }
 
 func TestTaskStepsWriteStoreFailureChainsAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)

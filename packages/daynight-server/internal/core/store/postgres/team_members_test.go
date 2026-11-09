@@ -16,6 +16,7 @@ import (
 )
 
 func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, team := storeTeamFixture(t)
 	ctx := context.Background()
 	_, other, _ := testAuthRecords(t, s)
@@ -107,6 +108,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 }
 
 func TestTeamMemberMutationFailuresRollbackAndPreserveCauses(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, operation := range []string{"update", "delete"} {
 		t.Run(operation, func(t *testing.T) {
 			s, actor, team := storeTeamFixture(t)
@@ -137,6 +139,7 @@ func TestTeamMemberMutationFailuresRollbackAndPreserveCauses(t *testing.T) {
 }
 
 func TestTeamMemberCancellationAndUnknownCommit(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, team := storeTeamFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	err := testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error {

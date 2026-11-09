@@ -11,6 +11,7 @@ import (
 )
 
 func TestStoreAttachmentEntryPointsPersistUpdatesAndDelete(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	project := queryProject(t, database, 1)
@@ -56,6 +57,7 @@ func TestStoreAttachmentEntryPointsPersistUpdatesAndDelete(t *testing.T) {
 }
 
 func TestStoreAttachmentMutationCommitsAndRollsBackCallback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	project := queryProject(t, database, 1)
@@ -116,6 +118,7 @@ func TestStoreAttachmentMutationCommitsAndRollsBackCallback(t *testing.T) {
 }
 
 func TestStoreTaskSearchEntryPointRetainsSnapshotAndCallbackCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	project := queryProject(t, database, 1)

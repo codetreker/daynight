@@ -24,6 +24,7 @@ func (tx *threadCommitResponseLoss) Commit(ctx context.Context) error {
 }
 
 func TestThreadCommitAppliedWithLostResponseRemainsUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -49,6 +50,7 @@ func TestThreadCommitAppliedWithLostResponseRemainsUnknown(t *testing.T) {
 }
 
 func TestThreadAbortedCommitIsConfirmedRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	completion, err := database.WriteThread(ctx, func(tx ThreadScope) error {
@@ -63,6 +65,7 @@ func TestThreadAbortedCommitIsConfirmedRollback(t *testing.T) {
 }
 
 func TestThreadRollbackKeepsCancellationAndCleanupCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	tx, err := database.Pool.Begin(ctx)
@@ -91,6 +94,7 @@ func TestThreadRollbackKeepsCancellationAndCleanupCause(t *testing.T) {
 }
 
 func TestThreadCancellationBeforeCommitAndPanicCleanup(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	completion, err := database.WriteThread(ctx, func(tx ThreadScope) error { cancel(); return nil })
