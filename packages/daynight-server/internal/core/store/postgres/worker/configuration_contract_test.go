@@ -30,7 +30,8 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 	admin, member, project := testutil.ProjectMembershipFixture(t, database)
 	ctx := context.Background()
 	workerID := testutil.QueryID(90)
-	worker := testutil.WorkerSnapshotFixture(admin.UserID, workerID, time.Now().UTC())
+	sampledAt := time.Now().UTC()
+	worker := testutil.WorkerSnapshotFixture(admin.UserID, workerID, sampledAt)
 	worker.Telemetry.AssistantHost = &model.WorkerAssistantHost{ProtocolVersion: 1, ObservedAt: worker.Telemetry.SampledAt, DefaultCwd: "/workspace", DefaultProvider: model.AgentCodex, Providers: []model.WorkerAssistantProvider{{Provider: model.AgentCodex, Available: true, Args: []string{}}}}
 	worker = testutil.PutWorkerSnapshot(t, database, worker)
 	value := testutil.WorkerConfiguration()
@@ -87,11 +88,26 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	expectedLegacy := testutil.WorkerSnapshotFixture(admin.UserID, workerID, worker.CreatedAt)
+	expectedLegacy.LastReportedAt = worker.LastReportedAt.Add(time.Second)
+	expectedLegacy.Telemetry.SampledAt = sampledAt
 	worker.LastReportedAt = worker.LastReportedAt.Add(time.Second)
 	worker.Telemetry.AssistantHost = nil
-	legacy := testutil.PutWorkerSnapshot(t, database, worker)
+	var legacy model.WorkerSnapshot
+	completion, err := database.WriteWorker(ctx, func(scope WorkerScope) error {
+		var err error
+		legacy, err = scope.WorkerDAO().UpsertWorker(ctx, worker)
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("legacy heartbeat did not commit: %+v %v", completion, err)
+	}
 	if legacy.Telemetry.AssistantHost != nil || !legacy.LastReportedAt.Equal(worker.LastReportedAt) {
 		t.Fatalf("legacy heartbeat retained stale assistant-host telemetry: %#v", legacy)
+	}
+	persisted := testutil.ReadWorkerSnapshot(t, database, admin.UserID, workerID, expectedLegacy.LastReportedAt)
+	if persisted.Telemetry.AssistantHost != nil || !reflect.DeepEqual(persisted.Telemetry, expectedLegacy.Telemetry) || !persisted.LastReportedAt.Equal(expectedLegacy.LastReportedAt) || !reflect.DeepEqual(persisted, expectedLegacy) {
+		t.Fatalf("legacy heartbeat did not persist its complete snapshot: got=%+v want=%+v", persisted, expectedLegacy)
 	}
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		current, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, admin.UserID, workerID)

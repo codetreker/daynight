@@ -123,6 +123,9 @@ func newAdmissionServiceFixture(t *testing.T) *admissionServiceFixture {
 		},
 		exchangeConfiguration: func(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, worker string, input model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error) {
 			f.take("exchange")
+			if f.parsed == nil {
+				t.Fatal("configuration exchange called without parsed configuration")
+			}
 			f.checkContext(ctx)
 			if dao != f || principal != f.principal || worker != f.worker || !reflect.DeepEqual(input, *f.parsed) {
 				t.Errorf("configuration exchange arguments = %p %+v %s %+v", dao, principal, worker, input)
@@ -261,6 +264,89 @@ func (f *admissionServiceFixture) SetWorkerConfiguration(context.Context, string
 func (f *admissionServiceFixture) SetWorkerConfigurationObservation(context.Context, string, string, int64, model.WorkerConfigurationObservation) error {
 	f.t.Error("service called the Core configuration dependency")
 	return errors.New("unexpected observation write")
+}
+
+func admissionCompatibilityConfiguration() model.WorkerConfiguration {
+	return model.WorkerConfiguration{
+		MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
+		Projects: []model.WorkerProjectConfiguration{},
+	}
+}
+
+func admissionCompatibilityBootstrap() *model.WorkerConfigurationExchange {
+	value := admissionCompatibilityConfiguration()
+	return &model.WorkerConfigurationExchange{Bootstrap: &value}
+}
+
+func admissionCompatibilityObservation() *model.WorkerConfigurationExchange {
+	return &model.WorkerConfigurationExchange{Observation: &model.WorkerConfigurationObservation{
+		BaseRevision: "0", DesiredRevision: "2", Items: []model.WorkerConfigurationItem{},
+	}}
+}
+
+func admissionCompatibilityReceipt() *model.WorkerConfigurationReceipt {
+	return &model.WorkerConfigurationReceipt{
+		Desired: &model.WorkerDesiredConfiguration{
+			Revision: "1", UpdatedAt: time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC), Value: admissionCompatibilityConfiguration(),
+		},
+		ObservationRevision: "0", ObservationAccepted: false,
+	}
+}
+
+func TestWorkerAdmissionConfigurationCompatibility(t *testing.T) {
+	for _, name := range []string{"bootstrap", "exchange refusal", "legacy"} {
+		t.Run(name, func(t *testing.T) {
+			f := newAdmissionServiceFixture(t)
+			f.input.TaskInventory, f.normalized.TaskInventory = nil, nil
+			f.items = nil
+			f.proposed.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}
+			f.stored.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}
+			f.input.Telemetry.AssistantHost = admissionAssistantHost("/input-assistant-host")
+			f.normalized.Telemetry.AssistantHost = admissionAssistantHost("/normalized-assistant-host")
+			f.proposed.Telemetry.AssistantHost = admissionAssistantHost("/snapshot-assistant-host")
+			f.stored.Telemetry.AssistantHost = admissionAssistantHost("/stored-assistant-host")
+			f.input.Configuration = admissionCompatibilityBootstrap()
+			f.normalized.Configuration = admissionCompatibilityBootstrap()
+			f.parsed = admissionCompatibilityBootstrap()
+			f.receipt = admissionCompatibilityReceipt()
+			f.want = []string{"validate", "parse", "write", "dao", "admission", "admit", "snapshot", "upsert", "exchange", "clock", "completion"}
+			var cause error
+			var refusal *model.Fault
+			if name == "exchange refusal" {
+				f.input.Telemetry.AssistantHost = admissionAssistantHost("/rejected-assistant-host")
+				f.input.Configuration = admissionCompatibilityObservation()
+				f.normalized.Configuration = admissionCompatibilityObservation()
+				f.parsed = admissionCompatibilityObservation()
+				f.receipt = nil
+				cause = errors.New("supplied configuration refusal")
+				refusal = &model.Fault{Code: "invalid_input", Message: "Supplied configuration refusal", Cause: cause}
+				f.stopAt("exchange", refusal)
+				f.completion = store.Completion{Outcome: store.TransactionNotCommitted}
+			} else if name == "legacy" {
+				f.input.Configuration, f.normalized.Configuration, f.parsed, f.receipt = nil, nil, nil, nil
+				f.input.Telemetry.AssistantHost, f.normalized.Telemetry.AssistantHost = nil, nil
+				f.proposed.Telemetry.AssistantHost, f.stored.Telemetry.AssistantHost = nil, nil
+				f.want = []string{"validate", "write", "dao", "admission", "admit", "snapshot", "upsert", "clock", "completion"}
+			}
+			got, err := f.service.Report(f.ctx, f.principal, strings.ToUpper(f.worker), f.input)
+			if refusal != nil {
+				if !errors.Is(f.callbackError, refusal) || !errors.Is(f.callbackError, cause) || !errors.Is(err, refusal) || !errors.Is(err, cause) || !reflect.DeepEqual(got, WorkerReportResult{}) {
+					t.Fatalf("configuration refusal callback=%v result=%+v err=%v", f.callbackError, got, err)
+				}
+				requireFault(t, f.callbackError, "invalid_input")
+				requireFault(t, err, "invalid_input")
+				return
+			}
+			want := WorkerReportResult{LastReportedAt: f.stored.LastReportedAt, ObservedAt: f.observed}
+			if name == "bootstrap" {
+				want.Configuration = admissionCompatibilityReceipt()
+			}
+			if err != nil || f.callbackError != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("configuration report=%+v want=%+v callback=%v err=%v", got, want, f.callbackError, err)
+			}
+		})
+	}
 }
 
 func TestWorkerAdmissionPropagatesFactsAndSuppliedResults(t *testing.T) {

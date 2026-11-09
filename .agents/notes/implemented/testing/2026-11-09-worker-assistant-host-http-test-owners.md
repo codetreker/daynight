@@ -4,24 +4,31 @@ Status: implemented
 
 ## Problem
 
-The Worker assistant-host report/detail/list test assembles the complete
-application and executes real service and Core operations through DAO mocks to
+The original Worker assistant-host report/detail/list test assembled the complete
+application and executed real service and Core operations through DAO mocks to
 obtain fixed protocol results. HTTP arguments, output omission, private headers
-and log redaction are therefore coupled to unrelated route/MCP construction and
-lower business decisions. The same case captures complete snapshots, so removing
-its DAO fixture alone would lose validation and projection observations.
+and log redaction were coupled to unrelated route/MCP construction and lower
+business decisions. The same case captured complete snapshots, so removing its
+DAO fixture alone would lose validation and projection observations.
+
+The configuration-exchange compatibility case also observes a distinct initial
+configuration, future-observation refusal and legacy heartbeat behavior through
+that combined boundary. Supplied HTTP results cannot replace its Core and
+service observations. Its DAO mocks never proved actual persistence, and an
+existing Store legacy check observed only the write's RETURNING value before
+reading configuration in a fresh snapshot.
 
 The [root HTTP DAO decision](2026-11-09-root-http-test-dao-ownership.md) removed
 real database preparation while retaining application assembly and business
 paths. This decision partially supersedes that boundary for the first
-assistant-host reporting test.
+assistant-host reporting test and establishes separate compatibility receivers.
 
 ## Decision
 
-The existing strict Worker operation fixture registers actual Worker routes,
-request logging and credential middleware. Configurable Report, Get and List
-callbacks verify context, principal, canonical Worker ID, complete Report input,
-default page arguments and exact calls. Each request releases its callback;
+The strict Worker operation fixture registers actual Worker routes, request
+logging and credential middleware. Configurable Report, Get and List callbacks
+verify context, principal, canonical Worker ID, complete Report input, default
+page arguments and exact calls. Each request releases its callback;
 unconfigured operations fail independently. Get and List results are separate
 supplied facts, without evolving records from Report calls.
 
@@ -40,37 +47,63 @@ all-timeout and absent hosts; otherwise-valid protocol 2 remains invalid input.
 Host objects, provider slices, reason/model pointers and Args are independently
 allocated without typed-model JSON copying.
 
-The existing admission service fixture supplies distinguishable input,
-normalized, proposed-snapshot and stored hosts. Complete callback comparisons
-observe each transition and the strict DAO receives the independently supplied
-Core snapshot. The [admission decision](2026-11-09-worker-admission-test-owners.md)
-owns those six production bindings, refusals and completion precedence.
+Configuration receivers preserve the compatibility case's exact 3/60000/0
+bootstrap value, revision-one receipt with observation revision zero and false
+acceptance, and base-zero/desired-two observation refusal. Core executes the
+actual exchange through strict DAO callbacks. Its supplied current state,
+setter result and complete expected receipt are independent facts.
 
-The configuration-exchange compatibility test retains its existing shared DAO
-fixture and separate business observations. This change corrects the first
-report/read test and preserves its original request sequence.
+The admission service fixture supplies distinguishable input, normalized,
+proposed-snapshot and stored hosts. Complete callback comparisons observe each
+transition and the strict DAO receives the independently supplied Core snapshot.
+Compatibility cases independently supply bootstrap success, exchange refusal and
+legacy reports with no inventory or configuration. False observation acceptance
+forbids a configuration read; legacy reports forbid parsing and exchange. Receipt
+values, operation failures and transaction completion remain independent. The
+[admission decision](2026-11-09-worker-admission-test-owners.md) owns the six
+production bindings, refusals and completion precedence.
+
+The existing Store configuration case retains its own capacity data and real
+configuration/observation reads. Its legacy heartbeat checks actual committed
+completion, the original RETURNING result and a fresh complete Worker snapshot
+against independently constructed expected telemetry and timestamps. A fresh
+configuration snapshot still verifies that the heartbeat preserved desired and
+observed configuration. This fresh Worker read strengthens the physical proof;
+it does not relocate persistence from the former HTTP mocks.
+
+The configuration-exchange HTTP compatibility test retains its existing shared
+DAO fixture and request sequence. Its eventual protocol isolation is a separate
+change; these receivers preserve the lower observations beforehand. Historical
+configuration repair, revoked-project access and JSONB readback remain intact.
 
 ## Alternatives
 
 **Keep complete application construction and DAO mocks.** This repeats unrelated
 registration work and lower business paths while checking HTTP adaptation.
 
-**Replace the wire test without receiving its complete snapshot observations.**
-Supplied HTTP outcomes cannot prove actual report validation or projection.
-Core retains those rules; the service fixture retains normalized-to-snapshot
-argument propagation with distinguishable host facts.
+**Replace the wire test without receiving its lower observations.** Supplied
+HTTP outcomes cannot prove report validation, projection or configuration
+exchange decisions. Core retains those rules; the service fixture verifies
+coordination against independent results and refusals.
 
 **Use Report capture to populate later Get or List results.** That turns the
 fixture into a stateful storage substitute. Independent read facts expose
 transmission behavior without pretending that an operation persisted anything.
 
+**Treat RETURNING as a later persistence observation.** A write result cannot
+establish what a separate snapshot reads. The existing Store fixture supports
+that observation without another schema or business workflow.
+
 ## Consequences
 
 The selected HTTP, Core and admission service proofs execute without database or
 UniAuth fixtures. Native parsing, encoding and logging remain real. The separate
-configuration compatibility case retains its existing fixture requirements.
+configuration compatibility HTTP case retains its existing fixture requirements.
+Store retains actual SQL, completion, rollback and fresh persisted observations.
 
-Source-bound comparisons include the receiving Core and Service costs and the
-complete Root server package. Package timings and a cheaper isolated case do
-not establish faster hosted CI. Matched faults distinguish truncated wire Args,
-lost Core host projection and lost normalized service input at their owners.
+Source-bound comparisons include receiving Core, Service and Store costs. Added
+receivers can increase those costs before protocol migration; fewer upper-layer
+fixtures and faster hosted CI are not consequences of this prerequisite alone.
+Matched faults distinguish wrong bootstrap values, future observations, extra
+configuration calls and lost refusal chains at their responsible owners. Store
+faults separately verify host replacement and unchanged configuration.
