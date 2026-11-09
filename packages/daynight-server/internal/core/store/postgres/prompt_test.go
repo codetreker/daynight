@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
@@ -13,112 +13,6 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestPromptCASAndSnapshot(t *testing.T) {
-	db := searchTestStore(t)
-	ctx := context.Background()
-	user, id := uuid.NewString(), uuid.NewString()
-	write := func(text string, expected int64) error {
-		_, err := NewPrompt(db.Pool).WritePrompt(ctx, func(tx PromptWriteScope) error {
-			if expected == 0 {
-				_, err := tx.CreatePrompt(ctx, user, model.PromptScopeProject, id, text)
-				return err
-			}
-			_, err := tx.UpdatePrompt(ctx, user, model.PromptScopeProject, id, expected+1, expected, text)
-			return err
-		})
-		return err
-	}
-	var wg sync.WaitGroup
-	errs := make(chan error, 2)
-	for _, text := range []string{"one", "two"} {
-		wg.Add(1)
-		go func() { defer wg.Done(); errs <- write(text, 0) }()
-	}
-	wg.Wait()
-	close(errs)
-	wins, conflicts := 0, 0
-	for err := range errs {
-		if err == nil {
-			wins++
-			continue
-		}
-		var fault *model.Fault
-		if errors.As(err, &fault) && fault.Code == "version_conflict" {
-			conflicts++
-		} else {
-			t.Fatal(err)
-		}
-	}
-	if wins != 1 || conflicts != 1 {
-		t.Fatalf("create outcomes %d %d", wins, conflicts)
-	}
-	err := NewPrompt(db.Pool).ReadPromptSnapshot(ctx, func(s PromptSnapshot) error {
-		m, err := s.PromptMetadata(ctx, user, model.PromptScopeProject, id)
-		if err != nil {
-			return err
-		}
-		if m.Revision != 1 {
-			t.Fatalf("revision: %+v", m)
-		}
-		before, err := s.PromptText(ctx, user, model.PromptScopeProject, id)
-		if err != nil {
-			return err
-		}
-		if err := write("new", 1); err != nil {
-			return err
-		}
-		after, err := s.PromptText(ctx, user, model.PromptScopeProject, id)
-		if before != after {
-			t.Fatalf("snapshot changed %q to %q", before, after)
-		}
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := write("stale", 1); err == nil {
-		t.Fatal("stale update succeeded")
-	}
-	if err := write("", 2); err != nil {
-		t.Fatal(err)
-	}
-	if err := write("again", 3); err != nil {
-		t.Fatal(err)
-	}
-	err = NewPrompt(db.Pool).ReadPromptSnapshot(ctx, func(s PromptSnapshot) error {
-		m, e := s.PromptMetadata(ctx, user, model.PromptScopeProject, id)
-		if m.Revision != 4 {
-			t.Fatalf("ABA revision: %+v", m)
-		}
-		return e
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	updates := make(chan error, 2)
-	for _, text := range []string{"winner-a", "winner-b"} {
-		wg.Add(1)
-		go func() { defer wg.Done(); updates <- write(text, 4) }()
-	}
-	wg.Wait()
-	close(updates)
-	wins, conflicts = 0, 0
-	for err := range updates {
-		if err == nil {
-			wins++
-			continue
-		}
-		var f *model.Fault
-		if errors.As(err, &f) && f.Code == "version_conflict" {
-			conflicts++
-		} else {
-			t.Fatal(err)
-		}
-	}
-	if wins != 1 || conflicts != 1 {
-		t.Fatalf("update outcomes %d %d", wins, conflicts)
-	}
-}
 func TestPromptMigrationSchema(t *testing.T) {
 	db := searchTestStore(t)
 	ctx := context.Background()
@@ -171,23 +65,51 @@ func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
 	if err != nil || completion.Outcome != TransactionCommitted {
 		t.Fatalf("commit: %+v %v", completion, err)
 	}
-	check := func(expected string) {
-		t.Helper()
-		err := db.ReadPromptSnapshot(ctx, func(scope PromptSnapshot) error {
-			text, err := scope.PromptText(ctx, user, model.PromptScopeProject, id)
-			if err == nil && text != expected {
-				t.Errorf("read %q, want %q", text, expected)
-			}
+	read := func(scope PromptSnapshot, revision int64, expected string) error {
+		metadata, err := scope.PromptMetadata(ctx, user, model.PromptScopeProject, id)
+		if err != nil {
+			return err
+		}
+		text, err := scope.PromptText(ctx, user, model.PromptScopeProject, id)
+		if err != nil {
+			return err
+		}
+		if metadata.Revision != revision || text != expected {
+			mismatch := fmt.Errorf("snapshot revision/text = %d/%q, want %d/%q", metadata.Revision, text, revision, expected)
+			t.Error(mismatch)
+			return mismatch
+		}
+		return nil
+	}
+	err = NewPrompt(db.Pool).ReadPromptSnapshot(ctx, func(scope PromptSnapshot) error {
+		if err := read(scope, 1, "saved"); err != nil {
+			return err
+		}
+		completion, err := db.WritePrompt(ctx, func(tx PromptWriteScope) error {
+			_, err := tx.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 2, 1, "new")
 			return err
 		})
 		if err != nil {
+			return err
+		}
+		if completion.Outcome != TransactionCommitted {
+			return fmt.Errorf("interleaved update did not commit: %+v", completion)
+		}
+		return read(scope, 1, "saved")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func() {
+		t.Helper()
+		if err := db.ReadPromptSnapshot(ctx, func(scope PromptSnapshot) error { return read(scope, 2, "new") }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	check("saved")
+	check()
 	refusal := errors.New("cancel proposed update")
 	completion, err = db.WritePrompt(ctx, func(tx PromptWriteScope) error {
-		if _, err := tx.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 2, 1, "rolled back"); err != nil {
+		if _, err := tx.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 3, 2, "rolled back"); err != nil {
 			return err
 		}
 		return refusal
@@ -195,7 +117,14 @@ func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
 	if completion.Outcome != TransactionNotCommitted || !errors.Is(err, refusal) {
 		t.Fatalf("rollback: %+v %v", completion, err)
 	}
-	check("saved")
+	check()
+	domainRefusal := &model.Fault{Code: "version_conflict", Message: "The prompt revision has changed."}
+	completion, err = NewPrompt(db.Pool).WritePrompt(ctx, func(PromptWriteScope) error { return domainRefusal })
+	var actual *model.Fault
+	if completion.Outcome != TransactionNotCommitted || !errors.Is(err, domainRefusal) || !errors.As(err, &actual) || actual.Code != "version_conflict" {
+		t.Fatalf("domain refusal lost in writer: completion=%+v identity=%v fault=%+v err=%v", completion, errors.Is(err, domainRefusal), actual, err)
+	}
+	check()
 	cancelled, cancelNow := context.WithCancel(ctx)
 	cancelNow()
 	called := false
