@@ -138,7 +138,7 @@ it("rebuilds an active server claim from empty SQLite with both projects invento
     expect(f.remote.claim).not.toHaveBeenCalled();
     expect(f.tasks.start.mock.calls[0]![2]).toMatchObject({ configuration });
     expect(f.tasks.start.mock.calls[0]![2]).not.toHaveProperty("resumeSessionId");
-    expect(f.remote.ownInventory).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ projectId: f.project.projectId }), expect.objectContaining({ projectId: second.projectId })]), workerId, expect.anything(), expect.anything());
+    expect(f.remote.ownInventory).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ projectId: f.project.projectId }), expect.objectContaining({ projectId: second.projectId })]), workerId, expect.anything(), expect.any(Function), expect.any(Function));
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
   } finally { await f.coordinator.shutdown(); }
 }, 15_000);

@@ -47,4 +47,6 @@ failure remains visible to its callers without blocking existing PostgreSQL
 business operations. Fixed diagnostic summaries prevent arbitrary error text
 from crossing the monitoring boundary at the cost of remote detail; local
 diagnostics retain that detail. Worker-side capture and Web presentation have
-independent implementation and acceptance responsibilities.
+independent implementation and acceptance responsibilities. The [Worker capture
+decision](2026-11-09-worker-monitoring-capture.md) records the producer's
+separate scheduling and capacity ownership.

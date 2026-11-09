@@ -22,10 +22,10 @@ const fixture = () => {
   }));
   const task = { claimId: "claim", serverOrigin: "https://daynight.example", cleanup: null, webExecution: { executionId: "execution", launchId: "launch", controllerInstanceId: "instance", executionGeneration: "1", ticketPath: "/ticket", launchSubmission: "acknowledged" } } as unknown as LocalTask;
   const readTicket = vi.fn(async (_home: string, _launch: string) => ({ claimId: task.claimId, executionId: "execution", controllerInstanceId: "instance", executionGeneration: "1" } as ControllerLaunchTicket));
-  const refreshGrant = vi.fn(async () => {}), onError = vi.fn();
+  const refreshGrant = vi.fn(async () => {}), onError = vi.fn(), reportTicketFailure = vi.fn(), reportTicketVerified = vi.fn();
   const store = { listUnfinishedTasks: vi.fn(() => [task]) };
-  const run = () => maintainWorkerControllerGrants({ homeDirectory: "/home", serverOrigin: task.serverOrigin, store, launcher: { refreshGrant }, signal: cancellation.signal, onError, readTicket });
-  return { cancellation, task, store, refreshGrant, onError, readTicket, run };
+  const run = () => maintainWorkerControllerGrants({ homeDirectory: "/home", serverOrigin: task.serverOrigin, store, launcher: { refreshGrant, reportTicketFailure, reportTicketVerified }, signal: cancellation.signal, onError, readTicket });
+  return { cancellation, task, store, refreshGrant, onError, readTicket, reportTicketFailure, reportTicketVerified, run };
 };
 
 it("renews independently across intervals longer than the fifteen-minute relay lifetime", async () => {
@@ -69,6 +69,33 @@ it("rejects a stale-generation ticket before asking for a grant", async () => {
   const running = f.run(); await vi.advanceTimersByTimeAsync(0);
   expect(f.refreshGrant).not.toHaveBeenCalled(); expect(f.onError).toHaveBeenCalledWith(expect.stringContaining("conflicting"));
   f.cancellation.abort(); await running;
+});
+
+it("reports ticket read and identity failures until that exact ticket verifies", async () => {
+  const f = fixture(), error = new Error("private ticket path");
+  const valid = await f.readTicket("/home", "launch");
+  f.readTicket.mockClear(); f.readTicket.mockRejectedValueOnce(error).mockResolvedValueOnce({ ...valid, controllerInstanceId: "wrong" }).mockResolvedValue(valid);
+  const running = f.run();
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.reportTicketFailure).toHaveBeenLastCalledWith(f.task, error);
+    expect(f.reportTicketVerified).not.toHaveBeenCalled(); expect(f.refreshGrant).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.reportTicketFailure).toHaveBeenCalledTimes(2);
+    expect(f.reportTicketFailure.mock.calls[1]![1]).toBeInstanceOf(Error);
+    expect(f.reportTicketVerified).not.toHaveBeenCalled(); expect(f.refreshGrant).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.reportTicketVerified).toHaveBeenCalledExactlyOnceWith(f.task); expect(f.refreshGrant).toHaveBeenCalledOnce();
+  } finally { f.cancellation.abort(); await running; }
+});
+
+it("does not report a late ticket read as recovered after cancellation", async () => {
+  const f = fixture(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  const valid = await f.readTicket("/home", "launch");
+  f.readTicket.mockImplementationOnce(async () => { entered.resolve(); await gate.promise; return valid; });
+  const running = f.run();
+  try { await entered.promise; f.cancellation.abort(); gate.resolve(); await running; expect(f.reportTicketVerified).not.toHaveBeenCalled(); expect(f.reportTicketFailure).not.toHaveBeenCalled(); }
+  finally { gate.resolve(); f.cancellation.abort(); await running; }
 });
 
 it("renews another execution without waiting for a slow grant request", async () => {

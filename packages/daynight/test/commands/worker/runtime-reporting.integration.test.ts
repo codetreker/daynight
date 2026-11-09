@@ -29,11 +29,11 @@ vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadSto
 vi.mock("../../../src/commands/controller/launch-ticket.js", async original => ({ ...await original<object>(), readLaunchTicket: mocks.ticket }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
-vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitManager: mocks.git }));
+vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", () => ({ probeNativeAgentVersion: mocks.probe }));
+vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: mocks.webOpen }));
 vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
@@ -163,28 +163,38 @@ describe("worker runtime configuration reporting", () => {
     const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
     const response = (body: unknown, version?: string) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version }) } });
     let posts = 0, reads = 0, requestSignal: AbortSignal | undefined, getOperation: Operation | undefined;
+    const requestSignals: AbortSignal[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
       const pathname = new URL(String(url)).pathname;
       if (pathname === "/api/v1/me") return response({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } });
       if (pathname.endsWith("/configuration")) {
         if (++reads === 1) return response({ desired: target, observationRevision: "0", observation: null }, "1");
-        requestSignal = options!.signal!;
-        return new Promise<Response>((_resolve, reject) => requestSignal!.addEventListener("abort", () => reject(requestSignal!.reason), { once: true }));
+        const currentSignal = options!.signal!;
+        requestSignals.push(currentSignal);
+        requestSignal ??= currentSignal;
+        return new Promise<Response>((_resolve, reject) => currentSignal.addEventListener("abort", () => reject(currentSignal.reason), { once: true }));
       }
       if (pathname.endsWith("/report")) { posts++; throw new Error("lost response"); }
       throw new Error(`Unexpected request ${pathname}`);
     });
     mocks.remote.mockReturnValue({ ...real, project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })),
-      configuration: async (workerId: string, signal: AbortSignal, operation?: Operation) => { if (operation !== undefined) getOperation = operation; return real.configuration(workerId, signal, operation); },
+      configuration: async (workerId: string, signal: AbortSignal, operation?: Operation) => { if (operation !== undefined) getOperation ??= operation; return real.configuration(workerId, signal, operation); },
     });
     const running = start(f);
     await eventuallyWithoutAdvancingTime(() => expect(posts).toBe(1));
     await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
     await vi.advanceTimersByTimeAsync(30_000);
     await eventuallyWithoutAdvancingTime(() => expect(requestSignal).toBeDefined());
+    const firstRequestSignal = requestSignal!;
     expect(getOperation?.limits).toMatchObject({ totalMs: 15_000, requestMs: 10_000 });
-    await vi.advanceTimersByTimeAsync(9_999); expect(requestSignal!.aborted).toBe(false);
-    await vi.advanceTimersByTimeAsync(1); expect(requestSignal!.aborted).toBe(true);
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    coordinatorOptions.onClaim!({ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3) });
+    await vi.advanceTimersByTimeAsync(9_999); expect(firstRequestSignal.aborted).toBe(false);
+    expect(reads).toBe(2); expect(posts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1); expect(firstRequestSignal.aborted).toBe(true);
+    await eventuallyWithoutAdvancingTime(() => expect(reads).toBe(3));
+    expect(requestSignals[0]).toBe(firstRequestSignal); expect(requestSignals[1]!.aborted).toBe(false);
     await eventuallyWithoutAdvancingTime(() => expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "worker_report_failed").map(([event]) => [event.message, event.error?.message, event.error?.cause?.message])).toContainEqual([expect.any(String), "http_request", "operation_request_timeout"]));
     expect(posts).toBe(1);
     f.signal.abort(); await running;

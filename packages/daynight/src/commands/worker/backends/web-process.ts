@@ -15,6 +15,7 @@ import { createControllerExecutionSerializer, launchControllerProcess } from "./
 import { controllerCredentialNeedsRefresh } from "./grant-renewal.js";
 import { PromptInputLimitError } from "../prompt-input-limit.js";
 export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number }) => {
+  let grantObserver: { started(task: LocalTask): void; settled(task: LocalTask): void; checked(task: LocalTask): void; refreshed(task: LocalTask): void; failed(task: LocalTask, error: unknown, started: boolean): void; ticketFailed(task: LocalTask, error: unknown): void; ticketVerified(task: LocalTask): void; identityUnknown(task: LocalTask): void; identityResolved(task: LocalTask): void; identityLost(task: LocalTask): void } | undefined;
   const current = (task: LocalTask) => { const latest = options.store.getTask(task); if (latest?.webExecution == null) throw new Error("The web execution identity disappeared."); return latest; };
   const serializeExecution = createControllerExecutionSerializer();
   const serialize = <T>(task: LocalTask, action: () => Promise<T>): Promise<T> => serializeExecution(task.webExecution?.executionId ?? task.claimId, action);
@@ -80,18 +81,50 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         throw error;
       }
     },
-    refreshGrant: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
-      const task = current(input);
-      if (task.webExecution!.launchId !== ticket.launchId || await cleanupStopped(task)) return;
-      if (!await controllerCredentialNeedsRefresh(ticket.credentialFile, options.now())) return;
-      const grant = await options.sessionApi.grant(task, task.webExecution!, signal);
-      const latest = current(task);
-      if (latest.webExecution!.launchId !== ticket.launchId || await cleanupStopped(latest)) return;
-      signal.throwIfAborted();
-      await writeControllerCredential(ticket.credentialFile, grant);
+    refreshGrant: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal, onRefreshed?: () => void, onStarting?: () => void, onChecked?: () => void): Promise<void> => {
+      let task: LocalTask | null;
+      try { task = options.store.getTask(input); }
+      catch (error) {
+        if (onRefreshed === undefined && !signal.aborted) try { grantObserver?.identityUnknown(input); } catch { /* Optional monitoring cannot alter the lookup failure. */ }
+        throw error;
+      }
+      if (onRefreshed === undefined && !signal.aborted) try { grantObserver?.identityResolved(input); } catch { /* Optional monitoring cannot alter identity handling. */ }
+      if (task?.webExecution == null) {
+        if (!signal.aborted) try { grantObserver?.identityLost(input); } catch { /* Optional monitoring cannot alter identity handling. */ }
+        throw new Error("The web execution identity disappeared.");
+      }
+      let started = false;
+      try {
+        if (task.webExecution!.launchId !== ticket.launchId || await cleanupStopped(task)) return;
+        const needsRefresh = await controllerCredentialNeedsRefresh(ticket.credentialFile, options.now());
+        if (!signal.aborted) {
+          try { onChecked?.(); } catch { /* Optional monitoring cannot alter renewal. */ }
+          try { grantObserver?.checked(task); } catch { /* Optional monitoring cannot alter renewal. */ }
+        }
+        if (!needsRefresh) return;
+        signal.throwIfAborted();
+        started = true;
+        try { onStarting?.(); } catch { /* Optional monitoring cannot alter renewal. */ }
+        try { grantObserver?.started(task); } catch { /* Optional monitoring cannot alter renewal. */ }
+        const grant = await options.sessionApi.grant(task, task.webExecution!, signal);
+        const latest = current(task);
+        if (latest.webExecution!.launchId !== ticket.launchId || await cleanupStopped(latest)) return;
+        signal.throwIfAborted();
+        await writeControllerCredential(ticket.credentialFile, grant);
+        try { onRefreshed?.(); } catch { /* Optional monitoring cannot alter the refresh result. */ }
+        try { grantObserver?.refreshed(latest); } catch { /* Optional monitoring cannot alter the refresh result. */ }
+      } catch (error) {
+        if (onRefreshed === undefined && !signal.aborted) try { grantObserver?.failed(task, error, started); } catch { /* Optional monitoring cannot alter the refresh failure. */ }
+        throw error;
+      } finally {
+        if (started) try { grantObserver?.settled(task); } catch { /* Optional monitoring cannot alter renewal. */ }
+      }
     },
   };
   return {
+    setGrantObserver: (observer: typeof grantObserver): void => { grantObserver = observer; },
+    reportTicketFailure: (task: LocalTask, error: unknown): void => { try { grantObserver?.ticketFailed(task, error); } catch { /* Optional monitoring cannot alter renewal. */ } },
+    reportTicketVerified: (task: LocalTask): void => { try { grantObserver?.ticketVerified(task); } catch { /* Optional monitoring cannot alter renewal. */ } },
     prepare: (...args: Parameters<typeof methods.prepare>) => serialize(args[0], () => methods.prepare(...args)),
     launch: (...args: Parameters<typeof methods.launch>) => serialize(args[0], () => methods.launch(...args)),
     refreshGrant: (...args: Parameters<typeof methods.refreshGrant>) => serialize(args[0], () => methods.refreshGrant(...args)),

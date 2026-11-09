@@ -57,7 +57,7 @@ export const maintainControllerGrants = async <Execution>(options: {
 /** Keep native channels authorized independently of claim-discovery polling. */
 export const maintainWorkerControllerGrants = async (options: {
   homeDirectory: string; serverOrigin: string; store: Pick<WebExecutionStore, "listUnfinishedTasks">;
-  launcher: Pick<ReturnType<typeof createWebControllerLauncher>, "refreshGrant">;
+  launcher: Pick<ReturnType<typeof createWebControllerLauncher>, "refreshGrant"> & Partial<Pick<ReturnType<typeof createWebControllerLauncher>, "reportTicketFailure" | "reportTicketVerified">>;
   signal: AbortSignal; onError(message: string): void;
   readTicket?: typeof readLaunchTicket;
 }): Promise<void> => {
@@ -67,8 +67,15 @@ export const maintainWorkerControllerGrants = async (options: {
     key: task => task.webExecution!.executionId,
     refresh: async (task, signal) => {
       const execution = task.webExecution!;
-      const ticket = await readTicket(options.homeDirectory, execution.launchId);
-      if (ticket.executionId !== execution.executionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId || ticket.claimId !== task.claimId) throw new Error("Controller credential renewal has conflicting execution evidence.");
+      let ticket: Awaited<ReturnType<typeof readLaunchTicket>>;
+      try {
+        ticket = await readTicket(options.homeDirectory, execution.launchId);
+        if (ticket.executionId !== execution.executionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId || ticket.claimId !== task.claimId) throw new Error("Controller credential renewal has conflicting execution evidence.");
+      } catch (error) {
+        if (!signal.aborted) try { options.launcher.reportTicketFailure?.(task, error); } catch { /* Monitoring cannot change the renewal failure. */ }
+        throw error;
+      }
+      if (!signal.aborted) try { options.launcher.reportTicketVerified?.(task); } catch { /* Monitoring cannot change renewal. */ }
       await options.launcher.refreshGrant(task, ticket, signal);
     },
     signal: options.signal,

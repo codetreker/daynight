@@ -119,6 +119,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const adapters = new Map<string, ReturnType<typeof createWorkerHerdr>>();
   const connected = new Set<string>();
   const attachedRuns = new Set<string>();
+  const pendingAttachmentPublications = new Set<string>();
   const locks = new Map<string, Promise<void>>();
   const legacy = createAdapter({ ...options, selectionVerifier });
   const need = (owner: Identity): HerdrLifecycleRecord => {
@@ -409,7 +410,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const input = arbiters.get(need(owner).sessionId);
     if (input && need(owner).segments.at(-1)?.endedAt === null) input.bind(inputTarget(need(owner)));
   };
-  const publishObservedLedger = async (owner: Identity, operation: Operation): Promise<void> => {
+  const publishObservedLedger = async (owner: Identity, operation: Operation): Promise<boolean> => {
     const record = need(owner);
     const disconnected = !connected.has(record.sessionId);
     if (current(record).phase === "active" && disconnected) {
@@ -420,13 +421,15 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     }
     // Native identity can appear after the first input. A later unchanged
     // observation must also reconcile an earlier publication's unknown outcome.
-    if (current(record).phase === "active" && (disconnected || record.registrationRequest !== null || record.ledgerRequest !== null || record.publishedLedgerHash !== herdrLedgerHash(record))) await publish(owner, operation);
+    if (current(record).phase !== "active") return false;
+    if (disconnected || record.registrationRequest !== null || record.ledgerRequest !== null || record.publishedLedgerHash !== herdrLedgerHash(record)) await publish(owner, operation);
+    return true;
   };
-  const publishObservedIdentity = async (owner: Identity, observed: HerdrAgentObservation, operation: Operation): Promise<void> => {
+  const publishObservedIdentity = async (owner: Identity, observed: HerdrAgentObservation, operation: Operation): Promise<boolean> => {
     enrich(owner, observed);
-    await publishObservedLedger(owner, operation);
+    return publishObservedLedger(owner, operation);
   };
-  const send = async (context: HerdrExecutionContext, prompt: string, operation: Operation, guard?: (operation: Operation) => Promise<boolean>, onSubmitted?: (receipt: HerdrPromptReceipt) => void, initialOnly = false) => {
+  const send = async (context: HerdrExecutionContext, prompt: string, operation: Operation, guard?: (operation: Operation) => Promise<boolean>, onSubmitted?: (receipt: HerdrPromptReceipt) => void, initialOnly = false, onTransportCompleted?: () => void) => {
     const record = need(context), run = current(record), arbiter = getInput(context);
     if (run.phase !== "active") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
     await verifyRuntime(record); await verifyInputPurpose(context, operation, "automatic");
@@ -457,6 +460,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     });
     if (result.state === "rejected" && result.errorCode === "automation_suspended" && ["manual", "suspended"].includes(arbiter.state().state)) throw new HerdrInputWaitingError("control_suspended", "Automatic input is waiting for explicit control handoff.");
     if (result.state !== "transport_completed") throw new HerdrAgentActionError(`The original input admission returned ${result.state}: ${result.errorCode ?? "input_unknown"}.`, "agent.prompt", result.state === "rejected" ? "not-submitted" : "unknown", { promptSubmission: result.state === "rejected" ? "not-submitted" : "unknown" });
+    try { onTransportCompleted?.(); } catch { /* Optional observation cannot alter input. */ }
     const observed = await adapter(need(context)).tasks.observe(context, bindingFor(run), operation); enrich(context, observed);
     const receipt: HerdrPromptReceipt = { submission: "submitted", observation: observed };
     // Delivery is already durable. A later ledger failure must not leave the
@@ -638,6 +642,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     if (!recording.canAllocate(record)) {
       await recording.exhaust(record);
       attachedRuns.add(runKey);
+      pendingAttachmentPublications.add(runKey);
       await publish(owner, operation);
       return;
     }
@@ -652,6 +657,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     });
     startRecording(owner);
     attachedRuns.add(runKey);
+    pendingAttachmentPublications.add(runKey);
     await publish(owner, operation);
   };
   for (const record of store.list()) { if (store.retired(identity(record))) continue; store.recover(record); if (inputStore.get(record.sessionId)) inputStore.recover(record.sessionId); }
@@ -746,6 +752,8 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const agents = await Promise.all(info.foregroundPids.filter(pid => pid !== info.shellPid).map(pid => native.capture(pid, "agent")));
       if (agents.length === 0) throw new Error("The original native agent has no identifiable foreground process; input remains closed.");
       update(context, draft => { current(draft).processes.push(...agents); current(draft).phase = "active"; current(draft).nativeLaunch = "observed"; });
+      try { input.onAgentStarted?.(); } catch { /* Optional observation cannot alter launch. */ }
+      try { input.onAgentInitializing?.(); } catch { /* Optional observation cannot alter launch. */ }
       enrich(context, observed);
       update(context, draft => {
         const r = current(draft), segmentId = randomUUID(), previous = draft.segments.at(-1);
@@ -762,16 +770,28 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await resumeShutdownRecovery(context, operation);
       if (!options.sessionApi) await inputSession.poll(record.sessionId);
       attachedRuns.add(`${record.sessionId}/${run.run.executionGeneration}`);
+      try { input.onAgentInitialized?.(); } catch { /* Optional observation cannot alter launch. */ }
       if (observed.status === "blocked") throw new HerdrInputWaitingError("native_blocked", "The native agent requires operator action before input.");
       const inputState = getInput(context).state().state;
       if (inputState === "manual" || inputState === "suspended") throw new HerdrInputWaitingError("control_suspended", "Automatic input is waiting for explicit control handoff.");
       if (inputState !== "automation") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-      await send(context, prompt, operation, undefined, input.onPromptSubmitted);
+      try { input.onPromptSubmitting?.(); } catch { /* Optional observation cannot alter input. */ }
+      await send(context, prompt, operation, undefined, input.onPromptSubmitted, false, input.onPromptTransportCompleted);
       const after = await manager.observe(context, binding, operation); await publishObservedIdentity(context, after, operation); return after;
     }),
-    observe: (context, binding, operation) => serialize(context, async () => { await attachRun(context, operation); const record = need(context); const observed = await adapter(record).tasks.observe(context, binding, operation); await publishObservedIdentity(context, observed, operation); return observed; }),
-    submitPrompt: (context, binding, prompt, operation, guard) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard); }),
-    submitInitialPrompt: (context, binding, prompt, operation, guard) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard, undefined, true); }),
+    observe: (context, binding, operation, onAttached) => serialize(context, async () => {
+      await attachRun(context, operation);
+      const record = need(context), runKey = `${record.sessionId}/${current(record).run.executionGeneration}`;
+      const observed = await adapter(record).tasks.observe(context, binding, operation);
+      const publicationConfirmed = await publishObservedIdentity(context, observed, operation);
+      if (pendingAttachmentPublications.has(runKey) && publicationConfirmed) {
+        pendingAttachmentPublications.delete(runKey);
+        try { onAttached?.(); } catch { /* Optional observation cannot alter attachment. */ }
+      }
+      return observed;
+    }),
+    submitPrompt: (context, binding, prompt, operation, guard, onTransportCompleted) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard, undefined, false, onTransportCompleted); }),
+    submitInitialPrompt: (context, binding, prompt, operation, guard, onTransportCompleted) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard, undefined, true, onTransportCompleted); }),
     launch: async () => { throw new Error("Native launch must pass the durable Herdr admission path."); },
     processInfo: (context, binding, operation) => adapter(need(context)).tasks.processInfo(context, binding, operation),
     syncWorkspaceName: async (context, binding, title, operation) => { const record = need(context); if (record.runs.length > 0 && current(record).phase === "active") await adapter(record).tasks.syncWorkspaceName(context, binding, title, operation); },

@@ -53,6 +53,101 @@ it("waits for new Web prompts and retries only after a rejected revision changes
   expect(f.store.getTask(input)).toMatchObject({ recovery: { count: 0, pauseReason: null }, webExecution: { initialPrompt: null, launchSubmission: "not-submitted" } });
 });
 
+it("reports repeated Web observations as successful without inventing worktree progress", async () => {
+  const f = await orchestrationFixture();
+  const phases = vi.fn(), successes = vi.fn();
+  f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  f.backend.setMonitoringObserver({ observePhase: phases, observeSuccess: successes });
+  await f.backend.advance(f.task, new AbortController().signal);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "worktree-preparation" });
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "agent-observation" });
+  expect(phases).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "worktree-preparation" }, true, undefined);
+  phases.mockClear(); successes.mockClear();
+  await f.backend.advance(f.task, new AbortController().signal);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "agent-observation" });
+  expect(phases).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "worktree-preparation" }, true, undefined);
+});
+
+it("keeps grant renewal evidence distinct from a healthy controller observation", async () => {
+  const f = await orchestrationFixture(); f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  const phases = vi.fn(), successes = vi.fn(), failure = new Error("grant refresh failed");
+  const operationKey = `grant-refresh/${f.task.webExecution!.executionGeneration}/${f.task.webExecution!.launchId}`;
+  f.backend.setMonitoringObserver({ observePhase: phases, observeSuccess: successes });
+  const failedRefresh = async (_task: LocalTask, _ticket: ControllerLaunchTicket, _signal: AbortSignal, _refreshed?: () => void, starting?: () => void) => { starting?.(); throw failure; };
+  f.launcher.refreshGrant.mockImplementationOnce(failedRefresh).mockImplementationOnce(failedRefresh).mockResolvedValueOnce(undefined)
+    .mockImplementationOnce(async (_task: LocalTask, _ticket: ControllerLaunchTicket, _signal: AbortSignal, refreshed?: () => void, starting?: () => void) => { starting?.(); refreshed?.(); });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toBe(failure);
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "preparing" }, false, undefined, operationKey);
+    expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "agent-observation" });
+    expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "preparing" }, operationKey);
+  }
+  phases.mockClear();
+  await f.backend.advance(f.task, new AbortController().signal);
+  expect(phases).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "preparing" }, false, undefined, operationKey);
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "preparing" }, operationKey);
+  await f.backend.advance(f.task, new AbortController().signal);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "preparing" }, operationKey);
+});
+
+it("keeps ticket preparation distinct from worktree and controller observation", async () => {
+  const f = await orchestrationFixture(), phases = vi.fn(), successes = vi.fn(), failure = new Error("ticket unavailable");
+  f.backend.setMonitoringObserver({ observePhase: phases, observeSuccess: successes });
+  f.launcher.prepare.mockRejectedValueOnce(failure).mockResolvedValue(f.source.ticket);
+  await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toBe(failure);
+  expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "agent-start" }, "web-ticket");
+  await f.backend.advance(f.task, new AbortController().signal);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: f.task.claimId }), { kind: "execution", phase: "agent-start" }, "web-ticket");
+});
+
+it("reports in-flight Web worktree and startup stages without changing operation failures", async () => {
+  const f = await fixture(), input = f.store.getTask(f.identity)!;
+  const binding = await f.git.prepareWorktree({ projectId: input.projectId, repoUrl: input.repoUrl, localPath: input.repositoryPath }, input, {} as never);
+  let releaseWorktree!: () => void, enteredWorktree!: () => void, releaseStart!: () => void, enteredStart!: () => void;
+  const worktreeBarrier = new Promise<void>(resolve => { releaseWorktree = resolve; });
+  const worktreeEntered = new Promise<void>(resolve => { enteredWorktree = resolve; });
+  const startBarrier = new Promise<void>(resolve => { releaseStart = resolve; });
+  const startEntered = new Promise<void>(resolve => { enteredStart = resolve; });
+  vi.mocked(f.git.prepareWorktree).mockImplementationOnce(async () => { enteredWorktree(); await worktreeBarrier; return binding; });
+  const original = new Error("original startup failure");
+  const launcher = { prepare: vi.fn(async () => { enteredStart(); await startBarrier; throw original; }), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10 });
+  const phases = vi.fn();
+  backend.setMonitoringObserver({ observePhase: (...args) => { phases(...args); throw new Error("observer failed"); } });
+  const result = backend.advance(input, new AbortController().signal);
+  try {
+    await worktreeEntered;
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "worktree-preparation" }, false, undefined);
+    releaseWorktree(); await startEntered;
+    expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: input.claimId }), { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");
+    releaseStart(); await expect(result).rejects.toBe(original);
+  } finally { releaseWorktree(); releaseStart(); await result.catch(() => {}); }
+});
+
+it("exposes the actual cleanup phase without treating the notification deadline as a total deadline", async () => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 3);
+  task = f.store.initializeWebExecution(task, 4);
+  task = f.store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "managed", launchSubmission: "acknowledged" }, 5);
+  task = f.store.beginCleanup(task, { kind: "terminal", deadline: 10 }, 6);
+  const source = await cleanupSource(f, task); task = source.task;
+  let release!: () => void, entered!: () => void;
+  const enteredBarrier = new Promise<void>(resolve => { entered = resolve; });
+  const archiveBarrier = new Promise<void>(resolve => { release = resolve; });
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive: async () => { entered(); await archiveBarrier; }, request: source.request });
+  const phases = vi.fn(), successes = vi.fn();
+  backend.setMonitoringObserver({ observePhase: (...args) => { phases(...args); throw new Error("observer failed"); }, observeSuccess: (...args) => { successes(...args); throw new Error("observer failed"); } });
+  const result = backend.cleanup(task, "terminal", 30);
+  await enteredBarrier;
+  expect(phases).toHaveBeenLastCalledWith(expect.objectContaining({ claimId: task.claimId }), { kind: "cleanup", phase: "archive" }, false, undefined);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: task.claimId }), { kind: "cleanup", phase: "backend-close" });
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  release(); expect((await result).complete).toBe(true);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: task.claimId }), { kind: "cleanup", phase: "archive" });
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: task.claimId }), { kind: "cleanup", phase: "worktree-removal" });
+});
+
 it("revalidates a worktree obstruction without native recovery, launch, or initial input replay", async () => {
   const f = await orchestrationFixture();
   const { WorktreePreconditionError } = await import("../../../src/commands/worker/worktrees.js");
@@ -85,7 +180,9 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   source.stopped.mockResolvedValue(false); vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("running");
   const launcher = { prepare: vi.fn(async () => source.ticket), launch: vi.fn(), refreshGrant: vi.fn() };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50_000, request: source.request });
+  const successes = vi.fn(); backend.setMonitoringObserver({ observeSuccess: successes });
   const starting = await backend.advance(source.task, new AbortController().signal);
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "agent-observation" });
   expect(starting.resources.nativeSession !== null).toBe(bound);
   expect(starting.webExecution?.initialInputState).toBe("not_submitted");
   vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Temporary branch deviation."));
@@ -93,6 +190,7 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   snapshot = { ...snapshot, lifecycle: "ready", activity: "idle", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: starting.resources.nativeSession?.sessionId ?? randomUUID(), initialInputState: delivery, nativeProcesses: [native] };
   launcher.prepare.mockClear(); launcher.launch.mockClear(); source.request.mockClear();
   const ready = await backend.advance(starting, new AbortController().signal);
+  expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: starting.claimId }), { kind: "execution", phase: "agent-observation" });
   expect(ready.resources.nativeSession?.sessionId).toBe(snapshot.nativeSessionId);
   expect(ready.webExecution?.executionGeneration).toBe("1");
   expect(ready.recovery).toEqual({ count: 0, pauseReason: null, retryAuthorized: false });
@@ -157,7 +255,9 @@ it.each((["paused", "failed", "stopped", "stopping"] as const).flatMap(lifecycle
   f.source.stopped.mockResolvedValue(false);
   f.launcher.prepare.mockResolvedValue(f.source.ticket);
   f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, lifecycle: lifecycleState, error: "Original native lifecycle failed." } });
+  const successes = vi.fn(); f.backend.setMonitoringObserver({ observeSuccess: successes });
   await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow();
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "agent-observation" });
   expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, pauseReason: "Original native lifecycle failed.", retryAuthorized: false });
   expect(f.backend.observeStartupReport(f.task)?.recovery).toEqual({ state: "blocked", reasonCode: "recovery_blocked" });
   expect(f.store.getOrchestrationBlocker(f.task) !== null).toBe(blocked);
@@ -174,7 +274,9 @@ it.each(["native", "generation", "controller", "process", "stopped", "initial"])
   if (conflict === "initial") snapshot.initialInputState = "not_submitted";
   if (conflict === "process") vi.mocked(processProof.inspectProcessProof).mockResolvedValue("replaced");
   f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  const successes = vi.fn(); f.backend.setMonitoringObserver({ observeSuccess: successes });
   await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow();
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "execution", phase: "agent-observation" });
   expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
   expect(f.store.getTask(f.task)?.recovery.count).toBe(0);
   expect(f.launcher.launch).not.toHaveBeenCalled();

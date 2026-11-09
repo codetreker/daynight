@@ -376,6 +376,25 @@ describe("worker remote API", () => {
     await expect((await verifiedRemote(serverUrl)).ownInventory([{ projectId }, { projectId: uuid(8) }], workerId, signal())).rejects.toMatchObject({ status: 403 });
   });
 
+  it.each(["forbidden", "malformed"] as const)("reports the original project inventory %s failure without letting the observer replace it", async kind => {
+    const calls: string[] = [];
+    const serverUrl = await listen((request, response) => {
+      calls.push(request.url!);
+      if (kind === "forbidden") respond(response, { error: { code: "forbidden", message: "no access", requestId: "inventory" } }, 403);
+      else respond(response, { items: "invalid", nextCursor: null });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    const observerFailure = new Error("observer failed"), failure = vi.fn((_id: string, _error: unknown) => { throw observerFailure; });
+    const unavailable = vi.fn();
+    const actual = await remote.ownInventory([{ projectId }], workerId, signal(), unavailable, failure).catch((error: unknown) => error);
+    expect(failure).toHaveBeenCalledOnce();
+    expect(failure.mock.calls[0]).toEqual([projectId, actual]);
+    expect(actual).not.toBe(observerFailure);
+    expect(actual).toMatchObject(kind === "forbidden" ? { phase: "response", status: 403 } : { phase: "protocol" });
+    expect(unavailable).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+  });
+
   it("discards incomplete pages for an unavailable project while preserving healthy project claims", async () => {
     const other = uuid(8);
     const serverUrl = await listen((request, response) => {
@@ -385,8 +404,11 @@ describe("worker remote API", () => {
         else respond(response, { items: [task(taskId, worker)], nextCursor: "next" });
       } else respond(response, { items: [task(uuid(9), worker, other)], nextCursor: null });
     });
-    const result = await (await verifiedRemote(serverUrl)).ownInventory([{ projectId }, { projectId: other }], workerId, signal());
+    const unavailable = vi.fn(), failure = vi.fn();
+    const result = await (await verifiedRemote(serverUrl)).ownInventory([{ projectId }, { projectId: other }], workerId, signal(), unavailable, failure);
     expect(result).toEqual({ tasks: [task(uuid(9), worker, other)], coveredProjectIds: [other], unavailableProjectIds: [projectId] });
+    expect(unavailable).toHaveBeenCalledExactlyOnceWith(projectId);
+    expect(failure).not.toHaveBeenCalled();
   });
 
   it("invalidates as soon as a project returns 404 before waiting for another project", async () => {

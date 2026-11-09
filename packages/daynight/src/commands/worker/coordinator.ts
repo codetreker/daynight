@@ -1,5 +1,5 @@
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
-import { readWorkerClaim, readSessionStartupReport } from "../../api/task-properties.js";
+import { readWorkerClaim, readSessionStartupReport, readTaskPaused } from "../../api/task-properties.js";
 import { legacyBranchLatch } from "./backends/orchestration.js";
 import { WorktreePreconditionError } from "./worktrees.js";
 import { sameStartupReport, type SessionStartupReport } from "../../session/startup.js";
@@ -18,7 +18,7 @@ import { WorkerCleanupError } from "./cleanup-error.js";
 import { createCleanupDriver } from "./cleanup.js";
 import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
-import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
+import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager, WorkerObservedPhase } from "./execution.js";
 import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
 import { HerdrInputWaitingError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
@@ -29,13 +29,15 @@ import { isUnavailableProject } from "./remote.js";
 import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
+import type { createMonitoringObserver } from "./monitoring/observer.js";
+import { MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
 
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" };
 export type WorkerCoordinatorOptions = {
   hasHerdrJournal?: boolean;
   availableDiskBytes?: () => bigint;
-  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult">>;
+  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver">>;
   webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
@@ -51,6 +53,7 @@ export type WorkerCoordinatorOptions = {
   onPromptDemand?: (projectIds: readonly string[]) => void;
   onInventory?: (inventory: WorkerTaskInventory | null) => void; onClaim?: (reference: WorkerTaskReference) => void;
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
+  monitoring?: ReturnType<typeof createMonitoringObserver>;
 };
 export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds">;
 
@@ -76,6 +79,10 @@ const remoteOwner = (task: Task): ResourceOwner => {
 
 export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const now = options.now === undefined ? Date.now : options.now;
+  // Monitoring must never alter scheduling or the original error chain.
+  const observe = (action: (monitor: NonNullable<WorkerCoordinatorOptions["monitoring"]>) => void): void => {
+    if (options.monitoring !== undefined) try { action(options.monitoring); } catch { /* Local execution remains authoritative. */ }
+  };
   let configuration = configurationView(options);
   const selected = (projectId: string): boolean => configuration.readyProjectIds === undefined ? configuration.repositories.some(repository => repository.project.projectId === projectId) : configuration.readyProjectIds.includes(projectId);
   const stoppedProjects = new Set<string>();
@@ -83,12 +90,65 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const canAdvanceProject = (projectId: string): boolean => selected(projectId)
     && (configuration.targetProjectIds === undefined || configuration.targetProjectIds.includes(projectId))
     && !projectStops.has(projectId);
-  const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, readTask: options.remote.readTask, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, ...(options.promptSource === undefined ? {} : { promptSource: options.promptSource }), ...(options.preparePromptSource === undefined ? {} : { preparePromptSource: options.preparePromptSource }), emit: options.emit, now };
+  const recoverCleanupPhase = (identity: ClaimIdentity, phase: string): void => {
+    const failureKey = `true/${key(identity)}/${phase}`, failure = monitoringFailures.get(failureKey);
+    if (failure !== undefined) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
+  };
+  const recoverLimitIfReady = (identity: string): void => {
+    const limitKey = `limit/${identity}`, failure = monitoringFailures.get(limitKey);
+    if (failure === undefined || !monitoringLimitRetries.has(identity)) return;
+    if ([...monitoringFailures.keys()].some(value => value.startsWith(`false/${identity}/`)) || [...nameMonitoringFailures.keys()].some(value => value.startsWith(`${identity}/`))) return;
+    observe(m => m.recover(failure)); monitoringFailures.delete(limitKey); recoveredLimitNames.delete(identity);
+  };
+  const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, readTask: options.remote.readTask, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, ...(options.promptSource === undefined ? {} : { promptSource: options.promptSource }), ...(options.preparePromptSource === undefined ? {} : { preparePromptSource: options.preparePromptSource }), emit: options.emit, now,
+    observePhase: (identity, phase, progressed, _deadlineAt, operationKey) => {
+      const identityKey = key(identity);
+      const operationId = monitoringJobs.get(identityKey);
+      monitoringPhases.set(identityKey, phase.phase);
+      monitoringOperations.set(identityKey, operationKey ?? phase.phase);
+      if (operationId !== undefined) observe(m => {
+        m.updateActivity(operationId, { phase: pausedClaims.has(identityKey) && phase.kind === "execution" ? "paused" : phase.phase, progress: progressed, status: pausedClaims.has(identityKey) && phase.kind === "execution" ? "paused" : phase.phase === "waiting" ? "waiting" : "running", waitReason: pausedClaims.has(identityKey) && phase.kind === "execution" ? "task-paused" : phase.phase === "waiting" ? "native-input" : null });
+        if (phase.kind === "execution" && !progressed && phase.phase !== "waiting" && phase.phase !== "paused" && !operationKey?.startsWith("grant-refresh/")) {
+          const failure = monitoringFailures.get(`false/${identityKey}/${operationKey ?? phase.phase}`);
+          if (failure !== undefined) m.updateFailureRetry(failure, "running");
+        }
+        if (phase.kind === "cleanup") {
+          const failure = monitoringFailures.get(`true/${identityKey}/${phase.phase}`);
+          if (progressed) recoverCleanupPhase(identity, phase.phase);
+          else if (failure !== undefined) m.updateFailureRetry(failure, "running");
+        }
+      });
+    },
+    observeSuccess: (identity, phase, operationKey) => {
+      const ownerKey = key(identity), failureKey = `false/${ownerKey}/${operationKey ?? phase.phase}`, previous = monitoringFailures.get(failureKey);
+      if (previous !== undefined) {
+        observe(m => m.recover(previous)); monitoringFailures.delete(failureKey);
+        recoverLimitIfReady(ownerKey);
+      }
+    },
+  };
   const execution = createExecutionDriver(deps);
   const cleanup = createCleanupDriver(deps);
   const normalSignal = options.signal === undefined ? new AbortController().signal : options.signal;
   const tails = new Map<string, Promise<void>>();
   const jobs = new Map<string, Promise<void>>();
+  const monitoringJobs = new Map<string, string>();
+  const monitoringActivities = new Map<string, string>();
+  const monitoringFailures = new Map<string, string>();
+  const monitoringFailurePhases = new Map<string, string>();
+  const monitoringPhases = new Map<string, string>();
+  const monitoringOperations = new Map<string, string>();
+  const projectMonitoringFailures = new Map<string, string>();
+  const resourceMonitoringFailures = new Map<string, string>();
+  const candidateMonitoringFailures = new Map<string, string>();
+  const inventoryMonitoringFailures = new Map<string, string>();
+  const nameMonitoringFailures = new Map<string, string>();
+  const nameFailureThisJob = new Set<string>();
+  const monitoringLimitRetries = new Set<string>();
+  const recoveredLimitNames = new Map<string, Set<string>>();
+  const pausedClaims = new Set<string>();
+  const webMonitoringState = new Map<string, string>();
+  const webRecoveryFailures = new Map<string, { id: string; reason: "native_identity_missing" | "recovery_limit" | "recovery_blocked" }>();
   const controllers = new Map<string, { controller: AbortController; terminal: boolean }>();
   const ending = new Map<string, CleanupTarget>(options.store.listCleanupSchedules().map(record => [key(record), record]));
   let capacityWarning = "";
@@ -102,8 +162,67 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   let nextPendingProject = 0;
   let shuttingDown = false;
   let ticking = false;
+  let cycleCoverage: "unknown" | "complete" | "partial" = "unknown";
+  let reconciliationPhase: "reconciliation" | "inventory" | "project-preparation" | "resource-observation" | "claim-search" | "claim-request" = "reconciliation";
+  let projectSearchFailure = false;
+  let projectInventoryFailure = false;
+  const schedulerFailures = new Map<string, string>();
+  const recoverScheduler = (phase: string): void => {
+    const operationId = schedulerFailures.get(phase);
+    if (operationId !== undefined) { observe(m => m.recover(operationId)); schedulerFailures.delete(phase); }
+  };
   let archiveJob: Promise<void> | null = null;
   let archiveCursor = "";
+  const confirmedClaims = new Set<string>();
+  const unattributedWebIdentities = new Map<string, { identity: ClaimIdentity; operationKey: string }>();
+  const pendingWebFailures = new Map<string, { identity: ClaimIdentity; phase: Extract<WorkerObservedPhase, { kind: "execution" }>; error: unknown; operationKey: string; observedFailure: { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; running?: boolean } }>();
+  const partialKey = (identity: string, operationKey: string): string => `web-renewal/${identity}/${operationKey}`;
+  const recordWebFailure = (identity: ClaimIdentity, phase: Extract<WorkerObservedPhase, { kind: "execution" }>, error: unknown, operationKey: string, observedFailure?: { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; running?: boolean }): void => {
+    const identityKey = key(identity), pendingKey = `${identityKey}/${operationKey}`;
+    if (!confirmedClaims.has(identityKey)) {
+      const at = new Date(now()).toISOString(), previous = pendingWebFailures.get(pendingKey);
+      const prior = previous?.operationKey === operationKey ? previous.observedFailure : undefined;
+      pendingWebFailures.set(pendingKey, { identity, phase, error, operationKey, observedFailure: { firstObservedAt: prior?.firstObservedAt ?? observedFailure?.firstObservedAt ?? at, lastObservedAt: observedFailure?.lastObservedAt ?? at, occurrencesInRun: Math.min(Number.MAX_SAFE_INTEGER, (prior?.occurrencesInRun ?? 0) + (observedFailure?.occurrencesInRun ?? 1)), running: observedFailure?.running ?? prior?.running ?? false } });
+      observe(m => m.setUnattributed(partialKey(identityKey, operationKey), true));
+      return;
+    }
+    observe(m => m.setUnattributed(partialKey(identityKey, operationKey), false));
+    const failureKey = `false/${identityKey}/${operationKey}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
+    monitoringFailures.set(failureKey, failureId);
+    observe(m => m.fail({ operationId: failureId, component: "execution", phase: phase.phase, scope: { kind: "claim", projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId }, error, ...(observedFailure === undefined ? {} : { observedFailure }), ...(observedFailure?.running ? { retryState: "running" as const } : {}) }));
+  };
+  const confirmWebClaim = (identity: ClaimIdentity): void => {
+    const identityKey = key(identity); confirmedClaims.add(identityKey);
+    for (const [pendingKey, pending] of pendingWebFailures) if (key(pending.identity) === identityKey) { pendingWebFailures.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); recordWebFailure(pending.identity, pending.phase, pending.error, pending.operationKey, pending.observedFailure); }
+  };
+  const discardWebClaim = (identityKey: string): void => {
+    confirmedClaims.delete(identityKey);
+    for (const [pendingKey, pending] of unattributedWebIdentities) if (key(pending.identity) === identityKey) { unattributedWebIdentities.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); }
+    for (const [pendingKey, pending] of pendingWebFailures) if (key(pending.identity) === identityKey) { pendingWebFailures.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); }
+  };
+  try { options.webBackend?.setMonitoringObserver?.({ ...(deps.observePhase === undefined ? {} : { observePhase: deps.observePhase }), observeSelect: (identity, phase, operationKey) => { monitoringPhases.set(key(identity), phase.phase); monitoringOperations.set(key(identity), operationKey); }, observeSuccess: (identity, phase, operationKey) => {
+    const identityKey = key(identity), pendingKey = `${identityKey}/${operationKey}`, pending = pendingWebFailures.get(pendingKey);
+    if (pending !== undefined) { pendingWebFailures.delete(pendingKey); observe(m => m.setUnattributed(partialKey(identityKey, pending.operationKey), false)); return; }
+    if (phase.kind === "execution") deps.observeSuccess?.(identity, phase, operationKey); else if (controllers.get(identityKey)?.terminal === true) recoverCleanupPhase(identity, phase.phase);
+  }, observeFailure: (identity, phase, error, operationKey, observedFailure) => {
+    if (phase.kind !== "execution") return false;
+    recordWebFailure(identity, phase, error, operationKey ?? phase.phase, observedFailure);
+    return true;
+  }, observeRetry: (identity, operationKey, running) => {
+    const identityKey = key(identity), failure = monitoringFailures.get(`false/${identityKey}/${operationKey}`), pending = pendingWebFailures.get(`${identityKey}/${operationKey}`);
+    if (pending !== undefined) pending.observedFailure.running = running;
+    if (failure !== undefined) observe(m => m.updateFailureRetry(failure, running ? "running" : "none"));
+  }, observeUnattributed: (identity, operationKey, value) => {
+    const identityKey = key(identity), pendingKey = `${identityKey}/${operationKey}`;
+    if (value) unattributedWebIdentities.set(pendingKey, { identity: { projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId }, operationKey });
+    else unattributedWebIdentities.delete(pendingKey);
+    observe(m => m.setUnattributed(partialKey(identityKey, operationKey), value));
+    return true;
+  }, observeDiscard: (identity, operationKey) => {
+    const identityKey = key(identity), pendingKey = `${identityKey}/${operationKey}`, failureKey = `false/${identityKey}/${operationKey}`, failure = monitoringFailures.get(failureKey);
+    if (pendingWebFailures.delete(pendingKey)) observe(m => m.setUnattributed(partialKey(identityKey, operationKey), false));
+    if (failure !== undefined) { observe(m => m.discardFailure(failure)); monitoringFailures.delete(failureKey); }
+  } }); } catch { /* Monitoring remains independent of the backend. */ }
   const cancel = (): void => {
     shuttingDown = true;
     const reason = normalSignal.aborted ? normalSignal.reason : new Error("Worker shutdown requested.");
@@ -137,6 +256,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     activeCoverage?.covered.delete(projectId);
     activeCoverage?.unavailable.add(projectId);
     options.onInventory?.(null);
+    for (const [identity, activity] of monitoringActivities) if (identity.startsWith(`false/${projectId}/`)) {
+      observe(m => m.endActivity(activity)); monitoringActivities.delete(identity);
+      const limitKey = `limit/${identity.slice("false/".length)}`, limitFailure = monitoringFailures.get(limitKey);
+      if (limitFailure !== undefined) { observe(m => m.discardFailure(limitFailure)); monitoringFailures.delete(limitKey); }
+      const ownerKey = identity.slice("false/".length);
+      for (const [failureKey, operationId] of nameMonitoringFailures) if (failureKey.startsWith(`${ownerKey}/`)) { observe(m => m.discardFailure(operationId)); nameMonitoringFailures.delete(failureKey); }
+      nameFailureThisJob.delete(ownerKey);
+      const recovery = webRecoveryFailures.get(identity.slice("false/".length));
+      if (recovery !== undefined) observe(m => m.discardFailure(recovery.id));
+      webRecoveryFailures.delete(identity.slice("false/".length));
+    }
+    for (const [failureKey, operationId] of monitoringFailures) if (failureKey.startsWith(`false/${projectId}/`) || failureKey.startsWith(`limit/${projectId}/`)) { observe(m => m.discardFailure(operationId)); monitoringFailures.delete(failureKey); }
+    for (const [failureKey, operationId] of nameMonitoringFailures) if (failureKey.startsWith(`${projectId}/`)) { observe(m => m.discardFailure(operationId)); nameMonitoringFailures.delete(failureKey); }
+    for (const identity of monitoringLimitRetries) if (identity.startsWith(`${projectId}/`)) monitoringLimitRetries.delete(identity);
+    for (const identity of recoveredLimitNames.keys()) if (identity.startsWith(`${projectId}/`)) recoveredLimitNames.delete(identity);
+    for (const [identity, recovery] of webRecoveryFailures) if (identity.startsWith(`${projectId}/`)) { observe(m => m.discardFailure(recovery.id)); webRecoveryFailures.delete(identity); }
+    for (const identity of confirmedClaims) if (identity.startsWith(`${projectId}/`)) discardWebClaim(identity);
+    for (const pending of pendingWebFailures.values()) if (pending.identity.projectId === projectId) discardWebClaim(key(pending.identity));
+    for (const pending of unattributedWebIdentities.values()) if (pending.identity.projectId === projectId) discardWebClaim(key(pending.identity));
     for (const [identity, running] of controllers) {
       if (identity.startsWith(`${projectId}/`) && !running.terminal) running.controller.abort(new Error("The project is unavailable; its original claim and resources are retained."));
     }
@@ -178,7 +316,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const unavailableProjects = new Set<string>();
     const currentWarnings = new Map<string, Map<string, string>>();
     const unmapped = new Set<string>();
-    const observe = (owner: ResourceOwner): void => {
+    const recordOwner = (owner: ResourceOwner): void => {
       if (options.store.getProject(owner) === null) {
         unmapped.add(key(owner));
         if (!unmappedWarnings.has(key(owner))) options.emit({ kind: "warning", message: `Restore the project configuration for owned resources in ${owner.projectId}; they retain capacity.` });
@@ -188,10 +326,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       owners.set(key(owner), owner);
     };
     for (const owner of responsibilities()) {
-      observe(owner); proven.add(key(owner));
+      recordOwner(owner); proven.add(key(owner));
     }
-    for (const workspace of herdr) { observe(workspace.owner); proven.add(key(workspace.owner)); }
-    for (const task of options.webStore?.listUnfinishedTasks() ?? []) { observe(task); proven.add(key(task)); }
+    for (const workspace of herdr) { recordOwner(workspace.owner); proven.add(key(workspace.owner)); }
+    for (const task of options.webStore?.listUnfinishedTasks() ?? []) { recordOwner(task); proven.add(key(task)); }
     for (const project of options.store.listProjects()) {
       const warnings = new Map<string, string>();
       currentWarnings.set(project.projectId, warnings);
@@ -206,12 +344,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       catch (error) {
         if (isWorkerCancellation(error, signal ?? normalSignal)) throw error;
         unavailableProjects.add(project.projectId);
+        const operationId = resourceMonitoringFailures.get(project.projectId) ?? randomUUID();
+        resourceMonitoringFailures.set(project.projectId, operationId);
+        observe(m => m.fail({ operationId, component: "resources", phase: "resource-observation", scope: { kind: "project", projectId: project.projectId }, error }));
         warnings.set("discovery", `Could not inspect Git worktrees for project ${project.projectId}; its pending work and claims remain fenced.`);
         continue;
       }
+      const previousFailure = resourceMonitoringFailures.get(project.projectId);
+      if (previousFailure !== undefined) { observe(m => m.recover(previousFailure)); resourceMonitoringFailures.delete(project.projectId); }
       scannedProjects.add(project.projectId);
       for (const worktree of worktrees) {
-        observe(worktree.owner);
+        recordOwner(worktree.owner);
         if (!proven.has(key(worktree.owner))) {
           if (!coveredProjects.has(worktree.owner.projectId)) unresolved.add(key(worktree.owner));
           else warn("unproven-ownership", worktree.owner, `Preserved unproven Git ownership for ${key(worktree.owner)}; a static marker does not identify this worker.`);
@@ -228,18 +371,44 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const ownInventory = async (signal: AbortSignal, initialInvalidations: ReadonlyMap<string, number>): Promise<{ tasks: Map<string, Task>; covered: Set<string>; unavailable: Set<string> }> => {
     const projects = [...new Set([...options.store.listProjects().map(project => project.projectId), ...configuration.repositories.map(repository => repository.project.projectId), ...(configuration.targetProjectIds ?? [])])].map(projectId => ({ projectId }));
-    const observation = await options.remote.ownInventory(projects, options.workerId, signal, invalidateProject);
+    const observation = await options.remote.ownInventory(projects, options.workerId, signal, invalidateProject, (projectId, error) => {
+      if (isWorkerCancellation(error, signal)) return;
+      projectInventoryFailure = true;
+      const operationId = inventoryMonitoringFailures.get(projectId) ?? randomUUID();
+      inventoryMonitoringFailures.set(projectId, operationId);
+      observe(m => m.fail({ operationId, component: "inventory", phase: "inventory", scope: { kind: "project", projectId }, error }));
+    });
     const invalidated = (id: string): boolean => (projectInvalidations.get(id) ?? 0) !== (initialInvalidations.get(id) ?? 0);
     const result = new Map<string, Task>();
     for (const task of observation.tasks) {
       if (invalidated(task.projectId)) continue;
       const owner = remoteOwner(task);
+      observe(m => {
+        const identity = key(owner), paused = readTaskPaused(task.properties) === true;
+        const wasPaused = pausedClaims.has(identity), activity = monitoringActivities.get(`false/${identity}`);
+        if (paused) pausedClaims.add(identity); else pausedClaims.delete(identity);
+        if (activity !== undefined && paused !== wasPaused) {
+          const previous = monitoringPhases.get(identity);
+          const phase = previous === "waiting" ? "waiting" : "observation";
+          m.updateActivity(activity, paused
+            ? { phase: "paused", status: "paused", waitReason: "task-paused" }
+            : { phase, status: phase === "waiting" ? "waiting" : "running", waitReason: phase === "waiting" ? "native-input" : null });
+        }
+      });
       if (readWorkerClaim(task.properties)!.workerId !== options.workerId) throw new Error("The claim inventory contains another worker's claim.");
       if (result.has(key(owner))) throw new Error("The claim inventory contains duplicate claims.");
       result.set(key(owner), task);
+      confirmWebClaim(owner);
       if (options.store.getProject(owner) !== null) options.store.registerPending({ projectId: task.projectId, taskId: task.id, claimId: owner.claimId, agent: readWorkerClaim(task.properties)!.agent, agentControlMode: readWorkerClaim(task.properties)!.agentControlMode });
     }
     const covered = new Set(observation.coveredProjectIds.filter(id => !invalidated(id)));
+    for (const pending of pendingWebFailures.values()) if (covered.has(pending.identity.projectId) && !result.has(key(pending.identity))) discardWebClaim(key(pending.identity));
+    for (const pending of unattributedWebIdentities.values()) if (covered.has(pending.identity.projectId) && !result.has(key(pending.identity))) discardWebClaim(key(pending.identity));
+    for (const identity of confirmedClaims) if (covered.has(identity.slice(0, identity.indexOf("/"))) && !result.has(identity)) discardWebClaim(identity);
+    for (const projectId of covered) {
+      const previous = inventoryMonitoringFailures.get(projectId);
+      if (previous !== undefined) { observe(m => m.recover(previous)); inventoryMonitoringFailures.delete(projectId); }
+    }
     const unavailable = new Set([...observation.unavailableProjectIds, ...projects.map(project => project.projectId).filter(invalidated)]);
     for (const id of covered) promptUnavailable.delete(id);
     for (const id of unavailable) promptUnavailable.add(id);
@@ -259,12 +428,37 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean): void => {
     const identityKey = key(identity);
     if (shuttingDown || jobs.has(identityKey) || !terminal && !canAdvanceProject(identity.projectId)) return;
+    if (!terminal) { nameFailureThisJob.delete(identityKey); monitoringPhases.set(identityKey, "observation"); monitoringOperations.set(identityKey, "observation"); }
     const controller = new AbortController();
+    let operationId: string | undefined;
+    const scope = { kind: "claim" as const, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId };
+    observe(m => {
+      const activityKey = `${terminal}/${identityKey}`;
+      operationId = monitoringActivities.get(activityKey);
+      if (operationId === undefined) {
+        operationId = m.startActivity(terminal
+          ? { kind: "cleanup", phase: "observation", scope, status: tails.has(taskKey(identity)) ? "queued" : "running", waitReason: tails.has(taskKey(identity)) ? "operation-lock" : null }
+          : { kind: "execution", phase: pausedClaims.has(identityKey) ? "paused" : "observation", scope, status: pausedClaims.has(identityKey) ? "paused" : tails.has(taskKey(identity)) ? "queued" : "running", waitReason: pausedClaims.has(identityKey) ? "task-paused" : tails.has(taskKey(identity)) ? "operation-lock" : null });
+        monitoringActivities.set(activityKey, operationId);
+      }
+      monitoringJobs.set(identityKey, operationId);
+    });
     controllers.set(identityKey, { controller, terminal });
     const signal = AbortSignal.any([normalSignal, controller.signal]);
-    const job = serialize(identity, () => !terminal && !canAdvanceProject(identity.projectId) ? Promise.resolve() : action(signal)).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
+    const job = serialize(identity, () => {
+      if (!terminal && !canAdvanceProject(identity.projectId)) return Promise.resolve();
+      if (operationId !== undefined && (terminal || !pausedClaims.has(identityKey))) observe(m => {
+        m.updateActivity(operationId!, { status: "running", waitReason: null, nextAttemptAt: null });
+        const failure = terminal ? monitoringFailures.get(`true/${identityKey}/observation`) : undefined;
+        if (failure !== undefined) m.updateFailureRetry(failure, "running");
+      });
+      return action(signal).then(() => {
+        if (terminal) for (const [failureKey, failure] of monitoringFailures) if (failureKey.startsWith(`true/${identityKey}/`)) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
+      });
+    }).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
       if (isWorkerCancellation(error, signal)) return;
       if (!terminal && error instanceof HerdrInputWaitingError) {
+        if (operationId !== undefined) observe(m => m.updateActivity(operationId!, pausedClaims.has(identityKey) ? { phase: "paused", status: "paused", waitReason: "task-paused" } : { phase: "waiting", status: "waiting", waitReason: "native-input" }));
         if (inputWaiting.get(identityKey) !== error.message) {
           inputWaiting.set(identityKey, error.message);
           const task = options.store.getTask(identity);
@@ -286,6 +480,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const retryMs = Math.min(60_000, 1000 * 2 ** Math.min(count - 1, 6));
         const stage = error instanceof WorkerCleanupError ? error.stage : "observation";
         const nextAttemptAt = now() + retryMs;
+        if (operationId !== undefined) {
+          const failureKey = `true/${identityKey}/${stage}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
+          monitoringFailures.set(failureKey, failureId);
+          observe(m => m.fail({ operationId: failureId, component: "cleanup", phase: stage, scope, error, retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
+          for (const [key, pending] of monitoringFailures) if (key.startsWith(`true/${identityKey}/`) && key !== failureKey) observe(m => m.updateFailureRetry(pending, "scheduled", new Date(nextAttemptAt).toISOString()));
+          observe(m => m.updateActivity(operationId!, { phase: stage as "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal", status: "waiting", waitReason: "retry-backoff", nextAttemptAt: new Date(nextAttemptAt).toISOString() }));
+        }
         // Storage failures must not reject the job or prevent shutdown from proving stop.
         const lastError = error instanceof Error ? error.message || error.name : String(error) || "Unknown cleanup error";
         cleanupRetries.set(identityKey, { failures: count, nextAttemptAt, stage, lastError });
@@ -299,9 +500,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       } else {
         task = options.store.getTask(identity);
         if (task?.agentControlMode !== "web") failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
+        if (operationId !== undefined && !signal.aborted && !nameFailureThisJob.has(identityKey) && monitoringOperations.get(identityKey) !== "grant-identity-lost" && !(error instanceof WebRecoveryBlockedError && webRecoveryFailures.has(identityKey))) {
+          const phase = monitoringPhases.get(identityKey) ?? "observation";
+          const failureKey = `false/${identityKey}/${monitoringOperations.get(identityKey) ?? phase}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
+          monitoringFailures.set(failureKey, failureId);
+          observe(m => m.fail({ operationId: failureId, component: "execution", phase, scope, error }));
+        }
       }
       options.emit({ kind: terminal ? "cleanup-error" : "execution-error", ...(task === null ? {} : { task }), message: terminal ? cleanupMessage! : task?.agentControlMode === "web" ? "The task operation failed; native recovery accounting remains independent of orchestration retries." : "The task operation failed; this process retains its recovery count.", error: reportedError });
-    }).finally(() => { if (jobs.get(identityKey) === job) { jobs.delete(identityKey); controllers.delete(identityKey); } });
+    }).finally(() => {
+      if (!terminal && monitoringLimitRetries.delete(identityKey)) { const failure = monitoringFailures.get(`limit/${identityKey}`); if (failure !== undefined) observe(m => m.updateFailureRetry(failure, "none")); }
+      monitoringJobs.delete(identityKey); if (jobs.get(identityKey) === job) { jobs.delete(identityKey); controllers.delete(identityKey); }
+    });
     jobs.set(identityKey, job);
   };
   const recordMissingClaim = (owner: ResourceOwner, pane: HerdrOwnedWorkspace["panes"][number] | undefined): LocalTask | null => {
@@ -402,24 +612,50 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         options.store.deleteCleanupSchedule(owner);
         ending.delete(identityKey);
         cleanupRetries.delete(identityKey);
+        const activity = monitoringActivities.get(`true/${identityKey}`);
+        if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(`true/${identityKey}`); }
       }, true);
     }
   };
   const syncWorkspaceName = async (task: LocalTask, owner: ResourceOwner, title: string, signal: AbortSignal): Promise<void> => {
-    const pending = pendingStops().filter((stop) => sameClaim(stop.context, owner));
-    if (pending.some((stop) => stop.context.worktreeId !== owner.worktreeId)) throw new Error("The claim has conflicting pending Herdr stop identities.");
+    const identity = key(task);
+    const failName = (boundary: "admission" | "discovery" | "rename", error: unknown): void => {
+      if (isWorkerCancellation(error, signal)) return;
+      const failureKey = `${identity}/${boundary}`, operationId = nameMonitoringFailures.get(failureKey) ?? randomUUID();
+      nameMonitoringFailures.set(failureKey, operationId); nameFailureThisJob.add(identity);
+      observe(m => m.fail({ operationId, component: "execution", phase: "observation", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, error }));
+    };
+    const recoverName = (boundary: "admission" | "discovery" | "rename"): void => {
+      const failureKey = `${identity}/${boundary}`, previous = nameMonitoringFailures.get(failureKey);
+      if (previous !== undefined) {
+        observe(m => m.recover(previous)); nameMonitoringFailures.delete(failureKey);
+        if (monitoringFailures.has(`limit/${identity}`) && !monitoringLimitRetries.has(identity)) {
+          const boundaries = recoveredLimitNames.get(identity) ?? new Set<string>(); boundaries.add(boundary); recoveredLimitNames.set(identity, boundaries);
+        }
+      }
+      if (previous !== undefined || recoveredLimitNames.get(identity)?.has(boundary)) recoverLimitIfReady(identity);
+    };
+    let pending: ReturnType<typeof pendingStops>;
+    try {
+      pending = pendingStops().filter((stop) => sameClaim(stop.context, owner));
+      if (pending.some((stop) => stop.context.worktreeId !== owner.worktreeId)) throw new Error("The claim has conflicting pending Herdr stop identities.");
+      recoverName("admission");
+    } catch (error) { failName("admission", error); throw error; }
     if (pending.length > 0) return;
     let workspaceId: string | null = null;
     try {
       const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
       const pane = actualTaskPane(owner, resources);
+      recoverName("discovery");
       if (pane === undefined) return;
       workspaceId = pane.binding.workspaceId;
       await workerOperation((operation) => options.herdr.tasks.syncWorkspaceName(
         executionContext({ task, owner, project: projectFor(task) }), pane.binding, title, operation,
       ), signal);
+      recoverName("rename");
     } catch (error) {
       if (isWorkerCancellation(error, signal)) throw error;
+      failName(workspaceId === null ? "discovery" : "rename", error);
       const snapshotFailure = (error instanceof HerdrRpcError && error.method === "session.snapshot")
         || (error instanceof OperationError && error.kind === "deadline");
       if (!snapshotFailure && (!(error instanceof HerdrAgentActionError) || error.action !== "workspace.rename")) throw error;
@@ -483,6 +719,33 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (nativeSessionId !== null) options.store.setSessionId(task, nativeSessionId);
           const phase = waitingInput !== undefined || (record !== null && options.webStore.getOrchestrationBlocker(record) !== null) || record?.recovery.pauseReason != null || record?.recovery.retryAuthorized
             || record?.webExecution?.activity === "initializing" ? "waiting" as const : "executing" as const;
+          const activity = monitoringJobs.get(key(task));
+          if (activity !== undefined) {
+            const taskPaused = pausedClaims.has(key(task));
+            const paused = taskPaused || record?.recovery.pauseReason != null || (record !== null && options.webStore.getOrchestrationBlocker(record) !== null);
+            const nativeWaiting = waitingInput !== undefined || record?.webExecution?.activity === "waiting_input";
+            const monitoringPhase = nativeWaiting ? "waiting" : phase;
+            const state = JSON.stringify([phase, paused, record?.webExecution?.activity, record?.webExecution?.executionGeneration, nativeSessionId]);
+            const progress = observed && webMonitoringState.get(key(task)) !== state;
+            if (observed) webMonitoringState.set(key(task), state);
+            observe(m => m.updateActivity(activity, { phase: paused ? "paused" : monitoringPhase, status: paused ? "paused" : monitoringPhase === "waiting" ? "waiting" : "running", waitReason: taskPaused ? "task-paused" : paused ? "recovery-blocked" : nativeWaiting ? "native-input" : monitoringPhase === "waiting" ? "initializing" : null, progress }));
+            const recoveryKey = key(task);
+            const recoveryReason = record?.recovery.pauseReason != null ? record.recovery.reasonCode ?? "recovery_blocked" : null;
+            const recovery = webRecoveryFailures.get(recoveryKey);
+            if (recoveryReason !== null && recovery?.reason !== recoveryReason) {
+              if (recovery !== undefined) observe(m => m.discardFailure(recovery.id));
+              const id = randomUUID();
+              webRecoveryFailures.set(recoveryKey, { id, reason: recoveryReason });
+              observe(m => m.fail({ operationId: id, component: "execution", phase: "paused", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, error: new MonitoringRecoveryEvidence(recoveryReason), retryState: "manual" }));
+            } else if (recovery !== undefined && recoveryReason === null && observed && !paused && waitingInput === undefined && !record?.recovery.retryAuthorized && record?.webExecution?.activity !== "initializing") {
+              observe(m => m.recover(recovery.id)); webRecoveryFailures.delete(recoveryKey);
+            }
+            const failureKey = `false/${key(task)}/observation`;
+            const previous = monitoringFailures.get(failureKey);
+            if (observed && !paused && waitingInput === undefined && !record?.recovery.retryAuthorized && record?.webExecution?.activity !== "initializing" && previous !== undefined) {
+              observe(m => m.recover(previous)); monitoringFailures.delete(failureKey);
+            }
+          }
           let startupReport: SessionStartupReport | undefined;
           try {
             // Observation and transport must never become another native recovery attempt.
@@ -500,6 +763,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       return waitingInput;
     }
     await syncWorkspaceName(task, owner, remoteTask.title, signal);
+    nameFailureThisJob.delete(key(task));
     if (!execute) return;
     const currentConfiguration = configurationFor(task);
     if (currentConfiguration === null) return;
@@ -510,22 +774,35 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     await publishSummary(latest, observed, remoteTask, signal);
     return observed.kind === "waiting_input" ? { kind: "waiting_input", reason: observed.reason } : undefined;
   };
-  const capacity = (resources: Snapshot): number => {
+  const reservations = (resources: Snapshot) => {
     const stopped = new Set(responsibilities().filter(isStopped).map(key));
     const live = new Set([...resources.herdr.map(resource => key(resource.owner)), ...pendingStops().map(stop => key(stop.context)), ...ending.keys(), ...controllers.keys()]);
-    return new Set([
-      ...options.store.listUnfinishedTasks().filter(task => task.status === "active").map(key),
-      ...resources.owners.keys(),
-      ...resources.unresolved,
+    const roles = new Map<string, Set<"active-task" | "resource-owner" | "unresolved" | "cleanup" | "pending-stop">>();
+    const add = (identity: string, role: "active-task" | "resource-owner" | "unresolved" | "cleanup" | "pending-stop"): void => {
+      const current = roles.get(identity) ?? new Set();
+      current.add(role);
+      roles.set(identity, current);
+    };
+    for (const task of options.store.listUnfinishedTasks()) {
+      if (task.status === "active") add(key(task), "active-task");
       // An unreadable repository cannot disprove an unfinished Git-only owner.
-      ...options.store.listUnfinishedTasks().filter(task => resources.unavailableProjects.has(task.projectId)).map(key),
-      ...ending.keys(), ...pendingStops().map(stop => key(stop.context)),
-    ].filter(identity => {
+      if (resources.unavailableProjects.has(task.projectId)) add(key(task), "unresolved");
+    }
+    for (const identity of resources.owners.keys()) add(identity, "resource-owner");
+    for (const identity of resources.unresolved) add(identity, "unresolved");
+    for (const identity of ending.keys()) add(identity, "cleanup");
+    for (const stop of pendingStops()) add(key(stop.context), "pending-stop");
+    return [...roles].filter(([identity]) => {
       if (stopped.has(identity) && controllers.get(identity)?.terminal !== false) return false;
       if (resources.owners.has(identity) && !resources.proven.has(identity)) return true;
       const owner = resources.owners.get(identity) ?? options.store.listTasks().find(task => key(task) === identity);
       return owner === undefined || canAdvanceProject(owner.projectId) || !stoppedProjects.has(owner.projectId) || live.has(identity);
-    })).size;
+    }).map(([identity, roleSet]) => ({ identity, roles: [...roleSet] }));
+  };
+  let latestReservations: ReturnType<typeof reservations> = [];
+  const capacity = (resources: Snapshot): number => {
+    latestReservations = reservations(resources);
+    return latestReservations.length;
   };
   const blockedByOldClaim = (task: LocalTask, owners: Iterable<ResourceOwner>): boolean =>
     options.store.listUnfinishedTasks().some((other) => other.projectId === task.projectId && other.taskId === task.taskId && other.claimId !== task.claimId && other.status === "active")
@@ -537,7 +814,23 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     startJob(task, signal => {
       if (!canAdvance(task)) return Promise.resolve();
       const current = configurationFor(task);
-      return current === null ? Promise.resolve() : ensure(task, remoteTask, signal, task.agentControlMode === "web" || count <= current.recoveryLimit).then(() => undefined);
+      if (current === null) return Promise.resolve();
+      const exhausted = task.agentControlMode !== "web" && count > current.recoveryLimit;
+      observe(m => {
+        const identity = key(task), activity = monitoringActivities.get(`false/${identity}`), limitKey = `limit/${identity}`;
+        if (exhausted) {
+          monitoringLimitRetries.delete(identity);
+          if (!monitoringFailures.has(limitKey)) {
+            const operationId = randomUUID(); monitoringFailures.set(limitKey, operationId);
+            m.fail({ operationId, component: "execution", phase: "paused", scope: { kind: "claim", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, error: new MonitoringRecoveryEvidence("recovery_limit"), retryState: "manual" });
+          }
+          if (activity !== undefined) m.updateActivity(activity, pausedClaims.has(identity) ? { phase: "paused", status: "paused", waitReason: "task-paused" } : { phase: "paused", status: "paused", waitReason: "recovery-blocked" });
+        } else {
+          const failure = monitoringFailures.get(limitKey);
+          if (failure !== undefined) { monitoringLimitRetries.add(identity); m.updateFailureRetry(failure, "running"); }
+        }
+      });
+      return ensure(task, remoteTask, signal, !exhausted).then(() => undefined);
     }, false);
   };
   // Stop the original execution without terminal cleanup, releasing neither claim nor worktree.
@@ -578,8 +871,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const [identity, running] of controllers) {
       if (identity.startsWith(`${projectId}/`) && !running.terminal) running.controller.abort(new Error("The project was excluded from worker execution."));
     }
+    for (const [identity, activity] of monitoringActivities) if (identity.startsWith(`false/${projectId}/`)) observe(m => m.updateActivity(activity, { phase: "waiting", status: "waiting", waitReason: "resource-stop" }));
     const operationSignal = signal === undefined ? normalSignal : AbortSignal.any([normalSignal, signal]);
     const operation = (async () => {
+      const endStoppedActivity = (owner: ClaimIdentity): void => {
+        const identity = `false/${key(owner)}`, activity = monitoringActivities.get(identity);
+        if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(identity); }
+      };
+      const stopObserved = async (owner: ResourceOwner): Promise<void> => {
+        await stopOwner(owner, operationSignal);
+        endStoppedActivity(owner);
+      };
       await Promise.all([...jobs].filter(([identity]) => identity.startsWith(`${projectId}/`)).map(([, job]) => job));
       operationSignal.throwIfAborted();
       const local = options.store.listUnfinishedTasks().filter(task => task.projectId === projectId);
@@ -589,7 +891,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         await options.verifyWebUnregistered(task, operationSignal, CLEANUP_OPERATION_MS);
       }));
       const webOwners = (options.webStore?.listUnfinishedTasks() ?? []).filter(owner => owner.projectId === projectId);
-      const webResults = await Promise.allSettled(webOwners.map(owner => serialize(owner, () => stopOwner(owner, operationSignal))));
+      const webResults = await Promise.allSettled(webOwners.map(owner => serialize(owner, () => stopObserved(owner))));
       const failures = [...missingResults, ...webResults].flatMap(result => result.status === "rejected" ? [result.reason] : []);
       await ensureHerdr(operationSignal);
       const workspaces = await listHerdr(operationSignal);
@@ -610,10 +912,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         owners.set(key(owner), owner);
       }
       const webKeys = new Set(webOwners.map(key));
-      const results = await Promise.allSettled([...owners.values()].filter(owner => !webKeys.has(key(owner)) && !conflicting.has(key(owner))).map(owner => serialize(owner, () => stopOwner(owner, operationSignal))));
+      const results = await Promise.allSettled([...owners.values()].filter(owner => !webKeys.has(key(owner)) && !conflicting.has(key(owner))).map(owner => serialize(owner, () => stopObserved(owner))));
       failures.push(...results.flatMap(result => result.status === "rejected" ? [result.reason] : []));
       if (failures.length > 0) throw new AggregateError(failures, "Project execution stop was not confirmed.");
       operationSignal.throwIfAborted();
+      if (durable === undefined) for (const task of local) if (task.agentControlMode !== "web" && !owned.some(owner => sameClaim(owner, task))) endStoppedActivity(task);
       if (selected(projectId) && (configuration.targetProjectIds === undefined || configuration.targetProjectIds.includes(projectId))) stoppedProjects.delete(projectId);
       else stoppedProjects.add(projectId);
     })().finally(() => { projectStops.delete(projectId); });
@@ -625,13 +928,31 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const resource of lifecycle()?.archive?.resources() ?? []) {
       const identity = key(resource.owner);
       if (!resource.worktreeDeleted || jobs.has(identity)) continue;
+      const monitoringKey = `archive/${identity}/${resource.sessionId}`;
+      observe(m => { const failure = monitoringFailures.get(monitoringKey); if (failure !== undefined) m.updateFailureRetry(failure, "running"); });
       try {
         const pending = ending.get(identity);
         if (pending && hasWorktreeIdentity(pending) && pending.worktreeId !== resource.owner.worktreeId) throw new Error("The pending cleanup belongs to another original worktree.");
         reconcileDeletedHerdrResource(options.store, resource);
         ending.delete(identity); cleanupRetries.delete(identity);
         const task = options.store.getTask(resource.owner); if (task !== null) execution.forget(task);
+        observe(m => {
+          const failure = monitoringFailures.get(monitoringKey), activity = monitoringActivities.get(monitoringKey);
+          if (failure !== undefined) m.recover(failure);
+          if (activity !== undefined) m.endActivity(activity);
+          monitoringFailures.delete(monitoringKey); monitoringFailurePhases.delete(monitoringKey); monitoringActivities.delete(monitoringKey); monitoringFailurePhases.delete(`archive-observed/${monitoringKey}`);
+        });
       } catch (error) {
+        observe(m => {
+          let operationId = monitoringActivities.get(monitoringKey);
+          if (operationId === undefined) {
+            operationId = m.startActivity({ kind: "cleanup", phase: "worktree-removal", scope: { kind: "claim", projectId: resource.owner.projectId, taskId: resource.owner.taskId, claimId: resource.owner.claimId }, status: "waiting", waitReason: "unknown" });
+            monitoringActivities.set(monitoringKey, operationId);
+          }
+          monitoringFailures.set(monitoringKey, operationId); monitoringFailurePhases.set(monitoringKey, "worktree-removal");
+          m.fail({ operationId, component: "cleanup", phase: "worktree-removal", scope: { kind: "claim", projectId: resource.owner.projectId, taskId: resource.owner.taskId, claimId: resource.owner.claimId }, error });
+          m.updateActivity(operationId, { phase: "worktree-removal", status: "waiting", waitReason: "unknown", nextAttemptAt: null });
+        });
         options.emit({ kind: "cleanup-error", message: `Herdr deleted-resource reconciliation for ${identity} remains incomplete; the original deletion evidence is retained for retry.`, error });
       }
     }
@@ -639,7 +960,29 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const advanceArchive = (inventory: ReadonlyMap<string, Task>, coveredProjects: ReadonlySet<string>): void => {
     const archive = lifecycle()?.archive;
     if (!archive || archiveJob !== null || shuttingDown) return;
-    const candidates = archive.resources().filter(resource => resource.stopped && !resource.worktreeDeleted
+    const retained = archive.resources();
+    for (const resource of retained) {
+      if (!resource.stopped || resource.worktreeDeleted || resource.disposition !== null || !coveredProjects.has(resource.owner.projectId) || inventory.has(key(resource.owner))) continue;
+      const monitoringKey = `archive/${key(resource.owner)}/${resource.sessionId}`;
+      observe(m => {
+        let operationId = monitoringActivities.get(monitoringKey);
+        if (operationId === undefined) {
+          operationId = m.startActivity({ kind: "cleanup", phase: "archive", scope: { kind: "claim", projectId: resource.owner.projectId, taskId: resource.owner.taskId, claimId: resource.owner.claimId }, status: "waiting", waitReason: resource.nextAttemptAt !== null ? "retry-backoff" : "unknown", nextAttemptAt: resource.nextAttemptAt === null ? null : new Date(resource.nextAttemptAt).toISOString() });
+          monitoringActivities.set(monitoringKey, operationId);
+        }
+        // This is the existing resource snapshot; repeated reads of the same error are not new failures.
+        if (resource.error !== null && monitoringFailurePhases.get(monitoringKey) !== "worktree-removal") {
+          const signatureKey = `archive-observed/${monitoringKey}`;
+          const signature = JSON.stringify([resource.state, resource.error, resource.nextAttemptAt]);
+          if (monitoringFailurePhases.get(signatureKey) !== signature) {
+            monitoringFailurePhases.set(signatureKey, signature);
+            monitoringFailures.set(monitoringKey, operationId); monitoringFailurePhases.set(monitoringKey, "archive");
+            m.fail({ operationId, component: "cleanup", phase: "archive", scope: { kind: "claim", projectId: resource.owner.projectId, taskId: resource.owner.taskId, claimId: resource.owner.claimId }, error: undefined, retryState: resource.nextAttemptAt === null ? "manual" : "scheduled", nextAttemptAt: resource.nextAttemptAt === null ? null : new Date(resource.nextAttemptAt).toISOString() });
+          } else m.updateFailureRetry(operationId, resource.nextAttemptAt === null ? "manual" : "scheduled", resource.nextAttemptAt === null ? null : new Date(resource.nextAttemptAt).toISOString());
+        }
+      });
+    }
+    const candidates = retained.filter(resource => resource.stopped && !resource.worktreeDeleted
       && resource.disposition === null && coveredProjects.has(resource.owner.projectId) && !inventory.has(key(resource.owner))
       && (["pending", "ready", "unavailable"].includes(resource.state) || resource.state === "failed" && resource.nextAttemptAt !== null)
       && (resource.nextAttemptAt === null || resource.nextAttemptAt <= now())
@@ -650,10 +993,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (!selected) return;
     archiveCursor = selected.sessionId;
     const owner = selected.owner;
+    const monitoringKey = `archive/${key(owner)}/${selected.sessionId}`;
+    let monitoringPhase: "archive" | "worktree-removal" = "archive";
+    let monitoringRetryAt: number | null = null;
     const job = serialize(owner, async () => {
+      observe(m => {
+        const activity = monitoringActivities.get(monitoringKey), failure = monitoringFailures.get(monitoringKey);
+        if (activity !== undefined) m.updateActivity(activity, { phase: "archive", status: "running", waitReason: null, nextAttemptAt: null });
+        if (failure !== undefined) m.updateFailureRetry(failure, "running");
+      });
       if (!isStopped(owner)) throw new Error("The retained original execution no longer has confirmed stop evidence.");
       const ready = await cleanupOperation(operation => archive.advance(owner, operation), normalSignal);
-      if (!ready) return;
+      if (!ready) { observe(m => { const activity = monitoringActivities.get(monitoringKey), failure = monitoringFailures.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { status: "waiting", waitReason: "unknown" }); if (failure !== undefined) m.updateFailureRetry(failure, "none"); }); return; }
+      observe(m => {
+        const activity = monitoringActivities.get(monitoringKey), failure = monitoringFailures.get(monitoringKey);
+        if (failure !== undefined && monitoringFailurePhases.get(monitoringKey) === "archive") { m.recover(failure); monitoringFailures.delete(monitoringKey); monitoringFailurePhases.delete(monitoringKey); }
+        if (activity !== undefined) m.updateActivity(activity, { phase: "archive", progress: true });
+      });
+      monitoringPhase = "worktree-removal";
+      observe(m => { const activity = monitoringActivities.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { phase: "worktree-removal", status: "running", waitReason: null }); });
       try {
         await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), normalSignal);
         if (await cleanupOperation(operation => options.git.findWorktree(projectFor(owner), owner, operation), normalSignal) !== null) throw new Error("The original archived worktree still exists after cleanup.");
@@ -662,13 +1020,31 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (!deleted || !reconcileDeletedHerdrResource(options.store, deleted)) throw new Error("The original archive deletion has no durable readback.");
         ending.delete(key(owner));
         cleanupRetries.delete(key(owner));
+        observe(m => {
+          const failure = monitoringFailures.get(monitoringKey), activity = monitoringActivities.get(monitoringKey);
+          if (failure !== undefined) m.recover(failure);
+          if (activity !== undefined) { m.updateActivity(activity, { progress: true }); m.endActivity(activity); }
+          monitoringFailures.delete(monitoringKey); monitoringFailurePhases.delete(monitoringKey); monitoringActivities.delete(monitoringKey); monitoringFailurePhases.delete(`archive-observed/${monitoringKey}`);
+        });
       } catch (error) {
         const previous = ensureCleanupSchedule(options.store, owner, now()), failures = previous.failures + 1;
-        options.store.saveCleanupSchedule(previous, { ...previous, failures, nextAttemptAt: now() + Math.min(300_000, 5000 * 2 ** Math.min(failures - 1, 6)), stage: "worktree-removal", lastError: error instanceof Error ? error.message : String(error) });
+        const nextAttemptAt = now() + Math.min(300_000, 5000 * 2 ** Math.min(failures - 1, 6));
+        options.store.saveCleanupSchedule(previous, { ...previous, failures, nextAttemptAt, stage: "worktree-removal", lastError: error instanceof Error ? error.message : String(error) });
+        monitoringRetryAt = nextAttemptAt;
         throw error;
       }
     }).catch(error => {
-      if (!isWorkerCancellation(error, normalSignal)) options.emit({ kind: "cleanup-error", message: `Herdr archive finalization for ${key(owner)} remains incomplete; the original source and resource responsibility are retained.`, error });
+      if (!isWorkerCancellation(error, normalSignal)) {
+        observe(m => {
+          const activity = monitoringActivities.get(monitoringKey);
+          if (activity === undefined) return;
+          const nextAttemptAt = monitoringRetryAt === null ? null : new Date(monitoringRetryAt).toISOString();
+          monitoringFailures.set(monitoringKey, activity); monitoringFailurePhases.set(monitoringKey, monitoringPhase);
+          m.fail({ operationId: activity, component: "cleanup", phase: monitoringPhase, scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId }, error, retryState: nextAttemptAt === null ? "none" : "scheduled", nextAttemptAt });
+          m.updateActivity(activity, { phase: monitoringPhase, status: "waiting", waitReason: nextAttemptAt === null ? "unknown" : "retry-backoff", nextAttemptAt });
+        });
+        options.emit({ kind: "cleanup-error", message: `Herdr archive finalization for ${key(owner)} remains incomplete; the original source and resource responsibility are retained.`, error });
+      }
     }).finally(() => { if (archiveJob === job) archiveJob = null; });
     archiveJob = job;
   };
@@ -712,6 +1088,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const reconcile = async (): Promise<void> => {
+    reconciliationPhase = "reconciliation";
+    observe(m => m.setPhase("reconciliation"));
     reconcileNeverStarted();
     reconcileDeletedArchives();
     launchCleanups();
@@ -719,8 +1097,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const initialInvalidations = new Map(projectInvalidations);
     let observation: Awaited<ReturnType<typeof ownInventory>>;
     try {
+      reconciliationPhase = "inventory";
+      observe(m => m.setPhase("inventory"));
       await options.remote.currentUserId(normalSignal);
       observation = await ownInventory(normalSignal, initialInvalidations);
+      recoverScheduler("inventory");
     } catch (error) {
       options.onInventory?.(null);
       throw error;
@@ -743,14 +1124,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       ? { observedAt: new Date(now()).toISOString(), claims: [...inventory.values()].map(task => ({ projectId: task.projectId, taskId: task.id, claimId: readWorkerClaim(task.properties)!.claimId })) }
       : null);
     const prepared = new Set(coveredProjects);
+    const preparationFailed = new Set<string>();
+    reconciliationPhase = "project-preparation";
+    observe(m => m.setPhase("project-preparation"));
     for (const repository of configuration.repositories) {
       const projectId = repository.project.projectId;
       if (!coveredProjects.has(projectId) || !options.prepareProject) continue;
-      try { await options.prepareProject(projectId, normalSignal); }
+      try {
+        await options.prepareProject(projectId, normalSignal);
+        const previous = projectMonitoringFailures.get(projectId);
+        if (previous !== undefined) { observe(m => m.recover(previous)); projectMonitoringFailures.delete(projectId); }
+      }
       catch (error) {
         if (isWorkerCancellation(error, normalSignal)) throw error;
         if (isUnavailableProject(error)) { invalidateProject(projectId); coveredProjects.delete(projectId); unavailable.add(projectId); }
         prepared.delete(projectId);
+        preparationFailed.add(projectId);
+        const operationId = projectMonitoringFailures.get(projectId) ?? randomUUID();
+        projectMonitoringFailures.set(projectId, operationId);
+        observe(m => m.fail({ operationId, component: "project", phase: "project-preparation", scope: { kind: "project", projectId }, error }));
         options.emit({ kind: "warning", message: `Could not prepare project ${projectId}; its work is not admitted.`, error });
       }
     }
@@ -766,8 +1158,22 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (!coveredProjects.has(local.projectId) || inventory.has(key(local))) continue;
       const running = controllers.get(key(local));
       if (running !== undefined && !running.terminal) running.controller.abort(new Error("The original claim no longer belongs to this worker."));
+      const identity = key(local), activity = monitoringActivities.get(`false/${identity}`);
+      discardWebClaim(identity);
+      if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(`false/${identity}`); }
+      for (const [failureKey, operationId] of monitoringFailures) if (failureKey.startsWith(`false/${identity}/`)) { observe(m => m.discardFailure(operationId)); monitoringFailures.delete(failureKey); }
+      const limitKey = `limit/${identity}`, limitFailure = monitoringFailures.get(limitKey);
+      if (limitFailure !== undefined) { observe(m => m.discardFailure(limitFailure)); monitoringFailures.delete(limitKey); }
+      monitoringLimitRetries.delete(identity); recoveredLimitNames.delete(identity);
+      for (const [failureKey, operationId] of nameMonitoringFailures) if (failureKey.startsWith(`${identity}/`)) { observe(m => m.discardFailure(operationId)); nameMonitoringFailures.delete(failureKey); }
+      nameFailureThisJob.delete(identity);
+      const recovery = webRecoveryFailures.get(identity);
+      if (recovery !== undefined) { observe(m => m.discardFailure(recovery.id)); webRecoveryFailures.delete(identity); }
+      webMonitoringState.delete(identity);
       execution.forget(local);
     }
+    reconciliationPhase = "resource-observation";
+    observe(m => m.setPhase("resource-observation"));
     await ensureHerdr(normalSignal);
     const observed = await listHerdr(normalSignal);
     const knownOwners = [...responsibilities(), ...observed.map((workspace) => workspace.owner), ...pendingStops().map((stop) => stop.context), ...(options.webStore?.listUnfinishedTasks() ?? [])];
@@ -781,10 +1187,23 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (local !== null && coveredProjects.has(local.projectId) && prepared.has(local.projectId) && local.status === "active" && !blockedByOldClaim(local, knownOwners)) schedule(local, remoteTask);
     }
     const resources = await snapshot(normalSignal, coveredProjects, [...inventory.values()].map((task) => remoteOwner(task)), unavailable);
+    if (resources.unavailableProjects.size === 0) recoverScheduler("resource-observation");
+    const observedAt = new Date(now()).toISOString();
+    const publishCapacity = (): void => {
+      const projection = latestReservations;
+      if (unavailable.size > 0 || resources.unavailableProjects.size > 0 || !allMappingsObserved()) { observe(m => m.staleCapacity()); return; }
+      observe(m => m.setCapacity({ limit: configuration.maxConcurrent, occupied: projection.length, observedAt,
+        reservations: projection.map(({ identity, roles }) => {
+          const [projectId, taskId, claimId] = identity.split("/");
+          return { identity: { projectId: projectId!, taskId: taskId!, claimId: claimId! }, roles };
+        }) }));
+    };
     // New mappings require both a claim inventory and resource discovery before admission.
     const allMappingsObserved = (): boolean => configurationObserved()
       && options.store.listProjects().every(project => resources.scannedProjects.has(project.projectId))
       && (configuration.targetProjectIds ?? []).every(id => unavailable.has(id) || options.store.getProject({ projectId: id }) !== null);
+    cycleCoverage = allMappingsObserved() && unavailable.size === 0 && resources.unavailableProjects.size === 0
+      && configuration.repositories.every(repository => prepared.has(repository.project.projectId)) ? "complete" : "partial";
     for (const [identityKey, owner] of resources.owners) {
       if (coveredProjects.has(owner.projectId) && resources.proven.has(identityKey) && !inventory.has(identityKey) && !isStopped(owner)) ending.set(identityKey, owner);
     }
@@ -824,16 +1243,35 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (!started) break;
     }
     const cleanupFailure = (identity: string) => options.store.getCleanupSchedule(ending.get(identity)!) ?? cleanupRetries.get(identity);
-    const blocked = capacity(resources) >= configuration.maxConcurrent
+    const occupied = capacity(resources);
+    const blocked = occupied >= configuration.maxConcurrent
       ? [...ending.keys()].filter(identity => cleanupFailure(identity)?.lastError != null).sort() : [];
+    publishCapacity();
+    const admissionAt = new Date(now()).toISOString();
+    if (cycleCoverage !== "complete") observe(m => m.setAdmission("partial", [
+      ...[...unavailable].map(projectId => ({ code: "project-unavailable" as const, scope: { kind: "project" as const, projectId }, observedAt: admissionAt, nextAttemptAt: null })),
+      ...[...preparationFailed].filter(projectId => !unavailable.has(projectId)).map(projectId => ({ code: "project-preparation-failed" as const, scope: { kind: "project" as const, projectId }, observedAt: admissionAt, nextAttemptAt: null })),
+      ...[...resources.unavailableProjects].map(projectId => ({ code: "resource-observation-unavailable" as const, scope: { kind: "project" as const, projectId }, observedAt: admissionAt, nextAttemptAt: null })),
+    ]));
+    else if (occupied >= configuration.maxConcurrent) observe(m => m.setAdmission("complete", [
+      { code: "capacity-full", scope: { kind: "worker" }, observedAt: admissionAt, nextAttemptAt: null },
+      ...(latestReservations.some(item => item.roles.includes("cleanup")) && latestReservations.filter(item => !item.roles.includes("cleanup") || inventory.has(item.identity) || resources.unresolved.has(item.identity)).length < configuration.maxConcurrent ? [{ code: "cleanup-capacity-blocked" as const, scope: { kind: "worker" as const }, observedAt: admissionAt, nextAttemptAt: null }] : []),
+    ]));
+    else if (configuration.repositories.length === 0) observe(m => m.setAdmission("complete", [{ code: "no-projects-selected", scope: { kind: "worker" }, observedAt: admissionAt, nextAttemptAt: null }]));
     const warning = blocked.join(",");
     if (warning !== capacityWarning) {
       capacityWarning = warning;
       if (warning !== "") options.emit({ kind: "cleanup-capacity-blocked", message: `Worker capacity is full; failed cleanup retains ${blocked.length} slot(s). ${blocked.map(identity => { const state = cleanupFailure(identity)!; return `${identity}: ${state.stage}, next retry ${new Date(state.nextAttemptAt).toISOString()}, ${state.lastError}`; }).join("; ")}. Correct the reported resource or archive failure; retries are automatic. No slot is released until cleanup is confirmed.` });
     }
     if (!allMappingsObserved() || capacity(resources) >= configuration.maxConcurrent || configuration.repositories.length === 0) return;
+    reconciliationPhase = "claim-search";
+    observe(m => { m.setPhase("claim-search"); if (cycleCoverage === "complete") m.setAdmission("unknown", []); });
     const acquisitionConfiguration = configuration;
     const tiers = acquisitionConfiguration.preferPlatformSpecificTasks ? [true, false] : [undefined];
+    let sawCandidate = false;
+    let searchIncomplete = false;
+    const retainedConflicts = new Set<string>();
+    const searchUnavailable = new Set<string>();
     for (const platformSpecific of tiers) {
       const candidates = new Map<number, AsyncGenerator<Task>>();
       const exhausted = new Set<number>();
@@ -844,7 +1282,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           else nextRepository = (index + 1) % configuration.repositories.length;
           if (exhausted.has(index)) continue;
           const repository = configuration.repositories[index]!;
-          if (!coveredProjects.has(repository.project.projectId) || !prepared.has(repository.project.projectId) || !resources.scannedProjects.has(repository.project.projectId)) { exhausted.add(index); continue; }
+          if (!coveredProjects.has(repository.project.projectId) || !prepared.has(repository.project.projectId) || !resources.scannedProjects.has(repository.project.projectId)) { searchIncomplete = true; cycleCoverage = "partial"; exhausted.add(index); continue; }
           let page = candidates.get(index);
           if (page === undefined) {
             page = platformSpecific === undefined
@@ -855,16 +1293,34 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           let next: IteratorResult<Task>;
           try { next = await page.next(); }
           catch (error) {
-            if (!isUnavailableProject(error)) throw error;
+            if (!isUnavailableProject(error)) {
+              if (!isWorkerCancellation(error, normalSignal)) {
+                projectSearchFailure = true;
+                const searchKey = `${repository.project.projectId}/${platformSpecific ?? "all"}`;
+                const operationId = candidateMonitoringFailures.get(searchKey) ?? randomUUID();
+                candidateMonitoringFailures.set(searchKey, operationId);
+                observe(m => m.fail({ operationId, component: "scheduler", phase: "claim-search", scope: { kind: "project", projectId: repository.project.projectId }, error }));
+              }
+              throw error;
+            }
             invalidateProject(repository.project.projectId);
+            searchUnavailable.add(repository.project.projectId);
+            observe(m => m.setAdmission("partial", [...searchUnavailable].map(projectId => ({ code: "project-unavailable", scope: { kind: "project", projectId }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null }))));
+            searchIncomplete = true;
+            cycleCoverage = "partial";
             coveredProjects.delete(repository.project.projectId);
             unavailable.add(repository.project.projectId);
             exhausted.add(index);
             continue;
           }
-          if (configuration !== acquisitionConfiguration) return;
-          if (next.done) { exhausted.add(index); continue; }
+          if (configuration !== acquisitionConfiguration) { cycleCoverage = "partial"; return; }
+          if (next.done) {
+            const searchKey = `${repository.project.projectId}/${platformSpecific ?? "all"}`, previous = candidateMonitoringFailures.get(searchKey);
+            if (previous !== undefined) { observe(m => m.recover(previous)); candidateMonitoringFailures.delete(searchKey); }
+            exhausted.add(index); continue;
+          }
           const candidate = next.value;
+          sawCandidate = true;
           if (!coveredProjects.has(candidate.projectId)) { exhausted.add(index); continue; }
           const claimConfiguration = configuration;
           const currentRepository = claimConfiguration.repositories.find(value => value.project.projectId === candidate.projectId);
@@ -874,6 +1330,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             if ([...resources.owners.values()].some(owner => owner.projectId === candidate.projectId && owner.taskId === candidate.id)) throw new Error("An original task resource still reserves its worktree; a new claim cannot be acquired.");
           }
           catch (error) {
+            if ([...resources.owners.values()].some(owner => owner.projectId === candidate.projectId && owner.taskId === candidate.id)) retainedConflicts.add(candidate.projectId);
             options.emit({ kind: "warning", message: `Skipping ${candidate.projectId}/${candidate.id}: ${error instanceof Error ? error.message : "retained resource admission failed"}`, error });
             continue;
           }
@@ -881,17 +1338,24 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
           if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved()) continue;
           const claimId = randomUUID();
+          reconciliationPhase = "claim-request";
+          observe(m => m.setPhase("claim-request"));
           try {
             const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
             const owner = remoteOwner(granted);
             const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: currentRepository.configuration });
             registerClaim(granted);
+            confirmWebClaim(owner);
             options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
             if (allMappingsObserved() && coveredProjects.has(local.projectId) && selected(local.projectId) && canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
+            if (configuration !== acquisitionConfiguration || !allMappingsObserved()) cycleCoverage = "partial";
+            observe(m => m.staleCapacity());
             return;
           } catch (error) {
             if (isWorkerCancellation(error, normalSignal)) throw error;
             if (isUnavailableProject(error)) options.onInventory?.(null);
+            cycleCoverage = "partial";
+            observe(m => m.setAdmission("partial", [{ code: "claim-unconfirmed", scope: { kind: "project", projectId: candidate.projectId }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null }]));
             options.emit({ kind: "warning", message: `Claim request for ${candidate.projectId}/${candidate.id}/${claimId} did not confirm a grant; the next complete inventory will reconcile it.`, error });
             return;
           }
@@ -899,6 +1363,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       } finally {
         await Promise.all([...candidates.values()].map((page) => page.return(undefined)));
       }
+    }
+    if (configuration !== acquisitionConfiguration || !allMappingsObserved()) cycleCoverage = "partial";
+    if (!searchIncomplete && configuration === acquisitionConfiguration && cycleCoverage === "complete") recoverScheduler("claim-search");
+    if (retainedConflicts.size > 0 || searchUnavailable.size > 0) {
+      const observedAt = new Date(now()).toISOString();
+      observe(m => m.setAdmission(searchIncomplete || cycleCoverage !== "complete" ? "partial" : "complete", [
+        ...[...searchUnavailable].map(projectId => ({ code: "project-unavailable" as const, scope: { kind: "project" as const, projectId }, observedAt, nextAttemptAt: null })),
+        ...[...retainedConflicts].map(projectId => ({ code: "retained-resource-conflict" as const, scope: { kind: "project" as const, projectId }, observedAt, nextAttemptAt: null })),
+      ]));
+    }
+    if (!sawCandidate && !searchIncomplete && cycleCoverage === "complete" && configuration === acquisitionConfiguration && allMappingsObserved() && latestReservations.length < configuration.maxConcurrent) {
+      observe(m => m.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null }]));
     }
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
@@ -945,7 +1421,26 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     tick: async (): Promise<void> => {
       if (shuttingDown || ticking) return;
       ticking = true;
-      try { await reconcile(); } finally { updatePromptDemand(); activeCoverage = undefined; ticking = false; }
+      cycleCoverage = "unknown";
+      projectSearchFailure = false;
+      projectInventoryFailure = false;
+      observe(m => m.startCycle("reconciliation"));
+      try { await reconcile(); observe(m => { if (cycleCoverage === "complete") m.markCycleSuccessful(); m.endCycle("completed", cycleCoverage); }); }
+      catch (error) {
+        const cancelled = isWorkerCancellation(error, normalSignal);
+        observe(m => {
+          m.staleCapacity();
+          m.setAdmission("unknown", []);
+          if (!cancelled && !projectSearchFailure && !projectInventoryFailure) {
+            const operationId = schedulerFailures.get(reconciliationPhase) ?? randomUUID();
+            schedulerFailures.set(reconciliationPhase, operationId);
+            m.fail({ operationId, component: reconciliationPhase === "inventory" ? "inventory" : reconciliationPhase === "resource-observation" ? "resources" : "scheduler", phase: reconciliationPhase, scope: { kind: "worker" }, error });
+          }
+          m.endCycle(cancelled ? "cancelled" : "failed", "partial");
+        });
+        throw error;
+      }
+      finally { updatePromptDemand(); activeCoverage = undefined; ticking = false; }
     },
     advanceRetry: async (identity: ClaimIdentity): Promise<WorkerInputWait | undefined> => {
       const { task, remoteTask } = await readSource(identity);

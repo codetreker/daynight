@@ -1759,6 +1759,12 @@ service uses its last valid report time for the 120-second offline threshold and
 72-hour recent-worker window; observation does not release claims or change
 task status.
 
+Current execution monitoring is reported separately every 30 seconds. It shows
+observed scheduling, activities, capacity and bounded failure summaries; unknown
+or stale data does not mean the Worker is idle. Monitoring failures do not stop
+heartbeats or task execution. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
+defines its freshness, permissions and retention.
+
 Snapshots include actual OS, logical CPU count and utilization, memory usage,
 and available/total space for the filesystem containing the directory where
 `worker run` started. They also include the running Daynight version, a read-only

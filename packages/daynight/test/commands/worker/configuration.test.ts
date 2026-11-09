@@ -636,9 +636,9 @@ describe("Worker cloud configuration application", () => {
   });
 
   it("propagates persistence failure and never publishes an uncommitted success", async () => {
-    const storageError = new Error("disk write rejected"), errors: unknown[] = [];
+    const storageError = new Error("disk write rejected"), errors: unknown[] = [], nativeEvents: string[] = [];
     let rejectWrites = false;
-    const { manager, wait } = await fixture({ onError: error => { errors.push(error); }, applyNative: async () => { rejectWrites = true; }, persist: async (file, contents) => {
+    const { manager, wait } = await fixture({ onError: error => { errors.push(error); }, onNativeApplication: event => { if (event.key.kind === "native") nativeEvents.push(event.kind); }, applyNative: async () => { rejectWrites = true; }, persist: async (file, contents) => {
       const cache = JSON.parse(contents);
       if (rejectWrites && cache.items.some((entry: { value: WorkerCloudItem }) => entry.value.key.kind === "native" && entry.value.state === "applied")) throw storageError;
       await replaceFileAtomically(file, contents, 0o600);
@@ -646,9 +646,17 @@ describe("Worker cloud configuration application", () => {
     await manager.receive(desired("1", "good", false));
     await wait(snapshot => snapshot.effective.maxConcurrent === 2);
     await vi.waitFor(() => expect(errors).toEqual([storageError]));
+    expect(nativeEvents).toEqual(["started", "cancelled"]);
     expect(manager.current().effective.native).toBeNull();
     expect(() => manager.report()).toThrow(storageError);
     await expect(manager.stop()).rejects.toBe(storageError);
     fixtures.find(fixture => fixture.manager === manager)!.expectedStopError = storageError;
+  });
+
+  it("keeps native application independent of an observer failure", async () => {
+    const { manager } = await fixture({ onNativeApplication: () => { throw new Error("observer failed"); } });
+    await manager.receive(desired("1", "good", false));
+    await manager.settle();
+    expect(item(manager.current(), "native")).toMatchObject({ state: "applied", appliedValue: { agent: "codex", model: "good" } });
   });
 });
