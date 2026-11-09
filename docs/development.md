@@ -342,8 +342,14 @@ GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
 captured targets, disposable review artifacts, shared refs, and isolation between
-PR worktrees. Independent Git suites run in separate Vitest workers. Review suites
-copy immutable bare-origin seeds into private test directories; refs,
+PR worktrees. Ownership lifecycle cases use an explicit 60-second outer test
+limit, including cleanup diagnostics that first clone and prepare a real
+worktree. This limit includes native setup, ownership inspection, fault injection
+and assertions; the runner's five-second default does not cover that complete
+workflow on Windows. The
+[cleanup diagnostic budget decision](../.agents/notes/implemented/testing/2026-11-09-review-cleanup-diagnostic-budget.md)
+records its scope and evidence limits. Independent Git suites run in separate
+Vitest workers. Review suites copy immutable bare-origin seeds into private test directories; refs,
 SQLite databases, clones and worktrees remain separate for every case. Sparse
 suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
