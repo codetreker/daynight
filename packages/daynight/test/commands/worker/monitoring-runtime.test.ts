@@ -37,7 +37,7 @@ vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...awa
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", () => ({ probeNativeAgentVersion: mocks.probe }));
+vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: mocks.webOpen }));
 vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
@@ -120,6 +120,154 @@ afterEach(async () => {
 
 
 describe("worker runtime monitoring isolation", () => {
+  it.each(["worker", "project"] as const)("reports and recovers actual %s native application failures", async kind => {
+    vi.useRealTimers(); vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const f = await fixture(), retryStarted = deferred<void>(), retryRelease = deferred<void>();
+    target = { ...target, value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: { agent: "claude" } }] } };
+    let attempts = 0;
+    mocks.probe.mockImplementation(async ({ agent }: { agent: string }) => {
+      if (agent !== (kind === "worker" ? "codex" : "claude")) return "1.2.3";
+      if (++attempts === 1) throw new OperationError("request_timeout", { cause: new Error("secret prompt and command output") });
+      retryStarted.resolve(); await retryRelease.promise; return "1.2.3";
+    });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    mocks.remote.mockReturnValue({ ...remote, readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
+    const running = start(f);
+    try {
+      await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
+      const scope = kind === "worker" ? { kind: "worker" } : { kind: "project", projectId: uuid(1) };
+      await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ component: "configuration", phase: "configuration", scope, retryState: "scheduled" })));
+      const failed = monitor.capture("1"), failure = failed.currentFailures.find(item => item.component === "configuration" && item.scope.kind === kind)!;
+      expect(failure).toMatchObject({ error: { code: "timeout", cause: "The operation timed out." }, occurrencesInRun: 1, nextAttemptAt: new Date(Date.now() + 5_000).toISOString() });
+      expect(failed.admission).toMatchObject({ coverage: "partial" });
+      expect(failed.admission.reasons).toContainEqual(expect.objectContaining({ code: "configuration-incomplete", scope, nextAttemptAt: failure.nextAttemptAt }));
+      expect(JSON.stringify(failed)).not.toContain("secret prompt");
+      monitor.setAdmission("complete", [{ code: "no-ready-tasks", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]);
+      expect(monitor.capture("2").admission.reasons.some(item => item.code === "no-ready-tasks")).toBe(false);
+      await vi.advanceTimersByTimeAsync(5_000); await retryStarted.promise;
+      expect(monitor.capture("3").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "running", occurrencesInRun: 1 }));
+      expect(monitor.capture("3").activities).toContainEqual(expect.objectContaining({ kind: "maintenance", phase: "configuration", scope }));
+      retryRelease.resolve();
+      await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("4").lastRecovery).toMatchObject({ operationId: failure.operationId, scope }));
+      expect(monitor.capture("4").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
+    } finally { retryRelease.resolve(); f.signal.abort(); await running; }
+  });
+
+  it("keeps fallback native failure separate from repository preparation", async () => {
+    vi.useRealTimers(); vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const f = await fixture(), firstTick = deferred<void>(), retryStarted = deferred<void>(), retryRelease = deferred<void>();
+    const unavailable = new ApiError({ operation: "project.resolve" }, "response", { status: 404, serverError: { code: "not_found", message: "Unavailable", requestId: uuid(2) }, cause: new Error("Unavailable") });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    mocks.remote.mockReturnValue({ ...remote, configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject: vi.fn().mockRejectedValueOnce(unavailable).mockImplementation(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: vi.fn(async () => ({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: null, observationRevision: "0", observationAccepted: false } })), readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
+    mocks.probe.mockRejectedValueOnce(new OperationError("request_timeout", { cause: new Error("private native output") })).mockImplementationOnce(async () => { retryStarted.resolve(); await retryRelease.promise; return "1.2.3"; });
+    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), updateConfiguration: update, shutdown }));
+    const running = start(f);
+    try {
+      await eventuallyWithoutAdvancingTime(() => { expect(mocks.probe).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
+      const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
+      const failed = monitor.capture("1"), failure = failed.currentFailures.find(item => item.component === "configuration")!;
+      expect(failure).toMatchObject({ scope: { kind: "project", projectId: uuid(1) }, error: { code: "timeout" }, occurrencesInRun: 1 });
+      expect(failed.currentFailures.some(item => item.component === "project")).toBe(false);
+      expect(failed.admission.reasons).toContainEqual(expect.objectContaining({ code: "configuration-incomplete", scope: { kind: "project", projectId: uuid(1) } }));
+      expect(JSON.stringify(failed)).not.toContain("private native output");
+      firstTick.resolve(); await vi.advanceTimersByTimeAsync(60_000); await retryStarted.promise;
+      expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "running", occurrencesInRun: 1 }));
+      retryRelease.resolve(); await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: failure.operationId }));
+      expect(monitor.capture("3").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
+    } finally { firstTick.resolve(); retryRelease.resolve(); f.signal.abort(); await running; }
+  });
+
+  it.each([true, false])("handles fallback to cloud native target matching=%s", async matches => {
+    vi.useRealTimers(); vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const f = await fixture(), firstTick = deferred<void>();
+    await writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agent: matches ? "codex" : "copilot", repositories: [{ remote: remoteUrl, path: path.join(f.homeDirectory, "repo"), projectId: uuid(1) }], maxConcurrent: 9 } }));
+    const unavailable = new ApiError({ operation: "project.resolve" }, "response", { status: 404, serverError: { code: "not_found", message: "Unavailable", requestId: uuid(2) }, cause: new Error("Unavailable") });
+    let remoteDesired: WorkerCloudDesired | null = null, remoteRevision = 0n;
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    mocks.remote.mockReturnValue({ ...remote, configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject: vi.fn().mockRejectedValueOnce(unavailable).mockImplementation(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: vi.fn(async (_worker: string, _report: WorkerReport, configuration: WorkerCloudReport) => {
+      const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(remoteRevision);
+      if (observationAccepted) remoteRevision++;
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: remoteDesired, observationRevision: String(remoteRevision), observationAccepted } };
+    }), readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
+    mocks.probe.mockRejectedValueOnce(new OperationError("request_timeout"));
+    mocks.coordinator.mockImplementation(() => ({ tick: vi.fn(async () => { await firstTick.promise; }), updateConfiguration: update, shutdown }));
+    const running = start(f);
+    try {
+      await eventuallyWithoutAdvancingTime(() => { expect(mocks.probe).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
+      expect(mocks.probe.mock.calls[0]![0]).toMatchObject({ agent: matches ? target.value.native.agent : "copilot" });
+      const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
+      const failure = monitor.capture("1").currentFailures.find(item => item.component === "configuration" && item.scope.kind === "project")!;
+      expect(failure).toMatchObject({ scope: { kind: "project", projectId: uuid(1) }, error: { code: "timeout" } });
+      remoteDesired = target;
+      await vi.advanceTimersByTimeAsync(30_000);
+      if (matches) await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("2").lastRecovery).toMatchObject({ operationId: failure.operationId, scope: { kind: "project", projectId: uuid(1) } }));
+      else { await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("2").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }))); expect(monitor.capture("2").lastRecovery?.operationId).not.toBe(failure.operationId); }
+      expect(monitor.capture("2").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
+    } finally { firstTick.resolve(); f.signal.abort(); await running; }
+  });
+
+  it.each(["worker", "project"] as const)("keeps the %s native failure after a cancelled retry returns", async kind => {
+    vi.useRealTimers(); vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const f = await fixture(), retryStarted = deferred<void>(), retryRelease = deferred<void>(), writes: Observation[] = [];
+    target = { ...target, value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: { agent: "claude" } }] } };
+    let attempts = 0;
+    mocks.probe.mockImplementation(async ({ agent }: { agent: string }) => {
+      if (agent !== (kind === "worker" ? "codex" : "claude")) return "1.2.3";
+      if (++attempts === 1) throw new OperationError("request_timeout");
+      retryStarted.resolve(); await retryRelease.promise; return "1.2.3";
+    });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    mocks.remote.mockReturnValue({ ...remote, readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => { writes.push(observation); return { revision: uuid(8), runId: observation.runId, sequence: observation.sequence }; }) });
+    const running = start(f);
+    try {
+      await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
+      await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ component: "configuration", retryState: "scheduled" })));
+      const failure = monitor.capture("1").currentFailures.find(item => item.component === "configuration")!;
+      await vi.advanceTimersByTimeAsync(5_000); await retryStarted.promise;
+      f.signal.abort(); retryRelease.resolve(); await running;
+      const final = writes.at(-1)!;
+      expect(final.lifecycle).toBe("stopped");
+      expect(final.currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "none", nextAttemptAt: null, occurrencesInRun: 1 }));
+      expect(final.activities).not.toContainEqual(expect.objectContaining({ kind: "maintenance", phase: "configuration" }));
+      expect(final.lastRecovery).toBeNull();
+    } finally { retryRelease.resolve(); f.signal.abort(); await running; }
+  });
+
+  it("discards an old project native failure on target change without claiming recovery", async () => {
+    vi.useRealTimers(); vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const f = await fixture(), retryStarted = deferred<void>();
+    target = { ...target, value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: { agent: "claude" } }] } };
+    let attempts = 0;
+    mocks.probe.mockImplementation(async ({ agent }: { agent: string }, operation: Operation) => {
+      if (agent !== "claude") return "1.2.3";
+      if (++attempts === 1) throw new OperationError("request_timeout");
+      retryStarted.resolve();
+      return await new Promise<string>((_resolve, reject) => { if (operation.signal.aborted) reject(operation.signal.reason); else operation.signal.addEventListener("abort", () => reject(operation.signal.reason), { once: true }); });
+    });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    mocks.remote.mockReturnValue({ ...remote, readMonitoring: vi.fn(async () => ({ state: "absent" })), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => ({ revision: uuid(8), runId: observation.runId, sequence: observation.sequence })) });
+    const running = start(f);
+    try {
+      await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      const monitor = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).monitoring!;
+      await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ component: "configuration", scope: { kind: "project", projectId: uuid(1) }, retryState: "scheduled" })));
+      const failure = monitor.capture("1").currentFailures.find(item => item.component === "configuration" && item.scope.kind === "project")!;
+      await vi.advanceTimersByTimeAsync(5_000); await retryStarted.promise;
+      target = { ...target, revision: "2", value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: { agent: "copilot" } }] } };
+      await vi.advanceTimersByTimeAsync(30_000);
+      await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("2").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId })));
+      expect(monitor.capture("2").lastRecovery?.operationId).not.toBe(failure.operationId);
+      expect(monitor.capture("2").admission.reasons).not.toContainEqual(expect.objectContaining({ code: "configuration-incomplete", scope: { kind: "project", projectId: uuid(1) } }));
+    } finally { f.signal.abort(); await running; }
+  });
+
   it("keeps scheduler coverage partial while a selected project is still being prepared", async () => {
     const f = await fixture(), started = deferred<void>(), release = deferred<void>();
     prepare.mockImplementationOnce(async () => { started.resolve(); await release.promise; });

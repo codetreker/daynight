@@ -12,6 +12,7 @@ import { createWorkerSessionApi } from "./backends/session-api.js";
 import type { WorkerEvent } from "./execution.js";
 import type { WorkerPaths } from "./paths.js";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { statfsSync } from "node:fs";
 import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
 import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
@@ -27,7 +28,7 @@ import { ProtocolError } from "../../api/parse.js";
 import { parseWorkerCloudReport } from "../../api/worker-configuration.js";
 import type { WorkerCloudNative, WorkerCloudResource, WorkerCloudValue } from "../../api/worker-configuration.js";
 import { probeNativeAgentVersion } from "./herdr/version-probe.js";
-import { createWorkerConfigurationManager } from "./configuration.js";
+import { createWorkerConfigurationManager, resolveWorkerCloudProjectNative } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
 import { parseWorkerCloudBootstrap, readWorkerLocalConfiguration, resolveCloudNative, workerLocalExplicitProjectIds, workerLocalRepositoryForId, workerLocalRepositoryForProject, workerLocalUnboundRepository, workerLocalUnboundRepositoryIndexes } from "./configuration-source.js";
 import type { WorkerProject } from "./types.js";
@@ -386,6 +387,9 @@ export const runWorker = async (options: {
     const transitions = new Map<string, string>();
     const preparationFailures = new Map<string, { operationId: string; observedAt: string; revision: string; successRevision: string | null }>();
     const fallbackPreparationFailures = new Map<string, { operationId: string; observedAt: string }>();
+    const nativeFailures = new Map<string, { operationId: string; observedAt: string; target: WorkerCloudNative }>();
+    const fallbackNativeFailures = new Map<string, { operationId: string; observedAt: string; target: WorkerCloudNative }>();
+    const nativeActivities = new Map<string, { operationId: string; revision: string }>();
     let monitoringTargetSignature: string | undefined;
     let effectiveSignature = "";
     let configurationChanged = new AbortController();
@@ -393,18 +397,61 @@ export const runWorker = async (options: {
     configuration = await createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal,
       applyNative: nativeApplication.apply,
+      onNativeApplication: event => {
+        const projectId = event.key.kind === "projectNative" ? event.key.projectId : null;
+        const key = projectId === null ? "native" : `project/${projectId}`;
+        const scope = projectId === null ? { kind: "worker" as const } : { kind: "project" as const, projectId };
+        const failure = nativeFailures.get(key);
+        if (event.kind === "started") {
+          if (failure !== undefined && isDeepStrictEqual(failure.target, event.target)) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "running"); m.setNativeConfigurationReason(scope, { observedAt: failure.observedAt, nextAttemptAt: null }); });
+          observeMonitoring(m => { const operationId = m.startActivity({ kind: "maintenance", phase: "configuration", scope }); nativeActivities.set(key, { operationId, revision: event.revision }); });
+          return;
+        }
+        const activity = nativeActivities.get(key);
+        if (activity?.revision === event.revision) { observeMonitoring(m => m.endActivity(activity.operationId)); nativeActivities.delete(key); }
+        if (event.kind === "cancelled") {
+          if (failure !== undefined && isDeepStrictEqual(failure.target, event.target)) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setNativeConfigurationReason(scope, { observedAt: failure.observedAt, nextAttemptAt: null }); });
+          return;
+        }
+        const current = configuration?.current(), item = current?.items.find(value => value.key.kind === event.key.kind && (event.key.kind === "native" || "projectId" in value.key && value.key.projectId === event.key.projectId));
+        if (item?.targetRevision !== event.revision) return;
+        if (event.kind === "failed") {
+          const observedAt = new Date().toISOString(), operationId = failure?.operationId ?? randomUUID();
+          nativeFailures.set(key, { operationId, observedAt, target: event.target });
+          observeMonitoring(m => { m.fail({ operationId, component: "configuration", phase: "configuration", scope, error: event.error, retryState: "scheduled", nextAttemptAt: event.nextAttemptAt }); m.setNativeConfigurationReason(scope, { observedAt, nextAttemptAt: event.nextAttemptAt }); });
+        } else if (item.state === "applied" && failure !== undefined && isDeepStrictEqual(failure.target, event.target)) {
+          observeMonitoring(m => { m.recover(failure.operationId); m.setNativeConfigurationReason(scope, null); }); nativeFailures.delete(key);
+        }
+      },
       onChange: snapshot => {
         const targetSignature = JSON.stringify(snapshot.desired?.value ?? null);
         if (monitoringTargetSignature !== targetSignature) { monitoringTargetSignature = targetSignature; observeMonitoring(m => m.invalidateAdmission()); }
         const incomplete = snapshot.desired === null
           ? fallback !== null && (!fallbackComplete || fallbackRepositories.length !== fallback.repositories.length)
-          : !snapshot.synchronized || snapshot.desired.value.projects.some(project => {
+          : !snapshot.synchronized || snapshot.effective.native === null || snapshot.desired.value.projects.some(project => {
             const effective = snapshot.effective.projects.find(value => value.projectId === project.projectId);
             return effective === undefined || !effective.ready || effective.native === null || !prepared.has(project.projectId);
           });
         observeMonitoring(m => m.setProjectPreparationIncomplete(incomplete));
         if (snapshot.desired !== null) observeMonitoring(m => m.setProjectPreparationUnknown(false));
         const selectedProjects = new Set(snapshot.desired?.value.projects.map(project => project.projectId) ?? []);
+        if (snapshot.desired !== null) for (const [projectId, failure] of fallbackNativeFailures) {
+          const project = snapshot.desired.value.projects.find(value => value.projectId === projectId);
+          const scope = { kind: "project" as const, projectId };
+          if (project !== undefined && isDeepStrictEqual(failure.target, resolveWorkerCloudProjectNative(snapshot.desired.value.native, project))) nativeFailures.set(`project/${projectId}`, failure);
+          else observeMonitoring(m => { m.discardFailure(failure.operationId); m.setNativeConfigurationReason(scope, null); });
+          fallbackNativeFailures.delete(projectId);
+        }
+        for (const [key, failure] of nativeFailures) {
+          const projectId = key.startsWith("project/") ? key.slice("project/".length) : null;
+          const project = projectId === null ? undefined : snapshot.desired?.value.projects.find(value => value.projectId === projectId);
+          const target = snapshot.desired === null ? null : projectId === null ? snapshot.desired.value.native : project === undefined ? null : resolveWorkerCloudProjectNative(snapshot.desired.value.native, project);
+          if (target === null || !isDeepStrictEqual(target, failure.target)) {
+            const scope = projectId === null ? { kind: "worker" as const } : { kind: "project" as const, projectId };
+            observeMonitoring(m => { m.discardFailure(failure.operationId); m.setNativeConfigurationReason(scope, null); });
+            nativeFailures.delete(key);
+          }
+        }
         if (snapshot.desired !== null) for (const [projectId, failure] of fallbackPreparationFailures) {
           if (selectedProjects.has(projectId)) {
             const item = snapshot.items.find(value => value.key.kind === "projectPreparation" && value.key.projectId === projectId);
@@ -549,6 +596,7 @@ export const runWorker = async (options: {
         signal.throwIfAborted();
         let projectId = repository.projectId ?? discovered.get(repository.remote);
         let resolving = false;
+        let nativeFailed = false;
         let activityId: string | undefined;
         const startPreparation = (id: string): void => {
           if (activityId !== undefined) return;
@@ -579,7 +627,31 @@ export const runWorker = async (options: {
               const operation = createOperation({ signal });
               try { await getGit().prepareRepository(binding, operation); }
               finally { operation.dispose(); }
-              await nativeApplication.apply({ agent: repository.agent, model: repository.model, args: repository.args }, signal);
+              const nativeTarget = { agent: repository.agent, model: repository.model, args: repository.args }, nativeScope = { kind: "project" as const, projectId };
+              let nativeActivity: string | undefined;
+              const nativeFailure = fallbackNativeFailures.get(projectId);
+              observeMonitoring(m => {
+                if (nativeFailure !== undefined) { m.updateFailureRetry(nativeFailure.operationId, "running"); m.setNativeConfigurationReason(nativeScope, { observedAt: nativeFailure.observedAt, nextAttemptAt: null }); }
+                nativeActivity = m.startActivity({ kind: "maintenance", phase: "configuration", scope: nativeScope });
+              });
+              try {
+                await nativeApplication.apply(nativeTarget, signal);
+                const recovered = fallbackNativeFailures.get(projectId);
+                if (recovered !== undefined && !signal.aborted && manager.current().desired === null && isDeepStrictEqual(recovered.target, nativeTarget)) {
+                  observeMonitoring(m => { m.recover(recovered.operationId); m.setNativeConfigurationReason(nativeScope, null); }); fallbackNativeFailures.delete(projectId);
+                }
+              } catch (error) {
+                nativeFailed = true;
+                if (!signal.aborted && manager.current().desired === null) {
+                  const observedAt = new Date().toISOString(), operationId = fallbackNativeFailures.get(projectId)?.operationId ?? randomUUID();
+                  fallbackNativeFailures.set(projectId, { operationId, observedAt, target: nativeTarget });
+                  observeMonitoring(m => { m.fail({ operationId, component: "configuration", phase: "configuration", scope: nativeScope, error }); m.setNativeConfigurationReason(nativeScope, { observedAt, nextAttemptAt: null }); });
+                }
+                throw error;
+              } finally {
+                if (signal.aborted) { const failure = fallbackNativeFailures.get(projectId); if (failure !== undefined) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setNativeConfigurationReason(nativeScope, { observedAt: failure.observedAt, nextAttemptAt: null }); }); }
+                if (nativeActivity !== undefined) observeMonitoring(m => m.endActivity(nativeActivity!));
+              }
               prepared.set(projectId, await admitRepository(binding, signal));
             } finally { reservations.delete(projectId); }
           }
@@ -592,7 +664,7 @@ export const runWorker = async (options: {
             const failure = fallbackPreparationFailures.get(projectId);
             if (failure !== undefined) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setProjectPreparationReason(projectId!, { observedAt: failure.observedAt, nextAttemptAt: null }); });
           }
-          if (!signal.aborted && manager.current().desired === null) {
+          if (!signal.aborted && !nativeFailed && manager.current().desired === null) {
             if (projectId === undefined) observeMonitoring(m => m.setProjectPreparationUnknown(true));
             else {
               const observedAt = new Date().toISOString(), operationId = fallbackPreparationFailures.get(projectId)?.operationId ?? randomUUID();
@@ -835,6 +907,7 @@ export const runWorker = async (options: {
       if (!changed.signal.aborted && fallback !== null && manager.current().desired === null) {
         const nextAttemptAt = new Date(Date.now() + (interval ?? 1_000)).toISOString();
         for (const [projectId, failure] of fallbackPreparationFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt }); });
+        for (const [projectId, failure] of fallbackNativeFailures) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "scheduled", nextAttemptAt); m.setNativeConfigurationReason({ kind: "project", projectId }, { observedAt: failure.observedAt, nextAttemptAt }); });
       }
       try {
         if (!changed.signal.aborted) await delay(interval === null ? 1_000 : interval, undefined, { signal: AbortSignal.any([signal, changed.signal]) });

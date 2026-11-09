@@ -4,6 +4,8 @@ import { OperationError } from "../../../../src/api/operation.js";
 import { ProtocolError } from "../../../../src/api/parse.js";
 import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-error.js";
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
+import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
+import { HerdrCommandCleanupError, HerdrCommandDeadlineError, HerdrCommandError } from "../../../../src/commands/worker/herdr/command.js";
 import { classifyFailure, diagnostic, MonitoringRecoveryEvidence } from "../../../../src/commands/worker/monitoring/diagnostics.js";
 import { createMonitoringObserver, goJsonBytes } from "../../../../src/commands/worker/monitoring/observer.js";
 import type { DiagnosticCode } from "../../../../src/commands/worker/monitoring/types.js";
@@ -13,6 +15,23 @@ const identity = (index: number) => ({ projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaa
 const secret = "secret /private/path prompt $(command output)";
 
 describe("worker monitoring observer", () => {
+  it("keeps worker and project native failures independent and suppresses stale idle evidence", () => {
+    const observer = createMonitoringObserver({ runId, now: () => 1_000 }), observedAt = new Date(1_000).toISOString(), nextAttemptAt = new Date(6_000).toISOString();
+    const worker = { kind: "worker" } as const, project = { kind: "project", projectId: identity(1).projectId } as const;
+    observer.setAdmission("complete", [{ code: "no-ready-tasks", scope: worker, observedAt, nextAttemptAt: null }]);
+    observer.setNativeConfigurationReason(worker, { observedAt, nextAttemptAt });
+    observer.setNativeConfigurationReason(project, { observedAt, nextAttemptAt });
+    observer.setAdmission("complete", [{ code: "configuration-incomplete", scope: worker, observedAt, nextAttemptAt: null }]);
+    const snapshot = observer.capture("1");
+    expect(snapshot.admission.coverage).toBe("partial");
+    expect(snapshot.admission.reasons).toHaveLength(2);
+    expect(snapshot.admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "configuration-incomplete", scope: worker, nextAttemptAt }), expect.objectContaining({ code: "configuration-incomplete", scope: project, nextAttemptAt })]));
+    observer.setNativeConfigurationReason(worker, null);
+    expect(observer.capture("2").admission.reasons).toContainEqual(expect.objectContaining({ code: "configuration-incomplete", scope: project }));
+    observer.setNativeConfigurationReason(project, null);
+    expect(observer.capture("3").admission.coverage).toBe("partial");
+  });
+
   it("retains independent project preparation reasons across scheduler admission updates", () => {
     const observer = createMonitoringObserver({ runId, now: () => 1_000 });
     const projectId = identity(1).projectId, observedAt = new Date(1_000).toISOString(), nextAttemptAt = new Date(6_000).toISOString();
@@ -214,6 +233,33 @@ describe("safe monitoring diagnostics", () => {
     expect(classifyFailure(new ApiError({ operation: "read" }, "response", { status: 500, cause: new Error(secret) }))).toEqual(diagnostic("unknown"));
     expect(classifyFailure(new ApiError({ operation: "read" }, "pagination", { cause: new Error(secret) }))).toEqual(diagnostic("invalid-response"));
     expect(classifyFailure(new WorktreePreconditionError("validation_failed", secret))).toEqual(diagnostic("worktree-validation-failed"));
+  });
+
+  it("classifies trusted native probe failures without exposing command data or guessing aggregate causes", () => {
+    const output = new NativeVersionOutputError("codex"); output.message = secret;
+    const deadline = new HerdrCommandDeadlineError(); deadline.message = secret;
+    const command = new HerdrCommandError(secret, 17, null, secret, { cause: new Error(secret) });
+    const spawn = new HerdrCommandError(secret, null, null, secret, { cause: new Error(secret) });
+    const signalOnly = new HerdrCommandError(secret, null, "SIGTERM", secret);
+    const cases: [unknown, DiagnosticCode][] = [
+      [output, "invalid-output"], [deadline, "timeout"], [command, "command-failed"],
+      [spawn, "unknown"], [signalOnly, "unknown"], [new HerdrCommandError(secret, 0, null, secret), "unknown"],
+      [new WorkerCleanupError("observation", command), "command-failed"],
+      [new AggregateError([output, command], secret), "unknown"],
+      [new HerdrCommandCleanupError([deadline], command), "unknown"],
+      [{ name: "HerdrCommandError", exitCode: 17, stderr: secret }, "unknown"],
+    ];
+    for (const [error, code] of cases) expect(classifyFailure(error)).toEqual(diagnostic(code));
+    expect(classifyFailure(command, true)).toEqual(diagnostic("outcome-unknown"));
+    expect(classifyFailure(new ApiError({ operation: "write" }, "request", { cause: command, outcomeUnconfirmed: true }))).toEqual(diagnostic("outcome-unknown"));
+    expect(classifyFailure(new ApiError({ operation: "read" }, "response", { status: 403, cause: command }))).toEqual(diagnostic("permission-denied"));
+    const observer = createMonitoringObserver({ runId });
+    const scope = { kind: "project", projectId: identity(1).projectId } as const;
+    for (const [error] of cases) {
+      const operationId = observer.startActivity({ kind: "maintenance", phase: "configuration", scope });
+      observer.fail({ operationId, component: "configuration", phase: "configuration", scope, error });
+    }
+    expect(JSON.stringify(observer.capture("1"))).not.toContain(secret);
   });
 
   it("never copies secrets, paths, prompts or command output from error chains into snapshots", () => {

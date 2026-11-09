@@ -101,14 +101,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     observe(m => m.recover(failure)); monitoringFailures.delete(limitKey); recoveredLimitNames.delete(identity);
   };
   const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, readTask: options.remote.readTask, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, ...(options.promptSource === undefined ? {} : { promptSource: options.promptSource }), ...(options.preparePromptSource === undefined ? {} : { preparePromptSource: options.preparePromptSource }), emit: options.emit, now,
-    observePhase: (identity, phase, progressed) => {
+    observePhase: (identity, phase, progressed, _deadlineAt, operationKey) => {
       const identityKey = key(identity);
       const operationId = monitoringJobs.get(identityKey);
       monitoringPhases.set(identityKey, phase.phase);
+      monitoringOperations.set(identityKey, operationKey ?? phase.phase);
       if (operationId !== undefined) observe(m => {
         m.updateActivity(operationId, { phase: pausedClaims.has(identityKey) && phase.kind === "execution" ? "paused" : phase.phase, progress: progressed, status: pausedClaims.has(identityKey) && phase.kind === "execution" ? "paused" : phase.phase === "waiting" ? "waiting" : "running", waitReason: pausedClaims.has(identityKey) && phase.kind === "execution" ? "task-paused" : phase.phase === "waiting" ? "native-input" : null });
         if (phase.kind === "execution" && !progressed && phase.phase !== "waiting" && phase.phase !== "paused") {
-          const failure = monitoringFailures.get(`false/${identityKey}/${phase.phase}`);
+          const failure = monitoringFailures.get(`false/${identityKey}/${operationKey ?? phase.phase}`);
           if (failure !== undefined) m.updateFailureRetry(failure, "running");
         }
         if (phase.kind === "cleanup") {
@@ -118,8 +119,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
       });
     },
-    observeSuccess: (identity, phase) => {
-      const ownerKey = key(identity), failureKey = `false/${ownerKey}/${phase.phase}`, previous = monitoringFailures.get(failureKey);
+    observeSuccess: (identity, phase, operationKey) => {
+      const ownerKey = key(identity), failureKey = `false/${ownerKey}/${operationKey ?? phase.phase}`, previous = monitoringFailures.get(failureKey);
       if (previous !== undefined) {
         observe(m => m.recover(previous)); monitoringFailures.delete(failureKey);
         recoverLimitIfReady(ownerKey);
@@ -137,6 +138,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const monitoringFailures = new Map<string, string>();
   const monitoringFailurePhases = new Map<string, string>();
   const monitoringPhases = new Map<string, string>();
+  const monitoringOperations = new Map<string, string>();
   const projectMonitoringFailures = new Map<string, string>();
   const resourceMonitoringFailures = new Map<string, string>();
   const candidateMonitoringFailures = new Map<string, string>();
@@ -370,7 +372,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean): void => {
     const identityKey = key(identity);
     if (shuttingDown || jobs.has(identityKey) || !terminal && !canAdvanceProject(identity.projectId)) return;
-    if (!terminal) nameFailureThisJob.delete(identityKey);
+    if (!terminal) { nameFailureThisJob.delete(identityKey); monitoringPhases.set(identityKey, "observation"); monitoringOperations.set(identityKey, "observation"); }
     const controller = new AbortController();
     let operationId: string | undefined;
     const scope = { kind: "claim" as const, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId };
@@ -444,7 +446,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (task?.agentControlMode !== "web") failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
         if (operationId !== undefined && !signal.aborted && !nameFailureThisJob.has(identityKey) && !(error instanceof WebRecoveryBlockedError && webRecoveryFailures.has(identityKey))) {
           const phase = monitoringPhases.get(identityKey) ?? "observation";
-          const failureKey = `false/${identityKey}/${phase}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
+          const failureKey = `false/${identityKey}/${monitoringOperations.get(identityKey) ?? phase}`, failureId = monitoringFailures.get(failureKey) ?? randomUUID();
           monitoringFailures.set(failureKey, failureId);
           observe(m => m.fail({ operationId: failureId, component: "execution", phase, scope, error }));
         }

@@ -121,6 +121,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     observe: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => observe(context, binding)),
     start: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput) => {
       order.push("start"); const pane = resources.get(context.claimId)!.panes[0]!;
+      input.onAgentStarted?.();
       pane.kind = context.agent; pane.status = "idle"; pane.interactiveReady = true; pane.stateChangeSeq = 1;
       pane.nativeSession = { source: "herdr", agent: context.agent, sessionId: input.resumeSessionId ?? uuid(1000 + sequence) };
       if (blockedStartupInput) {
@@ -2764,6 +2765,28 @@ describe("applied cloud runtime configuration", () => {
 });
 
 describe("worker monitoring of coordinator jobs", () => {
+  it("retains a cold workspace stop failure until that stop is confirmed", async () => {
+    const f = await fixture(), monitor = createMonitoringObserver();
+    const owner = { projectId: f.project.projectId, taskId: uuid(100), claimId: uuid(901), worktreeId: uuid(902) };
+    f.grant(f.candidates[0]!, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", platform: "linux", machine: { id: uuid(3), name: "fixture" } });
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    const binding = { session: "w", workspaceId: "old", paneId: "old-pane", terminalId: "old-terminal" };
+    f.resources.set(owner.claimId, { owner, workspaceId: binding.workspaceId, panes: [{ binding, cwd: f.bind(owner).worktreePath, kind: null, status: "idle", launchPending: false, interactiveReady: false, nativeSession: null, stateChangeSeq: 0, completionSeq: 0 }] });
+    f.tasks.stopAndClose.mockRejectedValueOnce(new Error("old workspace retained")).mockRejectedValueOnce(new Error("old workspace retained"));
+    const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });
+    try {
+      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
+      const failure = monitor.capture("1").currentFailures[0]!;
+      expect(failure).toMatchObject({ component: "execution", phase: "observation", occurrencesInRun: 1 });
+      await coordinator.tick(); await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledTimes(2));
+      await eventually(() => expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, occurrencesInRun: 2 })));
+      expect(monitor.capture("2").lastRecovery).toBeNull();
+      await coordinator.tick();
+      await eventually(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: failure.operationId }));
+      expect(monitor.capture("3").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
+    } finally { await coordinator.shutdown(); }
+  });
+
   it("keeps inventory failure scoped to its project and recovers only after that project is covered", async () => {
     const f = await fixture(), monitor = createMonitoringObserver();
     const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });

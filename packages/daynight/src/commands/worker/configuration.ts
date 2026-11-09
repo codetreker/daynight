@@ -25,12 +25,17 @@ export type WorkerConfigurationProjectAdapters = {
   readonly prepare?: (projectId: string, signal: AbortSignal) => Promise<void | false>;
   readonly remove?: (projectId: string, signal: AbortSignal) => Promise<void>;
 };
+type WorkerNativeApplicationOutcome =
+  | { readonly kind: "started" | "cancelled" | "succeeded" }
+  | { readonly kind: "failed"; readonly error: unknown; readonly nextAttemptAt: string };
+export type WorkerNativeApplicationEvent = { readonly key: { readonly kind: "native" } | { readonly kind: "projectNative"; readonly projectId: string }; readonly revision: string; readonly target: WorkerCloudNative } & WorkerNativeApplicationOutcome;
 export type WorkerConfigurationManagerOptions = {
   readonly file: string;
   readonly identity: WorkerConfigurationIdentity;
   readonly signal: AbortSignal;
   readonly applyNative: (native: WorkerCloudNative, signal: AbortSignal) => Promise<void>;
   readonly onChange?: (snapshot: WorkerConfigurationSnapshot) => void;
+  readonly onNativeApplication?: (event: WorkerNativeApplicationEvent) => void;
   readonly onError?: (error: unknown) => void;
   readonly onCapacity?: (revision: string) => void;
   readonly onInvalidDesired?: (revision: string) => void;
@@ -286,6 +291,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     });
     if (!began) return;
     if (controller.signal.aborted) { await resetCancelled(); return; }
+    const nativeKey = key.kind === "native" ? { kind: "native" as const } : key.kind === "projectNative" ? { kind: "projectNative" as const, projectId: key.projectId } : null;
+    const notifyNative = (event: WorkerNativeApplicationOutcome): void => {
+      if (nativeKey !== null) try { options.onNativeApplication?.({ ...event, key: nativeKey, revision, target: intended as WorkerCloudNative }); } catch { /* Monitoring cannot change application results. */ }
+    };
+    if (nativeKey !== null) notifyNative({ kind: "started" });
     let outcome: { succeeded: true } | { succeeded: false; error: unknown } = { succeeded: true }, preparationDeferred = false;
     let validated: WorkerCloudNative | undefined;
     try {
@@ -296,8 +306,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       else if (key.kind === "projectPreparation") preparationDeferred = await prepare!(key.projectId, controller.signal) === false;
       else if (key.kind === "projectRemoval") await remove!(key.projectId, controller.signal);
     } catch (error) { outcome = { succeeded: false, error }; }
-    if (stopped) return;
-    if (controller.signal.aborted) { await resetCancelled(); return; }
+    if (stopped) { notifyNative({ kind: "cancelled" }); return; }
+    if (controller.signal.aborted) { notifyNative({ kind: "cancelled" }); await resetCancelled(); return; }
     if (!outcome.succeeded && (key.kind === "native" || key.kind === "projectNative")) {
       const previous = findItem(cache, key)?.value.appliedValue;
       if (typeof previous === "object" && previous !== null && !equal(previous, intended) && !equal(previous, validatedNative.get(keyOf(key)))) {
@@ -307,8 +317,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         }
       }
     }
-    if (stopped) return;
-    if (controller.signal.aborted) { await resetCancelled(); return; }
+    if (stopped) { notifyNative({ kind: "cancelled" }); return; }
+    if (controller.signal.aborted) { notifyNative({ kind: "cancelled" }); await resetCancelled(); return; }
     if (preparationDeferred) {
       await commit(current => {
         const item = findItem(current, key);
@@ -317,14 +327,23 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       deferred.add(`${keyOf(key)}:${revision}`);
       return;
     }
-    await commit(current => {
+    let accepted = false, retryAt: string | null = null;
+    try { await commit(current => {
       const item = findItem(current, key);
       if (item === undefined || item.value.targetRevision !== revision || item.value.state !== "applying" || key.kind !== "projectRemoval" && !equal(target(current, key), intended)) return current;
+      accepted = true;
       if (outcome.succeeded) return replaceItem(current, { ...item, attempts: 0, started: false, value: { ...item.value, appliedValue: intended, state: "applied", error: null, nextAttemptAt: null } });
       if (current.nextFailureId === Number.MAX_SAFE_INTEGER) throw new RangeError("Worker configuration failure sequence is exhausted.");
       const diagnostic = failure(outcome.error, key, now()), attempts = Math.min(item.attempts + 1, retryDelays.length), delay = retryDelays[attempts - 1]!;
-      return { ...replaceItem(current, { ...item, attempts, failureId: current.nextFailureId, value: { ...item.value, state: "error", error: diagnostic, lastFailure: diagnostic, nextAttemptAt: new Date(now() + delay).toISOString() } }), nextFailureId: current.nextFailureId + 1 };
-    }, false, validated === undefined ? undefined : { key, revision, native: validated });
+      retryAt = new Date(now() + delay).toISOString();
+      return { ...replaceItem(current, { ...item, attempts, failureId: current.nextFailureId, value: { ...item.value, state: "error", error: diagnostic, lastFailure: diagnostic, nextAttemptAt: retryAt } }), nextFailureId: current.nextFailureId + 1 };
+    }, false, validated === undefined ? undefined : { key, revision, native: validated }); }
+    catch (error) { notifyNative({ kind: "cancelled" }); throw error; }
+    if (nativeKey !== null) {
+      if (!accepted || stopped || controller.signal.aborted) notifyNative({ kind: "cancelled" });
+      else if (outcome.succeeded) notifyNative({ kind: "succeeded" });
+      else notifyNative({ kind: "failed", error: outcome.error, nextAttemptAt: retryAt! });
+    }
   };
   const pump = (): void => {
     if (stopped || fatal !== undefined || !synchronized) return;

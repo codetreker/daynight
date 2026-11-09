@@ -32,6 +32,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
   let capacity: Observation["capacity"] = null;
   let admission: Observation["admission"] = { observedAt: time(), coverage: "unknown", reasons: [] };
   const projectPreparationReasons = new Map<string, { observedAt: string; nextAttemptAt: string | null }>();
+  const nativeConfigurationReasons = new Map<string, { scope: Extract<Scope, { kind: "worker" | "project" }>; observedAt: string; nextAttemptAt: string | null }>();
   let projectPreparationUnknown = false;
   let projectPreparationIncomplete = false;
   let reservations: Reservation[] = [];
@@ -40,7 +41,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
   const failures = new Map<string, Failure>();
   let lastRecovery: Observation["lastRecovery"] = null;
   let delivery: Observation["delivery"] = { lastSucceededAt: null, lastFailure: null };
-  const preparationIncomplete = (): boolean => projectPreparationUnknown || projectPreparationIncomplete || projectPreparationReasons.size > 0 || [...activities.values()].some(({ value }) => value.kind === "maintenance" && value.phase === "project-preparation");
+  const preparationIncomplete = (): boolean => projectPreparationUnknown || projectPreparationIncomplete || projectPreparationReasons.size > 0 || nativeConfigurationReasons.size > 0 || [...activities.values()].some(({ value }) => value.kind === "maintenance" && (value.phase === "project-preparation" || value.phase === "configuration"));
   const invalidateAdmission = (): void => { admission = { observedAt: time(), coverage: "unknown", reasons: [] }; scheduler = { ...scheduler, coverage: "partial" }; dirty(); };
   const reservationId = (id: Identity): string => {
     const digest = options.reservationDigest?.(id) ?? createHmac("sha256", key).update("daynight-worker-monitoring-reservation-v1\0", "utf8").update(id.projectId + id.taskId + id.claimId, "ascii").digest();
@@ -56,8 +57,9 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
     const failureItems = [...failures.values()].map(value => ({ ...value, scope: copyScope(value.scope), error: { ...value.error } })).sort((a, b) => a.firstObservedAt.localeCompare(b.firstObservedAt) || a.operationId.localeCompare(b.operationId));
     const reservationItems = reservations.map(value => ({ ...value, scope: copyScope(value.scope), roles: [...value.roles] })).sort((a, b) => Number(b.roles.includes("cleanup") || b.roles.includes("unresolved") || b.roles.includes("pending-stop")) - Number(a.roles.includes("cleanup") || a.roles.includes("unresolved") || a.roles.includes("pending-stop")) || a.observedAt.localeCompare(b.observedAt) || a.reservationId.localeCompare(b.reservationId));
     const preparationReasons: AdmissionReason[] = [...projectPreparationReasons].map(([projectId, reason]) => ({ code: "project-preparation-failed", scope: { kind: "project", projectId }, ...reason }));
+    const nativeReasons: AdmissionReason[] = [...nativeConfigurationReasons.values()].map(reason => ({ code: "configuration-incomplete", ...reason, scope: copyScope(reason.scope) }));
     const admissionCoverage: Coverage = preparationIncomplete() ? "partial" : admission.coverage;
-    let selectedReasons = [...admission.reasons, ...preparationReasons].sort((a, b) => Number(b.code === "cleanup-capacity-blocked") - Number(a.code === "cleanup-capacity-blocked") || a.observedAt.localeCompare(b.observedAt) || a.code.localeCompare(b.code));
+    let selectedReasons = [...admission.reasons.filter(reason => reason.code !== "configuration-incomplete" || !nativeConfigurationReasons.has(reason.scope.kind === "worker" ? "native" : reason.scope.kind === "project" ? `project/${reason.scope.projectId}` : "")), ...preparationReasons, ...nativeReasons].sort((a, b) => Number(b.code === "cleanup-capacity-blocked") - Number(a.code === "cleanup-capacity-blocked") || a.observedAt.localeCompare(b.observedAt) || a.code.localeCompare(b.code));
     const reasonsTruncated = selectedReasons.length > 16;
     if (admissionCoverage !== "complete" || reasonsTruncated) selectedReasons = selectedReasons.filter(reason => reason.code !== "no-ready-tasks" && reason.code !== "no-projects-selected");
     const result: Observation = {
@@ -127,11 +129,20 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
     },
     setProjectPreparationUnknown(value: boolean): void { if (projectPreparationUnknown !== value) { if (value) invalidateAdmission(); projectPreparationUnknown = value; dirty(); } },
     setProjectPreparationIncomplete(value: boolean): void { if (projectPreparationIncomplete !== value) { if (value) invalidateAdmission(); projectPreparationIncomplete = value; dirty(); } },
+    setNativeConfigurationReason(scope: Extract<Scope, { kind: "worker" | "project" }>, reason: { observedAt: string; nextAttemptAt: string | null } | null): void {
+      if (!validScope(scope)) { detailsPartial = true; dirty(); return; }
+      const key = scope.kind === "worker" ? "native" : `project/${scope.projectId}`;
+      if (reason === null) { if (nativeConfigurationReasons.delete(key)) dirty(); return; }
+      const previous = nativeConfigurationReasons.get(key);
+      if (previous?.observedAt === reason.observedAt && previous.nextAttemptAt === reason.nextAttemptAt) return;
+      if (previous === undefined) invalidateAdmission();
+      nativeConfigurationReasons.set(key, { scope: copyScope(scope) as Extract<Scope, { kind: "worker" | "project" }>, ...reason }); dirty();
+    },
     invalidateAdmission,
     startActivity(input: ActivityInput): string {
       const operationId = randomUUID();
       if (!validScope(input.scope)) { detailsPartial = true; dirty(); return operationId; }
-      if (input.kind === "maintenance" && input.phase === "project-preparation") invalidateAdmission();
+      if (input.kind === "maintenance" && (input.phase === "project-preparation" || input.phase === "configuration")) invalidateAdmission();
       const at = time(), value = { kind: input.kind, phase: input.phase, operationId, scope: copyScope(input.scope), status: input.status ?? "running", startedAt: at, lastProgressAt: null, elapsedMs: 0, deadlineAt: input.deadlineAt ?? null, waitReason: input.waitReason ?? null, nextAttemptAt: input.nextAttemptAt ?? null } as Activity;
       activities.set(operationId, { value, monotonicStart: monotonic() }); dirty(); return operationId;
     },
