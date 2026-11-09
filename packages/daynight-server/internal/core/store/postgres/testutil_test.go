@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -73,17 +74,24 @@ func closedStore(t *testing.T) *Store {
 	return &Store{Pool: pool}
 }
 
-func assertFaultTriggerRemoved(t *testing.T, database *Store, name, table string) {
-	t.Helper()
+func checkFaultTriggerRemoved(ctx context.Context, database *Store, name, table string) error {
 	var retained bool
-	if err := database.Pool.QueryRow(t.Context(), `SELECT
+	if err := database.Pool.QueryRow(ctx, `SELECT
  EXISTS(SELECT FROM pg_trigger WHERE tgname=$1 AND tgrelid=$2::regclass)
  OR EXISTS(SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
  WHERE p.proname=$1 AND n.nspname=current_schema())`, name, table).Scan(&retained); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	if retained {
-		t.Fatalf("fault trigger or function %s was retained", name)
+		return fmt.Errorf("fault trigger or function %s was retained", name)
+	}
+	return nil
+}
+
+func assertFaultTriggerRemoved(t *testing.T, database *Store, name, table string) {
+	t.Helper()
+	if err := checkFaultTriggerRemoved(t.Context(), database, name, table); err != nil {
+		t.Fatal(err)
 	}
 }
 
