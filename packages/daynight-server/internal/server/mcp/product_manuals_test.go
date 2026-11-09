@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -124,5 +127,64 @@ func TestProductManualFailureHasSafeKey(t *testing.T) {
 	var loadErr *manualLoadError
 	if !errors.As(err, &loadErr) || loadErr.Key != "concepts" || !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("got %v; want concepts and wrapped not-exist error", err)
+	}
+}
+
+func TestEntryRejectsInvalidManualSource(t *testing.T) {
+	missing, _ := manualFixture(t)
+	delete(missing, "manuals/concepts.md")
+	privateError := errors.New("private storage credential and path")
+	tests := []struct {
+		name   string
+		source fs.FS
+		cause  error
+		key    string
+	}{
+		{"missing topic", missing, fs.ErrNotExist, "concepts"},
+		{"source failure", failedManualFS{err: privateError}, privateError, "instructions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			entry, err := newWithManualSource(testAuthenticator{}, "https://daynight.test", nil, logger, nil, tt.source)
+			var loadErr *manualLoadError
+			if entry != nil || !errors.Is(err, tt.cause) || !errors.As(err, &loadErr) || loadErr.Key != tt.key {
+				t.Fatalf("entry = %v, error = %v; want nil entry and wrapped %s failure", entry, err, tt.key)
+			}
+			var record map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+				t.Fatalf("invalid log: %v", err)
+			}
+			for key, want := range map[string]string{"type": "operation_error", "component": "mcp", "phase": "manual_load", "document": tt.key} {
+				if record[key] != want {
+					t.Errorf("log %s = %v; want %s", key, record[key], want)
+				}
+			}
+			if strings.Contains(logs.String(), privateError.Error()) {
+				t.Fatal("log exposes underlying private error")
+			}
+		})
+	}
+}
+
+func TestEntryRejectsInvalidConstructionArguments(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	for _, tt := range []struct {
+		name   string
+		auth   Authenticator
+		origin string
+		logger *slog.Logger
+	}{
+		{"missing auth", nil, "https://daynight.test", logger},
+		{"missing logger", testAuthenticator{}, "https://daynight.test", nil},
+		{"invalid origin", testAuthenticator{}, "not-an-origin", logger},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			entry, err := New(tt.auth, tt.origin, nil, tt.logger, nil)
+			if entry != nil || err == nil {
+				t.Fatalf("entry = %v, error = %v; want constructor rejection", entry, err)
+			}
+		})
 	}
 }
