@@ -20,16 +20,6 @@ func historyPageRows(f *historyScenario, n int) []store.WebhookDelivery {
 		rows[i].EventID = fmt.Sprintf("%08x-2222-4222-8222-222222222222", i+1)
 		rows[i].OccurredAt = f.d.OccurredAt.Add(time.Duration(i) * time.Minute)
 	}
-	f.reader.sources = func(_ context.Context, d store.WebhookDelivery, u string) (store.WebhookHistorySources, error) {
-		if u != f.principal.UserID {
-			f.t.Errorf("source user=%s", u)
-		}
-		s := f.src
-		s.Event.ID = d.EventID
-		s.Event.OccurredAt = d.OccurredAt
-		return s, nil
-	}
-	f.reader.attempts = func(context.Context, string) ([]store.WebhookAttempt, error) { return nil, nil }
 	return rows
 }
 
@@ -37,7 +27,7 @@ func TestHistoryDeliveryPaginationUsesLastEmittedPosition(t *testing.T) {
 	f := newHistoryScenario(t)
 	rows := historyPageRows(f, 3)
 	call := 0
-	f.reader.deliveries = func(_ context.Context, o Owner, e string, at time.Time, id string, limit int) ([]store.WebhookDelivery, error) {
+	f.reader.batch = func(_ context.Context, o Owner, e, actor string, at time.Time, id string, limit int) (store.WebhookHistoryBatch, error) {
 		if o != f.owner || e != f.d.EndpointID || limit != 100 {
 			t.Fatal("wrong history DAO scan")
 		}
@@ -50,7 +40,7 @@ func TestHistoryDeliveryPaginationUsesLastEmittedPosition(t *testing.T) {
 		}
 		v := rows[call:]
 		call++
-		return v, nil
+		return historyBatchRows(f, v), nil
 	}
 	var cursor *string
 	for i := range rows {
@@ -81,8 +71,8 @@ func TestHistoryFilteringCannotRevealMetadataOnlySources(t *testing.T) {
 			f := newHistoryScenario(t)
 			rows := historyPageRows(f, 2)
 			f.src.ProjectReadable = false
-			f.reader.deliveries = func(context.Context, Owner, string, time.Time, string, int) ([]store.WebhookDelivery, error) {
-				return rows, nil
+			f.reader.batch = func(context.Context, Owner, string, string, time.Time, string, int) (store.WebhookHistoryBatch, error) {
+				return historyBatchRows(f, rows), nil
 			}
 			v, err := f.service.ListDeliveries(t.Context(), f.principal, f.owner, f.d.EndpointID, q)
 			retentionFail(t, err)
@@ -97,29 +87,30 @@ func TestHistoryContinuesPastFullFilteredDAOPage(t *testing.T) {
 	f := newHistoryScenario(t)
 	rows := historyPageRows(f, 101)
 	call := 0
-	f.reader.deliveries = func(_ context.Context, _ Owner, _ string, at time.Time, id string, n int) ([]store.WebhookDelivery, error) {
+	f.reader.batch = func(_ context.Context, _ Owner, _ string, _ string, at time.Time, id string, n int) (store.WebhookHistoryBatch, error) {
 		if n != 100 {
 			t.Fatal("unbounded history scan")
 		}
 		call++
 		if call == 1 {
-			return rows[:100], nil
+			return historyBatchRows(f, rows[:100]), nil
 		}
 		if call == 2 {
 			if !at.Equal(rows[99].OccurredAt) || id != rows[99].ID {
 				t.Fatal("scan did not advance across filtered rows")
 			}
-			return rows[100:], nil
+			return historyBatchRows(f, rows[100:]), nil
 		}
 		t.Fatal("unexpected scan")
-		return nil, nil
+		return store.WebhookHistoryBatch{}, nil
 	}
-	f.reader.sources = func(_ context.Context, d store.WebhookDelivery, _ string) (store.WebhookHistorySources, error) {
-		s := f.src
-		s.Event.ID = d.EventID
-		s.Event.OccurredAt = d.OccurredAt
-		s.ProjectReadable = d.ID == rows[100].ID
-		return s, nil
+	readBatch := f.reader.batch
+	f.reader.batch = func(c context.Context, o Owner, e, actor string, at time.Time, id string, n int) (store.WebhookHistoryBatch, error) {
+		batch, err := readBatch(c, o, e, actor, at, id, n)
+		for i := range batch.Items {
+			batch.Items[i].Sources.ProjectReadable = batch.Items[i].Delivery.ID == rows[100].ID
+		}
+		return batch, err
 	}
 	v, err := f.service.ListDeliveries(t.Context(), f.principal, f.owner, f.d.EndpointID, DeliveryQuery{EventType: "task.created"})
 	retentionFail(t, err)
@@ -133,8 +124,8 @@ func TestHistoryContinuesPastFullFilteredDAOPage(t *testing.T) {
 func TestHistoryDeliveryCursorBindsDisclosureAndQuery(t *testing.T) {
 	f := newHistoryScenario(t)
 	rows := historyPageRows(f, 2)
-	f.reader.deliveries = func(context.Context, Owner, string, time.Time, string, int) ([]store.WebhookDelivery, error) {
-		return rows, nil
+	f.reader.batch = func(context.Context, Owner, string, string, time.Time, string, int) (store.WebhookHistoryBatch, error) {
+		return historyBatchRows(f, rows), nil
 	}
 	v, err := f.service.ListDeliveries(t.Context(), f.principal, f.owner, f.d.EndpointID, DeliveryQuery{Limit: 1})
 	retentionFail(t, err)
@@ -235,8 +226,8 @@ func TestHistoryListLimitsAndEmptyPages(t *testing.T) {
 		}
 	}
 	f := newHistoryScenario(t)
-	f.reader.deliveries = func(context.Context, Owner, string, time.Time, string, int) ([]store.WebhookDelivery, error) {
-		return nil, nil
+	f.reader.batch = func(context.Context, Owner, string, string, time.Time, string, int) (store.WebhookHistoryBatch, error) {
+		return store.WebhookHistoryBatch{}, nil
 	}
 	for _, limit := range []int{0, 1, 100} {
 		v, err := f.service.ListDeliveries(t.Context(), f.principal, f.owner, f.d.EndpointID, DeliveryQuery{Limit: limit})
