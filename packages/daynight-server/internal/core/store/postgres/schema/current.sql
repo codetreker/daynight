@@ -1,4 +1,4 @@
--- Schema snapshot version: 54
+-- Schema snapshot version: 55
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1312,6 +1312,8 @@ CREATE INDEX "projects_live_created_id_idx" ON "projects" USING "btree" ("create
 
 CREATE INDEX "session_operations_pending" ON "session_operations" USING "btree" ("session_id", "operation_seq") WHERE (("receipt" ->> 'state'::"text") = 'accepted'::"text");
 
+CREATE INDEX "session_operations_terminal_pending" ON "session_operations" USING "btree" ("session_id", "operation_seq") WHERE (("receipt" ->> 'state'::"text") = ANY (ARRAY['queued'::"text", 'dispatching'::"text"]));
+
 CREATE INDEX "sessions_expiry" ON "sessions" USING "btree" ("expires_at");
 
 CREATE INDEX "task_dependencies_predecessor" ON "task_dependencies" USING "btree" ("project_id", "depends_on_task_id", "task_id");
@@ -1335,6 +1337,8 @@ CREATE INDEX "tasks_project_updated_id" ON "tasks" USING "btree" ("project_id", 
 CREATE INDEX "team_invitations_expiry" ON "team_invitations" USING "btree" ("team_id", "expires_at");
 
 CREATE INDEX "team_invitations_team" ON "team_invitations" USING "btree" ("team_id", "created_at", "id");
+
+CREATE INDEX "team_members_team_created" ON "team_members" USING "btree" ("team_id", "created_at");
 
 CREATE INDEX "team_members_user" ON "team_members" USING "btree" ("user_id", "team_id");
 

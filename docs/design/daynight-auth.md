@@ -302,13 +302,15 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 | device_authorizations | ID、设备秘密摘要、唯一短码、状态、到期、轮询时钟/间隔和批准账号；状态转换与领取以行锁保护。 |
 | device_authorization_limits | bucket_hash、attempts、expires_at；创建与短码查询在不同副本共享限制，到期窗口可清理。 |
 | teams | UUID；唯一 nullable personal_user_id；Personal 的 name 为 null，普通 Team 的 name 非 null；正 version 与时间。 |
-| team_members | `(team_id,user_id)` 唯一；admin/member；正 bigint version 来自独立 sequence；加入与更新时间。 |
+| team_members | `(team_id,user_id)` 唯一；admin/member；正 bigint version 来自独立 sequence；加入与更新时间；`(team_id,created_at)` B-tree 支持成员分页。 |
 | project_ownership | project_id 唯一；真实 team_id、正 version 与 updated_at；每个 Project 恰一行。 |
 | project_grants | `(project_id,user_id)` 唯一；role 为 admin/member；bigint version 来自独立 sequence。 |
 | project_invitations | ID、project_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
 | team_invitations | ID、team_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
 
 使用既有迁移机制、唯一索引和角色 CHECK，不要求新增 foreign key；关联由业务事务验证。
+成员分页仍以 `created_at,user_id` 排序并使用复合游标；两列索引不替代同时间成员的完整排序。
+索引取舍见[成员与终端读取索引决策](../../.agents/notes/implemented/architecture/2026-11-09-member-terminal-read-indexes.md)。
 迁移 `018_device_authorization.sql` 建立设备授权和共享限流表，
 `019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
 ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。

@@ -141,6 +141,9 @@ lease TTL 为 30 秒，客户端每 10 秒以 renew_control 请求续约。释�
 
 操作去重记录保存至执行封存后仍可查询。相同 ID 不同正文拒绝，原操作结果不会
 被新 claim 接管。原始 paste 正文只放在有界内存中；数据库保存摘要与路由元数据。
+`session_operations_terminal_pending` 以 `(session_id,operation_seq)` 索引 receipt 状态为
+`queued` 或 `dispatching` 的操作，服务终端到期和队列读取；Web Session 的 accepted
+队列保留独立的 `session_operations_pending` 索引。
 预览按同连接心跳维护存活时间，新分配时回收已过期且无待提交写入的缓存。
 输入正文使用与持久操作相同的 deadline，到期后不能再被读取或占用新操作容量。
 提交失败和控制暂停时，只清理各自捕获的正文 reservation；事务释放行锁后，
