@@ -13,25 +13,45 @@ import (
 // Runtime coordinates the Bot credential, definition and bound Session in a
 // single transaction. Bot locks always precede the associated Session lock.
 type Runtime struct {
-	engine *sessioncore.Engine
-	write  sessioncore.TransactionRunner
+	core  coreOperations
+	write sessioncore.TransactionRunner
+}
+
+type coreOperations struct {
+	beginOperation   func() (*sessioncore.Operation, error)
+	closeOperation   func(*sessioncore.Operation)
+	lockCredential   func(*sessioncore.Operation, context.Context, store.SessionScope, model.Principal) error
+	authorizeRuntime func(model.Bot, string, string) error
+	checkBot         func(*sessioncore.Operation, string, *model.Bot) error
+	load             func(*sessioncore.Operation, context.Context, store.SessionScope, string, *model.Bot) (*sessioncore.Access, error)
+	checkTestOwner   func(*sessioncore.Operation, *sessioncore.Access, model.Principal) error
+	authority        func(*sessioncore.Access) sessioncore.Authority
 }
 
 func NewRuntime(engine *sessioncore.Engine, write sessioncore.TransactionRunner) *Runtime {
-	return &Runtime{engine: engine, write: write}
+	return &Runtime{core: coreOperations{
+		beginOperation:   engine.BeginOperation,
+		closeOperation:   (*sessioncore.Operation).Close,
+		lockCredential:   (*sessioncore.Operation).LockCredential,
+		authorizeRuntime: botcore.AuthorizeRuntime,
+		checkBot:         (*sessioncore.Operation).CheckBot,
+		load:             (*sessioncore.Operation).Load,
+		checkTestOwner:   (*sessioncore.Operation).CheckTestOwner,
+		authority:        (*sessioncore.Access).Authority,
+	}, write: write}
 }
 
 func (s *Runtime) Run(ctx context.Context, p model.Principal, workerID, id string, prepare func(model.Bot) error, check func(model.Bot, *sessioncore.Access) error, work func(*sessioncore.Operation, store.SessionScope, model.Bot, *sessioncore.Access, func(model.Principal) error) error) error {
-	op, err := s.engine.BeginOperation()
+	op, err := s.core.beginOperation()
 	if err != nil {
 		return err
 	}
-	defer op.Close()
+	defer s.core.closeOperation(op)
 	return s.write(ctx, op, func(scope store.SessionScope) error {
 		if p.Kind != model.PATCredential {
 			return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
 		}
-		if err := op.LockCredential(ctx, scope, p); err != nil {
+		if err := s.core.lockCredential(op, ctx, scope, p); err != nil {
 			return err
 		}
 		bot, err := scope.BotDAO().Bot(ctx, id)
@@ -41,7 +61,7 @@ func (s *Runtime) Run(ctx context.Context, p model.Principal, workerID, id strin
 		if err != nil {
 			return err
 		}
-		if err = botcore.AuthorizeRuntime(bot, p.UserID, workerID); err != nil {
+		if err = s.core.authorizeRuntime(bot, p.UserID, workerID); err != nil {
 			return err
 		}
 		if prepare != nil {
@@ -51,10 +71,10 @@ func (s *Runtime) Run(ctx context.Context, p model.Principal, workerID, id strin
 		}
 		var access *sessioncore.Access
 		if bot.SessionID != nil {
-			if err = op.CheckBot(*bot.SessionID, &bot); err != nil {
+			if err = s.core.checkBot(op, *bot.SessionID, &bot); err != nil {
 				return err
 			}
-			access, err = op.Load(ctx, scope, *bot.SessionID, &bot)
+			access, err = s.core.load(op, ctx, scope, *bot.SessionID, &bot)
 			if err != nil {
 				return err
 			}
@@ -63,20 +83,20 @@ func (s *Runtime) Run(ctx context.Context, p model.Principal, workerID, id strin
 					return err
 				}
 			}
-			if err = op.LockCredential(ctx, scope, p); err != nil {
+			if err = s.core.lockCredential(op, ctx, scope, p); err != nil {
 				return err
 			}
-			if err = op.CheckTestOwner(access, p); err != nil {
+			if err = s.core.checkTestOwner(op, access, p); err != nil {
 				return err
 			}
-			authority := access.Authority()
+			authority := s.core.authority(access)
 			if authority.ParentCredentialID != "" {
 				parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
-				if err = op.LockCredential(ctx, scope, parent); err != nil {
+				if err = s.core.lockCredential(op, ctx, scope, parent); err != nil {
 					return err
 				}
 			}
 		}
-		return work(op, scope, bot, access, func(principal model.Principal) error { return op.LockCredential(ctx, scope, principal) })
+		return work(op, scope, bot, access, func(principal model.Principal) error { return s.core.lockCredential(op, ctx, scope, principal) })
 	})
 }
