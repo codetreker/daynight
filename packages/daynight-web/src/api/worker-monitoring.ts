@@ -1,3 +1,4 @@
+import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 import { array, boolean, count, malformed, record, string, timestamp } from './validation';
 import type { WorkerReadAdmission } from './workers';
@@ -57,6 +58,7 @@ const uuid = (value: unknown): string => typeof value === 'string' && /^[0-9a-f]
 const sequence = (value: unknown): string => typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n ? value : malformed();
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 const text = (value: unknown): string => { const s = string(value); return s.isWellFormed() && s.length > 0 && !s.includes('\0') ? s : malformed(); };
+const monitoringCount = (value: unknown): number => { const n = count(value); return n === 0 ? 0 : n; };
 const coverage = (value: unknown): Coverage => choice(value, ['unknown', 'complete', 'partial'] as const);
 const detail = (value: unknown): DetailCoverage => choice(value, ['complete', 'partial'] as const);
 const lifecycle = (value: unknown): MonitoringSummary['lifecycle'] => choice(value, ['starting', 'running', 'stopping', 'stopped'] as const);
@@ -80,7 +82,7 @@ const association = (value: unknown, owner: MonitoringScope): MonitoringAssociat
 const scoped = (data: Record<string, unknown>): Scoped => { const s = scope(data.scope); return { scope: s, association: association(data.association, s) }; };
 const capacity = (value: unknown, withCoverage: boolean): MonitoringCapacity & { detailCoverage?: DetailCoverage } => {
   const d = fields(value, ['observedAt', 'quality', 'limit', 'occupied', 'available', ...(withCoverage ? ['detailCoverage'] : [])]);
-  const limit = count(d.limit), occupied = count(d.occupied), available = count(d.available);
+  const limit = monitoringCount(d.limit), occupied = monitoringCount(d.occupied), available = monitoringCount(d.available);
   if (limit < 1 || limit > 64 || available !== Math.max(0, limit - occupied)) return malformed();
   return { observedAt: timestamp(d.observedAt), quality: choice(d.quality, ['current', 'stale'] as const), limit, occupied, available, ...(withCoverage ? { detailCoverage: detail(d.detailCoverage) } : {}) };
 };
@@ -105,14 +107,14 @@ const reservation = (value: unknown): MonitoringReservation => {
 const activity = (value: unknown): MonitoringActivity => {
   const d = fields(value, ['kind', 'phase', 'operationId', 'status', 'scope', 'startedAt', 'lastProgressAt', 'elapsedMs', 'deadlineAt', 'waitReason', 'nextAttemptAt', 'association']);
   const kind = choice(d.kind, ['execution', 'cleanup', 'maintenance'] as const);
-  return { ...scoped(d), kind, phase: kind === 'execution' ? choice(d.phase, executionPhases) : kind === 'cleanup' ? choice(d.phase, cleanupPhases) : phase(d.phase), operationId: uuid(d.operationId), status: choice(d.status, ['queued', 'running', 'waiting', 'paused'] as const), startedAt: timestamp(d.startedAt), lastProgressAt: nullable(d.lastProgressAt, timestamp), elapsedMs: count(d.elapsedMs), deadlineAt: nullable(d.deadlineAt, timestamp), waitReason: nullable(d.waitReason, v => choice(v, waits)), nextAttemptAt: nullable(d.nextAttemptAt, timestamp) };
+  return { ...scoped(d), kind, phase: kind === 'execution' ? choice(d.phase, executionPhases) : kind === 'cleanup' ? choice(d.phase, cleanupPhases) : phase(d.phase), operationId: uuid(d.operationId), status: choice(d.status, ['queued', 'running', 'waiting', 'paused'] as const), startedAt: timestamp(d.startedAt), lastProgressAt: nullable(d.lastProgressAt, timestamp), elapsedMs: monitoringCount(d.elapsedMs), deadlineAt: nullable(d.deadlineAt, timestamp), waitReason: nullable(d.waitReason, v => choice(v, waits)), nextAttemptAt: nullable(d.nextAttemptAt, timestamp) };
 };
 const failure = (value: unknown): MonitoringFailure => {
   const d = fields(value, ['operationId', 'component', 'phase', 'scope', 'error', 'firstObservedAt', 'lastObservedAt', 'occurrencesInRun', 'retryState', 'nextAttemptAt', 'association']);
   const component = choice(d.component, components), parsedScope = scoped(d), retryState = choice(d.retryState, ['none', 'scheduled', 'running', 'manual'] as const), nextAttemptAt = nullable(d.nextAttemptAt, timestamp);
   if ((retryState === 'scheduled') !== (nextAttemptAt !== null) || (component === 'project' && parsedScope.scope.kind === 'worker')) return malformed();
   const parsedPhase = component === 'execution' ? choice(d.phase, executionPhases) : component === 'cleanup' ? choice(d.phase, cleanupPhases) : component === 'monitoring' ? choice(d.phase, deliveryPhases) : phase(d.phase);
-  return { ...parsedScope, component, phase: parsedPhase, operationId: uuid(d.operationId), error: cause(d.error), firstObservedAt: timestamp(d.firstObservedAt), lastObservedAt: timestamp(d.lastObservedAt), occurrencesInRun: count(d.occurrencesInRun), retryState, nextAttemptAt };
+  return { ...parsedScope, component, phase: parsedPhase, operationId: uuid(d.operationId), error: cause(d.error), firstObservedAt: timestamp(d.firstObservedAt), lastObservedAt: timestamp(d.lastObservedAt), occurrencesInRun: monitoringCount(d.occurrencesInRun), retryState, nextAttemptAt };
 };
 const recovery = (value: unknown): MonitoringRecovery => {
   const d = fields(value, ['operationId', 'component', 'scope', 'observedAt', 'explanation', 'explanationTruncated', 'association']);
@@ -169,16 +171,86 @@ export const parseWorkerMonitoringQuery = (value: unknown, workerIds: readonly s
   if (items.length !== workerIds.length || items.some((item, index) => item.workerId !== workerIds[index])) return malformed();
   return { observedAt: timestamp(d.observedAt), items };
 };
+// Every numeric field in a successful monitoring DTO is a nonnegative safe
+// integer. Inspect its source token before Number can round a fractional or
+// out-of-range value into an apparently valid integer.
+const validateMonitoringNumbers = (source: string): void => {
+  const token = /(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?/y;
+  for (let at = 0; at < source.length;) {
+    if (source[at] === '"') {
+      at++;
+      while (at < source.length && source[at] !== '"') at += source[at] === '\\' ? 2 : 1;
+      at++;
+      continue;
+    }
+    if (source[at] !== '-' && !/[0-9]/.test(source[at]!)) { at++; continue; }
+    token.lastIndex = at;
+    const match = token.exec(source);
+    if (match === null) return malformed();
+    at = token.lastIndex;
+    const fraction = match[3] ?? '';
+    const digits = (match[2]! + fraction).replace(/^0+/, '');
+    if (digits === '') continue;
+    if (match[1] === '-') return malformed();
+    const exponentText = match[4] ?? '0';
+    const magnitude = exponentText.replace(/^[+-]?0*/, '');
+    if (magnitude.length > 6) return malformed();
+    const exponent = (exponentText.startsWith('-') ? -1 : 1) * Number(magnitude || '0');
+    const significant = digits.replace(/0+$/, '');
+    const scale = exponent - fraction.length + digits.length - significant.length;
+    if (scale < 0 || scale > 16 || significant.length + scale > 16 || BigInt(significant + '0'.repeat(scale)) > 9007199254740991n) return malformed();
+  }
+};
+
+// Inspect the original bytes before object keys can be collapsed by JSON.parse.
+// The service owns these encoded response budgets, including the final newline.
+const decodeMonitoringJson = async (response: Response, signal: AbortSignal, limit: number): Promise<unknown> => {
+  if (response.body === null) throw new Error('Missing monitoring response body');
+  const length = response.headers.get('Content-Length');
+  if (length !== null && (!/^\d+$/.test(length) || BigInt(length) > BigInt(limit))) {
+    void response.body.cancel().catch(() => undefined);
+    throw new Error('Monitoring response exceeds its budget');
+  }
+  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+  let size = 0;
+  const cancel = () => { void reader.cancel(signal.reason).catch(() => undefined); };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    signal.throwIfAborted();
+    for (;;) {
+      const part = await reader.read();
+      signal.throwIfAborted();
+      if (part.done) break;
+      size += part.value.byteLength;
+      if (size > limit) throw new Error('Monitoring response exceeds its budget');
+      chunks.push(part.value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const value = decodeStrictSessionJson(bytes, limit);
+    if (response.ok) validateMonitoringNumbers(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
+    return value;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+};
+const admitMonitoringResponse = (response: Response, userId: string, onPrincipalMismatch: () => void): void => {
+  try { assertResponsePrincipal(response, userId, onPrincipalMismatch); }
+  catch (error) { if (response.body !== null) void response.body.cancel().catch(() => undefined); throw error; }
+};
 export const getWorkerMonitoring = async (workerId: string, signal: AbortSignal, admission: WorkerReadAdmission): Promise<WorkerMonitoringDetail> => {
   const userId = requestId(admission.userId), canonicalWorkerId = requestId(workerId);
   const response = await request(`/api/v1/me/workers/${canonicalWorkerId}/monitoring`, signal, { headers: { Accept: 'application/json' } });
-  assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
-  return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parseWorkerMonitoringDetail(value); });
+  admitMonitoringResponse(response, userId, admission.onPrincipalMismatch);
+  return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parseWorkerMonitoringDetail(value); }, response => decodeMonitoringJson(response, signal, 512 * 1024));
 };
 export const queryWorkerMonitoring = async (workerIds: readonly string[], signal: AbortSignal, admission: WorkerReadAdmission): Promise<WorkerMonitoringQuery> => {
   const userId = requestId(admission.userId), ids = workerIds.map(requestId);
   if (ids.length < 1 || ids.length > 100 || new Set(ids).size !== ids.length) throw new ApiError('protocol');
   const response = await request('/api/v1/me/workers/monitoring/query', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ workerIds: ids }) });
-  assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
-  return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parseWorkerMonitoringQuery(value, ids); });
+  admitMonitoringResponse(response, userId, admission.onPrincipalMismatch);
+  return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parseWorkerMonitoringQuery(value, ids); }, response => decodeMonitoringJson(response, signal, 256 * 1024));
 };

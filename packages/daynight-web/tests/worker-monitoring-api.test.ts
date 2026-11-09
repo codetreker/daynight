@@ -99,4 +99,87 @@ describe('Worker monitoring response contracts', () => {
     for (const ids of [[], [id, id], Array.from({ length: 101 }, (_, i) => workerId(i))]) await expect(queryWorkerMonitoring(ids, signal, admission)).rejects.toMatchObject({ kind: 'protocol' });
     expect(fetch).toHaveBeenCalledTimes(4);
   });
+  it('rejects duplicate decoded keys in the original GET and query response bytes', async () => {
+    const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() }, signal = new AbortController().signal;
+    const getBody = JSON.stringify(detail()).replace('"coverage":"complete"', String.raw`"coverage":"partial","cov\u0065rage":"complete"`);
+    const queryBody = JSON.stringify(query()).replace('"permissionProjection":"current"', String.raw`"permissionProjection":"restricted","permissionProje\u0063tion":"current"`);
+    const getPlain = JSON.stringify(detail()).replace('"state":"available"', '"state":"absent","state":"available"');
+    const queryPlain = JSON.stringify(query()).replace('"reasonCodes":["no-ready-tasks"]', '"reasonCodes":[],"reasonCodes":["no-ready-tasks"]');
+    const response = (body: string) => new Response(new TextEncoder().encode(body), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response(getBody)).mockResolvedValueOnce(response(queryBody)).mockResolvedValueOnce(response(getPlain)).mockResolvedValueOnce(response(queryPlain))
+      .mockResolvedValueOnce(response(JSON.stringify(detail()))).mockResolvedValueOnce(response(JSON.stringify(query()))));
+    await expect(getWorkerMonitoring(id, signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    await expect(queryWorkerMonitoring([id], signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    await expect(getWorkerMonitoring(id, signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    await expect(queryWorkerMonitoring([id], signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    expect(await getWorkerMonitoring(id, signal, admission)).toEqual(detail());
+    expect(await queryWorkerMonitoring([id], signal, admission)).toEqual(query());
+  });
+  it('preserves principal admission and the confirmed 503 error before decoding a success', async () => {
+    const mismatch = vi.fn(), admission = { userId: WORKER_USER, onPrincipalMismatch: mismatch }, signal = new AbortController().signal;
+    const headers = { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER };
+    const wrong = new Response(new Uint8Array([0xff]), { headers: { ...headers, 'Daynight-User-ID': workerId(90) } });
+    const unavailable = new Response(JSON.stringify({ error: { code: 'monitoring_unavailable', message: 'Unavailable', requestId: 'worker-request', details: { sample: 0.1 } } }), { status: 503, headers });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(wrong).mockResolvedValueOnce(unavailable));
+    await expect(getWorkerMonitoring(id, signal, admission)).rejects.toMatchObject({ code: 'principal_mismatch' });
+    expect(mismatch).toHaveBeenCalledOnce();
+    await expect(queryWorkerMonitoring([id], signal, admission)).rejects.toMatchObject({ kind: 'server', status: 503, code: 'monitoring_unavailable', requestId: 'worker-request' });
+  });
+  it('cancels the unread stream on principal rejection without replacing the admission error', async () => {
+    const mismatch = vi.fn(), cancel = vi.fn(), admission = { userId: WORKER_USER, onPrincipalMismatch: mismatch }, signal = new AbortController().signal;
+    const body = new ReadableStream<Uint8Array>({ cancel }, { highWaterMark: 0 });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': workerId(90) } })));
+    await expect(queryWorkerMonitoring([id], signal, admission)).rejects.toMatchObject({ code: 'principal_mismatch' });
+    expect(mismatch).toHaveBeenCalledOnce(); expect(cancel).toHaveBeenCalledOnce();
+  });
+  it('validates original number values exactly before JavaScript can round them', async () => {
+    const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() }, signal = new AbortController().signal;
+    const getValue = detail(); getValue.data.capacity.occupied = Number.MAX_SAFE_INTEGER; getValue.data.capacity.available = 0;
+    const queryValue = query(); queryValue.items[0]!.summary.capacity.occupied = Number.MAX_SAFE_INTEGER; queryValue.items[0]!.summary.capacity.available = 0;
+    const getBody = JSON.stringify(getValue), queryBody = JSON.stringify(queryValue);
+    const fractionalGet = getBody.replace('"occupied":9007199254740991', '"occupied":9007199254740990.9');
+    const fractionalQuery = queryBody.replace('"occupied":9007199254740991', '"occupied":9007199254740990.9');
+    const overflow = getBody.replace('"elapsedMs":100', '"elapsedMs":9007199254740992');
+    const underflow = getBody.replace('"elapsedMs":100', '"elapsedMs":1e-4000');
+    const integralGet = getBody.replace('"limit":2', '"limit":2.0').replace('"elapsedMs":100', '"elapsedMs":1e2').replace('"occurrencesInRun":1', '"occurrencesInRun":10e-1');
+    const integralQuery = queryBody.replace('"limit":2', '"limit":20e-1').replace('"available":0', '"available":-0');
+    const response = (body: string) => new Response(new TextEncoder().encode(body), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response(fractionalGet)).mockResolvedValueOnce(response(fractionalQuery))
+      .mockResolvedValueOnce(response(overflow)).mockResolvedValueOnce(response(underflow)).mockResolvedValueOnce(response(integralGet)).mockResolvedValueOnce(response(integralQuery)));
+    await expect(getWorkerMonitoring(id, signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    await expect(queryWorkerMonitoring([id], signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    await expect(getWorkerMonitoring(id, signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    await expect(getWorkerMonitoring(id, signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    expect(await getWorkerMonitoring(id, signal, admission)).toEqual(getValue);
+    expect(await queryWorkerMonitoring([id], signal, admission)).toEqual(queryValue);
+  });
+  it('enforces response byte limits and rejects malformed UTF-8', async () => {
+    const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() }, signal = new AbortController().signal;
+    const headers = { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER };
+    const source = JSON.stringify(absent());
+    const atLimit = source + ' '.repeat(512 * 1024 - source.length);
+    const tooLarge = JSON.stringify(query()) + ' '.repeat(256 * 1024);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(atLimit, { headers }))
+      .mockResolvedValueOnce(new Response(tooLarge, { headers })).mockResolvedValueOnce(new Response(new Uint8Array([0xff]), { headers })));
+    expect(await getWorkerMonitoring(id, signal, admission)).toEqual(absent());
+    await expect(queryWorkerMonitoring([id], signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    await expect(getWorkerMonitoring(id, signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+  });
+  it('propagates cancellation while reading and cancels the owned response stream', async () => {
+    const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() }, controller = new AbortController();
+    const started = Promise.withResolvers<void>(), cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull: () => { started.resolve(); return new Promise<void>(() => {}); }, cancel }, { highWaterMark: 0 });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER } })));
+    const pending = getWorkerMonitoring(id, controller.signal, admission);
+    await started.promise; controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+  it('retains the response-stream failure as the protocol error cause', async () => {
+    const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() }, signal = new AbortController().signal;
+    const failure = new Error('controlled stream failure');
+    const body = new ReadableStream<Uint8Array>({ pull: controller => controller.error(failure) }, { highWaterMark: 0 });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER } })));
+    await expect(getWorkerMonitoring(id, signal, admission)).rejects.toMatchObject({ kind: 'protocol', status: 200, cause: failure });
+  });
 });

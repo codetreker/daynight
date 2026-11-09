@@ -39,6 +39,7 @@ async function install(page: Page, running = false, linked = false, large = fals
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), versionForTask: row => row.id === taskId ? task.version : previous.version, propertiesForTask: row => row.id === taskId ? task.properties : previous.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-graph`) return send(graph());
     if (path === `/api/v1/projects/${projectId}/tasks/search` && request.method() === 'POST') {
       expect(request.postDataJSON()).toEqual({ query: `id:${taskId}`, limit: 15 });
       return send({ projectId, total: 1, items: [{ id: task.id, projectId, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
