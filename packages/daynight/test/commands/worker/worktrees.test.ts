@@ -51,12 +51,21 @@ const fixture = async (refFormat: RefFormat = "files") => {
   const root = await mkdtemp(path.join(scratch, "Git 用户 ")); directories.push(root);
   const repository = path.join(root, "repository");
   cpSync(source, repository, { recursive: true, force: false, errorOnExist: true });
+  const bare = path.join(root, "origin.git");
+  git(root, ["clone", "--bare", repository, bare]);
+  git(repository, ["config", `url.${bare}.insteadOf`, remote]);
   const project: WorkerProject = { projectId: ids.projectId, repoUrl: remote, localPath: repository };
   const owner: ResourceOwner = { projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId };
-  return { root, repository, project, owner };
+  return { root, repository, bare, project, owner };
 };
 const administrativeDirectory = (cwd: string): string => git(cwd, ["rev-parse", "--absolute-git-dir"]);
 const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => path.normalize(field.slice(9)));
+const privateBases = (cwd: string): string => git(cwd, ["for-each-ref", "--format=%(refname)", "refs/daynight/worker-bases/"]);
+const commitForOrigin = (repository: string, bare: string, branch: string, message: string): string => {
+  const commit = git(repository, ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", message]);
+  git(bare, ["fetch", "--no-write-fetch-head", "--no-tags", "--no-auto-maintenance", repository, `${commit}:refs/heads/${branch}`]);
+  return commit;
+};
 const changedClaim = (owner: ResourceOwner): ResourceOwner => ({ ...owner, claimId: "66666666-6666-4666-8666-666666666666", worktreeId: "77777777-7777-4777-8777-777777777777" });
 beforeAll(async () => {
   await mkdir(scratch, { recursive: true });
@@ -278,6 +287,23 @@ describe("worker repositories and task worktrees", () => {
     expect(result.root).toBe(destination); expect(cloneTimeout).toBe(120_000); expect(await readFile(path.join(destination, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
+  it("refreshes the remote default again after cloning a missing repository", async () => {
+    const f = await fixture(); const destination = path.join(f.root, "clone"); let latest = "";
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      if (!args.includes("clone")) return runRepositoryGit(cwd, args, op, options);
+      const result = await runRepositoryGit(cwd, args.map(value => value === remote ? f.bare : value), op, options);
+      git(destination, ["remote", "set-url", "origin", remote]);
+      git(destination, ["config", `url.${f.bare}.insteadOf`, remote]);
+      latest = commitForOrigin(f.repository, f.bare, "main", "advanced after clone");
+      return result;
+    } });
+    const clone = { ...f.project, localPath: destination };
+    await adapter.prepareRepository(clone, operation());
+    const binding = await adapter.prepareWorktree(clone, f.owner, operation());
+    expect(git(binding.worktreePath, ["rev-parse", "HEAD"])).toBe(latest);
+    expect(privateBases(destination)).toBe("");
+  });
+
   it("retries empty failed clone reservations and rejects existing nonrepositories, nested paths and mismatched origins", async () => {
     const f = await fixture(); const failed = new Error("controlled clone failure"); let attempts = 0;
     const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { if (args.includes("clone")) { attempts += 1; throw failed; } return runRepositoryGit(cwd, args, op, options); } });
@@ -312,6 +338,150 @@ describe("worker repositories and task worktrees", () => {
     expect(owner).toMatchObject({ projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId, leaf: `${entry.dev}:${entry.ino}` });
     expect(owner).not.toHaveProperty("serverOrigin");
     expect(await adapter.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
+  });
+
+  it("starts from the fetched remote HEAD even with a stale local default and another dirty checkout", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const initial = git(f.repository, ["rev-parse", "HEAD"]);
+    git(f.repository, ["checkout", "-b", "local-work"]);
+    git(f.repository, ["update-ref", `refs/daynight/worker-bases/${f.owner.worktreeId}`, initial]);
+    git(f.repository, ["update-ref", "refs/remotes/origin/main", initial]);
+    git(f.repository, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    const latest = commitForOrigin(f.repository, f.bare, "trunk", "new remote default");
+    git(f.bare, ["symbolic-ref", "HEAD", "refs/heads/trunk"]);
+    await writeFile(path.join(f.repository, "tracked.txt"), "local dirty work\n");
+    await writeFile(path.join(f.repository, "untracked"), "keep\n");
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    expect(git(binding.worktreePath, ["rev-parse", "HEAD"])).toBe(latest);
+    expect(git(f.repository, ["rev-parse", `refs/heads/${binding.branch}`])).toBe(latest);
+    expect(git(f.repository, ["rev-parse", "HEAD"])).toBe(initial);
+    expect(git(f.repository, ["symbolic-ref", "HEAD"])).toBe("refs/heads/local-work");
+    expect(git(f.repository, ["symbolic-ref", "refs/remotes/origin/HEAD"])).toBe("refs/remotes/origin/main");
+    expect(await readFile(path.join(f.repository, "tracked.txt"), "utf8")).toBe("local dirty work\n");
+    expect(await readFile(path.join(f.repository, "untracked"), "utf8")).toBe("keep\n");
+    expect(privateBases(f.repository)).toBe("");
+  });
+
+  it("fails closed when the remote HEAD cannot be fetched, while retaining existing work", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const initial = git(f.repository, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(f.repository, "tracked.txt"), "keep dirty\n");
+    await rename(f.bare, `${f.bare}.offline`);
+    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow();
+    expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
+    expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
+    expect(git(f.repository, ["rev-parse", "HEAD"])).toBe(initial);
+    expect(await readFile(path.join(f.repository, "tracked.txt"), "utf8")).toBe("keep dirty\n");
+  });
+
+  it("rejects a remote HEAD that does not resolve to a commit", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const blob = git(f.repository, ["hash-object", "-w", "tracked.txt"]);
+    git(f.repository, ["push", f.bare, `${blob}:refs/tags/not-a-commit`]);
+    git(f.bare, ["symbolic-ref", "HEAD", "refs/tags/not-a-commit"]);
+    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow();
+    expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
+    expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
+  });
+
+  it("never reuses a stale private ref when remote HEAD is absent", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const old = git(f.repository, ["rev-parse", "HEAD"]);
+    const ref = `refs/daynight/worker-bases/${f.owner.worktreeId}`;
+    git(f.repository, ["update-ref", ref, old]);
+    git(f.bare, ["symbolic-ref", "HEAD", "refs/heads/missing"]);
+    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow();
+    expect(git(f.repository, ["rev-parse", ref])).toBe(old);
+    expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
+    expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
+  });
+
+  it("preserves both creation and private-ref cleanup failures", async () => {
+    const f = await fixture(); const creation = new Error("controlled worktree failure"), cleanup = new Error("controlled ref cleanup failure");
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      if (args.includes("worktree") && args.includes("add")) throw creation;
+      if (args.includes("update-ref") && args.includes("-d")) throw cleanup;
+      return runRepositoryGit(cwd, args, op, options);
+    } });
+    const failure = await adapter.prepareWorktree(f.project, f.owner, operation()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({ cause: creation, errors: [creation, cleanup] });
+    expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
+    expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
+  });
+
+  it("reuses dirty worktrees and retained task branches while origin is offline", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const retained = git(binding.worktreePath, ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "retained"]);
+    git(binding.worktreePath, ["reset", "--hard", retained]);
+    await writeFile(path.join(binding.worktreePath, "tracked.txt"), "dirty task work\n");
+    await rename(f.bare, `${f.bare}.offline`);
+    expect(await adapter.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("dirty task work\n");
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    const restored = await adapter.prepareWorktree(f.project, changedClaim(f.owner), operation());
+    expect(git(restored.worktreePath, ["rev-parse", "HEAD"])).toBe(retained);
+  });
+
+  it("keeps concurrent tasks on their own fetched commits", async () => {
+    const f = await fixture();
+    const firstHead = git(f.repository, ["rev-parse", "HEAD"]);
+    const fetchHead = path.join(f.repository, ".git", "FETCH_HEAD");
+    await writeFile(fetchHead, "sentinel\n");
+    git(f.repository, ["update-ref", "refs/remotes/origin/main", firstHead]);
+    let fetched!: () => void; const firstFetched = new Promise<void>(resolve => { fetched = resolve; });
+    let release!: () => void; const firstMayContinue = new Promise<void>(resolve => { release = resolve; });
+    let fetches = 0;
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      const result = await runRepositoryGit(cwd, args, op, options);
+      if (args.includes("fetch") && ++fetches === 1) { fetched(); await firstMayContinue; }
+      return result;
+    } });
+    const otherOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", worktreeId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
+    const first = reservation(adapter.prepareWorktree(f.project, f.owner, operation()));
+    try {
+      await firstFetched;
+      const secondHead = commitForOrigin(f.repository, f.bare, "main", "remote advances between fetches");
+      expect(git(f.repository, ["rev-parse", "refs/remotes/origin/main"])).toBe(firstHead);
+      const second = await reservation(adapter.prepareWorktree(f.project, otherOwner, operation()));
+      release();
+      const firstBinding = await first;
+      expect(git(firstBinding.worktreePath, ["rev-parse", "HEAD"])).toBe(firstHead);
+      expect(git(second.worktreePath, ["rev-parse", "HEAD"])).toBe(secondHead);
+      expect(await readFile(fetchHead, "utf8")).toBe("sentinel\n");
+      expect(git(f.repository, ["rev-parse", "refs/remotes/origin/main"])).toBe(firstHead);
+      expect(privateBases(f.repository)).toBe("");
+    } finally { release(); await Promise.allSettled([first]); }
+  });
+
+  it("exposes a real fetch timeout without creating a branch or registration", async () => {
+    const f = await fixture(); const blocker = path.join(f.root, "block-fetch.cjs");
+    await writeFile(blocker, "setInterval(() => {}, 1000);\n");
+    git(f.repository, ["config", "remote.origin.uploadpack", `\"${process.execPath}\" \"${blocker}\"`]);
+    const adapter = manager(f.root, { runGit: (cwd, args, op, options) => runRepositoryGit(cwd, args, op, args.includes("fetch") ? { ...options, timeoutMs: 1500 } : options) });
+    await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("deadline exceeded");
+    expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
+    expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
+  });
+
+  it("does not create a branch when cancellation interrupts the refresh", async () => {
+    const f = await fixture(); const controller = new AbortController(); const cancelled = new Error("refresh cancelled");
+    let fetching!: () => void; const started = new Promise<void>(resolve => { fetching = resolve; });
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      if (args.includes("fetch")) {
+        fetching();
+        await new Promise<void>(resolve => op.signal.addEventListener("abort", () => resolve(), { once: true }));
+        op.check();
+      }
+      return runRepositoryGit(cwd, args, op, options);
+    } });
+    const op = createOperation({ signal: controller.signal }); operations.push(op);
+    const pending = reservation(adapter.prepareWorktree(f.project, f.owner, op));
+    await started; controller.abort(cancelled);
+    await expect(pending).rejects.toMatchObject({ kind: "cancelled", cause: cancelled });
+    expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
+    expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
   });
 
   it("rejects ownership markers with unexpected fields without changing work", async () => {
@@ -391,7 +561,7 @@ describe("worker repositories and task worktrees", () => {
     const f = await fixture(); const timeouts: (number | undefined)[] = [];
     const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { timeouts.push(options?.timeoutMs); return runRepositoryGit(cwd, args, op, options); } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
-    expect(timeouts.length).toBeGreaterThan(0); expect(timeouts.every(timeout => timeout === 30_000)).toBe(true);
+    expect(timeouts).toContain(120_000); expect(timeouts.every(timeout => timeout === 30_000 || timeout === 120_000)).toBe(true);
     timeouts.length = 0;
     await writeFile(path.join(binding.worktreePath, "unpublished"), "terminal temp\n"); await writeFile(path.join(f.repository, "unrelated"), "keep\n");
     await cleanupOperation(op => adapter.removeWorktree(f.project, f.owner, op));
