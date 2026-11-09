@@ -294,8 +294,8 @@ func TestHistoryPropagatesDependencyErrors(t *testing.T) {
 					return store.WebhookDelivery{}, failure
 				}
 			case "history list":
-				f.reader.deliveries = func(context.Context, Owner, string, time.Time, string, int) ([]store.WebhookDelivery, error) {
-					return nil, failure
+				f.reader.batch = func(context.Context, Owner, string, string, time.Time, string, int) (store.WebhookHistoryBatch, error) {
+					return store.WebhookHistoryBatch{}, failure
 				}
 				operation = func() (any, error) {
 					return f.service.ListDeliveries(t.Context(), f.principal, f.owner, f.d.EndpointID, DeliveryQuery{})
@@ -306,8 +306,8 @@ func TestHistoryPropagatesDependencyErrors(t *testing.T) {
 					return f.service.ListDeliveries(t.Context(), f.principal, f.owner, f.d.EndpointID, DeliveryQuery{})
 				}
 			case "policy":
-				f.reader.deliveries = func(context.Context, Owner, string, time.Time, string, int) ([]store.WebhookDelivery, error) {
-					return nil, nil
+				f.reader.batch = func(context.Context, Owner, string, string, time.Time, string, int) (store.WebhookHistoryBatch, error) {
+					return store.WebhookHistoryBatch{}, nil
 				}
 				f.reader.policy = func(context.Context, int64) (wm.Policy, error) { return wm.Policy{}, failure }
 				operation = func() (any, error) {

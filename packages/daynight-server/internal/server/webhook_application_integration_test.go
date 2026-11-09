@@ -234,7 +234,7 @@ func TestWebhookProductionApplicationMaintenance(t *testing.T) {
 	delivery := store.WebhookDelivery{ID: "75555555-5555-4555-8555-555555555555", EventID: eventID, EndpointID: endpoint.ID, EventType: "task.created", ProjectID: project, Owner: owner, OccurredAt: now, OriginalMatchCount: 1, OriginalMatchSHA256: matchDigest, DestinationRevision: 1, DestinationKind: "http", DestinationOrigin: endpoint.Origin, AdapterVersion: 1, DestinationConfiguration: append([]byte(nil), endpoint.DestinationConfiguration...), Body: rendered, BodySHA256: digest[:], OriginalBodyBytes: len(rendered), Generation: 1, State: "pending", ExpiresAt: now.Add(3 * 24 * time.Hour), AutomaticExpiresAt: now.Add(3 * 24 * time.Hour), PayloadExpiresAt: now.Add(7 * 24 * time.Hour)}
 	sources := store.WebhookHistorySources{Event: store.WebhookCapturedEvent{ID: eventID, ProjectID: project, TaskID: taskID, EventType: "task.created", OccurredAt: now, FactBytes: rendered, FactSHA256: digest[:], TaskVersion: &version}, OriginalFactBytes: len(rendered), TaskTitle: &title, ProjectReadable: true, TaskPresent: true, Matches: []store.WebhookAdmissionMatch{{WebhookCapturedMatch: match, Continuous: true}}}
 	planHistory := func(generation int64) {
-		read := scope("Credential", "Endpoint", "ObservedAt", "HistoryDisclosure", "HistoryDeliveries", "HistorySources", "ObservedAt", "ReadEligibility", "Endpoint", "ObservedAt", "HistoryAttempts", "Policy")
+		read := scope("Credential", "Endpoint", "ObservedAt", "HistoryDisclosure", "HistoryBatch", "HistoryMatches", "HistoryBatchAttempts", "Policy")
 		read.delivery, read.sources = delivery, sources
 		read.delivery.Generation = generation
 		plans.addRead(read)

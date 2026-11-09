@@ -45,6 +45,9 @@ func (m mgmtMockBase) need(method string, configured bool) {
 }
 
 type mgmtWebhookDAO struct {
+	HistoryBatchFn         func(context.Context, wm.Owner, string, string, time.Time, string, int) (store.WebhookHistoryBatch, error)
+	HistoryMatchesFn       func(context.Context, []string) ([]store.WebhookHistoryMatch, error)
+	HistoryBatchAttemptsFn func(context.Context, []string) ([]store.WebhookAttempt, error)
 	mgmtMockBase
 	EndpointFn          func(context.Context, wm.Owner, string) (wm.Endpoint, error)
 	EndpointsFn         func(context.Context, wm.Owner) ([]wm.Endpoint, error)
@@ -128,6 +131,18 @@ func (m *mgmtWebhookDAO) DeleteSigningKeys(p0 context.Context, p1 string) error 
 func (m *mgmtWebhookDAO) PutOperation(p0 context.Context, p1 wm.Operation) error {
 	m.need("PutOperation", m.PutOperationFn != nil)
 	return m.PutOperationFn(p0, p1)
+}
+func (m *mgmtWebhookDAO) HistoryBatch(c context.Context, o wm.Owner, e, actor string, at time.Time, id string, n int) (store.WebhookHistoryBatch, error) {
+	m.need("HistoryBatch", m.HistoryBatchFn != nil)
+	return m.HistoryBatchFn(c, o, e, actor, at, id, n)
+}
+func (m *mgmtWebhookDAO) HistoryMatches(c context.Context, ids []string) ([]store.WebhookHistoryMatch, error) {
+	m.need("HistoryMatches", m.HistoryMatchesFn != nil)
+	return m.HistoryMatchesFn(c, ids)
+}
+func (m *mgmtWebhookDAO) HistoryBatchAttempts(c context.Context, ids []string) ([]store.WebhookAttempt, error) {
+	m.need("HistoryBatchAttempts", m.HistoryBatchAttemptsFn != nil)
+	return m.HistoryBatchAttemptsFn(c, ids)
 }
 func (m *mgmtWebhookDAO) HistoryDeliveries(p0 context.Context, p1 wm.Owner, p2 string, p3 time.Time, p4 string, p5 int) ([]store.WebhookDelivery, error) {
 	m.need("HistoryDeliveries", m.HistoryDeliveriesFn != nil)

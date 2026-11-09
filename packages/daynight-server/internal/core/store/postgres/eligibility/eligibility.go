@@ -35,24 +35,10 @@ func (d *dao) ReadEligibility(ctx context.Context, owner webhook.Owner, projectI
 	if err != nil {
 		return store.WebhookEligibility{}, pg.QueryError("read webhook eligibility", err)
 	}
-	if !live {
-		return store.WebhookEligibility{Status: "resource_unavailable"}, nil
-	}
-	if name == nil || teamID == nil || teamExists == nil {
-		return store.WebhookEligibility{}, fmt.Errorf("live project ownership or owner Team missing")
-	}
-	status := "eligible"
-	if owner.Kind == "personal" && !ownerAccess {
-		status = "access_revoked"
-	}
-	if owner.Kind == "team" && *teamID != owner.ID {
-		status = "owner_scope_changed"
-	}
-	out := store.WebhookEligibility{Status: status}
-	if status == "eligible" && actorAccess {
-		out.ProjectName = name
-	}
-	return out, nil
+	return webhook.EvaluateEligibility(owner, webhook.EligibilityFacts{
+		ProjectLive: live, ProjectName: name, TeamID: teamID,
+		TeamPresent: teamExists != nil, OwnerAccess: ownerAccess, ActorAccess: actorAccess,
+	})
 }
 
 func (d *dao) LockAffected(ctx context.Context, f store.WebhookEligibilityFilter) ([]store.WebhookAuthorization, error) {

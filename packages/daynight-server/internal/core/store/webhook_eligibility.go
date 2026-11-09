@@ -7,10 +7,7 @@ import (
 )
 
 // WebhookEligibility is the current owner scope and the actor-visible project name.
-type WebhookEligibility struct {
-	Status      string
-	ProjectName *string
-}
+type WebhookEligibility = webhook.Eligibility
 
 // WebhookEligibilityFilter identifies subscriptions affected by a source mutation.
 // Exactly one of ProjectID or TeamID is specified. UserID limits the result to

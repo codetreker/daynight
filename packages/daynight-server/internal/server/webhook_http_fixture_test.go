@@ -227,6 +227,35 @@ func (s *webhookHTTPScope) HistoryDisclosure(ctx context.Context, owner wm.Owner
 	s.equal(at, s.now, "history observation")
 	return "current", nil
 }
+func (s *webhookHTTPScope) HistoryBatch(ctx context.Context, owner wm.Owner, endpoint, actor string, at time.Time, id string, limit int) (store.WebhookHistoryBatch, error) {
+	s.call(ctx, "HistoryBatch")
+	s.equal(owner, s.endpoint.Owner, "history batch owner")
+	s.equal(endpoint, s.endpoint.ID, "history batch endpoint")
+	s.equal(actor, s.principal.UserID, "history batch actor")
+	s.equal(at, time.Time{}, "history batch position")
+	s.equal(id, "", "history batch ID")
+	s.equal(limit, 100, "history batch limit")
+	name, team, revision := "project", owner.ID, s.endpoint.DestinationRevision
+	return store.WebhookHistoryBatch{ObservedAt: s.now, Items: []store.WebhookHistoryItem{{
+		Delivery: s.delivery, Sources: s.sources, EventPresent: true,
+		Eligibility:     wm.EligibilityFacts{ProjectLive: true, ProjectName: &name, TeamID: &team, TeamPresent: true, OwnerAccess: true, ActorAccess: true},
+		EndpointPresent: true, EndpointRevision: &revision,
+	}}}, nil
+}
+func (s *webhookHTTPScope) HistoryMatches(ctx context.Context, ids []string) ([]store.WebhookHistoryMatch, error) {
+	s.call(ctx, "HistoryMatches")
+	s.equal(ids, []string{s.delivery.ID}, "history match IDs")
+	matches := make([]store.WebhookHistoryMatch, 0, len(s.sources.Matches))
+	for _, match := range s.sources.Matches {
+		matches = append(matches, store.WebhookHistoryMatch{DeliveryID: s.delivery.ID, WebhookAdmissionMatch: match})
+	}
+	return matches, nil
+}
+func (s *webhookHTTPScope) HistoryBatchAttempts(ctx context.Context, ids []string) ([]store.WebhookAttempt, error) {
+	s.call(ctx, "HistoryBatchAttempts")
+	s.equal(ids, []string{s.delivery.ID}, "history attempt IDs")
+	return []store.WebhookAttempt{}, nil
+}
 func (s *webhookHTTPScope) HistoryDeliveries(ctx context.Context, owner wm.Owner, endpoint string, at time.Time, id string, limit int) ([]store.WebhookDelivery, error) {
 	s.call(ctx, "HistoryDeliveries")
 	s.equal(owner, s.endpoint.Owner, "history collection owner")
