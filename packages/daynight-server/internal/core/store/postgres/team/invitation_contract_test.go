@@ -67,6 +67,43 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	lockedCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	holder, err := s.Pool.Begin(lockedCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(context.Background())
+	if _, err := holder.Exec(lockedCtx, `SELECT id FROM team_invitations WHERE id=$1 FOR UPDATE`, invitation.ID); err != nil {
+		t.Fatal(err)
+	}
+	var current model.TeamInvitation
+	done := make(chan error, 1)
+	go func() {
+		done <- testutil.WriteTeam(lockedCtx, s, team.ID, func(tx TeamWriteDAO) error {
+			var err error
+			current, err = tx.LockInvitation(lockedCtx, invitation.TokenHash)
+			return err
+		})
+	}()
+	testutil.WaitTransferTeamLock(t, lockedCtx, s.Pool, "SELECT id::text,team_id::text,created_by::text,token_hash", holder.Conn().PgConn().PID())
+	expires := time.Now().UTC().Truncate(time.Microsecond).Add(500 * time.Millisecond)
+	if _, err := holder.Exec(lockedCtx, `UPDATE team_invitations SET expires_at=$2 WHERE id=$1`, invitation.ID, expires); err != nil {
+		t.Fatal(err)
+	}
+	if err := holder.Commit(lockedCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := testutil.ReceiveQueryResult(t, lockedCtx, done); err != nil {
+		t.Fatal(err)
+	}
+	if current.ID != invitation.ID || !current.ExpiresAt.Equal(expires) || current.ExpiresAt.Equal(invitation.ExpiresAt) {
+		t.Fatalf("invitation lock returned expiry from before the lock wait: %#v", current)
+	}
+	var persistedExpiry time.Time
+	if err := s.Pool.QueryRow(lockedCtx, `SELECT expires_at FROM team_invitations WHERE id=$1`, invitation.ID).Scan(&persistedExpiry); err != nil || !persistedExpiry.Equal(expires) {
+		t.Fatalf("locked expiry differs from fresh row: %v %v", persistedExpiry, err)
+	}
 	if err := testutil.WriteTeam(ctx, s, team.ID, func(tx TeamWriteDAO) error {
 		ref, err := tx.InvitationTeam(ctx)
 		if err != nil || ref.ID != team.ID {
@@ -83,7 +120,14 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 		if joined.UserID != member.UserID || joined.TeamID != team.ID || joined.Role != model.ProjectMemberRole || joined.Version < 1 {
 			t.Fatal("invited member")
 		}
-		return tx.ConsumeInvitation(ctx, got.ID, member.UserID, time.Now())
+		if err := tx.ConsumeInvitation(ctx, got.ID, member.UserID, time.Now()); err != nil {
+			return err
+		}
+		changed, err := tx.RevokeInvitation(ctx, got.ID, time.Now())
+		if err != nil || changed {
+			return errors.New("consumed invitation was revoked")
+		}
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
