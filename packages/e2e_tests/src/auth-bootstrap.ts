@@ -20,12 +20,24 @@ export const registerAuth = async (
   const { chromium, expect } = await import("@playwright/test");
   const started = performance.now();
   let phase: Phase = "browser-launch";
-  const observe = (event: ObservationDetail): void => observer({ timestamp: new Date().toISOString(), elapsedMs: performance.now() - started, phase, ...event });
+  let observationFailure: { error: unknown } | undefined;
+  const observe = (event: ObservationDetail): void => {
+    if (observationFailure !== undefined) return;
+    try { observer({ timestamp: new Date().toISOString(), elapsedMs: performance.now() - started, phase, ...event }); }
+    catch (error) { observationFailure = { error }; }
+  };
+  const checkObservation = (): void => {
+    if (observationFailure !== undefined) throw observationFailure.error;
+  };
   const begin = (next: Phase): void => {
     phase = next;
     observe({ event: "phase", state: "started" });
+    checkObservation();
   };
-  const complete = (): void => observe({ event: "phase", state: "completed" });
+  const complete = (): void => {
+    observe({ event: "phase", state: "completed" });
+    checkObservation();
+  };
   const authOrigin = new URL(environment.authURL).origin;
   const route = (value: string): Route => {
     const url = new URL(value);
@@ -44,6 +56,7 @@ export const registerAuth = async (
   };
   let launched: Browser | undefined;
   let detach: (() => void) | undefined;
+  const failures: unknown[] = [];
   try {
     begin("browser-launch");
     const browser = await chromium.launch({ proxy: { server: environment.proxyURL, bypass: "127.0.0.1,localhost" } });
@@ -126,11 +139,15 @@ export const registerAuth = async (
     complete();
     return { appId: creation.app.id, appSecret: creation.secret };
   } catch (error) {
-    try { observe({ event: "phase", state: "failed", error: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "error" }); }
-    catch (observationError) { throw new AggregateError([error, observationError], "OAuth bootstrap and diagnostic recording failed.", { cause: error }); }
+    observe({ event: "phase", state: "failed", error: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "error" });
+    failures.push(error);
     throw error;
   } finally {
     detach?.();
-    if (launched !== undefined) await launched.close();
+    try { if (launched !== undefined) await launched.close(); }
+    catch (error) { failures.push(error); }
+    if (observationFailure !== undefined && !failures.includes(observationFailure.error)) failures.push(observationFailure.error);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "OAuth bootstrap, cleanup or diagnostic recording failed.", { cause: failures[0] });
   }
 };

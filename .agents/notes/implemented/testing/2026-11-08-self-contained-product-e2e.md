@@ -55,6 +55,13 @@ and page captures are not published because Console registration can return
 application secrets before the product scenario begins. The product test runner's
 later browser evidence cannot explain an earlier bootstrap failure.
 
+Event callbacks retain the first diagnostic-write failure without throwing into
+the browser or Node event dispatcher. Bootstrap reports it at the next awaited
+stage boundary, after preserving any stage failure and closing its browser.
+Provider shutdown drains its sockets before reporting a retained diagnostic
+failure. Existing runtime and environment cleanup aggregate it with their primary
+failures and continue the remaining cleanup steps.
+
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
 remain with their established owners. Preparation may retrieve pinned build
@@ -80,6 +87,13 @@ trace. Recording the entire Console session would also retain OAuth and App
 credentials. Fixed-stage and transport timelines cover that earlier boundary
 without publishing those payloads.
 
+**Throw or ignore diagnostic failures in event callbacks.** Throwing bypasses the
+awaited resource owner and can terminate the process before cleanup. Ignoring the
+failure could report a successful run with missing required evidence. Retaining
+one failure until the owner's existing await or cleanup boundary preserves both
+the diagnostic failure and the original operation's outcome without changing
+authentication timing.
+
 ## Consequences
 
 The framework adds an independent build and runtime owner while reusing normal
@@ -97,5 +111,11 @@ the retained result. Bootstrap and transport timelines preserve the last observe
 boundary without changing navigation deadlines or retrying failed authentication.
 Expected certificate-error recovery may include a failed TLS attempt followed by
 a successful new connection; observations must be read as a sequence.
+After a sink failure, further observations are suppressed rather than repeatedly
+writing to the failed sink or accumulating unbounded errors. Bootstrap still
+waits for the current stage's existing deadline, and provider diagnostics surface
+through normal runtime shutdown; neither path adds retries or proves the cause
+of an OAuth timeout. Tooling regressions use asynchronous browser events and real
+local transport with filesystem write failures to verify propagation and cleanup.
 The independent hosted job does not replace module, installed CLI or deployment
 checks; module-only fixture changes do not schedule a complete product journey.

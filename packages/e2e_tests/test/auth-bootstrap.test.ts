@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { appendFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
 import { test } from "node:test";
 import { chromium, type Browser, type Request, type Response } from "@playwright/test";
 import { registerAuth, type AuthBootstrapObservation } from "../src/auth-bootstrap.ts";
@@ -114,3 +117,77 @@ test("bootstrap begins the next action before peer continuations queued by navig
   await assert.rejects(registerAuth(environment, () => {}), (error) => error === failure);
   assert.deepEqual(order, ["click", "peer"]);
 });
+
+for (const scenario of [
+  { event: "request", primaryFails: false },
+  { event: "response", primaryFails: false },
+  { event: "request-finished", primaryFails: false },
+  { event: "request-failed", primaryFails: false },
+  { event: "navigation", primaryFails: false },
+  { event: "request", primaryFails: true },
+] as const) {
+  test(`asynchronous ${scenario.event} diagnostic failure reaches bootstrap cleanup${scenario.primaryFails ? " with its primary failure" : ""}`, { timeout: 10_000 }, async (t) => {
+    const temporary = path.resolve(import.meta.dirname, "../../..", ".tmp");
+    await mkdir(temporary, { recursive: true });
+    const sink = await mkdtemp(path.join(temporary, "bootstrap-diagnostic-test-"));
+    const page = new EventEmitter();
+    const existing = () => {};
+    page.on("request", existing);
+    const primaryFailure = new Error("Navigation timed out");
+    primaryFailure.name = "TimeoutError";
+    let diagnosticFailure: unknown;
+    let sinkAttempts = 0;
+    let actionSettled = false;
+    let closed = 0;
+    const request = {
+      url: () => `${environment.authURL}/console/?state=private-query`,
+      method: () => "GET",
+      isNavigationRequest: () => true,
+      failure: () => ({ errorText: "net::ERR_CONNECTION_RESET" }),
+    } as unknown as Request;
+    const frame = { url: () => request.url() };
+    const fakePage = Object.assign(page, {
+      mainFrame: () => frame,
+      setDefaultTimeout: () => {},
+      goto: () => new Promise<void>((resolve, reject) => setImmediate(() => {
+        try {
+          page.emit("request", request);
+          page.emit("response", { request: () => request, url: () => request.url(), status: () => 200 });
+          page.emit("requestfinished", request);
+          page.emit("requestfailed", request);
+          page.emit("framenavigated", frame);
+        } finally {
+          actionSettled = true;
+          if (scenario.primaryFails) reject(primaryFailure);
+          else resolve();
+        }
+      })),
+      getByRole: () => { throw new Error("Bootstrap continued after a diagnostic failure"); },
+    });
+    t.mock.method(chromium, "launch", async () => ({
+      newContext: async () => ({ newPage: async () => fakePage }),
+      close: async () => { assert.equal(actionSettled, true); closed++; },
+    }) as unknown as Browser);
+    try {
+      await assert.rejects(registerAuth(environment, (event) => {
+        if (event.event !== scenario.event) return;
+        sinkAttempts++;
+        try { appendFileSync(sink, `${JSON.stringify(event)}\n`); }
+        catch (error) { diagnosticFailure = error; throw error; }
+      }), (error) => {
+        if (!scenario.primaryFails) return error === diagnosticFailure;
+        assert.ok(error instanceof AggregateError);
+        assert.equal(error.cause, primaryFailure);
+        assert.deepEqual(error.errors, [primaryFailure, diagnosticFailure]);
+        return true;
+      });
+      assert.ok(diagnosticFailure instanceof Error && "code" in diagnosticFailure && diagnosticFailure.code === "EISDIR");
+      assert.equal(sinkAttempts, 1);
+      assert.equal(closed, 1);
+      assert.deepEqual(page.listeners("request"), [existing]);
+      for (const event of ["response", "requestfailed", "requestfinished", "framenavigated"]) assert.equal(page.listenerCount(event), 0);
+      page.emit("request", request);
+      assert.equal(sinkAttempts, 1);
+    } finally { await rm(sink, { recursive: true, force: true }); }
+  });
+}

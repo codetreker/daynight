@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { request as requestHTTP } from "node:http";
+import { request as requestHTTP, Server as HTTPServer } from "node:http";
+import { connect } from "node:net";
+import type { Socket } from "node:net";
 import path from "node:path";
 import { test } from "node:test";
 import { connect as connectTLS } from "node:tls";
 import { providerClientId, providerClientSecret, startProvider, type Provider, type ProviderObservation } from "../src/provider.ts";
+import { prepareWithLifecycle } from "../src/lifecycle.ts";
 
 type Response = { status: number; headers: Map<string, string>; body: string };
 
@@ -58,7 +62,7 @@ const request = async (provider: Provider, certificate: Buffer, hostname: string
 };
 
 const fixture = async (observe?: (event: ProviderObservation) => void): Promise<{ provider: Provider; certificate: Buffer; cleanup: () => Promise<void> }> => {
-  const temporary = path.resolve(import.meta.dirname, "../../../..", ".tmp");
+  const temporary = path.resolve(import.meta.dirname, "../../..", ".tmp");
   await mkdir(temporary, { recursive: true });
   const directory = await mkdtemp(path.join(temporary, "e2e-provider-test-"));
   const certificatePath = path.join(directory, "provider.pem");
@@ -192,4 +196,88 @@ test("malformed TLS is observed without a fabricated HTTP request", { timeout: 1
     assert.equal(observations.some((event) => event.event === "request"), false);
     assert.equal(JSON.stringify(observations).includes("private-state"), false);
   } finally { socket?.destroy(); await context.cleanup(); }
+});
+
+for (const failingEvent of ["connection", "connect", "tls-ready", "request", "response", "close", "tls-error"] as const) {
+  test(`asynchronous provider ${failingEvent} diagnostic failure is surfaced after socket cleanup`, { timeout: 10_000 }, async () => {
+    const temporary = path.resolve(import.meta.dirname, "../../..", ".tmp");
+    await mkdir(temporary, { recursive: true });
+    const sink = await mkdtemp(path.join(temporary, "provider-diagnostic-test-"));
+    let diagnosticFailure: unknown;
+    let sinkAttempts = 0;
+    const failed = Promise.withResolvers<void>();
+    const context = await fixture((event) => {
+      if (event.event !== failingEvent) return;
+      sinkAttempts++;
+      try { appendFileSync(sink, `${JSON.stringify(event)}\n`); }
+      catch (error) { diagnosticFailure = error; failed.resolve(); throw error; }
+    });
+    let socket: Socket | undefined;
+    try {
+      if (failingEvent === "tls-error") {
+        socket = await new Promise<Socket>((resolve, reject) => {
+          const tunnel = requestHTTP({ hostname: "127.0.0.1", port: context.provider.port, method: "CONNECT", path: "github.com:443" });
+          tunnel.once("error", reject);
+          tunnel.once("connect", (_response, connected) => resolve(connected as Socket));
+          tunnel.end();
+        });
+        socket.on("error", () => {});
+        socket.resume();
+        socket.write("GET / HTTP/1.1\r\n\r\n");
+      } else {
+        assert.equal((await request(context.provider, context.certificate, "github.com", "/unsupported")).status, 404);
+      }
+      await failed.promise;
+      socket?.destroy();
+      socket = connect({ host: "127.0.0.1", port: context.provider.port });
+      socket.on("error", () => {});
+      await new Promise<void>((resolve) => socket!.once("connect", resolve));
+      const closed = new Promise<void>((resolve) => socket!.once("close", () => resolve()));
+      const close = context.provider.close();
+      assert.equal(context.provider.close(), close);
+      await assert.rejects(close, (error) => error === diagnosticFailure);
+      await closed;
+      assert.ok(diagnosticFailure instanceof Error && "code" in diagnosticFailure && diagnosticFailure.code === "EISDIR");
+      assert.equal(sinkAttempts, 1);
+      await assert.rejects(new Promise<void>((resolve, reject) => {
+        const probe = connect({ host: "127.0.0.1", port: context.provider.port });
+        probe.once("error", reject);
+        probe.once("connect", () => { probe.destroy(); resolve(); });
+      }), { code: "ECONNREFUSED" });
+    } finally {
+      socket?.destroy();
+      try { await assert.rejects(context.cleanup(), (error) => error === diagnosticFailure); }
+      finally { await rm(sink, { recursive: true, force: true }); }
+    }
+  });
+}
+
+test("provider cleanup preserves the owner failure, close failure and asynchronous diagnostic failure", { timeout: 10_000 }, async (t) => {
+  const primaryFailure = new Error("Runtime transport failed");
+  const diagnosticFailure = Object.assign(new Error("Diagnostic recording failed"), { code: "ENOSPC" });
+  const closeFailure = new Error("Provider close failed");
+  const originalClose = HTTPServer.prototype.close;
+  t.mock.method(HTTPServer.prototype, "close", function (this: HTTPServer, callback?: (error?: Error) => void) {
+    return originalClose.call(this, () => callback?.(closeFailure));
+  });
+  const context = await fixture((event) => { if (event.event === "connection") throw diagnosticFailure; });
+  let environmentClosed = 0;
+  try {
+    await assert.rejects(prepareWithLifecycle(async (lifecycle) => {
+      lifecycle.defer(async () => { environmentClosed++; });
+      lifecycle.defer(context.provider.close);
+      assert.equal((await request(context.provider, context.certificate, "github.com", "/unsupported")).status, 404);
+      throw primaryFailure;
+    }), (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.cause, primaryFailure);
+      assert.equal(error.errors[0], primaryFailure);
+      const cleanup = error.errors[1];
+      assert.ok(cleanup instanceof AggregateError);
+      assert.equal(cleanup.cause, closeFailure);
+      assert.deepEqual(cleanup.errors, [closeFailure, diagnosticFailure]);
+      return true;
+    });
+    assert.equal(environmentClosed, 1);
+  } finally { await assert.rejects(context.cleanup()); }
 });

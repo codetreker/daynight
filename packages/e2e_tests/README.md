@@ -128,6 +128,11 @@ credentials; the later product journey retains its configured browser evidence.
 An initial TLS certificate rejection can be followed by Chromium's normal
 certificate-error override and a new connection, so a TLS error alone does not
 establish that authentication failed.
+If timeline recording fails, event callbacks retain the first error. Bootstrap
+reports it at the next awaited stage boundary and closes the browser; provider
+shutdown closes its sockets before reporting it. These failures remain visible
+alongside the original operation or cleanup failure and do not bypass the
+remaining environment cleanup.
 
 Setup and execution have deadlines, readiness detects early service exit, and
 failures propagate to the command exit status. Cleanup runs after success,

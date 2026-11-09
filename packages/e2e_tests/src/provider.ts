@@ -85,11 +85,14 @@ export const startProvider = async (options: {
   const started = performance.now();
   let nextConnection = 1;
   let closing = false;
+  let observationFailure: { error: unknown } | undefined;
   // TLS wraps CONNECT sockets; public peer endpoints correlate the two Socket objects.
   const endpoint = (socket: Socket): string => `${socket.remoteAddress}:${socket.remotePort}`;
   const connection = (socket: Socket): number | undefined => connectionIds.get(socket) ?? endpoints.get(endpoint(socket));
   const observe = (socket: Socket, event: ProviderObservationDetail): void => {
-    options.observe?.({ timestamp: new Date().toISOString(), elapsedMs: performance.now() - started, connection: connection(socket), ...event });
+    if (observationFailure !== undefined) return;
+    try { options.observe?.({ timestamp: new Date().toISOString(), elapsedMs: performance.now() - started, connection: connection(socket), ...event }); }
+    catch (error) { observationFailure = { error }; }
   };
   const errorCode = (error: Error): string => "code" in error && typeof error.code === "string" && /^[A-Z][A-Z_0-9/]*$/.test(error.code) ? error.code : "unknown";
   const route = (request: IncomingMessage): ProviderRoute => {
@@ -256,8 +259,15 @@ export const startProvider = async (options: {
         codes.clear();
         tokens.clear();
         const closed = new Promise<void>((resolve, reject) => proxy.close((error) => error === undefined ? resolve() : reject(error)));
+        const connectionsClosed = [...sockets].map((socket) => new Promise<void>((resolve) => socket.once("close", () => resolve())));
         for (const socket of sockets) socket.destroy();
-        await closed;
+        const failures: unknown[] = [];
+        try { await closed; }
+        catch (error) { failures.push(error); }
+        await Promise.all(connectionsClosed);
+        if (observationFailure !== undefined) failures.push(observationFailure.error);
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "Provider cleanup and diagnostic recording failed.", { cause: failures[0] });
       })();
       return closePromise;
     },
