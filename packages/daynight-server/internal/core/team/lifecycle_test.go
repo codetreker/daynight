@@ -181,10 +181,11 @@ func (f *writerFake) ConsumeInvitation(ctx context.Context, id, user string, now
 
 type ruleReadDAO struct {
 	store.TeamWriteDAO
-	team           func(context.Context, string) (model.Team, error)
-	member         func(context.Context, string) (model.TeamMember, error)
-	adminCount     func(context.Context) (int64, error)
-	lockInvitation func(context.Context, []byte) (model.TeamInvitation, error)
+	team             func(context.Context, string) (model.Team, error)
+	member           func(context.Context, string) (model.TeamMember, error)
+	adminCount       func(context.Context) (int64, error)
+	lockInvitation   func(context.Context, []byte) (model.TeamInvitation, error)
+	revokeInvitation func(context.Context, string, time.Time) (bool, error)
 }
 
 func (d *ruleReadDAO) Team(ctx context.Context, actor string) (model.Team, error) {
@@ -198,6 +199,35 @@ func (d *ruleReadDAO) AdminCount(ctx context.Context) (int64, error) {
 }
 func (d *ruleReadDAO) LockInvitation(ctx context.Context, hash []byte) (model.TeamInvitation, error) {
 	return d.lockInvitation(ctx, hash)
+}
+
+type memberRefusalDAO struct {
+	*ruleReadDAO
+	t *testing.T
+}
+
+func (d *memberRefusalDAO) SetMemberRole(context.Context, string, model.ProjectRole) (model.TeamMember, error) {
+	d.t.Helper()
+	d.t.Fatal("unexpected SetMemberRole after membership refusal")
+	return model.TeamMember{}, nil
+}
+
+func (d *memberRefusalDAO) RemoveMember(context.Context, string) error {
+	d.t.Helper()
+	d.t.Fatal("unexpected RemoveMember after membership refusal")
+	return nil
+}
+func (d *ruleReadDAO) RevokeInvitation(ctx context.Context, id string, now time.Time) (bool, error) {
+	return d.revokeInvitation(ctx, id, now)
+}
+
+type invitationReadDAO struct {
+	store.TeamReader
+	read func(context.Context, []byte) (model.TeamInvitation, error)
+}
+
+func (d *invitationReadDAO) TeamInvitation(ctx context.Context, hash []byte) (model.TeamInvitation, error) {
+	return d.read(ctx, hash)
 }
 
 func TestValidationContracts(t *testing.T) {
@@ -246,16 +276,38 @@ func TestValidationContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
+		name     string
+		actor    model.Principal
 		id, user string
 		in       ChangeTeamMember
-		remove   bool
-	}{{id, id, ChangeTeamMember{Version: 1, ExpectedUserID: other.UserID}, true}, {"bad", id, ChangeTeamMember{Version: 1, ExpectedUserID: p.UserID}, true}, {id, "bad", ChangeTeamMember{Version: 1, ExpectedUserID: p.UserID}, true}, {id, id, ChangeTeamMember{ExpectedUserID: p.UserID}, true}, {id, id, ChangeTeamMember{Version: 1, ExpectedUserID: p.UserID}, false}} {
-		if _, _, err := ValidateMemberChange(p, tc.id, tc.user, tc.in, tc.remove); err == nil {
-			t.Fatal(tc)
+		modes    []bool
+		code     string
+	}{
+		{name: "identity mismatch", actor: p, id: id, user: id, in: ChangeTeamMember{Version: 1, Role: model.ProjectMemberRole, ExpectedUserID: other.UserID}, modes: []bool{false, true}, code: "identity_mismatch"},
+		{name: "anonymous", actor: model.Principal{}, id: id, user: p.UserID, in: ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: p.UserID}, modes: []bool{false}, code: "unauthenticated"},
+		{name: "invalid Team ID", actor: p, id: "invalid", user: p.UserID, in: ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: p.UserID}, modes: []bool{false, true}, code: "invalid_input"},
+		{name: "invalid member ID", actor: p, id: id, user: "bad", in: ChangeTeamMember{Version: 1, ExpectedUserID: p.UserID}, modes: []bool{true}, code: "invalid_input"},
+		{name: "noncanonical member ID", actor: p, id: id, user: strings.ToUpper("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), in: ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: p.UserID}, modes: []bool{false}, code: "invalid_input"},
+		{name: "zero version", actor: p, id: id, user: p.UserID, in: ChangeTeamMember{Version: 0, Role: model.ProjectAdmin, ExpectedUserID: p.UserID}, modes: []bool{false, true}, code: "invalid_input"},
+		{name: "empty role", actor: p, id: id, user: id, in: ChangeTeamMember{Version: 1, ExpectedUserID: p.UserID}, modes: []bool{false}, code: "invalid_input"},
+		{name: "invalid role", actor: p, id: id, user: p.UserID, in: ChangeTeamMember{Version: 1, Role: "invalid", ExpectedUserID: p.UserID}, modes: []bool{false}, code: "invalid_input"},
+	} {
+		for _, remove := range tc.modes {
+			operation := "set role"
+			if remove {
+				operation = "remove"
+			}
+			t.Run("member admission/"+tc.name+"/"+operation, func(t *testing.T) {
+				teamID, userID, err := ValidateMemberChange(tc.actor, tc.id, tc.user, tc.in, remove)
+				faultCode(t, err, tc.code)
+				if teamID != "" || userID != "" {
+					t.Fatalf("refusal returned IDs: Team=%q member=%q", teamID, userID)
+				}
+			})
 		}
 	}
-	if _, _, err := ValidateMemberChange(p, id, id, ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: p.UserID}, false); err != nil {
-		t.Fatal(err)
+	if teamID, userID, err := ValidateMemberChange(p, id, id, ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: p.UserID}, false); err != nil || teamID != id || userID != id {
+		t.Fatalf("member admission: Team=%q member=%q error=%v", teamID, userID, err)
 	}
 	if _, err := ValidateInvitationWrite(p, "bad", p.UserID); err == nil {
 		t.Fatal("bad id")
@@ -417,15 +469,17 @@ func TestTeamLifecycleDAO(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct {
-		name string
-		team model.Team
-		in   ChangeTeam
-		code string
+		name    string
+		team    model.Team
+		teamErr error
+		in      ChangeTeam
+		code    string
 	}{
 		{name: "forbidden", team: memberTeam, in: ChangeTeam{Name: *item.Name, Version: 1}, code: "forbidden"},
 		{name: "personal", team: personalTeam, in: ChangeTeam{Name: "Personal", Version: 1}, code: "personal_team_immutable"},
 		{name: "version mismatch", team: item, in: ChangeTeam{Name: *item.Name, Version: 2}, code: "version_conflict"},
 		{name: "name mismatch", team: item, in: ChangeTeam{Name: "New", Version: 1}, code: "version_conflict"},
+		{name: "actor membership removed", teamErr: model.ErrNotFound, in: ChangeTeam{Name: *item.Name, Version: 1}},
 	} {
 		t.Run("delete "+tc.name, func(t *testing.T) {
 			reads := 0
@@ -434,9 +488,16 @@ func TestTeamLifecycleDAO(t *testing.T) {
 				if gotCtx != ctx || actor != p.UserID || reads != 1 {
 					t.Fatalf("Team lookup: context=%v actor=%q calls=%d", gotCtx, actor, reads)
 				}
-				return tc.team, nil
+				return tc.team, tc.teamErr
 			}}
-			faultCode(t, Delete(ctx, dao, p, tc.in), tc.code)
+			err := Delete(ctx, dao, p, tc.in)
+			if tc.teamErr != nil {
+				if err != tc.teamErr || !errors.Is(err, model.ErrNotFound) {
+					t.Fatalf("actor lookup error lost: %v; want %v", err, tc.teamErr)
+				}
+			} else {
+				faultCode(t, err, tc.code)
+			}
 			if reads != 1 {
 				t.Fatalf("Team reads=%d; want 1", reads)
 			}
@@ -479,115 +540,91 @@ func TestMemberAuthorizationAndMutation(t *testing.T) {
 	item := namedTeam(p)
 	member := model.TeamMember{TeamID: item.ID, UserID: target, Role: model.ProjectAdmin, Version: 2, CreatedAt: item.CreatedAt.Add(time.Second), UpdatedAt: item.UpdatedAt.Add(time.Second)}
 	in := ChangeTeamMember{Version: 2, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}
-	w := &writerFake{team: item, member: member, count: 2, errs: map[string]error{}}
-	w.errs["team"] = fail
-	if _, err := ChangeMember(ctx, w, p, target, in, false); !errors.Is(err, fail) {
-		t.Fatal(err)
-	}
-	delete(w.errs, "team")
-	w.team.Kind = "personal"
-	_, err := ChangeMember(ctx, w, p, target, in, false)
-	faultCode(t, err, "personal_team_immutable")
-	for _, remove := range []bool{false, true} {
-		name := "non-admin role change"
-		if remove {
-			name = "non-admin removes another member"
-		}
-		t.Run(name, func(t *testing.T) {
-			currentTeam := item
-			currentTeam.Membership.Role = model.ProjectMemberRole
-			currentInput := in
+	personal, nonAdmin := item, item
+	personal.Kind, personal.Name = "personal", nil
+	nonAdmin.Membership.Role = model.ProjectMemberRole
+	rejoined := model.TeamMember{TeamID: item.ID, UserID: target, Role: model.ProjectMemberRole, Version: 7, CreatedAt: member.CreatedAt.Add(time.Minute), UpdatedAt: member.UpdatedAt.Add(time.Minute)}
+	for _, tc := range []struct {
+		name       string
+		modes      []bool
+		team       model.Team
+		teamErr    error
+		target     string
+		member     model.TeamMember
+		memberErr  error
+		version    int64
+		removeRole model.ProjectRole
+		count      int64
+		countErr   error
+		code       string
+		cause      error
+		calls      []string
+	}{
+		{name: "actor read failure", modes: []bool{false}, teamErr: fail, target: target, version: 2, cause: fail, calls: []string{"team"}},
+		{name: "actor membership removed", modes: []bool{false, true}, teamErr: model.ErrNotFound, target: target, version: 2, cause: model.ErrNotFound, calls: []string{"team"}},
+		{name: "personal member", modes: []bool{false}, team: personal, target: target, version: 2, code: "personal_team_immutable", calls: []string{"team"}},
+		{name: "personal self", modes: []bool{false, true}, team: personal, target: p.UserID, version: item.Membership.Version, removeRole: model.ProjectMemberRole, code: "personal_team_immutable", calls: []string{"team"}},
+		{name: "non-admin changes another member", modes: []bool{false, true}, team: nonAdmin, target: target, version: 2, code: "forbidden", calls: []string{"team"}},
+		{name: "missing member", modes: []bool{false}, team: item, target: target, memberErr: model.ErrNotFound, version: 2, code: "not_found", cause: model.ErrNotFound, calls: []string{"team", "member"}},
+		{name: "member read failure", modes: []bool{false}, team: item, target: target, memberErr: fail, version: 2, cause: fail, calls: []string{"team", "member"}},
+		{name: "future version", modes: []bool{false}, team: item, target: target, member: member, version: 3, code: "version_conflict", calls: []string{"team", "member"}},
+		{name: "stale rejoined version", modes: []bool{true}, team: item, target: target, member: rejoined, version: member.Version, code: "version_conflict", calls: []string{"team", "member"}},
+		{name: "administrator count failure", modes: []bool{false}, team: item, target: target, member: member, version: 2, countErr: fail, cause: fail, calls: []string{"team", "member", "count"}},
+		{name: "last administrator", modes: []bool{false, true}, team: item, target: p.UserID, member: item.Membership, version: item.Membership.Version, count: 1, code: "last_admin", calls: []string{"team", "member", "count"}},
+	} {
+		for _, remove := range tc.modes {
+			operation := "set role"
+			currentInput := ChangeTeamMember{Version: tc.version, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}
 			if remove {
-				currentInput.Role = ""
+				operation, currentInput.Role = "remove", tc.removeRole
 			}
-			var calls []string
-			writes := &writerFake{errs: map[string]error{}}
-			dao := &ruleReadDAO{
-				TeamWriteDAO: writes,
-				team: func(gotCtx context.Context, actor string) (model.Team, error) {
-					calls = append(calls, "team")
-					if gotCtx != ctx || actor != p.UserID {
-						t.Fatalf("Team lookup: context=%v actor=%q", gotCtx, actor)
+			t.Run(tc.name+"/"+operation, func(t *testing.T) {
+				var calls []string
+				record := func(gotCtx context.Context, call string) {
+					t.Helper()
+					calls = append(calls, call)
+					if gotCtx != ctx || len(calls) > len(tc.calls) || tc.calls[len(calls)-1] != call {
+						t.Fatalf("unexpected DAO call: context=%v calls=%v; want %v", gotCtx, calls, tc.calls)
 					}
-					return currentTeam, nil
-				},
-				member: func(context.Context, string) (model.TeamMember, error) {
-					calls = append(calls, "member")
-					return member, nil
-				},
-				adminCount: func(context.Context) (int64, error) {
-					calls = append(calls, "count")
-					return 1, nil
-				},
-			}
-			result, err := ChangeMember(ctx, dao, p, target, currentInput, remove)
-			faultCode(t, err, "forbidden")
-			if !reflect.DeepEqual(result, TeamMemberResult{}) || !reflect.DeepEqual(calls, []string{"team"}) || writes.roleCalls != 0 || writes.removed {
-				t.Fatalf("non-admin refusal: result=%#v calls=%v role writes=%d removed=%v", result, calls, writes.roleCalls, writes.removed)
-			}
-		})
-	}
-	w.team = item
-	w.errs["member"] = model.ErrNotFound
-	_, err = ChangeMember(ctx, w, p, target, in, false)
-	faultCode(t, err, "not_found")
-	w.errs["member"] = fail
-	if _, err = ChangeMember(ctx, w, p, target, in, false); !errors.Is(err, fail) {
-		t.Fatal(err)
-	}
-	delete(w.errs, "member")
-	in.Version = 3
-	_, err = ChangeMember(ctx, w, p, target, in, false)
-	faultCode(t, err, "version_conflict")
-	in.Version = 2
-	w.errs["count"] = fail
-	if _, err = ChangeMember(ctx, w, p, target, in, false); !errors.Is(err, fail) {
-		t.Fatal(err)
-	}
-	delete(w.errs, "count")
-	for _, remove := range []bool{false, true} {
-		name := "demote last administrator"
-		targetID, currentMember := p.UserID, item.Membership
-		currentInput := in
-		currentInput.Version = currentMember.Version
-		if remove {
-			name = "remove last administrator"
+				}
+				dao := &ruleReadDAO{
+					team: func(gotCtx context.Context, actor string) (model.Team, error) {
+						record(gotCtx, "team")
+						if actor != p.UserID {
+							t.Fatalf("Team actor=%q; want %q", actor, p.UserID)
+						}
+						return tc.team, tc.teamErr
+					},
+					member: func(gotCtx context.Context, user string) (model.TeamMember, error) {
+						record(gotCtx, "member")
+						if user != tc.target {
+							t.Fatalf("member target=%q; want %q", user, tc.target)
+						}
+						return tc.member, tc.memberErr
+					},
+					adminCount: func(gotCtx context.Context) (int64, error) {
+						record(gotCtx, "count")
+						return tc.count, tc.countErr
+					},
+				}
+				result, err := ChangeMember(ctx, &memberRefusalDAO{ruleReadDAO: dao, t: t}, p, tc.target, currentInput, remove)
+				if tc.code != "" {
+					faultCode(t, err, tc.code)
+				} else if err != tc.cause {
+					t.Fatalf("DAO error lost: %v; want %v", err, tc.cause)
+				}
+				if tc.cause != nil && !errors.Is(err, tc.cause) {
+					t.Fatalf("DAO error chain lost: %v; want %v", err, tc.cause)
+				}
+				if !reflect.DeepEqual(result, TeamMemberResult{}) || !reflect.DeepEqual(calls, tc.calls) {
+					t.Fatalf("member refusal: result=%#v calls=%v; want %v", result, calls, tc.calls)
+				}
+			})
 		}
-		t.Run(name, func(t *testing.T) {
-			var calls []string
-			dao := &ruleReadDAO{
-				team: func(gotCtx context.Context, actor string) (model.Team, error) {
-					calls = append(calls, "team")
-					if gotCtx != ctx || actor != p.UserID {
-						t.Fatalf("Team lookup: context=%v actor=%q", gotCtx, actor)
-					}
-					return item, nil
-				},
-				member: func(gotCtx context.Context, user string) (model.TeamMember, error) {
-					calls = append(calls, "member")
-					if gotCtx != ctx || user != targetID {
-						t.Fatalf("member lookup: context=%v target=%q", gotCtx, user)
-					}
-					return currentMember, nil
-				},
-				adminCount: func(gotCtx context.Context) (int64, error) {
-					calls = append(calls, "count")
-					if gotCtx != ctx {
-						t.Fatalf("administrator count context=%v", gotCtx)
-					}
-					return 1, nil
-				},
-			}
-			result, err := ChangeMember(ctx, dao, p, targetID, currentInput, remove)
-			faultCode(t, err, "last_admin")
-			if !reflect.DeepEqual(result, TeamMemberResult{}) || !reflect.DeepEqual(calls, []string{"team", "member", "count"}) {
-				t.Fatalf("last-administrator refusal: result=%#v calls=%v", result, calls)
-			}
-		})
 	}
-	w.count = 2
+	w := &writerFake{team: item, member: member, count: 2, errs: map[string]error{}}
 	w.errs["role"] = fail
-	if _, err = ChangeMember(ctx, w, p, target, in, false); !errors.Is(err, fail) {
+	if _, err := ChangeMember(ctx, w, p, target, in, false); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "role")
@@ -650,7 +687,7 @@ func TestMemberAuthorizationAndMutation(t *testing.T) {
 }
 
 func TestInvitationRules(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	p := principal()
 	item := namedTeam(p)
 	teamName := " Team "
@@ -664,9 +701,6 @@ func TestInvitationRules(t *testing.T) {
 	faultCode(t, ValidateInvitation(p, "bad"), "invitation_unavailable")
 	w.errs["team"] = fail
 	if _, err := CreateInvitation(ctx, w, p, item.ID, clock); !errors.Is(err, fail) {
-		t.Fatal(err)
-	}
-	if _, err := RevokeInvitation(ctx, w, p, id, clock); !errors.Is(err, fail) {
 		t.Fatal(err)
 	}
 	delete(w.errs, "team")
@@ -693,14 +727,60 @@ func TestInvitationRules(t *testing.T) {
 	if err := ValidateInvitation(p, minted.Secret); err != nil {
 		t.Fatal(err)
 	}
-	changed, err := RevokeInvitation(ctx, w, p, id, clock)
-	if err != nil || !changed {
-		t.Fatal(changed, err)
+	personal := item
+	personal.Kind, personal.Name = "personal", nil
+	for _, tc := range []struct {
+		name    string
+		team    model.Team
+		teamErr error
+		changed bool
+		code    string
+		calls   []string
+	}{
+		{name: "read failure", teamErr: fail, calls: []string{"team"}},
+		{name: "personal", team: personal, code: "personal_team_immutable", calls: []string{"team"}},
+		{name: "changed", team: item, changed: true, calls: []string{"team", "clock", "revoke"}},
+		{name: "already revoked", team: item, changed: false, calls: []string{"team", "clock", "revoke"}},
+	} {
+		t.Run("revoke invitation/"+tc.name, func(t *testing.T) {
+			var calls []string
+			record := func(call string) {
+				t.Helper()
+				calls = append(calls, call)
+				if len(calls) > len(tc.calls) || tc.calls[len(calls)-1] != call {
+					t.Fatalf("unexpected revoke call: %v; want %v", calls, tc.calls)
+				}
+			}
+			dao := &ruleReadDAO{
+				team: func(gotCtx context.Context, actor string) (model.Team, error) {
+					record("team")
+					if gotCtx != ctx || actor != p.UserID {
+						t.Fatalf("Team lookup: context=%v actor=%q", gotCtx, actor)
+					}
+					return tc.team, tc.teamErr
+				},
+				revokeInvitation: func(gotCtx context.Context, invitationID string, at time.Time) (bool, error) {
+					record("revoke")
+					if gotCtx != ctx || invitationID != id || !at.Equal(now) {
+						t.Fatalf("revoke arguments: context=%v id=%q time=%v", gotCtx, invitationID, at)
+					}
+					return tc.changed, nil
+				},
+			}
+			changed, err := RevokeInvitation(ctx, dao, p, id, func() time.Time {
+				record("clock")
+				return now
+			})
+			if tc.code != "" {
+				faultCode(t, err, tc.code)
+			} else if err != tc.teamErr {
+				t.Fatalf("revoke error=%v; want %v", err, tc.teamErr)
+			}
+			if changed != tc.changed || !reflect.DeepEqual(calls, tc.calls) {
+				t.Fatalf("revocation: changed=%v calls=%v; want %v %v", changed, calls, tc.changed, tc.calls)
+			}
+		})
 	}
-	w.team.Kind = "personal"
-	_, err = RevokeInvitation(ctx, w, p, id, clock)
-	faultCode(t, err, "personal_team_immutable")
-	w.team = item
 	r.teamErr = fail
 	if _, err = ListInvitations(ctx, r, p, item.ID, clock); !errors.Is(err, fail) {
 		t.Fatal(err)
@@ -715,21 +795,62 @@ func TestInvitationRules(t *testing.T) {
 	if err != nil || len(list) != 1 {
 		t.Fatal(list, err)
 	}
-	r.invitationErr = model.ErrNotFound
-	_, err = Invitation(ctx, r, minted.Secret, clock)
-	faultCode(t, err, "invitation_unavailable")
-	r.invitationErr = fail
-	if _, err = Invitation(ctx, r, minted.Secret, clock); !errors.Is(err, fail) {
-		t.Fatal(err)
+	available := w.invitation
+	expired, consumed, revoked := available, available, available
+	expired.ExpiresAt = now
+	prior := now.Add(-time.Minute)
+	consumer := principal()
+	consumed.ConsumedAt, consumed.ConsumedBy = &prior, &consumer.UserID
+	revoked.RevokedAt = &prior
+	for _, tc := range []struct {
+		name       string
+		invitation model.TeamInvitation
+		err        error
+		code       string
+		calls      []string
+	}{
+		{name: "missing", err: model.ErrNotFound, code: "invitation_unavailable", calls: []string{"read"}},
+		{name: "read failure", err: fail, calls: []string{"read"}},
+		{name: "expired", invitation: expired, code: "invitation_unavailable", calls: []string{"read", "clock"}},
+		{name: "consumed", invitation: consumed, code: "invitation_unavailable", calls: []string{"read", "clock"}},
+		{name: "revoked", invitation: revoked, code: "invitation_unavailable", calls: []string{"read", "clock"}},
+		{name: "available", invitation: available, calls: []string{"read", "clock"}},
+	} {
+		t.Run("read invitation/"+tc.name, func(t *testing.T) {
+			var calls []string
+			record := func(call string) {
+				t.Helper()
+				calls = append(calls, call)
+				if len(calls) > len(tc.calls) || tc.calls[len(calls)-1] != call {
+					t.Fatalf("unexpected invitation read: %v; want %v", calls, tc.calls)
+				}
+			}
+			dao := &invitationReadDAO{read: func(gotCtx context.Context, hash []byte) (model.TeamInvitation, error) {
+				record("read")
+				if gotCtx != ctx || !bytes.Equal(hash, secretutil.Hash(minted.Secret)) {
+					t.Fatalf("invitation lookup: context=%v hash=%x", gotCtx, hash)
+				}
+				return tc.invitation, tc.err
+			}}
+			got, err := Invitation(ctx, dao, minted.Secret, func() time.Time {
+				record("clock")
+				return now
+			})
+			if tc.code != "" {
+				faultCode(t, err, tc.code)
+			} else if err != tc.err {
+				t.Fatalf("invitation read error=%v; want %v", err, tc.err)
+			}
+			want := model.TeamInvitation{}
+			if tc.code == "" && tc.err == nil {
+				want = available
+			}
+			if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(calls, tc.calls) {
+				t.Fatalf("invitation read: result=%#v calls=%v; want %#v %v", got, calls, want, tc.calls)
+			}
+		})
 	}
-	r.invitationErr = nil
-	r.invitation.ExpiresAt = now
-	_, err = Invitation(ctx, r, minted.Secret, clock)
-	faultCode(t, err, "invitation_unavailable")
-	r.invitation = w.invitation
-	if _, err = Invitation(ctx, r, minted.Secret, clock); err != nil {
-		t.Fatal(err)
-	}
+	r.invitation = available
 	r.refErr = model.ErrNotFound
 	_, err = InspectInvitation(ctx, r, p, r.invitation)
 	faultCode(t, err, "invitation_unavailable")
