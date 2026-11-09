@@ -27,11 +27,11 @@ function fixture({ empty = false, working = false, steer = true, configure }: { 
   let paused = false;
   const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, isPaused: () => paused, storage: null, onPrincipalMismatch: vi.fn(), createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api });
   caches.push(cache);
-  const view = render(<BotSessionHost cache={cache} binding={bots[0]!.binding} />);
+  const view = render(<BotSessionHost cache={cache} displayBinding={bots[0]!.binding} actionBinding={bots[0]!.binding} />);
   return {
     bots, cache, view,
     select: async (index: number) => {
-      view.rerender(<BotSessionHost cache={cache} binding={bots[index]!.binding} />);
+      view.rerender(<BotSessionHost cache={cache} displayBinding={bots[index]!.binding} actionBinding={bots[index]!.binding} />);
       const input = await screen.findByRole('textbox', { name: 'Message' });
       await waitFor(() => expect(input).toBeEnabled());
       return input;
@@ -219,7 +219,7 @@ it('prevents a deleted assistant from reopening private content or reading throu
   const reads = [bot.api.current, bot.api.timeline, bot.api.channel, bot.api.operation].map(api => vi.mocked(api).mock.calls.length);
   act(() => f.cache.invalidateBot(bot.binding.botId, bot.binding.sessionId));
   expect(a.isConnected).toBe(false);
-  f.view.rerender(<BotSessionHost cache={f.cache} binding={bot.binding} />);
+  f.view.rerender(<BotSessionHost cache={f.cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
   expect(screen.queryByRole('textbox')).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Start with a conversation' })).toBeNull();
   await f.select(1);

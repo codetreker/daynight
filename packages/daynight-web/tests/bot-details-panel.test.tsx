@@ -60,7 +60,7 @@ async function sessionDetails() {
   let paused = false, current = true;
   const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => current, isPaused: () => paused, storage: null, onPrincipalMismatch: vi.fn(), createApi: () => source.api });
   caches.push(cache);
-  cache.select(source.binding);
+  cache.select(source.binding, source.binding);
   const pane = cache.snapshot()[0]!;
   await waitFor(() => expect(pane.client.snapshot().connected).toBe(true));
   const bot = { ...botDefinition(), id: source.binding.botId, ownerUserId: source.binding.ownerUserId, sessionId: source.binding.sessionId, testExecutionId: source.binding.testExecutionId };

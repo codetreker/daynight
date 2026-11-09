@@ -30,6 +30,11 @@ continues to block uncertain deletion and revoke confirmed deletion or denied
 access, including late results. The [details decision](../feature/2026-11-05-bot-details-panel.md)
 continues to own the shared fullscreen boundary and responsive focus behavior.
 
+Selection-specific detail revalidation uses the separate
+[current-action admission decision](../architecture/2026-11-09-bot-current-action-admission.md).
+It preserves resident display without entering the authentication transport pause;
+this decision continues to own actual background identity checks.
+
 ## Alternatives
 
 **Hide the conversation and close dialogs whenever reads are disabled.** This

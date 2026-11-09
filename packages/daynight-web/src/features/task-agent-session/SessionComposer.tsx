@@ -23,10 +23,10 @@ function classifySubmission(text: string, commands: readonly SessionNativeComman
   return { kind: 'command', command, args: parsed?.[2] ?? '' } as const;
 }
 
-export function SessionComposer({ state, connected, canInteract = true, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, operationProgress = new Map(), settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
+export function SessionComposer({ state, connected, canInteract = true, actionAdmitted = true, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, operationProgress = new Map(), settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
   readonly presentation?: SessionComposerPresentation; readonly inputRef?: RefObject<HTMLTextAreaElement | null>;
   readonly sessionNoticeOwned?: boolean; readonly statusDescriptionId?: string;
-  readonly state: SessionState; readonly connected: boolean; readonly canInteract?: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
+  readonly state: SessionState; readonly connected: boolean; readonly canInteract?: boolean; readonly actionAdmitted?: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
   readonly draft?: SessionDraft; readonly onDraftChange?: (text: string) => void;
   readonly operationProgress?: SessionOperationProgress;
   readonly settingIntents?: ReadonlyMap<string, SessionSettingIntent>;
@@ -162,7 +162,7 @@ export function SessionComposer({ state, connected, canInteract = true, sessionN
   // Snapshots reconstruct controls; only catalog changes invalidate keyboard selection.
   const catalogSignature = JSON.stringify(controls ? [controls.revision, controls.commandsError, controls.commands.map(command => [command.id, command.name, command.description, command.argumentHint, command.available])] : null);
   useLayoutEffect(() => { setCommandIndex(0); setCandidateExplicit(false); commandHighlightSource.current = 'keyboard'; commandAnchor.current = null; commandPointer.current = null; }, [text, catalogSignature, showCommands, controlView, active]);
-  const controlsAllowed = canInteract && !authPaused && !pending && !commandPending && sessionControlGate(state, connected);
+  const controlsAllowed = actionAdmitted && canInteract && !authPaused && !pending && !commandPending && sessionControlGate(state, connected);
   const dismissControls = useCallback(() => { setControlView(null); dismissCommands(true); }, []);
   const closeControls = useCallback(() => { dismissControls(); inputRef.current?.focus({ preventScroll: true }); }, [dismissControls]);
   useLayoutEffect(() => {
@@ -316,6 +316,7 @@ export function SessionComposer({ state, connected, canInteract = true, sessionN
       if (isCommand) setText('');
       setControlView(command.id === '$model' ? 'model' : 'permissions'); dismissCommands(true); return;
     }
+    if (!actionAdmitted) return;
     if (!controlsAllowed || !controls || !command.available || !onExecuteCommand) { setError(m.commandUnavailable); return; }
     const submitted = currentText.current, revision = localRevision.current;
     const commandDraft = submitted.trimStart().startsWith(`/${command.name}`);
@@ -333,10 +334,10 @@ export function SessionComposer({ state, connected, canInteract = true, sessionN
     } else void executeCommand(command, '');
   }
   const sendReady = canInteract && sessionSendGate(state, connected);
-  const sendAllowed = sendReady && !authPaused;
+  const sendAllowed = actionAdmitted && sendReady && !authPaused;
   const cancelReady = canInteract && sessionCancelGate(state, connected);
   const interruptRequested = interruptedTurn !== null && snapshot?.currentTurnId === interruptedTurn;
-  const cancelAllowed = cancelReady && !authPaused && !interruptRequested;
+  const cancelAllowed = actionAdmitted && cancelReady && !authPaused && !interruptRequested;
   const latest = useRef({ sendAllowed, pending, cancelAllowed, cancelling }); latest.current = { sendAllowed, pending, cancelAllowed, cancelling };
   let notice: string | null = null;
   const unknownInput = [...state.operations.values()].some(operation => ['send_message', 'execute_command'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown');
@@ -431,7 +432,7 @@ export function SessionComposer({ state, connected, canInteract = true, sessionN
     try { await onCancel(); setInterruptedTurn(turnId); } catch (cause) { errorKind.current = 'cancel'; setError(cause instanceof Error ? cause : m.failure); }
     finally { setCancelling(false); latest.current.cancelling = false; }
   }
-  const commandSendAllowed = canInteract && !authPaused && connected && !pending && !commandPending && (commands.some(command => command.id.startsWith('$') && `/${command.name}` === text.trim()) || controlsAllowed);
+  const commandSendAllowed = actionAdmitted && canInteract && !authPaused && connected && !pending && !commandPending && (commands.some(command => command.id.startsWith('$') && `/${command.name}` === text.trim()) || controlsAllowed);
   const input = <textarea readOnly={!canInteract} aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
       if (event.key === 'Tab' && event.shiftKey) {
@@ -466,7 +467,7 @@ export function SessionComposer({ state, connected, canInteract = true, sessionN
       <div className="session-command-body" ref={commandBodyRef}>
       {controls?.commandsError ? <p className="session-error" role="alert">{controls.commandsError}</p> : null}
       {!controls ? <p className="session-control-note">{m.controlsUnavailable}</p> : null}
-      {matchingCommands.length ? <div role="listbox" id={`${menuId}-commands`} aria-label={m.nativeCommands}>{matchingCommands.map((command, index) => <button key={command.id} id={`${menuId}-command-${index}`} type="button" role="option" aria-selected={index === selectedIndex} disabled={!canInteract || !command.available || authPaused || !connected || pending || commandPending} onPointerMove={event => highlightCommand(event, index)} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)}><strong>/{command.name}</strong><span>{controlMessages.commandDescription(command)}</span>{index === selectedIndex && command.argumentHint ? <small>{command.argumentHint}</small> : null}</button>)}</div> : <p className="session-control-note">{m.noCommands}</p>}
+      {matchingCommands.length ? <div role="listbox" id={`${menuId}-commands`} aria-label={m.nativeCommands}>{matchingCommands.map((command, index) => <button key={command.id} id={`${menuId}-command-${index}`} type="button" role="option" aria-selected={index === selectedIndex} disabled={!canInteract || !command.available || authPaused || !connected || pending || commandPending || !actionAdmitted && !command.id.startsWith('$') && !command.argumentHint} onPointerMove={event => highlightCommand(event, index)} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)}><strong>/{command.name}</strong><span>{controlMessages.commandDescription(command)}</span>{index === selectedIndex && command.argumentHint ? <small>{command.argumentHint}</small> : null}</button>)}</div> : <p className="session-control-note">{m.noCommands}</p>}
       </div>
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}

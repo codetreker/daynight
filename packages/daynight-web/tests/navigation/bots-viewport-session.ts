@@ -5,7 +5,7 @@ import type { SessionArchive } from '../../../daynight/src/session/archive';
 import { sessionFence } from '../../../daynight/src/session/protocol';
 
 export type BotViewportOptions = {
-  readonly scenario: 'empty' | 'long' | 'error' | 'archive';
+  readonly scenario: 'empty' | 'long' | 'error' | 'archive' | 'hot-switch';
   readonly text?: string;
 };
 
@@ -47,6 +47,10 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
       if (direction === 'tail') {
         metrics.tail++;
         if (options?.scenario === 'error') throw new Error('Controlled history unavailable');
+        if (options?.scenario === 'hot-switch') {
+          const tail = page(1901, 2000);
+          return { ...tail, items: tail.items.map(entry => entry.entrySeq === '1950' ? { kind: 'tool_call' as const, callId: 'hot-switch-tool', entryId: entry.entryId, entrySeq: entry.entrySeq, revision: entry.revision, name: 'commandExecution', status: 'completed' as const, input: 'ls -la', output: [{ type: 'text' as const, text: 'Retained tool output' }], truncated: false } : entry) };
+        }
         return options ? content() : page(1901, 2000);
       }
       metrics.before++; const end = Number(cursor) - 1; return page(Math.max(1, end - 99), end);
