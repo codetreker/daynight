@@ -11,7 +11,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"github.com/google/uuid"
 )
@@ -86,95 +85,61 @@ func TestWorkerAssistantHostHTTPReportingAndLegacyReplacement(t *testing.T) {
 }
 
 func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T) {
-	f := newCapacityHTTPFixture(t, uuid.NewString(), &bytes.Buffer{})
-	path := "/api/v1/me/workers/" + f.worker
+	f := newCapacityReportOperationFixtureWithOutput(t, uuid.NewString(), &bytes.Buffer{})
 	host := assistantHostBody()
-	value := configurationHTTPValue()
-	body := configurationHTTPReportBody(value, nil)
+	body := configurationHTTPReportBody(configurationHTTPValue(), nil)
 	body["assistantHost"] = host
 	wantHost := capacityDecode[api.WorkerAssistantHost](t, host)
-	wantConfiguration := capacityDecode[model.WorkerConfiguration](t, value)
-	desired := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: capacityObservedAt, Value: wantConfiguration}
-	configuration := model.WorkerConfigurationResource{Desired: &desired, ObservationRevision: "0"}
-	stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-	plan := f.write([]string{"dao", "admit", "upsert", "configuration", "set_configuration", "observed"}, store.TransactionCommitted, func(d *capacityWorkerDAO) {
-		f.reportDAO(d, body, stored)
-		d.configuration = func(user, worker string) (model.WorkerConfigurationResource, error) {
-			f.workerAddress(user, worker)
-			return model.WorkerConfigurationResource{ObservationRevision: "0"}, nil
-		}
-		d.setConfiguration = func(user, worker string, revision int64, actual model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
-			f.workerAddress(user, worker)
-			if revision != 1 || !reflect.DeepEqual(actual, wantConfiguration) {
-				t.Fatal("configuration bootstrap arguments differ")
-			}
-			return capacityDecode[model.WorkerDesiredConfiguration](t, desired), nil
-		}
-	})
-	response := configurationHTTPRequest(f.handler, http.MethodPost, path+"/report", jsonBody(t, body), "1")
+	desired := func() *model.WorkerDesiredConfiguration {
+		return &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: capacityObservedAt, Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue())}
+	}
+	configuration := func() model.WorkerConfigurationResource {
+		return model.WorkerConfigurationResource{Desired: desired(), ObservationRevision: "0"}
+	}
+	configurationReceipt := func() *model.WorkerConfigurationReceipt {
+		return &model.WorkerConfigurationReceipt{Desired: desired(), ObservationRevision: "0", ObservationAccepted: false}
+	}
+	response := f.reportRequest(body, 1, workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: configurationReceipt()}, nil, "1")
 	receipt := decodeResponse[configurationHTTPReceipt](t, response, http.StatusOK)
-	plan.check()
-	if response.Header().Get(workerConfigurationHeader) != "1" || !reflect.DeepEqual(receipt.Configuration.Desired, &desired) || receipt.Configuration.ObservationRevision != "0" || receipt.Configuration.ObservationAccepted {
+	wantReceipt := configurationHTTPReceipt{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: *configurationReceipt()}
+	if response.Header().Get(workerConfigurationHeader) != "1" || !reflect.DeepEqual(receipt, wantReceipt) {
 		t.Fatalf("combined report did not negotiate bootstrap: %s", response.Body)
 	}
-	plan = f.readWorker(stored)
-	detail := snapshotDetailHTTP(t, f.handler, f.worker)
-	plan.check()
+	detail := decodeResponse[api.WorkerDetailResponse](t, f.getRequest(workerservice.WorkerDetailResult{ObservedAt: capacityObservedAt, Worker: capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)}), http.StatusOK)
 	if !reflect.DeepEqual(detail.Worker.Telemetry.AssistantHost, &wantHost) {
 		t.Fatalf("configuration exchange changed assistant host: %+v", detail.Worker.Telemetry.AssistantHost)
 	}
-	plan = f.readConfiguration(configuration)
-	readConfiguration := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(f.handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
-	plan.check()
-	if !reflect.DeepEqual(readConfiguration, configuration) {
+	readConfiguration := decodeResponse[model.WorkerConfigurationResource](t, f.configurationRequest(configuration()), http.StatusOK)
+	if !reflect.DeepEqual(readConfiguration, configuration()) {
 		t.Fatalf("combined report configuration differs: %+v", readConfiguration)
 	}
 	rejectedHost := assistantHostBody()
 	rejectedHost["defaultCwd"] = "/rejected-assistant-host"
 	rejected := configurationHTTPReportBody(nil, map[string]any{"baseRevision": "0", "desiredRevision": "2", "items": []any{}})
 	rejected["assistantHost"] = rejectedHost
-	rejectedSnapshot := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, rejected)
-	plan = f.write([]string{"dao", "admit", "upsert", "configuration"}, store.TransactionNotCommitted, func(d *capacityWorkerDAO) {
-		f.reportDAO(d, rejected, rejectedSnapshot)
-		d.configuration = func(user, worker string) (model.WorkerConfigurationResource, error) {
-			f.workerAddress(user, worker)
-			return capacityDecode[model.WorkerConfigurationResource](t, configuration), nil
-		}
-	})
-	assertProjectError(t, configurationHTTPRequest(f.handler, http.MethodPost, path+"/report", jsonBody(t, rejected), "1"), http.StatusBadRequest, "invalid_input")
-	plan.check()
-	plan = f.readWorker(stored)
-	after := snapshotDetailHTTP(t, f.handler, f.worker)
-	plan.check()
+	refusal := &model.Fault{Code: "invalid_input", Message: "Worker observation references a future desired revision."}
+	assertProjectError(t, f.reportRequest(rejected, 1, workerservice.WorkerReportResult{}, refusal, "1"), http.StatusBadRequest, "invalid_input")
+	after := decodeResponse[api.WorkerDetailResponse](t, f.getRequest(workerservice.WorkerDetailResult{ObservedAt: capacityObservedAt, Worker: capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)}), http.StatusOK)
 	if !reflect.DeepEqual(after.Worker, detail.Worker) {
 		t.Fatalf("refused exchange response changed: %+v", after.Worker)
 	}
-	plan = f.readConfiguration(configuration)
-	afterConfiguration := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(f.handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
-	plan.check()
-	if !reflect.DeepEqual(afterConfiguration, configuration) {
+	afterConfiguration := decodeResponse[model.WorkerConfigurationResource](t, f.configurationRequest(configuration()), http.StatusOK)
+	if !reflect.DeepEqual(afterConfiguration, configuration()) {
 		t.Fatal("refused exchange configuration response changed")
 	}
 	delete(body, "assistantHost")
 	delete(body, "configuration")
-	legacySnapshot := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-	plan = f.report(body, legacySnapshot)
-	legacy := projectRequest(f.handler, http.MethodPost, path+"/report", jsonBody(t, body))
-	plan.check()
+	legacy := f.reportRequest(body, 1, workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt}, nil, "")
 	fields := decodeResponse[map[string]json.RawMessage](t, legacy, http.StatusOK)
 	if len(fields) != 2 || fields["observedAt"] == nil || fields["lastReportedAt"] == nil || legacy.Header().Get(workerConfigurationHeader) != "" {
 		t.Fatalf("legacy heartbeat received extended receipt: %s", legacy.Body)
 	}
-	plan = f.readWorker(legacySnapshot)
-	legacyDetail := snapshotDetailHTTP(t, f.handler, f.worker)
-	plan.check()
+	legacyDetail := decodeResponse[api.WorkerDetailResponse](t, f.getRequest(workerservice.WorkerDetailResult{ObservedAt: capacityObservedAt, Worker: capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)}), http.StatusOK)
 	if legacyDetail.Worker.Telemetry.AssistantHost != nil {
 		t.Fatal("legacy replacement retained obsolete assistant capability")
 	}
-	plan = f.readConfiguration(configuration)
-	retained := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(f.handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
-	plan.check()
-	if !reflect.DeepEqual(retained, configuration) {
+	retained := decodeResponse[model.WorkerConfigurationResource](t, f.configurationRequest(configuration()), http.StatusOK)
+	if !reflect.DeepEqual(retained, configuration()) {
 		t.Fatal("legacy heartbeat configuration response changed")
 	}
 }
