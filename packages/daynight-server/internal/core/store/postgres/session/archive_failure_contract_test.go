@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestArchiveFileInventoryAndImmutableWrites(t *testing.T) {
@@ -112,5 +113,47 @@ func TestArchiveReadyDoesNotReportSuccessWhenStorageDeclinesWrite(t *testing.T) 
 	var count int
 	if e := database.Pool.QueryRow(ctx, `SELECT count(*) FROM session_archives WHERE session_id=$1`, id).Scan(&count); e != nil || count != 0 {
 		t.Fatal(count, e)
+	}
+}
+
+func TestSourceAcknowledgementDoesNotAcceptFailedInsert(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{"declined", "BEGIN RETURN NULL; END"},
+		{"error", "BEGIN RAISE EXCEPTION 'source acknowledgement storage failure'; END"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database, _, id := sessionArchiveLockFixture(t)
+			ctx := t.Context()
+			// Each test owns its database. The trigger preserves real PostgreSQL
+			// command and transaction outcomes while refusing acknowledgement storage.
+			if _, e := database.Pool.Exec(ctx, `CREATE FUNCTION refuse_source_fixture() RETURNS trigger LANGUAGE plpgsql AS $$`+test.body+`$$; CREATE TRIGGER refuse_source_fixture BEFORE INSERT ON session_source_hashes FOR EACH ROW EXECUTE FUNCTION refuse_source_fixture()`); e != nil {
+				t.Fatal(e)
+			}
+			h := store.SessionSourceHash{SessionID: id, SourceEpoch: uuid.NewString(), Kind: "event", Identity: "1", Through: 1, Digest: []byte(strings.Repeat("a", 32))}
+			var insertError error
+			_, e := database.WriteSession(ctx, func(scope store.SessionScope) error {
+				insertError = scope.SessionDAO().(store.SessionSourceDAO).SaveSessionSourceHash(ctx, h)
+				return insertError
+			})
+			if test.name == "declined" {
+				var fault *model.Fault
+				if !errors.As(e, &fault) || fault.Code != "resource_conflict" {
+					t.Fatal("zero-written-row outcome became a source acknowledgement", e)
+				}
+			} else {
+				var failure *pgconn.PgError
+				var queryFailure *store.Error
+				if !errors.As(e, &failure) || failure.Code != "P0001" || !errors.Is(e, insertError) || !errors.As(insertError, &queryFailure) || queryFailure.Phase != "persist original source hash" {
+					t.Fatal("source acknowledgement lost its persistence failure chain", e)
+				}
+			}
+			var count int
+			if e := database.Pool.QueryRow(ctx, `SELECT count(*) FROM session_source_hashes WHERE session_id=$1`, id).Scan(&count); e != nil || count != 0 {
+				t.Fatal("failed insertion persisted an acknowledgement", count, e)
+			}
+		})
 	}
 }
