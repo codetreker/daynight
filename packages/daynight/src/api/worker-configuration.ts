@@ -198,7 +198,7 @@ export const parseWorkerPromptSelectors = (value: unknown): readonly WorkerPromp
 const promptResource = (value: unknown, key: WorkerPromptKey, userId: string, workerId: string): WorkerPromptResource => {
   const data = exact(value, ["scope", "scopeId", "revision", "text", "updatedAt"]);
   const scopeId = id(data.scopeId), revision = parseWorkerCloudRevision(data.revision, true);
-  const expectedId = key.scope === "user" ? userId : key.scope === "worker" ? workerId : key.projectId;
+  const expectedId = key.scope === "project" ? key.projectId : key.scope === "user" ? userId : workerId;
   if (data.scope !== key.scope || scopeId !== expectedId || typeof data.text !== "string" || !data.text.isWellFormed() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(data.text) || Buffer.byteLength(data.text, "utf8") > 1_048_576) return malformed();
   const updatedAt = data.updatedAt === null ? null : instant(data.updatedAt);
   if (revision === "0" ? data.text !== "" || updatedAt !== null : updatedAt === null) return malformed();

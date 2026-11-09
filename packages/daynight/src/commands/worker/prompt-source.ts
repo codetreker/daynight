@@ -79,6 +79,7 @@ export const createWorkerPromptSource = (identity: WorkerPromptIdentity) => {
       });
     } catch (error) { failCycle(); throw error; }
     updates.forEach(update => update());
+    if (results.length !== 0 && results.every(result => result.status === "error")) { failCycle(); return false; }
     if (fifo.length === 0 && fresh.length === 0) { active = false; return false; }
     return true;
   };

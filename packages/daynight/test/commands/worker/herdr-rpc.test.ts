@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { createHerdrRpcClient, HERDR_MAX_REQUEST_BYTES, HERDR_MAX_RESPONSE_BYTES, HerdrRpcError, herdrIpcAddress } from "../../../src/commands/worker/herdr/rpc.js";
+import { createHerdrRpcClient, HERDR_MAX_REQUEST_BYTES, HERDR_MAX_RESPONSE_BYTES, HerdrRpcError, herdrIpcAddress, validateHerdrPromptInput } from "../../../src/commands/worker/herdr/rpc.js";
 
 type Request = { id: string; method: string; params: Record<string, unknown> };
 const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp");
@@ -71,6 +71,15 @@ afterEach(async () => {
 });
 
 describe("Herdr local RPC", () => {
+  it("checks the complete encoded prompt envelope before any native connection", () => {
+    const target = "pane-1";
+    const id = "00000000-0000-4000-8000-000000000000";
+    const overhead = Buffer.byteLength(JSON.stringify({ id, method: "agent.prompt", params: { target, text: "" } }));
+    expect(() => validateHerdrPromptInput(target, "x".repeat(HERDR_MAX_REQUEST_BYTES - overhead))).not.toThrow();
+    try { validateHerdrPromptInput(target, "\"".repeat(Math.ceil((HERDR_MAX_REQUEST_BYTES - overhead + 1) / 2))); throw new Error("expected rejection"); }
+    catch (error) { expect(error).toMatchObject({ name: "PromptInputLimitError", inputPath: "herdr_rpc", maxBytes: HERDR_MAX_REQUEST_BYTES, actualBytes: expect.any(Number), submission: "not-submitted" }); }
+  });
+
   it("maps logical paths directly to each platform's IPC address", () => {
     expect(herdrIpcAddress("/state/herdr.sock", "linux")).toBe("/state/herdr.sock");
     expect(herdrIpcAddress("/state/herdr.sock", "darwin")).toBe("/state/herdr.sock");

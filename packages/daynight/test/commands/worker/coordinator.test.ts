@@ -813,6 +813,29 @@ describe("minimal worker resource reconciliation", () => {
     await coordinator.shutdown();
   });
 
+  it("keeps the original claim and capacity while prompt input is unknown, without spending recovery", async () => {
+    const f = await fixture(); const limited = { ...configuration, recoveryLimit: 0 };
+    const resource = (scope: "user" | "project" | "worker", scopeId: string) => ({ scope, scopeId, revision: "0", text: "", updatedAt: null });
+    let ready = false;
+    const demand = vi.fn();
+    const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }], onPromptDemand: demand,
+      promptSource: { current: () => ready ? { user: resource("user", uuid(2)), project: resource("project", f.project.projectId), worker: resource("worker", workerId) } : null } });
+    await coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ phase: "waiting", herdr: null, nativeSessionId: null }), expect.anything()));
+    const original = f.store.listTasks()[0]!;
+    for (let attempt = 0; attempt < 4; attempt++) await coordinator.tick();
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    expect(f.store.listTasks()).toHaveLength(1);
+    expect(f.store.getTask(original)).toMatchObject({ claimId: original.claimId, status: "active" });
+    expect(f.events.filter(event => event.kind === "execution-error")).toEqual([]);
+    expect(demand).toHaveBeenCalledWith([f.project.projectId]);
+    expect(await coordinator.advanceRetry(original)).toEqual({ kind: "waiting_input", reason: "prompt_unknown" });
+    ready = true;
+    await coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    expect(f.store.getTask(original)?.claimId).toBe(original.claimId);
+    await coordinator.shutdown();
+  });
+
   it("keeps ordinary visible-read failures in the execution recovery budget", async () => {
     const f = await fixture(); const limited = { ...configuration, recoveryLimit: 0 };
     const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }] });
@@ -2194,6 +2217,24 @@ it("keeps an authorized Web retry waiting until a healthy observation after conf
     await eventually(() => expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)?.phase).toBe("executing"));
     expect(webStore.getTask(row)?.recovery.count).toBe(1);
   } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+});
+
+it("returns a Web retry's input wait without claiming a completed submission", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+  const advance = vi.fn(async (input: WebTask) => input);
+  const advanceResult = vi.fn(async (input: WebTask) => ({ kind: "waiting_input" as const, reason: "prompt_too_large" as const, task: input }));
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore,
+    verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, advanceResult, cleanup: vi.fn() } });
+  try {
+    await coordinator.tick(); await eventually(() => expect(advanceResult).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    expect(await coordinator.advanceRetry(row)).toEqual({ kind: "waiting_input", reason: "prompt_too_large" });
+    expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)?.phase).toBe("waiting");
+    expect(f.store.getTask(row)).toMatchObject({ status: "active", claimId: row.claimId });
+    expect(advance).not.toHaveBeenCalled();
+  } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
 it("refuses an explicit Web retry without original execution evidence instead of starting an assignment", async () => {

@@ -258,3 +258,50 @@ describe("Worker cloud configuration client", () => {
     expect(bounded).not.toHaveBeenCalled();
   });
 });
+
+describe("Worker prompt configuration sync", () => {
+  const selectors = [{ key: { scope: "user" as const }, knownRevision: null }, { key: { scope: "worker" as const }, knownRevision: null }];
+  const prompts = [
+    { key: selectors[0]!.key, status: "value", value: { scope: "user", scopeId: userId, revision: "0", text: "", updatedAt: null } },
+    { key: selectors[1]!.key, status: "value", value: { scope: "worker", scopeId: workerId, revision: "1", text: " x\n", updatedAt: time } },
+  ];
+  it("sends selectors on the same POST and returns the native and prompt results", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ ...receipt, configuration: { ...receipt.configuration, prompts } }, "2"));
+    const result = await api(fetch).reportWorkerConfiguration(workerId, report, configuration, selectors);
+    expect(result).toEqual({ ...receipt, prompts: { ok: true, results: prompts } });
+    const headers = new Headers(fetch.mock.calls[0]![1]!.headers);
+    expect(headers.get("Daynight-Worker-Configuration")).toBe("2");
+    expect(JSON.parse(headers.get("Daynight-Worker-Prompts")!)).toEqual(selectors);
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual({ ...report, configuration });
+  });
+  it("retains the native receipt while refusing malformed prompt batches", async () => {
+    const invalid = { ...receipt, configuration: { ...receipt.configuration, prompts: [{ ...prompts[0], value: { ...prompts[0]!.value, scopeId: workerId } }] } };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(invalid, "2"));
+    await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration, selectors)).resolves.toEqual({ ...receipt, prompts: { ok: false } });
+    const duplicate = JSON.stringify({ ...receipt, configuration: { ...receipt.configuration, prompts } }).replace('"scope":"user"', '"scope":"user","scope":"user"');
+    const raw = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(duplicate, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "2" } }));
+    await expect(api(raw).reportWorkerConfiguration(workerId, report, configuration, selectors)).resolves.toEqual({ ...receipt, prompts: { ok: false } });
+  });
+  it("reads three worst-case escaped prompt values within the POST limit without lowering the operation budget", async () => {
+    const project = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const requested = [...selectors, { key: { scope: "project" as const, projectId: project }, knownRevision: null }];
+    const items = requested.map(({ key }, index) => ({ key, status: "value", value: { scope: key.scope, scopeId: index === 0 ? userId : index === 1 ? workerId : project, revision: "1", text: `PLACEHOLDER${index}`, updatedAt: time } }));
+    let body = JSON.stringify({ ...receipt, configuration: { ...receipt.configuration, prompts: items } });
+    for (let index = 0; index < 3; index++) body = body.replace(`PLACEHOLDER${index}`, "\\u0026".repeat(1_048_400));
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(resource)).mockResolvedValueOnce(new Response(body, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "2" } }));
+    const operation = createOperation(); operations.push(operation);
+    operation.consume(35 * 1_048_576);
+    const client = createApiClient({ serverUrl: "http://localhost:8787", serverToken: "fixture-token", expectedUserId: userId, operation, fetch });
+    await client.getWorkerConfiguration(workerId);
+    const result = await client.reportWorkerConfiguration(workerId, report, configuration, requested);
+    expect(result.prompts?.ok).toBe(true);
+    if (result.prompts?.ok) expect(result.prompts.results.map(item => item.status === "value" ? item.value.text.length : 0)).toEqual([1_048_400, 1_048_400, 1_048_400]);
+  });
+  it("refuses principal or capability mismatches and invalid outgoing selectors", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ ...receipt, configuration: { ...receipt.configuration, prompts } }, "1"));
+    await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration, selectors)).rejects.toMatchObject({ phase: "protocol" });
+    const changed = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ ...receipt, configuration: { ...receipt.configuration, prompts } }, "2", workerId));
+    await expect(api(changed).reportWorkerConfiguration(workerId, report, configuration, selectors)).rejects.toMatchObject({ phase: "protocol" });
+    expect(() => api(fetch).reportWorkerConfiguration(workerId, report, configuration, [selectors[0]!, selectors[0]!])).toThrow(ProtocolError);
+  });
+});

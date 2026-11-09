@@ -271,6 +271,38 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("captures a fresh recovery input without replaying the original assignment", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation()); f.reopen();
+    const next = await f.prepare();
+    const preparePrompt = vi.fn((recovery: boolean) => recovery
+      ? "Continue the original assigned task under its existing authorization.\n\n----- begin user prompt -----\nlatest\n----- end user prompt -----"
+      : "unexpected original assignment");
+    await f.facade.tasks.start(f.context, next, { configuration: { agent: "codex", model: null, args: [] }, prompt: "stale assignment", preparePrompt }, operation());
+    expect(preparePrompt).toHaveBeenCalledWith(true);
+    expect(f.inputs.filter(value => value.initial)).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(f.inputs.filter(value => !value.initial)).toEqual([{ initial: false, body: expect.stringContaining("latest") }]);
+    expect(f.inputs.at(-1)!.body).not.toContain("stale assignment");
+    expect(f.read().initialPrompt).toBe("Original managed assignment");
+  });
+  it("keeps a durable native launch unsubmitted when fresh input preparation rejects", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    const failure = new Error("Prompt input is not ready");
+    await expect(f.facade.tasks.start(f.context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "stale", preparePrompt: () => { throw failure; } }, operation())).rejects.toBe(failure);
+    expect(f.launches).toEqual([]);
+    expect(f.inputs).toEqual([]);
+    expect(f.read()).toMatchObject({ initialAssignment: "pending", initialPrompt: null, runs: [expect.objectContaining({ phase: "prepared", nativeLaunch: "not_submitted" })] });
+  });
+  it("reuses a fixed unsubmitted initial prompt without fetching or rebuilding it", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    f.mutateRecord(record => { record.initialPrompt = "Previously fixed input"; });
+    const preparePromptSource = vi.fn(async () => {}), preparePrompt = vi.fn(() => "New configuration text");
+    await f.facade.tasks.start(f.context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Other input", preparePromptSource, preparePrompt }, operation());
+    expect(preparePromptSource).not.toHaveBeenCalled();
+    expect(preparePrompt).not.toHaveBeenCalled();
+    expect(f.inputs).toEqual([{ initial: true, body: "Previously fixed input" }]);
+    expect(f.read().initialPrompt).toBe("Previously fixed input");
+  });
   it("shares one owned selection verifier across the legacy and per-run adapters", async () => {
     const f = fixture(); f.register(); await f.prepare();
     expect(f.adapterSelectionVerifiers.length).toBeGreaterThan(1);
@@ -1197,6 +1229,39 @@ it.each(["initial", "deferred"] as const)("keeps the %s assignment pending throu
       expect(journal.get(original.sessionId)!.initialOperationId).toBe(initialOperationId);
       expect(f.launches).toHaveLength(1);
     } finally { journal.close(); }
+  } finally { store.close(); }
+});
+
+it("keeps a blocked macOS recovery input fixed and respects a later task pause", async () => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const originalTask = await f.readTask();
+  await f.facade.lifecycle!.stop(f.context, "shutdown", operation()); f.reopen();
+  f.settings.nativeStatus = "blocked";
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
+  store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
+  const resource = (scope: "user" | "project" | "worker", text: string, revision: string) => ({ scope, scopeId: scope === "project" ? project.projectId : uuid(5), text, revision, updatedAt: "2026-11-09T00:00:00Z" });
+  let tuple = { user: resource("user", "captured", "1"), project: resource("project", "", "0"), worker: resource("worker", "", "0") };
+  const submit = vi.spyOn(f.facade.tasks, "submitPrompt");
+  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+    herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment",
+    promptSource: { current: () => tuple }, emit: () => {}, now: Date.now });
+  const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 } };
+  try {
+    await driver.advance(input);
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    tuple = { ...tuple, user: resource("user", "later", "2") };
+    f.settings.nativeStatus = "idle";
+    f.changeTask({ properties: { ...originalTask.properties, paused: true } });
+    await expect(driver.advance(input)).rejects.toMatchObject({ reason: "task_paused", promptSubmission: "not-submitted" });
+    expect(submit.mock.calls.at(-1)?.[4]).toEqual(expect.any(Function));
+    expect(f.inputs).toHaveLength(1);
+    f.changeTask({ properties: originalTask.properties });
+    await driver.advance(input); await driver.advance(input);
+    expect(f.inputs).toHaveLength(2);
+    expect(f.inputs[1]).toEqual({ initial: false, body: "Continue the original assigned task under its existing authorization.\n\n----- begin user prompt -----\ncaptured\n----- end user prompt -----" });
+    expect(f.launches).toHaveLength(2);
   } finally { store.close(); }
 });
 

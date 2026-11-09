@@ -102,7 +102,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const remote = { serverOrigin: project.serverOrigin, currentUserId: async () => task.userId!, readTask: async () => remoteTask,
     ownInventory: async () => ({ tasks: [remoteTask], coveredProjectIds: [project.projectId], unavailableProjectIds: [] }),
     candidates: async function* () {}, update } as unknown as WorkerRemote;
-  const advance = vi.spyOn(backend, "advance");
+  const advance = vi.spyOn(backend, "advanceResult");
   const coordinator = createWorkerCoordinator({ store: workerStore, webStore: store, webBackend: { ...backend, cleanup: async input => ({ task: input, complete: true }) },
     git, herdr: {} as WorkerHerdrAdapter, remote, serverOrigin: project.serverOrigin, workerId: task.workerId, platform: "linux",
     machine: { id: randomUUID(), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration,

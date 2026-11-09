@@ -7,6 +7,8 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerReport, WorkerTaskReference, WorkerTelemetry } from "../../../src/api/types.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
+import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-source.js";
+import type { WorkerPromptSelector } from "../../../src/api/worker-configuration.js";
 import { HerdrCommandCleanupError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 
@@ -416,6 +418,65 @@ it("starts no work when its root signal is already cancelled", async () => {
 
 const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
 const cloudDesired = { revision: "1", updatedAt: timestamp, value: cloudValue };
+
+it("drains a finite prompt cycle on the same reporter and stops after unchanged values", async () => {
+  const f = fixture();
+  const userId = "11111111-1111-4111-8111-111111111111", workerId = "22222222-2222-4222-8222-222222222222";
+  const projects = ["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555"];
+  const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId, workerId });
+  source.setDemand(projects);
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation, selectors?: readonly WorkerPromptSelector[]) => ({
+    observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt,
+    prompts: { ok: true as const, results: selectors!.map(selector => selector.knownRevision === null
+      ? { key: selector.key, status: "value" as const, value: { scope: selector.key.scope, scopeId: selector.key.scope === "project" ? selector.key.projectId : selector.key.scope === "user" ? userId : workerId, revision: "0", text: "", updatedAt: null } }
+      : { key: selector.key, status: "unchanged" as const, revision: selector.knownRevision }) },
+  }));
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
+  await settle();
+  expect(send.mock.calls.map(call => call[3]!.length)).toEqual([3, 2]);
+  expect(source.current(projects[0]!)?.project.revision).toBe("0");
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(send.mock.calls.map(call => call[3]!.length)).toEqual([3, 2, 3, 2]);
+  await vi.advanceTimersByTimeAsync(1_000); expect(send).toHaveBeenCalledTimes(4);
+  await reporter.stop(); source.close();
+});
+
+it("ends prompt catchup on a global read failure while retaining the native acknowledgement", async () => {
+  const f = fixture();
+  const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId: "11111111-1111-4111-8111-111111111111", workerId: "22222222-2222-4222-8222-222222222222" });
+  source.setDemand(["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]);
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const accept = vi.fn(async () => {});
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation, selectors?: readonly WorkerPromptSelector[]) => ({
+    observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt,
+    prompts: { ok: true as const, results: selectors!.map(selector => ({ key: selector.key, status: "error" as const, error: "timeout" as const })) },
+  }));
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept, prompts: source } });
+  await settle(); expect(send).toHaveBeenCalledOnce(); expect(accept).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(29_999); expect(send).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1); expect(send).toHaveBeenCalledTimes(2);
+  await reporter.stop(); source.close();
+});
+
+it("does not retry a failed prompt batch when a new demand arrived in flight", async () => {
+  const f = fixture();
+  const source = createWorkerPromptSource({ serverOrigin: "https://daynight.cc", userId: "11111111-1111-4111-8111-111111111111", workerId: "22222222-2222-4222-8222-222222222222" });
+  const blocked = deferred<WorkerCloudReportReceipt>();
+  const send = vi.fn((_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => blocked.promise);
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
+  await settle();
+  source.setDemand(["33333333-3333-4333-8333-333333333333"]); reporter.demandChanged();
+  blocked.reject(new Error("network")); await settle();
+  expect(send).toHaveBeenCalledOnce();
+  source.setDemand(["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]); reporter.demandChanged();
+  await settle(); expect(send).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(30_000); expect(send).toHaveBeenCalledTimes(2);
+  await reporter.stop(); source.close();
+});
 
 it("uses the latest inventory after a delayed cloud configuration preparation", async () => {
   const f = fixture(), preparation = deferred<void>();

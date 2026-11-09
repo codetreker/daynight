@@ -731,7 +731,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await beforeStart(operation);
       await publish(context, operation);
       await prepareRecording(context, operation);
-      record = update(context, draft => { current(draft).phase = "launch_requested"; current(draft).nativeLaunch = "requested"; if (draft.initialAssignment === "pending") draft.initialPrompt = input.prompt; });
+      const recovery = record.initialAssignment !== "pending";
+      const existing = recovery ? null : record.initialPrompt;
+      if (existing === null) await input.preparePromptSource?.(operation);
+      const prompt = existing ?? input.preparePrompt?.(recovery) ?? (recovery ? "Continue the original assigned task under its existing authorization." : input.prompt);
+      input.onPromptPrepared?.(prompt, recovery);
+      record = update(context, draft => { current(draft).phase = "launch_requested"; current(draft).nativeLaunch = "requested"; if (draft.initialAssignment === "pending") draft.initialPrompt = prompt; });
       const manager = adapter(record).tasks;
       const observed = await manager.launch(context, binding, { configuration: input.configuration, beforeStart, ...(run.run.binding.nativeSessionId === null ? {} : { resumeSessionId: run.run.binding.nativeSessionId }) }, operation);
       const info = await manager.processInfo(context, binding, operation);
@@ -759,7 +764,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const inputState = getInput(context).state().state;
       if (inputState === "manual" || inputState === "suspended") throw new HerdrInputWaitingError("control_suspended", "Automatic input is waiting for explicit control handoff.");
       if (inputState !== "automation") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-      await send(context, need(context).initialAssignment === "pending" ? input.prompt : "Continue the original assigned task under its existing authorization.", operation, undefined, input.onPromptSubmitted);
+      await send(context, prompt, operation, undefined, input.onPromptSubmitted);
       const after = await manager.observe(context, binding, operation); await publishObservedIdentity(context, after, operation); return after;
     }),
     observe: (context, binding, operation) => serialize(context, async () => { await attachRun(context, operation); const record = need(context); const observed = await adapter(record).tasks.observe(context, binding, operation); await publishObservedIdentity(context, observed, operation); return observed; }),
