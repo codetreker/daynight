@@ -3,7 +3,9 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -106,11 +108,14 @@ func publishArchiveRecoveryFixture(t *testing.T, op *ArchiveOperation, r *record
 }
 
 func TestArchiveTimelineRecoveryRechecksStoredIdentityAndReleasesReadLease(t *testing.T) {
-	for _, variant := range []string{"original", "wrong-file", "not-ready", "invalid-ledger", "incomplete-file", "missing-file", "corrupt-file", "changed-ledger"} {
+	for _, variant := range []string{"original", "owner-changed", "wrong-file", "not-ready", "invalid-ledger", "incomplete-file", "missing-file", "corrupt-file", "changed-ledger"} {
 		t.Run(variant, func(t *testing.T) {
 			op, d, r := archiveFlowFixture(t)
 			timeline, fileID := publishArchiveRecoveryFixture(t, op, r)
 			op.execution.archivePreflightRun = func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error) {
+				if variant == "owner-changed" {
+					return uuid.NewString(), nil
+				}
 				return r.Owner, nil
 			}
 			switch variant {
@@ -202,6 +207,108 @@ func TestArchiveRecoveryReceiptsRemainBoundToOriginalOwnerAndRound(t *testing.T)
 				}
 			} else if pe == nil || fe == nil {
 				t.Fatal("receipt escaped its original owner or stopped round", variant, pe, fe)
+			}
+		})
+	}
+}
+
+func TestArchiveMigrationReusesOnlyVerifiedImmutableOriginal(t *testing.T) {
+	for _, variant := range []string{"original", "changed-descriptor", "missing-blob", "corrupt-blob"} {
+		t.Run(variant, func(t *testing.T) {
+			op, d, r := archiveFlowFixture(t)
+			original := []byte("previously saved original")
+			length, digest, mime := decimal(int64(len(original))), archiveDigest(original), "text/plain"
+			resource := sp.Resource{ResourceID: uuid.NewString(), Status: "available", Name: "retained", ByteLength: &length, SHA256: &digest, MediaType: &mime}
+			encoded := base64.StdEncoding.EncodeToString(original)
+			entry, e := sp.DecodeTimeline([]byte(`{"entryId":"` + uuid.NewString() + `","entrySeq":"1","revision":"1","kind":"assistant_message","content":[{"type":"resource","resourceId":"` + resource.ResourceID + `","label":"retained"}]}`))
+			if e != nil {
+				t.Fatal(e)
+			}
+			source := encode(sp.ArchiveDocument{SchemaVersion: 1, Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID, Provider: r.Snapshot.Identity.Provider, Entries: []sp.TimelineEntry{entry}, Resources: []sp.ArchiveResource{{Resource: resource, Data: &encoded}}})
+			sourceHash := archiveDigest(source)
+			sourcePath, e := archiveObjectPath("", r.Owner, op.id, sourceHash)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = op.execution.files.Put(t.Context(), archiveBucket, sourcePath, bytes.NewReader(source)); e != nil {
+				t.Fatal(e)
+			}
+			d.status, d.archivePath = sp.ArchiveStatus{State: "ready", SHA256: &sourceHash}, sourcePath
+			blob := uuid.NewString()
+			blobPath, e := BlobAddress("", r.Owner, op.id, blob)
+			if e != nil {
+				t.Fatal(e)
+			}
+			saved := store.SessionResourceRecord{SessionID: op.id, Resource: resource, BlobID: blob, BlobPath: blobPath}
+			if variant == "changed-descriptor" {
+				saved.Resource.Name = "another saved descriptor"
+			}
+			d.resources[resource.ResourceID] = saved
+			if variant != "missing-blob" {
+				data := original
+				if variant == "corrupt-blob" {
+					data = []byte("replacement original")
+				}
+				if _, e = op.execution.files.Put(t.Context(), "session-resources", blobPath, bytes.NewReader(data)); e != nil {
+					t.Fatal(e)
+				}
+			}
+			result, e := op.execution.migrateLegacyArchive(t.Context(), op, source, sourcePath)
+			if variant == "original" {
+				manifest, decodeErr := sp.DecodeArchiveManifest(result)
+				if e != nil || decodeErr != nil || len(manifest.Resources) != 1 || manifest.Resources[0].BlobID == nil || *manifest.Resources[0].BlobID != blob || d.migration == nil || d.migration.Phase != "verified" {
+					t.Fatal("existing immutable original was replaced", manifest, d.migration, e, decodeErr)
+				}
+			} else if e == nil || len(result) != 0 || d.status.SchemaVersion == 3 {
+				t.Fatal("migration repaired or published an invalid existing original", variant, e)
+			}
+			if d.leases != 0 || d.resources[resource.ResourceID].BlobID != blob {
+				t.Fatal("migration leaked a lease or changed the existing blob identity")
+			}
+			value, e := op.execution.files.Open(t.Context(), archiveBucket, sourcePath)
+			if e != nil {
+				t.Fatal(e)
+			}
+			actual, readErr := io.ReadAll(value.Body)
+			closeErr := value.Body.Close()
+			if readErr != nil || closeErr != nil || !bytes.Equal(actual, source) {
+				t.Fatal("migration changed its retained legacy source", readErr, closeErr)
+			}
+		})
+	}
+}
+
+func TestArchiveProjectionRecoveryCannotReplaceStoppedSource(t *testing.T) {
+	previous := archiveLedger{HistoryEpoch: "original-history", SourceThrough: "7", Entries: []archiveLedgerEntry{{ID: uuid.NewString(), Sequence: "1", Revision: "1", SHA256: archiveDigest([]byte("first display")), SourceSHA256: archiveDigest([]byte("first source"))}, {ID: uuid.NewString(), Sequence: "2", Revision: "1", SHA256: archiveDigest([]byte("unresolved display")), SourceSHA256: archiveDigest([]byte("second source"))}}}
+	for _, variant := range []string{"resolved-projection", "history-epoch", "source-cutoff", "entry-count", "entry-identity", "entry-sequence", "source-content", "same-revision", "regressed-revision", "unchanged-revision-bump", "no-change"} {
+		t.Run(variant, func(t *testing.T) {
+			next := previous
+			next.Entries = append([]archiveLedgerEntry(nil), previous.Entries...)
+			next.Entries[1].SHA256, next.Entries[1].Revision = archiveDigest([]byte("resolved display")), "2"
+			switch variant {
+			case "history-epoch":
+				next.HistoryEpoch = "replacement-history"
+			case "source-cutoff":
+				next.SourceThrough = "8"
+			case "entry-count":
+				next.Entries = next.Entries[:1]
+			case "entry-identity":
+				next.Entries[1].ID = uuid.NewString()
+			case "entry-sequence":
+				next.Entries[1].Sequence = "3"
+			case "source-content":
+				next.Entries[1].SourceSHA256 = archiveDigest([]byte("replacement source"))
+			case "same-revision":
+				next.Entries[1].Revision = "1"
+			case "regressed-revision":
+				next.Entries[1].Revision = "0"
+			case "unchanged-revision-bump":
+				next.Entries[0].Revision = "2"
+			case "no-change":
+				next.Entries[1] = previous.Entries[1]
+			}
+			if e := verifyArchiveHistoryAdvance(previous, next); (e == nil) != (variant == "resolved-projection") {
+				t.Fatal("projection recovery escaped its fixed source identity", variant, e)
 			}
 		})
 	}
