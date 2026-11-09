@@ -479,6 +479,7 @@ and prose, and [Agent Notes](.agents/notes/README.md) for decision history.
 | Package READMEs and `docs/development.md` | Component usage, development, release procedures and validation methods |
 | [`docs/ui-design.md`](docs/ui-design.md) | Shared UI design principles, examples and information boundaries |
 | [`docs/daynight-server.md`](docs/daynight-server.md) | Stable server code organization rules |
+| [`docs/daynight-server-database.md`](docs/daynight-server-database.md) | Server database usage rules: business logic, SQL, constraints, concurrency and query costs |
 | [`docs/writing_tests.md`](docs/writing_tests.md) | Test ownership, real dependencies, normal integration flows and CI responsibilities |
 | `docs/spec/` | Required product behavior and observable guarantees |
 | `docs/design/` | Current structure, mechanisms, rationale and implementation boundaries |
@@ -499,7 +500,7 @@ must not be committed, including interactive previews composed from production
 components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
 and reviewable prototypes in their owning Daynight task's attachments.
 
-Specifications, designs, and the server organization rules use Chinese headings
-and prose while preserving technical literals. Other documents, skills, code,
+Specifications, designs, and the server organization and database usage rules
+use Chinese headings and prose while preserving technical literals. Other documents, skills, code,
 comments and commit messages use English unless explicitly instructed otherwise.
 Discuss work in Chinese.
