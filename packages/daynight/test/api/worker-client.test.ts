@@ -219,6 +219,25 @@ describe("in-process worker task API", () => {
     expect(urls[1]!.searchParams.get("cursor")).toBe("next+/=");
   });
 
+  it.each([true, false])("retains platformSpecific=%s through candidate pagination and rejects the opposite tier", async (platformSpecific) => {
+    const urls: URL[] = [];
+    let wrongTier = false;
+    const requiredPlatform = platformSpecific ? "macos" : null;
+    const origin = await listen((request, response) => {
+      const url = new URL(request.url!, "http://localhost"); urls.push(url);
+      const next = url.searchParams.has("cursor");
+      respond(response, { items: [{ ...task(undefined), id: next ? newClaimId : taskId, requiredPlatform: wrongTier ? (platformSpecific ? null : "macos") : requiredPlatform }], nextCursor: next || wrongTier ? null : "next-tier" });
+    });
+    const client = api(origin);
+    const filters = { limit: 1, compatiblePlatform: "macos", platformSpecific } as const;
+    const first = await client.listTaskPage(projectId, filters);
+    expect(first.nextCursor).toBe("next-tier");
+    await client.listTaskPage(projectId, { ...filters, cursor: first.nextCursor! });
+    expect(urls.map(url => url.searchParams.get("platformSpecific"))).toEqual([String(platformSpecific), String(platformSpecific)]);
+    wrongTier = true;
+    await expect(client.listTaskPage(projectId, filters)).rejects.toMatchObject({ phase: "protocol" });
+  });
+
   it("reads every worker inventory page without adding candidate eligibility filters", async () => {
     const canonicalWorkerId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     const first = { ...task({ ...claim(), workerId: canonicalWorkerId }), allowAgents: false, requiredPlatform: "windows" } as const;
@@ -328,7 +347,7 @@ describe("in-process worker task API", () => {
     const operation = createOperation();
     cleanups.push(() => operation.dispose());
     const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
-    for (const query of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: 1, cursor: "" }, { limit: 1, ready: 1 }, { limit: 1, allowAgents: "true" }, { limit: 1, compatiblePlatform: "win32" }, { limit: 1, status: "proposed" }]) {
+    for (const query of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: 1, cursor: "" }, { limit: 1, ready: 1 }, { limit: 1, platformSpecific: "false" }, { limit: 1, platformSpecific: null }, { limit: 1, allowAgents: "true" }, { limit: 1, compatiblePlatform: "win32" }, { limit: 1, status: "proposed" }]) {
       expect(() => client.listTaskPage(projectId, query as never)).toThrow();
     }
     expect(fetch).not.toHaveBeenCalled();

@@ -95,7 +95,7 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 	}
 	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{
 		PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready,
-		AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, WorkerID: request.WorkerID,
+		AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, WorkerID: request.WorkerID,
 	})
 	if err != nil {
 		return TaskPage{}, err

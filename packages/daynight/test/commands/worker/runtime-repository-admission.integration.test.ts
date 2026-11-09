@@ -78,7 +78,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(8), name: "original" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const originalClaim = readWorkerClaim(task.properties);
-  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { maxConcurrent: 4, pollIntervalMs: 1000, recoveryLimit: 3,
+  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { maxConcurrent: 4, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false,
     native: { agent: "codex", model: "cloud-model", args: [] }, projects: [{ projectId: selectedProjectId, nativeOverrides: {} }] } };
   let observationRevision = 0n;
   const report = vi.fn(async (_workerId: string, _body: unknown, configuration: WorkerCloudReport) => {

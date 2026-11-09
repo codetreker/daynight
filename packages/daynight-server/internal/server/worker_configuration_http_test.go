@@ -19,7 +19,7 @@ import (
 
 func configurationHTTPValue() map[string]any {
 	return map[string]any{
-		"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0,
+		"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "preferPlatformSpecificTasks": false,
 		"native":   map[string]any{"agent": "codex", "model": nil, "args": []any{}},
 		"projects": []any{},
 	}
@@ -77,6 +77,7 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	assertProjectError(t, projectRequest(f.handler, http.MethodPut, f.path(), jsonBody(t, map[string]any{"revision": "0", "value": value})), http.StatusBadRequest, "invalid_input")
 	projectID := "d4444444-4444-4444-8444-444444444444"
 	value["projects"] = []any{map[string]any{"projectId": strings.ToUpper(projectID), "nativeOverrides": map[string]any{"model": nil, "args": []any{}}}}
+	value["preferPlatformSpecificTasks"] = true
 	canonical := configurationHTTPModel(t, value)
 	canonical.Projects[0].ProjectID = projectID
 	initial := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: canonical}
@@ -92,6 +93,7 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	}
 	current := model.WorkerConfigurationResource{Desired: &initial, ObservationRevision: "0"}
 	value["maxConcurrent"] = 5
+	value["preferPlatformSpecificTasks"] = false
 	changed := configurationHTTPModel(t, value)
 	changed.Projects[0].ProjectID = projectID
 	saved := model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: f.now.Add(time.Second), Value: changed}

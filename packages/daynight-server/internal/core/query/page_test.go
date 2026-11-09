@@ -211,3 +211,28 @@ func TestProjectCursorRejectsMalformedInputAndEncodingFailure(t *testing.T) {
 		t.Fatal("encoded an unrepresentable list timestamp")
 	}
 }
+
+func TestTaskListCursorBindsPlatformSpecificTier(t *testing.T) {
+	id := "f47ac10b-58cc-11cf-a447-001122334455"
+	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	yes, no := true, false
+	for _, tier := range []*bool{nil, &no, &yes} {
+		scope := ListScope{Kind: "tasks", ProjectID: id, PlatformSpecific: tier}
+		encoded, err := EncodeListCursor(scope, when, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, nextTier := range []*bool{nil, &no, &yes} {
+			next := scope
+			next.PlatformSpecific = nextTier
+			page, err := ListPage(model.PageRequest{Limit: 1, Cursor: &encoded}, next)
+			if model.EqualOptional(tier, nextTier) {
+				if err != nil || page.After == nil || page.After.ID != id || !page.After.CreatedAt.Equal(when) {
+					t.Fatalf("same tier page=%#v err=%v", page, err)
+				}
+			} else if err == nil {
+				t.Fatal("accepted cursor from another platform tier")
+			}
+		}
+	}
+}

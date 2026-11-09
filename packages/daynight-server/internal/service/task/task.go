@@ -39,6 +39,7 @@ type TaskListRequest struct {
 	Ready              *bool
 	AllowAgents        *bool
 	CompatiblePlatform *model.TaskPlatform
+	PlatformSpecific   *bool
 	WorkerID           *string
 }
 

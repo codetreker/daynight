@@ -214,3 +214,15 @@ func TestTaskPlatformSurvivesEveryStatusAssignment(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskListPlatformSpecificTierReachesDAO(t *testing.T) {
+	_, row, _ := assignmentTaskModels()
+	for _, tier := range []*bool{nil, pointer(false), pointer(true)} {
+		wanted := store.TaskQuery{CompatiblePlatform: pointer(model.PlatformMacOS), PlatformSpecific: tier, Ready: pointer(true), AllowAgents: pointer(true)}
+		tasks, _, project, principal := assignmentListFixture(t, wanted, []model.Task{row})
+		page, err := tasks.List(t.Context(), principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, CompatiblePlatform: wanted.CompatiblePlatform, PlatformSpecific: tier, Ready: wanted.Ready, AllowAgents: wanted.AllowAgents})
+		if err != nil || len(page.Items) != 1 || page.Items[0].ID != row.ID {
+			t.Fatalf("tier list=%#v err=%v", page, err)
+		}
+	}
+}

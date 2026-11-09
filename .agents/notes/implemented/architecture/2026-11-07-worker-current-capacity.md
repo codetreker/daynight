@@ -26,6 +26,9 @@ complete inventory. Startup retains registration progress across capacity retrie
 within the current run and re-observes retained projects after restart. The
 [configuration decision](../../archived/architecture/2026-11-04-worker-cloud-configuration.md)
 records the original separation between target and application observations.
+The [platform preference decision](../feature/2026-11-09-worker-platform-task-preference.md)
+sets the current collection bound to 1025, accommodating one additional global
+item while retaining the previous capacity for unresolved records.
 
 ## Alternatives
 

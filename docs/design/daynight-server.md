@@ -390,14 +390,14 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 两个列表接口接受 `limit` 和不透明 `cursor`。`limit` 默认 50，范围为 1 至 100，
 使用 `(createdAt, id)` 升序 keyset 分页；响应为 `items` 和 `nextCursor`，没有
 下一页时后者为 `null`。
-task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
+task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`platformSpecific`、`assignedTo` 和可选规范 UUID `workerId`，显式条件按 AND 组合。platformSpecific 是仅普通列表支持的可选布尔条件，true 对应 required_platform IS NOT NULL，false 对应 IS NULL，省略保留两类；它与 compatiblePlatform 组合后在排序、分页和 lookahead 前执行。assignedTo 在 service 转为 all/unassigned/user 选择，me 先解析当前 principal；原生 UUID 等值或 IS NULL 与许可、平台和 ready 一起在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
 普通列表按原 keyset 在同一快照逐项读取并用实际 REST 投影计量，4 MiB 页上限包含外壳、cursor 和换行。指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属；分页和 lookahead 在归属筛选后计算。字节限制提前结束时 cursor 指向最后返回的匹配项，不跳过下一候选；不引入独立 claim 权威表。
 编码预算与分页的取舍见[响应预算决策](../../.agents/notes/implemented/architecture/2026-11-07-encoded-response-budgets.md)。
 
 项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
 
-Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
+Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，platformSpecific 以可空布尔保留省略与 false 的区别，编码省略未提供的条件，排序位置仍是 createdAt、id；workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
 
 cursor 编码最后一项的位置、资源类型、project 路径范围及规范化筛选条件。解码时
 校验格式和范围，拒绝旧版本1任务 cursor、将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。

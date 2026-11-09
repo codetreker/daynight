@@ -105,9 +105,9 @@ Typed ApiClient 的 `getCurrentUser()` 复用既有 GET /api/v1/me，解码 User
 
 listTaskPage 保留 nextCursor，供运行时有界推进候选；assignedTo=me、许可、ready 和实际平台在服务端排序和分页前组合，后续每页保留同一筛选。active 记录对应 in_progress，天然不属于 ready todo。普通 daemon 跳过 released 候选并继续后续游标，不能据此把仓库判为空。
 
-`GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定版本2的Task游标；不附加 status/ready/allowAgents/compatiblePlatform/assignedTo 才是该项目完整归属查询。显式 assignedTo 条件先按原生列过滤，再在既有 TEXT 解码后匹配 worker，全部匹配先于最终分页；带负责人条件的结果只是清单子集，不能据其缺席清理。新候选显式使用 assignedTo=me，完整既有库存调用省略该条件，不新增 claim 表或归属权威。
+`GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定版本2的Task游标；不附加 status/ready/allowAgents/compatiblePlatform/platformSpecific/assignedTo 才是该项目完整归属查询。显式 assignedTo 条件先按原生列过滤，再在既有 TEXT 解码后匹配 worker，全部匹配先于最终分页；带负责人条件的结果只是清单子集，不能据其缺席清理。新候选显式使用 assignedTo=me，完整既有库存调用省略该条件，不新增 claim 表或归属权威。
 
-Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 assignedTo 和 workerId；listTasks 成功读到末页才返回完整数组，后页失败、重复身份或游标循环抛出错误，不返回部分成功。listTaskPage 仍是显式分页接口；响应不匹配 active/workerId 时拒绝协议，不本地丢项。调用者按成功完整覆盖的项目和原 claimId 对账，不读取 task 状态分类缺席原因；不可用项目不能以缺席推断结束归属。
+Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 assignedTo、workerId 和可选 platformSpecific；最后一项只用于列表，响应必须满足指定的平台类别，不能本地丢弃错类结果。listTasks 成功读到末页才返回完整数组，后页失败、重复身份或游标循环抛出错误，不返回部分成功。listTaskPage 仍是显式分页接口；响应不匹配 active/workerId 时拒绝协议，不本地丢项。调用者按成功完整覆盖的项目和原 claimId 对账，不读取 task 状态分类缺席原因；不可用项目不能以缺席推断结束归属。
 
 自动初次认领结果未知时不重放；成功完整的自己 claim 清单找回实际 claim 后再登记 pending，失败或部分清单不建立归属结论。显式管理的精确版本及未知写入结果仍按具体 taskId 读取核对原 claim 及具体操作的目标结果；该读取不用于自动清理的缺席原因分类。只有明确拒绝的提交可由新明确决定替换，该决定须重新读取 task 并核对精确 if-version 与本次观察相同；拒绝未修改 task 时，数值相同的版本仍有效。Unknown 提交不因读到旧值解除 fence。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
 

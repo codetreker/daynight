@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	coreworker "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/google/uuid"
 )
 
@@ -177,11 +178,11 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 	})
 	t.Run("observation.items", func(t *testing.T) {
 		f := newCapacityHTTPFixture(t, uuid.NewString(), io.Discard)
-		items := make([]any, 1025)
+		items := make([]any, coreworker.MaxObservationItems+1)
 		for i := range items {
 			items[i] = map[string]any{"key": map[string]any{"kind": "projectPreparation", "projectId": uuid.NewString()}, "targetRevision": "1", "appliedValue": nil, "state": "pending", "error": nil, "lastFailure": nil, "nextAttemptAt": nil}
 		}
-		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:1024]}
+		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems]}
 		body := configurationHTTPReportBody(nil, obs)
 		stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
 		current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
@@ -212,7 +213,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		receipt := decodeResponse[configurationHTTPReceipt](t, response, http.StatusOK)
 		plan.check()
 		if !receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "1" || !reflect.DeepEqual(receipt.Configuration.Desired, current.Desired) {
-			t.Fatal("1024 item observation receipt differs")
+			t.Fatal("maximum item observation receipt differs")
 		}
 		f.rejectBeforeWrite()
 		obs["baseRevision"] = "1"

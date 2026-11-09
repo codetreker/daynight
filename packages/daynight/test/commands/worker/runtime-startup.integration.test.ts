@@ -45,7 +45,7 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
 const resource = (target: WorkerCloudDesired | null): WorkerCloudResource => ({ desired: target, observationRevision: "0", observation: null });
 const fixture = async (warm = false, configured = true) => {
@@ -114,9 +114,9 @@ describe("worker cloud-first startup", () => {
     const f = await fixture(true, false), target = desired([]), ids = [uuid(10_000), uuid(10_001)];
     for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });
     const stored = (key: Record<string, string>, appliedValue: unknown) => ({ value: { key, targetRevision: "1", appliedValue, state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
-    const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "native" }, target.value.native)];
+    const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "preferPlatformSpecificTasks" }, false), stored({ kind: "native" }, target.value.native)];
     for (let n = 0; n < 1019; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(20_000 + n) }, true));
-    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 1, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: target, observationRevision: "0", nextFailureId: 1, items }));
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: target, observationRevision: "0", nextFailureId: 1, items }));
     let revision = 0n, reporterOptions: ReporterOptions | undefined;
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(revision), observation: null }));
@@ -151,9 +151,9 @@ describe("worker cloud-first startup", () => {
     const f = await fixture(true, false), cancellation = new AbortController(); cancellations.add(cancellation);
     const old = desired([]), next: WorkerCloudDesired = { ...desired([uuid(10)]), revision: "2" };
     const stored = (key: Record<string, string>, appliedValue: unknown, state = "applied", started = false) => ({ value: { key, targetRevision: "1", appliedValue, state, error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started });
-    const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "native" }, old.value.native)];
+    const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "preferPlatformSpecificTasks" }, false), stored({ kind: "native" }, old.value.native)];
     for (let n = 0; n < 1020; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(10 + n) }, n < 2 ? true : null, n < 2 ? "applied" : "pending", n === 0));
-    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 1, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: old, observationRevision: "0", nextFailureId: 1, items }));
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: old, observationRevision: "0", nextFailureId: 1, items }));
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue(resource(next));
     let assertionFailure: unknown;
@@ -161,7 +161,7 @@ describe("worker cloud-first startup", () => {
       queueMicrotask(() => { void (async () => {
         try {
           const sent = options.configuration!.capture();
-          expect(sent.observation?.items).toHaveLength(1024);
+          expect(sent.observation?.items).toHaveLength(1025);
           expect(sent.observation?.desiredRevision).toBe("1");
           await options.configuration!.accept(sent, { desired: next, observationRevision: "1", observationAccepted: true });
           const saved = JSON.parse(await readFile(f.paths.configurationFile, "utf8"));

@@ -27,14 +27,14 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 ### W-01：前台运行、配置与平台
 
 - `daynight worker run` 在前台运行，支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS，遵守[客户端平台要求](daynight.md#c1-包与平台)。实际平台枚举仍为 windows/linux/macos；WSL Linux 计为 linux，未知平台明确拒绝。
-- 云端目标管理 maxConcurrent、pollIntervalMs、recoveryLimit、项目选择及全局/项目级 Agent、model、args；repositoryRoot、本机路径、服务连接与凭据、workerId、agentControlMode 以及可选 agentModel/agentReasoningEffort 留在本地。[配置协议](daynight-worker-configuration.md)拥有目标版本、逐项观测及服务端权限。配置接入不查询或限制 active claim，不改变 Task/claim 的字段、API、认领和恢复规则。
+- 云端目标管理 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、项目选择及全局/项目级 Agent、model、args；repositoryRoot、本机路径、服务连接与凭据、workerId、agentControlMode 以及可选 agentModel/agentReasoningEffort 留在本地。[配置协议](daynight-worker-configuration.md)拥有目标版本、逐项观测及服务端权限。配置接入不查询或限制 active claim，不改变 Task/claim 的字段、认领和恢复规则。
 - 启动先读取同一份服务、身份、repositoryRoot 及 mode 本地快照及新原生覆盖字段并认证，再查询云端目标。已有云端值时不解析本地托管字段作为运行权威，不执行项目选择引导；旧本地托管值不能覆盖云端；新的 agentModel/agentReasoningEffort 按下述本地覆盖规则组合。云端尚无目标时才从捕获的原始 YAML 导入完整候选；项目覆盖保留省略、model:null 与 args:[]，并发导入由服务端只建立一次初值。`projects:[]` 是合法配置，正常 run 不因项目为空失败或弹出选择流程，也不创建虚假 Project、Task 或 worktree。空项目不消除原 Task 库存和清理责任。
-- 未接入前，独立 worker mapping 支持 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agentControlMode、agent、model、args 和 repositories，默认值为 ~/daynights、1、60000、3、herdr、copilot、null、[] 和 []；repositories 不从 review 推断。本地候选和运行项目集合最多 128 个不同 Project；标量与 native 的容量遵循[配置协议](daynight-worker-configuration.md#目标配置)。缺失文件或省略可选字段使用这些默认值。只有确实缺失的文件按缺省处理；YAML 结构、重复键、本地字段、首次候选的已知字段、读取故障及取消均严格校验。未知根、review、worker 和仓库字段在投影时忽略，CLI 编辑保留其节点，读取不重写配置。
+- 未接入前，独立 worker mapping 支持 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、agentControlMode、agent、model、args 和 repositories，默认值依次为 ~/daynights、1、60000、3、false、herdr、copilot、null、[] 和 []；repositories 不从 review 推断。本地候选和运行项目集合最多 128 个不同 Project；标量与 native 的容量遵循[配置协议](daynight-worker-configuration.md#目标配置)。缺失文件或省略可选字段使用这些默认值。只有确实缺失的文件按缺省处理；YAML 结构、重复键、本地字段、首次候选的已知字段、读取故障及取消均严格校验。未知根、review、worker 和仓库字段在投影时忽略，CLI 编辑保留其节点，读取不重写配置。
 - 首次候选中的仓库提供 remote，可有 projectId 与逐字段 native 覆盖；导入只投影 Project 身份及覆盖意图。本机绑定实际使用时校验 path：相对 config.yml 目录或为绝对路径，不展开 tilde，拒绝 drive-relative Windows 路径和重叠仓库/状态目录。相同 Agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，模型与 effort 参数按规范化规则合并；其它参数不允许覆盖 worker 拥有的 cwd/session/mode 或固定 full access 策略，冲突在本机应用前明确拒绝。
-- Worker 在自己的状态目录保存 configuration.json，校验 schema 与 service origin/userId/workerId。文件损坏、身份不符和持久化错误明确失败，不猜测默认配置。缓存中的 native 成功历史不能直接供新进程执行。全局与项目 native 项优先按当前本地 mode 验证本次云端目标；目标成功前不发布尚未重新验证的历史值，目标成功后直接使用新元组，包括显式 model:null 与 args:[]。当前目标验证失败时，才重新验证此前成功的元组供该运行时使用；已在当前运行时验证的成功值在后续目标应用期间继续有效。最近目标、逐项成功值、当前错误、未确认失败及观测版本由单一串行提交 owner 合并，原子替换成功后才发布不可变实际视图；receive、应用完成与报告确认不能互相覆盖更新结果。
+- Worker 在自己的状态目录保存 schemaVersion=2 的 configuration.json，校验 schema 与 service origin/userId/workerId。版本 1 缓存显式迁移目标的 preferPlatformSpecificTasks=false 及对应待应用项，保留原移除、重试、失败和观测事实，原子保存后继续。文件损坏、身份不符和持久化错误明确失败，不猜测默认配置。缓存中的 native 成功历史不能直接供新进程执行。全局与项目 native 项优先按当前本地 mode 验证本次云端目标；目标成功前不发布尚未重新验证的历史值，目标成功后直接使用新元组，包括显式 model:null 与 args:[]。当前目标验证失败时，才重新验证此前成功的元组供该运行时使用；已在当前运行时验证的成功值在后续目标应用期间继续有效。最近目标、逐项成功值、当前错误、未确认失败及观测版本由单一串行提交 owner 合并，原子替换成功后才发布不可变实际视图；receive、应用完成与报告确认不能互相覆盖更新结果。
 - 配置随独立心跳交换，在心跳之外逐项应用。已成功的标量与 native 元组独立生效，一项失败不回滚其他成功项；从未成功的项为 unavailable，不能以目标值或默认值冒充实际值。原生校验、仓库或停止等外部操作不占用缓存提交队列，也不阻塞后续报告。旧目标结果提交时必须重新核验适用性。
 - 失败项按 5、10、20、40、60 秒退避，仅重试失败项，新目标替代旧应用重试；已开始的项目移除保留原版本工作及结果直至确认。报告被接纳前保留最近失败，即使期间已恢复；报告确认只清除该份已发送快照中被确认的失败，不能清除飞行期间的新失败。观测 CAS 被拒绝只更新下次比较版本，不确认旧失败。诊断使用闭合 code/category/phase，不上传命令、原始输出或凭据。
-- 同一个 coordinator 消费最近成功配置。提高并发供后续调度使用；降低上限不抢占已有任务，占用低于上限后再启动其他任务。pollIntervalMs 作用于完整轮次后的下一次等待，单位毫秒，缺省为 60000；合法显式值（包括 5000）保持其含义。recoveryLimit 供既有恢复逻辑读取。参数更新不重启健康原生进程；Herdr 后续启动使用当前适用设置，Web 恢复沿用既有冻结记录，不把另一工具的参数套到原工具。
+- 同一个 coordinator 消费最近成功配置。提高并发供后续调度使用；降低上限不抢占已有任务，占用低于上限后再启动其他任务。pollIntervalMs 作用于完整轮次后的下一次等待，单位毫秒，缺省为 60000；合法显式值（包括 5000）保持其含义。recoveryLimit 供既有恢复逻辑读取。preferPlatformSpecificTasks 只影响后续新任务领取，其 false 应用值与尚未应用的 null 分开。参数更新不重启健康原生进程；Herdr 后续启动使用当前适用设置，Web 恢复沿用既有冻结记录，不把另一工具的参数套到原工具。
 - 项目选择与本机项目映射分别管理。云端新增项目复用已有映射，否则在本机 repositoryRoot 生成路径并准备仓库；只有确认准备成功的项目进入有效集合。独立项目的准备失败不得阻断健康项目，native 验证成功本身不证明仓库已准备。
 - 移除项目先排除调度，再停止该 Worker 在项目中的执行，保留任务状态、认领、工作区和会话历史。有效集合约束 active、pending、新领取及在途领取完成后的启动；项目仍被排除时，普通轮询与重启不能自动推进。停止未确认的资源继续占用容量，已确认停止而仅保留现场的资源不永久占用执行槽。失败按项目报告并重试，已开始的移除保留原目标版本直至确认；重新加入后的任务行为遵循既有恢复和人工操作规则。移除不能删除用于归属清单、资源发现和人工处置的本机映射。
 - 运行中断网继续使用最近成功值；重启先核对云端再开始正常调度，本机副本不取得权威。配置接收、缓存与报告不依赖任务清单同步或业务后端初始化成功。空项目、业务准备失败及长操作期间继续心跳；任务执行仍服从原有归属与恢复准入。
@@ -62,7 +62,7 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 - 服务端、CLI 和 Web 一致支持设置、清除、展示及兼容筛选。CLI create/update 使用 `--required-platform windows|linux|macos`，update 使用互斥的 `--clear-required-platform` 清除，list/ready 使用 `--compatible-platform windows|linux|macos`；查询平台不充当运行环境配置。Web 详情状态行使用单一平台下拉框展示已确认值，提供不限平台/Any platform、Windows、Linux、macOS。选择不同值后弹窗展示当前与目标平台，确认才提交；选择当前值或取消、Escape、关闭、遮罩关闭均不提交，取消后恢复下拉框焦点。概览没有独立平台编辑区或保存按钮，成功前保持已确认值。
 - in_progress 与自动执行许可一并锁定实际变化，完成或合法人工解除后才可修改；精确版本同值更新保留版本与时间，旧版本仍冲突。明确人工设置状态不受平台要求限制。平台确认、许可和状态设置共享每任务写入控制，未知结果先核对，迟到响应保持原 task 归属。
 - 平台条件不改变 task 的 ready 语义，不匹配的候选不占名额、不创建资源、不消耗恢复次数。
-- `compatiblePlatform` 包含 null 和与查询平台相同的任务要求。自动执行许可、ready 与平台条件须在有界候选排序和分页前按 AND 组合，并绑定游标范围，不能让较早的未开启许可或不兼容任务遮住后续合格任务。
+- `compatiblePlatform` 包含 null 和与查询平台相同的任务要求。普通任务列表的可选布尔 `platformSpecific` 为 true 时仅含明确指定平台的任务，为 false 时仅含不限平台任务，省略时同时包含两类；与 compatiblePlatform 合用可以分别查询当前平台专用和不限平台候选。自动执行许可、ready 与平台条件须在有界候选排序和分页前按 AND 组合，并绑定游标范围，不能让较早的未开启许可、不兼容任务或另一类别遮住后续合格任务。
 - 平台字段、领域匹配与候选查询的验收独立于后续运行时。自动候选选择与连续调度由 worker 承担；worker daemon 的原生平台识别、自动 claim 事务重验、资源启动及历史执行平台须由对应能力提供运行证据。普通技能每次执行一个明确指定的任务。
 
 ### W-04：原子领取与执行归属
@@ -76,7 +76,8 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 
 ### W-05：调度与全局并发
 
-- 每轮调度在所有配置仓库中合计最多领取一个新任务；确认授予后结束本轮领取，即使任务暂留 pending 或仍有空闲名额。后续新领取等待本轮完成后的 pollIntervalMs 间隔，再从下一项目继续轮转；空项目可以跳过，新候选保持服务端 ready 顺序。已有 pending 优先启动，项目内按稳定 task_id 顺序选择，每成功分配一个名额后轮转到下一项目，同轮可按容量启动多个已领取的 pending。
+- 每轮调度在所有配置仓库中合计最多领取一个新任务；确认授予后结束本轮领取，即使任务暂留 pending 或仍有空闲名额。后续新领取等待本轮完成后的 pollIntervalMs 间隔，再从下一项目继续轮转；空项目可以跳过。preferPlatformSpecificTasks 默认 false，候选按既有项目轮转与项目内 createdAt、id 升序选择。为 true 时先在全部可领取项目中查找 requiredPlatform 等于实际运行平台的任务；该类别没有可领取项时才进入 requiredPlatform=null 类别。同类别内保留项目轮转及项目内 createdAt、id 顺序，优先级跨项目和全部候选页生效。例如项目 A 的较早不限平台任务不能排在项目 B 的较晚当前平台专用任务前面。配置更新对后续新领取生效，已取得的 claim 继续原生命周期。
+- 已有 pending 优先启动，项目内按稳定 task_id 顺序选择，每成功分配一个名额后轮转到下一项目，同轮可按容量启动多个已领取的 pending；平台优先不改变该规则或抢占已有执行。
 - Active 从启动前资源预留到收尾完成占用名额。等待 CI/review、人工输入、恢复超限及清理仍占用。容量是 active 行、实际归属资源、已确认收尾责任及适配器待确认停止责任按 claim 去重的并集；没有本机行的孤立执行也须保留责任。macOS Herdr 原运行停止、封段和 ledger 确认后可释放执行槽，但保留工作区继续维持同 task 屏障；已排队恢复仍占名额。
 - Pending 在没有实际运行资源时不占名额；同 task 旧执行停止、关闭 workspace 并删除 worktree 后，新 claim 才能 active。降低上限不抢占已有任务。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
 - 空或不兼容仓库不占名额。同仓库不同 task 可以并发；各 task 的操作串行，不同任务的有界等待和清理互不阻塞。

@@ -90,7 +90,7 @@ beforeEach(async () => {
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
   mocks.webOpen.mockImplementation(() => ({ close: mocks.webClose, listCompletedTasks: mocks.completed }));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  target = { revision: "1", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
+  target = { revision: "1", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
   observationRevision = 0n;
   collect = vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] }));
   report = vi.fn(async (_workerId, _body, configuration) => {
@@ -115,6 +115,19 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it("hot-loads platform preference into the coordinator in both directions", async () => {
+    const f = await fixture(), running = start(f);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.preferPlatformSpecificTasks === false && configuration.repositories.length === 1)).toBe(true));
+    update.mockClear();
+    target = { ...target, revision: "2", value: { ...target.value, preferPlatformSpecificTasks: true } };
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.preferPlatformSpecificTasks === true && configuration.repositories.length === 1)).toBe(true));
+    update.mockClear();
+    target = { ...target, revision: "3", value: { ...target.value, preferPlatformSpecificTasks: false } };
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.preferPlatformSpecificTasks === false && configuration.repositories.length === 1)).toBe(true));
+    f.signal.abort(); await running;
+  });
   it("rechecks the cloud target after a locally oversized report", async () => {
     const f = await fixture(), remote = mocks.remote(); mocks.remote.mockClear();
     report.mockImplementationOnce(async () => { throw new ApiError({ operation: "worker.reportConfiguration" }, "prepare", { cause: new OperationError("request_limit") }); });
@@ -282,7 +295,7 @@ describe("worker runtime configuration reporting", () => {
     const f = await fixture(); const running = start(f);
     await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
     const original = mocks.coordinator.mock.results[0]!.value;
-    target = { revision: "2", updatedAt: workerTelemetryTime, value: { ...target.value, maxConcurrent: 3, pollIntervalMs: 1000, recoveryLimit: 8, native: { agent: "codex", model: "new-model", args: [] } } };
+    target = { revision: "2", updatedAt: workerTelemetryTime, value: { ...target.value, maxConcurrent: 3, pollIntervalMs: 1000, recoveryLimit: 8, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "new-model", args: [] } } };
     await vi.advanceTimersByTimeAsync(30_000);
     await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 3, globalConfiguration: expect.objectContaining({ model: "new-model", recoveryLimit: 8 }) })));
     expect(mocks.coordinator).toHaveBeenCalledOnce(); expect(original.tick).toHaveBeenCalledOnce(); expect(shutdown).not.toHaveBeenCalled();
@@ -455,7 +468,7 @@ describe("worker runtime configuration reporting", () => {
   it("applies a recovered native tuple on its scheduled retry through the existing coordinator", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     const f = await fixture();
-    target = { ...target, value: { ...target.value, maxConcurrent: 4, recoveryLimit: 8, native: { ...target.value.native, model: "recovered-model" } } };
+    target = { ...target, value: { ...target.value, maxConcurrent: 4, recoveryLimit: 8, preferPlatformSpecificTasks: false, native: { ...target.value.native, model: "recovered-model" } } };
     mocks.probe.mockRejectedValue(new Error("private-native-probe-output"));
     const running = start(f);
     await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());

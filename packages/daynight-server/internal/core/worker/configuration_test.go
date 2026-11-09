@@ -89,6 +89,27 @@ func TestPutConfigurationCASNoopAndProjectAdmission(t *testing.T) {
 	}
 }
 
+func TestPutConfigurationPreferenceToggleUsesConfigurationRevision(t *testing.T) {
+	ctx, principal := context.Background(), model.Principal{UserID: "user"}
+	d := configuredDAO("3")
+	value := configurationFixture()
+	value.PreferPlatformSpecificTasks = true
+	got, err := PutConfiguration(ctx, d, principal, "worker", 3, value)
+	if err != nil || got.Desired.Revision != "4" || !got.Desired.Value.PreferPlatformSpecificTasks || d.desiredWrites != 1 {
+		t.Fatalf("enabling preference did not create its desired revision: %+v %v", got, err)
+	}
+	d.current = got
+	got, err = PutConfiguration(ctx, d, principal, "worker", 4, value)
+	if err != nil || got.Desired.Revision != "4" || d.desiredWrites != 1 {
+		t.Fatalf("same preference changed configuration: %+v %v", got, err)
+	}
+	value.PreferPlatformSpecificTasks = false
+	got, err = PutConfiguration(ctx, d, principal, "worker", 4, value)
+	if err != nil || got.Desired.Revision != "5" || got.Desired.Value.PreferPlatformSpecificTasks || d.desiredWrites != 2 {
+		t.Fatalf("disabling preference was lost: %+v %v", got, err)
+	}
+}
+
 func TestPutConfigurationFailuresAndExhaustion(t *testing.T) {
 	ctx, principal, value := context.Background(), model.Principal{UserID: "user"}, configurationFixture()
 	sentinel := errors.New("database failure")

@@ -93,7 +93,7 @@ describe("worker remote API", () => {
 
   it("exchanges configuration through the authenticated single report operation without affecting legacy reports", async () => {
     const requests: { method: string | undefined; url: string | undefined; capability: string | undefined; body: unknown }[] = [];
-    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
     const desired = { revision: "1", updatedAt: time, value };
     const configuration = { bootstrap: value, observation: null };
     const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };
@@ -427,6 +427,19 @@ describe("worker remote API", () => {
       { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100" },
       { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100", cursor: "candidate cursor+/=" },
     ]);
+  });
+
+  it.each([true, false])("preserves platformSpecific=%s on every candidate page", async (platformSpecific) => {
+    const queries: URLSearchParams[] = [];
+    const serverUrl = await listen((request, response) => {
+      const query = new URL(request.url!, "http://localhost").searchParams; queries.push(query);
+      const later = query.has("cursor");
+      respond(response, { items: [{ ...task(later ? uuid(9) : taskId, later ? undefined : { ...worker, state: "released" }), assignedTo: worker.userId, requiredPlatform: platformSpecific ? "macos" : null }], nextCursor: later ? null : "next-tier" });
+    });
+    const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "macos", signal(), platformSpecific));
+    expect(result.map(({ id }) => id)).toEqual([uuid(9)]);
+    expect(queries.map(query => query.get("platformSpecific"))).toEqual([String(platformSpecific), String(platformSpecific)]);
+    expect(queries.every(query => query.get("compatiblePlatform") === "macos" && query.get("assignedTo") === "me")).toBe(true);
   });
 
   it("selects the authenticated account's candidates before the service page limit", async () => {

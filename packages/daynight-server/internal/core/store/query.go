@@ -33,6 +33,7 @@ type TaskQuery struct {
 	Ready              *bool
 	AllowAgents        *bool
 	CompatiblePlatform *model.TaskPlatform
+	PlatformSpecific   *bool
 	Worker             *WorkerQuery
 	// BoundedText withholds an irreducibly oversized candidate's text.
 	BoundedText bool

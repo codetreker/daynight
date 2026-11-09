@@ -191,6 +191,7 @@ export const parseWorkerCloudBootstrap = async (
     maxConcurrent: Object.hasOwn(worker, "maxConcurrent") ? worker.maxConcurrent : workerConfigurationDefaults.maxConcurrent,
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
     recoveryLimit: Object.hasOwn(worker, "recoveryLimit") ? worker.recoveryLimit : workerConfigurationDefaults.recoveryLimit,
+    preferPlatformSpecificTasks: Object.hasOwn(worker, "preferPlatformSpecificTasks") ? worker.preferPlatformSpecificTasks : workerConfigurationDefaults.preferPlatformSpecificTasks,
     native: { agent: workerConfigurationDefaults.agent, model: null, args: [], ...nativeOverrides(worker) },
     projects: projects.sort((left, right) => left.projectId.localeCompare(right.projectId)),
   });
