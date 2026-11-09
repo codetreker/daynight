@@ -103,8 +103,9 @@ Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩�
 `BotDisplaySnapshotStore`。页面读取、pane 观察器和冷目标删除使用同一协调器；
 账号清理入口还覆盖当前没有挂载助手页面的账号。协调器先同步撤销读取、观察
 和待写候选资格，再调用 store 的 `clearTarget` 或 `clearAccount`。物理清理失败
-保留撤销状态并记录诊断，不能作为已从磁盘删除的证据。临时删除 block 只冻结
-目标，只有权威 active 详情允许恢复；权威拒绝或删除清目标记录。
+保留撤销状态并记录诊断，不能作为已从磁盘删除的证据。临时删除 block 同步撤销
+目标当前及在途观察，包括已经关闭 observer 的排队保存，但保留最后成功快照；
+只有权威 active 详情允许恢复。权威拒绝或删除清目标记录。
 
 选择目标时读取可更新 LRU；存储通知触发的被动重读使用 `touch: false`，不能
 再次写磁盘并形成跨标签反馈。旧清理失败的重试只处理失败时的磁盘值，不重新
@@ -152,7 +153,8 @@ stale lease 或跨标签失效会冻结该次已接受历史来源，后续本�
 协调器以 client 与来源保留冻结状态，同一 client 重建 observer 不能重获资格；
 pane 重开创建的新 client 仍须实际接受合法历史页，current 本身不能保存。
 真实已知本地身份转换仍执行原有清理与替换流程。
-负向屏障同步撤销当前 store-owned observation；`save` 在持锁后检查其撤销标记，
+历史冲突、临时删除 block 与权威无 Session 共用目标级负向来源屏障。
+负向屏障同步撤销当前及在途 store-owned observation；`save` 在持锁后检查其撤销标记，
 拒绝已经越过协调层检查但仍排队的旧写入。撤销只作用于该 observation，不删除
 其他标签记录，也不撤销其他 Bot 的观察资格。observer 关闭时立即停止普通观察，
 但为已排队的保存保留负向撤销订阅，最后一笔保存结束后解除订阅。
@@ -163,6 +165,11 @@ pane 重开创建的新 client 仍须实际接受合法历史页，current 本�
 `lastKnownBinding` 只校验历史数据，不能创建 client 或授予新操作资格。无绑定
 时 `SessionView` 接受 null client，保持同一外壳、Timeline 和输入占位；绑定由
 真实详情提供后接入实际 client，不以伪造 snapshot 复用能力或操作账本。
+详情尚未确认与权威确认 `sessionId: null` 是不同状态。后者同步撤下目标旧 pane、
+显示种子和恢复记录，并清理持久历史；scope 保留可恢复的无 Session 事实，认证
+暂停、迟到读取、旧 observer 或重新选择目标均不能撤销该事实。普通缓存 binding
+和历史回调不能恢复资格，只有新的权威详情通过 `confirmSession` 确认真实绑定
+后，才允许新 client 接受历史并保存；该状态不把 Bot 永久标记为已删除。
 
 共享 `SessionHistoryPreview` 仅包含 fence、epoch、事件水位、entries、资源描述符和可选
 阅读锚点。Timeline 在同一滚动区使用相同 entryId 行 key，真实 reducer 的行优先；

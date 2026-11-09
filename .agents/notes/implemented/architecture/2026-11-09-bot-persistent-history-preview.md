@@ -53,6 +53,17 @@ also rejects an old save already queued past the coordinator's generation check
 without invalidating another Bot's observation. Closing an observer stops normal
 observation immediately but retains its negative subscription until all in-flight
 saves finish, so pane eviction cannot remove a queued save's revocation guard.
+Temporary deletion blocks use the same target source revocation and preserve
+the last successful snapshot. Unblocking alone cannot renew an unchanged old
+client's source; the reopened client must accept real history.
+
+A confirmed definition with no Session withdraws the old pane, display seed,
+retained Session state and persistent history. Its recoverable absence remains
+in the identity scope across authentication pauses and selection changes.
+Ordinary cached bindings and old history callbacks cannot release that barrier;
+an explicit confirmed Session binding can. This separates initial unknown
+details, which may display a preview, from authoritative absence without
+permanently revoking a Bot that can later start a Session.
 
 The client publishes accepted-history and settled-history facts separately from
 online pagination readiness. Applied-page coverage, rather than a current
@@ -104,6 +115,13 @@ able to acquire the peer's current version. A negative source fence prevents bot
 paths while retaining the peer's data. Coordinator generations alone cannot stop
 a save that has already passed their check and is waiting for the storage lock;
 the captured store-owned lease must itself be revocable.
+
+**Treat a null binding as both pending details and confirmed absence.** Pending
+details may still admit a cached preview, while confirmed absence must withdraw
+both preview and real old rows. A render-only flag also loses the negative fact
+when authentication pauses or the selection changes. Keeping recoverable absence
+in the scope and requiring explicit confirmation to restore it preserves both
+outcomes; permanent Bot invalidation would prevent a later legitimate Session.
 
 ## Consequences
 

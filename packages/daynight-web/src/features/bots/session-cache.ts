@@ -36,10 +36,10 @@ type Options = {
   readonly createApi?: (binding: BotSessionBinding, onPrincipalMismatch: () => void) => SessionApi;
   readonly displaySnapshots?: BotDisplaySnapshotCoordinator;
 };
-type Guards = { readonly blocked: Set<string>; readonly revoked: Set<string>; readonly caches: Set<BotSessionCache>; revision: number };
+type Guards = { readonly blocked: Set<string>; readonly revoked: Set<string>; readonly noSessions: Set<string>; readonly caches: Set<BotSessionCache>; revision: number };
 const scopeGuards = new WeakMap<object, Map<string, Guards>>();
 function guardsFor(options: Options): Guards {
-  const fresh = (): Guards => ({ blocked: new Set(), revoked: new Set(), caches: new Set(), revision: 0 });
+  const fresh = (): Guards => ({ blocked: new Set(), revoked: new Set(), noSessions: new Set(), caches: new Set(), revision: 0 });
   if (!options.identityScope) return fresh();
   let users = scopeGuards.get(options.identityScope);
   if (!users) { users = new Map(); scopeGuards.set(options.identityScope, users); }
@@ -71,6 +71,7 @@ export class BotSessionCache {
   isCurrent = (): boolean => !this.invalidated && this.options.isCurrent();
   isBlocked = (botId: string): boolean => this.guards.blocked.has(botId);
   isRevoked = (botId: string): boolean => this.guards.revoked.has(botId);
+  isNoSession = (botId: string): boolean => this.guards.noSessions.has(botId);
   guardSnapshot = (): number => this.guards.revision;
   snapshot = (): readonly BotSessionPane[] => this.panes;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
@@ -82,9 +83,16 @@ export class BotSessionCache {
     if (!this.isCurrent()) { this.invalidate(); return; }
     this.guards.caches.add(this);
     if (!binding || binding.ownerUserId !== this.options.userId || this.isRevoked(binding.botId) || this.isBlocked(binding.botId)) return;
-    this.options.displaySnapshots?.bind(binding);
     const key = botSessionKey(binding);
     const actionAdmitted = actionBinding !== null && botSessionKey(actionBinding) === key;
+    if (actionAdmitted) {
+      if (this.options.isPaused?.() || this.options.displaySnapshots?.confirmSession(binding) === false) return;
+      if (this.guards.noSessions.delete(binding.botId)) {
+        this.guards.revision++;
+        for (const cache of this.guards.caches) cache.publish();
+      }
+    } else if (this.isNoSession(binding.botId)) return;
+    this.options.displaySnapshots?.bind(binding);
     this.recent.set(key, ++this.clock);
     const existing = this.panes.find(pane => pane.key === key);
     if (existing) { existing.client.setActionAdmission(actionAdmitted); return; }
@@ -124,6 +132,17 @@ export class BotSessionCache {
       if (saved) clearSessionDisplayPreference({ userId: saved.binding.ownerUserId, sessionId: saved.binding.sessionId });
       this.retained.delete(key); pane?.client.invalidate();
     } else pane?.client.close();
+  }
+  /** A confirmed absence ends the old Session without permanently revoking its Bot. */
+  confirmNoSession(botId: string): void {
+    if (!this.isCurrent() || this.isRevoked(botId) || this.isNoSession(botId)) return;
+    this.guards.noSessions.add(botId); this.guards.revision++;
+    this.options.displaySnapshots?.confirmNoSession(botId);
+    clearBotStoredSessionState(this.options.userId, botId, undefined, this.options.storage);
+    for (const cache of this.guards.caches) {
+      for (const [key, saved] of cache.retained) if (saved.binding.botId === botId) cache.remove(key, true);
+      cache.publish();
+    }
   }
   /** Freeze an unconfirmed deletion without losing drafts, receipts or reading state. */
   blockBot(botId: string): void {

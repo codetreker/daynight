@@ -66,6 +66,7 @@ export class BotDisplaySnapshotCoordinator {
   readonly store: BotDisplaySnapshotStore;
   private readonly blocked = new Set<string>();
   private readonly revoked = new Set<string>();
+  private readonly noSessions = new Set<string>();
   private readonly bindings = new Map<string, string>();
   private readonly histories = new Map<string, string>();
   private readonly previews = new Map<string, BotDisplayPreview>();
@@ -75,7 +76,7 @@ export class BotDisplaySnapshotCoordinator {
   private readonly generations = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
   private readonly historyListeners = new Set<(botId: string) => void>();
-  private readonly rejectionListeners = new Set<(botId: string) => void>();
+  private readonly sourceRevocationListeners = new Set<(botId: string) => void>();
   private revision = 0;
   private storageGeneration = 0;
   private storeRevocation: object | null = null;
@@ -89,12 +90,12 @@ export class BotDisplaySnapshotCoordinator {
     if (typeof window !== 'undefined') window.addEventListener('storage', this.externalChange);
   }
   private current = () => !this.invalidated && this.options.isCurrent() && !this.options.isPaused?.();
-  displayAllowed = (botId: string) => !this.invalidated && this.options.isCurrent() && !this.blocked.has(botId) && !this.revoked.has(botId);
+  displayAllowed = (botId: string) => !this.invalidated && this.options.isCurrent() && !this.blocked.has(botId) && !this.revoked.has(botId) && !this.noSessions.has(botId);
   allowed = (botId: string) => this.current() && this.displayAllowed(botId);
   version = () => this.revision;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   subscribeHistoryReplacement = (listener: (botId: string) => void) => { this.historyListeners.add(listener); return () => { this.historyListeners.delete(listener); }; };
-  subscribeHistoryRejection = (listener: (botId: string) => void) => { this.rejectionListeners.add(listener); return () => { this.rejectionListeners.delete(listener); }; };
+  subscribeSourceRevocation = (listener: (botId: string) => void) => { this.sourceRevocationListeners.add(listener); return () => { this.sourceRevocationListeners.delete(listener); }; };
   private publish() { this.revision++; for (const listener of this.listeners) listener(); }
   private expire(botId: string) { this.generations.set(botId, (this.generations.get(botId) ?? 0) + 1); this.previews.delete(botId); this.publish(); }
   private externalChange = (event: StorageEvent) => {
@@ -149,13 +150,27 @@ export class BotDisplaySnapshotCoordinator {
     this.previews.delete(botId);
     if (this.rejectedPreviews.get(botId) === key) return;
     this.rejectedPreviews.set(botId, key);
-    this.sourceRejections.set(botId, (this.sourceRejections.get(botId) ?? 0) + 1);
     // A peer's incompatible record revokes local persistence authority without
     // deleting that record or authorizing another observation of old history.
-    this.expire(botId);
-    for (const listener of this.rejectionListeners) listener(botId);
+    this.revokeSource(botId);
   }
-  blockBot(botId: string): void { if (!this.blocked.has(botId)) { this.blocked.add(botId); this.expire(botId); } }
+  private revokeSource(botId: string): void {
+    this.sourceRejections.set(botId, (this.sourceRejections.get(botId) ?? 0) + 1);
+    this.expire(botId);
+    for (const listener of this.sourceRevocationListeners) listener(botId);
+  }
+  confirmNoSession(botId: string): void {
+    if (this.invalidated || !this.options.isCurrent() || this.revoked.has(botId) || this.noSessions.has(botId)) return;
+    this.noSessions.add(botId); this.bindings.delete(botId); this.histories.delete(botId);
+    this.clearTarget(botId);
+  }
+  /** Only a confirmed active definition can restore a previously absent Session. */
+  confirmSession(binding: BotSessionBinding): boolean {
+    if (binding.ownerUserId !== this.options.userId || !this.current() || this.blocked.has(binding.botId) || this.revoked.has(binding.botId)) return false;
+    if (this.noSessions.delete(binding.botId)) this.publish();
+    this.bind(binding); return true;
+  }
+  blockBot(botId: string): void { if (!this.blocked.has(botId)) { this.blocked.add(botId); this.revokeSource(botId); } }
   unblockBot(botId: string): void { if (this.blocked.delete(botId)) this.expire(botId); }
   invalidateBot(botId: string): void {
     if (this.revoked.has(botId)) return;
@@ -163,7 +178,7 @@ export class BotDisplaySnapshotCoordinator {
   }
   private clearTarget(botId: string, replacedHistory = false): void {
     this.rejectedPreviews.delete(botId);
-    this.expire(botId);
+    if (replacedHistory) this.expire(botId); else this.revokeSource(botId);
     void this.store.clearTarget(this.options.userId, botId).then(cleared => {
       if (!cleared) console.error('Bot display snapshot could not be physically cleared.', botId);
       // Only a locally confirmed replacement authorizes another observation.
@@ -182,7 +197,7 @@ export class BotDisplaySnapshotCoordinator {
     return this.clearing;
   }
   close(): void {
-    this.invalidated = true; this.previews.clear(); this.detach(); this.store.close(); this.listeners.clear(); this.historyListeners.clear(); this.rejectionListeners.clear();
+    this.invalidated = true; this.previews.clear(); this.detach(); this.store.close(); this.listeners.clear(); this.historyListeners.clear(); this.sourceRevocationListeners.clear();
     accounts.get(this.options.userId)?.delete(this);
     if (typeof window !== 'undefined') window.removeEventListener('storage', this.externalChange);
   }
@@ -214,7 +229,7 @@ export class BotHistorySnapshotObserver {
   constructor(private readonly options: ObserverOptions) {
     this.detach = options.client.subscribe(this.observe);
     this.detachReplacement = options.owner.subscribeHistoryReplacement(botId => { if (botId === options.binding.botId) { this.lease = null; this.observedSource = null; this.expiredSource = null; this.observe(); } });
-    this.detachRejection = options.owner.subscribeHistoryRejection(botId => {
+    this.detachRejection = options.owner.subscribeSourceRevocation(botId => {
       if (botId !== options.binding.botId) return;
       for (const lease of [this.lease, this.candidate?.lease, this.lastAccepted?.lease, ...this.saving.keys()]) if (lease) options.owner.store.revokeObservation(lease);
       this.observation++; this.lease = null; this.candidate = null; this.lastAccepted = null;

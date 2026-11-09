@@ -47,14 +47,15 @@ export function useBotSessionCache(): BotSessionCache {
   return cache;
 }
 
-/** The caller supplies only an authenticated Bot's real Session binding, or null while it is unknown. */
-export function BotSessionHost({ cache, displayBinding, actionBinding = null, botId = displayBinding?.botId ?? null, active = true, fullscreenBoundary, presentation, botName = null, error = null, onRetry }: {
+/** A missing binding remains unresolved until the caller independently confirms no Session. */
+export function BotSessionHost({ cache, displayBinding, actionBinding = null, confirmedNoSession = false, botId = displayBinding?.botId ?? null, active = true, fullscreenBoundary, presentation, botName = null, error = null, onRetry }: {
   readonly cache: BotSessionCache;
   readonly botName?: string | null;
   readonly error?: string | null;
   readonly onRetry?: () => void;
   readonly displayBinding: BotSessionBinding | null;
   readonly actionBinding?: BotSessionBinding | null;
+  readonly confirmedNoSession?: boolean;
   readonly botId?: string | null;
   readonly active?: boolean;
   readonly presentation?: SessionPresentationSlots;
@@ -77,15 +78,19 @@ export function BotSessionHost({ cache, displayBinding, actionBinding = null, bo
   };
   // Two admitted navigations can return to this same selection in one commit.
   // The navigation owner's snapshot still changes, so that commit must readmit it.
-  useLayoutEffect(() => { cache.select(binding, current ? action : null); }, [cache, key, actionKey, botId, active, current, guardRevision, location]);
+  useLayoutEffect(() => {
+    if (current && botId && confirmedNoSession) cache.confirmNoSession(botId);
+    else cache.select(binding, current ? action : null);
+  }, [cache, key, actionKey, confirmedNoSession, botId, active, current, guardRevision, location]);
   useLayoutEffect(() => { if (botId) cache.setBotName(botId, botName); }, [cache, botId, botName]);
   const targets = panes.map(pane => ({ botId: pane.binding.botId, pane: pane as BotSessionPane | null }));
   if (current && botId && !cache.isBlocked(botId) && !cache.isRevoked(botId) && !targets.some(target => target.botId === botId)) targets.push({ botId, pane: null });
   return <section className="bot-session-host" aria-label={m.title}>
     {targets.map(target => {
       const visible = active && current && target.botId === botId && !cache.isBlocked(target.botId) && !cache.isRevoked(target.botId);
+      const noSession = cache.isNoSession(target.botId) || target.botId === botId && confirmedNoSession;
       return <div key={target.botId} className="bot-session-pane" data-bot-id={target.botId} hidden={!visible} inert={!visible}>
-        <BotPane cache={cache} botId={target.botId} presentation={assistantPresentation} pane={target.pane} current={current} active={visible} error={target.botId === botId ? error : null} {...(onRetry ? { onRetry } : {})} {...(fullscreenBoundary ? { fullscreenBoundary } : {})} />
+        <BotPane cache={cache} botId={target.botId} presentation={assistantPresentation} pane={noSession ? null : target.pane} noSession={noSession} current={current} active={visible} error={target.botId === botId ? error : null} {...(onRetry ? { onRetry } : {})} {...(fullscreenBoundary ? { fullscreenBoundary } : {})} />
       </div>;
     })}
   </section>;
@@ -128,10 +133,11 @@ function useHistoryPreview(owner: BotDisplaySnapshotCoordinator | undefined, bot
   return preview;
 }
 
-function BotPane({ cache, botId, pane, active, current, fullscreenBoundary, presentation, error, onRetry }: { readonly cache: BotSessionCache; readonly botId: string; readonly presentation?: SessionPresentationSlots; readonly pane: BotSessionPane | null; readonly active: boolean; readonly current: boolean; readonly error: string | null; readonly onRetry?: () => void; readonly fullscreenBoundary?: RefObject<HTMLElement | null> }) {
+function BotPane({ cache, botId, pane, noSession, active, current, fullscreenBoundary, presentation, error, onRetry }: { readonly cache: BotSessionCache; readonly botId: string; readonly presentation?: SessionPresentationSlots; readonly pane: BotSessionPane | null; readonly noSession: boolean; readonly active: boolean; readonly current: boolean; readonly error: string | null; readonly onRetry?: () => void; readonly fullscreenBoundary?: RefObject<HTMLElement | null> }) {
   const view = useSyncExternalStore(pane?.client.subscribe ?? noSubscribe, pane?.client.snapshot ?? noSnapshot);
   const owner = cache.displaySnapshots();
-  const preview = useHistoryPreview(owner, botId, active && current, view);
+  const loadedPreview = useHistoryPreview(owner, botId, active && current && !noSession, view);
+  const preview = noSession ? null : loadedPreview;
   const previewInput: SessionHistoryPreview | undefined = preview ? { fence: preview.fence, historyEpoch: preview.historyEpoch, lastEventSeq: preview.lastEventSeq, entries: preview.entries, resources: preview.resources, ...(preview.readingAnchor ? { readingAnchor: preview.readingAnchor } : {}) } : undefined;
   const readingRef = useRef<SessionTimelineReadingHandle | null>(null);
   useLayoutEffect(() => { if (pane) pane.reading.current = readingRef.current; });

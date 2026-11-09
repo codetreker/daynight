@@ -1,10 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { BotDisplaySnapshotCoordinator, BotHistorySnapshotObserver, clearBotDisplaySnapshots, retryBotDisplaySnapshotCleanup } from '../src/features/bots/display-snapshot-coordinator';
+import { BotDisplaySnapshotCoordinator, BotHistorySnapshotObserver, clearBotDisplaySnapshots, getBotDisplaySnapshotCoordinator, retryBotDisplaySnapshotCleanup } from '../src/features/bots/display-snapshot-coordinator';
 import { BotDisplaySnapshotStore, type BotDisplayPreview, type BotDisplaySnapshotLock } from '../src/features/bots/display-snapshot';
 import { BotSessionCache } from '../src/features/bots/session-cache';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
 import type { TimelineReadingBookmark } from '../src/ui/useTimelineScroll';
 import { sessionFence } from '../../daynight/src/session/protocol';
+import { getBotDeletionCoordinator } from '../src/features/bots/deletion-coordinator';
+import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { botDefinition, botError, botResponse } from './helpers/bots';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { cleanups.splice(0).forEach(close => close()); vi.useRealTimers(); localStorage.clear(); });
@@ -400,8 +403,8 @@ it.each([false, true])('revokes an already queued old-source save when a capture
   });
   const client = old.start();
   await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
-  const subscribeRejection = old.owner.subscribeHistoryRejection.bind(old.owner), detached = vi.fn();
-  vi.spyOn(old.owner, 'subscribeHistoryRejection').mockImplementation(listener => {
+  const subscribeRejection = old.owner.subscribeSourceRevocation.bind(old.owner), detached = vi.fn();
+  vi.spyOn(old.owner, 'subscribeSourceRevocation').mockImplementation(listener => {
     const detach = subscribeRejection(listener); return () => { detached(); detach(); };
   });
   const observer = new BotHistorySnapshotObserver({ owner: old.owner, binding: old.bot.binding, client, name: () => 'Assistant', bookmark: () => null });
@@ -535,4 +538,175 @@ it('broadcasts a passive rejection to simultaneous observers of the same accepte
   await expect(old.observer.flush()).resolves.toBeNull(); await expect(second.flush()).resolves.toBeNull();
   expect((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
   expect(old.bot.api.current).toHaveBeenCalledOnce(); expect(old.bot.api.timeline).toHaveBeenCalledOnce();
+});
+it('preserves the last saved history when deletion blocks a cache after its next flush has queued', async () => {
+  const userId = crypto.randomUUID(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  cleanups.unshift(() => gate.resolve());
+  let blocked = false;
+  vi.stubGlobal('navigator', { locks: { request: async (_name: string, run: () => unknown) => {
+    if (blocked) { entered.resolve(); await gate.promise; }
+    return run();
+  } } });
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }), owner = getBotDisplaySnapshotCoordinator(scope), store = owner.store;
+  cleanups.push(() => scope.dispose(), () => owner.close());
+  const bot = botFixture({ ...botBinding(1), ownerUserId: userId }), first = { ...bot.page.items[0]!, entryId: crypto.randomUUID() };
+  vi.mocked(bot.api.timeline).mockResolvedValue({ ...bot.page, items: [first] });
+  const cache = new BotSessionCache({ userId, identityScope: scope, isCurrent: () => !scope.isInvalidated, storage: null, createApi: () => bot.api, onPrincipalMismatch: vi.fn(), displaySnapshots: owner });
+  cleanups.push(cache.close);
+  const deletion = getBotDeletionCoordinator(scope), detach = deletion.attachCache(cache);
+  cleanups.push(detach);
+  const observe = vi.spyOn(store, 'observe'), save = vi.spyOn(store, 'save'), clear = vi.spyOn(store, 'clearTarget');
+  cache.setBotName(bot.binding.botId, 'Assistant'); cache.select(bot.binding, bot.binding);
+  const original = cache.snapshot()[0]!.client;
+  await vi.waitFor(() => expect(original.snapshot().historySettled).toBe(true));
+  await observe.mock.results.at(-1)!.value;
+  cache.flushDisplay(bot.binding.botId); await expect(save.mock.results.at(-1)!.value).resolves.toBe('saved');
+  const siblingBinding = { ...botBinding(2), ownerUserId: userId }, sibling = { ...preview(), ownerUserId: userId, botId: siblingBinding.botId, lastKnownBinding: siblingBinding, fence: { sessionId: siblingBinding.sessionId, testExecutionId: siblingBinding.testExecutionId, executionGeneration: '1' } };
+  const siblingLease = (await store.observe(userId, sibling.botId))!;
+  await expect(store.save(siblingLease, { source: 'verified-history', historyLoaded: true, preview: sibling })).resolves.toBe('saved');
+  const key = `daynight:bot-display:v1:${userId}`;
+  let before = localStorage.getItem(key);
+  const second = { ...first, entryId: crypto.randomUUID(), entrySeq: '2', content: [{ type: 'text' as const, text: 'accepted immediately before deletion' }] }, snapshot = bot.snapshot();
+  bot.receive({ protocol: snapshot.protocol, type: 'event', cursor: 'next', event: { protocol: snapshot.protocol, ...sessionFence(snapshot), connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: second } });
+  expect(original.snapshot().state.entries).toEqual([first, second]);
+  blocked = true; cache.flushDisplay(bot.binding.botId); await entered.promise;
+  const lateSave = save.mock.results.at(-1)!.value;
+  const pending = Promise.withResolvers<Response>(), history = Promise.withResolvers<typeof bot.page>();
+  const definition = { ...botDefinition(), id: bot.binding.botId, ownerUserId: userId, sessionId: bot.binding.sessionId, testExecutionId: bot.binding.testExecutionId, roleConfiguration: { instructions: 'Assistant', revision: '1', digest: 'a'.repeat(64) } };
+  vi.stubGlobal('fetch', vi.fn(async (_url, init) => init?.method === 'DELETE' ? pending.promise : botResponse(definition, userId)));
+  const operation = deletion.begin(definition);
+  try {
+    expect(deletion.snapshot()[0]!.phase).toBe('submitting');
+    expect(cache.isBlocked(bot.binding.botId)).toBe(true); expect(cache.snapshot()).toEqual([]);
+    expect(bot.channel.close).toHaveBeenCalledOnce();
+    await expect(owner.read(bot.binding.botId, { touch: false })).resolves.toBeNull();
+    expect(localStorage.getItem(key)).toBe(before);
+    gate.resolve();
+    await expect(lateSave).resolves.toBe('stale');
+    expect(localStorage.getItem(key)).toBe(before); expect(clear).not.toHaveBeenCalled();
+    await expect(store.save(siblingLease, { source: 'verified-history', historyLoaded: true, preview: { ...sibling, lastEventSeq: '2' } })).resolves.toBe('saved');
+    expect((await store.read(userId, bot.binding.botId, { touch: false }))?.entries).toEqual([first]);
+    before = localStorage.getItem(key);
+    pending.resolve(botError(409, 'version_conflict', userId)); await operation;
+    expect(deletion.snapshot()[0]!.phase).toBe('rejected');
+    expect(cache.isBlocked(bot.binding.botId)).toBe(false);
+    expect(localStorage.getItem(key)).toBe(before);
+    vi.mocked(bot.api.timeline).mockReturnValue(history.promise);
+    cache.select(bot.binding, bot.binding);
+    const reopened = cache.snapshot()[0]!.client; expect(reopened).not.toBe(original);
+    await vi.waitFor(() => expect(reopened.snapshot().state.snapshot).not.toBeNull());
+    expect(reopened.snapshot().historyLoaded).toBe(false);
+    cache.flushDisplay(bot.binding.botId); expect(localStorage.getItem(key)).toBe(before);
+    history.resolve({ ...bot.page, items: [first, second] });
+    await vi.waitFor(() => expect(reopened.snapshot().historySettled).toBe(true));
+    await observe.mock.results.at(-1)!.value;
+    cache.flushDisplay(bot.binding.botId); await expect(save.mock.results.at(-1)!.value).resolves.toBe('saved');
+    expect((await store.read(userId, bot.binding.botId, { touch: false }))?.entries).toEqual([first, second]);
+  } finally {
+    gate.resolve(); pending.resolve(botError(409, 'version_conflict', userId)); history.resolve({ ...bot.page, items: [first, second] });
+    await operation;
+  }
+});
+it('keeps confirmed no-session history revoked until explicit session confirmation and new accepted progress', async () => {
+  const userId = crypto.randomUUID(), old = await savedEpochTab(userId, crypto.randomUUID(), true);
+  const revision = old.client.snapshot().historyRevision;
+  old.owner.confirmNoSession(old.bot.binding.botId);
+  const generation = old.owner.generation(old.bot.binding.botId), version = old.owner.version();
+  old.owner.confirmNoSession(old.bot.binding.botId);
+  expect(old.owner.generation(old.bot.binding.botId)).toBe(generation); expect(old.owner.version()).toBe(version);
+  old.owner.bind(old.bot.binding); old.owner.history(old.bot.binding, old.bot.snapshot());
+  old.client.setDraft('cached history cannot restore a session'); old.observer.refresh();
+  expect(old.owner.displayAllowed(old.bot.binding.botId)).toBe(false);
+  await expect(old.owner.read(old.bot.binding.botId, { touch: false })).resolves.toBeNull();
+  await Promise.all(old.clear.mock.results.map(result => result.value));
+  await expect(old.observer.flush()).resolves.toBeNull();
+  expect(await old.store.read(userId, old.bot.binding.botId, { touch: false })).toBeNull();
+  expect(old.owner.confirmSession(old.bot.binding)).toBe(true);
+  old.observer.refresh(); await expect(old.observer.flush()).resolves.toBeNull();
+  await old.client.refresh();
+  await vi.waitFor(() => expect(old.client.snapshot().historyRevision).toBeGreaterThan(revision));
+  await old.observe.mock.results.at(-1)!.value;
+  await expect(old.observer.flush()).resolves.toBe('saved');
+  expect((await old.store.read(userId, old.bot.binding.botId, { touch: false }))?.entries).toEqual([old.item]);
+});
+it('allows newly accepted history after session confirmation while the no-session clear is still queued', async () => {
+  const userId = crypto.randomUUID(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  cleanups.unshift(() => gate.resolve());
+  let blocked = false;
+  const old = epochTab(userId, crypto.randomUUID(), true, async (_key, run) => {
+    if (blocked) { entered.resolve(); await gate.promise; }
+    return run();
+  });
+  const client = old.start(); await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
+  const observer = new BotHistorySnapshotObserver({ owner: old.owner, binding: old.bot.binding, client, name: () => 'Assistant', bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  await old.observe.mock.results.at(-1)!.value; await expect(observer.flush()).resolves.toBe('saved');
+  try {
+    blocked = true; old.owner.confirmNoSession(old.bot.binding.botId); await entered.promise;
+    expect(old.owner.confirmSession(old.bot.binding)).toBe(true);
+    const revision = client.snapshot().historyRevision;
+    await client.refresh(); await vi.waitFor(() => expect(client.snapshot().historyRevision).toBeGreaterThan(revision));
+    const freshObservation = old.observe.mock.results.at(-1)!.value;
+    gate.resolve();
+    await Promise.all(old.clear.mock.results.map(result => result.value)); await freshObservation;
+    await expect(observer.flush()).resolves.toBe('saved');
+    expect((await old.store.read(userId, old.bot.binding.botId, { touch: false }))?.entries).toEqual([old.item]);
+  } finally {
+    gate.resolve(); observer.close(false);
+    await Promise.allSettled([...old.clear.mock.results, ...old.observe.mock.results].map(result => result.value));
+  }
+});
+it('rejects pre-confirmation reads and queued saves when the Session is confirmed absent', async () => {
+  const userId = crypto.randomUUID(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  cleanups.unshift(() => gate.resolve());
+  let blocked = false;
+  const old = epochTab(userId, crypto.randomUUID(), true, async (_key, run) => {
+    if (blocked) { entered.resolve(); await gate.promise; }
+    return run();
+  });
+  const client = old.start(); await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
+  const observer = new BotHistorySnapshotObserver({ owner: old.owner, binding: old.bot.binding, client, name: () => 'Assistant', bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  await old.observe.mock.results.at(-1)!.value; await expect(observer.flush()).resolves.toBe('saved');
+  const captured = Promise.withResolvers<void>(), delivery = Promise.withResolvers<void>(), realRead = old.store.read.bind(old.store);
+  cleanups.unshift(() => delivery.resolve());
+  vi.spyOn(old.store, 'read').mockImplementation(async (...args) => { const result = await realRead(...args); captured.resolve(); await delivery.promise; return result; });
+  const read = old.owner.read(old.bot.binding.botId, { touch: false });
+  let save: ReturnType<typeof observer.flush> | undefined;
+  try {
+    await captured.promise;
+    blocked = true; save = observer.flush(); await entered.promise;
+    old.owner.confirmNoSession(old.bot.binding.botId); observer.close(false);
+    old.owner.bind(old.bot.binding); old.owner.history(old.bot.binding, old.bot.snapshot());
+    delivery.resolve(); await expect(read).resolves.toBeNull();
+    expect(old.owner.displayAllowed(old.bot.binding.botId)).toBe(false); expect(old.owner.cached(old.bot.binding.botId)).toBeNull();
+    gate.resolve(); await expect(save).resolves.toBe('stale');
+    await Promise.all(old.clear.mock.results.map(result => result.value));
+    expect(await old.store.read(userId, old.bot.binding.botId, { touch: false })).toBeNull();
+  } finally {
+    delivery.resolve(); gate.resolve(); observer.close(false);
+    await Promise.allSettled([read, save, ...old.clear.mock.results.map(result => result.value)]);
+  }
+});
+it('keeps no-session revocation target-specific and refuses session confirmation during admission failures', async () => {
+  const userId = crypto.randomUUID(), binding = { ...botBinding(1), ownerUserId: userId }, sibling = { ...botBinding(2), ownerUserId: userId };
+  let paused = false, current = true;
+  const store = new BotDisplaySnapshotStore({ isCurrent: user => user === userId, storage: storage(), withLock: async (_key, run) => run() });
+  const owner = new BotDisplaySnapshotCoordinator({ userId, isCurrent: () => current, isPaused: () => paused, store });
+  cleanups.push(() => owner.close());
+  const revoked = vi.fn(); owner.subscribeSourceRevocation(revoked);
+  owner.confirmNoSession(binding.botId); await store.read(userId, binding.botId, { touch: false });
+  expect(revoked.mock.calls).toEqual([[binding.botId]]);
+  paused = true; expect(owner.confirmSession(binding)).toBe(false);
+  paused = false; current = false; expect(owner.confirmSession(binding)).toBe(false);
+  current = true; expect(owner.confirmSession({ ...binding, ownerUserId: crypto.randomUUID() })).toBe(false);
+  owner.blockBot(binding.botId); owner.blockBot(binding.botId); expect(owner.confirmSession(binding)).toBe(false);
+  expect(revoked.mock.calls).toEqual([[binding.botId], [binding.botId]]);
+  owner.unblockBot(binding.botId); expect(owner.displayAllowed(binding.botId)).toBe(false);
+  expect(owner.confirmSession(binding)).toBe(true); expect(owner.displayAllowed(binding.botId)).toBe(true);
+  expect(revoked.mock.calls).toEqual([[binding.botId], [binding.botId]]);
+  owner.bind(sibling);
+  owner.invalidateBot(binding.botId); expect(owner.confirmSession(binding)).toBe(false);
+  expect(owner.displayAllowed(sibling.botId)).toBe(true);
+  expect(revoked.mock.calls).toEqual([[binding.botId], [binding.botId], [binding.botId]]);
 });

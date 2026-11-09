@@ -14,7 +14,7 @@ const row = `${selected} [data-entry-key]`;
 const entryId = (n: number) => `30000000-0000-4000-8000-${String(10000 + n).padStart(12, '0')}`;
 
 async function install(page: Page, tail: { readonly initialStart: number; readonly restoredStart: number; readonly end: number } | null = null, history: { readonly epoch: string; readonly revision: string; readonly lastEventSeq: string } | null = null) {
-  let holdDetail = false, missing = false;
+  let holdDetail = false, missing = false, noSession = false, replacement = false;
   const pending: (() => void)[] = [], writes: string[] = [];
   await page.addInitScript(({ tail, history }) => {
     const restored = sessionStorage.getItem('b2-history-barriers') === 'true';
@@ -32,10 +32,10 @@ async function install(page: Page, tail: { readonly initialStart: number; readon
     if (path === '/api/v1/me/bots') return send({ items: bots, nextCursor: null });
     const bot = bots.find(value => path === `/api/v1/me/bots/${value.id}`);
     if (bot && holdDetail) await new Promise<void>(resolve => pending.push(resolve));
-    if (bot && !missing) return send(bot);
+    if (bot && !missing) return send(bot.id === bots[0]!.id && noSession ? { ...bot, sessionId: null, testExecutionId: null, roleConfiguration: null, startupResult: { state: 'pending', code: null } } : bot.id === bots[0]!.id && replacement ? { ...bot, sessionId: botId(901), testExecutionId: botId(902) } : bot);
     return send({ error: { code: 'not_found', message: 'Assistant is unavailable.', requestId: 'persistent-browser' } }, 404);
   });
-  return { writes, hold() { holdDetail = true; }, release() { holdDetail = false; pending.splice(0).forEach(resolve => resolve()); }, missing() { missing = true; } };
+  return { writes, hold() { holdDetail = true; }, release() { holdDetail = false; pending.splice(0).forEach(resolve => resolve()); }, missing() { missing = true; }, noSession() { noSession = true; }, replaceSession() { noSession = false; replacement = true; } };
 }
 
 async function saved(page: Page, target = bots[0]!.id, count = 100) {
@@ -156,6 +156,44 @@ test('withdraws a cold preview across tabs after an authoritative missing target
   await expect(peer.locator(row)).toHaveCount(0);
   peerApi.release();
   await peer.close();
+});
+
+test('withdraws confirmed no-Session history and permits a later real Session', async ({ page }, info) => {
+  const api = await install(page);
+  await page.goto(`/bots/${bots[0]!.id}`);
+  await saved(page);
+  await page.evaluate(() => sessionStorage.setItem('b2-history-barriers', 'true'));
+  api.hold(); api.noSession();
+  await page.reload();
+  await expect(page.locator(row)).toHaveCount(100);
+  const pendingPreviewEntries = await page.locator(row).count();
+  expect(await page.evaluate(() => window.botViewport.metrics.bindings.length)).toBe(0);
+  api.release();
+  await expect(page.locator(row)).toHaveCount(0);
+  const targetEntries = () => page.evaluate(({ namespace, target }) => {
+    const raw = localStorage.getItem(namespace);
+    return raw ? (JSON.parse(raw).records as { preview: { botId: string } }[]).filter(record => record.preview.botId === target).length : 0;
+  }, { namespace, target: bots[0]!.id });
+  await expect.poll(targetEntries).toBe(0);
+  await page.getByRole('link', { name: new RegExp(`^${bots[1]!.name} `) }).click();
+  await page.getByRole('link', { name: new RegExp(`^${bots[0]!.name} `) }).click();
+  await expect(page.locator(row)).toHaveCount(0);
+  api.replaceSession();
+  await page.locator('.bot-refresh').click();
+  await expect.poll(() => page.evaluate(sessionId => window.botViewport.metrics.bindings.some(raw => JSON.parse(raw).sessionId === sessionId), botId(901))).toBe(true);
+  await page.evaluate(() => { window.botViewport.releaseCurrent(); window.botViewport.releaseHistory(); });
+  await expect(page.locator(row)).toHaveCount(100);
+  await saved(page);
+  api.noSession();
+  await page.locator('.bot-refresh').click();
+  await expect(page.locator(row)).toHaveCount(0);
+  await expect.poll(targetEntries).toBe(0);
+  const metrics = await page.evaluate(() => window.botViewport.metrics);
+  expect(metrics.commands).toBe(0);
+  expect(api.writes).toEqual([]);
+  const path = info.outputPath('confirmed-no-session.json');
+  await writeFile(path, JSON.stringify({ boundary: 'Production app/client/observer/store; controlled detail and SessionApi; real Chrome storage and reload.', pendingPreviewEntries, withdrawnEntries: await page.locator(row).count(), targetRecords: await targetEntries(), replacementSessionId: botId(901), metrics, writes: api.writes }, null, 2));
+  await info.attach('confirmed-no-session', { path, contentType: 'application/json' });
 });
 
 test('does not feed cross-tab storage reads back into repeated LRU writes', async ({ context, page }) => {
