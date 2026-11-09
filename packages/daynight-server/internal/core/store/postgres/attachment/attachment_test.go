@@ -31,12 +31,13 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 	projectID, taskID := uuid.NewString(), uuid.NewString()
 	input := model.Attachment{ProjectID: projectID, TaskID: taskID, Path: "docs/a.md", ContentType: "text/markdown", SizeBytes: 10}
 	first, created, err := database.PutAttachment(ctx, input)
-	if err != nil || !created || first.CreatedAt.IsZero() || !first.CreatedAt.Equal(first.UpdatedAt) {
+	if err != nil || !created || first.ProjectID != projectID || first.TaskID != taskID || first.Path != input.Path || first.SizeBytes != input.SizeBytes || first.CreatedAt.IsZero() || !first.CreatedAt.Equal(first.UpdatedAt) {
 		t.Fatalf("insert: %#v, %v, %v", first, created, err)
 	}
 	input.SizeBytes = 20
+	input.ContentType = "text/plain"
 	updated, created, err := database.PutAttachment(ctx, input)
-	if err != nil || created || updated.SizeBytes != 20 || !first.CreatedAt.Equal(updated.CreatedAt) || !updated.UpdatedAt.After(first.UpdatedAt) {
+	if err != nil || created || updated.SizeBytes != 20 || updated.ContentType != input.ContentType || !first.CreatedAt.Equal(updated.CreatedAt) || !updated.UpdatedAt.After(first.UpdatedAt) {
 		t.Fatalf("update: %#v, %v, %v", updated, created, err)
 	}
 	input.Path = "docs/b.md"
