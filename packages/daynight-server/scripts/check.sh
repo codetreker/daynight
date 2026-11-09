@@ -10,6 +10,7 @@ if (( $# != 0 )); then
 fi
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/validation-env.sh"
+: "${DAYNIGHT_TEST_REDIS_URL:?Set DAYNIGHT_TEST_REDIS_URL to an isolated Redis test instance}"
 rm -f coverage.out
 
 node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts

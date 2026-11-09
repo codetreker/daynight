@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	monitoringredis "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 )
 
 type Config struct {
@@ -22,6 +24,7 @@ type Config struct {
 	AllowHTTPTestOrigin  bool
 	AllowLoopbackHTTP    bool
 	DatabaseURL          string
+	RedisURL             string
 	StorageRoot          string
 	ListenAddress        string
 	MetricsListenAddress string
@@ -85,6 +88,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		AllowHTTPTestOrigin:  allowHTTP,
 		AllowLoopbackHTTP:    allowLoopback,
 		DatabaseURL:          getenv("DAYNIGHT_DATABASE_URL"),
+		RedisURL:             getenv("DAYNIGHT_REDIS_URL"),
 		StorageRoot:          getenv("DAYNIGHT_STORAGE_ROOT"),
 		ListenAddress:        address,
 		MetricsListenAddress: getenv("DAYNIGHT_METRICS_LISTEN_ADDR"),
@@ -154,6 +158,11 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.DatabaseURL) == "" {
 		return &ConfigurationError{Field: "DAYNIGHT_DATABASE_URL", Rule: "is required"}
+	}
+	if c.RedisURL != "" {
+		if err := monitoringredis.ValidateURL(c.RedisURL); err != nil {
+			return &ConfigurationError{Field: "DAYNIGHT_REDIS_URL", Rule: "must be a valid redis or rediss URL", Cause: err}
+		}
 	}
 	if strings.TrimSpace(c.StorageRoot) == "" {
 		return &ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "is required"}
