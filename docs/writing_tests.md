@@ -74,7 +74,7 @@ Go 的上述测试都不安装或运行 CLI，不执行 Web 测试。为 Go Serv
 
 ## Go API 集成测试
 
-Go Server 的 API 集成测试统一放在 `packages/daynight-server/cmd/integration_tests/`，使用显式 `integration` build tag，并由 `scripts/integration.sh` 构建生产 Server 后运行。这些测试属于 Go 模块验证，与普通单元测试发现及独立产品 E2E 分开。可执行命令、生产资源准备和环境回收由 server README 与开发指南维护。
+Go Server 的 API 集成测试统一放在 `packages/daynight-server/cmd/integration_tests/`，使用显式 `integration` build tag，并由 `scripts/integration.sh` 构建生产 Server 后运行。这些测试由独立的 API 集成 CI job 执行，与 Go 模块单元测试和覆盖率 job、普通单元测试发现及独立产品 E2E 分开。可执行命令、生产资源准备和环境回收由 server README 与开发指南维护。
 
 在隔离环境内启动真实 Go Server 进程、PostgreSQL 实例和附件存储，通过 Go HTTP 客户端驱动服务，断言公开响应和可观察结果。测试必须经过真实路由、认证接入、服务组装、DAO 和持久化链路，不能用 DAO mock 或模拟产品 API 替代，也不使用 CLI 或浏览器作为驱动。生产 Web 资源是 Server 构建依赖；这些测试不驱动 Web 交互。
 

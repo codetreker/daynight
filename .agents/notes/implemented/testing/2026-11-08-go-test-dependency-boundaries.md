@@ -72,7 +72,11 @@ use distinct resources. Mixed scenarios are assigned to protocol, business,
 store or runtime owners; boundary, response-loss, concurrency and stress matrices
 are not copied into API integration. Receiver discovery and execution plus
 independent proof preservation are required before duplicate normal flows are
-removed.
+removed. The
+[independent API integration decision](2026-11-09-independent-go-api-integration.md)
+owns its CI scheduling and production build inputs. The runner's process and
+cleanup failure tests run with the Go module's tool tests, keeping those proofs
+outside the normal API-flow suite.
 
 ## Alternatives
 
