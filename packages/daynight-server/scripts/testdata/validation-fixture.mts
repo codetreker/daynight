@@ -65,7 +65,7 @@ if [[ "$1" == scripts/prepare-uniauth-fixture.mts ]]; then printf '%s\\n' fixtur
   await chmod(join(tools, 'node'), 0o755);
   const traceFile = join(fixture, 'trace');
   const env = { ...process.env, PATH: `${tools}:${process.env.PATH}`, TRACE: traceFile,
-    DAYNIGHT_TEST_DATABASE_URL: 'postgres://fixture', GOFLAGS: '-race', CI: ci,
+    DAYNIGHT_TEST_DATABASE_URL: 'postgres://fixture', DAYNIGHT_TEST_REDIS_URL: 'redis://fixture', GOFLAGS: '-race', CI: ci,
     GITHUB_EVENT_NAME: undefined, GITHUB_REF: undefined, ...extra };
   const result = spawnSync('bash', [join(scripts, `${entry}.sh`), ...(entry === 'check' ? ['--coverage'] : [])], {
     env, encoding: 'utf8', timeout: 10_000,

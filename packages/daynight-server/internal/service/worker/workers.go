@@ -21,8 +21,9 @@ type workerStore interface {
 }
 
 type Workers struct {
-	store   workerStore
-	prompts store.PromptSnapshotReader
+	store      workerStore
+	prompts    store.PromptSnapshotReader
+	monitoring store.MonitoringStore
 }
 
 func NewWorkers(database workerStore) *Workers { return &Workers{store: database} }

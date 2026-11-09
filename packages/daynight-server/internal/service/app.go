@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	monitoringredis "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
@@ -34,6 +35,9 @@ type App struct {
 
 	closeLock         chan struct{}
 	files             interface{ Close() error }
+	monitoring        monitoringBackend
+	monitoringClosed  chan struct{}
+	monitoringErr     error
 	persistence       *Persistence
 	persistenceClosed chan struct{}
 	filesClosed       chan struct{}
@@ -108,8 +112,9 @@ func OpenApp(ctx context.Context, c config.Config) (*App, error) {
 // OpenAppWithLogger uses the server's structured logger for owned background work.
 func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger) (*App, error) {
 	return openApp(ctx, c, logger, appOpeners{
-		files:    func(root string) (appStorage, error) { return local.New(root) },
-		database: openPostgres,
+		files:      func(root string) (appStorage, error) { return local.New(root) },
+		database:   openPostgres,
+		monitoring: func(url string) (monitoringBackend, error) { return monitoringredis.New(url) },
 	})
 }
 
@@ -118,9 +123,15 @@ type appStorage interface {
 	Close() error
 }
 
+type monitoringBackend interface {
+	store.MonitoringStore
+	Close() error
+}
+
 type appOpeners struct {
-	files    func(string) (appStorage, error)
-	database func(context.Context, string) (persistenceBackend, error)
+	files      func(string) (appStorage, error)
+	database   func(context.Context, string) (persistenceBackend, error)
+	monitoring func(string) (monitoringBackend, error)
 }
 
 func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open appOpeners) (*App, error) {
@@ -155,6 +166,17 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		cleanup, done := context.WithTimeout(context.Background(), c.ShutdownTimeout)
 		defer done()
 		return nil, errors.Join(cause, app.Close(cleanup))
+	}
+	if c.RedisURL != "" {
+		if open.monitoring == nil {
+			return failOpen(errors.New("monitoring store opener is unavailable"))
+		}
+		monitoring, err := open.monitoring(c.RedisURL)
+		if err != nil {
+			return failOpen(&config.ConfigurationError{Field: "DAYNIGHT_REDIS_URL", Rule: "must identify a valid monitoring store", Cause: err})
+		}
+		app.monitoring = monitoring
+		app.Workers.SetMonitoringStore(monitoring)
 	}
 	if err := app.assembleWebhooks(database.Transactions, c.WebhookEnabled, logger); err != nil {
 		return failOpen(err)
@@ -219,6 +241,23 @@ func (a *App) Close(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if a.monitoring != nil {
+		if a.monitoringClosed == nil {
+			a.monitoringClosed = make(chan struct{})
+			go func() {
+				a.monitoringErr = a.monitoring.Close()
+				close(a.monitoringClosed)
+			}()
+		}
+		select {
+		case <-a.monitoringClosed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if a.persistence != nil {
 		if a.persistenceClosed == nil {
 			a.persistenceClosed = make(chan struct{})
@@ -241,7 +280,7 @@ func (a *App) Close(ctx context.Context) error {
 			done := make(chan struct{})
 			a.filesClosed = done
 			go func() {
-				a.closeErr = a.files.Close()
+				a.closeErr = errors.Join(a.monitoringErr, a.files.Close())
 				close(done)
 			}()
 		}
@@ -262,5 +301,6 @@ func (a *App) Close(ctx context.Context) error {
 		}
 	}
 	a.closed = true
-	return ctx.Err()
+	a.closeErr = a.monitoringErr
+	return errors.Join(a.closeErr, ctx.Err())
 }

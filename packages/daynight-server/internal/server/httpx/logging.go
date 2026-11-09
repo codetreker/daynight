@@ -39,6 +39,11 @@ func ValidRequestID(value string) bool {
 }
 
 func ErrorKind(err error) string {
+	// Monitoring failures classify the Redis operation explicitly while retaining
+	// its cause, including deadline or network errors, for diagnosis.
+	if fault, ok := KnownFault(err); ok && (fault.Code == "monitoring_unavailable" || fault.Code == "monitoring_write_outcome_unknown") {
+		return fault.Code
+	}
 	if fault, ok := err.(*model.Fault); ok && fault.Code == "search_timeout" {
 		if _, known := KnownFault(err); known {
 			return fault.Code
@@ -120,8 +125,16 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	if errors.As(err, &gatewayFailure) && ValidRequestID(gatewayFailure.RequestID) {
 		upstreamID = gatewayFailure.RequestID
 	}
-	logger.ErrorContext(ctx, "operation failed", "type", "operation_error", "component", component,
-		"phase", phase, "cause", kind, "error_code", code, "diagnostic", diagnostic, "request_id", RequestID(ctx), "upstream_request_id", upstreamID)
+	attrs := []any{"type", "operation_error", "component", component,
+		"phase", phase, "cause", kind, "error_code", code, "diagnostic", diagnostic, "request_id", RequestID(ctx), "upstream_request_id", upstreamID}
+	var monitoringFailure *store.MonitoringError
+	if component == "worker_monitoring" && errors.As(err, &monitoringFailure) {
+		switch monitoringFailure.Kind {
+		case "deadline", "cancelled", "format", "oom", "type", "server", "network", "other":
+			attrs = append(attrs, "dependency_cause", monitoringFailure.Kind)
+		}
+	}
+	logger.ErrorContext(ctx, "operation failed", attrs...)
 }
 
 type ResponseRecorder struct {
