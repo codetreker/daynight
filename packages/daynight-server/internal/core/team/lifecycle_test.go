@@ -488,10 +488,45 @@ func TestMemberAuthorizationAndMutation(t *testing.T) {
 	w.team.Kind = "personal"
 	_, err := ChangeMember(ctx, w, p, target, in, false)
 	faultCode(t, err, "personal_team_immutable")
-	w.team = item
-	w.team.Membership.Role = model.ProjectMemberRole
-	_, err = ChangeMember(ctx, w, p, target, in, false)
-	faultCode(t, err, "forbidden")
+	for _, remove := range []bool{false, true} {
+		name := "non-admin role change"
+		if remove {
+			name = "non-admin removes another member"
+		}
+		t.Run(name, func(t *testing.T) {
+			currentTeam := item
+			currentTeam.Membership.Role = model.ProjectMemberRole
+			currentInput := in
+			if remove {
+				currentInput.Role = ""
+			}
+			var calls []string
+			writes := &writerFake{errs: map[string]error{}}
+			dao := &ruleReadDAO{
+				TeamWriteDAO: writes,
+				team: func(gotCtx context.Context, actor string) (model.Team, error) {
+					calls = append(calls, "team")
+					if gotCtx != ctx || actor != p.UserID {
+						t.Fatalf("Team lookup: context=%v actor=%q", gotCtx, actor)
+					}
+					return currentTeam, nil
+				},
+				member: func(context.Context, string) (model.TeamMember, error) {
+					calls = append(calls, "member")
+					return member, nil
+				},
+				adminCount: func(context.Context) (int64, error) {
+					calls = append(calls, "count")
+					return 1, nil
+				},
+			}
+			result, err := ChangeMember(ctx, dao, p, target, currentInput, remove)
+			faultCode(t, err, "forbidden")
+			if !reflect.DeepEqual(result, TeamMemberResult{}) || !reflect.DeepEqual(calls, []string{"team"}) || writes.roleCalls != 0 || writes.removed {
+				t.Fatalf("non-admin refusal: result=%#v calls=%v role writes=%d removed=%v", result, calls, writes.roleCalls, writes.removed)
+			}
+		})
+	}
 	w.team = item
 	w.errs["member"] = model.ErrNotFound
 	_, err = ChangeMember(ctx, w, p, target, in, false)
