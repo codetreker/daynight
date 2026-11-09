@@ -106,7 +106,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
   const coordinator = createWorkerCoordinator({ store: workerStore, webStore: store, webBackend: { ...backend, cleanup: async input => ({ task: input, complete: true }) },
     git, herdr: {} as WorkerHerdrAdapter, remote, serverOrigin: project.serverOrigin, workerId: task.workerId, platform: "linux",
     machine: { id: randomUUID(), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration,
-    maxConcurrent: 1, ...{ preferPlatformSpecificTasks: false }, buildPrompt: () => "fixture", emit() {}, now: () => clock, verifyWebStartupReporting: async () => true });
+    maxConcurrent: 1, preferPlatformSpecificTasks: false, buildPrompt: () => "fixture", emit() {}, now: () => clock, verifyWebStartupReporting: async () => true });
   disposals.push(async () => { await coordinator.shutdown(); });
   const reconcile = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
   const launch = async () => {
