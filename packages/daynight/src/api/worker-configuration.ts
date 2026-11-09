@@ -154,3 +154,73 @@ export const decodeWorkerCloudJsonSource = (source: string): unknown => {
     return value;
   });
 };
+
+export type WorkerPromptKey = { readonly scope: "user" | "worker" } | { readonly scope: "project"; readonly projectId: string };
+export type WorkerPromptSelector = { readonly key: WorkerPromptKey; readonly knownRevision: string | null };
+export type WorkerPromptResource = { readonly scope: WorkerPromptKey["scope"]; readonly scopeId: string; readonly revision: string; readonly text: string; readonly updatedAt: string | null };
+export type WorkerPromptResult =
+  | { readonly key: WorkerPromptKey; readonly status: "value"; readonly value: WorkerPromptResource }
+  | { readonly key: WorkerPromptKey; readonly status: "unchanged"; readonly revision: string }
+  | { readonly key: WorkerPromptKey; readonly status: "unavailable" }
+  | { readonly key: WorkerPromptKey; readonly status: "error"; readonly error: "unavailable" | "timeout" };
+export type WorkerPromptResults = { readonly ok: true; readonly results: readonly WorkerPromptResult[] } | { readonly ok: false };
+export type WorkerCloudSyncReceipt = WorkerCloudReportReceipt & { readonly prompts: WorkerPromptResults };
+
+export const workerPromptKeyId = (key: WorkerPromptKey): string => key.scope === "project" ? `project:${key.projectId}` : key.scope;
+const promptKey = (value: unknown): WorkerPromptKey => {
+  const data = record(value);
+  if (data.scope === "user" || data.scope === "worker") { exact(data, ["scope"]); return { scope: data.scope }; }
+  if (data.scope === "project") { exact(data, ["scope", "projectId"]); return { scope: "project", projectId: id(data.projectId) }; }
+  return malformed();
+};
+export const parseWorkerPromptSelectors = (value: unknown): readonly WorkerPromptSelector[] => {
+  const seen = new Set<string>();
+  const result = array(value, item => {
+    const data = exact(item, ["key", "knownRevision"]), key = promptKey(data.key), keyId = workerPromptKeyId(key);
+    if (seen.has(keyId)) return malformed();
+    seen.add(keyId);
+    return { key, knownRevision: data.knownRevision === null ? null : parseWorkerCloudRevision(data.knownRevision, true) };
+  });
+  if (result.length > 3 || Buffer.byteLength(JSON.stringify(result), "ascii") > 1024) return malformed();
+  return result;
+};
+
+const promptResource = (value: unknown, key: WorkerPromptKey, userId: string, workerId: string): WorkerPromptResource => {
+  const data = exact(value, ["scope", "scopeId", "revision", "text", "updatedAt"]);
+  const scopeId = id(data.scopeId), revision = parseWorkerCloudRevision(data.revision, true);
+  const expectedId = key.scope === "user" ? userId : key.scope === "worker" ? workerId : key.projectId;
+  if (data.scope !== key.scope || scopeId !== expectedId || typeof data.text !== "string" || !data.text.isWellFormed() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(data.text) || Buffer.byteLength(data.text, "utf8") > 1_048_576) return malformed();
+  const updatedAt = data.updatedAt === null ? null : instant(data.updatedAt);
+  if (revision === "0" ? data.text !== "" || updatedAt !== null : updatedAt === null) return malformed();
+  return { scope: key.scope, scopeId, revision, text: data.text, updatedAt };
+};
+export const parseWorkerPromptResults = (value: unknown, selectors: readonly WorkerPromptSelector[], userId: string, workerId: string): readonly WorkerPromptResult[] => {
+  if (!Array.isArray(value) || value.length !== selectors.length) return malformed();
+  return value.map((item, index): WorkerPromptResult => {
+    const data = record(item), selector = selectors[index]!, key = promptKey(data.key);
+    if (workerPromptKeyId(key) !== workerPromptKeyId(selector.key)) return malformed();
+    if (data.status === "value") { exact(data, ["key", "status", "value"]); return { key, status: "value", value: promptResource(data.value, key, userId, workerId) }; }
+    if (data.status === "unchanged") {
+      exact(data, ["key", "status", "revision"]);
+      const revision = parseWorkerCloudRevision(data.revision, true);
+      if (selector.knownRevision === null || revision !== selector.knownRevision) return malformed();
+      return { key, status: "unchanged", revision };
+    }
+    if (data.status === "unavailable") { exact(data, ["key", "status"]); return { key, status: "unavailable" }; }
+    if (data.status === "error") { exact(data, ["key", "status", "error"]); if (data.error !== "unavailable" && data.error !== "timeout") return malformed(); return { key, status: "error", error: data.error }; }
+    return malformed();
+  });
+};
+
+// Validate the envelope and native subtree separately so a malformed prompt
+// batch cannot discard a confirmed native configuration receipt.
+export const decodeWorkerCloudSyncSource = (source: string): { readonly native: unknown; readonly promptSource: string | undefined } => {
+  const root = jsonObjectSources(source, ["configuration", "prompts"]);
+  const configurationSource = root.get("configuration");
+  if (configurationSource === undefined) return malformed();
+  const configuration = jsonObjectSources(configurationSource, ["prompts"]);
+  const promptSource = configuration.get("prompts");
+  const configNative = `{${[...configuration].filter(([key]) => key !== "prompts").map(([key, value]) => `${JSON.stringify(key)}:${value}`).join(",")}}`;
+  const nativeSource = `{${[...root].map(([key, value]) => `${JSON.stringify(key)}:${key === "configuration" ? configNative : value}`).join(",")}}`;
+  return { native: decodeWorkerCloudJsonSource(nativeSource), promptSource };
+};

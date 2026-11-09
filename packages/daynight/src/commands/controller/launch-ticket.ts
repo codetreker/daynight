@@ -8,7 +8,11 @@ import { sessionBinding, type SessionBinding } from "../../session/protocol.js";
 import type { FrozenExecutionConfiguration } from "../worker/types.js";
 
 // Retain the legacy 5 MiB allowance plus room for a fully JSON-escaped 64 KiB role.
-const MAX_TICKET_BYTES = 6 * 1024 * 1024;
+export const MAX_TICKET_BYTES = 6 * 1024 * 1024;
+export const MAX_INITIAL_PROMPT_BYTES = 4 * 1024 * 1024;
+export class LaunchTicketLimitError extends Error {
+  constructor(readonly actualBytes: number, readonly maxBytes: number, message: string) { super(message); }
+}
 
 type LaunchCommon = {
   readonly schemaVersion: 1;
@@ -50,7 +54,9 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   for (const key of ["cwd", "nativeHome", "credentialFile"]) if (typeof data[key] !== "string" || !path.isAbsolute(data[key]) || /[\0\r\n]/.test(data[key])) throw new Error(`Controller ticket ${key} must be absolute.`);
   if (typeof data.ipcEndpoint !== "string" || /[\0\r\n]/.test(data.ipcEndpoint) || !(path.isAbsolute(data.ipcEndpoint) || data.ipcEndpoint.startsWith("\\\\.\\pipe\\"))) throw new Error("Controller IPC endpoint is invalid.");
   if (typeof data.ipcSecret !== "string" || !/^[a-f0-9]{64}$/.test(data.ipcSecret)) throw new Error("Controller IPC authentication is invalid.");
-  if (typeof data.initialPrompt !== "string" || (!(test && data.initialInput === "none") && data.initialPrompt.trim() === "") || !data.initialPrompt.isWellFormed() || Buffer.byteLength(data.initialPrompt) > 4 * 1024 * 1024) throw new Error("Controller initial prompt is invalid or too large.");
+  if (typeof data.initialPrompt !== "string" || (!(test && data.initialInput === "none") && data.initialPrompt.trim() === "") || !data.initialPrompt.isWellFormed()) throw new Error("Controller initial prompt is invalid or too large.");
+  const promptBytes = Buffer.byteLength(data.initialPrompt);
+  if (promptBytes > MAX_INITIAL_PROMPT_BYTES) throw new LaunchTicketLimitError(promptBytes, MAX_INITIAL_PROMPT_BYTES, "Controller initial prompt is invalid or too large.");
   if (Object.hasOwn(data, "instructions") && (typeof data.instructions !== "string" || data.instructions.trim() === "" || !data.instructions.isWellFormed() || Buffer.byteLength(data.instructions, "utf8") > 64 * 1024)) throw new Error("Controller instructions must be nonempty well-formed Unicode text of at most 64 KiB UTF-8.");
   if (test && (data.initialInput !== "none" && data.initialInput !== "prompt" || data.initialInput === "none" && data.initialPrompt !== "" || data.resumeNativeSessionId !== null && data.initialInput !== "none")) throw new Error("Test controller initial input or resume binding is invalid.");
   if (data.resumeNativeSessionId !== null) uuid(data.resumeNativeSessionId);
@@ -68,10 +74,15 @@ export const readLaunchTicket = async (home: string, launchId: string): Promise<
   if (ticket.launchId !== launchId) throw new Error("Controller launch ticket identity mismatch.");
   return ticket;
 };
-export const writeLaunchTicket = async (home: string, ticket: ControllerLaunchTicket): Promise<string> => {
+export const serializeLaunchTicket = (ticket: ControllerLaunchTicket): string => {
   parseLaunchTicket(ticket);
   const serialized = `${JSON.stringify(ticket)}\n`;
-  if (Buffer.byteLength(serialized, "utf8") > MAX_TICKET_BYTES) throw new Error("Controller serialized ticket exceeds 6 MiB.");
+  const actualBytes = Buffer.byteLength(serialized, "utf8");
+  if (actualBytes > MAX_TICKET_BYTES) throw new LaunchTicketLimitError(actualBytes, MAX_TICKET_BYTES, "Controller serialized ticket exceeds 6 MiB.");
+  return serialized;
+};
+export const writeLaunchTicket = async (home: string, ticket: ControllerLaunchTicket): Promise<string> => {
+  const serialized = serializeLaunchTicket(ticket);
   const filename = controllerTicketPath(home, ticket.launchId); const directory = path.dirname(filename);
   await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
   const temporary = `${filename}.${randomUUID()}.tmp`; const file = await open(temporary, "wx", 0o600);

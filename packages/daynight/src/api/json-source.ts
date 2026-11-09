@@ -10,7 +10,7 @@ type SourceNode = {
 
 const invalid = (): never => { throw new SyntaxError("Invalid JSON source."); };
 
-const inspectJsonSource = (source: string): SourceNode => {
+const inspectJsonSource = (source: string, ignoreDuplicateWithin?: readonly string[]): SourceNode => {
   let offset = 0;
   const number = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
   const whitespace = (): void => {
@@ -32,7 +32,7 @@ const inspectJsonSource = (source: string): SourceNode => {
     }
     return invalid();
   };
-  const value = (depth: number): SourceNode => {
+  const value = (depth: number, path: readonly string[]): SourceNode => {
     whitespace();
     const start = offset;
     const token = source[offset];
@@ -54,11 +54,11 @@ const inspectJsonSource = (source: string): SourceNode => {
           if (object) {
             const keySource = string();
             key = JSON.parse(source.slice(keySource.start, keySource.end)) as string;
-            if (members.has(key)) return invalid();
+            if (members.has(key) && !(ignoreDuplicateWithin !== undefined && ignoreDuplicateWithin.every((part, index) => path[index] === part))) return invalid();
             whitespace();
             if (source[offset++] !== ":") return invalid();
           }
-          const child = value(depth + 1);
+          const child = value(depth + 1, key === undefined ? path : [...path, key]);
           if (key === undefined) values.push(child);
           else {
             members.set(key, child);
@@ -84,7 +84,7 @@ const inspectJsonSource = (source: string): SourceNode => {
     offset = number.lastIndex;
     return { start, end: offset };
   };
-  const root = value(0);
+  const root = value(0, []);
   whitespace();
   if (offset !== source.length) return invalid();
   return root;
@@ -97,8 +97,8 @@ export const jsonContainerSources = (source: string): readonly string[] => {
   return entries.map(({ start, end }) => source.slice(start, end));
 };
 
-export const jsonObjectSources = (source: string): ReadonlyMap<string, string> => {
-  const node = inspectJsonSource(source);
+export const jsonObjectSources = (source: string, ignoreDuplicateWithin?: readonly string[]): ReadonlyMap<string, string> => {
+  const node = inspectJsonSource(source, ignoreDuplicateWithin);
   if (node.members === undefined) return invalid();
   return new Map([...node.members].map(([key, { start, end }]) => [key, source.slice(start, end)]));
 };

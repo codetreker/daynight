@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Socket } from "node:net";
 import path from "node:path";
 import type { Operation } from "../../../api/operation.js";
+import { PromptInputLimitError } from "../prompt-input-limit.js";
 
 export const HERDR_MAX_REQUEST_BYTES = 1_048_576;
 export const HERDR_MAX_RESPONSE_BYTES = 16 * 1_048_576;
@@ -46,6 +47,10 @@ export const herdrIpcAddress = (endpoint: string, platform: NodeJS.Platform = pr
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+class HerdrRequestLimitError extends RangeError {
+  constructor(readonly actualBytes: number) { super("The Herdr RPC request exceeds the 1 MiB limit."); }
+}
+
 const encodeRequest = (id: string, method: string, params: Record<string, unknown>): Buffer => {
   if (typeof method !== "string" || method.trim() === "" || /[\r\n\0]/.test(method)) {
     throw new TypeError("The Herdr RPC method must be nonempty text without line breaks or NUL characters.");
@@ -60,8 +65,18 @@ const encodeRequest = (id: string, method: string, params: Record<string, unknow
   });
   // Herdr bounds the bytes preceding the newline, not the framing byte itself.
   // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/api/server.rs#L750-L765
-  if (Buffer.byteLength(json, "utf8") > HERDR_MAX_REQUEST_BYTES) throw new RangeError("The Herdr RPC request exceeds the 1 MiB limit.");
+  const actualBytes = Buffer.byteLength(json, "utf8");
+  if (actualBytes > HERDR_MAX_REQUEST_BYTES) throw new HerdrRequestLimitError(actualBytes);
   return Buffer.from(`${json}\n`, "utf8");
+};
+
+/** Uses the same envelope and encoder as submission; all generated request UUIDs have the same encoded length. */
+export const validateHerdrPromptInput = (target: string, prompt: string): void => {
+  try { encodeRequest("00000000-0000-4000-8000-000000000000", "agent.prompt", { target, text: prompt }); }
+  catch (error) {
+    if (error instanceof HerdrRequestLimitError) throw new PromptInputLimitError("herdr_rpc", error.actualBytes, HERDR_MAX_REQUEST_BYTES);
+    throw error;
+  }
 };
 
 export const createHerdrRpcClient = (endpoint: string) => {
