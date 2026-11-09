@@ -92,6 +92,22 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestMonitoringRedisConfiguration(t *testing.T) {
+	for _, value := range []string{"", "redis://127.0.0.1:6379/0", "redis://127.0.0.1:6379?db=1", "rediss://user:secret@redis.example:6380/1"} {
+		c, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_REDIS_URL": value}))
+		if err != nil || c.RedisURL != value {
+			t.Fatalf("Redis URL not preserved: %v", err)
+		}
+	}
+	for _, value := range []string{" ", "https://example.com", "unix:///tmp/redis.sock", "redis://host:word", "redis://host:", "redis://host:0", "redis://host:99999", "redis://host/-1", "redis://host?db=-1", "redis://host?db=", "redis://host?pool_size=2147483648", "redis://host?min_idle_conns=999999999", "redis://host?db=0&db=1", "redis://host/invalid", "redis://user:secret@bad%host"} {
+		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_REDIS_URL": value}))
+		var failure *ConfigurationError
+		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_REDIS_URL" || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("invalid Redis URL accepted or disclosed: %v", err)
+		}
+	}
+}
+
 func TestMCPTemporaryCapacityConfiguration(t *testing.T) {
 	c, err := LoadConfig(configEnvironment(nil))
 	if err != nil || c.MCPTempBudgetBytes != 8<<30 || c.MCPReservedFreeBytes != 1<<30 {

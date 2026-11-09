@@ -10,15 +10,36 @@
 
 启用时，每个 `service.App` 持有自己的 `prometheus.Registry`，并注册官方默认
 GoCollector、启用 `ReportErrors` 的 ProcessCollector 和该 App 的 PostgreSQL 池
-collector。`Persistence` 从具体 backend 取得并保存 collector；注册冲突使组装失败。
-禁用时 registry 为 nil，
-不注册或采集指标。实例不使用全局默认 registry；注册失败使组装失败，不能以
-已有 collector 代替。service 持有 registry 和资源，server 接收 registry 并负责
+collector。`Persistence` 从具体 backend 取得并保存 collector。禁用时 registry
+为 nil，不注册或采集指标。实例不使用全局默认 registry；注册冲突使组装失败，
+不能以已有 collector 代替。service 持有 registry 和资源，server 接收 registry 并负责
 HTTP 暴露；采集器不持有数据库关闭权。
 
 官方 `go_*` 和 `process_*` 描述运行时及当前进程，具体集合取决于平台和构建方式。
 Linux 进程指标需要可读取 `/proc`；不支持或读取失败由采集错误显式呈现，不以
 零值代替。promhttp 自身的错误计数属于抓取诊断，不是业务请求指标。
+
+## 业务请求观测
+
+Runtime 在绑定 listener 前向同一 registry 注册 `httpx.RequestMetrics`；注册冲突
+使组装失败。禁用时不注册或观测。业务请求日志和指标共用 `ResponseRecorder`
+以及退出时的 finalizer，位于 URI 限制、关闭准入和路由之前。它记录首个最终
+status、提交时的 SSE 内容类型、成功 Hijack 和写入错误，并通过
+`ResponseController` 与 `Unwrap` 保留流式响应和传输能力。Runtime 直接接收
+`net/http` 的响应 writer；它的隐式写入和刷新在传输失败前提交 200，而任意自定义
+writer 不提供通用提交状态查询。panic 分类基于原始值，随后沿用已有日志和
+`ErrAbortHandler` 行为。请求退出时减少 in-flight 并记录一次计数和耗时；
+metrics listener 不经过此包装。
+
+Counter 使用 method、固定 route 模板、mode、status、outcome；Histogram 仅使用
+method、route、mode，Gauge 无 labels。method 限定为标准方法或 `OTHER`，空
+pattern 为 `unrouted`，不使用原始路径、query 或业务 ID。成功 Hijack 表示
+`websocket`，提交的 `text/event-stream` 表示 `sse`，其余为 `http`。流式耗时
+覆盖 handler 生命周期；普通 API 延迟查询需限定 `mode="http"`。异常优先级为
+panic、abort、写入错误、取消、正常返回。未提交的异常使用 `none`，已提交的
+status 保持不变。具体 family 名称、buckets 和运维查询口径由服务 README 维护。
+
+## PostgreSQL 连接池观测
 
 PostgreSQL collector 位于 store 实现，单次采集只读取一次 `Pool.Stat()` 本地
 快照，不执行 SQL，也不拥有池的关闭权。连接状态使用固定的 `acquired`、`idle`、

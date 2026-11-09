@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	monitoring "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/monitoring"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 )
@@ -29,6 +30,9 @@ type workerService interface {
 	Get(context.Context, model.Principal, string) (service.WorkerDetailResult, error)
 	Configuration(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
 	PutConfiguration(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+	PutMonitoring(context.Context, model.Principal, string, *string, monitoring.Observation) (monitoring.Receipt, error)
+	GetMonitoring(context.Context, model.Principal, string) (monitoring.DetailResponse, error)
+	QueryMonitoring(context.Context, model.Principal, []string) (monitoring.QueryResponse, error)
 }
 
 type configurationSyncReceipt struct {
@@ -51,16 +55,27 @@ func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult
 
 func RegisterRoutes(mux *http.ServeMux, workers *service.Workers, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &workersHandler{workers: workers, logger: logger}
+	registerRoutes(mux, handler, auth.Require)
+}
+
+func registerRoutes(mux *http.ServeMux, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
+	logger := handler.logger
 	base := "/api/v1/me/workers"
-	mux.HandleFunc("GET "+base+"/{workerId}/configuration", auth.Require(handler.configuration))
-	mux.HandleFunc("PUT "+base+"/{workerId}/configuration", auth.Require(handler.configuration))
-	mux.HandleFunc(base+"/{workerId}/configuration", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
-	mux.HandleFunc("POST "+base+"/{workerId}/report", auth.Require(handler.report))
-	mux.HandleFunc(base+"/{workerId}/report", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc("GET "+base, auth.Require(handler.list))
-	mux.HandleFunc(base, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("GET "+base+"/{workerId}", auth.Require(handler.get))
-	mux.HandleFunc(base+"/{workerId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("POST "+base+"/monitoring/query", require(handler.queryMonitoring))
+	mux.HandleFunc(base+"/monitoring/query", require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("GET "+base+"/{workerId}/monitoring", require(handler.getMonitoring))
+	mux.HandleFunc("HEAD "+base+"/{workerId}/monitoring", require(httpx.ResourceMethodNotAllowed(logger, "GET, PUT")))
+	mux.HandleFunc("PUT "+base+"/{workerId}/monitoring", require(handler.putMonitoring))
+	mux.HandleFunc(base+"/{workerId}/monitoring", require(httpx.ResourceMethodNotAllowed(logger, "GET, PUT")))
+	mux.HandleFunc("GET "+base+"/{workerId}/configuration", require(handler.configuration))
+	mux.HandleFunc("PUT "+base+"/{workerId}/configuration", require(handler.configuration))
+	mux.HandleFunc(base+"/{workerId}/configuration", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
+	mux.HandleFunc("POST "+base+"/{workerId}/report", require(handler.report))
+	mux.HandleFunc(base+"/{workerId}/report", require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("GET "+base, require(handler.list))
+	mux.HandleFunc(base, require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("GET "+base+"/{workerId}", require(handler.get))
+	mux.HandleFunc(base+"/{workerId}", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 }
 
 func (h *workersHandler) resource(request *http.Request, principal model.Principal) (string, *slog.Logger, error) {

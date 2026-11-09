@@ -616,6 +616,7 @@ diagnostics and cause categories.
 | Environment variable | Meaning | Default |
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
+| `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
@@ -754,7 +755,7 @@ issuing SQL. It exposes the following families for the App's own pool:
 | `daynight_postgres_pool_empty_acquires_total` | Counter | Successful acquisitions that waited for an empty pool |
 | `daynight_postgres_pool_empty_acquire_wait_seconds_total` | Counter | Total empty-pool wait time for those successful acquisitions, in seconds |
 
-Only the connections family has labels. These acquisition durations are not SQL
+Among the pool families, only the connections family has labels. These acquisition durations are not SQL
 execution latency; the pool metrics do not describe the database server's CPU or
 resource use. Counters reset when the process restarts.
 
@@ -767,18 +768,37 @@ force a collector to stop; shutdown waits for active scrapes before closing App
 resources. See the [metrics design](../../docs/design/server-metrics.md) for
 registry and lifecycle ownership.
 
+Business requests expose `daynight_http_requests_total` (Counter),
+`daynight_http_request_duration_seconds` (Histogram, seconds) and
+`daynight_http_requests_in_flight` (Gauge). The counter labels are `method`,
+`route`, `mode`, `status` and `outcome`; the histogram uses only `method`,
+`route` and `mode`. Its classic buckets are 0.005, 0.01, 0.025, 0.05, 0.1,
+0.25, 0.5, 1, 2.5, 5, 10, 30, 60 and 300 seconds, plus `+Inf`.
+
+The route is the registered template without its method prefix, or `unrouted`
+when no pattern matched. Methods outside GET, HEAD, POST, PUT, PATCH, DELETE,
+OPTIONS, CONNECT and TRACE are `OTHER`. Modes are `http`, `websocket` and
+`sse`; streaming durations cover the handler or connection lifetime, so select
+`mode="http"` for ordinary request latency. The first final response status is
+retained; an uncommitted abnormal exit uses `none`. Outcomes, in descending
+priority, are `panic`, `aborted`, `write_error`, `canceled` and `returned`.
+A canceled stream is not automatically a server failure. These observations do
+not prove complete client receipt. Business health requests are included; scrapes
+on the separate listener are excluded.
+
 ## Validate
 
 Complete server validation runs both the module and startup/shutdown checks.
 Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
 Both checks require `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated
-PostgreSQL instance; the module check owns SQL and other module mechanisms, and
-the startup/shutdown check owns command lifecycle mechanisms.
+PostgreSQL instance. The module check also requires `DAYNIGHT_TEST_REDIS_URL`
+for an isolated Redis instance; it owns SQL, Redis and other module mechanisms,
+while the startup/shutdown check owns command lifecycle mechanisms.
 Database-independent suites have focused commands below.
 The regular Session HTTP selection uses Go dependencies and local transport
-fixtures without database, gateway, CLI or Web preparation. For a disposable
-instance for the complete check, use the same PostgreSQL **18.6-bookworm** image
-as CI:
+fixtures without database, gateway, CLI or Web preparation. For disposable
+instances for the complete check, use PostgreSQL **18.6-bookworm** and Redis
+**8.10.3**, as in CI:
 
 ```bash
 docker run --detach --name daynight-server-tests \
@@ -786,15 +806,22 @@ docker run --detach --name daynight-server-tests \
   --env POSTGRES_DB=daynight --publish 127.0.0.1::5432 postgres:18.6-bookworm
 docker port daynight-server-tests 5432
 docker exec daynight-server-tests pg_isready -U daynight -d daynight
+docker run --detach --name daynight-server-redis-tests \
+  --publish 127.0.0.1::6379 redis:8.10.3 \
+  redis-server --save "" --appendonly no --maxmemory 64mb --maxmemory-policy noeviction
+docker port daynight-server-redis-tests 6379
+docker exec daynight-server-redis-tests redis-cli ping
 ```
 
-Set the reported loopback port in the test URL, then run:
+Set the reported loopback ports in the test URLs, then run:
 
 ```bash
 export DAYNIGHT_TEST_DATABASE_URL='postgres://daynight:daynight-test@127.0.0.1:PORT/daynight?sslmode=disable'
+export DAYNIGHT_TEST_REDIS_URL='redis://127.0.0.1:PORT/0'
 bash scripts/check.sh
 bash scripts/startup-shutdown.sh
 docker rm --force --volumes daynight-server-tests
+docker rm --force --volumes daynight-server-redis-tests
 ```
 
 The module check builds and vets the Go module using its unit-test Web resource
@@ -1544,7 +1571,8 @@ of its production code from the other job.
 unit-test Web resource overlay. The absolute replacement paths remain valid
 when the command coverage run changes directory and its fresh-process test
 builds a child from the module root. Production builds retain real Web assets.
-Tests and their database state require the isolated PostgreSQL instance;
+Module tests require isolated PostgreSQL and Redis instances; command tests
+require isolated PostgreSQL. Redis DAO fixtures use unique keys and remove them;
 preparation failures fail validation. Package concurrency stays limited to two:
 schema-isolated fixtures still share the database-wide migration advisory lock.
 Both entries clear cached test results before their coverage runs.
@@ -1819,6 +1847,37 @@ saved observations while applying current access and undeleted-task filtering
 to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
+
+## Worker current monitoring
+
+The account can store and read one bounded current observation per recent
+Worker. The [contract](../../docs/spec/daynight-worker-monitoring.md) defines
+its closed fields, diagnostic content, permissions and errors; the
+[design](../../docs/design/daynight-worker-monitoring.md) explains storage and
+failure isolation. This server capability does not itself collect Worker state
+or provide a Web presentation.
+
+| Method | Path | Result |
+|---|---|---|
+| `PUT` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, accepted or duplicate receipt |
+| `GET` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, current permission-filtered observation or absent state |
+| `POST` | `/api/v1/me/workers/monitoring/query` | `200`, ordered summaries for 1–100 distinct admitted Worker IDs |
+
+These authenticated routes accept no query parameters. The request owner comes
+from the principal; an unknown, other-account or expired Worker returns 404,
+including any failed admission in a batch. Stored observations expire after
+one hour; reads and duplicate or rejected writes do not renew them. Detail and
+summary responses have separate encoding budgets. Four CAS conflicts return
+409, unavailable storage returns `503 monitoring_unavailable`, and an uncertain
+write returns `503 monitoring_write_outcome_unknown`; callers must read back an
+unknown result before deciding what to do. Current access filters associated
+names, IDs and private details without changing the Worker's total capacity.
+
+Set `DAYNIGHT_REDIS_URL` to a valid `redis` or `rediss` URL to enable monitoring. The only supported URL query parameter is `db`; connection and retry limits are fixed.
+If it is empty, the monitoring API returns 503 while existing business APIs and
+readiness continue; a nonempty invalid URL fails configuration validation.
+The Redis connection is owned only by monitoring and is closed during shutdown.
+See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
 
 ## Worker cloud configuration
 

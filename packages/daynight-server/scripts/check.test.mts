@@ -61,3 +61,10 @@ test('module check rejects empty production selection and exact ninety percent c
   assert.equal(boundary.result.status, 1);
   assert.match(boundary.result.stderr, /Overall coverage must be >90%/);
 });
+
+test('module check requires an isolated Redis instance', async (t) => {
+  const { result, trace } = await runValidation(t, 'check', undefined, { DAYNIGHT_TEST_REDIS_URL: '' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /DAYNIGHT_TEST_REDIS_URL/);
+  assert.doesNotMatch(trace, /go vet|go-cov/);
+});

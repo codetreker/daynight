@@ -6,9 +6,11 @@ Status: implemented
 
 The PostgreSQL root tests repeatedly establish management connections and build
 complete schemas for fault matrices that only need independent operations against
-the same initial state. Snapshot comparison faults also repeat historical replay
-and snapshot construction. Expiry waits add elapsed time when the behavior under
-test receives its clock from the caller, without proving production clock sampling.
+the same initial state. Historical migration-failure matrices replay the same
+known-good prefix before each independent failure. Snapshot comparison faults
+also repeat historical replay and snapshot construction. Expiry waits add elapsed
+time when the behavior under test receives its clock from the caller, without
+proving production clock sampling.
 
 ## Decision
 
@@ -56,6 +58,26 @@ and one independent snapshot. Mutations run in transactions with rollback;
 `nextval` state is restored explicitly, including `is_called`, and read back.
 Snapshot regeneration and full catalog, data and sequence comparison remain.
 
+[Personal ownership migration failures](../../../../packages/daynight-server/internal/core/store/postgres/personal_ownership_migration_test.go)
+share one real replay through migration 31, and
+[invalid property migration inputs](../../../../packages/daynight-server/internal/core/store/postgres/property_rows_test.go)
+share one real replay through migration 25. All seven ownership and five property
+failure cases still execute the real migration in its own transaction. Source
+facts and the original migration ledger are compared before restoration; old
+catalog names and the absence of newly created objects remain checked. Mutated
+member and invitation rows are restored from the captured records, including
+versions, timestamps and bytea data. The old member sequence's `last_value` and
+`is_called` are restored separately, and the ledger rejection trigger and function
+are removed with catalog readback. Every case verifies the valid fixture before
+reuse; a failed case stops the matrix.
+
+Property fault inputs remain raw text. Unknown, null, duplicate and missing fields
+are written and read without normalizing their JSON, and the complete source rows
+must survive a failed migration unchanged. The bad row is returned to its exact
+valid value before reuse. Successful migration cases retain independent fixtures,
+including called/uncalled sequence semantics and the 105-row property transform
+that crosses its 100-row page boundary.
+
 Expiry probes whose SQL samples database time observe real locks before crossing
 a short future database-time expiry. The grant test arms expiry after its lock
 receipt, preserving rejection of a stale time sampled before the lock. Private
@@ -87,6 +109,12 @@ acquire their own connections and own real commits and rollback. An outer
 transaction cannot restore those operations or replace their persisted-outcome
 proofs. Fault objects are restored explicitly after the real operation completes.
 
+**Replay each historical prefix for every failure.** This gives each case a
+pristine schema without explicit data restoration, but repeats the same catalog
+construction and committed prefix work. Failure matrices retain a real prefix
+replay and require source, catalog, ledger and pool restoration before another
+failure uses it. Successful migration proofs remain independently initialized.
+
 **Change migration locking or database authentication.** The measured root-only
 lock acquisition cost is small. PostgreSQL SCRAM contributes connection CPU,
 but management-pool reuse removes repeated handshakes without changing the
@@ -107,8 +135,10 @@ waiter is released.
 
 The matrices retain real SQL failures, transaction outcomes and isolated
 cleanup while reducing repeated preparation. Restoration adds database readback
-and requires explicit handling of nontransactional sequence advancement. Failed
-restoration or unfinished writers prevent reuse. Caller-time storage predicates
+and requires explicit handling of nontransactional sequence advancement. Historical
+prefix reuse removes repeated migration applications while preserving actual
+failed transactions and raw legacy inputs. Failed restoration or unfinished
+writers prevent reuse. Caller-time storage predicates
 and service clock sampling have separate proof owners; tests of SQL that samples
 database time still cross actual database time. Source-bound comparison and
 fault receipts own performance and defect-detection claims; fewer fixtures or
