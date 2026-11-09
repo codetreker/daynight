@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
@@ -167,6 +168,12 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		app.Metrics, err = makeMetrics()
 		if err != nil {
 			return failOpen(err)
+		}
+		if app.Metrics == nil {
+			return failOpen(errors.New("metrics registry is unavailable"))
+		}
+		if err := app.Metrics.Register(database.MetricsCollector); err != nil {
+			return failOpen(fmt.Errorf("register persistence metrics collector: %w", err))
 		}
 	}
 	if err := app.assembleWebhooks(database.Transactions, c.WebhookEnabled, logger); err != nil {
