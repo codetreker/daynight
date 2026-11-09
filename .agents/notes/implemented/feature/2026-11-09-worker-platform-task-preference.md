@@ -16,6 +16,8 @@ unrestricted tasks in one Project.
 
 Each Worker has a cloud-managed `preferPlatformSpecificTasks` boolean, initially
 false. It is editable in My Workers and hot-applied to subsequent acquisition.
+The control names the viewed Worker’s platform using the shared display names;
+when its platform is unavailable, the control retains a generic label.
 Local YAML supplies the initial import only; later cloud values retain authority.
 The setting is independent of native execution configuration and does not change
 existing claims or pending startup priority.

@@ -58,6 +58,16 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 375, height: 667 }
   test(`${viewport.width}x${viewport.height} keeps dirty save actions visible and focused fields unobscured`, async ({ page }, info) => {
     await page.setViewportSize(viewport);
     const state = await install(page);
+    const preference = page.getByRole('checkbox', { name: '优先领取 Linux 的任务' });
+    await expect(preference).toBeVisible();
+    const label = preference.locator('..');
+    const labelBox = await label.boundingBox();
+    expect(labelBox!.x).toBeGreaterThanOrEqual(0);
+    expect(labelBox!.x + labelBox!.width).toBeLessThanOrEqual(viewport.width);
+    const text = label.locator('span');
+    expect(await text.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    const textBox = await text.boundingBox();
+    expect(textBox!.x + textBox!.width).toBeLessThanOrEqual(viewport.width);
     const bar = page.locator('.config-save-bar'), first = page.locator('#config-maxConcurrent');
     await expect(bar).not.toBeInViewport();
     await first.fill('4');
