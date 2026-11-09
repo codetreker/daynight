@@ -35,6 +35,9 @@ type failedMetricsWrite struct {
 func (w *failedMetricsWrite) Header() http.Header    { return w.header }
 func (w *failedMetricsWrite) WriteHeader(status int) { w.status = status }
 func (w *failedMetricsWrite) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.short {
 		return 0, nil
 	}

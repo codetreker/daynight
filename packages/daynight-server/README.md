@@ -742,7 +742,7 @@ issuing SQL. It exposes the following families for the App's own pool:
 | `daynight_postgres_pool_empty_acquires_total` | Counter | Successful acquisitions that waited for an empty pool |
 | `daynight_postgres_pool_empty_acquire_wait_seconds_total` | Counter | Total empty-pool wait time for those successful acquisitions, in seconds |
 
-Only the connections family has labels. These acquisition durations are not SQL
+Among the pool families, only the connections family has labels. These acquisition durations are not SQL
 execution latency; the pool metrics do not describe the database server's CPU or
 resource use. Counters reset when the process restarts.
 
@@ -754,6 +754,24 @@ write timeout is 10 seconds, and idle timeout is 60 seconds. A timeout does not
 force a collector to stop; shutdown waits for active scrapes before closing App
 resources. See the [metrics design](../../docs/design/server-metrics.md) for
 registry and lifecycle ownership.
+
+Business requests expose `daynight_http_requests_total` (Counter),
+`daynight_http_request_duration_seconds` (Histogram, seconds) and
+`daynight_http_requests_in_flight` (Gauge). The counter labels are `method`,
+`route`, `mode`, `status` and `outcome`; the histogram uses only `method`,
+`route` and `mode`. Its classic buckets are 0.005, 0.01, 0.025, 0.05, 0.1,
+0.25, 0.5, 1, 2.5, 5, 10, 30, 60 and 300 seconds, plus `+Inf`.
+
+The route is the registered template without its method prefix, or `unrouted`
+when no pattern matched. Methods outside GET, HEAD, POST, PUT, PATCH, DELETE,
+OPTIONS, CONNECT and TRACE are `OTHER`. Modes are `http`, `websocket` and
+`sse`; streaming durations cover the handler or connection lifetime, so select
+`mode="http"` for ordinary request latency. The first final response status is
+retained; an uncommitted abnormal exit uses `none`. Outcomes, in descending
+priority, are `panic`, `aborted`, `write_error`, `canceled` and `returned`.
+A canceled stream is not automatically a server failure. These observations do
+not prove complete client receipt. Business health requests are included; scrapes
+on the separate listener are excluded.
 
 ## Validate
 

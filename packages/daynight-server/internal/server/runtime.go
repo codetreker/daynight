@@ -90,8 +90,13 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 		return nil, &httpx.RuntimeError{Component: "metrics", Phase: "composition", Cause: errors.New("metrics address and registry are required")}
 	}
 	var metricsHandler http.Handler
+	var requestMetrics *httpx.RequestMetrics
 	if len(metrics) == 1 {
 		var err error
+		requestMetrics, err = httpx.NewRequestMetrics(metrics[0].Registry)
+		if err != nil {
+			return nil, &httpx.RuntimeError{Component: "metrics", Phase: "composition", Cause: err}
+		}
 		metricsHandler, err = newMetricsHandler(metrics[0].Registry, logger)
 		if err != nil {
 			return nil, &httpx.RuntimeError{Component: "metrics", Phase: "composition", Cause: err}
@@ -128,7 +133,7 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 	}
 	r.closeLock <- struct{}{}
 	r.http = &runtimeHTTPServer{state: &r.admissionState, Server: &http.Server{
-		Handler: httpx.RequestLogging(logger, httpx.LimitRequestTarget(logger, r.admit(handler))), ReadHeaderTimeout: 5 * time.Second,
+		Handler: httpx.RequestLoggingWithMetrics(logger, httpx.LimitRequestTarget(logger, r.admit(handler)), requestMetrics), ReadHeaderTimeout: 5 * time.Second,
 		// net/http adds 4096 bytes of read-ahead to MaxHeaderBytes.
 		MaxHeaderBytes: transport.MaxRequestHeadersBytes - 4096,
 		IdleTimeout:    60 * time.Second, BaseContext: func(net.Listener) context.Context { return requests },
