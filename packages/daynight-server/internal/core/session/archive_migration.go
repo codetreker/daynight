@@ -148,7 +148,7 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 			result = errors.Join(result, s.releaseImageLease(context.WithoutCancel(ctx), op.principal, op.project, op.task, op.id, leaseID))
 		}
 	}()
-	migration := store.ArchiveMigration{SessionID: op.id, MigrationID: migrationID.String(), SourcePath: sourcePath, SourceHash: sourceHash, TargetPath: manifestPath, TargetHash: manifestHash, Phase: "prepared"}
+	migration := store.ArchiveMigration{SessionID: op.id, MigrationID: migrationID.String(), SourcePath: sourcePath, SourceHash: sourceHash, SourceLength: int64(len(source)), TargetPath: manifestPath, TargetHash: manifestHash, Phase: "prepared"}
 	access := func(work func(*operationTx, *record, store.SessionArchiveDAO, store.SessionResourceDAO) error) error {
 		return s.archiveAccess(ctx, op.principal, op.project, op.task, op.id, false, func(tx *operationTx, r *record, _ task) error {
 			if r.Owner != op.owner {
@@ -168,7 +168,7 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 	err = access(func(tx *operationTx, r *record, dao store.SessionArchiveDAO, media store.SessionResourceDAO) error {
 		existing, e := dao.SessionArchiveMigration(ctx, op.id)
 		if e == nil {
-			if existing.MigrationID != migration.MigrationID || existing.SourcePath != sourcePath || existing.SourceHash != sourceHash || existing.TargetHash != manifestHash {
+			if existing.MigrationID != migration.MigrationID || existing.SourcePath != sourcePath || existing.SourceHash != sourceHash || existing.SourceLength != migration.SourceLength || existing.TargetHash != manifestHash {
 				return archiveConflict()
 			}
 			migration = existing

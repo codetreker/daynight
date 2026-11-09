@@ -25,3 +25,14 @@ test("rejects missing references and refuses partial archival of a known saved r
   await expect(archive.verifySessionArchiveClosure(archive.parseSessionArchiveManifest({...manifest(),resources:[]}), Buffer.from(JSON.stringify(timeline)), async () => original)).rejects.toThrow();
   await expect(archive.verifySessionArchiveClosure(archive.parseSessionArchiveManifest({...manifest(),completeness:"partial"}), Buffer.from(JSON.stringify(timeline)), async () => original)).rejects.toThrow();
 });
+
+test("accepts migration evidence only as a bounded ready schema3 status", () => {
+  const migration = { migrationId: id(9), sourceSha256: digest("schema1 original"), sourceByteLength: "67108864" };
+  const ready = { state: "ready", sha256: digest("manifest"), byteLength: "8", errorCode: null, schemaVersion: 3, completeness: "complete", migration };
+  expect(archive.parseSessionArchiveStatus(ready)).toEqual(ready);
+  for (const invalid of [null, { ...migration, extra: true }, { ...migration, sourceByteLength: "67108865" }, { ...migration, sourceByteLength: "0" }, { ...migration, sourceSha256: "unknown" }, { ...migration, migrationId: "unknown" }]) {
+    expect(() => archive.parseSessionArchiveStatus({ ...ready, migration: invalid })).toThrow();
+  }
+  expect(() => archive.parseSessionArchiveStatus({ state: "pending", sha256: null, byteLength: null, errorCode: null, schemaVersion: 3, completeness: null, migration })).toThrow();
+  expect(() => archive.parseSessionArchiveStatus({ state: "ready", sha256: ready.sha256, byteLength: "8", errorCode: null, migration })).toThrow();
+});

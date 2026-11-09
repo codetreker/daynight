@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -14,6 +15,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+var errPrivateSessionResource = fmt.Errorf("private Session resource: %w", model.ErrNotFound)
 
 func (s *Execution) savedResource(ctx context.Context, p model.Principal, project, taskID, id, resourceID string) (content []byte, descriptor sp.Resource, result error) {
 	if s.files == nil {
@@ -36,11 +39,21 @@ func (s *Execution) savedResource(ctx context.Context, p model.Principal, projec
 		if e != nil {
 			return e
 		}
-		if e = s.admitImageRate(ctx, tx, p.UserID, "observe"); e != nil {
-			return e
+		if saved.BlobID == "" && saved.BlobPath == "" {
+			return model.ErrNotFound
 		}
 		if saved.BlobID == "" || saved.BlobPath == "" {
-			return model.ErrNotFound
+			return fault("resource_conflict", "Saved resource storage identity is corrupt.")
+		}
+		visible, e := d.SessionResourceReadableBy(ctx, id, resourceID, p.UserID)
+		if e != nil {
+			return e
+		}
+		if !visible {
+			return errPrivateSessionResource
+		}
+		if e = s.admitImageRate(ctx, tx, p.UserID, "observe"); e != nil {
+			return e
 		}
 		path, e := BlobAddress(project, r.Owner, id, saved.BlobID)
 		if e != nil {
@@ -84,6 +97,13 @@ func (s *Execution) savedResource(ctx context.Context, p model.Principal, projec
 		}
 		if usage.Deleting {
 			return fault("resource_conflict", "Session resource deletion has begun.")
+		}
+		visible, e := d.SessionResourceReadableBy(ctx, id, resourceID, p.UserID)
+		if e != nil {
+			return e
+		}
+		if !visible {
+			return errPrivateSessionResource
 		}
 		return nil
 	})

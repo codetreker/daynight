@@ -20,7 +20,7 @@ func TestArchiveFileInventoryAndImmutableWrites(t *testing.T) {
 		first, second = second, first
 	}
 	file := store.ArchiveBundleFile{SessionID: id, FileID: first, Purpose: "timeline", SHA256: archiveHashOf("original"), ByteLength: 8, State: "receiving", Path: "original/timeline"}
-	migration := store.ArchiveMigration{SessionID: id, MigrationID: uuid.NewString(), SourcePath: "original/source", SourceHash: archiveHashOf("source"), TargetPath: "original/target", TargetHash: archiveHashOf("target"), Phase: "prepared"}
+	migration := store.ArchiveMigration{SessionID: id, MigrationID: uuid.NewString(), SourcePath: "original/source", SourceHash: archiveHashOf("source"), SourceLength: 6, TargetPath: "original/target", TargetHash: archiveHashOf("target"), Phase: "prepared"}
 	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
 		dao := base.(store.SessionArchiveDAO)
 		if e := dao.SaveSessionArchiveFile(ctx, file); e != nil {
@@ -45,6 +45,11 @@ func TestArchiveFileInventoryAndImmutableWrites(t *testing.T) {
 		changedMigration.SourceHash = archiveHashOf("another source")
 		if e := dao.SaveSessionArchiveMigration(ctx, changedMigration); e == nil {
 			t.Fatal("migration accepted replacement original")
+		}
+		changedMigration = migration
+		changedMigration.SourceLength++
+		if e := dao.SaveSessionArchiveMigration(ctx, changedMigration); e == nil {
+			t.Fatal("migration accepted changed original byte length")
 		}
 		return nil
 	})

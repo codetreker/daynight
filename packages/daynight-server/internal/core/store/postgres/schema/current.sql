@@ -408,10 +408,12 @@ CREATE TABLE "session_archive_migrations" (
     "migration_id" "uuid" NOT NULL,
     "source_path" "text" NOT NULL,
     "source_hash" "text" NOT NULL,
+    "source_byte_length" bigint NOT NULL,
     "target_path" "text" DEFAULT ''::"text" NOT NULL,
     "target_hash" "text" DEFAULT ''::"text" NOT NULL,
     "phase" "text" NOT NULL,
     CONSTRAINT "session_archive_migrations_phase_check" CHECK (("phase" = ANY (ARRAY['prepared'::"text", 'files_durable'::"text", 'committed'::"text", 'verified'::"text"]))),
+    CONSTRAINT "session_archive_migrations_source_byte_length_check" CHECK ((("source_byte_length" >= 1) AND ("source_byte_length" <= 67108864))),
     CONSTRAINT "session_archive_migrations_source_hash_check" CHECK (("source_hash" ~ '^[a-f0-9]{64}$'::"text")),
     CONSTRAINT "session_archive_migrations_target_hash_check" CHECK ((("target_hash" = ''::"text") OR ("target_hash" ~ '^[a-f0-9]{64}$'::"text")))
 );

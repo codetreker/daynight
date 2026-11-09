@@ -22,9 +22,19 @@ Controller preparations produce validated private files and controlled read
 leases. Service publication requires independent complete decoding, matching
 original length and SHA-256, durable file publication and a confirmed metadata
 commit. Both callers execute the same pinned Node 24 and sharp validation build.
+Caller cancellation and decoder budget expiry remain context outcomes after the
+decoder child joins; neither establishes invalid content or retires the original
+verifying upload.
 An entire input acquires its resources before dispatching; a later preparation
 failure therefore cannot partially call the native provider. An uncertain native
 result retains the original operation and its pins for observation.
+
+Resource reads require both Session access and a publishing reference. Message
+references and committed archive closures permit shared reads; a private upload
+requires its original actor and matching complete receipt. Operation, unknown,
+native-resume and temporary archive pins retain bytes without granting access.
+The authorized transaction checks references before I/O and again before
+returning the bytes, so releasing a private reference cannot publish a late read.
 
 A source retry retains its capture, occurrence and locator while a new attempt
 fences private staging and every subsequent commit. Its reservation and durable
@@ -41,6 +51,13 @@ migration preserves the original files and identities until the new closure has
 been durably committed and read back. New writes do not generate a schema1 copy.
 The 132 MiB archive reservation remains a conservative capacity commitment.
 Deletion closes admission and joins physical operations before its final sweep.
+Ordinary media admission also reaps crash-orphaned leases across the deployment.
+It ends the listing transaction before trying each original filesystem lock,
+retains busy owners, and holds an acquired lock through confirmed deletion of
+that exact lease. A timeout or uncertain commit never clears the counters.
+The immutable archive barrier includes unresolved content-changing commands and
+resource associations; unrelated unknown control receipts retain their original
+identity without preventing publication of complete message history.
 
 This decision replaces the separate wire and dual archive choices in the
 [original protocol decision](2026-11-05-session-image-contracts.md) and

@@ -89,7 +89,7 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 		}
 		for _, v := range batch {
 			migration := store.ArchiveMigration{SessionID: v.SessionID}
-			err = tx.QueryRow(ctx, `SELECT migration_id::text,source_path,source_hash,target_path,target_hash,phase FROM session_archive_migrations WHERE session_id=$1`, v.SessionID).Scan(&migration.MigrationID, &migration.SourcePath, &migration.SourceHash, &migration.TargetPath, &migration.TargetHash, &migration.Phase)
+			err = tx.QueryRow(ctx, `SELECT migration_id::text,source_path,source_hash,source_byte_length,target_path,target_hash,phase FROM session_archive_migrations WHERE session_id=$1`, v.SessionID).Scan(&migration.MigrationID, &migration.SourcePath, &migration.SourceHash, &migration.SourceLength, &migration.TargetPath, &migration.TargetHash, &migration.Phase)
 			if err == nil {
 				v.Migration = &migration
 			} else if !errors.Is(err, pgx.ErrNoRows) {

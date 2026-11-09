@@ -48,6 +48,21 @@ fsync and handle close. Deletion closes admission, cancels and joins writers and
 readers, then performs final cleanup before publishing completion. Lease expiry
 alone cannot establish physical termination.
 
+Active history ownership follows a verified generation grant in the same
+transaction. The update compares the original writer identity and retains the
+preparation, acknowledged file rounds, ledger and unresolved references. A stopped
+writer enters settling through the same transition for preparation and source-tail
+replay. Receiving history is retired only after stop proof and absence of physical
+IO leases; its original file ID, chunks and offsets remain observable. The last
+complete ledger remains until final history passes identity and revision checks.
+
+Legacy receipt reconciliation uses the committed migration's immutable source
+hash and length and its exact target manifest relation. Different archive
+representations have different hashes; a successful migration cannot be checked
+by comparing their hashes for equality. The source relation travels with ready
+schema3 status and lets a stopped uploader replace its confirmed local receipt
+without reopening native execution.
+
 ## Alternatives
 
 **Increase one JSON limit and retain embedded Base64.** Opening and uploading a
@@ -72,6 +87,16 @@ and physical writer/reader completion permit removal.
 and a known available blob may be damaged. Partial is restricted to definite
 never-collected occurrences; unknown work remains recoverable and corruption
 remains a failure.
+
+**Delay generation handoff until the next history upload.** Several verified
+recoveries can occur before any upload, while a later stop proof identifies only
+its immediate predecessor. Atomic grant handoff preserves that chain without
+guessing an older writer's authority or discarding its acknowledged rounds.
+
+**Require an interrupted active upload to finish after shutdown.** Its endpoint
+requires the original active connection. Keeping that round receiving after the
+writer stops blocks every final sync. Explicit retirement preserves its evidence
+and leaves the complete ledger and references intact until final synchronization.
 
 ## Consequences
 

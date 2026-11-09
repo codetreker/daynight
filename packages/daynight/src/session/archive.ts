@@ -34,6 +34,7 @@ export type SessionArchiveStatus = {
   readonly errorCode: string | null;
   readonly schemaVersion?: 3;
   readonly completeness?: "complete" | "partial" | null;
+  readonly migration?: { readonly migrationId: string; readonly sourceSha256: string; readonly sourceByteLength: string };
 };
 
 const invalid = (): never => { throw new Error("Invalid Daynight session archive."); };
@@ -63,15 +64,24 @@ export const parseSessionArchiveFileReceipt = (value: unknown): SessionArchiveFi
 
 export const parseSessionArchiveStatus = (value: unknown): SessionArchiveStatus => {
   const modern = !!value && typeof value === "object" && Object.hasOwn(value, "schemaVersion");
-  const data = exact(value, ["state", "sha256", "byteLength", "errorCode", ...(modern ? ["schemaVersion", "completeness"] : [])]);
+  const migrated = modern && Object.hasOwn(value as object, "migration");
+  const data = exact(value, ["state", "sha256", "byteLength", "errorCode", ...(modern ? ["schemaVersion", "completeness"] : []), ...(migrated ? ["migration"] : [])]);
   if (modern && (data.schemaVersion !== 3 || (data.state === "ready" ? !["complete", "partial"].includes(String(data.completeness)) : data.completeness !== null))) return invalid();
   const extra = modern ? { schemaVersion: 3 as const, completeness: data.completeness as "complete" | "partial" | null } : {};
   if (!["pending", "ready", "failed", "unavailable"].includes(String(data.state))) return invalid();
   if (data.state === "ready") {
     const byteLength = sequence(data.byteLength);
     if (BigInt(byteLength) > BigInt(modern ? SESSION_ARCHIVE_MANIFEST_MAX_BYTES : SESSION_ARCHIVE_MAX_BYTES) || data.errorCode !== null) return invalid();
-    return { state: "ready", sha256: hash(data.sha256), byteLength, errorCode: null, ...extra };
+    let migration: SessionArchiveStatus["migration"];
+    if (migrated) {
+      const source = exact(data.migration, ["migrationId", "sourceSha256", "sourceByteLength"]);
+      const sourceByteLength = sequence(source.sourceByteLength);
+      if (BigInt(sourceByteLength) > BigInt(SESSION_ARCHIVE_MAX_BYTES)) return invalid();
+      migration = { migrationId: uuid(source.migrationId), sourceSha256: hash(source.sourceSha256), sourceByteLength };
+    }
+    return { state: "ready", sha256: hash(data.sha256), byteLength, errorCode: null, ...extra, ...(migration ? { migration } : {}) };
   }
+  if (migrated) return invalid();
   if (data.sha256 !== null || data.byteLength !== null || (data.errorCode !== null && (typeof data.errorCode !== "string" || !/^[a-z_]{1,64}$/.test(data.errorCode)))) return invalid();
   if (data.state !== "failed" && data.errorCode !== null) return invalid();
   return { state: data.state as SessionArchiveStatus["state"], sha256: null, byteLength: null, errorCode: data.errorCode as string | null, ...extra };

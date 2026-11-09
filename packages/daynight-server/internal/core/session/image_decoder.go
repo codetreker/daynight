@@ -142,6 +142,9 @@ func NewImageDecoder(c ImageDecoderConfig) (ImageDecoder, error) {
 	}
 	return func(parent context.Context, src io.Reader, length int64, digest string) (sp.ValidatedImage, error) {
 		var empty sp.ValidatedImage
+		if err := parent.Err(); err != nil {
+			return empty, err
+		}
 		if length < 1 || length > 10485760 || len(digest) != 64 || strings.ToLower(digest) != digest {
 			return empty, fault("invalid_image", "Image original integrity is invalid.")
 		}
@@ -168,6 +171,9 @@ func NewImageDecoder(c ImageDecoderConfig) (ImageDecoder, error) {
 		n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(src, length+1))
 		syncErr := f.Sync()
 		closeErr := f.Close()
+		if err := parent.Err(); err != nil {
+			return empty, errors.Join(err, copyErr, syncErr, closeErr)
+		}
 		if copyErr != nil {
 			return empty, copyErr
 		}
@@ -201,7 +207,15 @@ func NewImageDecoder(c ImageDecoderConfig) (ImageDecoder, error) {
 		cmd.Stderr = &stderr
 		// Run waits for process exit and both pipe-copy goroutines before files or slots are returned.
 		err = cmd.Run()
-		if err != nil || ctx.Err() != nil || stdout.overflow || stderr.overflow {
+		// A caller disconnect says nothing about the original's validity. Keep
+		// that upload recoverable after the child has exited and joined.
+		if parent.Err() != nil {
+			return empty, parent.Err()
+		}
+		if ctx.Err() != nil {
+			return empty, ctx.Err()
+		}
+		if err != nil || stdout.overflow || stderr.overflow {
 			return empty, fault("image_decode_failed", "Complete image decoding did not finish.")
 		}
 		var metrics struct {
@@ -235,6 +249,9 @@ func NewImageDecoder(c ImageDecoderConfig) (ImageDecoder, error) {
 		}
 		if result.ByteLength != strconv.FormatInt(length, 10) || result.SHA256 != digest {
 			return empty, fault("image_integrity", "Decoded image original integrity differs.")
+		}
+		if err := parent.Err(); err != nil {
+			return empty, err
 		}
 		return result, nil
 	}, nil

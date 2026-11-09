@@ -1,14 +1,85 @@
 package session_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+func TestActiveArchiveWriterHandoffComparesOriginalOwnerAndRetainsFileReceipts(t *testing.T) {
+	database, _, id := sessionArchiveLockFixture(t)
+	ctx := t.Context()
+	previous, next := json.RawMessage(`{"controller":"generation-one"}`), json.RawMessage(`{"controller":"generation-two"}`)
+	fileID := uuid.NewString()
+	bundle := store.ArchiveBundle{SessionID: id, PrepareID: uuid.NewString(), Phase: "active", Revision: 7, Identity: previous, Resources: json.RawMessage(`[]`), Ledger: json.RawMessage(`{"sourceThrough":"19"}`), HistoryID: fileID}
+	file := store.ArchiveBundleFile{SessionID: id, FileID: fileID, Purpose: "history", SHA256: archiveHashOf("original"), ByteLength: 8, AcceptedOffset: 4, State: "failed", Path: "original/history"}
+	chunk := store.ArchiveBundleChunk{SessionID: id, FileID: fileID, Offset: 0, ByteLength: 4, SHA256: archiveHashOf("orig"), Path: "original/chunk"}
+	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
+		dao := base.(store.SessionArchiveDAO)
+		if e := dao.SaveSessionArchiveBundle(ctx, bundle); e != nil {
+			return e
+		}
+		if e := dao.SaveSessionArchiveFile(ctx, file); e != nil {
+			return e
+		}
+		return dao.InsertSessionArchiveChunk(ctx, chunk)
+	})
+	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
+		rebind := base.(store.SessionArchiveHandoffDAO)
+		if e := rebind.RebindSessionArchiveBundle(ctx, id, previous, next); e != nil {
+			return e
+		}
+		e := rebind.RebindSessionArchiveBundle(ctx, id, previous, json.RawMessage(`{"controller":"replacement"}`))
+		var fault *model.Fault
+		if !errors.As(e, &fault) || fault.Code != "archive_conflict" {
+			t.Fatal("stale owner replaced the handoff", e)
+		}
+		return nil
+	})
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, e := database.WriteSession(ctx, func(scope store.SessionScope) error {
+		return scope.SessionDAO().(store.SessionArchiveHandoffDAO).RebindSessionArchiveBundle(canceled, id, next, previous)
+	}); !errors.Is(e, context.Canceled) {
+		t.Fatal("handoff lost canceled query", e)
+	}
+	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
+		dao := base.(store.SessionArchiveDAO)
+		saved, e := dao.SessionArchiveBundle(ctx, id)
+		if e != nil {
+			return e
+		}
+		if saved.PrepareID != bundle.PrepareID || saved.Revision != bundle.Revision || saved.HistoryID != fileID || string(saved.Identity) != `{"controller": "generation-two"}` || string(saved.Ledger) != `{"sourceThrough": "19"}` {
+			t.Fatal("handoff replaced prior archive identities", saved)
+		}
+		stored, e := dao.SessionArchiveFile(ctx, id, fileID)
+		if e != nil {
+			return e
+		}
+		chunks, e := dao.SessionArchiveChunks(ctx, id, fileID)
+		if e != nil {
+			return e
+		}
+		if stored.State != "failed" || stored.AcceptedOffset != 4 || len(chunks) != 1 || chunks[0] != chunk {
+			t.Fatal("handoff lost acknowledged file data", stored, chunks)
+		}
+		saved.Phase = "sealed"
+		if e = dao.SaveSessionArchiveBundle(ctx, saved); e != nil {
+			return e
+		}
+		if e = base.(store.SessionArchiveHandoffDAO).RebindSessionArchiveBundle(ctx, id, next, previous); e == nil {
+			t.Fatal("sealed archive changed writer")
+		}
+		return nil
+	})
+}
 
 func TestArchiveBundleDurableIdentityChunksAndMigrationPhases(t *testing.T) {
 	database, _, id := sessionArchiveLockFixture(t)
@@ -76,7 +147,7 @@ func TestArchiveBundleDurableIdentityChunksAndMigrationPhases(t *testing.T) {
 		return nil
 	})
 	for _, phase := range []string{"prepared", "files_durable", "committed", "verified"} {
-		value := store.ArchiveMigration{SessionID: id, MigrationID: migration, SourcePath: "original/schema1", SourceHash: archiveHashOf("source"), TargetPath: "original/manifest", TargetHash: archiveHashOf("target"), Phase: phase}
+		value := store.ArchiveMigration{SessionID: id, MigrationID: migration, SourcePath: "original/schema1", SourceHash: archiveHashOf("source"), SourceLength: 6, TargetPath: "original/manifest", TargetHash: archiveHashOf("target"), Phase: phase}
 		sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
 			return base.(store.SessionArchiveDAO).SaveSessionArchiveMigration(ctx, value)
 		})

@@ -193,7 +193,7 @@ func TestArchivePreparationAndSealRetainStorageRefusals(t *testing.T) {
 			base.bundle = nil
 			if kind == "lease-count" || kind == "files" {
 				identity := sp.ArchivePrepareRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID}
-				base.bundle = &store.ArchiveBundle{SessionID: op.id, Phase: "active", Identity: encode(identity)}
+				base.bundle = &store.ArchiveBundle{SessionID: op.id, Phase: "active", Identity: encode(identity), Ledger: encode(archiveLedger{HistoryEpoch: r.Snapshot.HistoryEpoch})}
 			}
 			d := bindArchiveFailureDAO(op, base, r, kind, 0)
 			_, e := op.PrepareArchive(t.Context(), sp.ArchivePrepareRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID})
@@ -518,7 +518,7 @@ func TestArchiveStatusObservesMigratedClosureBeforeReportingUnifiedReady(t *test
 			}
 			out, e := op.execution.ArchiveStatus(t.Context(), op.principal, "", "", op.id)
 			if kind == "original" {
-				if e != nil || out.State != "ready" || out.SchemaVersion != 3 || d.migration == nil || d.migration.Phase != "verified" {
+				if e != nil || out.State != "ready" || out.SchemaVersion != 3 || d.migration == nil || d.migration.Phase != "verified" || out.Migration == nil || out.Migration.MigrationID != d.migration.MigrationID || out.Migration.SourceSHA256 != digest || out.Migration.SourceByteLength != length {
 					t.Fatal("status returned before unified closure verification", out, e)
 				}
 			} else if e == nil || out.SchemaVersion == 3 {
@@ -526,6 +526,43 @@ func TestArchiveStatusObservesMigratedClosureBeforeReportingUnifiedReady(t *test
 			}
 			if len(op.execution.archiveSlots) != 0 || d.leases != 0 {
 				t.Fatal("status migration leaked its archive or media permit")
+			}
+		})
+	}
+}
+
+func TestArchiveMigrationReceiptRequiresItsCommittedTarget(t *testing.T) {
+	for _, kind := range []string{"committed", "verified", "prepared", "files_durable", "target-hash", "target-path", "no-length", "missing", "read-failure"} {
+		t.Run(kind, func(t *testing.T) {
+			op, base, r := archiveFlowFixture(t)
+			digest, length := archiveDigest([]byte("manifest")), "8"
+			base.status = sp.ArchiveStatus{State: "ready", SchemaVersion: 3, SHA256: &digest, ByteLength: &length}
+			base.archivePath = "target"
+			base.migration = &store.ArchiveMigration{SessionID: op.id, MigrationID: uuid.NewString(), SourceHash: archiveDigest([]byte("original")), SourceLength: 8, TargetPath: "target", TargetHash: digest, Phase: "verified"}
+			d := bindArchiveFailureDAO(op, base, r, "", 0)
+			switch kind {
+			case "committed", "verified", "prepared", "files_durable":
+				base.migration.Phase = kind
+			case "target-hash":
+				base.migration.TargetHash = archiveDigest([]byte("different"))
+			case "target-path":
+				base.migration.TargetPath = "different"
+			case "no-length":
+				base.migration.SourceLength = 0
+			case "missing":
+				base.migration = nil
+			case "read-failure":
+				d.fail = "migration"
+			}
+			out, e := archiveStatusWithMigration(t.Context(), &operationTx{dao: d}, op.id)
+			if kind == "read-failure" {
+				if !errors.Is(e, archiveDependencyFailure) {
+					t.Fatal(e)
+				}
+				return
+			}
+			if e != nil || (kind == "committed" || kind == "verified") != (out.Migration != nil) {
+				t.Fatal("uncommitted or unrelated migration became a receipt", out, e)
 			}
 		})
 	}

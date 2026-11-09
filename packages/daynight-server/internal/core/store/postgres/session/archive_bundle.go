@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -9,6 +10,18 @@ import (
 )
 
 var _ store.SessionArchiveDAO = (*DAO)(nil)
+var _ store.SessionArchiveHandoffDAO = (*DAO)(nil)
+
+func (tx *DAO) RebindSessionArchiveBundle(ctx context.Context, id string, previous, next json.RawMessage) error {
+	result, err := tx.tx.Exec(ctx, `UPDATE session_archive_bundles SET identity=$3 WHERE session_id=$1 AND phase='active' AND identity=$2`, id, previous, next)
+	if err != nil {
+		return mediaQueryError("handoff active archive writer", err)
+	}
+	if result.RowsAffected() != 1 {
+		return &model.Fault{Code: "archive_conflict", Message: "The active archive writer no longer matches."}
+	}
+	return nil
+}
 
 func (tx *DAO) SessionArchiveBundle(ctx context.Context, id string) (store.ArchiveBundle, error) {
 	v := store.ArchiveBundle{SessionID: id}
@@ -58,14 +71,14 @@ func (tx *DAO) SessionArchiveFiles(ctx context.Context, id string) ([]store.Arch
 }
 func (tx *DAO) SessionArchiveMigration(ctx context.Context, id string) (store.ArchiveMigration, error) {
 	v := store.ArchiveMigration{SessionID: id}
-	err := tx.tx.QueryRow(ctx, `SELECT migration_id::text,source_path,source_hash,target_path,target_hash,phase FROM session_archive_migrations WHERE session_id=$1 FOR UPDATE`, id).Scan(&v.MigrationID, &v.SourcePath, &v.SourceHash, &v.TargetPath, &v.TargetHash, &v.Phase)
+	err := tx.tx.QueryRow(ctx, `SELECT migration_id::text,source_path,source_hash,source_byte_length,target_path,target_hash,phase FROM session_archive_migrations WHERE session_id=$1 FOR UPDATE`, id).Scan(&v.MigrationID, &v.SourcePath, &v.SourceHash, &v.SourceLength, &v.TargetPath, &v.TargetHash, &v.Phase)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, model.ErrNotFound
 	}
 	return v, err
 }
 func (tx *DAO) SaveSessionArchiveMigration(ctx context.Context, v store.ArchiveMigration) error {
-	result, err := tx.tx.Exec(ctx, `INSERT INTO session_archive_migrations(session_id,migration_id,source_path,source_hash,target_path,target_hash,phase) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(session_id) DO UPDATE SET target_path=excluded.target_path,target_hash=excluded.target_hash,phase=excluded.phase WHERE session_archive_migrations.migration_id=excluded.migration_id AND session_archive_migrations.source_hash=excluded.source_hash AND session_archive_migrations.source_path=excluded.source_path`, v.SessionID, v.MigrationID, v.SourcePath, v.SourceHash, v.TargetPath, v.TargetHash, v.Phase)
+	result, err := tx.tx.Exec(ctx, `INSERT INTO session_archive_migrations(session_id,migration_id,source_path,source_hash,source_byte_length,target_path,target_hash,phase) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(session_id) DO UPDATE SET target_path=excluded.target_path,target_hash=excluded.target_hash,phase=excluded.phase WHERE session_archive_migrations.migration_id=excluded.migration_id AND session_archive_migrations.source_hash=excluded.source_hash AND session_archive_migrations.source_byte_length=excluded.source_byte_length AND session_archive_migrations.source_path=excluded.source_path`, v.SessionID, v.MigrationID, v.SourcePath, v.SourceHash, v.SourceLength, v.TargetPath, v.TargetHash, v.Phase)
 	if err == nil && result.RowsAffected() != 1 {
 		return errors.New("archive identity conflict")
 	}

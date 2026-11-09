@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,18 +98,36 @@ func TestImageDecoderProcessBoundary(t *testing.T) {
 		})
 	}
 	t.Run("cancellation joins process before removing file", func(t *testing.T) {
-		c := decoderFixture(t, "cat >/dev/null\nwhile :; do :; done\n")
+		marker := filepath.Join(t.TempDir(), "started")
+		c := decoderFixture(t, "cat >/dev/null\nprintf ready > '"+strings.ReplaceAll(marker, "'", "'\\''")+"'\nwhile :; do :; done\n")
 		decode, err := NewImageDecoder(c)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		start := time.Now()
-		if _, err = decode(ctx, bytes.NewReader(raw), 3, sha); err == nil {
-			t.Fatal("accepted cancelled decoder")
+		done := make(chan error, 1)
+		go func() { _, err := decode(ctx, bytes.NewReader(raw), 3, sha); done <- err }()
+		deadline := time.After(3 * time.Second)
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				break
+			}
+			select {
+			case err := <-done:
+				t.Fatal("decoder exited before cancellation barrier", err)
+			case <-deadline:
+				t.Fatal("decoder did not reach cancellation barrier")
+			case <-time.After(time.Millisecond):
+			}
 		}
-		if time.Since(start) > 2*time.Second {
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatal("parent cancellation became a validation failure", err)
+			}
+		case <-time.After(2 * time.Second):
 			t.Fatal("cancellation did not join promptly")
 		}
 		items, _ := os.ReadDir(c.TemporaryDirectory)
@@ -117,6 +136,30 @@ func TestImageDecoderProcessBoundary(t *testing.T) {
 		}
 	})
 }
+func TestImageDecoderOwnDeadlineDoesNotDeclareInvalidContent(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	c := decoderFixture(t, "cat >/dev/null\nprintf ready > '"+strings.ReplaceAll(marker, "'", "'\\''")+"'\nexec /bin/sleep 30\n")
+	decode, err := NewImageDecoder(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithTimeout(t.Context(), 25*time.Second)
+	defer cancel()
+	raw := []byte("png")
+	h := sha256.Sum256(raw)
+	_, err = decode(parent, bytes.NewReader(raw), 3, hex.EncodeToString(h[:]))
+	if parent.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("decoder budget became an invalid-content verdict", parent.Err(), err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("decoder did not reach its own deadline", err)
+	}
+	items, err := os.ReadDir(c.TemporaryDirectory)
+	if err != nil || len(items) != 0 {
+		t.Fatal("decoder deadline left private staging", items, err)
+	}
+}
+
 func TestImageDecoderConfigurationFailsClosed(t *testing.T) {
 	for _, mutate := range []func(*ImageDecoderConfig){func(c *ImageDecoderConfig) { c.NodePath = "node" }, func(c *ImageDecoderConfig) { c.HelperPath = "relative" }, func(c *ImageDecoderConfig) { c.ManifestPath = "/missing" }, func(c *ImageDecoderConfig) { c.TemporaryDirectory = "relative" }, func(c *ImageDecoderConfig) { _ = os.WriteFile(c.ManifestPath, []byte(`{"version":1}`), 0600) }, func(c *ImageDecoderConfig) { _ = os.WriteFile(c.HelperPath, []byte("changed"), 0600) }, func(c *ImageDecoderConfig) { _ = os.WriteFile(c.NodePath, []byte("#!/bin/sh\necho v22.0.0\n"), 0700) }, func(c *ImageDecoderConfig) { _ = os.MkdirAll(c.TemporaryDirectory, 0755) }} {
 		c := decoderFixture(t, "")

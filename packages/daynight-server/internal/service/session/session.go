@@ -24,6 +24,7 @@ func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	})
 	s.Execution = sessioncore.NewExecution(engine, s.browser, s.controller, s.archive, s.terminal, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.registerTerminal, s.authorize)
 	s.Execution.SetArchivePreflight(s.archivePreflight)
+	engine.SetMediaLeaseRecovery(s.recoverMediaLeases)
 	engine.SetMediaLeaseCleanup(func(ctx context.Context, id, lease string) error {
 		return s.write(ctx, func(store.TransactionOutcome) {}, func(scope store.SessionScope) error {
 			dao, ok := scope.SessionDAO().(store.SessionResourceDAO)
@@ -61,15 +62,24 @@ func (s *Service) write(ctx context.Context, finish func(store.TransactionOutcom
 }
 
 // archivePreflight releases the database scope before the owner gate is taken.
-func (s *Service) archivePreflight(ctx context.Context, principal model.Principal, project, taskID, id string, mode sessioncore.ArchiveMode) (owner string, err error) {
+func (s *Service) archivePreflight(ctx context.Context, principal model.Principal, project, taskID, id string, mode sessioncore.ArchiveMode) (string, error) {
+	return s.archivePreflightWithRecovery(ctx, principal, project, taskID, id, mode, s.recoverMediaLeases, (*sessioncore.Operation).ArchivePreflight)
+}
+
+func (s *Service) archivePreflightWithRecovery(ctx context.Context, principal model.Principal, project, taskID, id string, mode sessioncore.ArchiveMode, recover func(context.Context) error, preflight archivePreflightOperation) (owner string, err error) {
 	op, err := s.engine.BeginOperation()
 	if err != nil {
 		return "", err
 	}
 	defer op.Close()
+	ctx, cancel := mediaRecoveryContext(ctx, op)
+	defer cancel()
+	if err = recover(ctx); err != nil {
+		return "", err
+	}
 	err = s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		var e error
-		owner, e = op.ArchivePreflight(ctx, scope, principal, project, taskID, id, mode)
+		owner, e = preflight(op, ctx, scope, principal, project, taskID, id, mode)
 		return e
 	})
 	return owner, err

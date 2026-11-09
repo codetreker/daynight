@@ -66,7 +66,7 @@ func TestRestoredMigrationVerifiesRetainedSourceAndDurableTargetPhases(t *testin
 				paths = append(paths, path)
 				put("session-resources", path, original)
 			}
-			migration := store.ArchiveMigration{SessionID: session, MigrationID: migrationID.String(), SourcePath: sourcePath, SourceHash: sourceHash, TargetPath: targetPath, TargetHash: targetHash, Phase: "files_durable"}
+			migration := store.ArchiveMigration{SessionID: session, MigrationID: migrationID.String(), SourcePath: sourcePath, SourceHash: sourceHash, SourceLength: int64(len(source)), TargetPath: targetPath, TargetHash: targetHash, Phase: "files_durable"}
 			inventory := store.StorageInventory{SessionID: session, OwnerID: owner, Migration: &migration}
 			switch damage {
 			case "prepared-no-target":

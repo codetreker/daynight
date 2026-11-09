@@ -17,6 +17,92 @@ type ActiveHistoryWriter struct {
 	Credential string
 }
 
+// retireActiveHistory runs only after the caller proves the old generation has
+// stopped. Durable leases still prevent retirement while server IO is running.
+// Failed rounds retain their original file identity and acknowledged chunks.
+func retireActiveHistory(ctx context.Context, tx *operationTx, dao store.SessionArchiveDAO, bundle store.ArchiveBundle) error {
+	media, err := archiveMediaDAO(tx)
+	if err != nil {
+		return err
+	}
+	leases, err := media.SessionResourceLeaseCount(ctx, bundle.SessionID)
+	if err != nil {
+		return err
+	}
+	if leases != 0 {
+		return archiveConflict()
+	}
+	files, err := dao.SessionArchiveFiles(ctx, bundle.SessionID)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if file.State != "receiving" {
+			continue
+		}
+		if file.Purpose != "history" {
+			return archiveConflict()
+		}
+		file.State = "failed"
+		if err = dao.SaveSessionArchiveFile(ctx, file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func settleActiveHistory(ctx context.Context, tx *operationTx, dao store.SessionArchiveDAO, bundle *store.ArchiveBundle, r *record) error {
+	if bundle.TimelineID != "" || bundle.ManifestHash != "" || bundle.ManifestPath != "" {
+		return archiveConflict()
+	}
+	var ledger archiveLedger
+	if json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.HistoryEpoch != r.Snapshot.HistoryEpoch {
+		return archiveConflict()
+	}
+	if err := retireActiveHistory(ctx, tx, dao, *bundle); err != nil {
+		return err
+	}
+	// Retain the last complete ledger until final history commits. Its source
+	// checkpoint is distinct from the final barrier, which tail replay may advance.
+	ledger.FinalSourceThrough = decimal(r.SourceSeq)
+	bundle.Phase = "settling"
+	bundle.Revision++
+	bundle.HistoryID = ""
+	bundle.Ledger = encode(ledger)
+	return dao.SaveSessionArchiveBundle(ctx, *bundle)
+}
+
+// The grant caller has validated the exact previous generation and stop proof.
+// Handoff shares that transaction so a grant cannot leave the ledger attached to
+// a former writer, even when several generations recover before the next sync.
+func handoffActiveHistory(ctx context.Context, tx *operationTx, r *record, grant sp.Grant) error {
+	dao, capable := tx.dao.(store.SessionArchiveDAO)
+	if !capable {
+		return nil
+	}
+	bundle, err := dao.SessionArchiveBundle(ctx, r.Snapshot.SessionID)
+	if errors.Is(err, model.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	identity := sp.ArchivePrepareRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID}
+	if bundle.Phase != "active" || !jsonEqual(bundle.Identity, encode(identity)) {
+		return archiveConflict()
+	}
+	rebind, capable := tx.dao.(store.SessionArchiveHandoffDAO)
+	if !capable {
+		return archiveConflict()
+	}
+	if err = retireActiveHistory(ctx, tx, dao, bundle); err != nil {
+		return err
+	}
+	identity.Fence.ExecutionGeneration = grant.ExecutionGeneration
+	identity.ControllerInstanceID = grant.ControllerInstanceID
+	return rebind.RebindSessionArchiveBundle(ctx, bundle.SessionID, bundle.Identity, encode(identity))
+}
+
 func (op *ArchiveOperation) validateHistoryWriter(r *record, t task) error {
 	if op.historyWriter == nil {
 		return archiveConflict()

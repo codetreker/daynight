@@ -422,6 +422,8 @@ Task base 为 `/api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}`
 
 创建、写块、继续验证要求原 actor、当前准确 target、活动生命周期、操作权和图片输入资格；准备不要求此刻可 steer。GET 原上传仅要求原 actor 和原 Session/历史访问权，不要求 Controller 在线或 current claim 仍相同；它不重新授权新目标。DELETE 要求原目标当前操作权，并与发送引用竞争。已发送图片由合法读者读取，不要求读者等于上传者；未发送资源仅在原 actor receipt/私有授权中可见，不广播。
 
+原件读取在已授权 Session 短事务中复核资源引用：`message` 引用允许共享读取；`upload` 引用须匹配当前 actor、原 complete receipt 和 resourceId；`archive` 引用须匹配已发布 ready schema3 的 bundle 或 migration 身份及 manifest hash。准备中的归档引用和 `operation`、`unknown`、`native_resume` 保活引用不授予共享读取权。无合法引用返回 not found，避免暴露私有原件。文件读取完成后再次复核同一授权及删除屏障，已撤销的引用不能产生迟到成功响应。
+
 Cookie 写必须精确 Origin；PAT 沿既有认证，不增加 CORS/query token。Web 保留 `credentials:"same-origin"`、`redirect:"error"`、`assertResponsePrincipal` 和 `Daynight-User-ID` 核验；身份等待结束、真正 dispatch 后才计网络等待。`IndependentSessionReadDenied` 的已认证 409 resource_conflict 仍是删除/归属屏障。所有响应及错误为 private,no-store。
 
 Task → 访问/Session、Bot → Session 为父锁顺序，随后预算、upload、resource/引用；多资源按 UUID 排序。网络、文件、解码不持数据库锁。块 ACK、available 发布、异步恢复和 operation 授权提交前，短事务再次核对凭据、权限、target、删除屏障、原 revision/intent/fence。撤权先提交则停止推进；上传先提交的 bytes 仍可能存在，但后续读取受新权限约束。取消请求不能收回已经取得的 bytes 或证明回滚。
@@ -445,6 +447,8 @@ Task → 访问/Session、Bot → Session 为父锁顺序，随后预算、uploa
 
 验证由持久工作驱动，HTTP 断开不删除工作。每次恢复核对原 actor 凭据及目标；同账户新的有效变更请求可在复核后接管未完成准备授权，GET 不能刷新授权、expiry 或 owner。一次 attempt 最多60秒，暂时 IO/离线保持 verifying，1/2/4/8/15秒抖动退避；确定解码失败为 failed，到期 expired。超时 cancel+join 执行单元及释放 IO 后才返额度，不能用超时推断写失败。
 
+服务解码器保留父请求的取消和 deadline 原因，在子进程退出并 join 后返回原 context 错误。解码器自身预算耗尽同样返回 deadline，不转换为内容拒绝。HTTP 断开或请求到期不转换为 `image_decode_failed`，不提交 failed 或清理原验证工作；后续有效请求仍可沿原 uploadId 完成验证。
+
 ### 发送、释放与到期
 
 发送授权在一个事务校验完整有序输入、全部 complete/upload 身份、目标、能力、20MiB/8张、统一 timeline 的精确元数据预算，持久 intent 并取得全部 pin。任何一图失败整条拒绝。DELETE 先提交使 released，迟到验证不能复活；complete 先提交而无 operation pin 仍可释放；发送先取得 pin 则 upload_in_use。仅取消浏览器等待不是 DELETE。
@@ -467,6 +471,8 @@ Task → 访问/Session、Bot → Session 为父锁顺序，随后预算、uploa
 | 临时拒绝 | 并发、速率或物理水位不足503 storage_unavailable，可 Retry-After 1..30秒；未知写仍 query；逻辑预算超限返回409 quota_exceeded |
 
 共享持久 admission 原子协调，进程内 semaphore 只是优化。租约到期只撤提交资格，不返物理槽；失联、心跳丢失、DB lease 到期、WS 重连均非执行单元停止证明。只有 cancel+join 或监督器确认原进程终止后回收。新实例先协调旧占用，再另取空闲槽，不能把计数清零或继承未释放槽；无可靠终止证明则保守拒绝超额。解码/缓冲/队列实测包含语言运行时副本，512KiB块不等于RSS上限。
+
+普通媒体 I/O 在取得新槽之前读取部署内持久 lease，结束该数据库事务后逐项非阻塞尝试原 owner 使用的精确文件锁。busy 表示原 owner 仍可能执行 I/O，保留其行；成功取得锁后持锁到删除该原 lease 的短事务确认提交，再关闭锁。列举、提交结果或锁关闭未知均返回错误，不凭 TTL 清空计数。该恢复覆盖 Session、账户及部署级计数，服务重启后的孤儿占用无需通过删除 Session 才能回收。
 
 统一 codec/metadata guard 计量新 timeline、manifest 及未决预留；完整旧 envelope 仅在旧数据读取或迁移边界计量。创建准备先检查最小关联空间，发送时按完整文字/有序图片精确原子预留；并发纯文字也走同序列，不能消耗已预留空间。unknown 留预留，消息投影按原 operation/imageId 结算一次，确定拒绝才释放。归档最终再核对，不把未来可预见的容量失败拖到原生接受后。ENOSPC、临时残留和跨卷峰值实际计费，不删旧图腾空间。
 

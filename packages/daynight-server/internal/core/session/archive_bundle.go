@@ -38,6 +38,7 @@ type archiveLedgerEntry struct {
 }
 type archiveLedger struct {
 	HistoryEpoch, SourceThrough, HistoryID string
+	FinalSourceThrough                     string `json:",omitempty"`
 	Sealable                               bool
 	Entries                                []archiveLedgerEntry
 	Resources                              []sp.Resource
@@ -190,6 +191,9 @@ func bundleReceipt(bundle store.ArchiveBundle) sp.ArchivePrepareReceipt {
 	var ledger archiveLedger
 	_ = json.Unmarshal(bundle.Ledger, &ledger)
 	out := sp.ArchivePrepareReceipt{RecordID: bundle.SessionID, Phase: phase, Resources: refs, TimelineRevision: revision, HistoryEpoch: ledger.HistoryEpoch, SourceThrough: ledger.SourceThrough}
+	if ledger.FinalSourceThrough != "" {
+		out.SourceThrough = ledger.FinalSourceThrough
+	}
 	if phase == "failed" {
 		out.Error = &sp.ImageError{Code: "archive_incomplete", Message: "Archive file validation failed."}
 	}
@@ -281,31 +285,7 @@ func (op *ArchiveOperation) PrepareArchive(ctx context.Context, in sp.ArchivePre
 			return archiveConflict()
 		}
 		if bundle.Phase == "active" {
-			media, e := archiveMediaDAO(tx)
-			if e != nil {
-				return e
-			}
-			leases, e := media.SessionResourceLeaseCount(ctx, op.id)
-			if e != nil {
-				return e
-			}
-			if leases != 0 {
-				return archiveConflict()
-			}
-			files, e := dao.SessionArchiveFiles(ctx, op.id)
-			if e != nil {
-				return e
-			}
-			for _, file := range files {
-				if file.State == "receiving" {
-					return archiveConflict()
-				}
-			}
-			bundle.Phase = "settling"
-			bundle.Revision++
-			bundle.HistoryID = ""
-			bundle.Ledger = encode(archiveLedger{HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: decimal(r.SourceSeq), Entries: []archiveLedgerEntry{}, Resources: []sp.Resource{}})
-			if e = dao.SaveSessionArchiveBundle(ctx, bundle); e != nil {
+			if e := settleActiveHistory(ctx, tx, dao, &bundle, r); e != nil {
 				return e
 			}
 		}
@@ -646,7 +626,12 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 					return archiveConflict()
 				}
 				if op.historyWriter == nil && file.TimelineRevision > 1 && len(previous.Entries) > 0 {
-					if e = verifyArchiveHistoryAdvance(previous, ledger); e != nil {
+					if previous.FinalSourceThrough != "" {
+						e = verifyStoppedHistoryAdvance(previous, ledger)
+					} else {
+						e = verifyArchiveHistoryAdvance(previous, ledger)
+					}
+					if e != nil {
 						return invalidArchiveFile(e)
 					}
 				}
@@ -1156,6 +1141,23 @@ func verifyArchiveHistoryAdvance(previous, next archiveLedger) error {
 	}
 	if !changed {
 		return archiveConflict()
+	}
+	return nil
+}
+
+func verifyStoppedHistoryAdvance(previous, next archiveLedger) error {
+	if previous.HistoryEpoch != next.HistoryEpoch || number(next.SourceThrough) < number(previous.SourceThrough) || len(next.Entries) < len(previous.Entries) {
+		return archiveConflict()
+	}
+	sameSource := next.SourceThrough == previous.SourceThrough
+	if sameSource && len(next.Entries) != len(previous.Entries) {
+		return archiveConflict()
+	}
+	for i, old := range previous.Entries {
+		current := next.Entries[i]
+		if old.ID != current.ID || old.Sequence != current.Sequence || number(current.Revision) < number(old.Revision) || old.Revision == current.Revision && old.SHA256 != current.SHA256 || sameSource && old.SourceSHA256 != current.SourceSHA256 {
+			return archiveConflict()
+		}
 	}
 	return nil
 }

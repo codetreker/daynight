@@ -23,6 +23,26 @@ const fixture = async () => {
   return { home, ticket, journalPath, entry, sourceThrough };
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
+test.each(["original", "source-hash", "source-length", "missing-relation"])("reconciles a confirmed legacy receipt only through its persisted migration: %s", async variant => {
+  const f = await fixture();
+  const receiptPath = `${f.journalPath}.archive-receipt-${f.ticket.executionGeneration}.json`;
+  const receipt = { state: "ready", sha256: "1".repeat(64), byteLength: "72", errorCode: null };
+  await writeFile(receiptPath, JSON.stringify(receipt));
+  const migration = { migrationId: randomUUID(), sourceSha256: variant === "source-hash" ? "3".repeat(64) : receipt.sha256, sourceByteLength: variant === "source-length" ? "73" : receipt.byteLength };
+  const current = { ...receipt, schemaVersion: 3, completeness: "complete", sha256: "2".repeat(64), byteLength: "96", ...(variant === "missing-relation" ? {} : { migration }) };
+  const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ archive: current }));
+  const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
+  if (variant === "original") {
+    expect(await result).toEqual(current);
+    expect(JSON.parse(await readFile(receiptPath, "utf8"))).toEqual(current);
+    await rm(`${f.journalPath}.pending-content`, { recursive: true });
+    expect(await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).toEqual(current);
+  } else {
+    await expect(result).rejects.toThrow("Server archive differs");
+    expect(JSON.parse(await readFile(receiptPath, "utf8"))).toEqual(receipt);
+  }
+  expect(request.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
+});
 test("uploads a schema3 manifest and separately hashed timeline without a native resume", async () => {
  const f=await fixture(),bodies:string[]=[],calls:string[]=[];
  const receiver=archiveTestReceiver({bodies,sourceThrough:f.sourceThrough,onRequest:(method,path)=>calls.push(`${method} ${path}`)});

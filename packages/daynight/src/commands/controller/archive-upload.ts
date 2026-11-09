@@ -67,8 +67,11 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   const receiptPath = `${journalPath}.archive-receipt-${ticket.executionGeneration}.json`;
   if (existsSync(receiptPath)) {
     const receipt = parseSessionArchiveStatus(JSON.parse(readFileSync(receiptPath, "utf8"))), current = await status();
-    if (receipt.state !== "ready" || current.state !== "ready" || current.schemaVersion !== 3 || current.sha256 !== receipt.sha256 || current.byteLength !== receipt.byteLength) throw new Error("Server archive differs from the confirmed receipt.");
+    const sameRepresentation = current.sha256 === receipt.sha256 && current.byteLength === receipt.byteLength;
+    const migratedOriginal = receipt.schemaVersion === undefined && current.migration?.sourceSha256 === receipt.sha256 && current.migration.sourceByteLength === receipt.byteLength;
+    if (receipt.state !== "ready" || current.state !== "ready" || current.schemaVersion !== 3 || !(receipt.schemaVersion === 3 ? sameRepresentation : migratedOriginal)) throw new Error("Server archive differs from the confirmed receipt.");
     inspectOriginal(() => undefined);
+    if (receipt.schemaVersion === undefined) writeDurableJson(receiptPath, current);
     return current;
   }
   const db = openSqliteDatabase({ file: journalPath, format: controllerJournalFormat, allowCreate: false,

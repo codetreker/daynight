@@ -21,6 +21,7 @@ type ArchiveBundleFile struct {
 }
 type ArchiveMigration struct {
 	SessionID, MigrationID, SourcePath, SourceHash, TargetPath, TargetHash, Phase string
+	SourceLength                                                                  int64
 }
 type ArchiveBundleChunk struct {
 	SessionID, FileID, Path, SHA256 string
@@ -39,4 +40,10 @@ type SessionArchiveDAO interface {
 	SessionArchiveMigration(context.Context, string) (ArchiveMigration, error)
 	SaveSessionArchiveMigration(context.Context, ArchiveMigration) error
 	SetUnifiedSessionArchiveReady(context.Context, string, string, int, string, string) error
+}
+
+// SessionArchiveHandoffDAO changes only the active writer under the caller's
+// validated generation stop proof. The preparation and all file identities stay.
+type SessionArchiveHandoffDAO interface {
+	RebindSessionArchiveBundle(context.Context, string, json.RawMessage, json.RawMessage) error
 }

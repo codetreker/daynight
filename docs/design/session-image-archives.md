@@ -120,6 +120,11 @@ type ImageArchiveStatus = {
   errorCode: string | null;
   schemaVersion: 3;
   completeness: "complete" | "partial" | null;
+  migration?: {
+    migrationId: UUID;
+    sourceSha256: SHA256;
+    sourceByteLength: Decimal;
+  };
 };
 type ImageArchiveStatusResponse = {
   archive: ImageArchiveStatus;
@@ -142,6 +147,8 @@ TimelineEntry 保留全部文字、工具、reasoning、Markdown bindings、reta
 | unavailable | 均 null | null | null |
 
 errorCode 的 nullable failed 分支沿既有严格 archive status，不替换成 ImageError，不推断 null 表示成功。只有 ready 提供可供完整性核验的文件身份。`GET {base}/archive` 返回上述 envelope；`PUT {base}/archive/content` 提交 manifest 原 JSON 并使用相同 status envelope，`GET {base}/archive/content` 返回 manifest 原 JSON bytes，不带 envelope。未迁移旧记录保留原status/envelope与原文件摘要；迁移verified后status与reader一致指向新manifest，不混用两种摘要。所有原件读仍走所属记录的 resource reader，blobId 不生成公开存储 URL。
+
+`migration` 是 ready schema3 状态的可选严格分支，仅当持久迁移为 committed/verified，且其 target path/hash 与当前归档完全匹配时返回。三个内部字段全部必填，sourceByteLength 为 1..67108864 的正 Decimal，源摘要与长度在迁移准备时固定，后续阶段不得修改。其他状态及未迁移记录不带该字段。已确认 schema1 回执以原 sha256/byteLength 核对此 source 身份；匹配后才能将本地回执原子替换为当前 schema3 状态。新旧表示的摘要不要求相等，缺失迁移关系或源身份不符仍拒绝，不能借 ready 状态猜测迁移成功。
 
 ### 归档准备及重置
 
@@ -211,6 +218,10 @@ PUT body 是原始文件块，使用下节统一文件 headers、偏移、持久
 
 每 Session 最多一个活跃完整同步轮次。最终准备 sealed 或已有 manifest 提交后不再接纳新最终同步。settling 中只有原同步已确认 complete/failed、原 writer 实际停止，且采集结算改变绑定或对已持久正文的有界投影恢复成功改变投影时，才能显式创建新 syncId。清除 imageProjectionError 并形成完整空绑定也是有效增量，不要求存在图片或 capture 终态变化。新轮次沿同一 prepare/stopped 身份、historyEpoch 与 sourceThrough，只推进发生变化的 entry/片段 revision，不产生新原生消息或新的来源 IO；新轮次 complete 前保留旧账本与全部 pin，旧迟到请求不能覆盖新轮次。活动账本同样保留 epoch/source 截止屏障及持久 outbox，确认完整同步前暂停新图片准入，不让并发文字消耗已预留容量。正文仅进入受 lease 保护的有界临时文件，计量后清理；数据库只保存元数据。
 
+活动账本的 writer 随合法 generation 恢复接管：Grant 在核验精确前代、原 Controller instance 及 stop proof 后，于同一事务以旧 identity 为条件更新 active bundle 的 writer。prepareId、原账本、全部 fileId、摘要、块、确认偏移及未决资源/operation 引用保持原身份；不重新创建归档准备，也不将 unknown 改成失败。连续多个 generation 在没有新同步时恢复仍逐代接管。旧 writer 的迟到请求按当前 fence 拒绝。接管与停止转换前，服务在事务外以实际文件锁证明回收已退出 IO 的孤儿 lease；仍持锁的 IO 保持 lease 并阻止接管。
+
+原 writer 已停止且服务确认没有活动 IO lease 后，active bundle 可转为 settling。原 receiving history 轮次明确标为 failed，保留其 fileId/hash/确认偏移和块，不将部分文件视为完整账本；最后完整账本及 pin 继续保留，直到新的最终同步成功。最终同步必须保留已确认 entry 的 ID、顺序及不退回的 revision；同 revision 不得改变内容，同 source 截止点还必须保留原正文 hash。真实 source 尾部推进后，允许更高 revision 的原 entry 更新和追加 entry。其后 settling 投影修正继续遵守同 source、同原文的严格增量规则。
+
 ### timeline 文件块与共同传输规则
 
 ```ts
@@ -239,6 +250,8 @@ timeline 和两种完整历史同步共用以下传输规则：
 ### 停止后的连续source尾部协调
 
 停止时journal仍可能持有未获ACK的原source事件。Controller归档协调器使用`POST {base}/archive/source-tail`提交原连续批次，`Content-Type: application/json`，body为严格`{fence,controllerId,controllerInstanceId,sourceEpoch,batchId,events}`；fence为原stopped代次，sourceEpoch为原executionId，events为1..100个原SourceEvent，不能含gap，完整body最多2097152 bytes。该HTTPS入口沿既有归档上传凭据和停止授权核验，不重连原WebSocket、不创建Provider或恢复原生进程。
+
+已有 active history bundle 时，source-tail 与 prepare 使用同一停止转换，在最终 history 开始前将其推进 settling，再沿原批次协调 ACK。服务分别保留最后完整活动账本的来源截止点和最终 source 屏障；精确尾部重放只推进后者，丢失 ACK 的重试不会再次增加准备 revision。最终 history 开始、sealed 或 manifest 提交后仍禁止追加尾部；不得用旧活动账本替代最终同步。
 
 服务推进原source checkpoint及有界原event/batch hash账本，不重放state或改变lifecycle、generation和operations。原stopped身份可将服务尚未知的native ID从null单调登记为原Controller已创建的ID，初始化null事实不会清除已知ID，不同的非null ID仍冲突；最终manifest沿同一停止授权保留该旧writer保证。成功返回严格`{sourceEpoch,batchId,lastAckedSourceSeq}`，ACK必须精确等于该批末尾；未知结果重发同batchId及原bytes。Controller先持久完整批次，再发送，只有核验并持久该精确ACK后才删除对应outbox前缀。原sourceFloor已越过本地ACK且缺少连续前缀时明确拒绝；不能猜测服务ACK或用最终历史文件掩盖源缺口。尾部协调后仍要求最终历史sourceThrough精确匹配；冲突ACK不能删尾，原活动身份不能借用此入口。
 

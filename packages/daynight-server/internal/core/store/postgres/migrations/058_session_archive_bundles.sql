@@ -51,6 +51,7 @@ CREATE TABLE session_archive_migrations (
  migration_id uuid NOT NULL UNIQUE,
  source_path text NOT NULL,
  source_hash text NOT NULL CHECK (source_hash ~ '^[a-f0-9]{64}$'),
+ source_byte_length bigint NOT NULL CHECK (source_byte_length BETWEEN 1 AND 67108864),
  target_path text NOT NULL DEFAULT '',
  target_hash text NOT NULL DEFAULT '' CHECK (target_hash='' OR target_hash ~ '^[a-f0-9]{64}$'),
  phase text NOT NULL CHECK (phase IN ('prepared','files_durable','committed','verified'))

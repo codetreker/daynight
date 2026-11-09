@@ -32,6 +32,7 @@ type Engine struct {
 	files                 filestorage.Storage
 	imageDecoder          ImageDecoder
 	releaseMediaLeaseRun  func(context.Context, string, string) error
+	recoverMediaLeasesRun func(context.Context) error
 	now                   func() time.Time
 	liveMutex             sync.Mutex
 	live                  map[string]*liveCell
@@ -270,6 +271,9 @@ func (s *Execution) grantRecord(ctx context.Context, tx *operationTx, p model.Pr
 		stopped, err := time.Parse(time.RFC3339Nano, g.StopProof.StoppedAt)
 		if err != nil || stopped.After(s.now().Add(time.Second)) {
 			return out, conflict()
+		}
+		if err = handoffActiveHistory(ctx, tx, r, g); err != nil {
+			return out, err
 		}
 		v.Controls = nil
 		v.TurnStartedAt = nil

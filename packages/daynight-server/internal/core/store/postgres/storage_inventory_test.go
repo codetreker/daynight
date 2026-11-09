@@ -104,8 +104,8 @@ func TestBackupInventoryRetainsMigrationAndSkipsReleasedStagingTombstones(t *tes
 			t.Fatal(e)
 		}
 	}
-	migration := store.ArchiveMigration{SessionID: id, MigrationID: uuid.NewString(), SourcePath: "source", SourceHash: digest, TargetPath: "target", TargetHash: digest, Phase: "files_durable"}
-	if _, e := database.Pool.Exec(ctx, `INSERT INTO session_archive_migrations(session_id,migration_id,source_path,source_hash,target_path,target_hash,phase) VALUES($1,$2,$3,$4,$5,$6,$7)`, id, migration.MigrationID, migration.SourcePath, migration.SourceHash, migration.TargetPath, migration.TargetHash, migration.Phase); e != nil {
+	migration := store.ArchiveMigration{SessionID: id, MigrationID: uuid.NewString(), SourcePath: "source", SourceHash: digest, SourceLength: 1, TargetPath: "target", TargetHash: digest, Phase: "files_durable"}
+	if _, e := database.Pool.Exec(ctx, `INSERT INTO session_archive_migrations(session_id,migration_id,source_path,source_hash,source_byte_length,target_path,target_hash,phase) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, migration.MigrationID, migration.SourcePath, migration.SourceHash, migration.SourceLength, migration.TargetPath, migration.TargetHash, migration.Phase); e != nil {
 		t.Fatal(e)
 	}
 	calls := 0

@@ -17,6 +17,10 @@ func (s *Execution) Resource(ctx context.Context, p model.Principal, project, ta
 	if s.releaseMediaLeaseRun != nil || s.imageDecoder != nil {
 		if data, saved, err := s.savedResource(ctx, p, project, taskID, id, resource); err == nil {
 			return data, saved, nil
+		} else if errors.Is(err, errPrivateSessionResource) {
+			// A private saved original cannot become public through the legacy
+			// Controller reader. Only absent service records may use that path.
+			return nil, descriptor, err
 		} else if !errors.Is(err, model.ErrNotFound) {
 			var refusal *model.Fault
 			if !errors.As(err, &refusal) || refusal.Code != "component_unsupported" {

@@ -51,6 +51,7 @@ type SessionResourceLease struct {
 // which also serializes the shared account/deployment counters.
 type SessionResourceDAO interface {
 	SavedSessionResource(context.Context, string, string) (SessionResourceRecord, error)
+	SessionResourceReadableBy(context.Context, string, string, string) (bool, error)
 	ListSessionResources(context.Context, string) ([]SessionResourceRecord, error)
 	InsertSessionResource(context.Context, SessionResourceRecord) error
 	AddSessionResourceReference(context.Context, SessionResourceReference) error

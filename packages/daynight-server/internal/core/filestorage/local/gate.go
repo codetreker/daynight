@@ -123,7 +123,7 @@ func (s *Storage) AcquireGate(ctx context.Context, domain filestorage.GateDomain
 			return nil, errors.New("empty media lease key")
 		}
 		for {
-			permit, err := s.TryAcquireResidency(ctx, "media-lease/"+key)
+			permit, err := filestorage.TryAcquireMediaLease(ctx, s, key)
 			if !errors.Is(err, filestorage.ErrGateBusy) {
 				return permit, err
 			}

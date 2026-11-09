@@ -26,6 +26,20 @@ func (s *Engine) beginImageIO(parent context.Context, id, lease string) (context
 		return nil, nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-op.Stopping():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	if s.recoverMediaLeasesRun != nil {
+		if err := s.recoverMediaLeasesRun(ctx); err != nil {
+			cancel()
+			op.Close()
+			return nil, nil, err
+		}
+	}
 	gate, err := s.files.AcquireGate(ctx, filestorage.MediaLeaseGate, "session-resource-lease/"+lease)
 	if err != nil {
 		cancel()
@@ -42,13 +56,6 @@ func (s *Engine) beginImageIO(parent context.Context, id, lease string) (context
 	}
 	s.mediaWork.work[id][lease] = w
 	s.mediaWork.Unlock()
-	go func() {
-		select {
-		case <-op.Stopping():
-			cancel()
-		case <-w.done:
-		}
-	}()
 	return ctx, func() error {
 		cancel()
 		err := gate.Close()

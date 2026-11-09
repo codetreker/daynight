@@ -39,12 +39,30 @@ func scopeArchiveTask(ctx context.Context, tx *operationTx, project, id string, 
 func archiveStatus(ctx context.Context, tx *operationTx, id string) (sp.ArchiveStatus, string, error) {
 	return tx.dao.SessionArchive(ctx, id)
 }
+func archiveStatusWithMigration(ctx context.Context, tx *operationTx, id string) (sp.ArchiveStatus, error) {
+	out, path, err := archiveStatus(ctx, tx, id)
+	dao, capable := tx.dao.(store.SessionArchiveDAO)
+	if err != nil || !capable || out.State != "ready" || out.SchemaVersion != 3 {
+		return out, err
+	}
+	migration, err := dao.SessionArchiveMigration(ctx, id)
+	if errors.Is(err, model.ErrNotFound) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	if (migration.Phase == "committed" || migration.Phase == "verified") && migration.TargetPath == path && out.SHA256 != nil && migration.TargetHash == *out.SHA256 && migration.SourceLength > 0 {
+		out.Migration = &sp.ArchiveMigrationReceipt{MigrationID: migration.MigrationID, SourceSHA256: migration.SourceHash, SourceByteLength: decimal(migration.SourceLength)}
+	}
+	return out, nil
+}
 func (s *Execution) ArchiveStatus(ctx context.Context, p model.Principal, project, taskID, id string) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
 	convertLegacy := false
 	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, _ *record, _ task) error {
 		var err error
-		out, _, err = archiveStatus(ctx, tx, id)
+		out, err = archiveStatusWithMigration(ctx, tx, id)
 		_, capable := tx.dao.(store.SessionArchiveDAO)
 		convertLegacy = capable && out.State == "ready" && out.SchemaVersion != 3
 		return err
@@ -59,7 +77,7 @@ func (s *Execution) ArchiveStatus(ctx context.Context, p model.Principal, projec
 		}
 		err = s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, _ *record, _ task) error {
 			var e error
-			out, _, e = archiveStatus(ctx, tx, id)
+			out, e = archiveStatusWithMigration(ctx, tx, id)
 			return e
 		})
 	}

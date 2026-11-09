@@ -56,6 +56,9 @@ func verifyBackupMigration(ctx context.Context, files backupStorageReader, inven
 	if err != nil {
 		return err
 	}
+	if int64(len(source)) != m.SourceLength {
+		return archiveConflict()
+	}
 	plan, err := convertLegacyArchive(source, migrationID)
 	if err != nil {
 		return err

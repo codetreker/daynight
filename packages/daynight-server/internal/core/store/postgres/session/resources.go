@@ -283,7 +283,12 @@ func mediaQueryError(phase string, err error) error {
 
 func (tx *DAO) UnsettledSessionResourceWrites(ctx context.Context, s string) (int, error) {
 	var n int
-	err := tx.tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM session_image_uploads WHERE session_id=$1 AND (receipt->>'state' IN ('receiving','verifying') OR NOT storage_released AND receipt->>'state' IN ('failed','expired','released')))+(SELECT count(*) FROM session_image_captures WHERE session_id=$1 AND receipt->>'state' IN ('reserved','copying'))+(SELECT count(*) FROM session_operations WHERE session_id=$1 AND receipt->>'state' IN ('accepted','offered','dispatching','unknown'))+(SELECT count(*) FROM session_media_requests media WHERE session_id=$1 AND NOT complete AND action IN ('write','complete') AND EXISTS(SELECT 1 FROM session_image_uploads uploads WHERE uploads.session_id=media.session_id AND uploads.upload_id=(media.body->>'uploadId')::uuid AND uploads.receipt->>'state' NOT IN ('released','expired','failed')))`, s).Scan(&n)
+	err := tx.tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM session_image_uploads WHERE session_id=$1 AND (receipt->>'state' IN ('receiving','verifying') OR NOT storage_released AND receipt->>'state' IN ('failed','expired','released')))+(SELECT count(*) FROM session_image_captures WHERE session_id=$1 AND receipt->>'state' IN ('reserved','copying'))+(SELECT count(*) FROM session_operations operations
+WHERE session_id=$1 AND receipt->>'state' IN ('accepted','offered','dispatching','unknown')
+AND (command->>'kind' IN ('send_message','interaction_response','execute_command','cancel')
+ OR EXISTS(SELECT 1 FROM session_resource_references refs
+   WHERE refs.session_id=operations.session_id AND refs.reference_id=operations.operation_id::text
+     AND refs.kind IN ('operation','native_resume'))))+(SELECT count(*) FROM session_media_requests media WHERE session_id=$1 AND NOT complete AND action IN ('write','complete') AND EXISTS(SELECT 1 FROM session_image_uploads uploads WHERE uploads.session_id=media.session_id AND uploads.upload_id=(media.body->>'uploadId')::uuid AND uploads.receipt->>'state' NOT IN ('released','expired','failed')))`, s).Scan(&n)
 	return n, mediaQueryError("count unsettled resource writes", err)
 }
 

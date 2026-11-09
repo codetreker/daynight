@@ -87,7 +87,7 @@ func TestBackupClosureRejectsInvalidMetadataAndRetainsInlineOriginals(t *testing
 }
 
 func TestBackupMigrationReconcilesOriginalAndReusedBlobIdentities(t *testing.T) {
-	for _, kind := range []string{"durable", "verified", "invalid-source-hash", "invalid-target-hash", "invalid-source", "invalid-target", "resource-count", "descriptor", "foreign-blob", "reused-blob", "manifest-identity"} {
+	for _, kind := range []string{"durable", "verified", "invalid-source-hash", "invalid-source-length", "invalid-target-hash", "invalid-source", "invalid-target", "resource-count", "descriptor", "foreign-blob", "reused-blob", "manifest-identity"} {
 		t.Run(kind, func(t *testing.T) {
 			files, e := local.New(t.TempDir())
 			if e != nil {
@@ -144,7 +144,7 @@ func TestBackupMigrationReconcilesOriginalAndReusedBlobIdentities(t *testing.T) 
 			}
 			targetHash := archiveDigest(target)
 			targetPath, _ := namespace.ObjectPath(targetHash)
-			migration := store.ArchiveMigration{SessionID: id, MigrationID: migrationID.String(), SourcePath: sourcePath, SourceHash: sourceHash, TargetPath: targetPath, TargetHash: targetHash, Phase: "files_durable"}
+			migration := store.ArchiveMigration{SessionID: id, MigrationID: migrationID.String(), SourcePath: sourcePath, SourceHash: sourceHash, SourceLength: int64(len(source)), TargetPath: targetPath, TargetHash: targetHash, Phase: "files_durable"}
 			inventory := store.StorageInventory{SessionID: id, OwnerID: owner, Migration: &migration}
 			put := func(path string, data []byte) {
 				t.Helper()
@@ -177,6 +177,9 @@ func TestBackupMigrationReconcilesOriginalAndReusedBlobIdentities(t *testing.T) 
 			}
 			if kind == "invalid-source-hash" {
 				migration.SourceHash = "invalid"
+			}
+			if kind == "invalid-source-length" {
+				migration.SourceLength++
 			}
 			if kind == "invalid-target-hash" {
 				migration.TargetHash = "invalid"

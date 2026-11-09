@@ -22,6 +22,18 @@ type imageBoundaryDAO struct {
 	point                   string
 	cause                   error
 	usageCalls, usageFailAt int
+	visibilityCalls         int
+}
+
+func (d *imageBoundaryDAO) SessionResourceReadableBy(ctx context.Context, s, id, actor string) (bool, error) {
+	d.visibilityCalls++
+	if d.point == "visibility" || d.point == "final visibility" && d.visibilityCalls == 2 {
+		return false, d.cause
+	}
+	if d.point == "revoked visibility" && d.visibilityCalls == 2 {
+		return false, nil
+	}
+	return d.imageRuleDAO.SessionResourceReadableBy(ctx, s, id, actor)
 }
 
 func (d *imageBoundaryDAO) SavedSessionResource(ctx context.Context, s, id string) (store.SessionResourceRecord, error) {
@@ -120,7 +132,7 @@ func (s imageBoundaryStorage) AcquireGate(ctx context.Context, d filestorage.Gat
 }
 
 func TestImageSavedReadsPreserveAuthorizationAndStorageFailures(t *testing.T) {
-	for _, kind := range []string{"missing storage", "missing capability", "resource", "rate", "empty blob", "wrong path", "unavailable", "usage", "lease", "open", "corrupt bytes", "final usage", "deleting", "invalid range", "past EOF"} {
+	for _, kind := range []string{"missing storage", "missing capability", "visibility", "final visibility", "revoked visibility", "resource", "rate", "empty blob", "wrong path", "unavailable", "usage", "lease", "open", "corrupt bytes", "final usage", "deleting", "invalid range", "past EOF"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newImageRuleFixture(t, []byte("original"))
 			f.prepare(t)
@@ -141,7 +153,7 @@ func TestImageSavedReadsPreserveAuthorizationAndStorageFailures(t *testing.T) {
 				f.s.files = nil
 			case "missing capability":
 				bindImageBoundary(f, &mediaRateMissingDAO{}, true)
-			case "resource", "usage", "lease":
+			case "resource", "usage", "lease", "visibility", "final visibility", "revoked visibility":
 				d.point = kind
 			case "rate":
 				f.d.rateDeny = "observe"
@@ -170,7 +182,7 @@ func TestImageSavedReadsPreserveAuthorizationAndStorageFailures(t *testing.T) {
 			if _, e = f.s.ReadResource(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, input); e == nil {
 				t.Fatal("invalid saved original read succeeded", kind)
 			}
-			if d.point != "" && !errors.Is(e, d.cause) {
+			if d.point != "" && d.point != "revoked visibility" && !errors.Is(e, d.cause) {
 				t.Fatal("saved read hid storage cause", e)
 			}
 			if len(f.d.leases) != 0 {

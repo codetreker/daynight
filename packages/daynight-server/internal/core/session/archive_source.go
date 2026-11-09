@@ -39,6 +39,15 @@ func (op *ArchiveOperation) AppendArchiveSourceTail(ctx context.Context, in sp.A
 		if e != nil && !errors.Is(e, model.ErrNotFound) {
 			return e
 		}
+		if exists && bundle.Phase == "active" {
+			identity := sp.ArchivePrepareRequest{Fence: in.Fence, ControllerID: in.ControllerID, ControllerInstanceID: in.ControllerInstanceID}
+			if !jsonEqual(bundle.Identity, encode(identity)) {
+				return archiveConflict()
+			}
+			if e = settleActiveHistory(ctx, tx, dao, &bundle, r); e != nil {
+				return e
+			}
+		}
 		if exists && (bundle.Phase != "settling" || bundle.HistoryID != "" || bundle.TimelineID != "" || bundle.ManifestHash != "") {
 			return archiveConflict()
 		}
@@ -51,7 +60,11 @@ func (op *ArchiveOperation) AppendArchiveSourceTail(ctx context.Context, in sp.A
 			if json.Unmarshal(bundle.Ledger, &ledger) != nil {
 				return archiveConflict()
 			}
-			ledger.SourceThrough = out.LastAckedSourceSeq
+			if ledger.FinalSourceThrough != "" {
+				ledger.FinalSourceThrough = out.LastAckedSourceSeq
+			} else {
+				ledger.SourceThrough = out.LastAckedSourceSeq
+			}
 			bundle.Ledger = encode(ledger)
 			return dao.SaveSessionArchiveBundle(ctx, bundle)
 		}
