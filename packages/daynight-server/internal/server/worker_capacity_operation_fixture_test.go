@@ -24,6 +24,8 @@ type capacityReportOperations struct {
 	t      *testing.T
 	report func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
 	put    func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+	get    func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
+	list   func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
 }
 
 func (s *capacityReportOperations) unexpected(method string) error {
@@ -43,12 +45,18 @@ func (s *capacityReportOperations) ReportSync(context.Context, model.Principal, 
 	return workerservice.ConfigurationSyncResult{}, s.unexpected("ReportSync")
 }
 
-func (s *capacityReportOperations) List(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error) {
-	return workerservice.WorkerPage{}, s.unexpected("List")
+func (s *capacityReportOperations) List(ctx context.Context, principal model.Principal, page model.PageRequest) (workerservice.WorkerPage, error) {
+	if s.list == nil {
+		return workerservice.WorkerPage{}, s.unexpected("List")
+	}
+	return s.list(ctx, principal, page)
 }
 
-func (s *capacityReportOperations) Get(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error) {
-	return workerservice.WorkerDetailResult{}, s.unexpected("Get")
+func (s *capacityReportOperations) Get(ctx context.Context, principal model.Principal, worker string) (workerservice.WorkerDetailResult, error) {
+	if s.get == nil {
+		return workerservice.WorkerDetailResult{}, s.unexpected("Get")
+	}
+	return s.get(ctx, principal, worker)
 }
 
 func (s *capacityReportOperations) Configuration(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error) {
@@ -85,9 +93,14 @@ type capacityReportOperationFixture struct {
 
 func newCapacityReportOperationFixture(t *testing.T, worker string) *capacityReportOperationFixture {
 	t.Helper()
+	return newCapacityReportOperationFixtureWithOutput(t, worker, io.Discard)
+}
+
+func newCapacityReportOperationFixtureWithOutput(t *testing.T, worker string, output io.Writer) *capacityReportOperationFixture {
+	t.Helper()
 	f := &capacityReportOperationFixture{t: t, worker: worker, operations: &capacityReportOperations{t: t}}
 	f.handler = &resourceTestHandler{token: "worker-capacity-token", principal: defaultHTTPPrincipal()}
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	logger := slog.New(slog.NewJSONHandler(output, nil))
 	auth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
 		f.authCalls++
 		if f.authCalls != 1 || ctx != f.requestContext || kind != model.PATCredential || token != f.handler.token {
@@ -144,13 +157,17 @@ func (f *capacityReportOperationFixture) reportRequest(body map[string]any, call
 
 func (f *capacityReportOperationFixture) dispatch(method, suffix string, body map[string]any, protocol string) *httptest.ResponseRecorder {
 	f.t.Helper()
+	return f.dispatchRaw(method, "/api/v1/me/workers/"+f.worker+suffix, jsonBody(f.t, body), protocol)
+}
+
+func (f *capacityReportOperationFixture) dispatchRaw(method, path, body, protocol string) *httptest.ResponseRecorder {
+	f.t.Helper()
 	f.authCalls = 0
-	path := "/api/v1/me/workers/" + f.worker + suffix
 	var response *httptest.ResponseRecorder
 	if protocol == "" {
-		response = projectRequest(f.handler, method, path, jsonBody(f.t, body))
+		response = projectRequest(f.handler, method, path, body)
 	} else {
-		response = configurationHTTPRequest(f.handler, method, path, jsonBody(f.t, body), protocol)
+		response = configurationHTTPRequest(f.handler, method, path, body, protocol)
 	}
 	if f.authCalls != 1 {
 		f.t.Fatalf("credential calls = %d, want 1", f.authCalls)
@@ -191,4 +208,46 @@ func (f *capacityReportOperationFixture) success(body map[string]any) {
 	if got != want {
 		f.t.Fatalf("worker report response = %+v, want %+v", got, want)
 	}
+}
+
+func (f *capacityReportOperationFixture) getRequest(result workerservice.WorkerDetailResult) *httptest.ResponseRecorder {
+	f.t.Helper()
+	used := 0
+	f.operations.get = func(ctx context.Context, principal model.Principal, worker string) (workerservice.WorkerDetailResult, error) {
+		used++
+		if used > 1 {
+			return workerservice.WorkerDetailResult{}, f.operations.unexpected("Get")
+		}
+		if ctx != f.requestContext || principal != f.handler.principal || worker != f.worker {
+			f.t.Errorf("Get arguments differ: principal=%+v worker=%s", principal, worker)
+		}
+		return capacityDecode[workerservice.WorkerDetailResult](f.t, result), nil
+	}
+	defer func() { f.operations.get = nil }()
+	response := f.dispatchRaw(http.MethodGet, "/api/v1/me/workers/"+f.worker, "", "")
+	if used != 1 {
+		f.t.Fatalf("Get calls = %d, want 1", used)
+	}
+	return response
+}
+
+func (f *capacityReportOperationFixture) listRequest(result workerservice.WorkerPage) *httptest.ResponseRecorder {
+	f.t.Helper()
+	used := 0
+	f.operations.list = func(ctx context.Context, principal model.Principal, page model.PageRequest) (workerservice.WorkerPage, error) {
+		used++
+		if used > 1 {
+			return workerservice.WorkerPage{}, f.operations.unexpected("List")
+		}
+		if ctx != f.requestContext || principal != f.handler.principal || !reflect.DeepEqual(page, model.PageRequest{Limit: 50}) {
+			f.t.Errorf("List arguments differ: principal=%+v page=%+v", principal, page)
+		}
+		return capacityDecode[workerservice.WorkerPage](f.t, result), nil
+	}
+	defer func() { f.operations.list = nil }()
+	response := f.dispatchRaw(http.MethodGet, "/api/v1/me/workers", "", "")
+	if used != 1 {
+		f.t.Fatalf("List calls = %d, want 1", used)
+	}
+	return response
 }

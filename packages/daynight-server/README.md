@@ -982,8 +982,8 @@ byte-field overflows arrive at the operation and receive a supplied service
 refusal; Report collection overflow is rejected by the actual wire parser.
 Configuration PUT and observation overflow inputs are parsed before any business
 call. Observation success additionally returns configuration protocol version 1
-and its complete accepted receipt. Assistant-host cases retain their separate
-DAO fixture.
+and its complete accepted receipt. The assistant-host configuration-exchange
+compatibility test retains its separate DAO fixture.
 
 `internal/core/worker` owns the original thirteen Report byte/count boundaries,
 normalization and full snapshot projection. Its Configuration capacity tests
@@ -1005,6 +1005,34 @@ The [Report capacity decision](../../.agents/notes/implemented/testing/2026-11-0
 and [Configuration capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-capacity-test-owners.md)
 record their protocol, rule and projection proof owners. Other root HTTP tests
 retain their own environment requirements.
+
+### Worker assistant-host HTTP tests
+
+The first assistant-host reporting test registers Worker routes, real credential
+middleware and request logging with strict direct Report/Get/List operations.
+It preserves complete host input/output, unavailable providers, absent-field
+omission, private headers and log redaction. Protocol 2 calls Report once with a
+supplied lower validation refusal. Get/List results are independent supplied
+facts, without report-driven storage state.
+
+Core tests retain actual validation and complete snapshot projection with fresh
+host values. Admission service fixtures use independently allocated input,
+normalized, proposed and stored hosts with distinguishable directories, so the
+existing full argument comparisons expose lost or bypassed normalization.
+The configuration-exchange compatibility test and shared DAO fixture retain their
+current scope. Run the selected owners without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^(TestWorkerAssistantHostHTTPReportingAndLegacyReplacement|TestWorkerAssistantHostReportValidationAndSnapshot|TestWorkerAdmission)' \
+  ./internal/server ./internal/core/worker ./internal/service/worker
+```
+
+The [assistant-host test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-assistant-host-http-test-owners.md)
+records the protocol, Core and service proof owners. Other Root and Worker
+selections keep their own infrastructure requirements.
 
 ### Worker configuration service tests
 

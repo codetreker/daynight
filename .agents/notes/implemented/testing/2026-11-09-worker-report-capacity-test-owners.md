@@ -58,8 +58,10 @@ variables unset. Protocol and call-count proofs stay separate from actual Core
 validation and projection. The
 [Configuration capacity decision](2026-11-09-worker-configuration-capacity-test-owners.md)
 extends the shared operation fixture and assigns its parser and business proofs.
-Assistant-host capacity cases retain their existing DAO fixture and separately
-owned guarantees; complete root suites retain their own environment requirements.
+The [assistant-host reporting decision](2026-11-09-worker-assistant-host-http-test-owners.md)
+extends the operation fixture for the first report/detail/list case. Its separate
+configuration compatibility test retains the shared DAO fixture and its own
+guarantees; complete root suites retain their environment requirements.
 
 Matching performance comparisons include the receiving Core package and full
 validation. Package elapsed times and a faster subset do not establish hosted

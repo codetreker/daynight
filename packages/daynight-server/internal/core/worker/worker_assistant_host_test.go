@@ -2,10 +2,12 @@ package worker
 
 import (
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestWorkerAssistantHostValidationRejectsUnknownProtocol(t *testing.T) {
@@ -24,6 +26,72 @@ func validAssistantHost() *model.WorkerAssistantHost {
 		{Provider: model.AgentClaude, Reason: workerValidationValue("not_found"), Args: []string{}},
 		{Provider: model.AgentCopilot, Available: true, Model: workerValidationValue("gpt-5"), Args: []string{"--effort", "high"}},
 	}}
+}
+
+func TestWorkerAssistantHostReportValidationAndSnapshot(t *testing.T) {
+	const userID = "11111111-1111-4111-8111-111111111111"
+	const workerID = "22222222-2222-4222-8222-222222222222"
+	newReport := func() model.WorkerReport {
+		report := validWorkerReportForValidation()
+		report.Telemetry.Machine = model.WorkerMachine{ID: "33333333-3333-4333-8333-333333333333", Name: "Private worker machine"}
+		report.Telemetry.WorkingDirectory = "/private/work"
+		report.Telemetry.AssistantHost = validAssistantHost()
+		return report
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(*model.WorkerReport)
+		invalid bool
+	}{
+		{name: "successful host", prepare: func(report *model.WorkerReport) {
+			report.Telemetry.AssistantHost.DefaultCwd = "/private/assistant-host-marker"
+		}},
+		{name: "failed providers", prepare: func(report *model.WorkerReport) {
+			report.Telemetry.AssistantHost.DefaultCwd = "/private/assistant-host-marker"
+			for i := range report.Telemetry.AssistantHost.Providers {
+				report.Telemetry.AssistantHost.Providers[i].Available = false
+				report.Telemetry.AssistantHost.Providers[i].Reason = workerValidationValue("timeout")
+			}
+		}},
+		{name: "legacy host", prepare: func(report *model.WorkerReport) {
+			report.Telemetry.AssistantHost = nil
+		}},
+		{name: "unknown protocol", prepare: func(report *model.WorkerReport) {
+			report.Telemetry.AssistantHost.ProtocolVersion = 2
+		}, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, expected := newReport(), newReport()
+			tc.prepare(&input)
+			tc.prepare(&expected)
+			normalized, err := ValidateReport(input)
+			if tc.invalid {
+				requireFault(t, err, "invalid_input")
+				return
+			}
+			if err != nil {
+				t.Fatalf("valid assistant-host report rejected: %v", err)
+			}
+			if !reflect.DeepEqual(normalized, expected) {
+				t.Fatalf("normalized assistant-host report differs: got %+v, want %+v", normalized, expected)
+			}
+			observedAt := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+			actual := SnapshotForReport(userID, workerID, normalized, observedAt, []model.WorkerObservedTask{})
+			expectedObservedAt := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+			expectedInventoryAt := expected.TaskInventory.ObservedAt
+			want := model.WorkerSnapshot{
+				UserID: userID, WorkerID: workerID, CreatedAt: expectedObservedAt, LastReportedAt: expectedObservedAt,
+				Telemetry: expected.Telemetry,
+				TaskSnapshot: model.WorkerTaskObservation{
+					State: model.WorkerTasksObserved, ObservedAt: &expectedObservedAt,
+					InventoryObservedAt: &expectedInventoryAt, Items: []model.WorkerObservedTask{},
+				},
+			}
+			if !reflect.DeepEqual(actual, want) {
+				t.Fatalf("assistant-host snapshot differs: got %+v, want %+v", actual, want)
+			}
+		})
+	}
 }
 
 func TestWorkerAssistantHostDomainValidation(t *testing.T) {

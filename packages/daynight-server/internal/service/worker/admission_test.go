@@ -50,11 +50,13 @@ func newAdmissionServiceFixture(t *testing.T) *admissionServiceFixture {
 		want: []string{"validate", "parse", "write", "dao", "admission", "admit", "sources", "match", "snapshot", "upsert", "exchange", "configuration", "clock", "completion"},
 	}
 	f.input = serviceWorkerReport()
+	f.input.Telemetry.AssistantHost = admissionAssistantHost("/input-assistant-host")
 	f.input.Telemetry.SampledAt = at.Add(24 * time.Hour)
 	f.input.TaskInventory = &model.WorkerTaskInventory{ObservedAt: at, Claims: []model.WorkerTaskReference{}}
 	bootstrap := cloudWorkerConfiguration("")
 	f.input.Configuration = &model.WorkerConfigurationExchange{Bootstrap: &bootstrap}
 	f.normalized = f.input
+	f.normalized.Telemetry.AssistantHost = admissionAssistantHost("/normalized-assistant-host")
 	f.normalized.Telemetry.Machine.Name = "Normalized report"
 	f.parsed = &model.WorkerConfigurationExchange{Observation: &model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []model.WorkerConfigurationItem{}}}
 	f.sources = []store.WorkerTaskSource{{Task: model.Task{ID: uuid.NewString(), Title: "Supplied source"}, ProjectName: "Project"}}
@@ -65,8 +67,10 @@ func newAdmissionServiceFixture(t *testing.T) *admissionServiceFixture {
 		TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &at, InventoryObservedAt: &at, Items: []model.WorkerObservedTask{}},
 	}
 	f.proposed.Telemetry.Machine.Name = "Supplied Core snapshot"
+	f.proposed.Telemetry.AssistantHost = admissionAssistantHost("/snapshot-assistant-host")
 	storedTelemetry := serviceWorkerReport().Telemetry
 	storedTelemetry.Machine.Name = "Supplied DAO result"
+	storedTelemetry.AssistantHost = admissionAssistantHost("/stored-assistant-host")
 	f.stored = model.WorkerSnapshot{
 		UserID: f.principal.UserID, WorkerID: f.worker, CreatedAt: at.Add(-time.Hour), LastReportedAt: at.Add(7 * time.Second),
 		Telemetry:    storedTelemetry,
@@ -132,6 +136,21 @@ func newAdmissionServiceFixture(t *testing.T) *admissionServiceFixture {
 		}
 	})
 	return f
+}
+
+func admissionAssistantHost(cwd string) *model.WorkerAssistantHost {
+	reason, providerModel := "not_found", "gpt-5"
+	return &model.WorkerAssistantHost{
+		ProtocolVersion: 1,
+		ObservedAt:      time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC),
+		DefaultCwd:      cwd,
+		DefaultProvider: model.AgentCopilot,
+		Providers: []model.WorkerAssistantProvider{
+			{Provider: model.AgentCodex, Available: true, Args: []string{}},
+			{Provider: model.AgentClaude, Available: false, Reason: &reason, Args: []string{}},
+			{Provider: model.AgentCopilot, Available: true, Model: &providerModel, Args: []string{"--effort", "high"}},
+		},
+	}
 }
 
 func (f *admissionServiceFixture) take(call string) {
