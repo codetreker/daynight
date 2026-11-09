@@ -2,7 +2,7 @@
 
 认证账号可以向自己的近期 Worker 保存并读取一份当前运行观测。它表达运行、调度、容量和异常摘要，不提供日志、事件流、历史查询或补传。资源准入沿用 [Worker 快照合同](daynight-worker-snapshots.md) 的账号身份和 72 小时窗口；本接口不修改心跳、Task、claim 或执行所有权。[服务端设计](../design/daynight-worker-monitoring.md)描述实现与失败隔离。
 
-本页规定交换合同和生产者必须满足的语义；服务端接收能力本身不代表 Worker 采集器或 Web 展示已实现。所有字段必需，除非类型明确为 null。拒绝未知字段、重复字段、未知枚举、错误类型和格式，不补默认值。UUID 使用规范小写形式；sequence 为 `1` 至 `9223372036854775807` 的无前导零十进制字符串；时间解析 RFC3339Nano 后规范化为 UTC。计数和毫秒为不超过 2^53−1 的非负安全整数。
+本页规定交换合同和生产者必须满足的语义；Worker 采集和完整组合验收分别有独立责任。所有字段必需，除非类型明确为 null。拒绝未知字段、重复字段、未知枚举、错误类型和格式，不补默认值。UUID 使用规范小写形式；sequence 为 `1` 至 `9223372036854775807` 的无前导零十进制字符串；时间解析 RFC3339Nano 后规范化为 UTC。计数和毫秒为不超过 2^53−1 的非负安全整数。
 
 ## 闭合状态模型
 
@@ -237,7 +237,9 @@ Redis 键缺席时 HTTP 200 state=absent，revision/runId/sequence/receivedAt/ex
 
 响应 `{observedAt,items:[{workerId,state,revision,receivedAt,expiresAt,summary}]}`，保持请求顺序，最大编码 256 KiB。state 为 available/absent；absent 的 revision/receivedAt/expiresAt/summary 为 null。
 
-summary 仅有 `{capturedAt,lifecycle,scheduler:{phase,coverage,lastSuccessfulAt,nextPollAt},capacity:{observedAt,quality,limit,occupied,available}|null,detailCoverage}`。不含任务名/ID、项目或任务级故障数。只读取已准入 ID 的 GETRANGE 0 2047，不读完整正文、不扫描键空间。Redis 故障为整批明确 503。
+summary 包含 `{capturedAt,lifecycle,scheduler:{phase,coverage,lastSuccessfulAt,nextPollAt},capacity:{observedAt,quality,limit,occupied,available}|null,detailCoverage,admission}`。`admission` 必需，包含原准入观测的 `observedAt`、`coverage`、当前权限过滤后的 `reasonCodes` 和 `permissionProjection`（`current` 或 `restricted`）。原因按下列固定索引排序并去重，最多 13 个。过滤任何原因时为 restricted，不返回隐藏数量；没有 scope、项目/任务/claim ID、名称、路径、错误原文或私有数量。空原因、unknown、partial 或 restricted 不表示无就绪任务；只有原覆盖完整且确实报告 `no-ready-tasks` 才能呈现该原因。无身份的 `cleanup-capacity-blocked` 必须来自独立上报的全局事实。
+
+查询先整批确认 Worker，再仅对已准入 ID 读取 `GETRANGE 0 2047`，不读正文、不扫描键空间；随后在一个当前权限快照中再次确认全部 Worker 并批量核对项目和任务。逐条过滤后才去重，权限或 Redis 故障整批明确失败，不变成空原因或 absent。
 
 ## 错误、CAS 与存储
 
@@ -245,8 +247,30 @@ summary 仅有 `{capturedAt,lifecycle,scheduler:{phase,coverage,lastSuccessfulAt
 
 CAS 顺序：先校验旧帧/版本/key 类型；缺席+非 null revision→state_lost；同 run+sequence+digest→重复；同 run+sequence 不同 digest→sample_conflict；同 run 旧 sequence→sequence_stale；revision 不匹配→revision_conflict；其余用一条 SET EX3600 接受新状态。所有拒绝/重复不写状态和 TTL。
 
-存储 key 为 `dn:worker-monitoring:{userId:workerId}`。首行 JSON 包含 formatVersion=1、revision、runId、sequence、bodyDigest、receivedAtMs、expiresAtMs、summary；连换行最多 2 KiB。正文是 Go 规范 JSON Observation，最多 256 KiB；完整值最多 258 KiB。digest 为规范 Observation JSON 的 SHA-256，不包含 expectedRevision。Lua 只解析首行，sequence 用规范十进制字符串的长度/字典序比较。
+存储 key 为 `dn:worker-monitoring:{userId:workerId}`。首行 JSON 包含 formatVersion=2、revision、runId、sequence、bodyDigest、receivedAtMs、expiresAtMs、summary；连换行最多 2 KiB。正文是 Go 规范 JSON Observation，最多 256 KiB；完整值最多 258 KiB。digest 为规范 Observation JSON 的 SHA-256，不包含 expectedRevision。Lua 只解析首行，sequence 用规范十进制字符串的长度/字典序比较。
+
+首行私有 StoredSummary 包含原摘要和 `admission={observedAt,coverage,reasons}`，最多 16 个 `[codeIndex,scopeToken]`。索引按下表固定；worker scope 为 null，project 是 16 字节 UUID 的规范无 padding base64url，claim 为 project 与 task 各 16 字节拼接后同样编码。claimId 不用于权限核对。token 仅能解码为 16 或 32 字节，必须重新编码逐字一致；非法类型、索引、字段或长度明确拒绝；`no-ready-tasks` 仅配完整覆盖，项目不可用或项目准备失败不得使用 worker scope。私有引用不进入 HTTP 或日志。公共和存储摘要使用独立闭合 codec，原正文保留完整 scope。
+
+| 索引 | ReasonCode |
+| --- | --- |
+| 0 | configuration-unavailable |
+| 1 | configuration-incomplete |
+| 2 | inventory-unavailable |
+| 3 | project-unavailable |
+| 4 | project-preparation-failed |
+| 5 | resource-observation-unavailable |
+| 6 | capacity-full |
+| 7 | cleanup-capacity-blocked |
+| 8 | no-projects-selected |
+| 9 | no-ready-tasks |
+| 10 | claim-unconfirmed |
+| 11 | retained-resource-conflict |
+| 12 | stopping |
 
 MonitoringStore 提供 CompareAndSet(identity,expectedRevision,candidate) / Read(identity) / ReadSummaries(identities)。identity 是 UserID/WorkerID 类型，不是任意 key。CAS result kind 为 accepted/duplicate/revision-conflict/sequence-stale/sample-conflict/state-lost，成功/重复带 receipt；冲突可带内部 metadata。缺席是明确 missing result，Redis/格式/类型错误为 error。驱动/命令只归 Redis adapter，所有操作总 deadline 200 ms；PG 事务不覆盖 Redis。
 
 没有运行注册、租约或持久历史。响应丢失不证明写入失败，客户端必须先读回状态，不得自动重放旧观测。
+
+## 格式切换
+
+正式首行 codec 和 CAS 只接受 v2，不提供旧格式兼容。独立确认存量为空且旧写入已排空时可以直接切换；存量存在或未知时，关闭并排空全部旧 monitoring 写入，以 Redis TIME 为起点等待至少 3600 秒，使合法旧帧按原 TTL 自然过期，再完整部署和验证 v2 Server 并恢复监控，随后部署 Web。监控维护窗口明确返回 503，心跳、Task、claim 和清理保持独立。回滚采用同一排空和自然到期条件；不扫描、迁移或删除键，不延长 TTL。无法确认写入已排空或 Redis 时间达到门槛时，监控保持关闭。操作细节见 [Server README](../../packages/daynight-server/README.md#monitoring-format-transition)。

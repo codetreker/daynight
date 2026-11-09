@@ -46,7 +46,8 @@ or run your own service. The interface supports English and Simplified Chinese.
   and archive requirements are satisfied.
 - **Observe and configure your Workers.** Open My Workers alongside My projects
   to see the current account's recent Workers, online/offline state, resource and
-  software observations, and authorized task snapshots. Detail keeps the last
+  software observations, authorized task snapshots, and current monitoring summaries.
+  Detail shows scheduling, capacity, activities and failure recovery. It keeps the last
   report time and distinguishes an unknown inventory from idle work. Its
   configuration section edits cloud runtime targets and displays reported actual
   values, partial failures and Project preparation or removal outcomes. Saved

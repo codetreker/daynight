@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/monitoring"
 	"github.com/google/uuid"
 	redisclient "github.com/redis/go-redis/v9"
 )
@@ -43,7 +45,7 @@ func fixture(t *testing.T) (*Store, store.MonitoringIdentity, string) {
 	return s, id, k
 }
 func candidate(run, seq, body string) store.MonitoringCandidate {
-	return store.MonitoringCandidate{RunID: run, Sequence: seq, Body: []byte(body), Summary: []byte(`{"capturedAt":"2026-01-01T00:00:00Z","lifecycle":"running","scheduler":{"phase":"initializing","coverage":"unknown","lastSuccessfulAt":null,"nextPollAt":null},"capacity":null,"detailCoverage":"complete"}`)}
+	return store.MonitoringCandidate{RunID: run, Sequence: seq, Body: []byte(body), Summary: []byte(`{"capturedAt":"2026-01-01T00:00:00Z","lifecycle":"running","scheduler":{"phase":"initializing","coverage":"unknown","lastSuccessfulAt":null,"nextPollAt":null},"capacity":null,"detailCoverage":"complete","admission":{"observedAt":"2026-01-01T00:00:00Z","coverage":"unknown","reasons":[]}}`)}
 }
 func TestCASPersistenceAndTTL(t *testing.T) {
 	s, id, k := fixture(t)
@@ -607,5 +609,115 @@ func TestRangeScriptDistinguishesMissingFromEmptyValue(t *testing.T) {
 	value, err := s.client.Get(ctx, k).Result()
 	if err != nil || value != "" {
 		t.Fatalf("empty value changed: %q %v", value, err)
+	}
+}
+
+func TestLegacyFrameExpiresWithoutRenewalBeforeV2Write(t *testing.T) {
+	s, id, k := fixture(t)
+	ctx := context.Background()
+	legacy, c := legacyV1Fixture(t)
+	observation, err := monitoring.ParseObservation(c.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Summary, err = monitoring.Summary(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Use a short fixture TTL to exercise natural expiry; TTL above is asserted
+	// independently as the production 3600-second constant.
+	if err := s.client.Set(ctx, k, legacy, 2*time.Second).Err(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.client.PTTL(ctx, k).Result()
+	if err != nil || before <= 0 {
+		t.Fatalf("legacy TTL: %v %v", before, err)
+	}
+	if _, err := s.Read(ctx, id); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("accepted v1 detail: %v", err)
+	}
+	if _, err := s.ReadSummaries(ctx, []store.MonitoringIdentity{id}); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("accepted v1 summary: %v", err)
+	}
+	if _, err := s.CompareAndSet(ctx, id, nil, c); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("accepted v1 CAS: %v", err)
+	}
+	after, err := s.client.PTTL(ctx, k).Result()
+	if err != nil || after <= 0 || after > before {
+		t.Fatalf("rejected operations renewed TTL: before=%v after=%v err=%v", before, after, err)
+	}
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for s.client.Exists(ctx, k).Val() != 0 {
+		select {
+		case <-deadline.C:
+			t.Fatal("legacy fixture did not expire")
+		case <-ticker.C:
+		}
+	}
+	v2, err := s.CompareAndSet(ctx, id, nil, c)
+	if err != nil || v2.Kind != store.MonitoringAccepted {
+		t.Fatalf("first v2 write after natural expiry: %+v %v", v2, err)
+	}
+	value, err := s.client.Get(ctx, k).Result()
+	if err != nil || !strings.HasPrefix(value, `{"formatVersion":2,`) {
+		t.Fatalf("stored frame is not v2: %v", err)
+	}
+}
+
+func TestActualMaximumSummaryFitsHeader(t *testing.T) {
+	s, identity, k := fixture(t)
+	at := "9999-12-31T23:59:59.999999999Z"
+	project, task, claim := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	reasons := make([]any, 16)
+	for i := range reasons {
+		reasons[i] = map[string]any{"code": "stopping", "scope": map[string]any{"kind": "claim", "projectId": project, "taskId": task, "claimId": claim}, "observedAt": at, "nextAttemptAt": nil}
+	}
+	o := map[string]any{
+		"runId": uuid.NewString(), "sequence": "9223372036854775807", "capturedAt": at, "lifecycle": "starting",
+		"scheduler":    map[string]any{"phase": "resource-observation", "coverage": "complete", "cycleId": nil, "lastCompletedAt": nil, "lastSuccessfulAt": at, "lastOutcome": nil, "nextPollAt": at},
+		"capacity":     map[string]any{"observedAt": at, "quality": "current", "limit": 64, "occupied": int64(9007199254740991), "available": 0, "detailCoverage": "complete"},
+		"admission":    map[string]any{"observedAt": at, "coverage": "complete", "reasons": reasons},
+		"reservations": []any{}, "activities": []any{}, "currentFailures": []any{}, "lastRecovery": nil,
+		"detailCoverage": "complete", "delivery": map[string]any{"lastSucceededAt": nil, "lastFailure": nil},
+	}
+	wire, err := json.Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := monitoring.ParseObservation(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := monitoring.Summary(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := store.MonitoringCandidate{RunID: o["runId"].(string), Sequence: o["sequence"].(string), Body: body, Summary: summary}
+	if result, err := s.CompareAndSet(context.Background(), identity, nil, candidate); err != nil || result.Kind != store.MonitoringAccepted {
+		t.Fatalf("write: %+v %v", result, err)
+	}
+	frame, err := s.client.Get(context.Background(), k).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newline := strings.IndexByte(frame, '\n')
+	if newline < 0 || newline+1 > headerLimit {
+		t.Fatalf("actual header including newline: %d", newline+1)
+	}
+	t.Logf("actual Redis header including LF: %d bytes; summary: %d bytes", newline+1, len(summary))
+	batch, err := s.ReadSummaries(context.Background(), []store.MonitoringIdentity{identity})
+	if err != nil || batch.Values[0] == nil || batch.Values[0].Body != nil {
+		t.Fatalf("summary-only read: %+v %v", batch, err)
+	}
+	stored, err := monitoring.ParseStoredSummary(batch.Values[0].Summary)
+	if err != nil || len(stored.Admission.Reasons) != 16 {
+		t.Fatalf("read stored reasons: %+v %v", stored.Admission, err)
 	}
 }

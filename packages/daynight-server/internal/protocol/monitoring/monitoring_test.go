@@ -50,10 +50,18 @@ func TestSummaryRejectsPrivateOrMalformedData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ParseSummary(summary); err != nil {
+	stored, err := ParseStoredSummary(summary)
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, raw := range []string{strings.Replace(string(summary), `"lifecycle":`, `"projectId":"private","lifecycle":`, 1), strings.Replace(string(summary), `"limit":2`, `"limit":null`, 1)} {
+	public, err := EncodePublicSummary(stored, []string{}, "current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ParseSummary(public); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{strings.Replace(string(public), `"lifecycle":`, `"projectId":"private","lifecycle":`, 1), strings.Replace(string(public), `"limit":2`, `"limit":null`, 1), string(summary)} {
 		if _, err := ParseSummary([]byte(raw)); err == nil {
 			t.Fatalf("accepted corrupt summary %s", raw)
 		}

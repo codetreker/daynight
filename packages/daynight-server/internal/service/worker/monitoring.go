@@ -16,10 +16,13 @@ type monitoringRules struct {
 	scopes            func(monitoring.Observation) ([]string, []string)
 	validateExecution func(monitoring.Observation, store.WorkerMonitoringSources, string, string) error
 	project           func(*monitoring.DetailResponse, store.WorkerMonitoringSources) error
+	summaryScopes     func([]monitoring.StoredSummary) ([]string, []string)
+	projectSummary    func(monitoring.StoredSummary, store.WorkerMonitoringSources) (json.RawMessage, error)
 }
 
 func defaultMonitoringRules() monitoringRules {
-	return monitoringRules{scopes: workercore.MonitoringScopes, validateExecution: workercore.ValidateMonitoringExecution, project: workercore.ProjectMonitoring}
+	return monitoringRules{scopes: workercore.MonitoringScopes, validateExecution: workercore.ValidateMonitoringExecution, project: workercore.ProjectMonitoring,
+		summaryScopes: workercore.MonitoringSummaryScopes, projectSummary: workercore.ProjectMonitoringSummary}
 }
 
 func validateMonitoringIDs(ids []string) error {
@@ -197,6 +200,10 @@ func (s *Workers) getMonitoring(ctx context.Context, p model.Principal, id strin
 	return out, nil
 }
 func (s *Workers) QueryMonitoring(ctx context.Context, p model.Principal, ids []string) (monitoring.QueryResponse, error) {
+	return s.queryMonitoring(ctx, p, ids, defaultMonitoringRules())
+}
+
+func (s *Workers) queryMonitoring(ctx context.Context, p model.Principal, ids []string, rules monitoringRules) (monitoring.QueryResponse, error) {
 	var out monitoring.QueryResponse
 	if err := model.RequirePrincipal(p); err != nil {
 		return out, err
@@ -221,6 +228,23 @@ func (s *Workers) QueryMonitoring(ctx context.Context, p model.Principal, ids []
 	if len(read.Values) != len(ids) {
 		return out, monitoringUnavailable(errors.New("invalid monitoring summary count"))
 	}
+	stored := make([]monitoring.StoredSummary, len(ids))
+	for i, v := range read.Values {
+		if v == nil {
+			continue
+		}
+		stored[i], err = monitoring.ParseStoredSummary(v.Summary)
+		if err != nil {
+			return monitoring.QueryResponse{}, monitoringUnavailable(&store.MonitoringError{Kind: "format", Cause: err})
+		}
+	}
+	projects, tasks := rules.summaryScopes(stored)
+	// Access may change while Redis is being read. Recheck all Workers and
+	// qualify references together in the same current PostgreSQL snapshot.
+	sources, err := s.monitoringResources(ctx, p, ids, projects, tasks)
+	if err != nil {
+		return monitoring.QueryResponse{}, err
+	}
 	out = monitoring.QueryResponse{ObservedAt: read.ObservedAt, Items: make([]monitoring.QueryItem, 0, len(ids))}
 	for i, v := range read.Values {
 		item := monitoring.QueryItem{WorkerID: ids[i], State: "absent"}
@@ -229,9 +253,9 @@ func (s *Workers) QueryMonitoring(ctx context.Context, p model.Principal, ids []
 			item.Revision = &v.Receipt.Revision
 			item.ReceivedAt = &v.Receipt.ReceivedAt
 			item.ExpiresAt = &v.Receipt.ExpiresAt
-			summary, err := monitoring.ParseSummary(v.Summary)
+			summary, err := rules.projectSummary(stored[i], sources)
 			if err != nil {
-				return monitoring.QueryResponse{}, monitoringUnavailable(&store.MonitoringError{Kind: "format", Cause: err})
+				return monitoring.QueryResponse{}, monitoringUnavailable(err)
 			}
 			item.Summary = summary
 		}

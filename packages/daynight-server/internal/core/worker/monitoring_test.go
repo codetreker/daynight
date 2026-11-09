@@ -3,6 +3,7 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -272,4 +273,134 @@ func sameMonitoringIDs(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+func TestMonitoringSummaryFiltersBeforeDeduplication(t *testing.T) {
+	const hiddenProject = "20000000-0000-4000-8000-000000000001"
+	const hiddenTask = "20000000-0000-4000-8000-000000000002"
+	const mismatchedTask = "20000000-0000-4000-8000-000000000003"
+	const observed = "2026-01-01T00:00:00Z"
+	base := fmt.Sprintf(`{"runId":%q,"sequence":"1","capturedAt":%q,"lifecycle":"running","scheduler":{"phase":"waiting-poll","coverage":"complete","cycleId":null,"lastCompletedAt":null,"lastSuccessfulAt":null,"lastOutcome":null,"nextPollAt":null},"capacity":null,"admission":{"observedAt":%q,"coverage":"complete","reasons":[]},"reservations":[],"activities":[],"currentFailures":[],"lastRecovery":null,"detailCoverage":"complete","delivery":{"lastSucceededAt":null,"lastFailure":null}}`, monitorClaim, observed, observed)
+	o, err := monitoring.ParseObservation([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := func(code string, scope map[string]any) any {
+		return map[string]any{"code": code, "scope": scope, "observedAt": observed, "nextAttemptAt": nil}
+	}
+	o["admission"].(map[string]any)["reasons"] = []any{
+		reason("capacity-full", monitorScope(hiddenProject, hiddenTask, monitorClaim)),
+		reason("cleanup-capacity-blocked", map[string]any{"kind": "worker"}),
+		reason("capacity-full", monitorScope(monitorProject, monitorTask, monitorClaim)),
+		reason("project-preparation-failed", map[string]any{"kind": "project", "projectId": monitorProject}),
+		reason("configuration-unavailable", monitorScope(monitorProject, mismatchedTask, monitorClaim)),
+	}
+	raw, err := json.Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err = monitoring.ParseObservation(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := monitoring.Summary(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := monitoring.ParseStoredSummary(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects, tasks := MonitoringSummaryScopes([]monitoring.StoredSummary{summary, summary})
+	if !sameMonitoringIDs(projects, []string{monitorProject, hiddenProject}) || !sameMonitoringIDs(tasks, []string{monitorTask, hiddenTask, mismatchedTask}) {
+		t.Fatalf("reference collection projects=%v tasks=%v", projects, tasks)
+	}
+	completed := monitorTaskSource(t, model.TaskDone, model.WorkerCompleted, monitorWorker, "20000000-0000-4000-8000-000000000004")
+	sources := store.WorkerMonitoringSources{Projects: map[string]string{monitorProject: "Visible Project"}, Tasks: map[string]store.WorkerTaskSource{
+		monitorTask:    completed,
+		mismatchedTask: {Task: model.Task{ProjectID: hiddenProject}},
+	}}
+	result, err := ProjectMonitoringSummary(summary, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public struct {
+		Admission struct {
+			ObservedAt           string   `json:"observedAt"`
+			Coverage             string   `json:"coverage"`
+			ReasonCodes          []string `json:"reasonCodes"`
+			PermissionProjection string   `json:"permissionProjection"`
+		} `json:"admission"`
+	}
+	if err := json.Unmarshal(result, &public); err != nil {
+		t.Fatal(err)
+	}
+	if public.Admission.ObservedAt != observed || public.Admission.Coverage != "complete" || public.Admission.PermissionProjection != "restricted" || !reflect.DeepEqual(public.Admission.ReasonCodes, []string{"project-preparation-failed", "capacity-full", "cleanup-capacity-blocked"}) {
+		t.Fatalf("incorrect projection %s", result)
+	}
+	for _, secret := range []string{hiddenProject, hiddenTask, monitorProject, monitorTask, mismatchedTask, "scope", "reasons"} {
+		if strings.Contains(string(result), secret) {
+			t.Fatalf("private reference leaked: %s", result)
+		}
+	}
+}
+
+func TestMonitoringSummaryOrdersAllReasonsAndRetainsCoverage(t *testing.T) {
+	const observed = "2026-01-01T00:00:00Z"
+	const raw = `{"runId":"10000000-0000-4000-8000-000000000005","sequence":"1","capturedAt":"2026-01-01T00:00:00Z","lifecycle":"running","scheduler":{"phase":"waiting-poll","coverage":"complete","cycleId":null,"lastCompletedAt":null,"lastSuccessfulAt":null,"lastOutcome":null,"nextPollAt":null},"capacity":null,"admission":{"observedAt":"2026-01-01T00:00:00Z","coverage":"complete","reasons":[]},"reservations":[],"activities":[],"currentFailures":[],"lastRecovery":null,"detailCoverage":"complete","delivery":{"lastSucceededAt":null,"lastFailure":null}}`
+	codes := []string{"configuration-unavailable", "configuration-incomplete", "inventory-unavailable", "project-unavailable", "project-preparation-failed", "resource-observation-unavailable", "capacity-full", "cleanup-capacity-blocked", "no-projects-selected", "no-ready-tasks", "claim-unconfirmed", "retained-resource-conflict", "stopping"}
+	o, err := monitoring.ParseObservation([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := make([]any, 0, len(codes))
+	for i := len(codes) - 1; i >= 0; i-- {
+		reasons = append(reasons, map[string]any{"code": codes[i], "scope": map[string]any{"kind": "project", "projectId": monitorProject}, "observedAt": observed, "nextAttemptAt": nil})
+	}
+	o["admission"].(map[string]any)["reasons"] = reasons
+	body, err := json.Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err = monitoring.ParseObservation(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, err := monitoring.Summary(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := monitoring.ParseStoredSummary(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		projects   map[string]string
+		want       []string
+		projection string
+	}{
+		{"visible", map[string]string{monitorProject: "project"}, codes, "current"},
+		{"withdrawn", map[string]string{}, []string{}, "restricted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := ProjectMonitoringSummary(stored, store.WorkerMonitoringSources{Projects: tc.projects})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Admission struct {
+					Codes      []string `json:"reasonCodes"`
+					Coverage   string   `json:"coverage"`
+					Projection string   `json:"permissionProjection"`
+				} `json:"admission"`
+			}
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.Admission.Codes, tc.want) || got.Admission.Coverage != "complete" || got.Admission.Projection != tc.projection {
+				t.Fatalf("projection %s", b)
+			}
+		})
+	}
 }

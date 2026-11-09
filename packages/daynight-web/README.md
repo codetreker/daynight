@@ -454,7 +454,7 @@ unavailable for editing.
 ## My Workers
 
 The account-owned `/workers` list shows Workers that have reported within the
-last 72 hours. `/workers/{workerId}` combines Runtime overview and Configuration
+last 72 hours. `/workers/{workerId}` combines Runtime monitoring and Configuration
 tabs: runtime observations retain that window, while cloud configuration is an
 independent, retained resource. Both routes support direct access, reloads and
 login return destinations. They mount inside the existing authenticated
@@ -471,6 +471,23 @@ time uses the browser time zone and includes seconds. The complete collection
 groups online Workers first while preserving the
 service’s creation-time and Worker ID order within each group. Heartbeats do not
 change that relative order.
+
+The list also reads current monitoring summaries in batches of at most 100 loaded
+Worker IDs and presents their permission-filtered admission reasons. Detail shows scheduling and admission, actual capacity, parallel
+activities, current failures and the latest recovery before host resources. Task
+associations open the existing task detail; fixed diagnostic categories and real
+retry times are displayed without inventing external waits or deadlines.
+
+Monitoring is independent of the existing Worker snapshot. Redis observation
+time and a monotonic browser clock mark an observation stale at 90 seconds and
+expired at 3600 seconds. Missing monitoring, read errors and offline Workers have
+distinct presentations; failed monitoring reads retain dated observations and
+leave host resources visible. Project withdrawal removes associated private
+details and invalidates list reason sets whose individual scopes are unavailable;
+late responses cannot restore them. Total Worker capacity remains visible, and
+reported identity-free reasons return on an admitted reread. Background checks retain page interaction and
+configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
+owns its fields and permission projection.
 
 Detail resource cards render actual OS type/release/version/architecture, CPU
 model/logical processor count/use, used/total memory and available/total capacity
@@ -498,8 +515,8 @@ resource identity and request generations fence late results. The shell's
 Same-account verification retains the last observation but rereads it; account
 replacement destroys the old workspace and its memory.
 
-The visible runtime observation view owns one five-second single-flight refresh
-and one one-second ticker. The list traverses every cursor privately and replaces the collection
+The visible Worker snapshot channel owns a 30-second single-flight refresh
+and a one-second ticker. The list traverses every cursor privately and replaces the collection
 only when the whole traversal succeeds. A failed page retains the previous
 complete collection and exposes retry. Its last response supplies `observedAt`
 and the paired `performance.now()` receipt for a common server-time anchor.

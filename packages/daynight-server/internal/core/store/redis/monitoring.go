@@ -148,10 +148,10 @@ func parseHeader(frame []byte) (header, int, error) {
 		return h, 0, ErrInvalidFrame
 	}
 	digest, err := hex.DecodeString(h.BodyDigest)
-	if h.FormatVersion != 1 || !validUUID(h.Revision) || !validUUID(h.RunID) || !validSequence(h.Sequence) || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != h.BodyDigest || h.ReceivedAtMs <= 0 || h.ExpiresAtMs <= h.ReceivedAtMs || h.ExpiresAtMs > 9007199254740991 || !validObject(h.Summary) {
+	if h.FormatVersion != 2 || !validUUID(h.Revision) || !validUUID(h.RunID) || !validSequence(h.Sequence) || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != h.BodyDigest || h.ReceivedAtMs <= 0 || h.ExpiresAtMs <= h.ReceivedAtMs || h.ExpiresAtMs > 9007199254740991 || !validObject(h.Summary) {
 		return h, 0, ErrInvalidFrame
 	}
-	if _, err := monitoring.ParseSummary(h.Summary); err != nil {
+	if _, err := monitoring.ParseStoredSummary(h.Summary); err != nil {
 		return h, 0, fmt.Errorf("%w: invalid summary: %v", ErrInvalidFrame, err)
 	}
 	return h, i + 1, nil
@@ -201,9 +201,9 @@ if t=='string' then
   if not ok or type(h)~='table' then return redis.error_reply('invalid monitoring header') end
   local fields={formatVersion=true,revision=true,runId=true,sequence=true,bodyDigest=true,receivedAtMs=true,expiresAtMs=true,summary=true}
   for k,_ in pairs(h) do if not fields[k] then return redis.error_reply('invalid monitoring header') end end
-  if h.formatVersion~=1 or not uuid(h.revision) or not uuid(h.runId) or not sequence(h.sequence) or type(h.bodyDigest)~='string' or #h.bodyDigest~=64 or not string.match(h.bodyDigest,'^[0-9a-f]+$') or type(h.receivedAtMs)~='number' or h.receivedAtMs<=0 or h.receivedAtMs~=math.floor(h.receivedAtMs) or type(h.expiresAtMs)~='number' or h.expiresAtMs<=h.receivedAtMs or h.expiresAtMs~=math.floor(h.expiresAtMs) or h.expiresAtMs>9007199254740991 or type(h.summary)~='table' then return redis.error_reply('invalid monitoring header') end
+  if h.formatVersion~=2 or not uuid(h.revision) or not uuid(h.runId) or not sequence(h.sequence) or type(h.bodyDigest)~='string' or #h.bodyDigest~=64 or not string.match(h.bodyDigest,'^[0-9a-f]+$') or type(h.receivedAtMs)~='number' or h.receivedAtMs<=0 or h.receivedAtMs~=math.floor(h.receivedAtMs) or type(h.expiresAtMs)~='number' or h.expiresAtMs<=h.receivedAtMs or h.expiresAtMs~=math.floor(h.expiresAtMs) or h.expiresAtMs>9007199254740991 or type(h.summary)~='table' then return redis.error_reply('invalid monitoring header') end
   local raw=string.sub(prefix,1,n-1)
-  local expected='{"formatVersion":1,"revision":"'..h.revision..'","runId":"'..h.runId..'","sequence":"'..h.sequence..'","bodyDigest":"'..h.bodyDigest..'","receivedAtMs":'..string.format('%.0f',h.receivedAtMs)..',"expiresAtMs":'..string.format('%.0f',h.expiresAtMs)..',"summary":{'
+  local expected='{"formatVersion":2,"revision":"'..h.revision..'","runId":"'..h.runId..'","sequence":"'..h.sequence..'","bodyDigest":"'..h.bodyDigest..'","receivedAtMs":'..string.format('%.0f',h.receivedAtMs)..',"expiresAtMs":'..string.format('%.0f',h.expiresAtMs)..',"summary":{'
   if string.sub(raw,1,#expected)~=expected or string.sub(raw,-2)~='}}' then return redis.error_reply('invalid monitoring header') end
   old=h
 end
@@ -219,7 +219,7 @@ if old and old.revision~=ARGV[1] then return {'revision-conflict'} end
 local now=redis.call('TIME')
 local received=tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000)
 local expires=received+tonumber(ARGV[8])*1000
-local head='{"formatVersion":1,"revision":"'..ARGV[2]..'","runId":"'..ARGV[3]..'","sequence":"'..ARGV[4]..'","bodyDigest":"'..ARGV[5]..'","receivedAtMs":'..string.format('%.0f',received)..',"expiresAtMs":'..string.format('%.0f',expires)..',"summary":'..ARGV[6]..'}\n'
+local head='{"formatVersion":2,"revision":"'..ARGV[2]..'","runId":"'..ARGV[3]..'","sequence":"'..ARGV[4]..'","bodyDigest":"'..ARGV[5]..'","receivedAtMs":'..string.format('%.0f',received)..',"expiresAtMs":'..string.format('%.0f',expires)..',"summary":'..ARGV[6]..'}\n'
 if #head>2048 or #ARGV[7]>262144 or #head+#ARGV[7]>264192 then return redis.error_reply('monitoring frame too large') end
 redis.call('SET',KEYS[1],head..ARGV[7],'EX',ARGV[8])
 return {'accepted',ARGV[2],ARGV[3],ARGV[4],string.format('%.0f',received),string.format('%.0f',expires)}
@@ -265,7 +265,7 @@ func (s *Store) CompareAndSet(ctx context.Context, id store.MonitoringIdentity, 
 	if !validUUID(c.RunID) || !validSequence(c.Sequence) || !validObject(c.Body) || len(c.Body) > bodyLimit || !validObject(c.Summary) || len(c.Summary) > headerLimit {
 		return result, errors.New("invalid monitoring candidate")
 	}
-	if _, err := monitoring.ParseSummary(c.Summary); err != nil {
+	if _, err := monitoring.ParseStoredSummary(c.Summary); err != nil {
 		return result, fmt.Errorf("invalid monitoring summary: %w", err)
 	}
 	exp := ""

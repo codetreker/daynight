@@ -1842,8 +1842,8 @@ The account can store and read one bounded current observation per recent
 Worker. The [contract](../../docs/spec/daynight-worker-monitoring.md) defines
 its closed fields, diagnostic content, permissions and errors; the
 [design](../../docs/design/daynight-worker-monitoring.md) explains storage and
-failure isolation. This server capability does not itself collect Worker state
-or provide a Web presentation.
+failure isolation. Worker capture and Web presentation use the same contract
+with independent lifecycles.
 
 | Method | Path | Result |
 |---|---|---|
@@ -1861,11 +1861,43 @@ write returns `503 monitoring_write_outcome_unknown`; callers must read back an
 unknown result before deciding what to do. Current access filters associated
 names, IDs and private details without changing the Worker's total capacity.
 
-Set `DAYNIGHT_REDIS_URL` to a valid `redis` or `rediss` URL to enable monitoring. The only supported URL query parameter is `db`; connection and retry limits are fixed.
+Summary reads first admit the entire Worker batch and read only each bounded
+Redis header. A current PostgreSQL snapshot rechecks Workers and projects the
+reason references before deduplication. Public summaries contain fixed reason
+codes and projection quality, never private references or hidden counts.
+
+Set `DAYNIGHT_REDIS_URL` to a valid `redis` or `rediss` URL to enable monitoring.
+The only supported URL query parameter is `db`; connection and retry limits are
+fixed.
 If it is empty, the monitoring API returns 503 while existing business APIs and
 readiness continue; a nonempty invalid URL fails configuration validation.
 The Redis connection is owned only by monitoring and is closed during shutdown.
 See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
+
+### Monitoring format transition
+
+The stored header uses strict format version 2; v1 and v2 servers cannot serve
+the same monitoring data concurrently. If an independently verified empty
+monitoring store has no remaining old writer, deploy all v2 servers and verify
+them before deploying the Web consumer. A single absent Worker is not proof
+that the store is empty.
+
+When old data exists or its presence is unknown, make monitoring endpoints
+return 503 and stop and drain every old PUT/CAS writer, including in-flight
+requests. Leave heartbeat, Task, claim and cleanup channels available. Record
+Redis TIME as T0 after the drain and keep writes stopped until Redis TIME is at
+least T0 plus 3600000 milliseconds. Legal old frames then expire under their
+original TTL. Deploy and verify all v2 servers, restore monitoring, and deploy
+the Web consumer. Do not scan or delete keys, extend TTLs, or use a migration
+or compatibility fallback. If the time or writer boundary cannot be verified,
+keep monitoring unavailable. Corrupt or non-expiring data remains an explicit
+storage error.
+
+Rollback uses the same write drain and natural TTL wait for v2 frames, unless an
+independently verified empty store permits a direct transition. This barrier
+can interrupt monitoring for the full hour plus deployment and verification;
+it does not stop Worker business operations. Production operations require
+their own authorization.
 
 ## Worker cloud configuration
 

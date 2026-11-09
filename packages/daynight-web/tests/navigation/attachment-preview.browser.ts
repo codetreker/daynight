@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { hasPaintedPdfMarker, readPdfPixels } from '../helpers/pdf-pixels';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
@@ -49,8 +49,11 @@ async function install(page: Page, linked = false) {
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
-    if (path === root) return send(task);
-    if (linked && path === `/api/v1/projects/${projectId}/tasks/${successorId}`) return send(successor);
+    if (path === `/api/v1/projects/${projectId}/task-graph`) return send(graph);
+    if (path === root || linked && path === `/api/v1/projects/${projectId}/tasks/${successorId}`) return route.fulfill({
+      body: stringifyWireJson(path === root ? task : successor),
+      headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': taskSyncEpoch(projectId) },
+    });
     if (linked && path === `/api/v1/projects/${projectId}/tasks/${successorId}/sessions`) return send({ items: [], nextCursor: null });
     if (path === `${root}/attachments`) return send({ items: files, nextCursor: null });
     if (path === `${root}/sessions`) return send({ items: [], nextCursor: null });
