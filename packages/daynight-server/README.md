@@ -416,16 +416,32 @@ writers remain stopped, with its corresponding loss of later writes.
 ## MCP HTTP entry
 
 The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
-`2026-07-28` and `2025-11-25`. Configure a client with the service's HTTPS URL
-ending in `/mcp` and an `Authorization: Bearer <PAT>` header. The entry also
-accepts MCP OAuth access credentials for its exact resource and `daynight:mcp`
-scope. Standard clients can discover the OAuth authorization server from the
-unauthenticated challenge and authorize through the existing browser account.
-Each request validates its own credential; browser cookies are not accepted. Requests carrying
-an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
-The [OAuth requirements](../../docs/spec/daynight-mcp-oauth.md) and
-[architecture](../../docs/design/daynight-mcp-oauth.md) describe the browser
-journey and protocol composition.
+`2026-07-28` and `2025-11-25`. Open the URL normally, or fetch it with `curl`, to
+read its public Markdown installation manual. The manual uses the configured
+`DAYNIGHT_PUBLIC_ORIGIN` and includes Codex, Claude Code and generic remote HTTP
+configuration, browser authorization and connection verification. A normal HEAD
+returns the same headers without a body. Reading the manual does not authenticate
+or invoke business operations.
+
+Configure a client with the service's HTTPS URL ending in `/mcp`. Standard clients
+discover OAuth from the unauthenticated protocol challenge and request the
+`daynight:mcp` scope through the existing browser account. The account holder
+completes sign-in and consent; adding configuration alone does not authenticate
+the connection. Clients without OAuth can send an `Authorization: Bearer <PAT>`
+header. Each MCP protocol request validates its own credential; browser cookies
+are not accepted. GET and HEAD requests explicitly listing `text/event-stream`
+or carrying MCP protocol, session, method, name or resume headers retain the
+protocol path: unauthenticated requests receive the OAuth challenge, and
+this stateless entry returns `405` with `Allow: POST` after authentication.
+Wildcard Accept values keep the manual readable by browsers and command-line
+fetches. POST always uses the authenticated protocol path.
+
+Host checks, the Origin allowlist, shutdown admission and `Cache-Control: no-store`
+apply to both documentation and protocol requests. An Origin must match
+`DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin. The
+[OAuth requirements](../../docs/spec/daynight-mcp-oauth.md) and
+[architecture](../../docs/design/daynight-mcp-oauth.md) describe discovery,
+the browser journey and protocol composition.
 The endpoint advertises Team lifecycle, membership and scoped Project tools,
 Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of

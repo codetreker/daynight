@@ -1,6 +1,23 @@
-# MCP 浏览器授权需求
+# MCP 连接发现与浏览器授权需求
 
-MCP 客户端可从未认证请求发现授权信息，通过既有 Daynight 账户登录并决定是否授予
+## 安装说明
+
+直接访问 `/mcp` 的普通 GET 返回无需凭据的 UTF-8 Markdown 安装说明，状态为 200。
+未设置 `Accept`、`*/*` 和浏览器常见的 Accept 均可读取说明。普通 HEAD 返回相同响应
+headers 且无正文。说明包含服务配置决定的 canonical endpoint、Codex 与 Claude Code
+安装命令、其他 remote HTTP 客户端的配置示例、OAuth 授权与连接验证步骤。agent 可据此
+完成连接配置；账户持有人仍须参与浏览器登录和授权。说明中的地址不得由请求 Host 或
+forwarded headers 改写。
+
+显式列出 `text/event-stream` 或携带 MCP protocol、session、method、name、resume
+headers 的 GET/HEAD 保留 MCP 协议行为：未认证时返回 401 及 OAuth discovery challenge，
+认证后由 stateless endpoint 返回 405 和 `Allow: POST`。所有 POST 均须认证。
+普通说明读取不调用认证、业务操作或数据库；Host、Origin、禁止缓存和 shutdown 准入检查
+仍须执行，响应发送失败须保留错误记录。
+
+## 浏览器授权
+
+MCP 客户端可从未认证协议请求发现授权信息，通过既有 Daynight 账户登录并决定是否授予
 `daynight:mcp` 访问权限。OAuth access token 仅适用于精确的 `/mcp` 资源，业务操作仍按
 当前账户权限判断；它不能用于普通 REST 或 Worker 入口。
 

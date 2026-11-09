@@ -80,6 +80,7 @@ type Entry struct {
 	auth            Authenticator
 	oauth           OAuthAuthenticator
 	resource        string
+	manual          string
 	logger          *slog.Logger
 	origins         map[string]bool
 	publicHost      string
@@ -102,6 +103,8 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 	if err := config.ValidateMCPOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
 		return nil, err
 	}
+	resource := publicOrigin + "/mcp"
+	manual := renderInstallationManual(resource)
 	origins := make(map[string]bool)
 	origins[publicOrigin] = true
 	for _, origin := range allowedOrigins {
@@ -110,7 +113,7 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 	ctx, cancel := context.WithCancel(context.Background())
 	sdkLogger := slog.New(safeSDKLog{handler: logger.Handler()})
 	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: sdkLogger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
-	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), input: make(chan struct{}, transport.MaxMCPInputOperations), bodyReadTimeout: transport.JSONBodyReadTimeout, ctx: ctx, cancel: cancel}
+	e := &Entry{server: server, auth: auth, oauth: oauth, resource: resource, manual: manual, logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), input: make(chan struct{}, transport.MaxMCPInputOperations), bodyReadTimeout: transport.JSONBodyReadTimeout, ctx: ctx, cancel: cancel}
 	// Raw input is limited before SDK dispatch. Batch correlation adds fewer
 	// than 80 bytes per Task call, each of which occupies over 50 input bytes.
 	// Four times the raw limit therefore bounds the transformed SDK input.
@@ -188,9 +191,14 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodOptions {
 		httpx.CloseUnreadBody(w, r)
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id, MCP-Method, MCP-Name, Last-Event-ID")
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if isInstallationRequest(r) {
+		httpx.CloseUnreadBody(w, r)
+		e.serveInstallationManual(w, r)
 		return
 	}
 	values := r.Header.Values("Authorization")
