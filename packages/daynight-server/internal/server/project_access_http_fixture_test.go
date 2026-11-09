@@ -110,7 +110,7 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 			calls()
 			projectHTTPCheck(t, actor, p)
 			projectHTTPCheck(t, scope, projectHTTPListScope(store.ProjectScopeAll, ""))
-			projectHTTPCheck(t, page, store.Page{Limit: 1})
+			projectHTTPCheck(t, page, store.Page{Limit: 50})
 			return store.ProjectPage{Items: []model.Project{v}}, nil
 		}
 	}

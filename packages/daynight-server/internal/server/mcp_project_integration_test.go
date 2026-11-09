@@ -139,18 +139,16 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 			tx.ReadSnapshotCall = nil
 			tx.WriteTeamCall = nil
 			if request.tool == "team_rename" {
-				read, bounded := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-				mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamBoundedCall: func(ctx context.Context, user, id string, budget int) (model.Team, bool, error) {
+				read, readTeam := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+				mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamCall: func(ctx context.Context, user, id string) (model.Team, error) {
 					read()
 					projectHTTPCheck(t, []string{user, id}, []string{actors[0].UserID, unicodeTeam.ID})
-					projectHTTPCheck(t, budget, 1<<20)
-					return unicodeTeam, false, nil
+					return unicodeTeam, nil
 				}})
-				mcpOrgWriteTeam(t, tx, unicodeTeam.ID, mcpOrgTeamWriter{TeamBoundedCall: func(ctx context.Context, user string, budget int) (model.Team, bool, error) {
-					bounded()
+				mcpOrgWriteTeam(t, tx, unicodeTeam.ID, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
+					readTeam()
 					projectHTTPCheck(t, user, actors[0].UserID)
-					projectHTTPCheck(t, budget, 1<<20)
-					return unicodeTeam, false, nil
+					return unicodeTeam, nil
 				}}, nil)
 			}
 			response, failed := call(0, request.tool, request.args)

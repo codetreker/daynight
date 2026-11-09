@@ -303,19 +303,19 @@ type oauthMCPTeamReader struct {
 	denied              bool
 }
 
-func (d *oauthMCPTeamReader) TeamBounded(_ context.Context, user, id string, budget int) (model.Team, bool, error) {
+func (d *oauthMCPTeamReader) Team(_ context.Context, user, id string) (model.Team, error) {
 	d.plan.Called("team")
 	expected := d.selector
 	if expected == "personal" {
 		expected = d.id
 	}
-	if user != d.actor || id != expected || budget != httpx.MaxJSONBody {
-		unexpectedHTTPCall(d.t, "OAuth Team bounded read arguments")
+	if user != d.actor || id != expected {
+		unexpectedHTTPCall(d.t, "OAuth Team read arguments")
 	}
 	if d.denied {
-		return model.Team{}, false, model.ErrNotFound
+		return model.Team{}, model.ErrNotFound
 	}
-	return model.Team{TeamRef: model.TeamRef{ID: d.id, Kind: "personal"}, Version: 1, Membership: model.TeamMember{TeamID: d.id, UserID: user, Role: model.ProjectAdmin, Version: 1}}, false, nil
+	return model.Team{TeamRef: model.TeamRef{ID: d.id, Kind: "personal"}, Version: 1, Membership: model.TeamMember{TeamID: d.id, UserID: user, Role: model.ProjectAdmin, Version: 1}}, nil
 }
 
 type oauthMCPThreadScope struct {

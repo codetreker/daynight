@@ -209,7 +209,7 @@ func TestMCPThreadProduction(t *testing.T) {
 			t.Fatal("message truncated")
 		}
 	}
-	// Capacity work remains opt-in and uses the complete original wire budgets.
+	// Exact message admission remains opt-in.
 	if os.Getenv("DAYNIGHT_MCP_THREAD_CAPACITY") == "1" {
 		probeModel := message(otherID, "a1111111-1111-4111-8111-111111111114", "x", now.Add(3*time.Second), nil)
 		probe := post(probeModel, nil, model.ThreadMessage{}, model.Task{})
@@ -244,7 +244,7 @@ func TestMCPThreadProduction(t *testing.T) {
 		}
 		p.plan.Verify()
 		tailCandidates := []model.ThreadMessage{maxMessages[3], maxMessages[2], maxMessages[1], maxMessages[0], probeModel}
-		read := planRead(principal, otherID, model.ThreadMessage{}, true, 101, tailCandidates, maxMessages[1].Position(), maxMessages[3].Position(), true, false, nil)
+		read := planRead(principal, otherID, model.ThreadMessage{}, true, 101, tailCandidates, probeModel.Position(), maxMessages[3].Position(), false, false, nil)
 		a = args(otherID)
 		a["count"] = 100
 		result, value = call(client, "task_thread_read", a)
@@ -255,7 +255,7 @@ func TestMCPThreadProduction(t *testing.T) {
 		page := value["data"].(map[string]any)
 		encoded, err = json.Marshal(page)
 		items := page["items"].([]any)
-		if err != nil || len(encoded) > 262144 || len(items) != 3 || items[0].(map[string]any)["id"] != maxMessages[1].ID || items[2].(map[string]any)["id"] != maxMessages[3].ID || page["hasMoreBefore"] != true || page["hasMoreAfter"] != false {
+		if err != nil || len(items) != 5 || items[0].(map[string]any)["id"] != probeModel.ID || items[4].(map[string]any)["id"] != maxMessages[3].ID || page["hasMoreBefore"] != false || page["hasMoreAfter"] != false {
 			t.Fatalf("capacity tail: bytes=%d page=%+v", len(encoded), page)
 		}
 		read = planRead(principal, otherID, maxMessages[1], true, 21, []model.ThreadMessage{maxMessages[0], probeModel}, probeModel.Position(), maxMessages[0].Position(), false, true, nil)

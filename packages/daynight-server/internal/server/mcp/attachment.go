@@ -20,7 +20,7 @@ import (
 var attachmentToolsJSON []byte
 
 type attachmentOperations interface {
-	ListBounded(context.Context, model.Principal, string, string, model.PageRequest, int, int) (attachmentcore.Page, error)
+	List(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error)
 	Delete(context.Context, model.Principal, string, string, string) error
 }
 
@@ -72,7 +72,6 @@ func RegisterAttachmentTools(e *Entry, attachments attachmentOperations) error {
 		var err error
 		switch name {
 		case "task_attachment_list":
-			// Legacy paths can exceed the current write limit.
 			err = e.registerReadTool(definition, func(json.RawMessage) BudgetClass { return BudgetLarge }, handler)
 		case "task_attachment_remove":
 			err = e.RegisterTool(definition, BudgetControl, handler)
@@ -99,77 +98,15 @@ func listAttachments(ctx context.Context, actor RequestActor, attachments attach
 	if input.Limit != nil {
 		limit = *input.Limit
 	}
-	page, err := attachments.ListBounded(ctx, actor.Principal, project, task, model.PageRequest{Limit: limit, Cursor: input.Cursor}, 2048, 8192)
+	page, err := attachments.List(ctx, actor.Principal, project, task, model.PageRequest{Limit: limit, Cursor: input.Cursor})
 	if err != nil {
 		return ToolResult{}, err
 	}
-	if len(page.Items) > 0 && len(page.Oversized) > 0 && page.Oversized[0] && page.Items[0].Path == "" {
-		// Re-read at most one item under the large permit. The cursor is applied
-		// again in a new snapshot, so a changed first row becomes the observation.
-		page, err = attachments.ListBounded(ctx, actor.Principal, project, task, model.PageRequest{Limit: 1, Cursor: input.Cursor}, 4<<20, 8192)
-		if err != nil {
-			return ToolResult{}, err
-		}
-	}
-	result := attachmentPage{Items: make([]attachmentWire, 0, len(page.Items))}
-	base, err := json.Marshal(envelope{Data: result, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-	if err != nil {
-		return ToolResult{}, err
-	}
-	itemBytes := 0
-	for i, item := range page.Items {
-		if i < len(page.Oversized) && page.Oversized[i] {
-			if i == 0 {
-				return oversizedAttachment(actor, project, task, item)
-			}
-			break
-		}
-		wire := attachmentWire{item.Path, item.ContentType, Decimal(item.SizeBytes), item.CreatedAt.UTC(), item.UpdatedAt.UTC()}
-		encoded, err := json.Marshal(wire)
-		if err != nil {
-			return ToolResult{}, err
-		}
-		candidateBytes := itemBytes + len(encoded)
-		if i > 0 {
-			candidateBytes++
-		}
-		var cursor *string
-		if i < len(page.Items)-1 || page.NextCursor != nil {
-			trimmed, err := attachmentcore.MakePage(store.AttachmentPage{Items: page.Items[:i+1], HasMore: true}, project, task)
-			if err != nil {
-				return ToolResult{}, err
-			}
-			cursor = trimmed.NextCursor
-		}
-		cursorJSON, err := json.Marshal(cursor)
-		if err != nil {
-			return ToolResult{}, err
-		}
-		// The empty page already contains nextCursor:null and [] for items.
-		if len(base)+candidateBytes+len(cursorJSON)-len("null") > 16<<10 {
-			if i == 0 {
-				return oversizedAttachment(actor, project, task, item)
-			}
-			break
-		}
-		result.Items = append(result.Items, wire)
-		result.NextCursor = cursor
-		itemBytes = candidateBytes
+	result := attachmentPage{Items: make([]attachmentWire, 0, len(page.Items)), NextCursor: page.NextCursor}
+	for _, item := range page.Items {
+		result.Items = append(result.Items, attachmentWire{item.Path, item.ContentType, Decimal(item.SizeBytes), item.CreatedAt.UTC(), item.UpdatedAt.UTC()})
 	}
 	return ToolResult{Data: result}, nil
-}
-
-func oversizedAttachment(actor RequestActor, project, task string, item model.Attachment) (ToolResult, error) {
-	refs := map[string]any{"projectId": project, "taskId": task}
-	if item.Path == "" {
-		return ToolResult{Refs: refs}, &model.Fault{Code: "resource_conflict", Message: "Attachment path exceeds the MCP input limit and cannot be referenced by this tool."}
-	}
-	continuation, err := attachmentcore.MakePage(store.AttachmentPage{Items: []model.Attachment{item}, HasMore: true}, project, task)
-	if err != nil {
-		return ToolResult{}, err
-	}
-	refs["path"], refs["restListPath"], refs["nextCursor"] = item.Path, "/api/v1/projects/"+project+"/tasks/"+task+"/attachments", continuation.NextCursor
-	return ToolResult{Refs: refs}, &model.Fault{Code: "resource_conflict", Message: "MCP cannot return this attachment metadata within the page budget. Use GET restListPath with a PAT or browser session and follow REST nextCursor pages to find path. MCP OAuth access tokens cannot authenticate REST. Continue MCP with nextCursor."}
 }
 
 func removeAttachment(ctx context.Context, actor RequestActor, attachments attachmentOperations, input attachmentInput) (ToolResult, error) {

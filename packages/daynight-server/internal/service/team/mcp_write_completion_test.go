@@ -33,13 +33,13 @@ func (s *mcpUnknownWrite) call(ctx context.Context, method string) {
 func (s *mcpUnknownWrite) WriteTeam(ctx context.Context, id string, operation func(store.TeamWriteScope) error) (store.Completion, error) {
 	s.calls++
 	if ctx != s.ctx || id != mcpAdmissionTeam || s.calls != 1 {
-		s.t.Fatal("unexpected bounded Team write")
+		s.t.Fatal("unexpected Team write")
 	}
 	if err := operation(s); err != nil {
-		s.t.Fatalf("unexpected bounded Team operation error: %v", err)
+		s.t.Fatalf("unexpected Team operation error: %v", err)
 	}
 	if len(s.pending) != 0 {
-		s.t.Errorf("unconsumed bounded write: %v", s.pending)
+		s.t.Errorf("unconsumed write: %v", s.pending)
 	}
 	return store.Completion{Outcome: store.TransactionUnknown}, s.failure
 }
@@ -49,12 +49,12 @@ func mcpUnconfirmedTeam() model.Team {
 	name := "Original"
 	return model.Team{TeamRef: model.TeamRef{ID: mcpAdmissionTeam, Kind: "ordinary", Name: &name}, Version: 1, Membership: model.TeamMember{TeamID: mcpAdmissionTeam, UserID: mcpAdmissionUser, Role: model.ProjectAdmin, Version: 1}}
 }
-func (s *mcpUnknownWrite) TeamBounded(ctx context.Context, user string, max int) (model.Team, bool, error) {
-	s.call(ctx, "TeamBounded")
-	if user != mcpAdmissionUser || max != 1<<20 {
-		s.t.Errorf("bounded Team user/limit: %s/%d", user, max)
+func (s *mcpUnknownWrite) Team(ctx context.Context, user string) (model.Team, error) {
+	s.call(ctx, "Team")
+	if user != mcpAdmissionUser {
+		s.t.Errorf("Team user: %s", user)
 	}
-	return mcpUnconfirmedTeam(), false, nil
+	return mcpUnconfirmedTeam(), nil
 }
 func (s *mcpUnknownWrite) Member(ctx context.Context, user string) (model.TeamMember, error) {
 	s.call(ctx, "Member")
@@ -95,7 +95,7 @@ func (s *mcpUnknownWrite) LockAffected(ctx context.Context, filter store.Webhook
 	}
 	return nil, nil
 }
-func TestMCPBoundedTeamWritesPreserveUnknownCompletion(t *testing.T) {
+func TestMCPTeamWritesPreserveUnknownCompletion(t *testing.T) {
 	for _, method := range []string{"rename", "delete", "leave", "set_role", "remove"} {
 		t.Run(method, func(t *testing.T) {
 			cause := &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("lost commit")}
@@ -105,29 +105,29 @@ func TestMCPBoundedTeamWritesPreserveUnknownCompletion(t *testing.T) {
 			var err error
 			switch method {
 			case "rename":
-				db.pending = []string{"TeamBounded", "Rename"}
-				result, failure := service.RenameBounded(t.Context(), principal, mcpAdmissionTeam, coreteam.ChangeTeam{Name: "Changed", Version: 1, ExpectedUserID: principal.UserID}, 1<<20)
+				db.pending = []string{"Team", "Rename"}
+				result, failure := service.Rename(t.Context(), principal, mcpAdmissionTeam, coreteam.ChangeTeam{Name: "Changed", Version: 1, ExpectedUserID: principal.UserID})
 				err = failure
 				if result.ID != "" {
 					t.Errorf("uncertain rename exposed data: %+v", result)
 				}
 			case "delete":
-				db.pending = []string{"TeamBounded", "HasProjects", "Delete", "LockAffected"}
-				err = service.DeleteBounded(t.Context(), principal, mcpAdmissionTeam, coreteam.ChangeTeam{Name: "Original", Version: 1, ExpectedUserID: principal.UserID}, 1<<20)
+				db.pending = []string{"Team", "HasProjects", "Delete", "LockAffected"}
+				err = service.Delete(t.Context(), principal, mcpAdmissionTeam, coreteam.ChangeTeam{Name: "Original", Version: 1, ExpectedUserID: principal.UserID})
 			default:
 				target := mcpAdmissionTarget
 				if method == "leave" {
 					target = mcpAdmissionUser
 				}
-				db.pending = []string{"TeamBounded", "Member", "RemoveMember", "LockAffected"}
+				db.pending = []string{"Team", "Member", "RemoveMember", "LockAffected"}
 				input := coreteam.ChangeTeamMember{Version: 1, ExpectedUserID: principal.UserID}
 				var result coreteam.TeamMemberResult
 				if method == "set_role" {
 					input.Role = model.ProjectAdmin
-					db.pending = []string{"TeamBounded", "Member", "SetMemberRole", "LockAffected"}
-					result, err = service.SetMemberRoleBounded(t.Context(), principal, mcpAdmissionTeam, target, input, 1<<20)
+					db.pending = []string{"Team", "Member", "SetMemberRole", "LockAffected"}
+					result, err = service.SetMemberRole(t.Context(), principal, mcpAdmissionTeam, target, input)
 				} else {
-					result, err = service.RemoveMemberBounded(t.Context(), principal, mcpAdmissionTeam, target, input, 1<<20)
+					result, err = service.RemoveMember(t.Context(), principal, mcpAdmissionTeam, target, input)
 				}
 				if result.Membership.UserID != "" || result.ActorRole != nil {
 					t.Errorf("uncertain membership exposed data: %+v", result)

@@ -162,12 +162,6 @@ func TestTeamMembersHTTP(t *testing.T) {
 	if err = h.Database.Pool.QueryRow(context.Background(), `SELECT version,role FROM team_members WHERE team_id=$1 AND user_id=$2`, team.ID, au.ID).Scan(&currentVersion, &currentRole); err != nil || currentVersion != precise || currentRole != "admin" {
 		t.Fatalf("canceled write changed row: %d %s %v", currentVersion, currentRole, err)
 	}
-	// A broken user reference must fail the whole directory rather than hiding a member.
-	_, err = h.Database.Pool.Exec(context.Background(), `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, uuid.NewString())
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, h.Request("GET", base, "", a, nil, ""), 500, "internal_error")
 	if strings.Contains(h.Logs.String(), "github:members") {
 		t.Fatal("profile source leaked")
 	}

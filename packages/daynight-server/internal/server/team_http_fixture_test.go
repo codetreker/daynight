@@ -8,7 +8,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/google/uuid"
 )
 
@@ -23,10 +22,6 @@ func (d teamHTTPReader) Team(ctx context.Context, user, id string) (model.Team, 
 	return d.Read(ctx, user, id)
 }
 func (d teamHTTPReader) Teams(ctx context.Context, user string, page store.Page) (store.TeamPage, error) {
-	return d.List(ctx, user, page)
-}
-func (d teamHTTPReader) TeamsBounded(ctx context.Context, user string, page store.Page, budget int) (store.TeamPage, error) {
-	projectHTTPCheck(d.t, budget, coreteam.MaxPageResponseJSONBytes)
 	return d.List(ctx, user, page)
 }
 

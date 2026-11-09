@@ -11,7 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 )
 
-func TestDownloadMetadataAndErrorsAreBounded(t *testing.T) {
+func TestDownloadMetadataAndInputErrors(t *testing.T) {
 	entry := newEntryFixture(t)
 	var expected mcpdownload.Input
 	var data map[string]any
@@ -49,9 +49,8 @@ func TestDownloadMetadataAndErrorsAreBounded(t *testing.T) {
 			args["transferId"], expected.TransferID = testTeamID, testTeamID
 		}
 		out := invitationCall(t, client, "task_attachment_read", args, wantError)
-		encoded, err := json.Marshal(out)
-		if err != nil || len(encoded) > 16<<10 {
-			t.Fatalf("%s response exceeds encoded limit: %d %v", action, len(encoded), err)
+		if _, err := json.Marshal(out); err != nil {
+			t.Fatalf("%s response encoding: %v", action, err)
 		}
 		return out
 	}
@@ -62,17 +61,19 @@ func TestDownloadMetadataAndErrorsAreBounded(t *testing.T) {
 			t.Fatalf("metadata included bytes: %#v", out)
 		}
 	}
-	data, failure = nil, &model.Fault{Code: "resource_conflict", Message: "Attachment metadata exceeds the read limit."}
+	data, failure = nil, &model.Fault{Code: "not_found", Message: "Attachment was not found."}
 	for _, action := range []string{"", "inspect", "open"} {
-		if out := invoke(action, "file", true); object(t, out["error"])["code"] != "resource_conflict" {
+		if out := invoke(action, "file", true); object(t, out["error"])["code"] != "not_found" {
 			t.Fatalf("metadata refusal: %#v", out)
 		}
 	}
 	longValidPath := strings.TrimSuffix(strings.Repeat(strings.Repeat("<", 90)+"/", 10), "/")
 	data, failure = map[string]any{"attachment": map[string]any{"path": longValidPath, "contentType": `text/plain; name="` + strings.Repeat("<", 1900) + `"`}}, nil
 	for _, action := range []string{"", "inspect", "open"} {
-		if out := invoke(action, longValidPath, true); object(t, out["error"])["code"] != "payload_too_large" {
-			t.Fatalf("encoded metadata limit: %#v", out)
+		out := invoke(action, longValidPath, false)
+		encoded, err := json.Marshal(out)
+		if err != nil || len(encoded) <= 16<<10 {
+			t.Fatalf("complete metadata response: %d %v", len(encoded), err)
 		}
 	}
 	before := calls
@@ -86,45 +87,6 @@ func TestDownloadMetadataAndErrorsAreBounded(t *testing.T) {
 	}
 	if calls != before || calls != 9 {
 		t.Fatalf("service calls=%d want=%d", calls, before)
-	}
-}
-
-type escapedMetadataReader struct{ count int }
-
-func (s *escapedMetadataReader) Read(_ context.Context, _ mcptransfer.Actor, _ mcpdownload.Input) (map[string]any, error) {
-	return map[string]any{"attachment": map[string]any{"path": "file", "contentType": strings.Repeat("<", s.count)}}, nil
-}
-func (s *escapedMetadataReader) ReadAdmitted(ctx context.Context, actor mcptransfer.Actor, input mcpdownload.Input, _ func(context.Context) error) (map[string]any, error) {
-	return s.Read(ctx, actor, input)
-}
-
-func TestDownloadEncodedMetadataBudget(t *testing.T) {
-	entry := newEntryFixture(t)
-	reader := &escapedMetadataReader{}
-	if err := RegisterDownloadTool(entry.entry, reader); err != nil {
-		t.Fatal(err)
-	}
-	client := entry.client(t, "2026-07-28", "alice")
-	for _, action := range []string{"", "inspect", "open"} {
-		args := map[string]any{"projectId": testProjectID, "taskId": testTargetID, "path": "file"}
-		if action != "" {
-			args["action"] = action
-		}
-		if action == "open" {
-			args["transferId"] = testTeamID
-		}
-		reader.count = 2000
-		out := invitationCall(t, client, "task_attachment_read", args, false)
-		encoded, err := json.Marshal(out)
-		if err != nil || len(encoded) > 16<<10 {
-			t.Fatalf("%s valid output exceeds budget: %d %v", action, len(encoded), err)
-		}
-		reader.count = 3000
-		out = invitationCall(t, client, "task_attachment_read", args, true)
-		encoded, err = json.Marshal(out)
-		if err != nil || len(encoded) > 16<<10 || object(t, out["error"])["code"] != "payload_too_large" {
-			t.Fatalf("%s oversize result: %d %s %v", action, len(encoded), encoded, err)
-		}
 	}
 }
 

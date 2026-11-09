@@ -119,16 +119,13 @@ func TestTeamToolsReturnConfirmedReceiptsAndMemberProfiles(t *testing.T) {
 		})
 	}
 	mocks.verify()
-	mocks.expect("Teams.MembersAdmitted")
+	mocks.expect("Teams.MembersPage")
 	name := "Member"
 	stamp := time.Date(2026, 8, 1, 12, 0, 0, 0, time.FixedZone("local", 7200))
 	members := []model.TeamMemberProfile{{Membership: model.TeamMember{TeamID: unknownTeam, UserID: unknownTarget, Role: model.ProjectMemberRole, Version: 9007199254740993, CreatedAt: stamp, UpdatedAt: stamp}, Profile: model.ProjectParticipantProfile{Name: &name}}}
-	mocks.teams.MembersAdmittedFunc = func(_ context.Context, _ model.Principal, id string, request model.PageRequest, measure func([]model.TeamMemberProfile, *string) error) (coreteam.MemberPage, error) {
+	mocks.teams.MembersPageFunc = func(_ context.Context, _ model.Principal, id string, request model.PageRequest) (coreteam.MemberPage, error) {
 		if id != unknownTeam || request.Limit != 50 || request.Cursor != nil {
-			t.Errorf("MembersAdmitted(%s, %+v)", id, request)
-		}
-		if err := measure(members, nil); err != nil {
-			return coreteam.MemberPage{}, err
+			t.Errorf("MembersPage(%s, %+v)", id, request)
 		}
 		return coreteam.MemberPage{Items: members}, nil
 	}

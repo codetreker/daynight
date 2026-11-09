@@ -11,8 +11,8 @@
 | 所有者 | 职责 |
 | --- | --- |
 | `src/app/CurrentAccountContext.tsx` | 从 AuthenticatedApp 直接提供当前 session.user 与认证准入状态，跨 portal 覆盖独立页和项目详情 |
-| `src/features/task-thread/contract.ts` | 浏览器消费者的 scope/query 类型、消息一致性和数据预算；复用浏览器安全的 API parser |
-| `src/features/task-thread/json.ts` | 有界响应流、fatal UTF-8 和原始 JSON 来源准入 |
+| `src/features/task-thread/contract.ts` | 浏览器消费者的 scope/query 类型、消息一致性和条数窗口；复用浏览器安全的 API parser |
+| `src/features/task-thread/json.ts` | 响应流、fatal UTF-8、错误传输限额和原始 JSON 来源解析 |
 | `src/features/task-thread/api.ts` | Thread 路由、身份头、HTTP 结果、dispatch 边界及确认资源 |
 | `src/features/task-thread/controller.ts` | 页面内存、订阅、请求代际、连续读取、历史、草稿、发送与容量 |
 | `src/ui/ChatMarkdown.tsx`、`useTimelineScroll.ts`、`reading-text-anchor.ts` | Session与Discussion共用的纯Markdown和阅读锚点原语 |
@@ -31,7 +31,7 @@ CLI的`src/api/thread.ts`、`json-source.ts`和相关纯校验代码不依赖Nod
 
 fetch 返回后，先检查请求 ticket、scope generation、lifetime 和当前账号，再检查 Daynight-User-ID。只有仍属于当前 live scope 的响应才能触发 principalMismatch；回调自身也重验准入。解码后发布之前重复检查，避免旧成功响应或旧错误账号头影响新账号。普通同 UID 身份重新验证不退休任务 scope。
 
-响应使用 `ReadableStream` 逐块累计真实字节并以 fatal UTF-8 解码；不先调用 response.text。页面最多 262,144 字节、消息最多 65,536 字节，错误 envelope 有单独的较小上限。原始消息区间保留服务端实际 HTML 转义预算；不以 JSON.stringify 的较短输出替代 wire 大小。共享 source scanner 在对象解码前拒绝重复键、未知字段、损坏输入和过深结构。
+成功响应使用 `ReadableStream` 与 fatal UTF-8 解码，沿用媒体类型、abort 和 15 秒期限，不执行 Thread 页面或单消息读取字节准入；错误 envelope 保留独立 16 KiB 传输上限。共享 source scanner 在对象解码前拒绝重复键、未知字段、损坏输入和过深结构；来源解析保留服务端完整字段和字符串。
 
 有类型解析要求小写 canonical UUID、真实 UTC 日期及固定三位毫秒、大写 Agent 布尔、必填 nullable displayName、完整且合法的可选 execution。details 的 Agent 消息必须含 claimId/workerId/provider，普通账号必须省略来源。页面严格升序、ID 唯一、数量不超过请求 count，空页两个 hasMore 均为 false。
 
@@ -57,15 +57,15 @@ POST 回执、历史、引用和详情永不推进连续位置。已消费 A、�
 
 | 数据窗口 | 上限 |
 | --- | --- |
-| visible | 200 条、2,097,152 数据字节 |
-| incoming | 100 条、1,048,576 数据字节 |
-| 引用 LRU | 16 条、1,048,576 数据字节，固定项也计入上限 |
+| visible | 200 条 |
+| incoming | 100 条 |
+| 引用 LRU | 16 条，固定项也计入条数 |
 | 读取并发 | 正向 1 个、历史 1 个、引用解析 1 组 |
-| 固定项 | 阅读锚点至多 1 条、最新确认回执至多 1 条、唯一在途 POST 预留 1 条/65,536 字节 |
+| 固定项 | 阅读锚点至多 1 条、最新确认回执至多 1 条、唯一在途 POST 预留 1 条 |
 
-数据字节和条数共同限制保留内容，不是 JavaScript 堆大小或模型 token 承诺。相同 ID 共享已验证资源，不为每个视图复制正文。新确认回执替换前一回执固定项；已展示的自己回执不因尚未被连续 GET 覆盖而无限固定。
+条数限制保留的消息身份，不执行正文或引用的读取字节准入，也不承诺固定 JavaScript 堆大小或模型 token 数量。相同 ID 共享已验证资源，不为每个视图复制正文。新确认回执替换前一回执固定项；已展示的自己回执不因尚未被连续 GET 覆盖而无限固定。
 
-incoming保留完整连续缓冲区间，包括已经在visible出现的回执；新消息数量只统计incoming中当前未展示的Id，不冒充服务端总积压。当前读取区间完整覆盖缓冲区间后才可清除incoming。有缓冲消息的reveal以完整incoming重建区间并保留固定项，其他已展示消息可重读；空缓冲且无容量暂停的跳转保留原区间并恢复底部阅读；需要释放追赶容量时可缩到原区间最新已读取单项，不把分离的可见项提升为区间边界。显式导航可以移出尚未被连续GET覆盖的自己回执，移出绝不改变连续位置。incoming上限加3个固定项最多103条/1,245,184字节，再加完整50条/262,144字节正向页仍低于visible双上限，因而释放空间后可继续追赶。
+incoming保留完整连续缓冲区间，包括已经在visible出现的回执；新消息数量只统计incoming中当前未展示的Id，不冒充服务端总积压。当前读取区间完整覆盖缓冲区间后才可清除incoming。有缓冲消息的reveal以完整incoming重建区间并保留固定项，其他已展示消息可重读；空缓冲且无容量暂停的跳转保留原区间并恢复底部阅读；需要释放追赶容量时可缩到原区间最新已读取单项，不把分离的可见项提升为区间边界。显式导航可以移出尚未被连续GET覆盖的自己回执，移出绝不改变连续位置。incoming 上限加三个固定项最多 103 条，再加完整 50 条正向页仍低于 visible 的 200 条上限，因而释放条数空间后可继续追赶。
 
 `windowIds`只表示一个已接纳且仍保留的连续服务端区间；分离的阅读锚点和自己POST回执可以继续可见，但不属于该区间。applyVisible从完整候选序列按被移出项划分连续段，按操作方向选择最旧或最新的边缘段；已有读取区间的裁剪至少保留一个已读取成员，保留可导航边界。方向可用性根据所有已知候选、移出项和可见项相对所选区间端点的位置计算，不能用分离可见项扩张区间。
 
@@ -85,7 +85,7 @@ incoming保留完整连续缓冲区间，包括已经在visible出现的回执�
 
 composer 保存完整原始 body，不 trim、重排换行或破坏代码缩进。空白仅用于可用性校验，另拒绝 NUL、非法 Unicode 和原始 UTF-8 超过 64 KiB。Ctrl/Command+Enter 发言，IME composing 不触发。同一 controller 最多一个 POST；等待结果期间仍可编辑草稿和回复。
 
-发送捕获 body、replyTo、账号及草稿/回复 revision。有效 201 要求身份头、完整默认资源、author.userId、Agent=false、body 和 replyTo 回显全部匹配。完整验证后立即停止网络计时并记录远端 confirmed，再等待同 UID 认证准入；之后的本地取消或准入失败不能改成 unknown。确认资源只占一个在途槽及其容量预留；真正scope退休仍阻止旧资源发布。confirmed之后的本地准入失败进入readError并以admit阶段诊断，保留confirmed资源与远端结果，不写入postError或显示“未发送”。
+发送捕获 body、replyTo、账号及草稿/回复 revision。有效 201 要求身份头、完整默认资源、author.userId、Agent=false、body 和 replyTo 回显全部匹配。完整验证后立即停止网络计时并记录远端 confirmed，再等待同 UID 认证准入；之后的本地取消或准入失败不能改成 unknown。确认资源只占一个在途槽及一条消息预留；真正scope退休仍阻止旧资源发布。confirmed之后的本地准入失败进入readError并以admit阶段诊断，保留confirmed资源与远端结果，不写入postError或显示“未发送”。
 
 准入后按 ID 合并消息。仅当各自 revision 仍等于发送快照时清空草稿或回复，不清理后续编辑。201 的 displayName 不要求等于页面当前名称，改名可以与发言同时发生。
 
@@ -103,6 +103,6 @@ Markdown 使用共享安全聊天 renderer，保留 GFM、软换行和隔离的 
 
 可按component、taskId及既有requestId过滤浏览器诊断，并关联服务端component=task_thread日志；没有requestId的网络失败只使用任务、阶段和浏览器时间定位，不能据此推断Agent已读。
 
-功能验证覆盖来源 decoder、A/B/C 连续性、初始空后积压、独立历史及引用、容量双边界、连续自己发言的回执替换、认证暂停及迟到响应、明确/未知/确认结果、确认后准入失败、正文与 revision、page/modal/fullscreen 焦点和窄屏滚动。真实服务与浏览器互操作证据与单元中的可控传输区分；常规 CI 不运行压力负载。完整命令由 [Web 指南](../../packages/daynight-web/README.md#validation-and-build)拥有。
+功能验证覆盖来源 decoder、A/B/C 连续性、初始空后积压、独立历史及引用、条数窗口边界、完整大消息页、连续自己发言的回执替换、认证暂停及迟到响应、明确/未知/确认结果、确认后准入失败、正文与 revision、page/modal/fullscreen 焦点和窄屏滚动。真实服务与浏览器互操作证据与单元中的可控传输区分；常规 CI 不运行压力负载。完整命令由 [Web 指南](../../packages/daynight-web/README.md#validation-and-build)拥有。
 
-[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)保存职责划分、复用和有界内存的取舍。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)保存原职责划分、复用和窗口容量的取舍；[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)记录保留条数窗口并移除读取字节准入的职责。

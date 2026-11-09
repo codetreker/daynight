@@ -157,7 +157,7 @@ func TestProjectDeletionHTTPClaimPagesAndPhases(t *testing.T) {
 	}
 }
 
-func TestProjectDeletionHTTPPreviewBudget(t *testing.T) {
+func TestProjectDeletionHTTPPreviewPageCount(t *testing.T) {
 	h := membershipTestHarness(t)
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
@@ -173,29 +173,24 @@ func TestProjectDeletionHTTPPreviewBudget(t *testing.T) {
 	}
 	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
 	for _, id := range ids {
-		if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,$3)`, id, h.project.ID, strings.Repeat("<", 100000)); err != nil {
+		if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,$3)`, id, h.project.ID, strings.Repeat("<", 256)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	path := base + "/deletion-preview?limit=100"
-	first := h.call("GET", path, "", h.admin)
-	p := decodeResponse[api.ProjectDeletionPreview](t, first, 200)
-	if len(first.Body.Bytes()) > 1<<20 || len(p.ActiveClaims) != 1 || p.ActiveClaims[0].TaskID != ids[0] || p.NextCursor == nil {
-		t.Fatalf("first budgeted page: bytes=%d claims=%d cursor=%v", first.Body.Len(), len(p.ActiveClaims), p.NextCursor)
+	complete := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", base+"/deletion-preview?limit=100", "", h.admin), 200)
+	if len(complete.ActiveClaims) != 2 || complete.ActiveClaims[0].TaskID != ids[0] || complete.ActiveClaims[1].TaskID != ids[1] || complete.NextCursor != nil {
+		t.Fatalf("complete page: %+v", complete)
 	}
-	second := h.call("GET", path+"&cursor="+*p.NextCursor, "", h.admin)
-	p = decodeResponse[api.ProjectDeletionPreview](t, second, 200)
-	if len(second.Body.Bytes()) > 1<<20 || len(p.ActiveClaims) != 1 || p.ActiveClaims[0].TaskID != ids[1] || p.NextCursor != nil {
-		t.Fatalf("second budgeted page: bytes=%d claims=%d cursor=%v", second.Body.Len(), len(p.ActiveClaims), p.NextCursor)
+	path := base + "/deletion-preview?limit=1"
+	first := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", path, "", h.admin), 200)
+	if len(first.ActiveClaims) != 1 || first.ActiveClaims[0].TaskID != ids[0] || first.NextCursor == nil {
+		t.Fatalf("first page: %+v", first)
 	}
-	if _, err = h.Database.Pool.Exec(ctx, `UPDATE tasks SET title=$2 WHERE id=$1`, ids[0], strings.Repeat("<", 200000)); err != nil {
-		t.Fatal(err)
+	next := decodeResponse[api.ProjectDeletionPreview](t, h.call("GET", path+"&cursor="+*first.NextCursor, "", h.admin), 200)
+	if len(next.ActiveClaims) != 1 || next.ActiveClaims[0].TaskID != ids[1] || next.NextCursor != nil {
+		t.Fatalf("continuation: %+v", next)
 	}
-	if _, err = h.Database.Pool.Exec(ctx, `UPDATE tasks SET title=$2 WHERE id=$1`, ids[1], strings.Repeat("<", 200000)); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, h.call("GET", path, "", h.admin), 413, "payload_too_large")
 }

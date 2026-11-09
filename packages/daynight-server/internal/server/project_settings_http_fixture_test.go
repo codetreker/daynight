@@ -3,12 +3,10 @@ package server
 import (
 	"context"
 	"reflect"
-	"slices"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
@@ -212,19 +210,12 @@ func settingsHTTPAuthenticate(t *testing.T, tx *httpTestStore, kind model.Creden
 
 func settingsHTTPProjectList(t *testing.T, tx *httpTestStore, actor model.Principal, first, second model.Project) {
 	t.Helper()
-	called := projectHTTPCount(t, 2)
-	position := 0
-	pages := []store.Page{{Limit: 1}, {Limit: 1, After: &store.Position{CreatedAt: first.CreatedAt, ID: first.ID}}}
-	results := []store.ProjectPage{{Items: []model.Project{first}, HasMore: true}, {Items: []model.Project{second}, HasMore: false}}
-	scope := store.ProjectScope{Kind: store.ProjectScopeAll, MaxItemBytes: coreproject.MaxPageResponseJSONBytes}
-	projectHTTPRead(t, tx, projectHTTPReader{ScopedProjectsCall: func(ctx context.Context, p model.Principal, gotScope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+	called := projectHTTPCount(t, 1)
+	projectHTTPRead(t, tx, projectHTTPReader{ScopedProjectsCall: func(ctx context.Context, p model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
 		called()
 		projectHTTPCheck(t, p, actor)
-		projectHTTPCheck(t, gotScope, scope)
-		projectHTTPCheck(t, page, pages[position])
-		result := results[position]
-		result.Items = slices.Clone(result.Items)
-		position++
-		return result, nil
+		projectHTTPCheck(t, scope, store.ProjectScope{Kind: store.ProjectScopeAll})
+		projectHTTPCheck(t, page, store.Page{Limit: 50})
+		return store.ProjectPage{Items: []model.Project{first, second}}, nil
 	}})
 }

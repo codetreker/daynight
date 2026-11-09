@@ -130,7 +130,7 @@ projectID, taskID, input) 沿用同一项目锁，在取锁后检查当前准入
 版本、目标状态与依赖。admin 和 member 都可执行这些资源操作；管理员角色额外
 管理成员、邀请与项目提醒设置。Worker 的 claim owner 操作路径和领取时的任务
 负责人要求保持各自原有规则。创建默认 todo，通用元数据更新不接收 status，没有
-旧状态写入旁路。任务版本、int64、图容量和现有分页合同保持。
+旧状态写入旁路。任务版本、int64、完整图范围和现有按条数分页合同保持。
 
 ### Team 元数据与生命周期事务
 
@@ -150,7 +150,7 @@ Unicode `White_Space`，并对名称同时执行 256 code points 和 1024 UTF-8 
 Team。读取和列表使用同一只读 Repeatable Read 快照取得 Team 与当前主体真实成员关系，列表 SQL 在 `(created_at,id)` 排序、游标和 LIMIT 之前
 过滤当前成员资格。HTTP Team cursor 使用 kind `teams`、version 1，绑定认证 userId 与页位置；
 不按名称解析身份，不返回全量 count。缺失或不可见 Team 同为 not_found，外部 Project grant
-不会授予 Team 元数据访问权。
+不会授予 Team 元数据访问权。列表一次取得请求条数加一项 lookahead，读取直接消费写入入口生成的规范存储字段；不重复结构、字段或容量检查，不引入读取 measurement callback 或字节裁页。REST 成员和邀请目录保持完整，MCP 页使用相应普通批量入口。[普通读取决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)记录职责取舍。
 
 已有 Team 写作用域开启 Read Committed 事务并取得目标 Team `FOR UPDATE`，通过事务绑定的
 Team DAO 向 core 提供能力。取锁后读取当前真实成员并重验 admin，Personal 禁用操作先于变更；比较元数据

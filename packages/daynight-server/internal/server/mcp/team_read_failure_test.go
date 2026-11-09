@@ -38,32 +38,32 @@ func TestTeamReadSnapshotFailureHasNoWriteOutcome(t *testing.T) {
 				failure := &store.TransactionError{Phase: "commit", Outcome: outcome, CommitAttempted: true, Cause: errors.New("snapshot completion failure")}
 				switch tc.name {
 				case "team_list":
-					mocks.expect("Teams.ListAdmitted")
-					mocks.teams.ListAdmittedFunc = func(_ context.Context, _ model.Principal, request model.PageRequest, _ func([]model.Team, *string) error) (coreteam.TeamPage, error) {
+					mocks.expect("Teams.List")
+					mocks.teams.ListFunc = func(_ context.Context, _ model.Principal, request model.PageRequest) (coreteam.TeamPage, error) {
 						if request.Limit != 50 || request.Cursor != nil {
 							t.Errorf("page = %+v", request)
 						}
 						return coreteam.TeamPage{}, failure
 					}
 				case "team_show":
-					mocks.expect("Teams.GetBounded")
-					mocks.teams.GetBoundedFunc = func(_ context.Context, _ model.Principal, id string, limit int) (model.Team, error) {
-						if id != unknownTeam || limit != 1<<20 {
-							t.Errorf("GetBounded(%s, %d)", id, limit)
+					mocks.expect("Teams.Get")
+					mocks.teams.GetFunc = func(_ context.Context, _ model.Principal, id string) (model.Team, error) {
+						if id != unknownTeam {
+							t.Errorf("Get(%s)", id)
 						}
 						return model.Team{}, failure
 					}
 				case "team_projects":
-					mocks.expect("Projects.ListAdmitted")
-					mocks.projects.ListAdmittedFunc = func(_ context.Context, _ model.Principal, request coreproject.ProjectListRequest, _ func([]model.Project, *string) error) (coreproject.ProjectPage, error) {
+					mocks.expect("Projects.ListScoped")
+					mocks.projects.ListScopedFunc = func(_ context.Context, _ model.Principal, request coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
 						if request.TeamID == nil || *request.TeamID != unknownTeam || request.Page.Limit != 50 || request.Page.Cursor != nil {
 							t.Errorf("scope = %+v", request)
 						}
 						return coreproject.ProjectPage{}, failure
 					}
 				case "team_member_list":
-					mocks.expect("Teams.MembersAdmitted")
-					mocks.teams.MembersAdmittedFunc = func(_ context.Context, _ model.Principal, id string, request model.PageRequest, _ func([]model.TeamMemberProfile, *string) error) (coreteam.MemberPage, error) {
+					mocks.expect("Teams.MembersPage")
+					mocks.teams.MembersPageFunc = func(_ context.Context, _ model.Principal, id string, request model.PageRequest) (coreteam.MemberPage, error) {
 						if id != unknownTeam || request.Limit != 50 || request.Cursor != nil {
 							t.Errorf("member page %s %+v", id, request)
 						}

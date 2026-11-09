@@ -54,16 +54,16 @@ func (p *teamCallPlan) call(ctx context.Context, principal model.Principal, name
 }
 
 type teamOperationMock struct {
-	plan                     *teamCallPlan
-	CreateFunc               func(ctx context.Context, principal model.Principal, input coreteam.CreateTeam) (model.Team, error)
-	ListAdmittedFunc         func(ctx context.Context, principal model.Principal, request model.PageRequest, measure func([]model.Team, *string) error) (coreteam.TeamPage, error)
-	GetBoundedFunc           func(ctx context.Context, principal model.Principal, id string, limit int) (model.Team, error)
-	RenameBoundedFunc        func(ctx context.Context, principal model.Principal, id string, input coreteam.ChangeTeam, limit int) (model.Team, error)
-	DeleteBoundedFunc        func(ctx context.Context, principal model.Principal, id string, input coreteam.ChangeTeam, limit int) error
-	MembersAdmittedFunc      func(ctx context.Context, principal model.Principal, id string, request model.PageRequest, measure func([]model.TeamMemberProfile, *string) error) (coreteam.MemberPage, error)
-	MemberFunc               func(ctx context.Context, principal model.Principal, id, user string) (model.TeamMember, error)
-	SetMemberRoleBoundedFunc func(ctx context.Context, principal model.Principal, id, user string, input coreteam.ChangeTeamMember, limit int) (coreteam.TeamMemberResult, error)
-	RemoveMemberBoundedFunc  func(ctx context.Context, principal model.Principal, id, user string, input coreteam.ChangeTeamMember, limit int) (coreteam.TeamMemberResult, error)
+	plan              *teamCallPlan
+	CreateFunc        func(ctx context.Context, principal model.Principal, input coreteam.CreateTeam) (model.Team, error)
+	ListFunc          func(ctx context.Context, principal model.Principal, request model.PageRequest) (coreteam.TeamPage, error)
+	GetFunc           func(ctx context.Context, principal model.Principal, id string) (model.Team, error)
+	RenameFunc        func(ctx context.Context, principal model.Principal, id string, input coreteam.ChangeTeam) (model.Team, error)
+	DeleteFunc        func(ctx context.Context, principal model.Principal, id string, input coreteam.ChangeTeam) error
+	MembersPageFunc   func(ctx context.Context, principal model.Principal, id string, request model.PageRequest) (coreteam.MemberPage, error)
+	MemberFunc        func(ctx context.Context, principal model.Principal, id, user string) (model.TeamMember, error)
+	SetMemberRoleFunc func(ctx context.Context, principal model.Principal, id, user string, input coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error)
+	RemoveMemberFunc  func(ctx context.Context, principal model.Principal, id, user string, input coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error)
 }
 
 func (m *teamOperationMock) Create(ctx context.Context, principal model.Principal, input coreteam.CreateTeam) (model.Team, error) {
@@ -74,43 +74,43 @@ func (m *teamOperationMock) Create(ctx context.Context, principal model.Principa
 	return m.CreateFunc(ctx, principal, input)
 }
 
-func (m *teamOperationMock) ListAdmitted(ctx context.Context, principal model.Principal, request model.PageRequest, measure func([]model.Team, *string) error) (coreteam.TeamPage, error) {
-	if err := m.plan.call(ctx, principal, "Teams.ListAdmitted", m.ListAdmittedFunc != nil); err != nil {
+func (m *teamOperationMock) List(ctx context.Context, principal model.Principal, request model.PageRequest) (coreteam.TeamPage, error) {
+	if err := m.plan.call(ctx, principal, "Teams.List", m.ListFunc != nil); err != nil {
 		var zero coreteam.TeamPage
 		return zero, err
 	}
-	return m.ListAdmittedFunc(ctx, principal, request, measure)
+	return m.ListFunc(ctx, principal, request)
 }
 
-func (m *teamOperationMock) GetBounded(ctx context.Context, principal model.Principal, id string, limit int) (model.Team, error) {
-	if err := m.plan.call(ctx, principal, "Teams.GetBounded", m.GetBoundedFunc != nil); err != nil {
+func (m *teamOperationMock) Get(ctx context.Context, principal model.Principal, id string) (model.Team, error) {
+	if err := m.plan.call(ctx, principal, "Teams.Get", m.GetFunc != nil); err != nil {
 		var zero model.Team
 		return zero, err
 	}
-	return m.GetBoundedFunc(ctx, principal, id, limit)
+	return m.GetFunc(ctx, principal, id)
 }
 
-func (m *teamOperationMock) RenameBounded(ctx context.Context, principal model.Principal, id string, input coreteam.ChangeTeam, limit int) (model.Team, error) {
-	if err := m.plan.call(ctx, principal, "Teams.RenameBounded", m.RenameBoundedFunc != nil); err != nil {
+func (m *teamOperationMock) Rename(ctx context.Context, principal model.Principal, id string, input coreteam.ChangeTeam) (model.Team, error) {
+	if err := m.plan.call(ctx, principal, "Teams.Rename", m.RenameFunc != nil); err != nil {
 		var zero model.Team
 		return zero, err
 	}
-	return m.RenameBoundedFunc(ctx, principal, id, input, limit)
+	return m.RenameFunc(ctx, principal, id, input)
 }
 
-func (m *teamOperationMock) DeleteBounded(ctx context.Context, principal model.Principal, id string, input coreteam.ChangeTeam, limit int) error {
-	if err := m.plan.call(ctx, principal, "Teams.DeleteBounded", m.DeleteBoundedFunc != nil); err != nil {
+func (m *teamOperationMock) Delete(ctx context.Context, principal model.Principal, id string, input coreteam.ChangeTeam) error {
+	if err := m.plan.call(ctx, principal, "Teams.Delete", m.DeleteFunc != nil); err != nil {
 		return err
 	}
-	return m.DeleteBoundedFunc(ctx, principal, id, input, limit)
+	return m.DeleteFunc(ctx, principal, id, input)
 }
 
-func (m *teamOperationMock) MembersAdmitted(ctx context.Context, principal model.Principal, id string, request model.PageRequest, measure func([]model.TeamMemberProfile, *string) error) (coreteam.MemberPage, error) {
-	if err := m.plan.call(ctx, principal, "Teams.MembersAdmitted", m.MembersAdmittedFunc != nil); err != nil {
+func (m *teamOperationMock) MembersPage(ctx context.Context, principal model.Principal, id string, request model.PageRequest) (coreteam.MemberPage, error) {
+	if err := m.plan.call(ctx, principal, "Teams.MembersPage", m.MembersPageFunc != nil); err != nil {
 		var zero coreteam.MemberPage
 		return zero, err
 	}
-	return m.MembersAdmittedFunc(ctx, principal, id, request, measure)
+	return m.MembersPageFunc(ctx, principal, id, request)
 }
 
 func (m *teamOperationMock) Member(ctx context.Context, principal model.Principal, id, user string) (model.TeamMember, error) {
@@ -121,32 +121,32 @@ func (m *teamOperationMock) Member(ctx context.Context, principal model.Principa
 	return m.MemberFunc(ctx, principal, id, user)
 }
 
-func (m *teamOperationMock) SetMemberRoleBounded(ctx context.Context, principal model.Principal, id, user string, input coreteam.ChangeTeamMember, limit int) (coreteam.TeamMemberResult, error) {
-	if err := m.plan.call(ctx, principal, "Teams.SetMemberRoleBounded", m.SetMemberRoleBoundedFunc != nil); err != nil {
+func (m *teamOperationMock) SetMemberRole(ctx context.Context, principal model.Principal, id, user string, input coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error) {
+	if err := m.plan.call(ctx, principal, "Teams.SetMemberRole", m.SetMemberRoleFunc != nil); err != nil {
 		var zero coreteam.TeamMemberResult
 		return zero, err
 	}
-	return m.SetMemberRoleBoundedFunc(ctx, principal, id, user, input, limit)
+	return m.SetMemberRoleFunc(ctx, principal, id, user, input)
 }
 
-func (m *teamOperationMock) RemoveMemberBounded(ctx context.Context, principal model.Principal, id, user string, input coreteam.ChangeTeamMember, limit int) (coreteam.TeamMemberResult, error) {
-	if err := m.plan.call(ctx, principal, "Teams.RemoveMemberBounded", m.RemoveMemberBoundedFunc != nil); err != nil {
+func (m *teamOperationMock) RemoveMember(ctx context.Context, principal model.Principal, id, user string, input coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error) {
+	if err := m.plan.call(ctx, principal, "Teams.RemoveMember", m.RemoveMemberFunc != nil); err != nil {
 		var zero coreteam.TeamMemberResult
 		return zero, err
 	}
-	return m.RemoveMemberBoundedFunc(ctx, principal, id, user, input, limit)
+	return m.RemoveMemberFunc(ctx, principal, id, user, input)
 }
 
 type teamProjectMock struct {
-	plan             *teamCallPlan
-	ListAdmittedFunc func(context.Context, model.Principal, coreproject.ProjectListRequest, func([]model.Project, *string) error) (coreproject.ProjectPage, error)
+	plan           *teamCallPlan
+	ListScopedFunc func(context.Context, model.Principal, coreproject.ProjectListRequest) (coreproject.ProjectPage, error)
 }
 
-func (m *teamProjectMock) ListAdmitted(ctx context.Context, principal model.Principal, input coreproject.ProjectListRequest, measure func([]model.Project, *string) error) (coreproject.ProjectPage, error) {
-	if err := m.plan.call(ctx, principal, "Projects.ListAdmitted", m.ListAdmittedFunc != nil); err != nil {
+func (m *teamProjectMock) ListScoped(ctx context.Context, principal model.Principal, input coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
+	if err := m.plan.call(ctx, principal, "Projects.ListScoped", m.ListScopedFunc != nil); err != nil {
 		return coreproject.ProjectPage{}, err
 	}
-	return m.ListAdmittedFunc(ctx, principal, input, measure)
+	return m.ListScopedFunc(ctx, principal, input)
 }
 
 type teamIdentityMock struct {
@@ -204,14 +204,13 @@ func configureTeamMutation(t *testing.T, mocks teamToolMocks, name string, args 
 		return
 	}
 	if name == "team_rename" || name == "team_delete" {
-		method := "Teams.RenameBounded"
+		method := "Teams.Rename"
 		if name == "team_delete" {
-			method = "Teams.DeleteBounded"
+			method = "Teams.Delete"
 		}
-		mocks.expect("Teams.GetBounded", method)
-		mocks.teams.GetBoundedFunc = func(_ context.Context, _ model.Principal, id string, limit int) (model.Team, error) {
+		mocks.expect("Teams.Get", method)
+		mocks.teams.GetFunc = func(_ context.Context, _ model.Principal, id string) (model.Team, error) {
 			check(id, unknownTeam)
-			check(limit, 1<<20)
 			return testUnknownTeam(), nil
 		}
 		expectedName := "Original"
@@ -219,29 +218,27 @@ func configureTeamMutation(t *testing.T, mocks teamToolMocks, name string, args 
 			expectedName = args["name"].(string)
 		}
 		expected := coreteam.ChangeTeam{Name: expectedName, Version: 1, ExpectedUserID: unknownActor}
-		mocks.teams.RenameBoundedFunc = func(_ context.Context, _ model.Principal, id string, input coreteam.ChangeTeam, limit int) (model.Team, error) {
+		mocks.teams.RenameFunc = func(_ context.Context, _ model.Principal, id string, input coreteam.ChangeTeam) (model.Team, error) {
 			check(id, unknownTeam)
 			check(input, expected)
-			check(limit, 1<<20)
 			result := testUnknownTeam()
 			result.Name = &expected.Name
 			return result, failure
 		}
-		mocks.teams.DeleteBoundedFunc = func(_ context.Context, _ model.Principal, id string, input coreteam.ChangeTeam, limit int) error {
+		mocks.teams.DeleteFunc = func(_ context.Context, _ model.Principal, id string, input coreteam.ChangeTeam) error {
 			check(id, unknownTeam)
 			check(input, expected)
-			check(limit, 1<<20)
 			return failure
 		}
 		return
 	}
 	target := unknownTarget
-	method := "Teams.RemoveMemberBounded"
+	method := "Teams.RemoveMember"
 	if name == "team_leave" {
 		target = unknownActor
 	}
 	if name == "team_member_set_role" {
-		method = "Teams.SetMemberRoleBounded"
+		method = "Teams.SetMemberRole"
 	}
 	mocks.expect("Teams.Member", method)
 	mocks.teams.MemberFunc = func(_ context.Context, _ model.Principal, id, user string) (model.TeamMember, error) {
@@ -253,13 +250,12 @@ func configureTeamMutation(t *testing.T, mocks teamToolMocks, name string, args 
 	if name == "team_member_set_role" {
 		expected.Role = model.ProjectRole(args["role"].(string))
 	}
-	mutate := func(_ context.Context, _ model.Principal, id, user string, input coreteam.ChangeTeamMember, limit int) (coreteam.TeamMemberResult, error) {
+	mutate := func(_ context.Context, _ model.Principal, id, user string, input coreteam.ChangeTeamMember) (coreteam.TeamMemberResult, error) {
 		check(id, unknownTeam)
 		check(user, target)
 		check(input, expected)
-		check(limit, 1<<20)
 		role := model.ProjectAdmin
 		return coreteam.TeamMemberResult{Membership: model.TeamMember{TeamID: unknownTeam, UserID: target, Role: expected.Role, Version: 2}, ActorRole: &role}, failure
 	}
-	mocks.teams.SetMemberRoleBoundedFunc, mocks.teams.RemoveMemberBoundedFunc = mutate, mutate
+	mocks.teams.SetMemberRoleFunc, mocks.teams.RemoveMemberFunc = mutate, mutate
 }

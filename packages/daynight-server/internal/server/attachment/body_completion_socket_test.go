@@ -100,7 +100,7 @@ func TestAttachmentConsumedBodyMetadataFailureKeepsSocketReusable(t *testing.T) 
 			}
 			return model.Attachment{}, false, nil, metadataError
 		},
-		ListREST: func(ctx context.Context, p model.Principal, project, id string, request model.PageRequest) (attachmentcore.Page, error) {
+		List: func(ctx context.Context, p model.Principal, project, id string, request model.PageRequest) (attachmentcore.Page, error) {
 			if lists.Add(1) != 1 || !listAllowed.Load() || ctx.Err() != nil || p != principal || project != task.ProjectID || id != task.ID || !reflect.DeepEqual(request, model.PageRequest{Limit: 50}) {
 				t.Error("unexpected attachment list arguments or ordering")
 				return attachmentcore.Page{}, errors.New("unexpected list")

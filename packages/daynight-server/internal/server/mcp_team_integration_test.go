@@ -52,25 +52,23 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 	prepareTeamRead := func(actor model.Principal, v model.Team) {
 		t.Helper()
 		read := projectHTTPCount(t, 1)
-		mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamBoundedCall: func(ctx context.Context, user, id string, budget int) (model.Team, bool, error) {
+		mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamCall: func(ctx context.Context, user, id string) (model.Team, error) {
 			read()
 			projectHTTPCheck(t, []string{user, id}, []string{actor.UserID, v.ID})
-			projectHTTPCheck(t, budget, 1<<20)
-			return v, false, nil
+			return v, nil
 		}})
 	}
 	prepareTeamRead(principals[0], team)
-	bounded, rename := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	readTeam, rename := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
 	renamed := team
 	newName := "Renamed"
 	renamed.Name = &newName
 	renamed.Version = 2
 	renamed.UpdatedAt = team.UpdatedAt.Add(time.Second)
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamBoundedCall: func(ctx context.Context, user string, budget int) (model.Team, bool, error) {
-		bounded()
+	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
+		readTeam()
 		projectHTTPCheck(t, user, principals[0].UserID)
-		projectHTTPCheck(t, budget, 1<<20)
-		return team, false, nil
+		return team, nil
 	}, RenameCall: func(ctx context.Context, user, name string) (model.Team, error) {
 		rename()
 		projectHTTPCheck(t, []string{user, name}, []string{principals[0].UserID, "Renamed"})
@@ -84,11 +82,10 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 	for _, operation := range []string{"team_rename", "team_delete"} {
 		prepareTeamRead(principals[0], personal)
 		read := projectHTTPCount(t, 1)
-		mcpOrgWriteTeam(t, tx, personal.ID, mcpOrgTeamWriter{TeamBoundedCall: func(ctx context.Context, user string, budget int) (model.Team, bool, error) {
+		mcpOrgWriteTeam(t, tx, personal.ID, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
 			read()
 			projectHTTPCheck(t, user, principals[0].UserID)
-			projectHTTPCheck(t, budget, 1<<20)
-			return personal, false, nil
+			return personal, nil
 		}}, nil)
 		args := map[string]any{"team": "personal", "confirm": true}
 		if operation == "team_rename" {
@@ -154,16 +151,15 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 		}})
 	}
 	prepareMember(principals[0], bobMember)
-	bounded, member, setRole := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	readTeam, member, setRole := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
 	promoted := bobMember
 	promoted.Role = model.ProjectAdmin
 	promoted.Version = 2
 	promoted.UpdatedAt = bobMember.UpdatedAt.Add(time.Second)
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamBoundedCall: func(ctx context.Context, user string, budget int) (model.Team, bool, error) {
-		bounded()
+	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
+		readTeam()
 		projectHTTPCheck(t, user, principals[0].UserID)
-		projectHTTPCheck(t, budget, 1<<20)
-		return renamed, false, nil
+		return renamed, nil
 	}, MemberCall: func(ctx context.Context, user string) (model.TeamMember, error) {
 		member()
 		projectHTTPCheck(t, user, bobMember.UserID)
@@ -193,7 +189,7 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 		mcpOrgRead(t, tx, 1, mcpOrgProjectReader{ScopedProjectsCall: func(ctx context.Context, p model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
 			read()
 			projectHTTPCheck(t, p, principals[0])
-			projectHTTPCheck(t, scope, store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: id, MaxItemBytes: 4 << 20})
+			projectHTTPCheck(t, scope, store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: id})
 			projectHTTPCheck(t, page, want)
 			return store.ProjectPage{Items: []model.Project{row}, HasMore: i == 0}, nil
 		}}, nil)
@@ -208,23 +204,21 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 		t.Fatal("project pagination lost items")
 	}
 	prepareTeamRead(principals[0], renamed)
-	bounded, hasProjects := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamBoundedCall: func(ctx context.Context, user string, budget int) (model.Team, bool, error) {
-		bounded()
+	readTeam, hasProjects := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
+		readTeam()
 		projectHTTPCheck(t, user, principals[0].UserID)
-		projectHTTPCheck(t, budget, 1<<20)
-		return renamed, false, nil
+		return renamed, nil
 	}, HasProjectsCall: func(context.Context) (bool, error) { hasProjects(); return true, nil }}, nil)
 	call(alice, "team_delete", map[string]any{"team": id, "confirm": true}, "team_not_empty")
 	prepareMember(principals[1], promoted)
-	bounded, member, count, remove := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	readTeam, member, count, remove := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
 	bobTeam := renamed
 	bobTeam.Membership = promoted
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamBoundedCall: func(ctx context.Context, user string, budget int) (model.Team, bool, error) {
-		bounded()
+	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
+		readTeam()
 		projectHTTPCheck(t, user, principals[1].UserID)
-		projectHTTPCheck(t, budget, 1<<20)
-		return bobTeam, false, nil
+		return bobTeam, nil
 	}, MemberCall: func(ctx context.Context, user string) (model.TeamMember, error) {
 		member()
 		projectHTTPCheck(t, user, principals[1].UserID)
@@ -243,12 +237,11 @@ func exerciseMCPTeams(t *testing.T, tx *httpTestStore, alice, bob *sdk.ClientSes
 	}})
 	call(bob, "team_member_list", map[string]any{"team": id}, "not_found")
 	prepareMember(principals[0], team.Membership)
-	bounded, member, count = projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
-	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamBoundedCall: func(ctx context.Context, user string, budget int) (model.Team, bool, error) {
-		bounded()
+	readTeam, member, count = projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	mcpOrgWriteTeam(t, tx, id, mcpOrgTeamWriter{TeamCall: func(ctx context.Context, user string) (model.Team, error) {
+		readTeam()
 		projectHTTPCheck(t, user, principals[0].UserID)
-		projectHTTPCheck(t, budget, 1<<20)
-		return renamed, false, nil
+		return renamed, nil
 	}, MemberCall: func(ctx context.Context, user string) (model.TeamMember, error) {
 		member()
 		projectHTTPCheck(t, user, principals[0].UserID)

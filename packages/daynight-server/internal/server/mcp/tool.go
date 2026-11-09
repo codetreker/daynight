@@ -312,15 +312,15 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 
 // registerTool selects admission after validation and preserves write completion facts.
 func (e *Entry) registerTool(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler) error {
-	return e.registerToolFor(tool, budget, handler, true)
+	return e.registerToolFor(tool, budget, handler, true, true)
 }
 
 // registerReadTool never classifies read-only snapshot completion as a write.
 func (e *Entry) registerReadTool(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler) error {
-	return e.registerToolFor(tool, budget, handler, false)
+	return e.registerToolFor(tool, budget, handler, false, false)
 }
 
-func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler, write bool) error {
+func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler, inferWriteOutcome, admitOutput bool) error {
 	if tool == nil || tool.Name == "" || tool.InputSchema == nil || tool.OutputSchema == nil || handler == nil || budget == nil {
 		return errors.New("invalid MCP tool registration")
 	}
@@ -420,7 +420,7 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			if failure.Phase == "" {
 				failure.Phase = facts.Phase
 			}
-			if write && failure.WriteOutcome == "" {
+			if inferWriteOutcome && failure.WriteOutcome == "" {
 				switch facts.Outcome {
 				case store.TransactionCommitted:
 					failure.WriteOutcome = "confirmed"
@@ -451,13 +451,13 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 		} else {
 			encoded, err = json.Marshal(value)
 		}
-		if err == nil && len(encoded) <= 128<<20 {
+		if err == nil && admitOutput && len(encoded) <= 128<<20 {
 			err = validateJSON(output, encoded)
-		} else if err == nil {
+		} else if err == nil && admitOutput {
 			err = errors.New("encoded output exceeds limit")
 		}
 		if err != nil {
-			if result.WriteOutcome == "" && (result.Outcome == "changed" || result.Outcome == "unchanged") {
+			if inferWriteOutcome && result.WriteOutcome == "" && (result.Outcome == "changed" || result.Outcome == "unchanged") {
 				result.WriteOutcome = "confirmed"
 			}
 			logger.ErrorContext(ctx, "MCP output construction failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)

@@ -554,8 +554,8 @@ complete module check supplies them to other packages. It executes the whole
 regular suite with that boundary; stress workloads use their separate fixture.
 The complete module check still includes isolated real PostgreSQL. The
 `internal/server/mcp` suite also clears infrastructure variables and controls
-direct service/use-case operations, retaining actual HTTP/SDK framing, schemas,
-byte boundaries and request lifecycle. Its [protocol test guide](../packages/daynight-server/README.md#mcp-protocol-tests)
+direct service/use-case operations, retaining actual HTTP/SDK framing, schema
+registration, input/write byte boundaries and request lifecycle. Its [protocol test guide](../packages/daynight-server/README.md#mcp-protocol-tests)
 owns the standalone command and lower admission, transfer and persistence proof
 boundaries.
 

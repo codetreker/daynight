@@ -18,10 +18,14 @@ principal and stable authority reference into tool handlers. The
 [OAuth credential decision](2026-11-06-mcp-oauth-credentials.md) describes the
 family and transaction boundaries. The official SDK supports the two declared
 protocol versions.
-Registered tools use one low-level wrapper with precompiled input and output
-schemas, safe structured errors, and explicit completion facts. The production
-registry exposes registered business adapters. The [Team adapter decision](2026-11-06-mcp-team-management.md)
-records its oversized-item limitation.
+Registered tools advertise input and output schemas. The low-level wrapper
+validates inputs, supplies safe structured errors and preserves explicit
+completion facts. Successful reads use ordinary JSON encoding without runtime
+output-schema or result-byte admission; writes retain output validation and
+capacity checks. The [ordinary resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md)
+records that read responsibility. The production registry exposes registered
+business adapters, and the [Team adapter decision](2026-11-06-mcp-team-management.md)
+records its authority, versions and count pagination.
 
 Separate control and large-object permits are selected by internal materialization,
 not the returned view. Permits remain held through handler and response delivery.
@@ -49,4 +53,6 @@ credential revocation and risk divergent relay or authorization state.
 
 Domain adapters select their worst-case materialization class. OAuth protocol
 endpoints and other business tools require their separately owned implementations.
-Clients and proxies handling full resources must support the declared result capacity.
+Complete read results grow with the selected data. Client and proxy transport
+policies remain independently owned; resource permits limit simultaneous work
+without imposing a stored-data read quota.

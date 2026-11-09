@@ -1120,12 +1120,13 @@ It does not request another current-user or member list for message authors.
 An active, visible Discussion reads new messages every five seconds after a
 successful read and immediately catches up complete pages. Hidden tabs and pages
 pause reads. History, references and post receipts never advance the independent
-consumed-after ID. Visible and incoming count/byte caps retain complete bodies;
+consumed-after ID. Visible and incoming count windows retain complete bodies
+without message, page or retained-data byte admission;
 explicit navigation can replace displayed history, which remains reachable by
 before/after ID paging. Only a reading anchor, the latest confirmed receipt and
 one pending POST reservation can be fixed, so repeated own posts cannot prevent
 older unseen messages from progressing. The new-message count describes retained
-incoming messages rather than the service's total backlog.
+incoming messages and does not claim the service's total backlog.
 
 All Web reads request details=true. Author names and Agent provider badges use
 immutable message snapshots; missing or blank names use a separate full account

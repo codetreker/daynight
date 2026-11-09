@@ -237,18 +237,14 @@ func TestPageAndMessageValidationAndBudgets(t *testing.T) {
 	if _, err := AdmitMessage(ctx, model.ThreadMessage{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("admission cancellation: %v", err)
 	}
-	if _, err := SelectPage(ctx, []model.ThreadMessage{{}}, 1, false, false); !errors.Is(err, context.Canceled) {
+	if _, err := SelectPage(ctx, []model.ThreadMessage{{}}, 1, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("page cancellation: %v", err)
-	}
-	huge := model.ThreadMessage{Body: strings.Repeat("x", taskcodec.PageLimit)}
-	if _, err := SelectPage(context.Background(), []model.ThreadMessage{huge}, 1, false, false); err == nil {
-		t.Fatal("oversized stored message accepted")
 	}
 	body := strings.Repeat("x", taskcodec.MessageLimit-200)
 	items := []model.ThreadMessage{{ID: "1", Body: body}, {ID: "2", Body: body}, {ID: "3", Body: body}, {ID: "4", Body: body}, {ID: "5", Body: body}}
-	page, err := SelectPage(context.Background(), items, 5, false, false)
-	if err != nil || len(page.Items) != 4 {
-		t.Fatalf("byte budget: %d %v", len(page.Items), err)
+	page, err := SelectPage(context.Background(), items, 5, false)
+	if err != nil || len(page.Items) != 5 {
+		t.Fatalf("count page: %d %v", len(page.Items), err)
 	}
 }
 
@@ -284,16 +280,10 @@ func TestAdmissionRejectsDetailedOverflowAndLateCancellation(t *testing.T) {
 	}
 }
 
-func TestReadPageRejectsOversizeAndLateCancellation(t *testing.T) {
-	huge := model.ThreadMessage{ID: "id", Body: strings.Repeat("x", taskcodec.PageLimit)}
-	f := &threadFixture{messages: []model.ThreadMessage{huge}}
-	_, encoded, err := ReadPage(context.Background(), f, "task", PageRequest{Count: 1})
-	if err == nil || encoded != nil {
-		t.Fatalf("oversize accepted: %v", err)
-	}
+func TestReadPageRejectsLateCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	f = &threadFixture{messages: []model.ThreadMessage{{ID: "id", Body: "hello"}}, cancel: cancel}
-	_, encoded, err = ReadPage(ctx, f, "task", PageRequest{Count: 1})
+	f := &threadFixture{messages: []model.ThreadMessage{{ID: "id", Body: "hello"}}, cancel: cancel}
+	_, encoded, err := ReadPage(ctx, f, "task", PageRequest{Count: 1})
 	if !errors.Is(err, context.Canceled) || encoded != nil {
 		t.Fatalf("late cancellation: %v", err)
 	}
@@ -301,7 +291,7 @@ func TestReadPageRejectsOversizeAndLateCancellation(t *testing.T) {
 
 func TestSelectPageRejectsCancellationAfterSelection(t *testing.T) {
 	ctx := &cancelOnSecondCheck{Context: context.Background()}
-	page, err := SelectPage(ctx, []model.ThreadMessage{{ID: "id", Body: "body"}}, 1, false, false)
+	page, err := SelectPage(ctx, []model.ThreadMessage{{ID: "id", Body: "body"}}, 1, false)
 	if !errors.Is(err, context.Canceled) || page.Items != nil {
 		t.Fatalf("late cancellation: %+v %v", page, err)
 	}

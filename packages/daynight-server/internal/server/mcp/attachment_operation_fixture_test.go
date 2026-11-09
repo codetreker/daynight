@@ -49,7 +49,7 @@ func (operation attachmentDeleteOperation) Delete(ctx context.Context, principal
 	return operation.delete(ctx, principal, project, task, path)
 }
 
-func (operation attachmentDeleteOperation) ListBounded(context.Context, model.Principal, string, string, model.PageRequest, int, int) (attachmentcore.Page, error) {
-	operation.t.Error("unexpected attachment ListBounded")
-	return attachmentcore.Page{}, errors.New("unexpected attachment ListBounded")
+func (operation attachmentDeleteOperation) List(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error) {
+	operation.t.Error("unexpected attachment List")
+	return attachmentcore.Page{}, errors.New("unexpected attachment List")
 }

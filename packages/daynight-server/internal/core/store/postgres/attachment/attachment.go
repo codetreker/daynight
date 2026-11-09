@@ -42,49 +42,25 @@ func (s *Reader) Attachment(ctx context.Context, projectID, taskID, path string)
 	return attachment, nil
 }
 
-// AttachmentBounded avoids materializing oversized content types in the caller.
-func (s *Reader) AttachmentBounded(ctx context.Context, projectID, taskID, path string, maxBytes int) (model.Attachment, bool, error) {
-	var a model.Attachment
-	var oversized bool
-	err := s.tx.QueryRow(ctx, `SELECT project_id::text, task_id::text, path,
-		CASE WHEN octet_length(content_type) <= $4 THEN content_type ELSE '' END,
-		size_bytes, created_at, updated_at, octet_length(content_type) > $4
-		FROM task_attachments WHERE project_id = $1 AND task_id = $2 AND path = $3`, projectID, taskID, path, maxBytes).
-		Scan(&a.ProjectID, &a.TaskID, &a.Path, &a.ContentType, &a.SizeBytes, &a.CreatedAt, &a.UpdatedAt, &oversized)
-	if err != nil {
-		return model.Attachment{}, false, pg.QueryError("read bounded attachment", err)
-	}
-	a.CreatedAt, a.UpdatedAt = a.CreatedAt.UTC(), a.UpdatedAt.UTC()
-	return a, oversized, nil
-}
-
 func (s *Reader) Attachments(ctx context.Context, projectID, taskID string, query store.AttachmentQuery) (store.AttachmentPage, error) {
-	rows, err := s.tx.Query(ctx, `SELECT project_id::text, task_id::text,
-		CASE WHEN $6::integer = 0 OR octet_length(path) <= $6 THEN path ELSE '' END,
-		CASE WHEN $5::integer = 0 OR octet_length(content_type) <= $5 THEN content_type ELSE '' END,
-		size_bytes, created_at, updated_at,
-		(($6::integer > 0 AND octet_length(path) > $6) OR ($5::integer > 0 AND octet_length(content_type) > $5))
-		FROM task_attachments
+	rows, err := s.tx.Query(ctx, `SELECT `+attachmentProjection+` FROM task_attachments
 		WHERE project_id = $1 AND task_id = $2 AND ($3::text IS NULL OR path > $3 COLLATE "C")
-		ORDER BY path LIMIT $4`, projectID, taskID, query.After, query.Limit+1, query.MaxFieldBytes, query.MaxPathBytes)
+		ORDER BY path LIMIT $4`, projectID, taskID, query.After, query.Limit+1)
 	if err != nil {
 		return store.AttachmentPage{}, pg.QueryError("list attachments", err)
 	}
 	defer rows.Close()
 	items := make([]model.Attachment, 0)
-	oversized := make([]bool, 0)
 	for rows.Next() {
 		var attachment model.Attachment
-		var tooLarge bool
 		err := rows.Scan(&attachment.ProjectID, &attachment.TaskID, &attachment.Path, &attachment.ContentType,
-			&attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt, &tooLarge)
+			&attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt)
 		if err != nil {
 			return store.AttachmentPage{}, pg.QueryError("list attachments", err)
 		}
 		attachment.CreatedAt = attachment.CreatedAt.UTC()
 		attachment.UpdatedAt = attachment.UpdatedAt.UTC()
 		items = append(items, attachment)
-		oversized = append(oversized, tooLarge)
 	}
 	if err := rows.Err(); err != nil {
 		return store.AttachmentPage{}, pg.QueryError("list attachments", err)
@@ -92,12 +68,8 @@ func (s *Reader) Attachments(ctx context.Context, projectID, taskID string, quer
 	hasMore := len(items) > query.Limit
 	if hasMore {
 		items = items[:query.Limit]
-		oversized = oversized[:query.Limit]
 	}
-	if query.MaxFieldBytes == 0 && query.MaxPathBytes == 0 {
-		oversized = nil
-	}
-	return store.AttachmentPage{Items: items, HasMore: hasMore, Oversized: oversized}, nil
+	return store.AttachmentPage{Items: items, HasMore: hasMore}, nil
 }
 
 func (s *Reader) AttachmentPathConflict(ctx context.Context, projectID, taskID string, query store.AttachmentConflictQuery) (bool, error) {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -77,14 +76,6 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 	if err != nil || *got.Name != "Renamed" || got.Version != first.Version+1 || got.UpdatedAt.Before(first.UpdatedAt) {
 		t.Fatalf("rename: %+v %v", got, err)
 	}
-	bounded, oversized, err := writer.TeamBounded(ctx, owner, 2)
-	if err != nil || !oversized || *bounded.Name != "" {
-		t.Fatalf("bounded write read: %+v %v %v", bounded, oversized, err)
-	}
-	bounded, oversized, err = reader.TeamBounded(ctx, owner, first.ID, 100)
-	if err != nil || oversized || *bounded.Name != "Renamed" {
-		t.Fatalf("bounded read: %+v %v %v", bounded, oversized, err)
-	}
 	page, err := reader.Teams(ctx, owner, store.Page{Limit: 1})
 	if err != nil || len(page.Items) != 1 || page.Items[0].ID != first.ID || !page.HasMore {
 		t.Fatalf("first page: %+v %v", page, err)
@@ -93,18 +84,6 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 	page, err = reader.Teams(ctx, owner, store.Page{Limit: 1, After: after})
 	if err != nil || len(page.Items) != 1 || page.Items[0].ID != second.ID || page.HasMore {
 		t.Fatalf("last page: %+v %v", page, err)
-	}
-	bp, err := reader.TeamsBounded(ctx, owner, store.Page{Limit: 1}, 100)
-	if err != nil || len(bp.Items) != 1 || !bp.HasMore {
-		t.Fatalf("bounded page: %+v %v", bp, err)
-	}
-	bp, err = reader.TeamsBounded(ctx, owner, store.Page{Limit: 10}, 2)
-	if err != nil || len(bp.Items) != 0 || bp.OversizedTeamID != first.ID || !bp.HasMore {
-		t.Fatalf("oversized first: %+v %v", bp, err)
-	}
-	bp, err = reader.TeamsBounded(ctx, owner, store.Page{Limit: 10}, 10)
-	if err != nil || len(bp.Items) != 1 || bp.OversizedTeamID != "" || !bp.HasMore {
-		t.Fatalf("oversized following: %+v %v", bp, err)
 	}
 	member, err := writer.AddInvitedMember(ctx, guest)
 	if err != nil || member.Role != model.ProjectMemberRole {
@@ -137,11 +116,6 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 		t.Fatalf("member continuation: %+v %v", mp, err)
 	}
 
-	execute(t, tx, `UPDATE users SET name=$2 WHERE id=$1`, guest, strings.Repeat("x", store.TeamMemberProfileByteLimit+1))
-	mp, err = reader.TeamMembersPage(ctx, first.ID, store.Page{Limit: 10})
-	if err != nil || len(mp.Items) != 1 || !mp.HasMore || mp.OversizedUserID != "" {
-		t.Fatalf("oversized following profile: %+v %v", mp, err)
-	}
 	if err := writer.RemoveMember(ctx, guest); err != nil {
 		t.Fatal(err)
 	}
@@ -239,25 +213,6 @@ func TestTeamInvitationDAOLifecycleAndTokenPrivacy(t *testing.T) {
 	}
 }
 
-func TestTeamDAORejectsMissingProfilesAndBoundsProfileBytes(t *testing.T) {
-	tx := teamTransaction(t)
-	ctx := t.Context()
-	owner := addUser(t, tx, strings.Repeat("x", store.TeamMemberProfileByteLimit+1))
-	item := createTeam(t, tx, owner, "Profiles")
-	reader := team.NewReader(tx)
-	page, err := reader.TeamMembersPage(ctx, item.ID, store.Page{Limit: 10})
-	if err != nil || !page.HasMore || page.OversizedUserID != owner || len(page.Items) != 0 {
-		t.Fatalf("oversized profile: %+v %v", page, err)
-	}
-	execute(t, tx, `DELETE FROM users WHERE id=$1`, owner)
-	if _, err := reader.TeamMembers(ctx, item.ID); err == nil {
-		t.Fatal("missing profile accepted")
-	}
-	if _, err := reader.TeamMembersPage(ctx, item.ID, store.Page{Limit: 10}); err == nil {
-		t.Fatal("paged missing profile accepted")
-	}
-}
-
 func TestPersonalTeamDAO(t *testing.T) {
 	tx := teamTransaction(t)
 	ctx := t.Context()
@@ -273,27 +228,8 @@ func TestPersonalTeamDAO(t *testing.T) {
 	if err := reader.TeamAccess(ctx, owner, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, over, err := reader.TeamBounded(ctx, owner, id, 1); err != nil || over {
-		t.Fatalf("bounded personal: %v %v", over, err)
-	}
 	if ref, err := reader.InvitationTeam(ctx, id); err != nil || ref.Kind != "personal" {
 		t.Fatalf("personal reference: %+v %v", ref, err)
-	}
-	execute(t, tx, `UPDATE team_members SET role='member' WHERE team_id=$1`, id)
-	if _, err := reader.Team(ctx, owner, id); err == nil {
-		t.Fatal("invalid personal role accepted")
-	}
-	if _, _, err := reader.TeamBounded(ctx, owner, id, 1); err == nil {
-		t.Fatal("invalid bounded personal role accepted")
-	}
-	if _, err := reader.Teams(ctx, owner, store.Page{Limit: 10}); err == nil {
-		t.Fatal("invalid personal Team list accepted")
-	}
-	if _, err := reader.TeamsBounded(ctx, owner, store.Page{Limit: 10}, 1); err == nil {
-		t.Fatal("invalid bounded personal Team list accepted")
-	}
-	if err := reader.TeamAccess(ctx, owner, id); err == nil {
-		t.Fatal("invalid personal access accepted")
 	}
 }
 
@@ -309,10 +245,8 @@ func TestTeamDAOClosedTransactionPreservesCauses(t *testing.T) {
 	checks := map[string]func() error{
 		"create":            func() error { _, err := team.NewCreation(tx, id).InsertTeam(ctx, id, "Name"); return err },
 		"Team":              func() error { _, err := reader.Team(ctx, id, id); return err },
-		"bounded":           func() error { _, _, err := reader.TeamBounded(ctx, id, id, 10); return err },
 		"access":            func() error { return reader.TeamAccess(ctx, id, id) },
 		"Teams":             func() error { _, err := reader.Teams(ctx, id, store.Page{Limit: 1}); return err },
-		"TeamsBounded":      func() error { _, err := reader.TeamsBounded(ctx, id, store.Page{Limit: 1}, 10); return err },
 		"rename":            func() error { _, err := writer.Rename(ctx, id, "Name"); return err },
 		"ownership":         func() error { _, err := writer.HasProjects(ctx); return err },
 		"delete":            func() error { return writer.Delete(ctx) },

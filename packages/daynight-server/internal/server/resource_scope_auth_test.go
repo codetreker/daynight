@@ -43,7 +43,7 @@ func (r resourceScopeAttachmentReader) Attachment(_ context.Context, project, ta
 func (r resourceScopeAttachmentReader) Attachments(_ context.Context, project, task string, query store.AttachmentQuery) (store.AttachmentPage, error) {
 	r.plan.Called("attachments")
 	projectHTTPCheck(r.t, []string{project, task}, []string{r.item.ProjectID, r.item.TaskID})
-	projectHTTPCheck(r.t, query, store.AttachmentQuery{Limit: 1, MaxPathBytes: attachmentcore.MaxMetadataPageResponseJSONBytes, MaxFieldBytes: attachmentcore.MaxMetadataPageResponseJSONBytes})
+	projectHTTPCheck(r.t, query, store.AttachmentQuery{Limit: 50})
 	return store.AttachmentPage{Items: []model.Attachment{r.item}}, nil
 }
 
@@ -332,7 +332,7 @@ func TestPrivateProjectListsRemainIsolatedAcrossPATs(t *testing.T) {
 		t.Helper()
 		plan.authenticate(user, model.PATCredential, strings.TrimPrefix(bearer["Authorization"], "Bearer "), true)
 		stored := projectHTTPRecord(project.ID, project.Name, project.RepoURL, project.Ownership.TeamID)
-		projectHTTPPage(t, tx, identityHTTPPrincipal(user, model.PATCredential), projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 1}, []model.Project{stored}, false)
+		projectHTTPPage(t, tx, identityHTTPPrincipal(user, model.PATCredential), projectHTTPListScope(store.ProjectScopeAll, ""), store.Page{Limit: 50}, []model.Project{stored}, false)
 		response, body := identityRequest(t, client, http.MethodGet, server.URL+"/api/v1/projects", "", bearer, http.StatusOK)
 		if response.Header.Get("Daynight-User-ID") != user.ID {
 			t.Fatal("PAT project response lost its authenticated identity")

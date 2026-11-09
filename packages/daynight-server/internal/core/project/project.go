@@ -199,15 +199,10 @@ func ValidateList(p model.Principal, request ProjectListRequest) error {
 	return err
 }
 func ReadList(ctx context.Context, dao store.ProjectReader, p model.Principal, request ProjectListRequest) (store.ProjectPage, error) {
-	return ReadListBounded(ctx, dao, p, request, 0)
-}
-
-func ReadListBounded(ctx context.Context, dao store.ProjectReader, p model.Principal, request ProjectListRequest, maxItemBytes int) (store.ProjectPage, error) {
 	p, scope, page, err := listScope(p, request)
 	if err != nil {
 		return store.ProjectPage{}, err
 	}
-	scope.MaxItemBytes = maxItemBytes
 	result, err := dao.ScopedProjects(ctx, p, scope, page)
 	if errors.Is(err, model.ErrNotFound) {
 		return store.ProjectPage{}, &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}

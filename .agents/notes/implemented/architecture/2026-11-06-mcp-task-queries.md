@@ -21,8 +21,9 @@ materialization under the large-object permit. Pages continue by requested item
 count without Task-specific response-byte slicing.
 
 Graph summary and full views return the complete selected graph with the
-existing snapshot and title-preview semantics. The shared MCP entry retains its
-independent 128 MiB result limit and resource permits. The
+existing snapshot and title-preview semantics. The shared MCP entry does not
+validate or budget read output; its input checks, deadlines and resource permits
+remain, as recorded in the [ordinary resource-read decision](../simplification/2026-11-09-canonical-resource-pages.md). The
 [Task canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)
 partially supersedes the original Task list byte admission, graph size checks
 and summary graph truncation.
