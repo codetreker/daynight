@@ -1058,7 +1058,7 @@ test discovery. The runner explicitly selects `TestServerAPINormalFlows` and
 UniAuth gateway, login, PAT and isolated resources. Task groups run sequentially
 with separate projects: lifecycle, search pagination and dependency graph,
 property and Sync readback, Step operations, Thread replies, Attachment bytes,
-and Worker claim/Agent discussion.
+personal Worker prompt synchronization, and Worker claim/Agent discussion.
 
 The Session flow creates an owner-bound Web Worker claim, registers a Session,
 mints its Controller grant and performs WebSocket hello and synchronization.

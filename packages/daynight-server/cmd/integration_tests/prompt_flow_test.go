@@ -14,8 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestServerAPIPromptNormalFlow(t *testing.T) {
-	f := newFixture(t)
+func serverAPIPromptNormalFlow(t *testing.T, f *fixture) {
 	project := createProject(t, f, "Personal prompt API")
 	workerID := uuid.NewString()
 	path := "/api/v1/me/workers/" + workerID + "/report"
