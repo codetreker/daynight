@@ -216,6 +216,19 @@ func TestValidationContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNameAdmissionBoundaries(t *testing.T) {
+	for _, name := range []string{strings.Repeat("a", 256), strings.Repeat("😀", 256)} {
+		if err := ValidateName(name); err != nil {
+			t.Fatalf("valid name rejected: %v", err)
+		}
+	}
+	for _, name := range []string{strings.Repeat("a", 257), strings.Repeat("😀", 256) + "a"} {
+		faultCode(t, ValidateName(name), "invalid_input")
+		_, err := Create(context.Background(), nil, CreateTeam{Name: name})
+		faultCode(t, err, "invalid_input")
+	}
+}
 func TestTeamLifecycleDAO(t *testing.T) {
 	ctx := context.Background()
 	p := principal()

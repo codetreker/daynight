@@ -13,17 +13,17 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type searchHandler struct {
-	reader store.TaskSearchReader
-	logger *slog.Logger
+	run              SearchOperation
+	logger           *slog.Logger
+	operationTimeout time.Duration
 }
 
-func TaskSearchRoutes(mux *http.ServeMux, reader store.TaskSearchReader, auth *authhttp.Authentication, logger *slog.Logger) {
-	h := &searchHandler{reader: reader, logger: logger}
+func TaskSearchRoutes(mux *http.ServeMux, search SearchOperation, auth RouteAuthentication, logger *slog.Logger) {
+	h := &searchHandler{run: search, logger: logger, operationTimeout: 5 * time.Second}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/search", auth.Require(h.search))
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tasks/search", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
@@ -84,7 +84,7 @@ func searchResponse(page tasksearch.Page) api.TaskSearchPage {
 		if item.Context != nil {
 			c = &api.TaskSearchContext{TaskID: item.Context.TaskID, Title: item.Context.Title}
 		}
-		out.Items = append(out.Items, api.TaskSearchItem{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Status: string(item.Status), AssignedTo: item.AssignedTo, UpdatedAt: item.UpdatedAt, Context: c, Match: api.TaskSearchMatch{Fields: item.Match.Fields, DescriptionSnippet: item.Match.DescriptionSnippet}})
+		out.Items = append(out.Items, api.TaskSearchItem{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Status: string(item.Status), AssignedTo: item.AssignedTo, UpdatedAt: item.UpdatedAt, CancelledAt: timestampResponse(item.CancelledAt), Context: c, Match: api.TaskSearchMatch{Fields: item.Match.Fields, DescriptionSnippet: item.Match.DescriptionSnippet}})
 	}
 	return out
 }
@@ -106,9 +106,9 @@ func (h *searchHandler) search(w http.ResponseWriter, request *http.Request, pri
 		return
 	}
 	started := time.Now()
-	operation, cancel := context.WithTimeout(request.Context(), 5*time.Second)
+	operation, cancel := context.WithTimeout(request.Context(), h.operationTimeout)
 	defer cancel()
-	page, err := tasksearch.Search(operation, h.reader, principal, projectID, input)
+	page, err := h.run(operation, principal, projectID, input)
 	var response []byte
 	if err == nil {
 		response, err = json.Marshal(searchResponse(page))

@@ -13,10 +13,11 @@ boundaries depend on retaining those rows.
 ## Decision
 
 The panel tests resolve controls within their actual Step row, toolbar,
-pagination, draft form or confirmation dialog. Queries retain the original
+pagination, draft form, target picker or confirmation dialog. Queries retain the original
 accessible roles and names, ordinary visibility filtering and interaction order.
 Existing Step IDs identify row owners; structural selectors identify the same
-form and toolbar owners already used by the fixtures. Owner helpers resolve the
+form and toolbar owners already used by the fixtures. The named target dialog
+owns its radio choices and selection button. Owner helpers resolve the
 current DOM after changes rather than retaining replaced elements.
 
 The full collection sizes, 100-row page boundaries, input values, error paths,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,13 @@ import (
 func TestBotDeletionHTTPBoundSessionAndReceiptReconciliation(t *testing.T) {
 	db := projectTestStore(t)
 	h := projectTestHandler(t, db, io.Discard)
+	project := decodeResponse[api.Project](t, projectRequest(h, "POST", "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Independent task", RepoURL: "https://example.test/independent", ExpectedUserID: h.principal.UserID})), 201)
+	taskCollection := "/api/v1/projects/" + project.ID + "/tasks"
+	task := decodeResponse[api.Task](t, projectRequest(h, "POST", taskCollection, `{"title":"Independent task","description":"Preserve content"}`), 201)
+	taskPath := taskCollection + "/" + task.ID
+	if read := decodeResponse[api.Task](t, projectRequest(h, "GET", taskPath, ""), 200); !reflect.DeepEqual(read, task) {
+		t.Fatal("independent task did not persist before Bot deletion")
+	}
 	worker := uuid.NewString()
 	reportSnapshotHTTP(t, h, worker, workerSnapshotReportBody())
 	bot := seedHTTPBot(t, db, h, worker)
@@ -66,6 +74,10 @@ func TestBotDeletionHTTPBoundSessionAndReceiptReconciliation(t *testing.T) {
 	inventory := decodeResponse[api.BotPage](t, projectRequest(h, "GET", "/api/v1/me/workers/"+worker+"/bots", ""), 200)
 	if len(inventory.Items) != 0 {
 		t.Fatal("completed deletion remains in Worker inventory")
+	}
+	assertProjectError(t, projectRequest(h, "GET", "/api/v1/test-sessions/"+registered.Session.SessionID, ""), 404, "not_found")
+	if read := decodeResponse[api.Task](t, projectRequest(h, "GET", taskPath, ""), 200); !reflect.DeepEqual(read, task) {
+		t.Fatalf("Bot deletion changed an independent task: %+v", read)
 	}
 }
 

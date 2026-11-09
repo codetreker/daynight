@@ -87,7 +87,7 @@
 .step-more[aria-disabled=true] { cursor: not-allowed; opacity: .7; }
 .step-move-picker:hover .step-status-reason, .step-more:focus-visible + .step-status-reason { display: block; }
 .step-move-menu { inset: auto; margin: 0; box-sizing: border-box; max-height: calc(100dvh - 16px); overflow-y: auto; }
-.step-move-menu button:disabled { opacity: .45; cursor: not-allowed; }
+.step-move-menu button:disabled, .step-status-menu button[aria-disabled=true], .step-move-menu button[aria-disabled=true] { opacity: .45; cursor: not-allowed; }
 .step-move-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; overflow: hidden; }
 .step-move-dialog::backdrop { background: #17244780; }
 .step-move-dialog[open] { display: flex; flex-direction: column; }

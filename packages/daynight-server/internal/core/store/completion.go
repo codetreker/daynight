@@ -5,16 +5,15 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/internal/transaction"
 )
 
 // TransactionOutcome states what is known about a transaction's durable result.
-type TransactionOutcome = transaction.Outcome
+type TransactionOutcome string
 
 const (
-	TransactionCommitted    = transaction.Committed
-	TransactionNotCommitted = transaction.NotCommitted
-	TransactionUnknown      = transaction.Unknown
+	TransactionCommitted    TransactionOutcome = "committed"
+	TransactionNotCommitted TransactionOutcome = "not_committed"
+	TransactionUnknown      TransactionOutcome = "unknown"
 )
 
 // Completion records the durable outcome independently of any operation or
@@ -25,16 +24,57 @@ type Completion struct {
 
 // Error preserves the driver cause without exposing credentials or SQL in diagnostics.
 type Error struct {
-	Phase string
-	Cause error
+	Phase           string
+	SQLState        string
+	DatabaseFailure bool
+	MissingRow      bool
+	Cause           error
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("database %s failed", e.Phase) }
 func (e *Error) Unwrap() error { return e.Cause }
 
+// DatabaseErrorFacts finds database failures even in joined error chains.
+func DatabaseErrorFacts(err error) (bool, string) {
+	if err == nil {
+		return false, ""
+	}
+	var found bool
+	if failure, ok := err.(*Error); ok && failure.DatabaseFailure {
+		found = true
+		if failure.SQLState != "" {
+			return true, failure.SQLState
+		}
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			isDatabase, state := DatabaseErrorFacts(child)
+			found = found || isDatabase
+			if state != "" {
+				return true, state
+			}
+		}
+		return found, ""
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		isDatabase, state := DatabaseErrorFacts(wrapped.Unwrap())
+		return found || isDatabase, state
+	}
+	return found, ""
+}
+
 // TransactionError preserves completion facts separately from the original
 // operation and cleanup causes. An unsuccessful COMMIT is not proof of rollback.
-type TransactionError = transaction.Error
+type TransactionError struct {
+	Phase           string
+	Cause           error
+	Outcome         TransactionOutcome
+	CommitAttempted bool
+	CleanupFailed   bool
+}
+
+func (err *TransactionError) Error() string { return "transaction " + err.Phase + " failed" }
+func (err *TransactionError) Unwrap() error { return err.Cause }
 
 // ThreadTransactionError records local write stages without inventing a durable
 // submission identity. An unsuccessful COMMIT is not proof of rollback.

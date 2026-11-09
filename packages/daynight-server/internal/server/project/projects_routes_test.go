@@ -130,3 +130,26 @@ func TestProjectRoutesDatabaseFailuresRemainSafe(t *testing.T) {
 		t.Fatal("database details leaked in logs")
 	}
 }
+
+func TestProjectHTTPPageCountAndCursor(t *testing.T) {
+	h := projectRoutesHarness(t)
+	var projects []api.Project
+	for _, suffix := range []string{"one", "two"} {
+		name := strings.Repeat("<", 250) + suffix
+		body := jsonBody(t, api.CreateProjectRequest{Name: name, RepoURL: "host:repo-" + suffix, ExpectedUserID: h.adminID})
+		project := decodeResponse[api.ProjectDocument](t, h.call(http.MethodPost, "/api/v1/projects", body, h.admin), http.StatusCreated)
+		projects = append(projects, project.Project)
+	}
+	complete := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=100", "", h.admin), http.StatusOK)
+	if len(complete.Items) != 3 || complete.Items[1] != projects[0] || complete.Items[2] != projects[1] || complete.NextCursor != nil {
+		t.Fatalf("complete page: %+v", complete)
+	}
+	first := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=2", "", h.admin), http.StatusOK)
+	if len(first.Items) != 2 || first.Items[1] != projects[0] || first.NextCursor == nil {
+		t.Fatalf("first page: %+v", first)
+	}
+	next := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=2&cursor="+*first.NextCursor, "", h.admin), http.StatusOK)
+	if len(next.Items) != 1 || next.Items[0] != projects[1] || next.NextCursor != nil {
+		t.Fatalf("continuation: %+v", next)
+	}
+}

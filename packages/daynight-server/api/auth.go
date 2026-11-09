@@ -1,15 +1,12 @@
 package api
 
-import "time"
+import (
+	"time"
 
-type User struct {
-	ID            string  `json:"id"`
-	Email         *string `json:"email"`
-	EmailVerified *bool   `json:"emailVerified"`
-	Name          *string `json:"name"`
-	AvatarURL     *string `json:"avatarUrl"`
-	PersonalTeam  TeamRef `json:"personalTeam"`
-}
+	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
+)
+
+type User = profileprotocol.Response
 
 type PersonalAccessToken struct {
 	ID        string     `json:"id"`

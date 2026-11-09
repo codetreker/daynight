@@ -10,8 +10,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-// New constructs the test execution against the fixture's isolated store.
-func New(db store.SessionWriter, files ...filestorage.Storage) *Execution {
+// New binds the Engine to the configured DAO scope and completion callback.
+func New(writer store.SessionWriter, files ...filestorage.Storage) *Execution {
 	var storage filestorage.Storage
 	if len(files) > 0 {
 		storage = files[0]
@@ -19,16 +19,16 @@ func New(db store.SessionWriter, files ...filestorage.Storage) *Execution {
 	engine := NewEngine(storage)
 	c := &fixtureCoordinator{engine: engine}
 	c.write = func(ctx context.Context, op *Operation, fn func(store.SessionScope) error) error {
-		completion, err := db.WriteSession(ctx, fn)
+		completion, err := writer.WriteSession(ctx, fn)
 		op.Finish(completion.Outcome)
 		if err != nil {
 			var transaction *store.TransactionError
 			if completion.Outcome == store.TransactionNotCommitted && errors.As(err, &transaction) && !transaction.CommitAttempted && !transaction.CleanupFailed {
 				var refusal *model.Fault
-				if errors.As(err, &refusal) {
+				if errors.As(err, &refusal) && refusal.Code != "cleanup_unknown" && onlyFixtureCause(transaction.Cause, refusal) {
 					return refusal
 				}
-				if errors.Is(err, model.ErrNotFound) {
+				if errors.Is(err, model.ErrNotFound) && onlyFixtureCause(transaction.Cause, model.ErrNotFound) {
 					return fault("not_found", "Session was not found.")
 				}
 			}
@@ -39,7 +39,9 @@ func New(db store.SessionWriter, files ...filestorage.Storage) *Execution {
 		}
 		return nil
 	}
-	return NewExecution(engine, c.browser, c.controller, c.archive, c.terminal, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.registerTerminal, c.authorize)
+	execution := NewExecution(engine, c.browser, c.controller, c.archive, c.terminal, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.registerTerminal, c.authorize)
+	execution.SetArchivePreflight(c.archivePreflight)
+	return execution
 }
 
 type fixtureCoordinator struct {
@@ -123,15 +125,14 @@ func (s *fixtureCoordinator) browser(ctx context.Context, principal model.Princi
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		access, err := loadSession(ctx, op, scope, id)
 		if err != nil {
 			return err
 		}
-		if err = op.BindTaskBrowser(ctx, access, task, principal, project, taskID, admin); err != nil {
+		if err = op.BindTaskBrowser(ctx, access, task, principal, project, taskID); err != nil {
 			return err
 		}
 		return work(access)
@@ -172,7 +173,7 @@ func (s *fixtureCoordinator) controller(ctx context.Context, fence sp.Controller
 			if err = op.LockCredential(ctx, scope, owner); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, owner, authority.ProjectID); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, owner, authority.ProjectID); err != nil {
 				return err
 			}
 		}
@@ -198,7 +199,7 @@ func (s *fixtureCoordinator) archive(ctx context.Context, principal model.Princi
 			if err = op.LockCredential(ctx, scope, principal); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, principal, project); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 				return err
 			}
 		}
@@ -232,15 +233,14 @@ func (s *fixtureCoordinator) terminal(ctx context.Context, principal model.Princ
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		access, err := op.LoadTerminal(ctx, scope, id)
 		if err != nil {
 			return err
 		}
-		if err = op.BindTerminal(access, task, principal, project, taskID, deleted, admin); err != nil {
+		if err = op.BindTerminal(access, task, principal, project, taskID, deleted); err != nil {
 			return err
 		}
 		return work(access)
@@ -264,7 +264,7 @@ func (s *fixtureCoordinator) registerTask(ctx context.Context, p model.Principal
 		if err = op.LockCredential(ctx, scope, p); err != nil {
 			return err
 		}
-		if _, err = op.ProjectAdmin(ctx, scope, p, project); err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, p, project); err != nil {
 			return err
 		}
 		if err = op.CheckRegistration(task, p, input); err != nil {
@@ -354,7 +354,7 @@ func (s *fixtureCoordinator) controllerGrant(ctx context.Context, hash []byte, w
 			if err = op.LockCredential(ctx, scope, parent); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, parent, authority.ProjectID); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, parent, authority.ProjectID); err != nil {
 				return err
 			}
 		}
@@ -365,7 +365,7 @@ func (s *fixtureCoordinator) controllerGrant(ctx context.Context, hash []byte, w
 	})
 }
 
-func (s *fixtureCoordinator) taskQuery(ctx context.Context, principal model.Principal, project, taskID string, work func(*Operation, store.SessionScope, *TaskAccess, bool, func(string) (*Access, error)) error) error {
+func (s *fixtureCoordinator) taskQuery(ctx context.Context, principal model.Principal, project, taskID string, work func(*Operation, store.SessionScope, *TaskAccess, func(string) (*Access, error)) error) error {
 	op, err := s.engine.BeginOperation()
 	if err != nil {
 		return err
@@ -379,12 +379,11 @@ func (s *fixtureCoordinator) taskQuery(ctx context.Context, principal model.Prin
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
-		admin, err := op.ProjectAdmin(ctx, scope, principal, project)
-		if err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
 		load := func(id string) (*Access, error) { return loadSession(ctx, op, scope, id) }
-		return work(op, scope, task, admin, load)
+		return work(op, scope, task, load)
 	})
 }
 
@@ -482,41 +481,72 @@ func (s *fixtureCoordinator) registerTerminal(ctx context.Context, p model.Princ
 		if err = op.LockCredential(ctx, scope, p); err != nil {
 			return err
 		}
-		if _, err = op.ProjectAdmin(ctx, scope, p, project); err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, p, project); err != nil {
 			return err
 		}
 		return work(op, scope, task)
 	})
 }
 
-func (s *fixtureCoordinator) authorize(ctx context.Context, op *Operation, scope store.SessionScope, p model.Principal, authority Authority) (bool, error) {
+func (s *fixtureCoordinator) authorize(ctx context.Context, op *Operation, scope store.SessionScope, p model.Principal, authority Authority) error {
 	if err := op.LockCredential(ctx, scope, p); err != nil {
-		return false, err
+		return err
 	}
 	if !authority.Test {
-		return op.ProjectAdmin(ctx, scope, p, authority.ProjectID)
+		return op.CheckProjectAccess(ctx, scope, p, authority.ProjectID)
 	}
 	if p.UserID != authority.OwnerID {
-		return false, &model.Fault{Code: "forbidden", Message: "Session access is not available."}
+		return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
 	}
 	if authority.ParentCredentialID != "" {
 		parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
 		if err := op.LockCredential(ctx, scope, parent); err != nil {
-			return false, err
+			return err
 		}
 	}
-	return true, nil
+	return nil
 }
 
-func testTransact(s *Execution, db *store.Store, ctx context.Context, fn func(*operationTx) error) error {
+func testTransact(s *Execution, writer store.SessionWriter, ctx context.Context, fn func(*operationTx) error) error {
 	op, err := s.BeginOperation()
 	if err != nil {
 		return err
 	}
 	defer op.Close()
-	completion, err := db.WriteSession(ctx, func(scope store.SessionScope) error {
+	completion, err := writer.WriteSession(ctx, func(scope store.SessionScope) error {
 		return fn(&operationTx{scope: scope, dao: scope.SessionDAO(), bot: scope.BotDAO(), op: op})
 	})
 	op.Finish(completion.Outcome)
 	return err
+}
+
+func (s *fixtureCoordinator) archivePreflight(ctx context.Context, p model.Principal, project, taskID, id string, mode ArchiveMode) (owner string, err error) {
+	op, err := s.engine.BeginOperation()
+	if err != nil {
+		return "", err
+	}
+	defer op.Close()
+	err = s.write(ctx, op, func(scope store.SessionScope) error {
+		var e error
+		owner, e = op.ArchivePreflight(ctx, scope, p, project, taskID, id, mode)
+		return e
+	})
+	return owner, err
+}
+
+func onlyFixtureCause(err, target error) bool {
+	if err == target {
+		return true
+	}
+	if failure, ok := err.(*store.Error); ok && target == model.ErrNotFound && failure.MissingRow && !failure.DatabaseFailure {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		return len(children) == 1 && onlyFixtureCause(children[0], target)
+	}
+	if next := errors.Unwrap(err); next != nil {
+		return onlyFixtureCause(next, target)
+	}
+	return false
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
@@ -61,7 +63,7 @@ func configurationInteger(raw json.RawMessage, minimum, maximum int64) (int64, e
 	return value, nil
 }
 
-func configurationNative(raw json.RawMessage, overrides bool) (model.WorkerNativeConfiguration, map[string]json.RawMessage, error) {
+func configurationNative(raw json.RawMessage, overrides, admit bool) (model.WorkerNativeConfiguration, map[string]json.RawMessage, error) {
 	fields, err := configurationObject(raw, "native", overrides, "agent", "model", "args")
 	if err != nil {
 		return model.WorkerNativeConfiguration{}, nil, err
@@ -83,10 +85,20 @@ func configurationNative(raw json.RawMessage, overrides bool) (model.WorkerNativ
 		if err := configurationDecode(field, &value.Args); err != nil {
 			return value, nil, err
 		}
+		if admit {
+			if err := nativeLimits("native", value); err != nil {
+				return value, nil, InputLimit(err)
+			}
+		}
 		for _, arg := range value.Args {
 			if !configurationText(arg) {
 				return value, nil, invalidInput("Native arguments must be nonempty text without control characters.")
 			}
+		}
+	}
+	if admit {
+		if err := nativeLimits("native", value); err != nil {
+			return value, nil, InputLimit(err)
 		}
 	}
 	// Re-encoding each node gives equal override values one canonical representation.
@@ -104,12 +116,21 @@ func configurationNative(raw json.RawMessage, overrides bool) (model.WorkerNativ
 }
 
 func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, error) {
+	return parseWorkerConfiguration(raw, true)
+}
+
+// Stored values need structural normalization for semantic comparisons even
+// when they predate current write limits. Only candidates are admitted.
+func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConfiguration, error) {
 	var value model.WorkerConfiguration
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", false, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "native", "projects")
+	fields, err := configurationObject(raw, "configuration", false, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects")
 	if err != nil {
+		return value, err
+	}
+	if err := configurationDecode(fields["preferPlatformSpecificTasks"], &value.PreferPlatformSpecificTasks); err != nil {
 		return value, err
 	}
 	value.MaxConcurrent, err = configurationInteger(fields["maxConcurrent"], 1, workerSafeInteger)
@@ -124,13 +145,18 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 	if err != nil {
 		return value, err
 	}
-	value.Native, _, err = configurationNative(fields["native"], false)
+	value.Native, _, err = configurationNative(fields["native"], false, admit)
 	if err != nil {
 		return value, err
 	}
 	var projects []json.RawMessage
 	if err := configurationDecode(fields["projects"], &projects); err != nil {
 		return value, err
+	}
+	if admit {
+		if err := upper("projects", int64(len(projects)), MaxProjects, "items"); err != nil {
+			return value, InputLimit(err)
+		}
 	}
 	value.Projects = make([]model.WorkerProjectConfiguration, 0, len(projects))
 	seen := make(map[string]bool, len(projects))
@@ -151,13 +177,21 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 			return value, invalidInput("Configuration projects must be unique.")
 		}
 		seen[project.ProjectID] = true
-		_, project.NativeOverrides, err = configurationNative(fields["nativeOverrides"], true)
+		_, project.NativeOverrides, err = configurationNative(fields["nativeOverrides"], true, admit)
 		if err != nil {
 			return value, err
 		}
 		value.Projects = append(value.Projects, project)
 	}
 	slices.SortFunc(value.Projects, func(a, b model.WorkerProjectConfiguration) int { return strings.Compare(a.ProjectID, b.ProjectID) })
+	if admit {
+		if err := AdmitConfiguration(value); err != nil {
+			return value, InputLimit(err)
+		}
+		if _, err := workerprotocol.EncodeConfiguration(io.Discard, value, MaxConfigurationJSONBytes); err != nil {
+			return value, InputLimit(err)
+		}
+	}
 	return value, nil
 }
 
@@ -205,10 +239,14 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 	if err != nil {
 		return nil, err
 	}
-	var observation model.WorkerConfigurationObservation
-	if err := json.Unmarshal(fields["observation"], &observation); err != nil {
+	var header struct {
+		BaseRevision    string `json:"baseRevision"`
+		DesiredRevision string `json:"desiredRevision"`
+	}
+	if err := json.Unmarshal(fields["observation"], &header); err != nil {
 		return nil, invalidInput("Configuration observation is invalid.")
 	}
+	observation := model.WorkerConfigurationObservation{BaseRevision: header.BaseRevision, DesiredRevision: header.DesiredRevision}
 	if _, err := ConfigurationRevision(observation.BaseRevision, true); err != nil {
 		return nil, err
 	}
@@ -219,6 +257,9 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 	var items []json.RawMessage
 	if err := configurationDecode(observationFields["items"], &items); err != nil {
 		return nil, err
+	}
+	if err := upper("observation.items", int64(len(items)), MaxObservationItems, "items"); err != nil {
+		return nil, InputLimit(err)
 	}
 	observation.Items = make([]model.WorkerConfigurationItem, 0, len(items))
 	seen := make(map[model.WorkerConfigurationItemKey]bool, len(items))
@@ -236,7 +277,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item is invalid.")
 		}
 		projectKind := slices.Contains([]string{"projectPreparation", "projectRemoval", "projectNative"}, item.Key.Kind)
-		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "native"}, item.Key.Kind) {
+		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"}, item.Key.Kind) {
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
@@ -263,8 +304,11 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		}
 		if !configurationNull(item.AppliedValue) {
 			switch item.Key.Kind {
+			case "preferPlatformSpecificTasks":
+				var enabled bool
+				err = configurationDecode(item.AppliedValue, &enabled)
 			case "native", "projectNative":
-				_, _, err = configurationNative(item.AppliedValue, false)
+				_, _, err = configurationNative(item.AppliedValue, false, true)
 			case "projectPreparation", "projectRemoval":
 				var ready bool
 				err = configurationDecode(item.AppliedValue, &ready)
@@ -313,5 +357,8 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		observation.Items = append(observation.Items, item)
 	}
 	exchange.Observation = &observation
+	if err := AdmitObservation(observation); err != nil {
+		return nil, InputLimit(err)
+	}
 	return exchange, nil
 }

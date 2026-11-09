@@ -24,7 +24,6 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
 
@@ -239,15 +238,38 @@ func TestProductionArchiveDeletionSerializesBothOrders(t *testing.T) {
 					_, err := f.service.PutArchive(ctx, f.owner, "", "", out.Session.SessionID, data)
 					upload <- err
 				}()
-				waitErr := waitServiceBotLock(ctx, f)
+				// A committed deletion may be rejected by the unlocked archive
+				// preflight before the upload reaches the Bot lock. Either way,
+				// deletion cleanup must finish without a late archive write.
+				waitCtx, stopWait := context.WithCancel(ctx)
+				waited := make(chan error, 1)
+				go func() { waited <- waitServiceBotLock(waitCtx, f) }()
+				var uploadErr, waitErr error
+				var uploadFinished, waitFinished bool
+				select {
+				case uploadErr = <-upload:
+					uploadFinished = true
+				case waitErr = <-waited:
+					waitFinished = true
+				case <-ctx.Done():
+					waitErr = ctx.Err()
+				}
+				stopWait()
+				if !waitFinished {
+					drained := <-waited
+					if drained != nil && !errors.Is(drained, context.Canceled) && waitErr == nil {
+						waitErr = drained
+					}
+				}
 				release()
-				if err := <-cleanup; err != nil {
-					t.Fatal(err)
+				cleanupErr := <-cleanup
+				if !uploadFinished {
+					uploadErr = <-upload
 				}
-				requireServiceError(t, <-upload, "resource_conflict")
-				if waitErr != nil {
-					t.Fatal(waitErr)
+				if waitErr != nil || cleanupErr != nil {
+					t.Fatalf("delete-first ordering: wait=%v cleanup=%v", waitErr, cleanupErr)
 				}
+				requireServiceError(t, uploadErr, "resource_conflict")
 			}
 			if _, err = os.Stat(filepath.Join(root, sessionarchive.Bucket, namespace.Directory())); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("namespace retained: %v", err)
@@ -350,13 +372,9 @@ func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
 	if _, err := f.service.Handle(ctx, sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 		t.Fatal(err)
 	}
-	actorUser := testsupport.ServicePrincipal(t, f.db)
-	actor := model.Principal{Kind: model.PATCredential, UserID: actorUser.UserID, CredentialID: uuid.NewString()}
+	actor := model.Principal{Kind: model.PATCredential, UserID: f.owner.UserID, CredentialID: uuid.NewString()}
 	hash := sha256.Sum256([]byte(actor.CredentialID))
 	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, f.project, actor.UserID); err != nil {
 		t.Fatal(err)
 	}
 	command := func() sp.Command {
@@ -366,7 +384,7 @@ func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
 	if _, err := f.service.Submit(ctx, actor, f.project, f.task, v.SessionID, first); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, actor.CredentialID); err != nil {
 		t.Fatal(err)
 	}
 	offers, err := f.service.Poll(ctx, v.ControllerFence)
@@ -377,7 +395,7 @@ func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
 	if err != nil || receipt.State != "rejected" {
 		t.Fatalf("poll rejection: %+v %v", receipt, err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE project_grants SET role='admin' WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	second := command()
@@ -388,7 +406,7 @@ func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
 	if err != nil || len(offers) != 1 {
 		t.Fatalf("offer: %v %v", offers, err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, actor.CredentialID); err != nil {
 		t.Fatal(err)
 	}
 	begin, err := f.service.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: second.OperationID})
@@ -398,7 +416,7 @@ func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
 	if result, ok := begin["operation"].(sp.Operation); !ok || result.State != "rejected" {
 		t.Fatalf("revoked actor dispatched: %v", begin)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE project_grants SET role='admin' WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+	if _, err = f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'actor',now(),now()+interval '1 day')`, actor.CredentialID, actor.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	third := command()

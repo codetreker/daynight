@@ -5,9 +5,13 @@ package v2
 
 import (
 	"encoding/json"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"reflect"
+
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
+
+// MaxHistoryCursorBytes is the existing encoded Terminal history cursor limit.
+const MaxHistoryCursorBytes = 1024
 
 const (
 	Protocol                  = "daynight.session.v2"

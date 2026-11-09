@@ -32,7 +32,8 @@ const fixture = async (options: { failure?: string; principal?: string; answer?:
     if (options.failure === "lost") throw new Error("connection lost");
     if (options.failure) return new Response(JSON.stringify({ error: { code: options.failure, message: "rejected", requestId: "request" } }), { status: 409, headers });
     const target = pathname.split("/").at(-1)!;
-    const value = method === "PATCH" ? { membership: { ...member(target, "member"), version: version + 1n }, actorRole: target === userId ? "member" : "admin" } : { teamId, userId: target, removed: true, actorRole: target === userId ? null : "admin" };
+    const role = method === "PATCH" ? JSON.parse(String(init?.body)).role as string : "member";
+    const value = method === "PATCH" ? { membership: { ...member(target, role), version: version + 1n }, actorRole: target === userId ? role : "admin" } : { teamId, userId: target, removed: true, actorRole: target === userId ? null : "admin" };
     return new Response(stringifyApiJson(value), { headers });
   });
   const ask = vi.fn(async () => options.answer ?? "y");
@@ -57,6 +58,20 @@ describe("Team membership commands", () => {
     expect(f.calls[2]!.body).toContain(`"version":${version}`);
     expect(f.calls[2]!.body).toContain(`"expectedUserId":"${userId}"`);
     expect(Buffer.from(f.stdoutBytes.mock.calls[0]![0]).toString()).toContain('"actorRole":"member"');
+  });
+  it("prints the complete receipt when another member becomes an admin", async () => {
+    const f = await fixture();
+    await runTeamCommand(["member", "set-role", otherId, "admin", "--team", teamId, "--if-version", String(version), "--confirm", "--json"], f.context, f.dependencies);
+    expect(f.calls.map(x => `${x.method} ${x.path}`)).toEqual([`GET /api/v1/me`, `GET /api/v1/teams/${teamId}/members`, `PATCH /api/v1/teams/${teamId}/members/${otherId}`]);
+    expect(f.calls[2]!.body).toBe(`{"version":${version},"role":"admin","expectedUserId":"${userId}"}`);
+    expect(Buffer.from(f.stdoutBytes.mock.calls[0]![0]).toString()).toBe(`${stringifyApiJson({ membership: { ...member(otherId, "admin"), version: version + 1n }, actorRole: "admin" })}\n`);
+  });
+  it("removes another member with the observed exact version and confirmed receipt", async () => {
+    const f = await fixture();
+    await runTeamCommand(["member", "remove", otherId, "--team", teamId, "--if-version", String(version), "--confirm", "--json"], f.context, f.dependencies);
+    expect(f.calls.map(x => `${x.method} ${x.path}`)).toEqual([`GET /api/v1/me`, `GET /api/v1/teams/${teamId}/members`, `DELETE /api/v1/teams/${teamId}/members/${otherId}`]);
+    expect(f.calls[2]!.body).toBe(`{"version":${version},"expectedUserId":"${userId}"}`);
+    expect(JSON.parse(Buffer.from(f.stdoutBytes.mock.calls[0]![0]).toString())).toEqual({ teamId, userId: otherId, removed: true, actorRole: "admin" });
   });
   it("leaves using the current membership and does not read after success", async () => {
     const f = await fixture();

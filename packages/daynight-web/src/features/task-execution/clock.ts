@@ -1,6 +1,6 @@
 import type { GraphTask } from "../../api/types";
 
-export type ExecutionTask = Pick<GraphTask, "status" | "allowAgents" | "startedAt" | "completedAt">;
+export type ExecutionTask = Pick<GraphTask, "status" | "allowAgents" | "startedAt" | "completedAt" | "cancelledAt">;
 export type TaskExecution = {
   readonly kind: "running" | "completed";
   readonly elapsedMilliseconds: number;
@@ -22,7 +22,7 @@ export type WarningSnapshot = { readonly warningMinutes: number };
 
 export const executionKind = (task: ExecutionTask): TaskExecution["kind"] | null =>
   task.startedAt === null ? null : task.status === "in_progress" ? "running"
-    : task.status === "done" && task.completedAt !== null ? "completed" : null;
+    : (task.status === "done" || task.status === "cancelled") && task.completedAt !== null ? "completed" : null;
 
 export const taskExecution = (task: ExecutionTask, snapshot: ClockSnapshot): TaskExecution | null => {
   const kind = executionKind(task);

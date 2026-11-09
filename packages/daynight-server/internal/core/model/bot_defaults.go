@@ -3,10 +3,11 @@ package model
 import "time"
 
 // BotWorkerPreference contains only successful explicit choices for one Worker.
-// Provider model and arguments always come from that Worker's current report.
+// Native choices are keyed by Provider and effort choices by the resolved model.
 type BotWorkerPreference struct {
 	Cwd      *string
 	Provider *string
+	Native   map[string]BotNativePreference
 }
 
 // BotDefaultsInput is owner-scoped input used by both preview and creation.
@@ -17,4 +18,9 @@ type BotDefaultsInput struct {
 	Workers           []WorkerSnapshot
 	PreferredWorkerID *string
 	WorkerPreferences map[string]BotWorkerPreference
+}
+
+type BotNativePreference struct {
+	Model   *string
+	Efforts map[string]string
 }

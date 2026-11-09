@@ -10,6 +10,7 @@ Apply [authorization and scope](authorization.md) first, read the complete task 
 | todo | Once ready and authorized for execution, use `task set-status` with the exact observed version to enter `in_progress`; confirm success before starting. |
 | in_progress | Reconcile existing work and session context, coordinate and resume through established repository mechanisms, and do not treat status as an execution lock. |
 | done | Report that it is already complete; consider reopening only when the explicit request includes it. |
+| cancelled | Report the cancelled terminal result and return; do not reopen, resume or substitute a completion claim. |
 
 An explicit ordinary assignment is not restricted by `allowAgents` or platform filtering for automatic selection; see [task management](task-management.md#metadata).
 This workflow does not select candidate tasks or advance a queue automatically.

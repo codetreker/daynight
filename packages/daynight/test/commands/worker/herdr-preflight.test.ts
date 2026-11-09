@@ -550,3 +550,12 @@ it("checks Claude root hooks and rejects local hook disabling before starting na
   await mkdir(path.join(f.cwd, ".claude")); await writeFile(path.join(f.cwd, ".claude", "settings.local.json"), JSON.stringify({ disableAllHooks: true }));
   await expect(f.preflight.verifyStart(input, operation())).rejects.toThrow(/disabled/);
 });
+
+it("settles a shared selection verifier without closing its Worker ownership", async () => {
+  const f = await fixture();
+  const selectionVerifier = { verify: vi.fn(), settle: vi.fn().mockResolvedValue(undefined), close: vi.fn() };
+  const preflight = createHerdrPreflight({ assertIntegrationEnvironment: f.assertIntegrationEnvironment, rpc: f.rpc, environment: {}, homeDirectory: f.home, runCommand: f.runCommand, selectionVerifier });
+  await preflight.close();
+  expect(selectionVerifier.settle).toHaveBeenCalledOnce();
+  expect(selectionVerifier.close).not.toHaveBeenCalled();
+});

@@ -26,6 +26,8 @@ type WorkspaceSidebarProps = {
   readonly visibilityTeamId?: string | null;
   readonly workersActive?: boolean;
   readonly botsActive?: boolean;
+  readonly webhooksActive?: boolean;
+  readonly webhooksAvailable?: boolean;
   readonly activeProjectId: string | null;
   readonly testSessionsActive?: boolean;
   readonly blocked: boolean;
@@ -34,7 +36,7 @@ type WorkspaceSidebarProps = {
   readonly onCreateTeam?: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, teamSettingsActive = false, teamMembersActive = false, personalId, selectedTeamId, visibilityTeamId = selectedTeamId, workersActive = false, botsActive = false, activeProjectId, testSessionsActive = false, blocked, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, teamSettingsActive = false, teamMembersActive = false, personalId, selectedTeamId, visibilityTeamId = selectedTeamId, workersActive = false, botsActive = false, webhooksActive = false, webhooksAvailable = false, activeProjectId, testSessionsActive = false, blocked, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app, projects: p } } } = useI18n();
   const projects = useProjectList();
   const teamMessages = useTeamMessages();
@@ -116,7 +118,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     setDrawer(null);
-    navigate(event.currentTarget.pathname);
+    navigate(event.currentTarget.pathname + event.currentTarget.search);
     onNavigate();
   };
   const teamLink = (target: (teamId: string) => string) => selectedTeamId === null
@@ -148,6 +150,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
           <a className="nav-button" href="/shared-projects" onClick={follow} aria-label={teamMessages.shared} title={teamMessages.shared} aria-current={sharedActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">◇</span><span className="nav-text">{teamMessages.shared}</span></a>
           <a className="nav-button" href="/workers" onClick={follow} aria-label={m.workers} title={m.workers} aria-current={workersActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4M7 8h10M7 12h6" /></svg></span><span className="nav-text">{m.workers}</span></a>
           <a className="nav-button" href="/bots" onClick={follow} aria-label={botMessages.title} title={botMessages.title} aria-current={botsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="7" width="16" height="13" rx="3" /><path d="M12 3v4M8 12h.01M16 12h.01M9 16h6" /></svg></span><span className="nav-text">{botMessages.title}</span></a>
+          {webhooksAvailable && <a className="nav-button" href="/webhooks?owner=personal" onClick={follow} aria-label="Webhooks" title="Webhooks" aria-current={webhooksActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9a4 4 0 1 1 5-6M17 9a4 4 0 1 1-4 7M7 17a4 4 0 1 1-4-5M7 9l-3 6h12M12 5l5 8" /></svg></span><span className="nav-text">Webhooks</span></a>}
           <a className="nav-button" href="/test-sessions" onClick={follow} aria-label={testMessages.title} title={testMessages.title} aria-current={testSessionsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▷</span><span className="nav-text">{testMessages.title}</span></a>
         </nav>
       </div>

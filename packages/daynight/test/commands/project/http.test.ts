@@ -1,11 +1,13 @@
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringifyApiJson } from "../../../src/api/index.js";
 import type { Project } from "../../../src/api/index.js";
+import { runCli } from "../../../src/cli/application.js";
 import { runProjectCommand } from "../../../src/commands/project/command.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
 
@@ -16,10 +18,25 @@ const project: Project = { id, name: "Project 名称", repoUrl: "git@Git.Example
 const personalTeam = { id: user.personalTeam.id, kind: "personal", name: null, version: 1n, createdAt: "2026-10-20T01:02:03Z", updatedAt: "2026-10-20T01:02:03Z", membership: { teamId: user.personalTeam.id, userId, role: "admin", version: 1n, createdAt: "2026-10-20T01:02:03Z", updatedAt: "2026-10-20T01:02:03Z" } };
 const creationReceipt = <T extends { id: string; ownership: { teamId: string; version: bigint }; createdAt: string; updatedAt: string }>(value: T, userId: string) => ({ ...value, access: { projectId: value.id, ownerTeam: { id: value.ownership.teamId, kind: "personal", name: null }, ownership: value.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: value.id, userId, role: "admin", version: 1n, createdAt: value.createdAt, updatedAt: value.updatedAt } } });
 const cleanups: (() => void | Promise<void>)[] = [];
+let restoreGitEnvironment: (() => void) | undefined;
 afterEach(async () => {
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-  vi.restoreAllMocks();
+  const failures: unknown[] = [];
+  try {
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      try { await cleanup(); } catch (error) { failures.push(error); }
+    }
+  } finally { restoreGitEnvironment?.(); restoreGitEnvironment = undefined; vi.restoreAllMocks(); }
+  if (failures.length > 0) throw new AggregateError(failures, "Project fixture cleanup failed.");
 });
+const gitEnvironment = () => Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GIT_"));
+const clearGitEnvironment = () => {
+  for (const [key] of gitEnvironment()) delete process.env[key];
+};
+const isolateGitEnvironment = (root: string) => {
+  clearGitEnvironment();
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
+  process.env.GIT_CONFIG_GLOBAL = path.join(root, "isolated-gitconfig");
+};
 const server = async (handler: (request: IncomingMessage, response: ServerResponse) => void): Promise<string> => {
   const created = createServer(handler);
   await new Promise<void>((resolve) => created.listen(0, "127.0.0.1", resolve));
@@ -31,7 +48,7 @@ const server = async (handler: (request: IncomingMessage, response: ServerRespon
   if (typeof address !== "object" || address === null) throw new Error("Missing server address");
   return `http://127.0.0.1:${address.port}`;
 };
-const fixture = async (serverUrl: string, operationLimits?: { readonly totalMs: number }) => {
+const fixture = async (serverUrl: string, operationLimits?: { readonly totalMs?: number; readonly responseBytes?: number; readonly totalBytes?: number }) => {
   const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/project-command-tests");
   await mkdir(temporary, { recursive: true });
   const home = await mkdtemp(path.join(temporary, "home 用户 "));
@@ -53,6 +70,56 @@ const respond = (response: ServerResponse, value: unknown, status = 200) => {
 };
 
 describe("project command over HTTP", () => {
+  it("isolates inherited Git configuration and creates from a subdirectory without repository binding metadata", async () => {
+    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/project-command-tests");
+    await mkdir(temporary, { recursive: true });
+    const root = await mkdtemp(path.join(temporary, "repo-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const savedGitEnvironment = gitEnvironment();
+    restoreGitEnvironment = () => {
+      clearGitEnvironment();
+      for (const [key, value] of savedGitEnvironment) if (value !== undefined) process.env[key] = value;
+    };
+    isolateGitEnvironment(root);
+    const unrelated = path.join(root, "unrelated");
+    execFileSync("git", ["init", "--quiet", unrelated], { timeout: 10_000 });
+    execFileSync("git", ["-C", unrelated, "remote", "add", "preserved", "https://example.test/unchanged.git"], { timeout: 10_000 });
+    const unrelatedConfig = await readFile(path.join(unrelated, ".git", "config"));
+    process.env.GIT_DIR = path.join(unrelated, ".git");
+    process.env.GIT_WORK_TREE = unrelated;
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = "remote.origin.url";
+    process.env.GIT_CONFIG_VALUE_0 = "https://example.test/injected.git";
+    isolateGitEnvironment(root);
+    expect(process.env.GIT_DIR).toBeUndefined();
+    expect(process.env.GIT_WORK_TREE).toBeUndefined();
+    expect(process.env.GIT_CONFIG_COUNT).toBeUndefined();
+    const repository = path.join(root, "repository");
+    execFileSync("git", ["init", "--quiet", repository], { timeout: 10_000 });
+    execFileSync("git", ["-C", repository, "remote", "add", "origin", project.repoUrl], { timeout: 10_000 });
+    const nested = path.join(repository, "source"); await mkdir(nested);
+    let submitted: string | undefined;
+    const url = await server((request, response) => {
+      response.setHeader("Daynight-User-ID", userId);
+      if (request.url === "/api/v1/me") respond(response, user);
+      else if (request.url === `/api/v1/teams/${user.personalTeam.id}`) respond(response, personalTeam);
+      else if (request.method === "GET") respond(response, { items: [], nextCursor: null });
+      else {
+        let body = ""; request.setEncoding("utf8"); request.on("data", (part: string) => { body += part; });
+        request.on("end", () => { submitted = body; respond(response, creationReceipt({ ...project, name: "Project" }, userId), 201); });
+      }
+    });
+    const { context, dependencies } = await fixture(url);
+    context.workingDirectory.mockReturnValue(nested);
+    await runProjectCommand(["create", "Project", "--confirm"], context, dependencies);
+    expect(context.stdoutBytes).toHaveBeenCalledOnce();
+    expect(JSON.parse(submitted!)).toMatchObject({ name: "Project", repoUrl: project.repoUrl });
+    await expect(stat(path.join(repository, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(unrelated, ".git", "config"))).toEqual(unrelatedConfig);
+    restoreGitEnvironment();
+    expect(Object.fromEntries(gitEnvironment())).toEqual(Object.fromEntries(savedGitEnvironment));
+  });
+
   it("prints one complete JSON array after the final project page succeeds", async () => {
     const next = { ...project, id: "22222222-2222-2222-2222-222222222222", name: "Second\nProject" };
     const requests: string[] = [];
@@ -71,6 +138,20 @@ describe("project command over HTTP", () => {
     expect(current.signals.listenerCount("SIGINT")).toBe(0);
   });
 
+  it("preserves exact nested settings versions from a later project page in JSON", async () => {
+    const precise = { ...project, id: "22222222-2222-2222-2222-222222222222", settings: { version: 9_007_199_254_740_993n, executionWarningMinutes: 90 } };
+    const requests: string[] = [];
+    const url = await server((request, response) => {
+      requests.push(request.url!);
+      respond(response, requests.length === 1 ? { items: [project], nextCursor: "second" } : { items: [precise], nextCursor: null });
+    });
+    const { context, dependencies } = await fixture(url);
+    await runProjectCommand(["list", "--json"], context, dependencies);
+    expect(context.stdout).toHaveBeenCalledExactlyOnceWith(`${stringifyApiJson([project, precise])}\n`);
+    expect(context.stdout.mock.calls[0]![0]).toContain('"settings":{"version":9007199254740993,"executionWarningMinutes":90}');
+    expect(requests).toEqual(["/api/v1/projects?limit=100", "/api/v1/projects?limit=100&cursor=second"]);
+  });
+
   it("preserves a later-page refusal and leaves stdout empty", async () => {
     let requests = 0;
     const url = await server((_request, response) => {
@@ -83,6 +164,27 @@ describe("project command over HTTP", () => {
     expect(context.workingDirectory).not.toHaveBeenCalled();
     expect(requests).toBe(2);
     expect(signals.listenerCount("SIGINT")).toBe(0);
+  });
+
+  it.each(["response", "total"])("does not print partial project JSON when the %s byte budget is exceeded", async (budget) => {
+    const first = stringifyApiJson({ items: [project], nextCursor: "second" });
+    const second = stringifyApiJson({ items: [{ ...project, id: "22222222-2222-2222-2222-222222222222", name: "Long second page ".repeat(32) }], nextCursor: null });
+    const requests: string[] = [];
+    const url = await server((request, response) => {
+      requests.push(request.url!);
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(requests.length === 1 ? first : second);
+    });
+    const limits = budget === "response"
+      ? { responseBytes: Buffer.byteLength(second) - 1 }
+      : { totalBytes: Buffer.byteLength(first) + Buffer.byteLength(second) - 1 };
+    const { context, dependencies } = await fixture(url, limits);
+    const exit = await runCli(["project", "list", "--json"], context, [{ name: "project", description: "Manage projects", load: async () => ({ run: (args, current) => runProjectCommand(args, current, dependencies) }) }]);
+    expect(exit).toBe(1);
+    expect(context.stderr.mock.calls.map(([text]) => text).join("")).toContain(budget === "response" ? "HTTP response byte limit exceeded." : "Operation response byte budget exceeded.");
+    expect(context.stdout).not.toHaveBeenCalled();
+    expect(context.stdoutBytes).not.toHaveBeenCalled();
+    expect(requests).toEqual(["/api/v1/projects?limit=100", "/api/v1/projects?limit=100&cursor=second"]);
   });
 
   it("submits original create values once and prints only the server-confirmed resource", async () => {

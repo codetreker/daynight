@@ -65,7 +65,11 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 		if err := tx.TaskDAO().MoveTaskStep(ctx, taskID, stepID, int64(mutation.From), int64(mutation.To)); err != nil {
 			return err
 		}
-		return tx.TaskDAO().TouchTask(ctx, taskID, observed)
+		if err := tx.TaskDAO().TouchTask(ctx, taskID, observed); err != nil {
+			return err
+		}
+		from, to := int64(mutation.From), int64(mutation.To)
+		return s.captureStep(ctx, tx, projectID, taskID, stepID, "moved", observed, &from, &to, nil, nil)
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

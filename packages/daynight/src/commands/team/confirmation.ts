@@ -21,6 +21,6 @@ export const confirmTeamChange = async (context: CliContext, confirmed: boolean,
     return;
   }
   let decoded: unknown;
-  try { decoded = JSON.parse(answer); } catch { throw new CliCancelledError("Team deletion cancelled: name did not match."); }
-  if (typeof decoded !== "string" || decoded !== deleteName) throw new CliCancelledError("Team deletion cancelled: name did not match.");
+  try { decoded = JSON.parse(answer); } catch { throw new CliCancelledError(`${action === "Team change" ? "Team deletion" : action} cancelled: name did not match.`); }
+  if (typeof decoded !== "string" || decoded !== deleteName) throw new CliCancelledError(`${action === "Team change" ? "Team deletion" : action} cancelled: name did not match.`);
 };

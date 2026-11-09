@@ -1,11 +1,9 @@
 package task_test
 
 import (
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-
 	"context"
 	"errors"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +11,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
@@ -20,212 +21,231 @@ func workerDescriptor() taskcore.WorkerDescriptor {
 	return taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Build machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, WorktreeID: uuid.NewString()}
 }
 
-func workerMember(t *testing.T, database *store.Store, projectID string) model.Principal {
+func workerTestCurrent(t *testing.T, state model.WorkerState) (model.Task, model.Principal, taskcore.WorkerDescriptor) {
 	t.Helper()
-	principal := servicePrincipal(t, database)
-	if err := writeProjectForTest(database, context.Background(), projectID, func(tx store.ProjectWriteScope) error {
-		_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), principal.UserID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return principal
-}
-
-func claimableTask(t *testing.T, tasks *taskservice.Tasks, principal model.Principal, projectID string) model.Task {
-	t.Helper()
-	created, err := tasks.Create(context.Background(), principal, projectID, taskcore.CreateTask{Title: "Worker task", AssignedTo: &principal.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return updateTask(t, tasks, principal, created, taskcore.UpdateTask{AllowAgents: pointer(true)})
-}
-
-func claimWorkerTask(t *testing.T, tasks *taskservice.Tasks, principal model.Principal, task model.Task, descriptor taskcore.WorkerDescriptor) model.Task {
-	t.Helper()
-	claimed, err := tasks.ClaimWorker(context.Background(), principal, task.ProjectID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return claimed
-}
-
-func TestWorkerClaimHasOneWinnerAndPreservesTaskData(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	owner := workerMember(t, database, project.ID)
-	prerequisite := finishTask(t, tasks, admin, startTask(t, tasks, admin, createTask(t, tasks, admin, project.ID, "Dependency")))
-	task := claimableTask(t, tasks, owner, project.ID)
-	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{DependsOn: pointer([]string{prerequisite.ID}), ExternalDependsOn: pointer([]string{prerequisite.ID}), Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00\n", Title: "Evidence"}), RequiredPlatform: platformChange(pointer(model.PlatformLinux))})
-	a, b := workerDescriptor(), workerDescriptor()
-	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.ClaimWorker(ctx, owner, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: a})
-		},
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.ClaimWorker(ctx, owner, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: b})
-		})
-	assertOneTaskWinner(t, results, "version_conflict")
-	actual, err := tasks.Get(context.Background(), admin, project.ID, task.ID)
-	if err != nil || actual.Status != model.TaskInProgress || actual.Ready || actual.StartedAt == nil || actual.CompletedAt != nil || actual.Version != task.Version+1 {
-		t.Fatalf("claim result: %#v, %v", actual, err)
-	}
-	worker := testWorker(t, actual.Properties)
-	if worker == nil || worker.State != model.WorkerActive || worker.Phase != model.WorkerPreparing || worker.Herdr != nil || worker.NativeSessionID != nil || worker.ClaimedAt.IsZero() || worker.ClaimedAt.Before(task.UpdatedAt) {
-		t.Fatalf("missing server execution facts: %#v", worker)
-	}
-	if (worker.ClaimID != a.ClaimID || worker.UserID != owner.UserID) && (worker.ClaimID != b.ClaimID || worker.UserID != owner.UserID) {
-		t.Fatal("claim identity does not identify the successful caller")
-	}
-	preserved := actual
-	preserved.Status, preserved.Version, preserved.UpdatedAt, preserved.StartedAt, preserved.Ready = task.Status, task.Version, task.UpdatedAt, task.StartedAt, task.Ready
-	preserved.Properties = testWithWorker(t, preserved.Properties, nil)
-	if !reflect.DeepEqual(preserved, task) {
-		t.Fatal("claim changed unrelated task data")
-	}
-}
-
-func TestWorkerClaimEligibilityAndPermissionRaces(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
+	_, current, principal := taskMockModels()
+	current.AllowAgents = true
 	descriptor := workerDescriptor()
-	task := createAssignedTask(t, tasks, admin, project.ID, &admin.UserID)
-	_, err := tasks.ClaimWorker(ctx, admin, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
-	requireFault(t, err, "invalid_transition")
-	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{AllowAgents: pointer(true), RequiredPlatform: platformChange(pointer(model.PlatformWindows))})
-	_, err = tasks.ClaimWorker(ctx, admin, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
-	requireFault(t, err, "invalid_transition")
-	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{RequiredPlatform: platformChange(nil)})
-	pre := createTask(t, tasks, admin, project.ID, "Unfinished")
-	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{DependsOn: pointer([]string{pre.ID})})
-	_, err = tasks.ClaimWorker(ctx, admin, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
-	requireFault(t, err, "dependency_unsatisfied")
-	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{DependsOn: pointer([]string{})})
-	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.ClaimWorker(ctx, admin, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
-		},
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.Update(ctx, admin, project.ID, task.ID, taskcore.UpdateTask{Version: task.Version, AllowAgents: pointer(false)})
-		})
-	assertOneTaskWinner(t, results, "version_conflict")
-	after, err := tasks.Get(ctx, admin, project.ID, task.ID)
-	if err != nil || (testWorker(t, after.Properties) != nil && !after.AllowAgents) {
-		t.Fatalf("permission race admitted a forbidden claim: %#v, %v", after, err)
+	if state != "" {
+		worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, UserID: principal.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: state, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
+		current.Properties = testWithWorker(t, current.Properties, worker)
+		if state == model.WorkerActive {
+			current.Status, current.Ready, current.StartedAt = model.TaskInProgress, false, pointer(current.UpdatedAt)
+		}
+		if state == model.WorkerCompleted {
+			current.Status, current.Ready, current.StartedAt, current.CompletedAt = model.TaskDone, false, pointer(current.UpdatedAt), pointer(current.UpdatedAt)
+		}
 	}
-	active := claimWorkerTask(t, tasks, admin, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
-	_, err = tasks.ClaimWorker(ctx, admin, project.ID, active.ID, taskcore.ClaimWorker{Version: active.Version, WorkerDescriptor: workerDescriptor()})
-	requireFault(t, err, "invalid_transition")
-	_, err = tasks.ClaimWorker(ctx, admin, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
-	requireFault(t, err, "version_conflict")
+	return current, principal, descriptor
+}
+
+func workerTestValues(current model.Task) store.TaskWrite {
+	return store.TaskWrite{AssignedTo: current.AssignedTo, RequiredPlatform: current.RequiredPlatform, AllowAgents: current.AllowAgents, Title: current.Title, Description: current.Description, Properties: maps.Clone(current.Properties), Status: current.Status, DependsOn: append([]string{}, current.DependsOn...), ExternalDependsOn: append([]string{}, current.ExternalDependsOn...)}
+}
+
+func workerTestResult(current model.Task) model.Task {
+	current.Version++
+	current.UpdatedAt = current.UpdatedAt.Add(time.Second)
+	return current
+}
+
+func TestWorkerClaimPreservesTaskDataAndReadsScopedVersion(t *testing.T) {
+	current, owner, descriptor := workerTestCurrent(t, "")
+	dependency := uuid.NewString()
+	current.DependsOn, current.ExternalDependsOn = []string{dependency}, []string{dependency}
+	current.RequiredPlatform = pointer(model.PlatformLinux)
+	current.Description = "Unrelated description"
+	current.Properties = model.TaskProperties{"pullRequests": propertyJSON([]model.PullRequestProperty{{URL: "opaque\x00\n", Title: "Evidence"}})}
+	observed := current.UpdatedAt.Add(time.Second)
+	worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, UserID: owner.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
+	want := workerTestResult(current)
+	want.Status, want.Ready, want.StartedAt = model.TaskInProgress, false, &observed
+	want.Properties = testWithWorker(t, current.Properties, worker)
+	values := workerTestValues(want)
+	f := workerMockWrite(t, current, owner)
+	f.Task.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
+		if ctx != f.Context {
+			t.Fatal("claim clock changed context")
+		}
+		return observed, nil
+	}
+	workerExpectUpdate(t, f, values, want)
+	got, err := f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("claim result: %#v %v", got, err)
+	}
+}
+
+func TestWorkerClaimEligibilityUsesScopedTaskAndPermission(t *testing.T) {
+	for _, entry := range []struct {
+		name, code string
+		alter      func(*model.Task)
+	}{
+		{"automation disabled", "invalid_transition", func(v *model.Task) { v.AllowAgents = false }},
+		{"platform mismatch", "invalid_transition", func(v *model.Task) { v.RequiredPlatform = pointer(model.PlatformWindows) }},
+		{"unfinished dependency", "dependency_unsatisfied", func(v *model.Task) { v.BlockedBy = []string{uuid.NewString()} }},
+		{"active execution", "invalid_transition", func(v *model.Task) { v.Status = model.TaskInProgress }},
+		{"stale version", "version_conflict", func(v *model.Task) { v.Version++ }},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			current, owner, descriptor := workerTestCurrent(t, "")
+			version := current.Version
+			entry.alter(&current)
+			f := workerMockWrite(t, current, owner)
+			_, err := f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: version, WorkerDescriptor: descriptor})
+			requireFault(t, err, entry.code)
+		})
+	}
 }
 
 func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
-	original := *testWorker(t, task.Properties)
-	phase, native := model.WorkerExecuting, "native-session"
+	current, owner, descriptor := workerTestCurrent(t, model.WorkerActive)
+	original := *testWorker(t, current.Properties)
+	native := "native-session"
 	herdr := &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace-1", PaneID: "pane-1"}
-	updated, err := tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: task.Version, ClaimID: original.ClaimID, Phase: &phase, Herdr: &herdr, NativeSessionID: pointer(&native)})
-	if err != nil || updated.Version != task.Version+1 || testWorker(t, updated.Properties).Phase != phase || testWorker(t, updated.Properties).NativeSessionID == nil || !reflect.DeepEqual(updated.StartedAt, task.StartedAt) {
-		t.Fatalf("session update: %#v, %v", updated, err)
+	next := original
+	next.Phase, next.Herdr, next.NativeSessionID = model.WorkerExecuting, herdr, &native
+	updated := workerTestResult(current)
+	updated.Properties = testWithWorker(t, current.Properties, &next)
+	f := workerMockWrite(t, current, owner)
+	workerExpectUpdate(t, f, workerTestValues(updated), updated)
+	got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: descriptor.ClaimID, Phase: &next.Phase, Herdr: &herdr, NativeSessionID: pointer(&native)})
+	if err != nil || !reflect.DeepEqual(got, updated) {
+		t.Fatalf("session update: %#v %v", got, err)
 	}
-	if got, err := tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: original.ClaimID, Phase: &phase, Herdr: &herdr, NativeSessionID: pointer(&native)}); err != nil || !reflect.DeepEqual(got, updated) {
-		t.Fatalf("same-value update mutated execution: %#v, %v", got, err)
+	t.Run("same value", func(t *testing.T) {
+		f := workerMockWrite(t, updated, owner)
+		got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: descriptor.ClaimID, Phase: &next.Phase, Herdr: &herdr, NativeSessionID: pointer(&native)})
+		if err != nil || !reflect.DeepEqual(got, updated) {
+			t.Fatalf("no-op update: %#v %v", got, err)
+		}
+	})
+	for _, entry := range []struct {
+		name, code string
+		principal  model.Principal
+		version    int64
+		claim      string
+	}{
+		{"stale version", "version_conflict", owner, current.Version, descriptor.ClaimID},
+		{"foreign claim", "claim_conflict", owner, updated.Version, uuid.NewString()},
+		{"foreign owner", "forbidden", model.Principal{UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: model.SessionCredential}, updated.Version, descriptor.ClaimID},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			f := workerMockWrite(t, updated, entry.principal)
+			_, err := f.Tasks.UpdateWorker(f.Context, entry.principal, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: entry.version, ClaimID: entry.claim, Phase: pointer(model.WorkerExecuting)})
+			requireFault(t, err, entry.code)
+		})
 	}
-	_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: task.Version, ClaimID: original.ClaimID, Phase: &phase})
-	requireFault(t, err, "version_conflict")
-	_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: uuid.NewString(), Phase: &phase})
-	requireFault(t, err, "claim_conflict")
-	for _, caller := range []model.Principal{other, admin} {
-		_, err = tasks.UpdateWorker(ctx, caller, project.ID, task.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: original.ClaimID, Phase: &phase})
-		requireFault(t, err, "forbidden")
-		_, err = tasks.SetStatus(ctx, caller, project.ID, task.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: model.TaskDone, ClaimID: &original.ClaimID})
-		requireFault(t, err, "forbidden")
+	t.Run("clear execution resources", func(t *testing.T) {
+		cleared := workerTestResult(updated)
+		next.Herdr, next.NativeSessionID = nil, nil
+		cleared.Properties = testWithWorker(t, updated.Properties, &next)
+		f := workerMockWrite(t, updated, owner)
+		workerExpectUpdate(t, f, workerTestValues(cleared), cleared)
+		var noHerdr *model.WorkerHerdr
+		var noNative *string
+		got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: descriptor.ClaimID, Herdr: &noHerdr, NativeSessionID: &noNative})
+		if err != nil || !reflect.DeepEqual(got, cleared) {
+			t.Fatalf("resource clear: %#v %v", got, err)
+		}
+	})
+	for _, entry := range []struct {
+		name, code string
+		status     model.TaskStatus
+		claim      *string
+		caller     model.Principal
+	}{
+		{"unbound completion", "claim_conflict", model.TaskDone, nil, owner},
+		{"ordinary reset", "invalid_transition", model.TaskTodo, nil, owner},
+		{"foreign completion", "forbidden", model.TaskDone, &descriptor.ClaimID, model.Principal{UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: model.SessionCredential}},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			f := workerMockWrite(t, updated, entry.caller)
+			_, err := f.Tasks.SetStatus(f.Context, entry.caller, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: entry.status, ClaimID: entry.claim})
+			requireFault(t, err, entry.code)
+		})
 	}
-	updated = updateTask(t, tasks, admin, updated, taskcore.UpdateTask{Properties: propertyPatch(model.PullRequestProperty{URL: "PR", Title: "Result"})})
-	if testWorker(t, updated.Properties).ClaimID != original.ClaimID || *testWorker(t, updated.Properties).NativeSessionID != native {
-		t.Fatal("ordinary property update discarded worker execution")
-	}
-	_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: model.TaskDone})
-	requireFault(t, err, "claim_conflict")
-	_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: model.TaskTodo})
-	requireFault(t, err, "invalid_transition")
-	if got, err := tasks.SetStatus(ctx, other, project.ID, task.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: model.TaskInProgress}); err != nil || !reflect.DeepEqual(got, updated) {
-		t.Fatal("same-status no-op changed ownership or timing")
-	}
-	var noHerdr *model.WorkerHerdr
-	var noNative *string
-	updated, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: original.ClaimID, Herdr: &noHerdr, NativeSessionID: &noNative})
-	if err != nil || testWorker(t, updated.Properties).Herdr != nil || testWorker(t, updated.Properties).NativeSessionID != nil {
-		t.Fatal("nullable session update was lost")
-	}
-	completed, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: model.TaskDone, ClaimID: &original.ClaimID})
-	if err != nil || testWorker(t, completed.Properties).State != model.WorkerCompleted || completed.CompletedAt == nil || !reflect.DeepEqual(completed.StartedAt, task.StartedAt) {
-		t.Fatalf("worker completion: %#v, %v", completed, err)
-	}
-	_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: completed.Version, ClaimID: original.ClaimID, Phase: &phase})
-	requireFault(t, err, "claim_conflict")
-	reopened, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: completed.Version, Status: model.TaskInProgress})
-	if err != nil || testWorker(t, reopened.Properties).State != model.WorkerCompleted || reopened.CompletedAt != nil {
-		t.Fatal("reopening reactivated historical worker ownership")
-	}
+	t.Run("same status", func(t *testing.T) {
+		f := workerMockWrite(t, updated, owner)
+		got, err := f.Tasks.SetStatus(f.Context, owner, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: model.TaskInProgress})
+		if err != nil || !reflect.DeepEqual(got, updated) {
+			t.Fatalf("same status: %#v %v", got, err)
+		}
+	})
+	t.Run("owner completion", func(t *testing.T) {
+		completed := workerTestResult(updated)
+		completed.Status = model.TaskDone
+		completed.CompletedAt = pointer(completed.UpdatedAt)
+		finished := *testWorker(t, updated.Properties)
+		finished.State = model.WorkerCompleted
+		completed.Properties = testWithWorker(t, updated.Properties, &finished)
+		f := workerMockWrite(t, updated, owner)
+		workerExpectUpdate(t, f, workerTestValues(completed), completed)
+		got, err := f.Tasks.SetStatus(f.Context, owner, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: updated.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
+		if err != nil || !reflect.DeepEqual(got, completed) {
+			t.Fatalf("completion: %#v %v", got, err)
+		}
+	})
 }
 
 func TestWorkerReleaseAndManualResumeCreateFreshExecution(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	descriptor := workerDescriptor()
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	resource := &model.WorkerHerdr{Session: "w", WorkspaceID: "source-workspace", PaneID: "source-pane"}
-	task, err := tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: task.Version, ClaimID: descriptor.ClaimID, Herdr: &resource, NativeSessionID: pointer(pointer("source-native"))})
-	if err != nil {
-		t.Fatal(err)
+	current, owner, descriptor := workerTestCurrent(t, model.WorkerActive)
+	active := *testWorker(t, current.Properties)
+	active.Herdr = &model.WorkerHerdr{Session: "w", WorkspaceID: "source-workspace", PaneID: "source-pane"}
+	active.NativeSessionID = pointer("source-native")
+	current.Properties = testWithWorker(t, current.Properties, &active)
+	released := workerTestResult(current)
+	released.Status, released.Ready, released.StartedAt, released.CompletedAt = model.TaskTodo, true, nil, nil
+	previous := active
+	previous.State = model.WorkerReleased
+	released.Properties = testWithWorker(t, current.Properties, &previous)
+	administrator := owner
+	administrator.UserID, administrator.CredentialID = uuid.NewString(), uuid.NewString()
+	f := workerMockWrite(t, current, administrator)
+	f.ExpectedAccessCalls = 2
+	f.Project.ProjectAccessFn = func(context.Context, model.Principal) (model.ProjectAccess, error) {
+		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: administrator.UserID, Role: model.ProjectAdmin}, nil
 	}
-	for _, input := range []taskcore.ReleaseWorker{{Version: task.Version, ClaimID: descriptor.ClaimID}, {Version: task.Version, ClaimID: "invalid", StoppedConfirmed: true}} {
-		_, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, input)
-		requireFault(t, err, "invalid_input")
+	workerExpectUpdate(t, f, workerTestValues(released), released)
+	got, err := f.Tasks.ReleaseWorker(f.Context, administrator, current.ProjectID, current.ID, taskcore.ReleaseWorker{Version: current.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
+	if err != nil || !reflect.DeepEqual(got, released) {
+		t.Fatalf("release: %#v %v", got, err)
 	}
-	_, err = tasks.ReleaseWorker(ctx, other, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	requireFault(t, err, "forbidden")
-	released, err := tasks.ReleaseWorker(ctx, admin, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	if err != nil || released.Status != model.TaskTodo || released.StartedAt != nil || released.CompletedAt != nil || testWorker(t, released.Properties).State != model.WorkerReleased || testWorker(t, released.Properties).WorktreeID != descriptor.WorktreeID || !released.AllowAgents {
-		t.Fatalf("release: %#v, %v", released, err)
-	}
-	for _, status := range []model.TaskStatus{model.TaskInProgress, model.TaskDone} {
-		_, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: released.Version, Status: status})
-		requireFault(t, err, "invalid_transition")
-	}
-	_, err = tasks.ClaimWorker(ctx, owner, project.ID, task.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, WorktreeID: descriptor.WorktreeID}})
-	requireFault(t, err, "invalid_transition")
-	_, err = tasks.ClaimWorker(ctx, owner, project.ID, task.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: descriptor})
-	requireFault(t, err, "claim_conflict")
-	released = updateTask(t, tasks, admin, released, taskcore.UpdateTask{AllowAgents: pointer(false), RequiredPlatform: platformChange(pointer(model.PlatformWindows))})
+	released.AllowAgents = false
+	released.RequiredPlatform = pointer(model.PlatformWindows)
 	next := workerDescriptor()
 	next.Agent = model.AgentCopilot
-	resume := taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID}
-	_, err = tasks.ResumeWorker(ctx, other, project.ID, task.ID, resume)
-	requireFault(t, err, "forbidden")
-	_, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, taskcore.ResumeWorker{ClaimWorker: resume.ClaimWorker, PreviousClaimID: uuid.NewString()})
-	requireFault(t, err, "claim_conflict")
-	resumed, err := tasks.ResumeWorker(ctx, owner, project.ID, task.ID, resume)
-	if err != nil || resumed.Status != model.TaskInProgress || resumed.AllowAgents || testWorker(t, resumed.Properties).ClaimID != next.ClaimID || testWorker(t, resumed.Properties).Platform != model.PlatformLinux || testWorker(t, resumed.Properties).WorktreeID != next.WorktreeID || testWorker(t, resumed.Properties).Agent != model.AgentCopilot || testWorker(t, resumed.Properties).Herdr != nil || testWorker(t, resumed.Properties).NativeSessionID != nil || resumed.StartedAt == nil || !resumed.StartedAt.After(*task.StartedAt) {
-		t.Fatalf("explicit manual resume did not preserve manual permission/platform semantics: %#v, %v", resumed, err)
+	observed := released.UpdatedAt.Add(time.Second)
+	fresh := &model.WorkerClaim{ClaimID: next.ClaimID, UserID: owner.UserID, WorkerID: next.WorkerID, Machine: next.Machine, Platform: next.Platform, Agent: next.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: next.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
+	resumed := workerTestResult(released)
+	resumed.Status, resumed.Ready, resumed.StartedAt = model.TaskInProgress, false, &observed
+	resumed.Properties = testWithWorker(t, released.Properties, fresh)
+	f = workerMockWrite(t, released, owner)
+	f.Task.ObservedAtFn = func(context.Context) (time.Time, error) { return observed, nil }
+	workerExpectUpdate(t, f, workerTestValues(resumed), resumed)
+	got, err = f.Tasks.ResumeWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
+	if err != nil || !reflect.DeepEqual(got, resumed) {
+		t.Fatalf("manual resume: %#v %v", got, err)
 	}
-	_, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: resumed.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	requireFault(t, err, "claim_conflict")
-	_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: resumed.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
-	requireFault(t, err, "claim_conflict")
-	_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: resumed.Version, ClaimID: descriptor.ClaimID})
-	requireFault(t, err, "claim_conflict")
-	manual := createTask(t, tasks, admin, project.ID, "Ordinary manual task")
-	manual = updateTask(t, tasks, admin, manual, taskcore.UpdateTask{RequiredPlatform: platformChange(pointer(model.PlatformWindows))})
-	manual = startTask(t, tasks, owner, manual)
-	manual = finishTask(t, tasks, owner, manual)
-	if manual.AllowAgents || testWorker(t, manual.Properties) != nil {
-		t.Fatal("ordinary manual lifecycle unexpectedly became worker-managed")
+	for _, entry := range []struct {
+		name, code string
+		descriptor taskcore.WorkerDescriptor
+		previous   string
+	}{
+		{"foreign previous claim", "claim_conflict", next, uuid.NewString()},
+		{"reused claim", "claim_conflict", descriptor, descriptor.ClaimID},
+		{"reused worktree", "invalid_transition", func() taskcore.WorkerDescriptor { d := next; d.WorktreeID = descriptor.WorktreeID; return d }(), descriptor.ClaimID},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			f := workerMockWrite(t, released, owner)
+			_, err := f.Tasks.ResumeWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: entry.descriptor}, PreviousClaimID: entry.previous})
+			requireFault(t, err, entry.code)
+		})
+	}
+	for _, status := range []model.TaskStatus{model.TaskInProgress, model.TaskDone} {
+		f := workerMockWrite(t, released, owner)
+		_, err := f.Tasks.SetStatus(f.Context, owner, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: released.Version, Status: status})
+		requireFault(t, err, "invalid_transition")
 	}
 }
 
@@ -233,82 +253,62 @@ func TestWorkerWithdrawalResetsClaimAndDisablesAutomation(t *testing.T) {
 	for _, state := range []model.WorkerState{model.WorkerActive, model.WorkerReleased} {
 		for _, operator := range []string{"owner", "administrator"} {
 			t.Run(string(state)+"/"+operator, func(t *testing.T) {
-				tasks, database, project, _, admin := taskService(t)
-				ctx := context.Background()
-				owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-				descriptor := workerDescriptor()
-				dependency := finishTask(t, tasks, admin, startTask(t, tasks, admin, createTask(t, tasks, admin, project.ID, "Prerequisite")))
-				candidate := updateTask(t, tasks, admin, claimableTask(t, tasks, owner, project.ID), taskcore.UpdateTask{RequiredPlatform: platformChange(pointer(model.PlatformLinux)), DependsOn: pointer([]string{dependency.ID}), ExternalDependsOn: pointer([]string{dependency.ID}), Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00", Title: "Evidence"})})
-				task := claimWorkerTask(t, tasks, owner, candidate, descriptor)
-				if state == model.WorkerReleased {
-					var err error
-					task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
-				input := taskcore.WithdrawWorker{Version: task.Version, ClaimID: descriptor.ClaimID}
-				_, err := tasks.WithdrawWorker(ctx, other, project.ID, task.ID, input)
-				requireFault(t, err, "forbidden")
-				_, err = tasks.WithdrawWorker(ctx, servicePrincipal(t, database), project.ID, task.ID, input)
-				requireFault(t, err, "not_found")
-				_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version - 1, ClaimID: descriptor.ClaimID})
-				requireFault(t, err, "version_conflict")
-				_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: uuid.NewString()})
-				requireFault(t, err, "claim_conflict")
-				assertTaskUnchanged(t, tasks, admin, task)
+				current, owner, descriptor := workerTestCurrent(t, state)
+				dependency := uuid.NewString()
+				current.DependsOn, current.ExternalDependsOn = []string{dependency}, []string{dependency}
+				current.RequiredPlatform = pointer(model.PlatformLinux)
+				current.Properties["pullRequests"] = propertyJSON([]model.PullRequestProperty{{URL: "opaque\x00", Title: "Evidence"}})
 				caller := owner
 				if operator == "administrator" {
-					caller = admin
+					caller.UserID, caller.CredentialID = uuid.NewString(), uuid.NewString()
 				}
-				withdrawn, err := tasks.WithdrawWorker(ctx, caller, project.ID, task.ID, input)
-				if err != nil || withdrawn.Status != model.TaskTodo || withdrawn.AllowAgents || testWorker(t, withdrawn.Properties) != nil || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil || withdrawn.Version != task.Version+1 || !withdrawn.UpdatedAt.After(task.UpdatedAt) {
-					t.Fatalf("withdrawal did not atomically reset execution: %#v, %v", withdrawn, err)
+				withdrawn := workerTestResult(current)
+				withdrawn.Status, withdrawn.Ready, withdrawn.AllowAgents, withdrawn.StartedAt, withdrawn.CompletedAt = model.TaskTodo, true, false, nil, nil
+				withdrawn.Properties = testWithWorker(t, current.Properties, nil)
+				f := workerMockWrite(t, current, caller)
+				if operator == "administrator" {
+					f.ExpectedAccessCalls = 2
+					f.Project.ProjectAccessFn = func(context.Context, model.Principal) (model.ProjectAccess, error) {
+						return model.ProjectAccess{ProjectID: current.ProjectID, UserID: caller.UserID, Role: model.ProjectAdmin}, nil
+					}
 				}
-				preserved := withdrawn
-				preserved.Status, preserved.AllowAgents = task.Status, task.AllowAgents
-				preserved.Properties = testWithWorker(t, preserved.Properties, testWorker(t, task.Properties))
-				preserved.StartedAt, preserved.CompletedAt, preserved.UpdatedAt, preserved.Version, preserved.Ready = task.StartedAt, task.CompletedAt, task.UpdatedAt, task.Version, task.Ready
-				if !reflect.DeepEqual(preserved, task) {
-					t.Fatal("withdrawal changed unrelated task data")
+				workerExpectUpdate(t, f, workerTestValues(withdrawn), withdrawn)
+				got, err := f.Tasks.WithdrawWorker(f.Context, caller, current.ProjectID, current.ID, taskcore.WithdrawWorker{Version: current.Version, ClaimID: descriptor.ClaimID})
+				if err != nil || !reflect.DeepEqual(got, withdrawn) {
+					t.Fatalf("withdrawal: %#v %v", got, err)
 				}
-				_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: withdrawn.Version, ClaimID: descriptor.ClaimID, Phase: pointer(model.WorkerExecuting)})
-				requireFault(t, err, "claim_conflict")
-				_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: withdrawn.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
-				requireFault(t, err, "claim_conflict")
-				_, err = tasks.ClaimWorker(ctx, owner, project.ID, task.ID, taskcore.ClaimWorker{Version: withdrawn.Version, WorkerDescriptor: workerDescriptor()})
+				for _, invoke := range []func(*workerWriteMock) error{
+					func(f *workerWriteMock) error {
+						_, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: withdrawn.Version, ClaimID: descriptor.ClaimID, Phase: pointer(model.WorkerExecuting)})
+						return err
+					},
+					func(f *workerWriteMock) error {
+						_, err := f.Tasks.SetStatus(f.Context, owner, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: withdrawn.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
+						return err
+					},
+				} {
+					f := workerMockWrite(t, withdrawn, owner)
+					requireFault(t, invoke(f), "claim_conflict")
+				}
+				f = workerMockWrite(t, withdrawn, owner)
+				_, err = f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: withdrawn.Version, WorkerDescriptor: workerDescriptor()})
 				requireFault(t, err, "invalid_transition")
-				started := startTask(t, tasks, owner, withdrawn)
-				if testWorker(t, started.Properties) != nil {
-					t.Fatal("manual execution retained withdrawn ownership")
-				}
 			})
 		}
 	}
 }
 
 func TestWorkerWithdrawalRequiresAnUnfinishedClaim(t *testing.T) {
-	tasks, _, project, _, owner := taskService(t)
-	ctx := context.Background()
-	task := claimableTask(t, tasks, owner, project.ID)
-	_, err := tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: uuid.NewString()})
-	requireFault(t, err, "claim_conflict")
-	task = claimWorkerTask(t, tasks, owner, task, workerDescriptor())
-	claimID := testWorker(t, task.Properties).ClaimID
-	task, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: &claimID})
-	if err != nil {
-		t.Fatal(err)
+	for _, state := range []model.WorkerState{"", model.WorkerCompleted} {
+		current, owner, descriptor := workerTestCurrent(t, state)
+		f := workerMockWrite(t, current, owner)
+		_, err := f.Tasks.WithdrawWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.WithdrawWorker{Version: current.Version, ClaimID: descriptor.ClaimID})
+		requireFault(t, err, "claim_conflict")
 	}
-	_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: claimID})
-	requireFault(t, err, "claim_conflict")
-	assertTaskUnchanged(t, tasks, owner, task)
 }
 
 func TestWorkerOperationsRejectInvalidInputsAndMissingResources(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	task := claimableTask(t, tasks, admin, project.ID)
-	base := workerDescriptor()
+	current, owner, base := workerTestCurrent(t, "")
 	for name, change := range map[string]func(*taskcore.WorkerDescriptor){
 		"claim": func(d *taskcore.WorkerDescriptor) { d.ClaimID = "bad" }, "worker": func(d *taskcore.WorkerDescriptor) { d.WorkerID = "bad" },
 		"machine": func(d *taskcore.WorkerDescriptor) { d.Machine.ID = "bad" }, "worktree": func(d *taskcore.WorkerDescriptor) { d.WorktreeID = "bad" },
@@ -316,233 +316,293 @@ func TestWorkerOperationsRejectInvalidInputsAndMissingResources(t *testing.T) {
 		"machine name": func(d *taskcore.WorkerDescriptor) { d.Machine.Name = "\x00" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			input := base
-			change(&input)
-			_, err := tasks.ClaimWorker(ctx, admin, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: input})
+			descriptor := base
+			change(&descriptor)
+			tasks := taskservice.NewTasks(&taskStoreMock{taskMockBase: newTaskMockBase(t, "descriptor preflight")})
+			_, err := tasks.ClaimWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
 			requireFault(t, err, "invalid_input")
 		})
 	}
-	for _, invoke := range []func() error{
-		func() error {
-			_, err := tasks.ClaimWorker(ctx, model.Principal{}, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: base})
+	for name, invoke := range map[string]func(*taskservice.Tasks) error{
+		"principal": func(s *taskservice.Tasks) error {
+			_, err := s.ClaimWorker(t.Context(), model.Principal{}, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: base})
 			return err
 		},
-		func() error {
-			_, err := tasks.ClaimWorker(ctx, admin, "bad", task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: base})
+		"project": func(s *taskservice.Tasks) error {
+			_, err := s.ClaimWorker(t.Context(), owner, "bad", current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: base})
 			return err
 		},
-		func() error {
-			_, err := tasks.ClaimWorker(ctx, admin, project.ID, "bad", taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: base})
+		"task": func(s *taskservice.Tasks) error {
+			_, err := s.ClaimWorker(t.Context(), owner, current.ProjectID, "bad", taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: base})
 			return err
 		},
-		func() error {
-			_, err := tasks.ClaimWorker(ctx, admin, project.ID, task.ID, taskcore.ClaimWorker{Version: 0, WorkerDescriptor: base})
+		"version": func(s *taskservice.Tasks) error {
+			_, err := s.ClaimWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: 0, WorkerDescriptor: base})
 			return err
 		},
-		func() error {
-			_, err := tasks.UpdateWorker(ctx, admin, project.ID, task.ID, taskcore.UpdateWorker{Version: task.Version, ClaimID: "bad"})
+		"update claim": func(s *taskservice.Tasks) error {
+			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: "bad"})
 			return err
 		},
-		func() error {
-			_, err := tasks.UpdateWorker(ctx, admin, project.ID, task.ID, taskcore.UpdateWorker{Version: task.Version, ClaimID: base.ClaimID})
+		"empty update": func(s *taskservice.Tasks) error {
+			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID})
 			return err
 		},
-		func() error {
-			_, err := tasks.UpdateWorker(ctx, admin, project.ID, task.ID, taskcore.UpdateWorker{Version: task.Version, ClaimID: base.ClaimID, Phase: pointer(model.WorkerPhase("invalid"))})
+		"phase": func(s *taskservice.Tasks) error {
+			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID, Phase: pointer(model.WorkerPhase("invalid"))})
 			return err
 		},
-		func() error {
-			_, err := tasks.UpdateWorker(ctx, admin, project.ID, task.ID, taskcore.UpdateWorker{Version: task.Version, ClaimID: base.ClaimID, Herdr: pointer(&model.WorkerHerdr{})})
+		"Herdr": func(s *taskservice.Tasks) error {
+			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID, Herdr: pointer(&model.WorkerHerdr{})})
 			return err
 		},
-		func() error {
-			_, err := tasks.UpdateWorker(ctx, admin, project.ID, task.ID, taskcore.UpdateWorker{Version: task.Version, ClaimID: base.ClaimID, NativeSessionID: pointer(pointer(" "))})
+		"native": func(s *taskservice.Tasks) error {
+			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID, NativeSessionID: pointer(pointer(" "))})
 			return err
 		},
-		func() error {
-			_, err := tasks.ResumeWorker(ctx, admin, project.ID, task.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: base}, PreviousClaimID: "bad"})
+		"release stop confirmation": func(s *taskservice.Tasks) error {
+			_, err := s.ReleaseWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.ReleaseWorker{Version: current.Version, ClaimID: base.ClaimID})
 			return err
 		},
-		func() error {
-			_, err := tasks.WithdrawWorker(ctx, admin, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: "bad"})
+		"release claim": func(s *taskservice.Tasks) error {
+			_, err := s.ReleaseWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.ReleaseWorker{Version: current.Version, ClaimID: "bad", StoppedConfirmed: true})
 			return err
 		},
-		func() error {
-			_, err := tasks.Create(ctx, admin, project.ID, taskcore.CreateTask{Title: "Forbidden", Properties: model.TaskProperties{"worker": propertyJSON(map[string]any{})}})
+		"previous claim": func(s *taskservice.Tasks) error {
+			_, err := s.ResumeWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: base}, PreviousClaimID: "bad"})
 			return err
 		},
-		func() error {
-			_, err := tasks.SetStatus(ctx, admin, project.ID, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskInProgress, ClaimID: &base.ClaimID})
+		"withdraw claim": func(s *taskservice.Tasks) error {
+			_, err := s.WithdrawWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.WithdrawWorker{Version: current.Version, ClaimID: "bad"})
 			return err
 		},
-		func() error {
-			_, err := tasks.SetStatus(ctx, admin, project.ID, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: pointer("bad")})
+		"reserved property": func(s *taskservice.Tasks) error {
+			_, err := s.Create(t.Context(), owner, current.ProjectID, taskcore.CreateTask{Title: "Forbidden", Properties: model.TaskProperties{"worker": propertyJSON(map[string]any{})}})
+			return err
+		},
+		"claim on start": func(s *taskservice.Tasks) error {
+			_, err := s.SetStatus(t.Context(), owner, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: current.Version, Status: model.TaskInProgress, ClaimID: &base.ClaimID})
+			return err
+		},
+		"invalid completion claim": func(s *taskservice.Tasks) error {
+			_, err := s.SetStatus(t.Context(), owner, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: current.Version, Status: model.TaskDone, ClaimID: pointer("bad")})
 			return err
 		},
 	} {
-		if invoke() == nil {
-			t.Fatal("invalid worker input was accepted")
-		}
+		t.Run(name, func(t *testing.T) {
+			s := taskservice.NewTasks(&taskStoreMock{taskMockBase: newTaskMockBase(t, "preflight")})
+			if err := invoke(s); err == nil {
+				t.Fatal("invalid input accepted")
+			}
+		})
 	}
-	_, err := tasks.ClaimWorker(ctx, admin, project.ID, uuid.NewString(), taskcore.ClaimWorker{Version: 1, WorkerDescriptor: base})
-	requireFault(t, err, "not_found")
-	_, err = tasks.ClaimWorker(ctx, admin, uuid.NewString(), task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: base})
-	requireFault(t, err, "not_found")
-	outsider := servicePrincipal(t, database)
-	_, err = tasks.ClaimWorker(ctx, outsider, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: base})
-	requireFault(t, err, "not_found")
-	_, err = tasks.SetStatus(ctx, admin, project.ID, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: &base.ClaimID})
-	requireFault(t, err, "claim_conflict")
+	t.Run("missing task", func(t *testing.T) {
+		f := workerMockWrite(t, current, owner)
+		f.Task.TaskFn = func(context.Context, string) (model.Task, error) { return model.Task{}, model.ErrNotFound }
+		_, err := f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: base})
+		requireFault(t, err, "not_found")
+	})
+	t.Run("missing project", func(t *testing.T) {
+		f := workerMockWrite(t, current, owner)
+		f.ExpectedAccessCalls, f.ExpectedTaskReads = 0, 0
+		f.Store.WriteProjectFn = func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error) {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, model.ErrNotFound
+		}
+		_, err := f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: base})
+		requireFault(t, err, "not_found")
+	})
+	t.Run("missing membership", func(t *testing.T) {
+		f := workerMockWrite(t, current, owner)
+		f.ExpectedTaskReads = 0
+		f.Project.ProjectAccessFn = func(context.Context, model.Principal) (model.ProjectAccess, error) {
+			return model.ProjectAccess{}, model.ErrNotFound
+		}
+		_, err := f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: base})
+		requireFault(t, err, "not_found")
+	})
 }
 
-func TestWorkerClaimRechecksMembershipAndRollsBackUnknownWrites(t *testing.T) {
-	tasks, database, project, databaseURL, admin := taskService(t)
-	ctx := context.Background()
-	member := workerMember(t, database, project.ID)
-	task := claimableTask(t, tasks, member, project.ID)
-	descriptor := workerDescriptor()
-	result := make(chan taskResult, 1)
-	lockContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := writeProjectForTest(database, lockContext, project.ID, func(tx store.ProjectWriteScope) error {
-		go func() {
-			claimed, err := tasks.ClaimWorker(lockContext, member, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
-			result <- taskResult{task: claimed, err: err}
-		}()
-		waitForTaskWriters(t, lockContext, database, 1)
-		return tx.ProjectDAO().RemoveMember(lockContext, member.UserID)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	requireFault(t, receiveTaskResult(t, lockContext, result).err, "not_found")
-	assertTaskUnchanged(t, tasks, admin, task)
-	task = claimableTask(t, tasks, admin, project.ID)
-	for _, fragment := range []string{"SELECT statement_timestamp()", "UPDATE tasks SET"} {
-		t.Run(fragment, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }, end: cancel})
-			_, err := traced.ClaimWorker(ctx, admin, project.ID, task.ID, taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("claim lost cancellation cause: %v", err)
+func TestWorkerClaimPreservesScopedMembershipAndWriteFailures(t *testing.T) {
+	t.Run("removed membership", func(t *testing.T) {
+		current, owner, descriptor := workerTestCurrent(t, "")
+		f := workerMockWrite(t, current, owner)
+		f.ExpectedTaskReads = 0
+		f.Project.ProjectAccessFn = func(context.Context, model.Principal) (model.ProjectAccess, error) {
+			return model.ProjectAccess{}, model.ErrNotFound
+		}
+		_, err := f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
+		requireFault(t, err, "not_found")
+	})
+	for _, stage := range []string{"clock", "write"} {
+		t.Run(stage, func(t *testing.T) {
+			current, owner, descriptor := workerTestCurrent(t, "")
+			f := workerMockWrite(t, current, owner)
+			calls := 0
+			f.Task.ObservedAtFn = func(context.Context) (time.Time, error) {
+				if stage == "clock" {
+					calls++
+					return time.Time{}, context.Canceled
+				}
+				return current.UpdatedAt.Add(time.Second), nil
 			}
-			assertTaskUnchanged(t, tasks, admin, task)
+			if stage == "write" {
+				f.Task.UpdateTaskFn = func(context.Context, string, store.TaskWrite) (model.Task, error) {
+					calls++
+					return model.Task{}, context.Canceled
+				}
+			}
+			got, err := f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
+			if calls != 1 || !errors.Is(err, context.Canceled) || !reflect.DeepEqual(got, model.Task{}) {
+				t.Fatalf("claim failure: calls=%d task=%#v error=%v", calls, got, err)
+			}
+			assertOperational(t, err)
 		})
 	}
 }
 
 func TestWorkerAutomaticReclaimCreatesFreshResourcesAndKeepsEligibility(t *testing.T) {
-	tasks, _, project, _, owner := taskService(t)
-	ctx := context.Background()
-	descriptor := workerDescriptor()
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	released, owner, previous := workerTestCurrent(t, model.WorkerReleased)
+	worker := *testWorker(t, released.Properties)
+	worker.Herdr = &model.WorkerHerdr{Session: "source", WorkspaceID: "workspace", PaneID: "pane"}
+	worker.NativeSessionID = pointer("source-native")
+	released.Properties = testWithWorker(t, released.Properties, &worker)
 	next := workerDescriptor()
 	next.Agent = model.AgentCopilot
-	for _, reused := range []taskcore.WorkerDescriptor{descriptor, {ClaimID: next.ClaimID, WorkerID: next.WorkerID, Machine: next.Machine, Platform: next.Platform, Agent: next.Agent, WorktreeID: descriptor.WorktreeID}} {
-		_, err := tasks.ClaimWorker(ctx, owner, project.ID, task.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: reused})
-		if reused.ClaimID == descriptor.ClaimID {
-			requireFault(t, err, "claim_conflict")
-		} else {
+	for _, entry := range []struct {
+		name, code string
+		descriptor taskcore.WorkerDescriptor
+	}{
+		{"same claim", "claim_conflict", previous},
+		{"same worktree", "invalid_transition", func() taskcore.WorkerDescriptor { d := next; d.WorktreeID = previous.WorktreeID; return d }()},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			f := workerMockWrite(t, released, owner)
+			_, err := f.Tasks.ClaimWorker(f.Context, owner, released.ProjectID, released.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: entry.descriptor})
+			requireFault(t, err, entry.code)
+		})
+	}
+	observed := released.UpdatedAt.Add(time.Second)
+	fresh := &model.WorkerClaim{ClaimID: next.ClaimID, WorkerID: next.WorkerID, UserID: owner.UserID, Machine: next.Machine, Platform: next.Platform, Agent: next.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: next.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
+	resumed := workerTestResult(released)
+	resumed.Status, resumed.Ready, resumed.StartedAt = model.TaskInProgress, false, &observed
+	resumed.Properties = testWithWorker(t, released.Properties, fresh)
+	f := workerMockWrite(t, released, owner)
+	f.Task.ObservedAtFn = func(context.Context) (time.Time, error) { return observed, nil }
+	workerExpectUpdate(t, f, workerTestValues(resumed), resumed)
+	got, err := f.Tasks.ClaimWorker(f.Context, owner, released.ProjectID, released.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next})
+	if err != nil || !reflect.DeepEqual(got, resumed) {
+		t.Fatalf("automatic reclaim: %#v %v", got, err)
+	}
+	for _, operation := range []string{"release", "withdraw", "complete"} {
+		f := workerMockWrite(t, resumed, owner)
+		_, err := workerManagementInvoke(f, resumed, owner, operation, previous)
+		requireFault(t, err, "claim_conflict")
+	}
+	for _, entry := range []struct {
+		name   string
+		change func(*model.Task)
+	}{
+		{"automation disabled", func(v *model.Task) { v.AllowAgents = false }},
+		{"platform mismatch", func(v *model.Task) { v.RequiredPlatform = pointer(model.PlatformWindows) }},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			current := released
+			entry.change(&current)
+			f := workerMockWrite(t, current, owner)
+			_, err := f.Tasks.ClaimWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: next})
 			requireFault(t, err, "invalid_transition")
-		}
-		assertTaskUnchanged(t, tasks, owner, released)
-	}
-	resumed, err := tasks.ClaimWorker(ctx, owner, project.ID, task.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: next})
-	if err != nil || testWorker(t, resumed.Properties).ClaimID != next.ClaimID || testWorker(t, resumed.Properties).WorktreeID != next.WorktreeID || testWorker(t, resumed.Properties).Agent != model.AgentCopilot || testWorker(t, resumed.Properties).Herdr != nil || testWorker(t, resumed.Properties).NativeSessionID != nil {
-		t.Fatalf("new automatic execution did not start with fresh resources: %#v, %v", resumed, err)
-	}
-	_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, taskcore.UpdateWorker{Version: resumed.Version, ClaimID: descriptor.ClaimID, Phase: pointer(model.WorkerExecuting)})
-	requireFault(t, err, "claim_conflict")
-	_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: resumed.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
-	requireFault(t, err, "claim_conflict")
-	_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: resumed.Version, ClaimID: descriptor.ClaimID})
-	requireFault(t, err, "claim_conflict")
-	released, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: resumed.Version, ClaimID: next.ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, update := range []taskcore.UpdateTask{{AllowAgents: pointer(false)}, {AllowAgents: pointer(true), RequiredPlatform: platformChange(pointer(model.PlatformWindows))}} {
-		released = updateTask(t, tasks, owner, released, update)
-		_, err := tasks.ClaimWorker(ctx, owner, project.ID, task.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()})
-		requireFault(t, err, "invalid_transition")
-		assertTaskUnchanged(t, tasks, owner, released)
+		})
 	}
 }
 
-func TestWorkerManagementRacesKeepOneDecision(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
-	ctx := context.Background()
-	owner := workerMember(t, database, project.ID)
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
-	claimID := testWorker(t, task.Properties).ClaimID
-	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: claimID})
-		},
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.WithdrawWorker(ctx, admin, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: claimID})
-		}), "version_conflict")
-	withdrawn, err := tasks.Get(ctx, admin, project.ID, task.ID)
-	if err != nil || testWorker(t, withdrawn.Properties) != nil || withdrawn.AllowAgents || withdrawn.Status != model.TaskTodo || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil {
-		t.Fatalf("withdrawal race left partial execution state: %#v, %v", withdrawn, err)
-	}
-	task = claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
-	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resume := func(descriptor taskcore.WorkerDescriptor) func(context.Context) (model.Task, error) {
-		return func(ctx context.Context) (model.Task, error) {
-			return tasks.ResumeWorker(ctx, admin, project.ID, task.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: descriptor}, PreviousClaimID: testWorker(t, released.Properties).ClaimID})
-		}
-	}
-	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID, resume(workerDescriptor()), resume(workerDescriptor())), "version_conflict")
-	resumed, err := tasks.Get(ctx, admin, project.ID, task.ID)
-	if err != nil || testWorker(t, resumed.Properties).UserID != admin.UserID || testWorker(t, resumed.Properties).WorktreeID == testWorker(t, released.Properties).WorktreeID || resumed.StartedAt == nil || !resumed.StartedAt.After(*task.StartedAt) {
-		t.Fatalf("resume race lost caller ownership, new resources or timing: %#v %v", resumed, err)
+func workerManagementInvoke(f *workerWriteMock, current model.Task, caller model.Principal, operation string, descriptor taskcore.WorkerDescriptor) (model.Task, error) {
+	switch operation {
+	case "release":
+		return f.Tasks.ReleaseWorker(f.Context, caller, current.ProjectID, current.ID, taskcore.ReleaseWorker{Version: current.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
+	case "withdraw":
+		return f.Tasks.WithdrawWorker(f.Context, caller, current.ProjectID, current.ID, taskcore.WithdrawWorker{Version: current.Version, ClaimID: descriptor.ClaimID})
+	case "resume":
+		return f.Tasks.ResumeWorker(f.Context, caller, current.ProjectID, current.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: workerDescriptor()}, PreviousClaimID: descriptor.ClaimID})
+	case "complete":
+		return f.Tasks.SetStatus(f.Context, caller, current.ProjectID, current.ID, taskcore.SetTaskStatus{Version: current.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
+	default:
+		panic("unexpected worker test operation")
 	}
 }
 
-func TestWorkerManagementRollsBackCanceledWrites(t *testing.T) {
-	tasks, _, project, databaseURL, owner := taskService(t)
-	ctx := context.Background()
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
+func TestWorkerManagementReadsCurrentScopeBeforeDeciding(t *testing.T) {
+	t.Run("administrator continuation", func(t *testing.T) {
+		current, owner, previous := workerTestCurrent(t, model.WorkerReleased)
+		administrator := owner
+		administrator.UserID, administrator.CredentialID = uuid.NewString(), uuid.NewString()
+		next := workerDescriptor()
+		observed := current.UpdatedAt.Add(time.Second)
+		worker := &model.WorkerClaim{ClaimID: next.ClaimID, UserID: administrator.UserID, WorkerID: next.WorkerID, Machine: next.Machine, Platform: next.Platform, Agent: next.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: next.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: observed}
+		returned := workerTestResult(current)
+		returned.Status, returned.Ready, returned.StartedAt = model.TaskInProgress, false, &observed
+		returned.Properties = testWithWorker(t, current.Properties, worker)
+		f := workerMockWrite(t, current, administrator)
+		f.ExpectedAccessCalls = 2
+		f.Project.ProjectAccessFn = func(context.Context, model.Principal) (model.ProjectAccess, error) {
+			return model.ProjectAccess{ProjectID: current.ProjectID, UserID: administrator.UserID, Role: model.ProjectAdmin}, nil
+		}
+		f.Task.ObservedAtFn = func(context.Context) (time.Time, error) { return observed, nil }
+		workerExpectUpdate(t, f, workerTestValues(returned), returned)
+		got, err := f.Tasks.ResumeWorker(f.Context, administrator, current.ProjectID, current.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: next}, PreviousClaimID: previous.ClaimID})
+		if err != nil || !reflect.DeepEqual(got, returned) {
+			t.Fatalf("administrator continuation: %#v %v", got, err)
+		}
+	})
 	for _, operation := range []string{"release", "withdraw", "resume"} {
-		if operation == "resume" {
-			var err error
-			task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
-			if err != nil {
-				t.Fatal(err)
+		t.Run(operation, func(t *testing.T) {
+			state := model.WorkerActive
+			if operation == "resume" {
+				state = model.WorkerReleased
 			}
-		}
-		for _, fragment := range []string{"SELECT statement_timestamp()", "UPDATE tasks SET"} {
-			if operation != "resume" && fragment == "SELECT statement_timestamp()" {
+			current, owner, descriptor := workerTestCurrent(t, state)
+			scoped := current
+			scoped.Version++
+			f := workerMockWrite(t, scoped, owner)
+			_, err := workerManagementInvoke(f, current, owner, operation, descriptor)
+			requireFault(t, err, "version_conflict")
+		})
+	}
+}
+
+func TestWorkerManagementPreservesCanceledDAOErrors(t *testing.T) {
+	for _, operation := range []string{"release", "withdraw", "resume"} {
+		for _, stage := range []string{"clock", "write"} {
+			if operation != "resume" && stage == "clock" {
 				continue
 			}
-			t.Run(operation+"/"+fragment, func(t *testing.T) {
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }, end: cancel})
-				descriptor := workerDescriptor()
-				var err error
-				switch operation {
-				case "release":
-					_, err = traced.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
-				case "withdraw":
-					_, err = traced.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID})
-				case "resume":
-					_, err = traced.ResumeWorker(ctx, owner, project.ID, task.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor}, PreviousClaimID: testWorker(t, task.Properties).ClaimID})
+			t.Run(operation+"/"+stage, func(t *testing.T) {
+				state := model.WorkerActive
+				if operation == "resume" {
+					state = model.WorkerReleased
+				}
+				current, owner, descriptor := workerTestCurrent(t, state)
+				f := workerMockWrite(t, current, owner)
+				calls := 0
+				if operation == "resume" {
+					f.Task.ObservedAtFn = func(context.Context) (time.Time, error) {
+						if stage == "clock" {
+							calls++
+							return time.Time{}, context.Canceled
+						}
+						return current.UpdatedAt.Add(time.Second), nil
+					}
+				}
+				if stage == "write" {
+					f.Task.UpdateTaskFn = func(context.Context, string, store.TaskWrite) (model.Task, error) {
+						calls++
+						return model.Task{}, context.Canceled
+					}
+				}
+				got, err := workerManagementInvoke(f, current, owner, operation, descriptor)
+				if calls != 1 || !errors.Is(err, context.Canceled) || !reflect.DeepEqual(got, model.Task{}) {
+					t.Fatalf("management failure: calls=%d task=%#v error=%v", calls, got, err)
 				}
 				assertOperational(t, err)
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("management lost cancellation cause: %v", err)
-				}
-				assertTaskUnchanged(t, tasks, owner, task)
 			})
 		}
 	}
@@ -552,123 +612,78 @@ func TestWorkerManagementRechecksOperatorMembership(t *testing.T) {
 	for _, operation := range []string{"release", "withdraw", "resume"} {
 		for _, permission := range []string{"removed owner", "demoted administrator"} {
 			t.Run(operation+"/"+permission, func(t *testing.T) {
-				tasks, database, project, _, admin := taskService(t)
-				ctx := context.Background()
-				owner, manager := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-				if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
-					_, err := tx.ProjectDAO().SetMemberRole(ctx, manager.UserID, model.ProjectAdmin)
-					return err
-				}); err != nil {
-					t.Fatal(err)
-				}
-				task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
+				state := model.WorkerActive
 				if operation == "resume" {
-					var err error
-					task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
-					if err != nil {
-						t.Fatal(err)
-					}
+					state = model.WorkerReleased
 				}
+				current, owner, descriptor := workerTestCurrent(t, state)
 				caller := owner
 				if permission == "demoted administrator" {
-					caller = manager
+					caller.UserID, caller.CredentialID = uuid.NewString(), uuid.NewString()
 				}
-				result := make(chan taskResult, 1)
-				lockContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-				defer cancel()
-				if err := writeProjectForTest(database, lockContext, project.ID, func(tx store.ProjectWriteScope) error {
-					go func() {
-						descriptor := workerDescriptor()
-						var actual model.Task
-						var err error
-						switch operation {
-						case "release":
-							actual, err = tasks.ReleaseWorker(lockContext, caller, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
-						case "withdraw":
-							actual, err = tasks.WithdrawWorker(lockContext, caller, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID})
-						case "resume":
-							actual, err = tasks.ResumeWorker(lockContext, caller, project.ID, task.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor}, PreviousClaimID: testWorker(t, task.Properties).ClaimID})
-						}
-						result <- taskResult{task: actual, err: err}
-					}()
-					waitForTaskWriters(t, lockContext, database, 1)
-					switch permission {
-					case "removed owner":
-						return tx.ProjectDAO().RemoveMember(lockContext, owner.UserID)
-					default:
-						_, err := tx.ProjectDAO().SetMemberRole(lockContext, manager.UserID, model.ProjectMemberRole)
-						return err
+				f := workerMockWrite(t, current, caller)
+				if permission == "removed owner" {
+					f.ExpectedTaskReads = 0
+					f.Project.ProjectAccessFn = func(context.Context, model.Principal) (model.ProjectAccess, error) {
+						return model.ProjectAccess{}, model.ErrNotFound
 					}
-				}); err != nil {
-					t.Fatal(err)
+				} else {
+					f.ExpectedAccessCalls = 2
 				}
-				want := map[string]string{"removed owner": "not_found", "demoted administrator": "forbidden"}[permission]
-				requireFault(t, receiveTaskResult(t, lockContext, result).err, want)
-				assertTaskUnchanged(t, tasks, admin, task)
+				_, err := workerManagementInvoke(f, current, caller, operation, descriptor)
+				want := "forbidden"
+				if permission == "removed owner" {
+					want = "not_found"
+				}
+				requireFault(t, err, want)
 			})
 		}
 	}
 }
 
 func TestWorkerManualResumeRetainsDependencyProtection(t *testing.T) {
-	tasks, _, project, _, owner := taskService(t)
-	ctx := context.Background()
-	prerequisite := finishTask(t, tasks, owner, startTask(t, tasks, owner, createTask(t, tasks, owner, project.ID, "Prerequisite")))
-	task := updateTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), taskcore.UpdateTask{DependsOn: pointer([]string{prerequisite.ID})})
-	task = claimWorkerTask(t, tasks, owner, task, workerDescriptor())
-	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, taskcore.ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	setStatusTask(t, tasks, owner, prerequisite, model.TaskTodo)
-	released, err = tasks.Get(ctx, owner, project.ID, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, taskcore.ResumeWorker{ClaimWorker: taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()}, PreviousClaimID: testWorker(t, released.Properties).ClaimID})
+	current, owner, descriptor := workerTestCurrent(t, model.WorkerReleased)
+	current.BlockedBy = []string{uuid.NewString()}
+	f := workerMockWrite(t, current, owner)
+	_, err := workerManagementInvoke(f, current, owner, "resume", descriptor)
 	requireFault(t, err, "dependency_unsatisfied")
-	assertTaskUnchanged(t, tasks, owner, released)
 }
 
-func TestWorkerWithdrawalRollsBackPartialDatabaseFailure(t *testing.T) {
-	tasks, database, project, _, owner := taskService(t)
-	ctx := context.Background()
-	prerequisite := finishTask(t, tasks, owner, createTask(t, tasks, owner, project.ID, "Completed prerequisite"))
-	task := updateTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), taskcore.UpdateTask{DependsOn: pointer([]string{prerequisite.ID})})
-	task = claimWorkerTask(t, tasks, owner, task, workerDescriptor())
-	if _, err := database.Pool.Exec(ctx, `CREATE FUNCTION reject_withdrawal_edge() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN RAISE EXCEPTION 'private withdrawal edge diagnostic'; END $$;
-		CREATE TRIGGER reject_withdrawal_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_withdrawal_edge()`); err != nil {
-		t.Fatal(err)
+func TestWorkerWithdrawalPreservesDatabaseFailureChain(t *testing.T) {
+	current, owner, descriptor := workerTestCurrent(t, model.WorkerActive)
+	cause := errors.New("private withdrawal edge diagnostic")
+	failure := &store.Error{Phase: "query", DatabaseFailure: true, SQLState: "P0001", Cause: cause}
+	f := workerMockWrite(t, current, owner)
+	calls := 0
+	f.Task.UpdateTaskFn = func(context.Context, string, store.TaskWrite) (model.Task, error) {
+		calls++
+		return model.Task{}, failure
 	}
-	_, err := tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID})
+	got, err := workerManagementInvoke(f, current, owner, "withdraw", descriptor)
+	var stored *store.Error
+	if calls != 1 || !errors.As(err, &stored) || stored != failure || !errors.Is(err, cause) || strings.Contains(err.Error(), cause.Error()) || !reflect.DeepEqual(got, model.Task{}) {
+		t.Fatalf("withdrawal failure lost typed cause: task=%#v error=%v", got, err)
+	}
 	assertOperational(t, err)
-	if errors.Unwrap(err) == nil || strings.Contains(err.Error(), "private withdrawal edge") {
-		t.Fatalf("withdrawal lost its error chain or exposed private diagnostics: %v", err)
-	}
-	assertTaskUnchanged(t, tasks, owner, task)
 }
 
-func TestWorkerWithdrawalAndCompletionRaceKeepsOneOutcome(t *testing.T) {
-	tasks, database, project, _, owner := taskService(t)
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
-	claimID := testWorker(t, task.Properties).ClaimID
-	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, taskcore.WithdrawWorker{Version: task.Version, ClaimID: claimID})
-		},
-		func(ctx context.Context) (model.Task, error) {
-			return tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: &claimID})
-		}), "version_conflict")
-	actual, err := tasks.Get(context.Background(), owner, project.ID, task.ID)
-	if err != nil {
-		t.Fatal(err)
+func TestWorkerWithdrawalAndCompletionUseScopedVersion(t *testing.T) {
+	for _, operation := range []string{"withdraw", "complete"} {
+		t.Run(operation, func(t *testing.T) {
+			before, owner, descriptor := workerTestCurrent(t, model.WorkerActive)
+			current := before
+			current.Version++
+			f := workerMockWrite(t, current, owner)
+			_, err := workerManagementInvoke(f, before, owner, operation, descriptor)
+			requireFault(t, err, "version_conflict")
+		})
 	}
-	if actual.Status == model.TaskTodo {
-		if testWorker(t, actual.Properties) != nil || actual.AllowAgents || actual.StartedAt != nil || actual.CompletedAt != nil {
-			t.Fatal("withdrawal committed a partial reset")
-		}
-	} else if actual.Status != model.TaskDone || testWorker(t, actual.Properties) == nil || testWorker(t, actual.Properties).State != model.WorkerCompleted || !actual.AllowAgents || actual.StartedAt == nil || actual.CompletedAt == nil {
-		t.Fatalf("completion race committed mixed outcomes: %#v", actual)
+}
+
+func workerExpectUpdate(t *testing.T, f *workerWriteMock, values store.TaskWrite, returned model.Task) {
+	t.Helper()
+	f.ExpectUpdate(values, returned)
+	if f.Current.Status != returned.Status {
+		f.ExpectCapture([]protocol.Fact{{Type: protocol.StatusChanged, ProjectID: returned.ProjectID, TaskID: returned.ID, TaskVersion: returned.Version, OccurredAt: returned.UpdatedAt, PreviousStatus: string(f.Current.Status), Status: string(returned.Status)}})
 	}
 }

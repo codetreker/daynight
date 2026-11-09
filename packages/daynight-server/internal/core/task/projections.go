@@ -11,7 +11,6 @@ import (
 
 type GraphReader interface {
 	TaskPresence(context.Context, string, string) (store.TaskPresence, error)
-	TaskGraphProjectionSize(context.Context, string, string, store.TaskGraphSelection) (store.TaskGraphSize, error)
 	TaskGraphTasks(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 }
 
@@ -25,14 +24,7 @@ func ReadGraph(ctx context.Context, reader GraphReader, clock SnapshotClock, pro
 	if fault := projection.GraphRoot(presence.Found, presence.DeletedAt != nil); fault != nil {
 		return model.TaskGraph{}, fault, nil
 	}
-	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, IncludeExternalEdges: true, LiveOnly: true}
-	size, err := reader.TaskGraphProjectionSize(ctx, projectID, taskID, selection)
-	if err != nil {
-		return model.TaskGraph{}, nil, err
-	}
-	if fault := projection.GraphLimit(size.NodeCount, size.EdgeCount); fault != nil {
-		return model.TaskGraph{}, fault, nil
-	}
+	selection := store.TaskGraphSelection{OrdinaryPrerequisites: true, OrdinaryDependents: true, DirectExternal: true, LiveOnly: true}
 	tasks, err := reader.TaskGraphTasks(ctx, projectID, taskID, selection, projection.TitlePreviewCharacters)
 	if err != nil {
 		return model.TaskGraph{}, nil, err
@@ -66,7 +58,6 @@ func ReadAssignees(ctx context.Context, reader AssigneeReader, projectID string,
 
 type SyncReader interface {
 	TaskCacheEpoch(context.Context, string) (string, error)
-	TaskGraphSize(context.Context, string) (store.TaskGraphSize, error)
 	TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
 	TaskAssignees(context.Context, string) ([]model.TaskAssigneeFact, error)
 }
@@ -77,19 +68,9 @@ func ReadSync(ctx context.Context, reader SyncReader, clock SnapshotClock, proje
 	if err != nil {
 		return model.TaskSync{}, nil, err
 	}
-	size, err := reader.TaskGraphSize(ctx, projectID)
-	if err != nil {
-		return model.TaskSync{}, nil, err
-	}
-	if fault := projection.GraphLimit(size.NodeCount, size.EdgeCount); fault != nil {
-		return model.TaskSync{}, fault, nil
-	}
 	var lower *time.Time
 	result.Mode, lower = projection.SyncWindow(requestedEpoch, result.Epoch, since, overlap)
 	result.Tasks, err = reader.TaskSyncTasks(ctx, projectID, lower, projection.TitlePreviewCharacters)
-	if fault := PropertyFault(err); fault != nil {
-		return model.TaskSync{}, fault, nil
-	}
 	if err != nil {
 		return model.TaskSync{}, nil, err
 	}

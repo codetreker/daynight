@@ -21,4 +21,8 @@ const loadWorkers = async (scope: TaskCacheScope, signal: AbortSignal): Promise<
     cursors.add(page.nextCursor); cursor = page.nextCursor;
   }
 };
-export const useWorkers = (options: WorkerReadOptions) => useWorkerObservation('workers', options, loadWorkers, false);
+const withdraw = (snapshot: WorkerListSnapshot): WorkerListSnapshot => ({ ...snapshot, items: snapshot.items.map(worker => ({
+  ...worker, taskObservationState: 'unavailable', taskObservedAt: null, activeTaskCount: null,
+})) });
+const filterDenied = (scope: TaskCacheScope, snapshot: WorkerListSnapshot, fence: ReadonlyMap<string, string>): WorkerListSnapshot => scope.projectionSnapshotHasDenials(fence) ? withdraw(snapshot) : snapshot;
+export const useWorkers = (options: WorkerReadOptions) => useWorkerObservation('workers', options, loadWorkers, false, withdraw, filterDenied);

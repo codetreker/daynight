@@ -49,6 +49,9 @@ func read(ctx context.Context, dao store.PromptReader, user string, scope model.
 	value := model.PromptResource{Scope: scope, ScopeID: id, Revision: strconv.FormatInt(m.Revision, 10), UpdatedAt: m.UpdatedAt}
 	if m.Revision != 0 {
 		value.Text, err = dao.PromptText(ctx, user, scope, id)
+		if err == nil {
+			err = storedTextError(value.Text)
+		}
 	}
 	return value, err
 }
@@ -115,6 +118,9 @@ func (p *Prompts) Put(ctx context.Context, principal model.Principal, scope mode
 		}
 		current, err := tx.PromptResource(ctx, principal.UserID, scope, id)
 		if err != nil {
+			return err
+		}
+		if err := storedTextError(current.Text); err != nil {
 			return err
 		}
 		next, changed, err := core.Next(current, expected, text)
@@ -217,6 +223,9 @@ func Batch(ctx context.Context, reader store.PromptSnapshotReader, principal mod
 				if err != nil {
 					return err
 				}
+				if err := storedTextError(value.Text); err != nil {
+					return err
+				}
 			}
 			results = append(results, model.PromptResult{Key: key, Status: "value", Value: &value})
 		}
@@ -226,4 +235,13 @@ func Batch(ctx context.Context, reader store.PromptSnapshotReader, principal mod
 		return nil, err
 	}
 	return results, nil
+}
+
+// Stored values must satisfy the same text contract as new writes. A corrupt
+// stored value is an internal failure, not a refusal of the caller's input.
+func storedTextError(text string) error {
+	if core.ValidateText(text) != nil {
+		return fmt.Errorf("stored prompt text is invalid")
+	}
+	return nil
 }

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CDPSession, Page, TestInfo } from '@playwright/test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { withCapacityTrace } from './e2e/capacity-trace';
+import { withCapacityTrace } from './helpers/capacity-trace';
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });

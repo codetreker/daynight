@@ -2,12 +2,16 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
+
+// ErrSessionProjectNotFound identifies a tombstoned project in scoped Session access.
+var ErrSessionProjectNotFound = errors.New("session project not found")
 
 // SessionWriter binds all Session and Bot operations to one transaction. The
 // scope and its DAOs are valid only until the callback returns.
@@ -110,10 +114,19 @@ type SessionTask struct {
 	StartupReport *sp.StartupReport
 }
 
+// ArchiveMetadata is an unlocked snapshot used only to select an archive permit.
+// The actual archive operation must recheck all authority under its normal locks.
+type ArchiveMetadata struct {
+	Owner, Parent, Project, Task, Backend                string
+	Test, TaskExists, TaskDeleted, ProjectLive, BotValid bool
+}
+
 // SessionDAO methods operate on the transaction supplied by SessionWriter.
 // Callers acquire credential, Task and Bot locks before related Session locks.
 type SessionDAO interface {
 	LockCredential(context.Context, model.Principal, time.Time) error
+	ReadCredential(context.Context, model.Principal, time.Time) error
+	ArchiveMetadata(context.Context, string) (ArchiveMetadata, error)
 	ProjectAccess(context.Context, string, string) (model.ProjectAccess, error)
 	LockTask(context.Context, string, string) (SessionTask, error)
 	SessionBotID(context.Context, string) (*string, error)
@@ -170,7 +183,3 @@ type SessionDAO interface {
 	QueuedTerminalOperation(context.Context, string) ([]string, error)
 	TerminalViewerOperationPending(context.Context, string, string, string) (bool, error)
 }
-
-var _ SessionWriter = (*Store)(nil)
-var _ SessionScope = (*sessionTx)(nil)
-var _ SessionDAO = (*sessionTx)(nil)

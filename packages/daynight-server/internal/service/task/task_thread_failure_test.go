@@ -9,20 +9,173 @@ import (
 	"testing"
 	"time"
 
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-
 	threadcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/thread"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 
-	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+type threadFailureFixture struct {
+	base           taskMockBase
+	project        model.Project
+	task           model.Task
+	principal      model.Principal
+	message        model.ThreadMessage
+	database       *taskStoreMock
+	snapshot       *taskSnapshotScopeMock
+	taskRead       *taskReaderMock
+	readCredential *credentialReaderMock
+	projectRead    *projectReaderMock
+	scope          *taskThreadScopeMock
+	taskWrite      *threadTaskMock
+	credential     *threadCredentialMock
+	projectWrite   *threadProjectMock
+	thread         *threadDAOMock
+	capture        *captureDAOMock
+	service        *taskservice.TaskThreads
+	call           func(context.Context, string) error
+}
+
+func newThreadFailureFixture(t *testing.T) *threadFailureFixture {
+	t.Helper()
+	project, target, principal := taskMockModels()
+	f := &threadFailureFixture{base: newTaskMockBase(t, "thread"), project: project, task: target, principal: principal}
+	f.message = model.ThreadMessage{ID: "66666666-6666-4666-8666-666666666666", TaskID: target.ID, Author: model.ThreadAuthor{UserID: principal.UserID}, Body: "Existing message", CreatedAt: target.UpdatedAt}
+	f.call = func(ctx context.Context, _ string) error { return ctx.Err() }
+	checkTask := func(ctx context.Context, stage, projectID, taskID string) error {
+		t.Helper()
+		if projectID != f.project.ID || taskID != f.task.ID {
+			t.Fatalf("%s scope: project=%s task=%s", stage, projectID, taskID)
+		}
+		return f.call(ctx, stage)
+	}
+	checkPrincipal := func(ctx context.Context, stage string, actual model.Principal) error {
+		t.Helper()
+		if actual != f.principal {
+			t.Fatalf("%s principal: %+v", stage, actual)
+		}
+		return f.call(ctx, stage)
+	}
+	f.database = &taskStoreMock{taskMockBase: f.base.withLabel("database")}
+	f.snapshot = &taskSnapshotScopeMock{taskMockBase: f.base.withLabel("snapshot")}
+	f.taskRead = &taskReaderMock{taskMockBase: f.base.withLabel("read-task")}
+	f.readCredential = &credentialReaderMock{taskMockBase: f.base.withLabel("read-credential")}
+	f.projectRead = &projectReaderMock{taskMockBase: f.base.withLabel("read-project")}
+	f.scope = &taskThreadScopeMock{taskMockBase: f.base.withLabel("write-scope")}
+	f.taskWrite = &threadTaskMock{taskMockBase: f.base.withLabel("write-task")}
+	f.credential = &threadCredentialMock{taskMockBase: f.base.withLabel("write-credential")}
+	f.projectWrite = &threadProjectMock{taskMockBase: f.base.withLabel("write-project")}
+	f.thread = &threadDAOMock{taskMockBase: f.base.withLabel("thread-dao")}
+	f.capture = &captureDAOMock{taskMockBase: f.base.withLabel("capture")}
+	f.snapshot.TaskDAOFn = func() store.TaskReader { return f.taskRead }
+	f.snapshot.CredentialDAOFn = func() store.CredentialReader { return f.readCredential }
+	f.snapshot.ProjectDAOFn = func() store.ProjectReader { return f.projectRead }
+	f.scope.TaskDAOFn = func() store.ThreadTaskDAO { return f.taskWrite }
+	f.scope.CredentialDAOFn = func() store.ThreadCredentialDAO { return f.credential }
+	f.scope.ProjectDAOFn = func() store.ThreadProjectDAO { return f.projectWrite }
+	f.scope.ThreadDAOFn = func() store.ThreadDAO { return f.thread }
+	f.scope.CaptureDAOFn = func() store.WebhookCaptureDAO { return f.capture }
+	f.database.ReadSnapshotFn = func(ctx context.Context, work func(store.SnapshotScope) error) error { return work(f.snapshot) }
+	f.database.WriteThreadFn = func(ctx context.Context, work func(store.ThreadScope) error) (store.Completion, error) {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, work(f.scope)
+	}
+	f.taskRead.TaskPresenceFn = func(ctx context.Context, projectID, taskID string) (store.TaskPresence, error) {
+		return store.TaskPresence{Found: true}, checkTask(ctx, "read-presence", projectID, taskID)
+	}
+	f.readCredential.CredentialFn = func(ctx context.Context, actual model.Principal) (store.ThreadCredential, error) {
+		return store.ThreadCredential{}, checkPrincipal(ctx, "read-credential", actual)
+	}
+	f.projectRead.ProjectAccessFn = func(ctx context.Context, actual model.Principal, projectID string) (model.ProjectAccess, error) {
+		if projectID != f.project.ID {
+			t.Fatalf("read authorization project=%s", projectID)
+		}
+		return taskMockAccess(f.project, f.principal), checkPrincipal(ctx, "read-authorization", actual)
+	}
+	f.taskRead.ThreadMessageFn = func(ctx context.Context, taskID, messageID string) (model.ThreadMessage, error) {
+		if taskID != f.task.ID || messageID != f.message.ID {
+			t.Fatalf("read anchor: task=%s message=%s", taskID, messageID)
+		}
+		return f.message, f.call(ctx, "read-anchor")
+	}
+	f.taskRead.ThreadCandidatesFn = func(ctx context.Context, taskID string, _ *model.ThreadPosition, _ bool, _ int) ([]model.ThreadMessage, error) {
+		if taskID != f.task.ID {
+			t.Fatalf("candidate task=%s", taskID)
+		}
+		return []model.ThreadMessage{f.message}, f.call(ctx, "read-candidates")
+	}
+	f.taskRead.ThreadSidesFn = func(ctx context.Context, taskID string, first, last model.ThreadPosition) (bool, bool, error) {
+		if taskID != f.task.ID || first != f.message.Position() || last != f.message.Position() {
+			t.Fatalf("page sides: task=%s first=%+v last=%+v", taskID, first, last)
+		}
+		return false, false, f.call(ctx, "read-sides")
+	}
+	f.taskWrite.LockTaskPresenceFn = func(ctx context.Context, projectID, taskID string) (store.TaskPresence, error) {
+		return store.TaskPresence{Found: true}, checkTask(ctx, "presence", projectID, taskID)
+	}
+	f.credential.CredentialFn = func(ctx context.Context, actual model.Principal) (store.ThreadCredential, error) {
+		return store.ThreadCredential{}, checkPrincipal(ctx, "credential", actual)
+	}
+	f.projectWrite.LockProjectAuthorizationFn = func(ctx context.Context, actual model.Principal, projectID string) (model.ProjectAccess, error) {
+		if projectID != f.project.ID {
+			t.Fatalf("write authorization project=%s", projectID)
+		}
+		return taskMockAccess(f.project, f.principal), checkPrincipal(ctx, "authorization", actual)
+	}
+	f.credential.AuthorNameFn = func(ctx context.Context, userID string) (*string, error) {
+		if userID != f.principal.UserID {
+			t.Fatalf("author user=%s", userID)
+		}
+		return nil, f.call(ctx, "author")
+	}
+	f.thread.LockHeadFn = func(ctx context.Context, taskID string) (*model.ThreadPosition, error) {
+		if taskID != f.task.ID {
+			t.Fatalf("head task=%s", taskID)
+		}
+		position := f.message.Position()
+		return &position, f.call(ctx, "head")
+	}
+	f.thread.ThreadMessageFn = func(ctx context.Context, taskID, messageID string) (model.ThreadMessage, error) {
+		if taskID != f.task.ID || messageID != f.message.ID {
+			t.Fatalf("reply scope: task=%s message=%s", taskID, messageID)
+		}
+		return f.message, f.call(ctx, "reply")
+	}
+	f.thread.InsertMessageFn = func(ctx context.Context, message model.ThreadMessage) (model.ThreadMessage, error) {
+		if message.TaskID != f.task.ID || message.Author.UserID != f.principal.UserID || message.ID != "" {
+			t.Fatalf("candidate scope: %+v", message)
+		}
+		message.ID = "77777777-7777-4777-8777-777777777777"
+		message.CreatedAt = f.task.UpdatedAt.Add(time.Millisecond)
+		return message, f.call(ctx, "insert")
+	}
+	f.thread.PrepareTimestampFn = func(ctx context.Context, message *model.ThreadMessage, head *model.ThreadPosition) error {
+		if message.ID == "" || head == nil || *head != f.message.Position() {
+			t.Fatalf("timestamp candidate/head: %+v %+v", message, head)
+		}
+		return f.call(ctx, "timestamp")
+	}
+	f.credential.CredentialValidFn = func(ctx context.Context, _ store.ThreadCredential) (bool, error) {
+		return true, f.call(ctx, "final-credential")
+	}
+	f.thread.AdvanceHeadFn = func(ctx context.Context, taskID string, position model.ThreadPosition) error {
+		if taskID != f.task.ID || position.ID != "77777777-7777-4777-8777-777777777777" {
+			t.Fatalf("advance scope: task=%s position=%+v", taskID, position)
+		}
+		return f.call(ctx, "advance")
+	}
+	f.capture.FreezeAudienceFn = func(ctx context.Context, projectID string, eventTypes []string) ([]store.WebhookAudience, error) {
+		if projectID != f.project.ID || len(eventTypes) != 1 || eventTypes[0] != protocol.ThreadPosted {
+			t.Fatalf("capture source: project=%s eventTypes=%v", projectID, eventTypes)
+		}
+		return []store.WebhookAudience{}, f.call(ctx, "capture")
+	}
+	f.service = taskservice.NewTaskThreads(f.database)
+	return f
+}
 
 type threadCancelAfterCheck struct {
 	context.Context
@@ -52,329 +205,271 @@ func TestThreadAdmissionObservesCancellationAfterInitialCheck(t *testing.T) {
 	}
 }
 
-func tracedThreads(t *testing.T, databaseURL string, action taskQueryAction) *taskservice.TaskThreads {
-	t.Helper()
-	config, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.ConnConfig.Tracer = action
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return taskservice.NewTaskThreads(&store.Store{Pool: pool})
-}
-
-func threadWait(t *testing.T, ctx context.Context, condition func() (bool, error)) {
-	t.Helper()
-	for {
-		ok, err := condition()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ok {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-}
-
-func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
+func TestThreadCredentialIsRecheckedAfterHeadWait(t *testing.T) {
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
 		t.Run(string(kind), func(t *testing.T) {
-			tasks, database, project, _, principal := taskService(t)
-			threads := taskservice.NewTaskThreads(database)
-			task := createTask(t, tasks, principal, project.ID, "Expiry during head wait")
-			postThread(t, threads, principal, task, taskservice.CreateThreadMessage{Body: "before"})
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			caller, table := principal, "sessions"
-			if kind == model.PATCredential {
-				credential := model.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, TokenHash: secretutil.Hash(secretutil.Random("dnpat_")), Name: "Never expires", CreatedAt: time.Now().UTC()}
-				if _, err := database.WriteIdentity(ctx, func(scope store.IdentityScope) error {
-					if err := scope.IdentityDAO().LockSession(ctx, principal, credential.CreatedAt); err != nil {
-						return err
-					}
-					if err := scope.IdentityDAO().CleanupCredentials(ctx, credential.CreatedAt); err != nil {
-						return err
-					}
-					return scope.IdentityDAO().InsertPAT(ctx, credential)
-				}); err != nil {
-					t.Fatal(err)
+			f := newThreadFailureFixture(t)
+			f.principal.Kind = kind
+			expires := f.task.UpdatedAt.Add(time.Minute)
+			locked := store.ThreadCredential{ExpiresAt: &expires}
+			credentialReads, finalChecks := 0, 0
+			f.credential.CredentialFn = func(ctx context.Context, principal model.Principal) (store.ThreadCredential, error) {
+				if principal != f.principal {
+					t.Fatalf("credential principal=%+v", principal)
 				}
-				caller = model.Principal{Kind: model.PATCredential, CredentialID: credential.ID, UserID: principal.UserID}
-				table = "personal_access_tokens"
-				postThread(t, threads, caller, task, taskservice.CreateThreadMessage{Body: "nullable PAT expiry is valid"})
+				credentialReads++
+				return locked, ctx.Err()
 			}
-			before := threadStoredState(t, database, task.ID)
-			blocker, err := database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
+			headEntered, releaseHead := make(chan struct{}), make(chan struct{})
+			f.thread.LockHeadFn = func(ctx context.Context, taskID string) (*model.ThreadPosition, error) {
+				if taskID != f.task.ID {
+					t.Fatalf("head task=%s", taskID)
+				}
+				close(headEntered)
+				select {
+				case <-releaseHead:
+					position := f.message.Position()
+					return &position, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
 			}
-			defer blocker.Rollback(context.Background())
-			if _, err := blocker.Exec(ctx, `SELECT task_id FROM task_threads WHERE task_id=$1 FOR UPDATE`, task.ID); err != nil {
-				t.Fatal(err)
+			f.credential.CredentialValidFn = func(ctx context.Context, credential store.ThreadCredential) (bool, error) {
+				if credential != locked {
+					t.Fatalf("final check lost locked credential: %+v", credential)
+				}
+				finalChecks++
+				return false, ctx.Err()
 			}
-			var expiry time.Time
-			if err := database.Pool.QueryRow(ctx, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1 RETURNING expires_at`, caller.CredentialID).Scan(&expiry); err != nil {
-				t.Fatal(err)
-			}
+			f.thread.AdvanceHeadFn = nil
+			f.capture.FreezeAudienceFn = nil
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
 			result := make(chan error, 1)
 			go func() {
-				document, err := threads.Post(ctx, caller, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "must roll back after expiry"})
-				if err == nil || document.JSON != nil {
-					result <- fmt.Errorf("expired call returned a resource: %#v", document)
+				document, err := f.service.Post(ctx, f.principal, f.project.ID, f.task.ID, taskservice.CreateThreadMessage{Body: "rejected after head wait"})
+				if document.JSON != nil {
+					result <- fmt.Errorf("expiry refusal returned a resource")
 					return
 				}
 				result <- err
 			}()
-			threadWait(t, ctx, func() (bool, error) {
-				var waiting bool
-				err := database.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=current_setting('application_name') AND wait_event_type='Lock' AND query LIKE '%SELECT last_created_at,last_message_id::text FROM task_threads%')`).Scan(&waiting)
-				return waiting, err
-			})
-			threadWait(t, ctx, func() (bool, error) {
-				var expired bool
-				err := database.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expiry).Scan(&expired)
-				return expired, err
-			})
-			if err := blocker.Commit(ctx); err != nil {
-				t.Fatal(err)
+			select {
+			case <-headEntered:
+				close(releaseHead)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
 			}
 			select {
 			case err := <-result:
 				requireThreadFault(t, err, "unauthenticated")
+				var attribution *taskservice.ThreadMessageError
+				if !errors.As(err, &attribution) || attribution.Outcome != store.TransactionNotCommitted {
+					t.Fatalf("expiry outcome: %#v %v", attribution, err)
+				}
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			if after := threadStoredState(t, database, task.ID); before != after {
-				t.Fatal("expiry rejection committed a message or changed head")
+			if credentialReads != 1 || finalChecks != 1 {
+				t.Fatalf("credential checks: initial=%d final=%d", credentialReads, finalChecks)
 			}
-			// The observation uses SQL and a separate valid principal, rather than
-			// mistaking an expired caller's read refusal for an empty database.
-			valid := workerMember(t, database, project.ID)
-			page := listThread(t, threads, valid, task, taskservice.ThreadListRequest{})
-			want := 1
-			if kind == model.PATCredential {
-				want = 2
+			f.readCredential.CredentialFn = func(context.Context, model.Principal) (store.ThreadCredential, error) {
+				return store.ThreadCredential{}, model.ErrNotFound
 			}
-			if len(page.Page.Items) != want {
-				t.Fatal("expiry rejection changed retained history")
-			}
-			_, err = threads.List(ctx, caller, project.ID, task.ID, taskservice.ThreadListRequest{})
+			f.taskRead.ThreadCandidatesFn = nil
+			_, err := f.service.List(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.ThreadListRequest{})
 			requireThreadFault(t, err, "unauthenticated")
 		})
 	}
 }
 
-func TestThreadCancellationBeforeCommitRollsBackEveryWriteStage(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	task := createTask(t, tasks, principal, project.ID, "Cancellation")
-	threads := taskservice.NewTaskThreads(database)
-	first := postThread(t, threads, principal, task, taskservice.CreateThreadMessage{Body: "first"})
-	before := threadStoredState(t, database, task.ID)
-	for _, fragment := range []string{
-		"SELECT deleted_at FROM tasks", "SELECT expires_at FROM sessions", "FOR SHARE OF o", "SELECT name,personal_user_id::text FROM teams",
-		"SELECT role FROM team_members WHERE team_id=$1 AND user_id=$2 FOR SHARE",
-		"FROM project_grants WHERE project_id=$1 AND user_id=$2 FOR SHARE", "SELECT name FROM users",
-		"INSERT INTO task_threads", "SELECT last_created_at,last_message_id", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2",
-		"INSERT INTO task_thread_messages", "SELECT $1::timestamptz IS NULL", "UPDATE task_threads SET",
-	} {
+func TestThreadCancellationBeforeCommitStopsAtEachDAOStage(t *testing.T) {
+	for _, stage := range []string{"presence", "credential", "authorization", "author", "head", "reply", "insert", "timestamp", "final-credential", "advance"} {
 		for _, after := range []bool{false, true} {
-			passed := t.Run(fmt.Sprintf("%s/after=%t", fragment, after), func(t *testing.T) {
-				ctx, cancel := context.WithCancel(context.Background())
+			t.Run(fmt.Sprintf("%s/after=%t", stage, after), func(t *testing.T) {
+				f := newThreadFailureFixture(t)
+				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				fired := false
-				cancelAtStage := func() { fired = true; cancel() }
-				action := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }}
-				if after {
-					action.end = cancelAtStage
-				} else {
-					action.start = cancelAtStage
+				f.call = func(actual context.Context, current string) error {
+					if err := actual.Err(); err != nil {
+						return err
+					}
+					if current == stage {
+						fired = true
+						cancel()
+						if !after {
+							return actual.Err()
+						}
+					}
+					return nil
 				}
-				traced := tracedThreads(t, databaseURL, action)
-				document, err := traced.Post(ctx, principal, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "rejected", ReplyTo: &first.Message.ID})
-				if !fired {
-					t.Fatal("intended cancellation stage did not run")
+				var callbackFailure error
+				f.database.WriteThreadFn = func(_ context.Context, work func(store.ThreadScope) error) (store.Completion, error) {
+					callbackFailure = work(f.scope)
+					return store.Completion{Outcome: store.TransactionNotCommitted}, callbackFailure
 				}
-				if err == nil || !errors.Is(err, context.Canceled) || document.JSON != nil {
-					t.Fatalf("cancellation lost or returned resource: %#v %v", document, err)
+				document, err := f.service.Post(ctx, f.principal, f.project.ID, f.task.ID, taskservice.CreateThreadMessage{Body: "rejected", ReplyTo: &f.message.ID})
+				var attribution *taskservice.ThreadMessageError
+				if !fired || !errors.Is(callbackFailure, context.Canceled) || !errors.Is(err, context.Canceled) || document.JSON != nil || !errors.As(err, &attribution) || attribution.Outcome != store.TransactionNotCommitted {
+					t.Fatalf("cancellation: fired=%t callback=%v document=%+v error=%v", fired, callbackFailure, document, err)
 				}
-				var stage *store.ThreadTransactionError
-				if errors.As(err, &stage) && (stage.CommitAttempted || stage.OutcomeUnknown) {
-					t.Fatalf("precommit cancellation classified as attempted commit: %#v", stage)
-				}
-				if afterState := threadStoredState(t, database, task.ID); before != afterState {
-					t.Fatal("canceled operation changed head/messages")
+				var transaction *store.ThreadTransactionError
+				if errors.As(err, &transaction) && (transaction.CommitAttempted || transaction.OutcomeUnknown) {
+					t.Fatalf("precommit cancellation became attempted commit: %+v", transaction)
 				}
 			})
-			if !passed {
-				t.FailNow()
-			}
 		}
 	}
-	assertTaskUnchanged(t, tasks, principal, task)
 }
 
 func TestThreadReadCancellationAndServiceDeadlineAreBounded(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
-	task := createTask(t, tasks, principal, project.ID, "Read cancellation")
-	threads := taskservice.NewTaskThreads(database)
-	first := postThread(t, threads, principal, task, taskservice.CreateThreadMessage{Body: "first"})
-	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_grants", "SELECT deleted_at FROM tasks", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
-		t.Run(fragment, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+	for _, stage := range []string{"read-credential", "read-authorization", "read-presence", "read-anchor", "read-candidates", "read-sides"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newThreadFailureFixture(t)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			traced := tracedThreads(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }, end: cancel})
-			document, err := traced.List(ctx, principal, project.ID, task.ID, taskservice.ThreadListRequest{BeforeID: &first.Message.ID})
-			// Page sides require a nonempty page, so use the tail when testing it.
-			if strings.Contains(fragment, "EXISTS(") {
-				ctx2, cancel2 := context.WithCancel(context.Background())
-				defer cancel2()
-				traced = tracedThreads(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }, end: cancel2})
-				document, err = traced.List(ctx2, principal, project.ID, task.ID, taskservice.ThreadListRequest{})
+			fired := false
+			f.call = func(actual context.Context, current string) error {
+				if err := actual.Err(); err != nil {
+					return err
+				}
+				if current == stage {
+					fired = true
+					cancel()
+				}
+				return nil
 			}
-			if err == nil || !errors.Is(err, context.Canceled) || document.JSON != nil {
-				t.Fatalf("read cancellation lost: %#v %v", document, err)
+			anchor := f.message
+			anchor.ID = "88888888-8888-4888-8888-888888888888"
+			anchor.CreatedAt = anchor.CreatedAt.Add(time.Millisecond)
+			f.taskRead.ThreadMessageFn = func(actual context.Context, taskID, messageID string) (model.ThreadMessage, error) {
+				if taskID != f.task.ID || messageID != anchor.ID {
+					t.Fatalf("anchor scope: task=%s message=%s", taskID, messageID)
+				}
+				return anchor, f.call(actual, "read-anchor")
+			}
+			document, err := f.service.List(ctx, f.principal, f.project.ID, f.task.ID, taskservice.ThreadListRequest{BeforeID: &anchor.ID})
+			if !fired || !errors.Is(err, context.Canceled) || document.JSON != nil {
+				t.Fatalf("read cancellation: fired=%t document=%+v error=%v", fired, document, err)
 			}
 		})
 	}
 	for _, post := range []bool{false, true} {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-		defer cancel()
-		blocker, err := database.Pool.Begin(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		rollback := func() error {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		t.Run(fmt.Sprintf("deadline/post=%t", post), func(t *testing.T) {
+			f := newThreadFailureFixture(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 			defer cancel()
-			err := blocker.Rollback(cleanup)
-			if errors.Is(err, pgx.ErrTxClosed) {
-				return nil
+			parentDeadline, _ := ctx.Deadline()
+			wait := func(actual context.Context) error {
+				deadline, ok := actual.Deadline()
+				if !ok || deadline.After(parentDeadline) {
+					t.Fatalf("service extended parent deadline: %v %v", deadline, parentDeadline)
+				}
+				<-actual.Done()
+				return actual.Err()
 			}
-			return err
-		}
-		// A failed assertion must release the blocking lease before pool cleanup.
-		defer func() {
-			if err := rollback(); err != nil {
-				t.Errorf("release blocking transaction: %v", err)
+			f.database.ReadSnapshotFn = func(actual context.Context, _ func(store.SnapshotScope) error) error { return wait(actual) }
+			f.database.WriteThreadFn = func(actual context.Context, _ func(store.ThreadScope) error) (store.Completion, error) {
+				return store.Completion{Outcome: store.TransactionNotCommitted}, wait(actual)
 			}
-		}()
-		// A relation lock blocks both reads and writes after pool acquisition.
-		if _, err := blocker.Exec(context.Background(), `LOCK TABLE tasks IN ACCESS EXCLUSIVE MODE`); err != nil {
-			t.Fatal(err)
-		}
-		start := time.Now()
-		if post {
-			_, err = threads.Post(ctx, principal, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "short parent"})
-		} else {
-			_, err = threads.List(ctx, principal, project.ID, task.ID, taskservice.ThreadListRequest{})
-		}
-		cancel()
-		elapsed := time.Since(start)
-		if err == nil || !errors.Is(err, context.DeadlineExceeded) || elapsed > time.Second {
-			t.Fatalf("parent deadline ignored (post=%t elapsed=%s): %v", post, elapsed, err)
-		}
-		if err := rollback(); err != nil {
-			t.Fatal(err)
-		}
-		listThread(t, threads, principal, task, taskservice.ThreadListRequest{})
+			start := time.Now()
+			var err error
+			if post {
+				_, err = f.service.Post(ctx, f.principal, f.project.ID, f.task.ID, taskservice.CreateThreadMessage{Body: "short parent"})
+			} else {
+				_, err = f.service.List(ctx, f.principal, f.project.ID, f.task.ID, taskservice.ThreadListRequest{})
+			}
+			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
+				t.Fatalf("parent deadline ignored: %v", err)
+			}
+		})
 	}
 }
 
-func TestThreadReadDatabaseFailureAndOversizeInvariantAreVisible(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	threads := taskservice.NewTaskThreads(database)
-	task := createTask(t, tasks, principal, project.ID, "Stored invariant")
-	oversize := model.ThreadMessage{ID: uuid.NewString(), Body: strings.Repeat("x", taskcodec.PageLimit+1)}
-	_, err := threadcore.SelectPage(context.Background(), []model.ThreadMessage{oversize}, 1, false, false)
-	if err == nil {
-		t.Fatal("oversize stored message silently skipped")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
+func TestThreadReadDatabaseFailureAndCancellationAreVisible(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := threadcore.AdmitMessage(ctx, model.ThreadMessage{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("admission cancellation lost: %v", err)
 	}
-	if _, err := threadcore.SelectPage(ctx, []model.ThreadMessage{{ID: "id"}}, 1, false, false); !errors.Is(err, context.Canceled) {
+	if _, err := threadcore.SelectPage(ctx, []model.ThreadMessage{{ID: "id"}}, 1, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("selection cancellation lost: %v", err)
 	}
-	if _, err := database.Pool.Exec(context.Background(), `DROP TABLE task_thread_messages`); err != nil {
-		t.Fatal(err)
+	for _, cause := range []error{errors.New("thread query failed"), errors.New("thread store closed")} {
+		f := newThreadFailureFixture(t)
+		f.database.ReadSnapshotFn = func(context.Context, func(store.SnapshotScope) error) error { return cause }
+		f.database.WriteThreadFn = func(context.Context, func(store.ThreadScope) error) (store.Completion, error) {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, cause
+		}
+		for _, post := range []bool{false, true} {
+			var err error
+			if post {
+				_, err = f.service.Post(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.CreateThreadMessage{Body: "failed write"})
+			} else {
+				_, err = f.service.List(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.ThreadListRequest{})
+			}
+			var refusal *model.Fault
+			if !errors.Is(err, cause) || errors.As(err, &refusal) {
+				t.Fatalf("operational failure replaced: %v", err)
+			}
+		}
 	}
-	_, err = threads.List(context.Background(), principal, project.ID, task.ID, taskservice.ThreadListRequest{})
-	assertOperational(t, err)
-	_, err = threads.Post(context.Background(), principal, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "no table"})
-	assertOperational(t, err)
-	database.Close()
-	_, err = threads.Post(context.Background(), principal, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "closed pool"})
-	assertOperational(t, err)
-	_, err = threads.List(context.Background(), principal, project.ID, task.ID, taskservice.ThreadListRequest{})
-	assertOperational(t, err)
 }
 
 func TestThreadPreCommitFailureExposesOnlyAvailableCandidateAttribution(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	threads := taskservice.NewTaskThreads(database)
-	task := createTask(t, tasks, principal, project.ID, "Rejected candidate")
-	if _, err := database.Pool.Exec(context.Background(), `CREATE FUNCTION refuse_thread_head() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'private head diagnostic'; END $$; CREATE TRIGGER refuse_thread_head BEFORE UPDATE ON task_threads FOR EACH ROW EXECUTE FUNCTION refuse_thread_head()`); err != nil {
-		t.Fatal(err)
-	}
-	document, err := threads.Post(context.Background(), principal, project.ID, task.ID, taskservice.CreateThreadMessage{Body: "private body"})
+	f := newThreadFailureFixture(t)
+	cause := errors.New("private head diagnostic")
+	f.thread.AdvanceHeadFn = func(context.Context, string, model.ThreadPosition) error { return cause }
+	f.capture.FreezeAudienceFn = nil
+	document, err := f.service.Post(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.CreateThreadMessage{Body: "private body"})
 	var attribution *taskservice.ThreadMessageError
-	if err == nil || document.JSON != nil || !errors.As(err, &attribution) || attribution.MessageID == "" || attribution.Execution != nil || strings.Contains(err.Error(), "private") {
+	if !errors.Is(err, cause) || document.JSON != nil || !errors.As(err, &attribution) || attribution.MessageID == "" || attribution.Execution != nil || strings.Contains(err.Error(), "private") || attribution.Outcome != store.TransactionNotCommitted {
 		t.Fatalf("failed attribution: %#v %v", attribution, err)
 	}
 	if _, parseErr := uuid.Parse(attribution.MessageID); parseErr != nil {
 		t.Fatal(parseErr)
 	}
-	var count int
-	if err := database.Pool.QueryRow(context.Background(), `SELECT count(*) FROM task_thread_messages WHERE task_id=$1`, task.ID).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("failed head left message: %d %v", count, err)
-	}
-	var pgErr interface{ SQLState() string }
-	if !errors.As(err, &pgErr) || pgErr.SQLState() != "P0001" {
-		t.Fatal("failure lost database error chain")
-	}
 }
 
 func TestThreadReadSnapshotKeepsAuthorizationMessagesAndSidesConsistent(t *testing.T) {
-	tasks, database, project, databaseURL, owner := taskService(t)
-	principal := workerMember(t, database, project.ID)
-	other := workerMember(t, database, project.ID)
-	threads := taskservice.NewTaskThreads(database)
-	task := createTask(t, tasks, owner, project.ID, "Snapshot consistency")
-	first := postThread(t, threads, principal, task, taskservice.CreateThreadMessage{Body: "in the authorized snapshot"})
-	interleaved := false
-	traced := tracedThreads(t, databaseURL, taskQueryAction{
-		match: func(sql string) bool { return strings.Contains(sql, "SELECT deleted_at FROM tasks") },
-		end: func() {
-			if interleaved {
-				return
-			}
-			interleaved = true
-			postThread(t, threads, principal, task, taskservice.CreateThreadMessage{Body: "committed after the snapshot"})
-			if err := tasks.Delete(context.Background(), principal, project.ID, task.ID, taskcore.DeleteTask{Version: task.Version}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID); err != nil {
-				t.Fatal(err)
-			}
-		},
-	})
-	page, err := traced.List(context.Background(), principal, project.ID, task.ID, taskservice.ThreadListRequest{})
-	if err != nil || !interleaved || len(page.Page.Items) != 1 || page.Page.Items[0].ID != first.Message.ID || page.Page.HasMoreBefore || page.Page.HasMoreAfter {
-		t.Fatalf("read mixed authorization/data/side snapshots: %#v %v", page.Page, err)
+	f := newThreadFailureFixture(t)
+	reads := 0
+	f.database.ReadSnapshotFn = func(_ context.Context, work func(store.SnapshotScope) error) error {
+		reads++
+		return work(f.snapshot)
 	}
-	_, err = threads.List(context.Background(), principal, project.ID, task.ID, taskservice.ThreadListRequest{})
+	presenceRead := false
+	f.taskRead.TaskPresenceFn = func(ctx context.Context, projectID, taskID string) (store.TaskPresence, error) {
+		if projectID != f.project.ID || taskID != f.task.ID {
+			t.Fatalf("presence scope: project=%s task=%s", projectID, taskID)
+		}
+		presenceRead = true
+		return store.TaskPresence{Found: true}, ctx.Err()
+	}
+	page, err := f.service.List(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.ThreadListRequest{})
+	if err != nil || reads != 1 || !presenceRead || len(page.Page.Items) != 1 || page.Page.Items[0].ID != f.message.ID || page.Page.HasMoreBefore || page.Page.HasMoreAfter {
+		t.Fatalf("snapshot handoff: reads=%d page=%+v error=%v", reads, page.Page, err)
+	}
+	f.projectRead.ProjectAccessFn = func(context.Context, model.Principal, string) (model.ProjectAccess, error) {
+		return model.ProjectAccess{}, model.ErrNotFound
+	}
+	f.taskRead.ThreadCandidatesFn = nil
+	_, err = f.service.List(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.ThreadListRequest{})
 	requireThreadFault(t, err, "forbidden")
-	_, err = threads.List(context.Background(), other, project.ID, task.ID, taskservice.ThreadListRequest{})
+	f.principal.UserID = "99999999-9999-4999-8999-999999999999"
+	f.projectRead.ProjectAccessFn = func(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
+		if principal != f.principal || projectID != f.project.ID {
+			t.Fatal("later snapshot changed principal or Project")
+		}
+		return taskMockAccess(f.project, f.principal), ctx.Err()
+	}
+	f.taskRead.TaskPresenceFn = func(context.Context, string, string) (store.TaskPresence, error) {
+		return store.TaskPresence{Found: true, DeletedAt: &f.task.UpdatedAt}, nil
+	}
+	_, err = f.service.List(t.Context(), f.principal, f.project.ID, f.task.ID, taskservice.ThreadListRequest{})
 	requireThreadFault(t, err, "task_deleted")
+	if reads != 3 {
+		t.Fatalf("each read needs its own snapshot: %d", reads)
+	}
 }

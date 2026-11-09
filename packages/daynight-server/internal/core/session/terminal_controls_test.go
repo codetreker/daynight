@@ -2,16 +2,17 @@ package session
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
-	"strings"
-	"testing"
-	"time"
 )
 
 func TestTerminalLeaseTransitionRequiresTheRequestedActorAndBoundedExpiry(t *testing.T) {
@@ -85,11 +86,12 @@ func TestTerminalInitialDispositionAcknowledgementKeepsAutomationSuspended(t *te
 
 type terminalControlFixture struct {
 	fixture
-	message v2.Message
-	binding v2.Binding
-	segment string
-	now     time.Time
-	browser string
+	message    v2.Message
+	binding    v2.Binding
+	segment    string
+	now        time.Time
+	browser    string
+	operations *terminalControlOperations
 }
 
 func terminalControlSetup(t *testing.T) *terminalControlFixture {
@@ -100,18 +102,31 @@ func terminalControlSetup(t *testing.T) *terminalControlFixture {
 	in := m.Payload.(v2.Registration)
 	x := &terminalControlFixture{fixture: f, message: m, binding: in.Binding, segment: uuid.NewString(), now: now, browser: uuid.NewString()}
 	f.s.now = func() time.Time { return x.now }
-	if _, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, m); err != nil {
+	x.operations = newTerminalControlOperations(t, x)
+	if _, err := terminalRegistrationStep(t, f, m.SessionID, func() (v2.Message, error) {
+		return terminalControlCall(f, f.TerminalRegistrationPhase(context.Background(), map[string]int{"InsertTerminal": 1}), func(ctx context.Context) (v2.Message, error) {
+			return f.s.RegisterTerminal(ctx, f.p, f.project, f.task, m)
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	run := v2.Run{ExecutionGeneration: "1", Owner: in.Owner, Binding: in.Binding, StartedAt: terminalTime(now), SegmentIDs: []string{x.segment}}
 	m.Type = "generation_ledger"
 	m.Payload = v2.GenerationLedger{Runs: []v2.Run{run}}
-	if _, err := f.s.UpdateTerminalLedger(context.Background(), f.p, f.project, f.task, m.SessionID, "1", m); err != nil {
+	if _, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+		return terminalControlCall(f, f.TerminalPhase(context.Background(), true, map[string]int{"SaveTerminal": 1}), func(ctx context.Context) (v2.Message, error) {
+			return f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, m.SessionID, "1", m)
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	m.Type = "recording_responsibility"
 	m.Payload = v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}
-	if _, err := f.s.UpdateTerminalRecording(context.Background(), f.p, f.project, f.task, m.SessionID, "1", m); err != nil {
+	if _, err := terminalRecordStep(t, f, func() (v2.Message, error) {
+		return terminalControlCall(f, f.TerminalPhase(context.Background(), true, map[string]int{"SaveTerminal": 1}), func(ctx context.Context) (v2.Message, error) {
+			return f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, m.SessionID, "1", m)
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	x.worker(t, "1", x.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}))
@@ -121,36 +136,150 @@ func (f *terminalControlFixture) msg(kind string, payload v2.Payload) v2.Message
 	m := f.message
 	m.Type = kind
 	m.Payload = payload
+	switch p := payload.(type) {
+	case v2.ControlRequest:
+		f.operations.expect(p.OperationID)
+	case v2.Operation:
+		f.operations.expect(p.OperationID)
+	}
 	return m
 }
 func (f *terminalControlFixture) worker(t *testing.T, epoch string, m v2.Message) v2.Message {
 	t.Helper()
-	out, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, epoch, m)
+	return f.workerWith(t, epoch, m, nil)
+}
+func (f *terminalControlFixture) workerWith(t *testing.T, epoch string, m v2.Message, overrides map[string]int) v2.Message {
+	t.Helper()
+	f.operations.resetWrites()
+	f.terminal.ProposedRaw = nil
+	work := f.workerPhaseCounts(t, m)
+	phase := f.TerminalPhase(context.Background(), m.Type == "control_ack" || m.Type == "operation_result", mergeFixtureCounts(work, overrides))
+	out, err := terminalControlCall(f.fixture, phase, func(ctx context.Context) (v2.Message, error) {
+		return f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, m.SessionID, epoch, m)
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	f.operations.checkRequired()
+	terminalNext(t, f.fixture)
+	switch payload := m.Payload.(type) {
+	case v2.ControlAck:
+		if len(f.operations.results) > 1 {
+			t.Fatal("acknowledgement wrote extra operation results")
+		}
+		if len(f.operations.results) == 1 {
+			f.operations.resultInput(payload.Result.OperationID)
+		}
+		f.operations.pending = false
+		f.operations.viewerPending = false
+	case v2.OperationResult:
+		if len(f.operations.results) > 1 {
+			t.Fatal("worker result wrote extra operation results")
+		}
+		if len(f.operations.results) == 1 {
+			f.operations.resultInput(payload.OperationID)
+		}
+		f.operations.pending = false
+		f.operations.viewerPending = false
 	}
 	return out
 }
 func (f *terminalControlFixture) submit(t *testing.T, m v2.Message) v2.Message {
 	t.Helper()
-	out, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, m.SessionID, f.browser, m)
+	return f.submitBy(t, f.p, m)
+}
+func (f *terminalControlFixture) submitBy(t *testing.T, principal model.Principal, m v2.Message) v2.Message {
+	t.Helper()
+	f.operations.resetWrites()
+	f.terminal.ProposedRaw = nil
+	_, operationID := terminalSummary(m)
+	old := f.operations.fact(operationID).value
+	work := map[string]int{"TerminalOperation": 1}
+	if old == nil {
+		work = mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1, "TerminalInputPending": 1, "InsertTerminalOperation": 1, "SaveTerminal": 1})
+	}
+	phase := f.TerminalPhase(context.Background(), false, work)
+	out, err := terminalControlCall(f.fixture, phase, func(ctx context.Context) (v2.Message, error) {
+		return f.s.SubmitTerminal(ctx, principal, f.project, f.task, m.SessionID, f.browser, m)
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	f.operations.checkRequired()
+	if old == nil {
+		if out.Payload.(v2.OperationResult).State != "queued" {
+			t.Fatal("new submission did not return queued")
+		}
+		if len(f.operations.inserted) != 1 || f.operations.inserted[0].Actor != principal {
+			t.Fatal("submission did not retain its original actor")
+		}
+		f.operations.insertedInput(operationID)
+		terminalNext(t, f.fixture)
+		f.operations.queued = append(f.operations.queued, operationID)
+		f.operations.pending = true
+		f.operations.viewerPending = true
+	} else if len(f.operations.inserted) != 0 {
+		t.Fatal("idempotent submission attempted a new ledger write")
 	}
 	return out
 }
 func (f *terminalControlFixture) poll(t *testing.T, epoch string) []v2.Message {
 	t.Helper()
-	out, err := f.s.PollTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, epoch)
+	return f.pollWith(t, epoch, len(f.operations.queued))
+}
+func (f *terminalControlFixture) pollWith(t *testing.T, epoch string, wantOffers int) []v2.Message {
+	t.Helper()
+	return f.pollCounts(t, epoch, wantOffers, nil)
+}
+func (f *terminalControlFixture) pollCounts(t *testing.T, epoch string, wantOffers int, overrides map[string]int) []v2.Message {
+	t.Helper()
+	queued := append([]string(nil), f.operations.queued...)
+	f.operations.resetWrites()
+	f.terminal.ProposedRaw = nil
+	work := f.refreshPhaseCounts(t)
+	credentialCalls, projectCalls := 1, 1
+	if count, ok := work["LockCredential"]; ok {
+		credentialCalls = count
+	}
+	if count, ok := work["ProjectAccess"]; ok {
+		projectCalls = count
+	}
+	work = mergeFixtureCounts(work, map[string]int{"QueuedTerminalOperation": 1, "TerminalOperation": len(queued), "SetTerminalOperationResult": len(queued), "SetSessionOperationEpoch": wantOffers, "SaveTerminal": 1, "LockCredential": credentialCalls + len(queued), "ProjectAccess": projectCalls + len(queued)})
+	phase := f.TerminalPhase(context.Background(), false, mergeFixtureCounts(work, overrides))
+	out, err := terminalControlCall(f.fixture, phase, func(ctx context.Context) ([]v2.Message, error) {
+		return f.s.PollTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, epoch)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.operations.checkRequired()
+	if len(out) != wantOffers || len(f.operations.results) != len(queued) || len(f.operations.epochs) != wantOffers {
+		t.Fatal("poll wrote an unexpected number of operation outcomes or dispatch epochs")
+	}
+	for _, operationID := range queued {
+		result := f.operations.resultWrite(operationID)
+		if result.State == "dispatching" {
+			f.operations.dispatchInput(operationID)
+		} else if result.State == "rejected" {
+			f.operations.resultInput(operationID)
+		} else {
+			t.Fatal("unexpected poll result", result)
+		}
+	}
+	terminalNext(t, f.fixture)
+	f.operations.queued = nil
+	f.operations.pending = wantOffers > 0
+	f.operations.viewerPending = wantOffers > 0
 	return out
 }
 func (f *terminalControlFixture) control(t *testing.T) *v2.ControlState {
 	t.Helper()
+	f.operations.checkRequired()
 	var out *v2.ControlState
-	err := f.s.terminalAccess(context.Background(), f.p, f.project, f.task, f.message.SessionID, false, func(_ *operationTx, r *terminalRecord, _ task, _ bool) error { out = r.Control; return nil })
+	phase := f.TerminalPhase(context.Background(), false, nil)
+	_, err := terminalControlCall(f.fixture, phase, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, f.s.terminalAccess(ctx, f.p, f.project, f.task, f.message.SessionID, false, func(_ *operationTx, r *terminalRecord, _ task, _ bool) error { out = r.Control; return nil })
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +309,11 @@ func TestTerminalClosedStateSurvivesDisconnectAndReconnect(t *testing.T) {
 			f := terminalControlSetup(t)
 			ctx := context.Background()
 			f.worker(t, "1", f.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: state, InitialAssignment: "transport_completed", AvailableActions: []string{}}))
-			if err := f.s.DisconnectTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+			if err := terminalErrorStep(t, f.fixture, func() error {
+				return terminalControlInputError(f, f.fixture.TerminalPhase(ctx, true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 2}), func(phaseCtx context.Context) error {
+					return f.s.DisconnectTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1")
+				})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if got := f.control(t); got.State != state {
@@ -190,7 +323,11 @@ func TestTerminalClosedStateSurvivesDisconnectAndReconnect(t *testing.T) {
 			registration.Mode = "reconnect"
 			epoch := "1"
 			registration.ConnectionEpoch = &epoch
-			if _, err := f.s.RegisterTerminal(ctx, f.p, f.project, f.task, f.msg("registration", registration)); err != nil {
+			if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalRegistrationPhase(ctx, map[string]int{"LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+					return f.s.RegisterTerminal(phaseCtx, f.p, f.project, f.task, f.msg("registration", registration))
+				})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if got := f.control(t); got.State != state {
@@ -198,7 +335,11 @@ func TestTerminalClosedStateSurvivesDisconnectAndReconnect(t *testing.T) {
 			}
 			for _, target := range []string{"suspended", "automation"} {
 				m := f.msg("control_state", v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "4", State: target, InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}})
-				if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, f.message.SessionID, "2", m); err == nil {
+				if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+					return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, f.refreshPhaseCounts(t)), func(phaseCtx context.Context) (v2.Message, error) {
+						return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "2", m)
+					})
+				}); err == nil {
 					t.Fatalf("%s reopened as %s", state, target)
 				}
 			}
@@ -209,7 +350,11 @@ func TestTerminalClosedStateSurvivesDisconnectAndReconnect(t *testing.T) {
 func TestTerminalControlEpochExhaustionClosesWithoutOverflow(t *testing.T) {
 	f := terminalControlSetup(t)
 	f.worker(t, "1", f.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "9223372036854775807", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{}}))
-	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 2}), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1")
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	got := f.control(t)
@@ -245,13 +390,17 @@ func TestTerminalFinalizationFencesDelayedCommittedSnapshot(t *testing.T) {
 	x := terminalControlSetup(t)
 	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: x.segment, SegmentOrdinal: "1", Binding: x.binding, Recorded: true, Frame: v2.Frame{FrameSeq: "1", CapturedAt: terminalTime(x.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "private"}}}}}
 	x.worker(t, "1", x.msg("snapshot", snapshot))
-	err = x.s.terminalAccess(context.Background(), x.p, x.project, x.task, x.message.SessionID, false, func(_ *operationTx, r *terminalRecord, _ task, _ bool) error {
-		finalID := uuid.NewString()
-		r.FinalizationID = &finalID
-		if x.s.terminalSnapshot(r) != nil {
-			t.Fatal("finalized record exposed cached frame")
-		}
-		return nil
+	err = terminalErrorStep(t, x.fixture, func() error {
+		return terminalControlInputError(x, x.fixture.TerminalPhase(context.Background(), false, nil), func(phaseCtx context.Context) error {
+			return x.s.terminalAccess(phaseCtx, x.p, x.project, x.task, x.message.SessionID, false, func(_ *operationTx, r *terminalRecord, _ task, _ bool) error {
+				finalID := uuid.NewString()
+				r.FinalizationID = &finalID
+				if x.s.terminalSnapshot(r) != nil {
+					t.Fatal("finalized record exposed cached frame")
+				}
+				return nil
+			})
+		})
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -310,21 +459,26 @@ func TestTerminalFrameOrderingSurvivesDelayedPublication(t *testing.T) {
 	}
 	older := snapshot
 	older.Frame.FrameSeq = "1"
-	if _, err = f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, "1", f.msg("snapshot", older)); err == nil {
+	if _, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, f.refreshPhaseCounts(t)), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, m.SessionID, "1", f.msg("snapshot", older))
+		})
+	}); err == nil {
 		t.Fatal("older frame replaced a committed unpublished frame")
 	}
 	publish()
 	f.s.forgetTerminalSnapshot(m.SessionID)
 	changed := snapshot
 	changed.Frame.Width = 2
-	if _, err = f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, "1", f.msg("snapshot", changed)); err == nil {
+	if _, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, f.refreshPhaseCounts(t)), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, m.SessionID, "1", f.msg("snapshot", changed))
+		})
+	}); err == nil {
 		t.Fatal("conflicting duplicate accepted after cache loss")
 	}
 	f.worker(t, "1", m)
-	var persisted string
-	if err := f.db.Pool.QueryRow(context.Background(), `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, m.SessionID).Scan(&persisted); err != nil {
-		t.Fatal(err)
-	}
+	persisted := string(f.terminal.Raw)
 	if strings.Contains(persisted, "newest private screen") {
 		t.Fatal("frame content persisted with ordering metadata")
 	}
@@ -332,13 +486,21 @@ func TestTerminalFrameOrderingSurvivesDelayedPublication(t *testing.T) {
 	registration.Mode = "reconnect"
 	epoch := "1"
 	registration.ConnectionEpoch = &epoch
-	if _, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, f.msg("registration", registration)); err != nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalRegistrationPhase(context.Background(), map[string]int{"LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.RegisterTerminal(phaseCtx, f.p, f.project, f.task, f.msg("registration", registration))
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot.ConnectionEpoch = "2"
 	f.worker(t, "2", f.msg("snapshot", snapshot))
 	older.ConnectionEpoch = "2"
-	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, "2", f.msg("snapshot", older)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, f.refreshPhaseCounts(t)), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, m.SessionID, "2", f.msg("snapshot", older))
+		})
+	}); err == nil {
 		t.Fatal("reconnect reset the current segment's frame order")
 	}
 }
@@ -368,10 +530,12 @@ func TestTerminalRevokedWorkerDisconnectStillReleasesPreview(t *testing.T) {
 	f := terminalControlSetup(t)
 	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: f.segment, SegmentOrdinal: "1", Binding: f.binding, Recorded: true, Frame: v2.Frame{FrameSeq: "1", CapturedAt: terminalTime(f.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "private screen"}}}}}
 	f.worker(t, "1", f.msg("snapshot", snapshot))
-	if _, err := f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err == nil {
+	revokeFixtureCredential(t, f.fixture, f.p)
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), true, map[string]int{"ProjectAccess": 0, "LockTerminal": 0}), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1")
+		})
+	}); err == nil {
 		t.Fatal("revoked principal unexpectedly retained database permission")
 	}
 	if len(f.s.terminalFrames) != 0 {
@@ -455,24 +619,30 @@ func TestTerminalOldDisconnectCannotClearNewPreviewOrPendingWrite(t *testing.T) 
 func TestTerminalDelayedSuspensionCleanupPreservesNewCommandBody(t *testing.T) {
 	f := terminalControlSetup(t)
 	lease := f.acquire(t)
-	f.submit(t, f.input(lease, "1", "old input"))
+	input := f.input(lease, "1", "old input")
+	f.submit(t, input)
+	f.operations.whenInvalidated(input.Payload.(v2.Operation).OperationID, "rejected", "stale_fence")
 	ctx := context.Background()
 	op, err := f.s.BeginOperation()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer op.Close()
-	completion, err := f.db.WriteSession(ctx, func(scope store.SessionScope) error {
-		tx := &operationTx{dao: scope.SessionDAO(), bot: scope.BotDAO(), op: op}
-		r, err := loadTerminal(ctx, tx, f.message.SessionID)
-		if err != nil {
-			return err
-		}
-		return f.s.suspendTerminal(ctx, tx, r)
+	completion, err := terminalControlInputCall(f, f.fixture.dao.ContextPhase(ctx, map[string]int{"LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (store.Completion, error) {
+		return f.writer.WriteSession(phaseCtx, func(scope store.SessionScope) error {
+			tx := &operationTx{dao: scope.SessionDAO(), bot: scope.BotDAO(), op: op}
+			r, err := loadTerminal(phaseCtx, tx, f.message.SessionID)
+			if err != nil {
+				return err
+			}
+			return f.s.suspendTerminal(phaseCtx, tx, r)
+		})
 	})
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("suspension: %v %v", completion, err)
 	}
+	f.operations.checkRequired()
+	terminalNext(t, f.fixture)
 	// The new connection writes after the row lock is released and before the committed cleanup runs.
 	newID := uuid.NewString()
 	if err = storeTerminalTestBody(f.s, f.message.SessionID, newID, []byte("new input")); err != nil {
@@ -503,19 +673,19 @@ func TestTerminalExpiredBodySlotsPermitNewSubmission(t *testing.T) {
 
 func TestTerminalRevokedWorkerDisconnectReleasesQueuedBody(t *testing.T) {
 	f := terminalControlSetup(t)
-	actor := terminalOtherActor(t, f)
+	actor := listCredential(t, f.fixture, f.p.UserID, model.PATCredential)
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
-	if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err == nil {
+	f.submitBy(t, actor, f.msg("control_request", req))
+	revokeFixtureCredential(t, f.fixture, f.p)
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), true, map[string]int{"ProjectAccess": 0, "LockTerminal": 0}), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1")
+		})
+	}); err == nil {
 		t.Fatal("revoked principal retained database permission")
 	}
 	if len(f.s.terminalPending) != 0 {
-		t.Fatal("revoked original connection retained admin-submitted body")
+		t.Fatal("revoked original connection retained queued body")
 	}
 }
 
@@ -524,10 +694,7 @@ func TestTerminalBodyDeadlineMatchesLedgerAndRetainsUnexpiredInput(t *testing.T)
 	f.now = f.now.Add(123 * time.Nanosecond)
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 	f.submit(t, f.msg("control_request", req))
-	var deadline time.Time
-	if err := f.db.Pool.QueryRow(context.Background(), `SELECT deadline FROM session_operations WHERE session_id=$1 AND operation_id=$2`, f.message.SessionID, req.OperationID).Scan(&deadline); err != nil {
-		t.Fatal(err)
-	}
+	deadline := f.operations.operation(req.OperationID).Deadline
 	if !f.s.terminalPending[f.message.SessionID][req.OperationID].deadline.Equal(deadline) {
 		t.Fatal("cache deadline differs from durable deadline")
 	}
@@ -539,10 +706,15 @@ func TestTerminalBodyDeadlineMatchesLedgerAndRetainsUnexpiredInput(t *testing.T)
 	if len(f.s.terminalBody(f.message.SessionID, req.OperationID)) != 0 || len(f.s.terminalPending) != 0 {
 		t.Fatal("expired body was readable or retained its quota")
 	}
-	if offered := f.poll(t, "1"); len(offered) != 0 {
+	f.operations.whenExpired(req.OperationID, "rejected", "input_busy")
+	if offered := f.pollWith(t, "1", 0); len(offered) != 0 {
 		t.Fatal("expired body was dispatched", offered)
 	}
-	result, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+	result, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+		})
+	})
 	if err != nil || result.Payload.(v2.OperationResult).State != "rejected" {
 		t.Fatal("expiry did not retain durable rejection", result, err)
 	}
@@ -571,7 +743,12 @@ func TestTerminalDeadlineObservationReclaimsExpiredBody(t *testing.T) {
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 	f.submit(t, f.msg("control_request", req))
 	f.now = f.now.Add(time.Duration(v2.InputTimeoutMillis) * time.Millisecond)
-	got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+	f.operations.whenExpired(req.OperationID, "rejected", "input_busy")
+	got, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+		})
+	})
 	if err != nil || got.Payload.(v2.OperationResult).State != "rejected" {
 		t.Fatal(got, err)
 	}
@@ -587,17 +764,19 @@ func TestTerminalRolledBackBodyCleanupCannotDeleteSuccessfulSameIDRetry(t *testi
 	m := f.msg("control_request", req)
 	var cancelFailedWrite func()
 	rollback := errors.New("test rollback")
-	completion, err := f.db.WriteSession(ctx, func(scope store.SessionScope) error {
-		tx := &operationTx{dao: scope.SessionDAO(), bot: scope.BotDAO(), op: &Operation{}}
-		r, err := loadTerminal(ctx, tx, m.SessionID)
-		if err != nil {
-			return err
-		}
-		cancelFailedWrite, err = f.s.storeTerminalBody(r, req.OperationID, encode(m), f.now.Add(time.Duration(v2.InputTimeoutMillis)*time.Millisecond))
-		if err != nil {
-			return err
-		}
-		return rollback
+	completion, err := terminalControlInputCall(f, f.fixture.dao.ContextPhase(ctx, map[string]int{"LockTerminal": 1}), func(phaseCtx context.Context) (store.Completion, error) {
+		return f.writer.WriteSession(phaseCtx, func(scope store.SessionScope) error {
+			tx := &operationTx{dao: scope.SessionDAO(), bot: scope.BotDAO(), op: &Operation{}}
+			r, err := loadTerminal(phaseCtx, tx, m.SessionID)
+			if err != nil {
+				return err
+			}
+			cancelFailedWrite, err = f.s.storeTerminalBody(r, req.OperationID, encode(m), f.now.Add(time.Duration(v2.InputTimeoutMillis)*time.Millisecond))
+			if err != nil {
+				return err
+			}
+			return rollback
+		})
 	})
 	if !errors.Is(err, rollback) || completion.Outcome != store.TransactionNotCommitted {
 		t.Fatalf("rollback: %v %v", completion, err)
@@ -609,7 +788,7 @@ func TestTerminalRolledBackBodyCleanupCannotDeleteSuccessfulSameIDRetry(t *testi
 	if offered := f.poll(t, "1"); len(offered) != 1 || offered[0].Payload.(v2.ControlDispatch).Request.OperationID != req.OperationID {
 		t.Fatal("rollback cleanup deleted the successfully retried body", offered)
 	}
-	if offered := f.poll(t, "1"); len(offered) != 0 {
+	if offered := f.pollWith(t, "1", 0); len(offered) != 0 {
 		t.Fatal("successful retry was replayed", offered)
 	}
 }
@@ -619,16 +798,18 @@ func TestTerminalSuspensionOfRolledBackBodyCannotDeleteSameIDRetry(t *testing.T)
 	ctx := context.Background()
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 	rollback := errors.New("test rollback")
-	completion, err := f.db.WriteSession(ctx, func(scope store.SessionScope) error {
-		tx := &operationTx{dao: scope.SessionDAO(), bot: scope.BotDAO(), op: &Operation{}}
-		r, err := loadTerminal(ctx, tx, f.message.SessionID)
-		if err != nil {
-			return err
-		}
-		if _, err = f.s.storeTerminalBody(r, req.OperationID, encode(f.msg("control_request", req)), f.now.Add(time.Second)); err != nil {
-			return err
-		}
-		return rollback
+	completion, err := terminalControlInputCall(f, f.fixture.dao.ContextPhase(ctx, map[string]int{"LockTerminal": 1}), func(phaseCtx context.Context) (store.Completion, error) {
+		return f.writer.WriteSession(phaseCtx, func(scope store.SessionScope) error {
+			tx := &operationTx{dao: scope.SessionDAO(), bot: scope.BotDAO(), op: &Operation{}}
+			r, err := loadTerminal(phaseCtx, tx, f.message.SessionID)
+			if err != nil {
+				return err
+			}
+			if _, err = f.s.storeTerminalBody(r, req.OperationID, encode(f.msg("control_request", req)), f.now.Add(time.Second)); err != nil {
+				return err
+			}
+			return rollback
+		})
 	})
 	if !errors.Is(err, rollback) || completion.Outcome != store.TransactionNotCommitted {
 		t.Fatalf("rollback: %v %v", completion, err)
@@ -639,17 +820,21 @@ func TestTerminalSuspensionOfRolledBackBodyCannotDeleteSameIDRetry(t *testing.T)
 		t.Fatal(err)
 	}
 	defer op.Close()
-	completion, err = f.db.WriteSession(ctx, func(scope store.SessionScope) error {
-		tx := &operationTx{dao: scope.SessionDAO(), bot: scope.BotDAO(), op: op}
-		r, err := loadTerminal(ctx, tx, f.message.SessionID)
-		if err != nil {
-			return err
-		}
-		return f.s.suspendTerminal(ctx, tx, r)
+	completion, err = terminalControlInputCall(f, f.fixture.dao.ContextPhase(ctx, map[string]int{"LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (store.Completion, error) {
+		return f.writer.WriteSession(phaseCtx, func(scope store.SessionScope) error {
+			tx := &operationTx{dao: scope.SessionDAO(), bot: scope.BotDAO(), op: op}
+			r, err := loadTerminal(phaseCtx, tx, f.message.SessionID)
+			if err != nil {
+				return err
+			}
+			return f.s.suspendTerminal(phaseCtx, tx, r)
+		})
 	})
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("suspension: %v %v", completion, err)
 	}
+	f.operations.checkRequired()
+	terminalNext(t, f.fixture)
 	f.worker(t, "1", f.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}))
 	req.ControlEpoch = "2"
 	f.submit(t, f.msg("control_request", req))
@@ -662,20 +847,28 @@ func TestTerminalSuspensionOfRolledBackBodyCannotDeleteSameIDRetry(t *testing.T)
 func TestTerminalFailedInsertCancelsItsBodyAndPermitsRetry(t *testing.T) {
 	f := terminalControlSetup(t)
 	ctx := context.Background()
-	if _, err := f.db.Pool.Exec(ctx, `CREATE FUNCTION reject_terminal_operation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'operation insert refused'; END $$; CREATE TRIGGER reject_terminal_operation BEFORE INSERT ON session_operations FOR EACH ROW EXECUTE FUNCTION reject_terminal_operation()`); err != nil {
-		t.Fatal(err)
-	}
+	insert := f.dao.InsertTerminalOperationFn
+	injected := errors.New("operation insert refused")
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	f.dao.Expect("InsertTerminalOperation", 2)
+	f.dao.InsertTerminalOperationFn = func(_ context.Context, in store.TerminalOperation) error {
+		if in.SessionID != f.message.SessionID || in.OperationID != req.OperationID || in.Actor != f.p {
+			t.Fatal("failed insertion used unexpected Session, operation or actor")
+		}
+		return injected
+	}
 	m := f.msg("control_request", req)
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, m.SessionID, f.browser, m); err == nil {
-		t.Fatal("injected insert failure unexpectedly committed")
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalOperation": 1, "ExpireTerminalOperations": 1, "TerminalInputPending": 1, "InsertTerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, m.SessionID, f.browser, m)
+		})
+	}); !errors.Is(err, injected) {
+		t.Fatal("insert error chain was not preserved", err)
 	}
 	if len(f.s.terminalPending) != 0 {
 		t.Fatal("failed insert retained its body reservation")
 	}
-	if _, err := f.db.Pool.Exec(ctx, `DROP TRIGGER reject_terminal_operation ON session_operations; DROP FUNCTION reject_terminal_operation()`); err != nil {
-		t.Fatal(err)
-	}
+	f.dao.InsertTerminalOperationFn = insert
 	f.submit(t, m)
 	if offered := f.poll(t, "1"); len(offered) != 1 {
 		t.Fatal("same-ID retry after failure was not dispatched", offered)
@@ -693,28 +886,38 @@ func TestTerminalForeignHealthyRelayCannotRevokeControlOrPendingOperation(t *tes
 				if dispatched {
 					f.poll(t, "1")
 				}
-				other := New(f.db)
+				other := New(f.writer)
 				other.now = f.s.now
 				ctx := context.Background()
-				var before string
-				if err := f.db.Pool.QueryRow(ctx, `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, input.SessionID).Scan(&before); err != nil {
-					t.Fatal(err)
-				}
+				before := string(f.terminal.Raw)
 				var err error
 				switch endpoint {
 				case "current":
-					_, err = other.CurrentTerminal(ctx, f.p, f.project, f.task)
+					_, err = terminalStateStep(t, f.fixture, func() (map[string]any, error) {
+						return terminalControlInputCall(f, f.fixture.TaskPhase(ctx, map[string]int{"CurrentTerminalSession": 1, "LockTerminal": 1}), func(phaseCtx context.Context) (map[string]any, error) {
+							return other.CurrentTerminal(phaseCtx, f.p, f.project, f.task)
+						})
+					})
 				case "state":
-					_, err = other.TerminalState(ctx, f.p, f.project, f.task, input.SessionID)
+					_, err = terminalStateStep(t, f.fixture, func() (map[string]any, error) {
+						return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, nil), func(phaseCtx context.Context) (map[string]any, error) {
+							return other.TerminalState(phaseCtx, f.p, f.project, f.task, input.SessionID)
+						})
+					})
 				case "operation":
-					_, err = other.TerminalOperation(ctx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+					_, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+						return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, nil), func(phaseCtx context.Context) (v2.Message, error) {
+							return other.TerminalOperation(phaseCtx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+						})
+					})
 				case "submit":
-					_, err = other.SubmitTerminal(ctx, f.p, f.project, f.task, input.SessionID, f.browser, f.input(lease, "2", "wrong relay"))
+					_, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+						return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+							return other.SubmitTerminal(phaseCtx, f.p, f.project, f.task, input.SessionID, f.browser, f.input(lease, "2", "wrong relay"))
+						})
+					})
 				}
-				var after string
-				if readErr := f.db.Pool.QueryRow(ctx, `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, input.SessionID).Scan(&after); readErr != nil {
-					t.Fatal(readErr)
-				}
+				after := string(f.terminal.Raw)
 				if before != after {
 					t.Fatal("foreign relay mutated healthy original control state")
 				}
@@ -722,7 +925,11 @@ func TestTerminalForeignHealthyRelayCannotRevokeControlOrPendingOperation(t *tes
 				if !errors.As(err, &refusal) || refusal.Code != "relay_instance_unavailable" {
 					t.Fatalf("missing explicit relay routing refusal: %v", err)
 				}
-				got, readErr := f.s.TerminalOperation(ctx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+				got, readErr := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+					return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+						return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+					})
+				})
 				want := map[bool]string{false: "queued", true: "dispatching"}[dispatched]
 				if readErr != nil || got.Payload.(v2.OperationResult).State != want {
 					t.Fatal("foreign request changed original operation", got, readErr)
@@ -743,13 +950,17 @@ func TestTerminalForeignRelaySuspendsOnlyAfterHeartbeatLossOrClaimEnd(t *testing
 			input := f.input(lease, "1", "pending when owner ends")
 			f.submit(t, input)
 			f.poll(t, "1")
-			other := New(f.db)
+			other := New(f.writer)
 			other.now, other.Origin = f.s.now, f.s.Origin
 			registration := f.message.Payload.(v2.Registration)
 			registration.Mode = "reconnect"
 			epoch := "1"
 			registration.ConnectionEpoch = &epoch
-			_, err := other.RegisterTerminal(context.Background(), f.p, f.project, f.task, f.msg("registration", registration))
+			_, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalRegistrationPhase(context.Background(), map[string]int{"LockTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+					return other.RegisterTerminal(phaseCtx, f.p, f.project, f.task, f.msg("registration", registration))
+				})
+			})
 			var refusal *model.Fault
 			if !errors.As(err, &refusal) || refusal.Code != "input_busy" {
 				t.Fatalf("healthy foreign registration bypassed existing owner: %v", err)
@@ -759,13 +970,22 @@ func TestTerminalForeignRelaySuspendsOnlyAfterHeartbeatLossOrClaimEnd(t *testing
 			} else {
 				archiveTerminal(t, f.fixture)
 			}
-			if _, err := other.TerminalState(context.Background(), f.p, f.project, f.task, input.SessionID); err != nil {
+			f.operations.whenInvalidated(input.Payload.(v2.Operation).OperationID, "unknown", "input_unknown")
+			if _, err := terminalStateStep(t, f.fixture, func() (map[string]any, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1, "TerminalArchive": 1}), func(phaseCtx context.Context) (map[string]any, error) {
+					return other.TerminalState(phaseCtx, f.p, f.project, f.task, input.SessionID)
+				})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if control := f.control(t); control.State != "suspended" || control.Lease != nil || control.ControlEpoch != "3" {
 				t.Fatal("lost owner retained manual control", control)
 			}
-			got, err := other.TerminalOperation(context.Background(), f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+			got, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "TerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+					return other.TerminalOperation(phaseCtx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+				})
+			})
 			if err != nil || got.Payload.(v2.OperationResult).State != "unknown" {
 				t.Fatal("lost owner dispatch did not remain unknown", got, err)
 			}
@@ -781,7 +1001,7 @@ func TestTerminalOldViewerCannotRevokeReconnectedWorkerControl(t *testing.T) {
 				f.acquire(t)
 				original := f.s
 				if differentInstance {
-					f.s = New(f.db)
+					f.s = New(f.writer)
 					f.s.now, f.s.Origin = original.now, original.Origin
 				}
 				f.now = f.now.Add(HeartbeatTimeout + time.Second)
@@ -789,7 +1009,11 @@ func TestTerminalOldViewerCannotRevokeReconnectedWorkerControl(t *testing.T) {
 				reg.Mode = "reconnect"
 				previous := "1"
 				reg.ConnectionEpoch = &previous
-				if _, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, f.msg("registration", reg)); err != nil {
+				if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+					return terminalControlInputCall(f, f.fixture.TerminalRegistrationPhase(context.Background(), map[string]int{"LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+						return f.s.RegisterTerminal(phaseCtx, f.p, f.project, f.task, f.msg("registration", reg))
+					})
+				}); err != nil {
 					t.Fatal(err)
 				}
 				f.worker(t, "2", f.msg("control_state", v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "2", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}))
@@ -806,28 +1030,40 @@ func TestTerminalOldViewerCannotRevokeReconnectedWorkerControl(t *testing.T) {
 					f.submit(t, f.msg("operation", input))
 					opID = input.OperationID
 				}
-				var before, after string
 				ctx := context.Background()
-				if err := f.db.Pool.QueryRow(ctx, `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, f.message.SessionID).Scan(&before); err != nil {
+				before := string(f.terminal.Raw)
+				if err := terminalErrorStep(t, f.fixture, func() error {
+					return terminalControlInputError(f, f.fixture.TerminalPhase(ctx, false, nil), func(phaseCtx context.Context) error {
+						return original.DisconnectTerminalViewer(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1")
+					})
+				}); err != nil {
 					t.Fatal(err)
 				}
-				if err := original.DisconnectTerminalViewer(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1"); err != nil {
-					t.Fatal(err)
-				}
-				if err := f.db.Pool.QueryRow(ctx, `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, f.message.SessionID).Scan(&after); err != nil {
-					t.Fatal(err)
-				}
+				after := string(f.terminal.Raw)
 				if before != after {
 					t.Fatal("old viewer revoked reconnected Worker state")
 				}
-				got, err := f.s.TerminalOperation(ctx, f.p, f.project, f.task, f.message.SessionID, opID)
+				got, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+					return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+						return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, f.message.SessionID, opID)
+					})
+				})
 				if err != nil || got.Payload.(v2.OperationResult).State != "queued" {
 					t.Fatal("old viewer rejected the new operation", got, err)
 				}
-				if err := f.s.DisconnectTerminalViewer(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "2"); err != nil {
+				f.operations.whenInvalidated(opID, "rejected", "stale_fence")
+				if err := terminalErrorStep(t, f.fixture, func() error {
+					return terminalControlInputError(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalViewerOperationPending": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) error {
+						return f.s.DisconnectTerminalViewer(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "2")
+					})
+				}); err != nil {
 					t.Fatal(err)
 				}
-				got, err = f.s.TerminalOperation(ctx, f.p, f.project, f.task, f.message.SessionID, opID)
+				got, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+					return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+						return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, f.message.SessionID, opID)
+					})
+				})
 				if err != nil || got.Payload.(v2.OperationResult).State != "rejected" {
 					t.Fatal("current viewer did not release its operation", got, err)
 				}
@@ -846,7 +1082,11 @@ func TestTerminalViewerStillReleasesLeaseAfterSameConnectionGenerationAdvance(t 
 	binding.NativeSessionID = &nativeID
 	f.worker(t, "1", f.msg("snapshot", v2.Snapshot{ConnectionEpoch: "1", SegmentID: f.segment, SegmentOrdinal: "1", Binding: binding, Recorded: true, Frame: v2.Frame{FrameSeq: "1", CapturedAt: terminalTime(f.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "observed"}}}}}))
 	var run v2.Run
-	if err := f.s.terminalAccess(ctx, f.p, f.project, f.task, f.message.SessionID, false, func(_ *operationTx, r *terminalRecord, _ task, _ bool) error { run = r.Runs[0]; return nil }); err != nil {
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(ctx, false, nil), func(phaseCtx context.Context) error {
+			return f.s.terminalAccess(phaseCtx, f.p, f.project, f.task, f.message.SessionID, false, func(_ *operationTx, r *terminalRecord, _ task, _ bool) error { run = r.Runs[0]; return nil })
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	stopped := terminalTime(f.now)
@@ -854,15 +1094,27 @@ func TestTerminalViewerStillReleasesLeaseAfterSameConnectionGenerationAdvance(t 
 	run.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: binding, BootID: "boot", StoppedAt: stopped, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent", BootID: "boot"}}}
 	f.message.ExecutionGeneration = "2"
 	newRun := v2.Run{ExecutionGeneration: "2", Owner: run.Owner, Binding: binding, StartedAt: stopped, SegmentIDs: []string{uuid.NewString()}}
-	if _, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("generation_ledger", v2.GenerationLedger{Runs: []v2.Run{run, newRun}})); err != nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.UpdateTerminalLedger(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("generation_ledger", v2.GenerationLedger{Runs: []v2.Run{run, newRun}}))
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("recording_responsibility", v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true})); err != nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, true, map[string]int{"SaveTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.UpdateTerminalRecording(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("recording_responsibility", v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}))
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	f.worker(t, "1", f.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}))
 	f.acquire(t)
-	if err := f.s.DisconnectTerminalViewer(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1"); err != nil {
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalViewerOperationPending": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminalViewer(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1")
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if control := f.control(t); control.State != "suspended" || control.Lease != nil {
@@ -875,17 +1127,25 @@ func TestTerminalInputCannotDispatchToPriorCollectionSegment(t *testing.T) {
 	lease := f.acquire(t)
 	input := f.input(lease, "1", "prior segment")
 	f.submit(t, input)
-	err := f.s.terminalAccess(context.Background(), f.p, f.project, f.task, f.message.SessionID, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
-		r.Runs[0].SegmentIDs = append(r.Runs[0].SegmentIDs, uuid.NewString())
-		return saveTerminal(context.Background(), tx, r)
+	err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"SaveTerminal": 1}), func(phaseCtx context.Context) error {
+			return f.s.terminalAccess(phaseCtx, f.p, f.project, f.task, f.message.SessionID, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
+				r.Runs[0].SegmentIDs = append(r.Runs[0].SegmentIDs, uuid.NewString())
+				return saveTerminal(phaseCtx, tx, r)
+			})
+		})
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if offered := f.poll(t, "1"); len(offered) != 0 {
+	if offered := f.pollWith(t, "1", 0); len(offered) != 0 {
 		t.Fatal("input offered to a prior segment", offered)
 	}
-	out, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, input.Payload.(v2.Operation).OperationID)
+	out, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, f.message.SessionID, input.Payload.(v2.Operation).OperationID)
+		})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -909,7 +1169,7 @@ func TestTerminalControlDurableAcknowledgementAndInputLedger(t *testing.T) {
 	if len(offers) != 1 {
 		t.Fatal(offers)
 	}
-	if len(f.poll(t, "1")) != 0 {
+	if len(f.pollWith(t, "1", 0)) != 0 {
 		t.Fatal("control request replayed")
 	}
 	dispatch := offers[0].Payload.(v2.ControlDispatch)
@@ -918,13 +1178,21 @@ func TestTerminalControlDurableAcknowledgementAndInputLedger(t *testing.T) {
 	}
 	lease := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: f.p.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
 	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "keys", "renew_control", "release_control"}}
-	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, request.SessionID, "1", f.msg("control_state", state)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"ExpireTerminalOperations": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, request.SessionID, "1", f.msg("control_state", state))
+		})
+	}); err == nil {
 		t.Fatal("unsolicited manual state granted lease")
 	}
 	ack := v2.ControlAck{RequestDigest: dispatch.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}
 	wrong := ack
 	wrong.RequestDigest = strings.Repeat("0", 64)
-	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, request.SessionID, "1", f.msg("control_ack", wrong)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, true, map[string]int{"TerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, request.SessionID, "1", f.msg("control_ack", wrong))
+		})
+	}); err == nil {
 		t.Fatal("uncorrelated durable acknowledgement accepted")
 	}
 	f.worker(t, "1", f.msg("control_ack", ack))
@@ -933,13 +1201,14 @@ func TestTerminalControlDurableAcknowledgementAndInputLedger(t *testing.T) {
 	}
 	input := f.input(lease, "1", "private-terminal-paste")
 	f.submit(t, input)
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, input.SessionID, f.browser, f.input(lease, "2", "other")); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1, "TerminalInputPending": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, input.SessionID, f.browser, f.input(lease, "2", "other"))
+		})
+	}); err == nil {
 		t.Fatal("second unresolved batch accepted")
 	}
-	var persisted string
-	if err := f.db.Pool.QueryRow(ctx, `SELECT command::text FROM session_operations WHERE session_id=$1 AND operation_id=$2`, input.SessionID, input.Payload.(v2.Operation).OperationID).Scan(&persisted); err != nil {
-		t.Fatal(err)
-	}
+	persisted := string(f.operations.operation(input.Payload.(v2.Operation).OperationID).Command)
 	if strings.Contains(persisted, "private-terminal-paste") {
 		t.Fatal("native paste persisted in the server control ledger")
 	}
@@ -947,7 +1216,7 @@ func TestTerminalControlDurableAcknowledgementAndInputLedger(t *testing.T) {
 	if len(offers) != 1 || offers[0].Payload.(v2.Operation).Payload.(v2.Paste).Text != "private-terminal-paste" {
 		t.Fatal(offers)
 	}
-	if len(f.poll(t, "1")) != 0 {
+	if len(f.pollWith(t, "1", 0)) != 0 {
 		t.Fatal("native input replayed")
 	}
 	opID := input.Payload.(v2.Operation).OperationID
@@ -959,10 +1228,18 @@ func TestTerminalControlDurableAcknowledgementAndInputLedger(t *testing.T) {
 	body := input.Payload.(v2.Operation)
 	body.Payload = v2.Paste{Text: "different"}
 	changed.Payload = body
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, input.SessionID, f.browser, changed); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, input.SessionID, f.browser, changed)
+		})
+	}); err == nil {
 		t.Fatal("same operation ID accepted different body")
 	}
-	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, input.SessionID, "1", f.msg("operation_result", terminalResult(opID, "transport_completed", ""))); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, true, map[string]int{"TerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, input.SessionID, "1", f.msg("operation_result", terminalResult(opID, "transport_completed", "")))
+		})
+	}); err == nil {
 		t.Fatal("unknown was converted into success")
 	}
 }
@@ -974,7 +1251,12 @@ func TestTerminalTimeoutAndReconnectNeverReplayOrRestoreControl(t *testing.T) {
 	f.submit(t, input)
 	f.poll(t, "1")
 	f.now = f.now.Add(11 * time.Second)
-	got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+	f.operations.whenExpired(input.Payload.(v2.Operation).OperationID, "unknown", "input_unknown")
+	got, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+		})
+	})
 	if err != nil || got.Payload.(v2.OperationResult).State != "unknown" {
 		t.Fatal(got, err)
 	}
@@ -984,7 +1266,11 @@ func TestTerminalTimeoutAndReconnectNeverReplayOrRestoreControl(t *testing.T) {
 	registration.Mode = "reconnect"
 	registration.ConnectionEpoch = &epoch
 	reconnect.Payload = registration
-	ack, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, reconnect)
+	ack, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalRegistrationPhase(context.Background(), map[string]int{"LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.RegisterTerminal(phaseCtx, f.p, f.project, f.task, reconnect)
+		})
+	})
 	if err != nil || ack.Payload.(v2.RegistrationAck).ConnectionEpoch != "2" {
 		t.Fatal(ack, err)
 	}
@@ -994,11 +1280,15 @@ func TestTerminalTimeoutAndReconnectNeverReplayOrRestoreControl(t *testing.T) {
 	if got := f.submit(t, input).Payload.(v2.OperationResult); got.State != "unknown" {
 		t.Fatal(got)
 	}
-	if len(f.poll(t, "2")) != 0 {
+	if len(f.pollWith(t, "2", 0)) != 0 {
 		t.Fatal("reconnect replayed input")
 	}
 	state := v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "3", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
-	if _, err = f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, input.SessionID, "2", f.msg("control_state", state)); err == nil {
+	if _, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, input.SessionID, "2", f.msg("control_state", state))
+		})
+	}); err == nil {
 		t.Fatal("reconnect resumed automation without handoff")
 	}
 }
@@ -1010,7 +1300,7 @@ func TestTerminalLostQueuedBodyIsRejectedWithoutPersistingOrReplayingInput(t *te
 	f.submit(t, input)
 	id := input.Payload.(v2.Operation).OperationID
 	f.s.forgetTerminalBody(input.SessionID, id)
-	if len(f.poll(t, "1")) != 0 {
+	if len(f.pollWith(t, "1", 0)) != 0 {
 		t.Fatal("missing body was offered")
 	}
 	if got := f.submit(t, input).Payload.(v2.OperationResult); got.State != "rejected" {
@@ -1023,10 +1313,19 @@ func TestTerminalPendingAcquireIsRevokedWhenItsBrowserDisconnects(t *testing.T) 
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 	f.submit(t, f.msg("control_request", req))
 	f.poll(t, "1")
-	if err := f.s.DisconnectTerminalViewer(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1"); err != nil {
+	f.operations.whenInvalidated(req.OperationID, "unknown", "input_unknown")
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"TerminalViewerOperationPending": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminalViewer(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1")
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+	got, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+		})
+	})
 	if err != nil || got.Payload.(v2.OperationResult).State != "unknown" {
 		t.Fatal(got, err)
 	}
@@ -1036,10 +1335,7 @@ func TestTerminalSnapshotIsTransientAndBoundToRegisteredSegment(t *testing.T) {
 	f := terminalControlSetup(t)
 	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: f.segment, SegmentOrdinal: "1", Binding: f.binding, Recorded: true, Frame: v2.Frame{FrameSeq: "1", CapturedAt: terminalTime(f.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "private-screen"}}}}}
 	f.worker(t, "1", f.msg("snapshot", snapshot))
-	var persisted string
-	if err := f.db.Pool.QueryRow(context.Background(), `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, f.message.SessionID).Scan(&persisted); err != nil {
-		t.Fatal(err)
-	}
+	persisted := string(f.terminal.Raw)
 	if strings.Contains(persisted, "private-screen") {
 		t.Fatal("terminal screen persisted outside archive storage")
 	}
@@ -1054,7 +1350,11 @@ func TestTerminalSnapshotIsTransientAndBoundToRegisteredSegment(t *testing.T) {
 		t.Fatal("latest live snapshot missing")
 	}
 	snapshot.SegmentID = uuid.NewString()
-	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", snapshot)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, f.refreshPhaseCounts(t)), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", snapshot))
+		})
+	}); err == nil {
 		t.Fatal("foreign segment preview accepted")
 	}
 }
@@ -1096,18 +1396,26 @@ func TestTerminalUnknownInitialDispositionAndAutomationHandoffAreSeparate(t *tes
 		t.Run(initial, func(t *testing.T) {
 			f := terminalControlSetup(t)
 			ctx := context.Background()
-			err := f.s.terminalAccess(ctx, f.p, f.project, f.task, f.message.SessionID, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
-				r.ControlEpoch = "2"
-				// An older Worker may advertise resume for unresolved delivery. The
-				// service still rejects that decision until separate disposition.
-				r.Control = &v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "suspended", InitialAssignment: initial, AvailableActions: []string{"acquire_control", "resolve_initial_assignment", "resume_automation"}}
-				return saveTerminal(ctx, tx, r)
+			err := terminalErrorStep(t, f.fixture, func() error {
+				return terminalControlInputError(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"SaveTerminal": 1}), func(phaseCtx context.Context) error {
+					return f.s.terminalAccess(phaseCtx, f.p, f.project, f.task, f.message.SessionID, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
+						r.ControlEpoch = "2"
+						// An older Worker may advertise resume for unresolved delivery. The
+						// service still rejects that decision until separate disposition.
+						r.Control = &v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "suspended", InitialAssignment: initial, AvailableActions: []string{"acquire_control", "resolve_initial_assignment", "resume_automation"}}
+						return saveTerminal(phaseCtx, tx, r)
+					})
+				})
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			resume := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "2", Action: "resume_automation", BrowserClientID: f.browser, DraftHandled: true}
-			if _, err = f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", resume)); err == nil {
+			if _, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+					return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", resume))
+				})
+			}); err == nil {
 				t.Fatal("automation resumed before the initial delivery decision")
 			}
 			disposition := "delivered_continue"
@@ -1123,7 +1431,11 @@ func TestTerminalUnknownInitialDispositionAndAutomationHandoffAreSeparate(t *tes
 			dispatch := offers[0].Payload.(v2.ControlDispatch)
 			state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "3", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
 			ack := v2.ControlAck{RequestDigest: dispatch.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(resolve.OperationID, "transport_completed", "")}
-			if _, err = f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_ack", ack)); err == nil {
+			if _, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, true, map[string]int{"TerminalOperation": 1, "SetTerminalOperationResult": 1, "LockCredential": 2, "ProjectAccess": 2}), func(phaseCtx context.Context) (v2.Message, error) {
+					return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_ack", ack))
+				})
+			}); err == nil {
 				t.Fatal("disposition acknowledgement enabled automation")
 			}
 			ack.ControlState.State = "suspended"
@@ -1132,7 +1444,7 @@ func TestTerminalUnknownInitialDispositionAndAutomationHandoffAreSeparate(t *tes
 			if got := f.control(t); got.State != "suspended" || got.InitialAssignment != "transport_completed" || got.Lease != nil {
 				t.Fatal(got)
 			}
-			if got := f.submit(t, f.msg("control_request", resolve)).Payload.(v2.OperationResult); got.State != "transport_completed" || len(f.poll(t, "1")) != 0 {
+			if got := f.submit(t, f.msg("control_request", resolve)).Payload.(v2.OperationResult); got.State != "transport_completed" || len(f.pollWith(t, "1", 0)) != 0 {
 				t.Fatal("duplicate disposition created another dispatch")
 			}
 			resume.OperationID = uuid.NewString()
@@ -1156,21 +1468,33 @@ func TestTerminalExpiredLeaseAndWrongBrowserCannotInput(t *testing.T) {
 	f := terminalControlSetup(t)
 	lease := f.acquire(t)
 	input := f.input(lease, "1", "guard")
-	if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, input.SessionID, uuid.NewString(), input); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, input.SessionID, uuid.NewString(), input)
+		})
+	}); err == nil {
 		t.Fatal("another browser reused the current lease")
 	}
 	f.now = f.now.Add(31 * time.Second)
-	if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, input.SessionID, f.browser, input); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"TerminalOperation": 1, "ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, input.SessionID, f.browser, input)
+		})
+	}); err == nil {
 		t.Fatal("expired lease accepted input")
 	}
 	// A read reconciles expiry and durably retains suspended instead of automation.
 	var reconciled *v2.ControlState
-	err := f.s.terminalAccess(context.Background(), f.p, f.project, f.task, input.SessionID, false, func(tx *operationTx, r *terminalRecord, task task, _ bool) error {
-		if err := f.s.refreshTerminalControl(context.Background(), tx, r, task); err != nil {
-			return err
-		}
-		reconciled = r.Control
-		return nil
+	err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) error {
+			return f.s.terminalAccess(phaseCtx, f.p, f.project, f.task, input.SessionID, false, func(tx *operationTx, r *terminalRecord, task task, _ bool) error {
+				if err := f.s.refreshTerminalControl(phaseCtx, tx, r, task); err != nil {
+					return err
+				}
+				reconciled = r.Control
+				return nil
+			})
+		})
 	})
 	if err != nil || reconciled.Lease != nil || reconciled.State != "suspended" {
 		t.Fatal(reconciled, err)
@@ -1179,49 +1503,30 @@ func TestTerminalExpiredLeaseAndWrongBrowserCannotInput(t *testing.T) {
 
 func terminalOtherActor(t *testing.T, f *terminalControlFixture) model.Principal {
 	t.Helper()
-	p := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
-	hash := sha256.Sum256([]byte(p.CredentialID))
-	statements := []struct {
-		sql  string
-		args []any
-	}{
-		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, []any{p.UserID, p.UserID}},
-		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'terminal actor',now(),now()+interval '1 day')`, []any{p.CredentialID, p.UserID, hash[:]}},
-		{`INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, p.UserID}},
-	}
-	for _, q := range statements {
-		if _, err := f.db.Pool.Exec(context.Background(), q.sql, q.args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return p
+	return addMember(t, f.fixture, string(model.ProjectAdmin))
 }
 
 func TestTerminalRevokedActorIsRejectedBeforeForwardingAndAcknowledgement(t *testing.T) {
 	for _, afterPoll := range []bool{false, true} {
 		t.Run(map[bool]string{false: "queued", true: "dispatched"}[afterPoll], func(t *testing.T) {
 			f := terminalControlSetup(t)
-			actor := terminalOtherActor(t, f)
+			actor := listCredential(t, f.fixture, f.p.UserID, model.PATCredential)
 			req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
-			if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
-				t.Fatal(err)
-			}
+			f.submitBy(t, actor, f.msg("control_request", req))
 			var offers []v2.Message
 			if afterPoll {
 				offers = f.poll(t, "1")
 			}
-			if _, err := f.db.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
-				t.Fatal(err)
-			}
+			revokeFixtureCredential(t, f.fixture, actor)
 			if !afterPoll {
-				if got := f.poll(t, "1"); len(got) != 0 {
+				if got := f.pollCounts(t, "1", 0, map[string]int{"ProjectAccess": 1}); len(got) != 0 {
 					t.Fatal("revoked actor command was forwarded")
 				}
 			} else {
 				d := offers[0].Payload.(v2.ControlDispatch)
 				l := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: actor.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
 				state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &l, InitialAssignment: "transport_completed", AvailableActions: []string{"paste"}}
-				f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+				f.workerWith(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}), map[string]int{"ProjectAccess": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 2})
 			}
 			if f.control(t).Lease != nil {
 				t.Fatal("revoked actor received lease")
@@ -1235,12 +1540,21 @@ func TestTerminalDisconnectAndLateAcknowledgementCannotReviveLease(t *testing.T)
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 	f.submit(t, f.msg("control_request", req))
 	d := f.poll(t, "1")[0].Payload.(v2.ControlDispatch)
-	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+	f.operations.whenInvalidated(req.OperationID, "unknown", "input_unknown")
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 2}), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1")
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	l := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: f.p.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
 	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &l, InitialAssignment: "transport_completed", AvailableActions: []string{"paste"}}
-	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")})); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), true, map[string]int{"TerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+		})
+	}); err == nil {
 		t.Fatal("late ack replaced unknown outcome")
 	}
 	if f.control(t).Lease != nil {
@@ -1258,7 +1572,7 @@ func TestTerminalRenewAcknowledgementAfterOldExpiryDoesNotReviveLease(t *testing
 	f.now = f.now.Add(2 * time.Second)
 	lease.ExpiresAt = terminalTime(f.now.Add(30 * time.Second))
 	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "renew_control"}}
-	f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+	f.workerWith(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}), map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 2})
 	if f.control(t).Lease != nil || f.control(t).State != "suspended" {
 		t.Fatal("late renewal revived an expired lease")
 	}
@@ -1272,7 +1586,7 @@ func TestTerminalActionRemovalBeforePollPreventsInput(t *testing.T) {
 	state := *f.control(t)
 	state.AvailableActions = []string{"keys", "release_control"}
 	f.worker(t, "1", f.msg("control_state", state))
-	if offers := f.poll(t, "1"); len(offers) != 0 {
+	if offers := f.pollWith(t, "1", 0); len(offers) != 0 {
 		t.Fatal("removed action was still offered")
 	}
 	if got := f.submit(t, input).Payload.(v2.OperationResult); got.State != "rejected" {
@@ -1332,7 +1646,11 @@ func TestTerminalInputRejectsStaleFencesTargetsSequencesAndActors(t *testing.T) 
 			o := m.Payload.(v2.Operation)
 			change(&o)
 			m.Payload = o
-			if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, m.SessionID, f.browser, m); err == nil {
+			if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+					return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, m.SessionID, f.browser, m)
+				})
+			}); err == nil {
 				t.Fatal("stale input accepted")
 			}
 		})
@@ -1341,29 +1659,60 @@ func TestTerminalInputRejectsStaleFencesTargetsSequencesAndActors(t *testing.T) 
 	f.submit(t, good)
 	f.poll(t, "1")
 	f.worker(t, "1", f.msg("operation_result", terminalResult(good.Payload.(v2.Operation).OperationID, "transport_completed", "")))
-	if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, good.SessionID, f.browser, f.input(lease, "1", "reused sequence")); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"TerminalOperation": 1})), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, good.SessionID, f.browser, f.input(lease, "1", "reused sequence"))
+		})
+	}); err == nil {
 		t.Fatal("duplicate lease sequence accepted")
 	}
 	actor := terminalOtherActor(t, f)
-	if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, good.SessionID, f.browser, good); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, nil), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, actor, f.project, f.task, good.SessionID, f.browser, good)
+		})
+	}); err == nil {
 		t.Fatal("another actor recovered original operation")
 	}
-	if _, err := f.s.PollTerminal(context.Background(), actor, f.project, f.task, good.SessionID, f.message.Envelope, "1"); err == nil {
+	if _, err := terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, nil), func(phaseCtx context.Context) ([]v2.Message, error) {
+		return f.s.PollTerminal(phaseCtx, actor, f.project, f.task, good.SessionID, f.message.Envelope, "1")
+	}); err == nil {
 		t.Fatal("another actor polled Worker channel")
 	}
-	if _, err := f.s.HandleTerminalControl(context.Background(), actor, f.project, f.task, good.SessionID, "1", f.msg("control_state", *f.control(t))); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, nil), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, actor, f.project, f.task, good.SessionID, "1", f.msg("control_state", *f.control(t)))
+		})
+	}); err == nil {
 		t.Fatal("another actor published Worker state")
 	}
-	if err := f.s.DisconnectTerminal(context.Background(), actor, f.project, f.task, good.SessionID, f.message.Envelope, "1"); err == nil {
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), true, nil), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminal(phaseCtx, actor, f.project, f.task, good.SessionID, f.message.Envelope, "1")
+		})
+	}); err == nil {
 		t.Fatal("another actor disconnected Worker")
 	}
-	if _, err := f.s.PollTerminal(context.Background(), f.p, f.project, f.task, good.SessionID, f.message.Envelope, "2"); err == nil {
+	if _, err := terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, nil), func(phaseCtx context.Context) ([]v2.Message, error) {
+		return f.s.PollTerminal(phaseCtx, f.p, f.project, f.task, good.SessionID, f.message.Envelope, "2")
+	}); err == nil {
 		t.Fatal("superseded epoch polled channel")
 	}
-	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, good.SessionID, f.message.Envelope, "2"); err != nil {
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), true, nil), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminal(phaseCtx, f.p, f.project, f.task, good.SessionID, f.message.Envelope, "2")
+		})
+	}); err != nil {
 		t.Fatal("stale disconnect affected current channel", err)
 	}
-	if err := f.s.DisconnectTerminalViewer(context.Background(), f.p, f.project, f.task, good.SessionID, uuid.NewString(), good.ClaimID, "1"); err != nil {
+	otherBrowser := uuid.NewString()
+	f.operations.viewerBrowser = otherBrowser
+	f.operations.viewerPending = false
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"TerminalViewerOperationPending": 1}), func(phaseCtx context.Context) error {
+			return f.s.DisconnectTerminalViewer(phaseCtx, f.p, f.project, f.task, good.SessionID, otherBrowser, good.ClaimID, "1")
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if f.control(t).Lease == nil {
@@ -1376,53 +1725,96 @@ func TestTerminalRejectsMalformedAndUnavailableControlWithoutLedgerWrite(t *test
 	ctx := context.Background()
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 	malformed := f.msg("operation", nil)
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, malformed); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.dao.ContextPhase(ctx, nil), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, malformed)
+		})
+	}); err == nil {
 		t.Fatal("nil payload accepted")
 	}
-	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, f.message.SessionID, "1", malformed); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.dao.ContextPhase(ctx, nil), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", malformed)
+		})
+	}); err == nil {
 		t.Fatal("nil Worker payload accepted")
 	}
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.dao.ContextPhase(ctx, nil), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message)
+		})
+	}); err == nil {
 		t.Fatal("registration used as operation")
 	}
-	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, f.message.SessionID, "1", f.message); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"ExpireTerminalOperations": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.message)
+		})
+	}); err == nil {
 		t.Fatal("registration used as control state")
 	}
 	wrong := req
 	wrong.ConnectionEpoch = "2"
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", wrong)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalOperation": 1, "ExpireTerminalOperations": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", wrong))
+		})
+	}); err == nil {
 		t.Fatal("wrong epoch accepted")
 	}
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, uuid.NewString(), f.msg("control_request", req)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.dao.ContextPhase(ctx, nil), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, uuid.NewString(), f.msg("control_request", req))
+		})
+	}); err == nil {
 		t.Fatal("wrong browser accepted")
 	}
 	actor := terminalOtherActor(t, f)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
-		t.Fatal(err)
+	access := f.dao.ProjectAccessFn
+	f.dao.ProjectAccessFn = func(ctx context.Context, user, project string) (model.ProjectAccess, error) {
+		if user == actor.UserID && project == f.project {
+			return model.ProjectAccess{UserID: user, ProjectID: project, Role: model.ProjectMemberRole}, nil
+		}
+		return access(ctx, user, project)
 	}
-	if _, err := f.s.SubmitTerminal(ctx, actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, nil), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req))
+		})
+	}); err == nil {
 		t.Fatal("read-only project member issued control")
 	}
 	state := *f.control(t)
 	state.AvailableActions = []string{}
 	f.worker(t, "1", f.msg("control_state", state))
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalOperation": 1, "ExpireTerminalOperations": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req))
+		})
+	}); err == nil {
 		t.Fatal("unavailable control action accepted")
 	}
 	state.AvailableActions = []string{"acquire_control"}
 	f.worker(t, "1", f.msg("control_state", state))
-	if err := f.s.terminalAccess(ctx, f.p, f.project, f.task, f.message.SessionID, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
-		r.OperationSeq = maxSessionOperations
-		return saveTerminal(ctx, tx, r)
+	if err := terminalErrorStep(t, f.fixture, func() error {
+		return terminalControlInputError(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"SaveTerminal": 1}), func(phaseCtx context.Context) error {
+			return f.s.terminalAccess(phaseCtx, f.p, f.project, f.task, f.message.SessionID, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
+				r.OperationSeq = maxSessionOperations
+				return saveTerminal(phaseCtx, tx, r)
+			})
+		})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalOperation": 1, "ExpireTerminalOperations": 1, "TerminalInputPending": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req))
+		})
+	}); err == nil {
 		t.Fatal("ledger capacity exceeded")
 	}
-	var count int
-	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM session_operations WHERE session_id=$1`, f.message.SessionID).Scan(&count); err != nil || count != 0 {
-		t.Fatal(count, err)
+	if f.operations.insertCalls != 0 {
+		t.Fatal("rejected controls attempted a ledger write", f.operations.insertCalls)
 	}
 }
 
@@ -1446,19 +1838,31 @@ func TestTerminalInvalidAndRepeatedSnapshotHandling(t *testing.T) {
 	f.worker(t, "1", f.msg("snapshot", snapshot))
 	bad := snapshot
 	bad.Frame.FrameSeq = "1"
-	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", bad)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, f.refreshPhaseCounts(t)), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", bad))
+		})
+	}); err == nil {
 		t.Fatal("older preview replaced current frame")
 	}
 	bad = snapshot
 	bad.ConnectionEpoch = "2"
-	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", bad)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, f.refreshPhaseCounts(t)), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", bad))
+		})
+	}); err == nil {
 		t.Fatal("different preview epoch accepted")
 	}
 	state := *f.control(t)
 	state.ControlEpoch = "2"
 	f.worker(t, "1", f.msg("control_state", state))
 	state.ControlEpoch = "1"
-	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_state", state)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, f.refreshPhaseCounts(t)), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.HandleTerminalControl(phaseCtx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_state", state))
+		})
+	}); err == nil {
 		t.Fatal("old control epoch accepted")
 	}
 }
@@ -1483,39 +1887,51 @@ func TestTerminalTransientBodyCapacityDoesNotEvictUnresolvedInput(t *testing.T) 
 }
 
 func TestTerminalActiveLeaseCredentialRevocationSuspendsAndInvalidatesInput(t *testing.T) {
-	for _, revoke := range []string{"credential", "role"} {
+	for _, revoke := range []string{"credential", "owner"} {
 		t.Run(revoke, func(t *testing.T) {
 			f := terminalControlSetup(t)
-			actor := terminalOtherActor(t, f)
+			actor := listCredential(t, f.fixture, f.p.UserID, model.PATCredential)
 			req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
-			if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
-				t.Fatal(err)
-			}
+			f.submitBy(t, actor, f.msg("control_request", req))
 			d := f.poll(t, "1")[0].Payload.(v2.ControlDispatch)
 			lease := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: actor.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
 			state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "release_control"}}
 			f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
 			input := f.input(lease, "1", "revoke in flight")
-			if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, input); err != nil {
-				t.Fatal(err)
-			}
+			f.submitBy(t, actor, input)
 			f.poll(t, "1")
-			sql := `DELETE FROM personal_access_tokens WHERE id=$1`
-			args := []any{actor.CredentialID}
-			if revoke == "role" {
-				sql = `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`
-				args = []any{f.project, actor.UserID}
+			f.operations.whenInvalidated(input.Payload.(v2.Operation).OperationID, "unknown", "input_unknown")
+			if revoke == "owner" {
+				other := terminalOtherActor(t, f)
+				if err := terminalErrorStep(t, f.fixture, func() error {
+					return terminalControlInputError(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"SaveTerminal": 1}), func(phaseCtx context.Context) error {
+						return f.s.terminalAccess(phaseCtx, f.p, f.project, f.task, f.message.SessionID, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
+							r.ControlActor = &other
+							return saveTerminal(phaseCtx, tx, r)
+						})
+					})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				f.operations.operation(input.Payload.(v2.Operation).OperationID).Actor = other
+			} else {
+				revokeFixtureCredential(t, f.fixture, actor)
 			}
-			if _, err := f.db.Pool.Exec(context.Background(), sql, args...); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.s.TerminalState(context.Background(), f.p, f.project, f.task, f.message.SessionID); err != nil {
+			if _, err := terminalStateStep(t, f.fixture, func() (map[string]any, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1, "TerminalArchive": 1, "LockCredential": 2, "ProjectAccess": map[string]int{"credential": 1, "owner": 2}[revoke]}), func(phaseCtx context.Context) (map[string]any, error) {
+					return f.s.TerminalState(phaseCtx, f.p, f.project, f.task, f.message.SessionID)
+				})
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if f.control(t).State != "suspended" || f.control(t).Lease != nil {
 				t.Fatal("revoked actor retained lease")
 			}
-			got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, input.Payload.(v2.Operation).OperationID)
+			got, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "TerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+					return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, f.message.SessionID, input.Payload.(v2.Operation).OperationID)
+				})
+			})
 			if err != nil || got.Payload.(v2.OperationResult).State != "unknown" {
 				t.Fatal(got, err)
 			}
@@ -1532,16 +1948,28 @@ func TestTerminalIncompleteWorkerCapabilitiesCannotGrantControl(t *testing.T) {
 	registration.ConnectionEpoch = &epoch
 	registration.Capabilities.Archive = false
 	reconnect.Payload = registration
-	if _, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, reconnect); err != nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalRegistrationPhase(context.Background(), map[string]int{"LockTerminal": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.RegisterTerminal(phaseCtx, f.p, f.project, f.task, reconnect)
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	state := v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "2", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
 	f.worker(t, "2", f.msg("control_state", state))
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "2", ControlEpoch: "2", Action: "acquire_control", BrowserClientID: f.browser}
-	if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
+	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"TerminalOperation": 1, "ExpireTerminalOperations": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+			return f.s.SubmitTerminal(phaseCtx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req))
+		})
+	}); err == nil {
 		t.Fatal("incomplete Worker granted control")
 	}
-	view, err := f.s.TerminalState(context.Background(), f.p, f.project, f.task, f.message.SessionID)
+	view, err := terminalStateStep(t, f.fixture, func() (map[string]any, error) {
+		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1}), func(phaseCtx context.Context) (map[string]any, error) {
+			return f.s.TerminalState(phaseCtx, f.p, f.project, f.task, f.message.SessionID)
+		})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1563,4 +1991,73 @@ func storeTerminalTestBody(s *Execution, id, operationID string, raw []byte) err
 	}
 	_, err := s.storeTerminalBody(&terminalRecord{Envelope: v2.Envelope{SessionID: id, ClaimID: "claim", ExecutionGeneration: "1"}, ConnectionEpoch: "1", Owner: v2.Owner{OwnerUserID: "owner"}}, operationID, raw, s.now().Add(time.Duration(v2.InputTimeoutMillis)*time.Millisecond))
 	return err
+}
+
+func terminalControlCall[T any](f fixture, phase context.Context, fn func(context.Context) (T, error)) (T, error) {
+	defer f.dao.FinishContext(phase)
+	return fn(phase)
+}
+
+func (f *terminalControlFixture) refreshPhaseCounts(t *testing.T) map[string]int {
+	t.Helper()
+	work := map[string]int{"ExpireTerminalOperations": 1}
+	r := f.terminal.Record(t)
+	if r.Control != nil && r.Control.Lease != nil {
+		work["LockCredential"], work["ProjectAccess"] = 2, 2
+	}
+	return work
+}
+
+func (f *terminalControlFixture) workerPhaseCounts(t *testing.T, m v2.Message) map[string]int {
+	t.Helper()
+	r := f.terminal.Record(t)
+	switch payload := m.Payload.(type) {
+	case v2.ControlAck:
+		op := f.operations.operation(payload.Result.OperationID)
+		work := map[string]int{"TerminalOperation": 1, "SaveTerminal": 1}
+		if !reflect.DeepEqual(op.Result, payload.Result) {
+			work["SetTerminalOperationResult"] = 1
+		}
+		if op.Result.State == "dispatching" {
+			if payload.Result.State == "unknown" || !f.now.Before(op.Deadline) {
+				work["InvalidateTerminalOperations"], work["SaveTerminal"] = 1, 2
+			} else if payload.Result.State == "transport_completed" {
+				work["LockCredential"], work["ProjectAccess"] = 2, 2
+			}
+		}
+		return work
+	case v2.OperationResult:
+		work := map[string]int{"TerminalOperation": 1}
+		if !reflect.DeepEqual(f.operations.operation(payload.OperationID).Result, payload) {
+			work["SetTerminalOperationResult"] = 1
+		}
+		return work
+	case v2.ControlState:
+		work := f.refreshPhaseCounts(t)
+		work["SaveTerminal"] = 1
+		if number(payload.ControlEpoch) > number(r.ControlEpoch) {
+			work["InvalidateTerminalOperations"] = 1
+		}
+		return work
+	case v2.Snapshot:
+		return mergeFixtureCounts(f.refreshPhaseCounts(t), map[string]int{"SaveTerminal": 1})
+	default:
+		t.Fatalf("unsupported successful Worker phase: %s", m.Type)
+		return nil
+	}
+}
+
+func terminalControlError(f fixture, phase context.Context, fn func(context.Context) error) error {
+	defer f.dao.FinishContext(phase)
+	return fn(phase)
+}
+
+func terminalControlInputCall[T any](f *terminalControlFixture, phase context.Context, fn func(context.Context) (T, error)) (T, error) {
+	f.operations.resetWrites()
+	return terminalControlCall(f.fixture, phase, fn)
+}
+
+func terminalControlInputError(f *terminalControlFixture, phase context.Context, fn func(context.Context) error) error {
+	f.operations.resetWrites()
+	return terminalControlError(f.fixture, phase, fn)
 }

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stringifyApiJson } from "../../../src/api/json.js";
+import { parseApiJson, stringifyApiJson } from "../../../src/api/json.js";
 import { runProjectCommand } from "../../../src/commands/project/command.js";
 import { parseTeamIdentifier } from "../../../src/commands/team/identifier.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
@@ -66,6 +66,15 @@ describe("Team identifiers", () => {
 });
 
 describe("project transfer", () => {
+  it("prints the complete confirmed JSON receipt when the actor loses access", async () => {
+    const f = await fixture();
+    await runProjectCommand([...args, "--confirm", "--json"], f.context, f.dependencies);
+    const output = Buffer.from(f.stdoutBytes.mock.calls[0]![0]).toString();
+    expect(parseApiJson(output)).toEqual(receipt);
+    expect(output).toContain('"actorAccess":null'); expect(output).toContain(`"version":${version + 1n}`);
+    expect(f.calls.map(x => x.method)).toEqual(["GET", "GET", "POST", "POST"]);
+    expect(parseApiJson(f.calls[3]!.body!)).toEqual({ ownership: { teamId: sourceId, version }, targetTeam: { id: targetId, version }, expectedUserId: userId });
+  });
   it("previews and confirms exact versions, reports success after losing access without a follow-up GET", async () => {
     const f = await fixture();
     await runProjectCommand([...args, "--if-version", version.toString()], f.context, f.dependencies);

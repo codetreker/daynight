@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -33,6 +34,40 @@ func controlState() sp.State {
 	started := "2026-10-28T05:00:00.000Z"
 	s.TurnStartedAt = &started
 	return s
+}
+
+func taskControlAuthorizationFixture(state sp.State) (*Execution, *record, task) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	fence := sp.Fence{SessionID: "00000000-0000-4000-8000-000000000001", ClaimID: "00000000-0000-4000-8000-000000000002", ExecutionGeneration: "1"}
+	snapshot := sp.Snapshot{
+		ControllerFence:       sp.ControllerFence{Fence: fence, ConnectionEpoch: "1"},
+		Protocol:              sp.Protocol,
+		SchemaVersion:         1,
+		ProjectionVersion:     1,
+		Identity:              sp.Identity{NativeSessionID: state.NativeSessionID},
+		Lifecycle:             "active",
+		ConnectionState:       "connected",
+		SessionRevision:       "1",
+		Controls:              state.Controls,
+		TurnStartedAt:         state.TurnStartedAt,
+		CleanupInteractionIDs: state.CleanupInteractionIDs,
+		InitialInputState:     state.InitialInputState,
+		Synchronized:          state.Synchronized,
+		Activity:              state.Activity,
+		CurrentTurnID:         state.CurrentTurnID,
+		Capabilities:          state.Capabilities,
+	}
+	worker := &model.WorkerClaim{ClaimID: fence.ClaimID, AgentControlMode: model.AgentControlModeWeb, State: model.WorkerActive}
+	execution := &Execution{Engine: &Engine{now: func() time.Time { return now }}}
+	return execution, &record{Snapshot: snapshot, LastSeen: &now}, task{Worker: worker, Status: "in_progress"}
+}
+
+func requireControlConflict(t *testing.T, err error) {
+	t.Helper()
+	var refusal *model.Fault
+	if !errors.As(err, &refusal) || refusal.Code != "session_conflict" {
+		t.Fatalf("expected session_conflict, got %v", err)
+	}
 }
 
 func TestControlsPermissionProjectionDoesNotMutateCatalog(t *testing.T) {
@@ -82,7 +117,7 @@ func TestDurableControlOperationKinds(t *testing.T) {
 			ctx := context.Background()
 			state := controlState()
 			publishState(t, f, v, state)
-			current, err := f.s.Current(ctx, f.p, f.project, f.task)
+			current, err := f.s.Current(f.TaskPhase(ctx, map[string]int{"CurrentTaskSession": 1, "SessionBotID": 1, "LockSession": 1}), f.p, f.project, f.task)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,30 +132,38 @@ func TestDurableControlOperationKinds(t *testing.T) {
 				t.Fatal("controller controls or turn start lost")
 			}
 			c := controlCommand(v, kind)
-			receipt, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c)
+			receipt, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, c)
 			if err != nil || receipt.State != "accepted" {
 				t.Fatal(receipt, err)
 			}
-			if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
+			f.SelectOperationWrite(t)
+			f.SelectSessionWrite(t)
+			f.data.AcceptedIDs = []string{c.OperationID}
+			if _, err = f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, c); err != nil {
 				t.Fatal("stable intent replay rejected", err)
 			}
 			conflict := c
 			conflict.Payload = encode(map[string]any{"changed": true})
-			if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, conflict); err == nil {
+			if _, err = f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, conflict); err == nil {
 				t.Fatal("different intent reused operation ID")
 			}
-			offers, err := f.s.Poll(ctx, v.ControllerFence)
+			offers, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence)
 			if err != nil || len(offers) != 1 {
 				t.Fatal(offers, err)
 			}
-			if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: c.OperationID}); err != nil {
+			selectContentOffer(t, f)
+			if _, err = f.s.Handle(f.ControllerPhase(ctx, map[string]int{"SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1}), sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: c.OperationID}); err != nil {
 				t.Fatal(err)
 			}
+			f.SelectReceiptWrite(t)
+			selectContentHandle(t, f)
 			receipt.State = "confirmed"
-			if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}); err != nil {
+			if _, err = f.s.Handle(f.ControllerPhase(ctx, map[string]int{"SessionOperation": 1, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1}), sp.ControllerMessage{Type: "operation_receipt", ControllerFence: v.ControllerFence, Operation: &receipt}); err != nil {
 				t.Fatal(err)
 			}
-			got, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, c.OperationID)
+			f.SelectReceiptWrite(t)
+			selectContentHandle(t, f)
+			got, err := f.s.Operation(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, c.OperationID)
 			if err != nil || got.State != "confirmed" || got.Kind != kind {
 				t.Fatal(got, err)
 			}
@@ -129,10 +172,7 @@ func TestDurableControlOperationKinds(t *testing.T) {
 }
 
 func TestControlAuthorizationRejectsCatalogAndRuntimeMismatch(t *testing.T) {
-	f, v := connectFixture(t)
 	ctx := context.Background()
-	base := controlState()
-	publishState(t, f, v, base)
 	cases := []struct {
 		name, kind string
 		payload    any
@@ -156,25 +196,38 @@ func TestControlAuthorizationRejectsCatalogAndRuntimeMismatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f, v := connectFixture(t)
 			state := controlState()
 			if tc.mutate != nil {
 				tc.mutate(&state)
 			}
-			publishState(t, f, v, state)
-			c := controlCommand(v, tc.kind)
+			execution, current, currentTask := taskControlAuthorizationFixture(state)
+			c := controlCommand(current.Snapshot, tc.kind)
 			if tc.payload != nil {
 				c.Payload = encode(tc.payload)
 			}
-			if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-				t.Fatal("unauthorized control accepted")
+			requireControlConflict(t, execution.authorizeCommand(ctx, nil, current, currentTask, c))
+		})
+	}
+}
+
+func TestControlAuthorizationAcceptsCurrentCatalog(t *testing.T) {
+	for _, kind := range []string{"update_setting", "execute_command", "refresh_controls"} {
+		t.Run(kind, func(t *testing.T) {
+			execution, current, currentTask := taskControlAuthorizationFixture(controlState())
+			if err := execution.authorizeCommand(context.Background(), nil, current, currentTask, controlCommand(current.Snapshot, kind)); err != nil {
+				t.Fatalf("valid control %s rejected: %v", kind, err)
 			}
 		})
 	}
+}
+
+func TestControlSubmitRejectsOutsider(t *testing.T) {
+	f, v := connectFixture(t)
+	ctx := context.Background()
 	publishState(t, f, v, controlState())
 	c := controlCommand(v, "update_setting")
 	outsider := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
-	if _, err := f.s.Submit(ctx, outsider, f.project, f.task, v.SessionID, c); err == nil {
+	if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"ProjectAccess": 0, "SessionBotID": 0, "LockSession": 0}), outsider, f.project, f.task, v.SessionID, c); err == nil {
 		t.Fatal("outsider submitted control")
 	}
 }
@@ -187,21 +240,27 @@ func TestControlRevisionRecheckedAtOfferAndDispatch(t *testing.T) {
 			state := controlState()
 			publishState(t, f, v, state)
 			c := controlCommand(v, "update_setting")
-			if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
+			if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, c); err != nil {
 				t.Fatal(err)
 			}
+			f.SelectOperationWrite(t)
+			f.SelectSessionWrite(t)
+			f.data.AcceptedIDs = []string{c.OperationID}
 			if phase == "begin" {
-				if offers, err := f.s.Poll(ctx, v.ControllerFence); err != nil || len(offers) != 1 {
+				if offers, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence); err != nil || len(offers) != 1 {
 					t.Fatal(offers, err)
 				}
+				selectContentOffer(t, f)
 			}
 			state.Controls.Revision = "2"
 			publishState(t, f, v, state)
 			if phase == "offer" {
-				if offers, err := f.s.Poll(ctx, v.ControllerFence); err != nil || len(offers) != 0 {
+				if offers, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence); err != nil || len(offers) != 0 {
 					t.Fatal(offers, err)
 				}
-				got, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, c.OperationID)
+				f.SelectReceiptWrite(t)
+				f.SelectSessionWrite(t)
+				got, err := f.s.Operation(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, f.project, f.task, v.SessionID, c.OperationID)
 				if err != nil || got.State != "rejected" {
 					t.Fatal(got, err)
 				}
@@ -220,26 +279,26 @@ func TestControlCatalogRevisionAndExecutionBoundary(t *testing.T) {
 	state.Controls.Revision = "2"
 	publishState(t, f, v, state)
 	state.Controls.Revision = "1"
-	if _, err := f.s.Handle(ctx, source(t, f, v, sp.SourceEvent{Kind: "state", Payload: encode(state)})); err == nil {
+	if _, err := f.s.Handle(f.ControllerPhase(ctx, nil), source(t, f, v, sp.SourceEvent{Kind: "state", Payload: encode(state)})); err == nil {
 		t.Fatal("control revision regressed")
 	}
 	state.Controls.Revision = "2"
 	state.Controls.Settings[0].Mutable = false
-	if _, err := f.s.Handle(ctx, source(t, f, v, sp.SourceEvent{Kind: "state", Payload: encode(state)})); err == nil {
+	if _, err := f.s.Handle(f.ControllerPhase(ctx, nil), source(t, f, v, sp.SourceEvent{Kind: "state", Payload: encode(state)})); err == nil {
 		t.Fatal("same revision changed content")
 	}
 	state.Controls.Revision = "3"
 	publishState(t, f, v, state)
 	publishState(t, f, v, state)
 	previous := "1"
-	_, err := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: uuid.NewString(), ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.r.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}})
+	_, err := f.s.Grant(f.BrowserPhase(ctx, map[string]int{"SetSessionGrant": 1, "SetSessionGenerationStop": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: uuid.NewString(), ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.r.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var raw []byte
-	if err = f.db.Pool.QueryRow(ctx, `SELECT snapshot FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&raw); err != nil {
-		t.Fatal(err)
+	if f.writes.Session == nil || f.writes.Session.Snapshot.ExecutionGeneration != "2" {
+		t.Fatal("new execution did not propose its changed generation")
 	}
+	raw := encode(f.writes.Session.Snapshot)
 	snapshot, err := sp.DecodeSnapshot(raw)
 	if err != nil || snapshot.Controls != nil || snapshot.TurnStartedAt != nil {
 		t.Fatal("new execution retained obsolete controls", err)
@@ -252,20 +311,33 @@ func TestControlsBeforeFirstLazyTestSessionInput(t *testing.T) {
 	state := sp.State{InitialInputState: "not_required", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true}}
 	publishState(t, f, v, state)
 	refresh := controlCommand(v, "refresh_controls")
-	if _, err := f.s.Submit(ctx, f.p, "", "", v.SessionID, refresh); err != nil {
+	update, execute := controlCommand(v, "update_setting"), controlCommand(v, "execute_command")
+	responses := configureContentOperations(t, f, refresh, update, execute)
+	f.dao.Expect("SessionOperation", 5)
+	f.dao.Expect("InsertSessionOperation", 3)
+	f.dao.Expect("PendingSessionOperationCount", 3)
+	f.dao.Expect("AcceptedSessionOperations", 0)
+	f.dao.Expect("SetSessionOperationEpoch", 0)
+	f.dao.Expect("SetSessionOperationReceipt", 0)
+	if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, "", "", v.SessionID, refresh); err != nil {
 		t.Fatal("initial catalog refresh rejected", err)
 	}
-	for _, kind := range []string{"update_setting", "execute_command"} {
-		if _, err := f.s.Submit(ctx, f.p, "", "", v.SessionID, controlCommand(v, kind)); err == nil {
-			t.Fatal("absent catalog accepted", kind)
+	f.SelectSessionWrite(t)
+	responses.useProposedResponse(refresh.OperationID, f.s.now().Add(time.Minute))
+	for _, command := range []sp.Command{update, execute} {
+		if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1}), f.p, "", "", v.SessionID, command); err == nil {
+			t.Fatal("absent catalog accepted", command.Kind)
 		}
 	}
 	state.Controls = nativeControls()
 	publishState(t, f, v, state)
-	for _, kind := range []string{"update_setting", "execute_command"} {
-		if _, err := f.s.Submit(ctx, f.p, "", "", v.SessionID, controlCommand(v, kind)); err != nil {
-			t.Fatal("lazy provider controls rejected", kind, err)
+	for i, command := range []sp.Command{update, execute} {
+		responses.pending = i + 1
+		if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, "", "", v.SessionID, command); err != nil {
+			t.Fatal("lazy provider controls rejected", command.Kind, err)
 		}
+		f.SelectSessionWrite(t)
+		responses.useProposedResponse(command.OperationID, f.s.now().Add(time.Minute))
 	}
 }
 
@@ -274,8 +346,8 @@ func TestControlReaderProjectionAndRevokedWriterAtDispatch(t *testing.T) {
 	ctx := context.Background()
 	publishState(t, f, v, controlState())
 	reader := addMember(t, f, "member")
-	admin := addMember(t, f, "admin")
-	current, err := f.s.Current(ctx, reader, f.project, f.task)
+	actor := listCredential(t, f, f.p.UserID, model.PATCredential)
+	current, err := f.s.Current(f.TaskPhase(ctx, map[string]int{"CurrentTaskSession": 1, "SessionBotID": 1, "LockSession": 1}), reader, f.project, f.task)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,12 +355,12 @@ func TestControlReaderProjectionAndRevokedWriterAtDispatch(t *testing.T) {
 	if view.Controls.Settings[0].Mutable || view.Controls.Commands[0].Available {
 		t.Fatal("reader got writable catalog")
 	}
-	initial, _, cursor, err := f.s.BrowserPoll(ctx, reader, f.project, f.task, v.SessionID, "")
+	initial, _, cursor, err := f.s.BrowserPoll(f.BrowserPhase(ctx, nil), reader, f.project, f.task, v.SessionID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	publishState(t, f, v, controlState())
-	_, events, _, err := f.s.BrowserPoll(ctx, reader, f.project, f.task, v.SessionID, cursor)
+	_, events, _, err := f.s.BrowserPoll(f.BrowserPhase(ctx, nil), reader, f.project, f.task, v.SessionID, cursor)
 	if err != nil || len(events) == 0 {
 		t.Fatal("history snapshot unavailable", err)
 	}
@@ -304,32 +376,33 @@ func TestControlReaderProjectionAndRevokedWriterAtDispatch(t *testing.T) {
 		t.Fatal("poll initial controls writable")
 	}
 	for _, kind := range []string{"update_setting", "execute_command", "refresh_controls"} {
-		if _, err := f.s.Submit(ctx, reader, f.project, f.task, v.SessionID, controlCommand(v, kind)); err == nil {
+		if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{}), reader, f.project, f.task, v.SessionID, controlCommand(v, kind)); err == nil {
 			t.Fatal("reader submitted", kind)
 		}
 	}
 	c := controlCommand(v, "execute_command")
-	if _, err := f.s.Submit(ctx, admin, f.project, f.task, v.SessionID, c); err != nil {
+	if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), actor, f.project, f.task, v.SessionID, c); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.Poll(ctx, v.ControllerFence); err != nil {
+	f.SelectOperationWrite(t)
+	f.SelectSessionWrite(t)
+	f.data.AcceptedIDs = []string{c.OperationID}
+	if _, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
-		t.Fatal(err)
-	}
-	assertRejectedBegin(t, f, v, c.OperationID)
+	selectContentOffer(t, f)
+	revokeContentCredential(t, f, actor)
+	assertRejectedBegin(t, f, v, c.OperationID, map[string]int{"ProjectAccess": 1})
 }
 
 func TestControlCommandAcceptsAdvertisedArguments(t *testing.T) {
-	f, v := connectFixture(t)
 	state := controlState()
 	hint := "instructions"
 	state.Controls.Commands[0].ArgumentHint = &hint
-	publishState(t, f, v, state)
-	c := controlCommand(v, "execute_command")
+	execution, current, currentTask := taskControlAuthorizationFixture(state)
+	c := controlCommand(current.Snapshot, "execute_command")
 	c.Payload = encode(sp.ExecuteCommand{CommandID: "compact", Arguments: "keep essential decisions", ExpectedControlsRevision: "1"})
-	if _, err := f.s.Submit(context.Background(), f.p, f.project, f.task, v.SessionID, c); err != nil {
+	if err := execution.authorizeCommand(context.Background(), nil, current, currentTask, c); err != nil {
 		t.Fatal("advertised command arguments rejected", err)
 	}
 }
@@ -337,14 +410,13 @@ func TestControlCommandAcceptsAdvertisedArguments(t *testing.T) {
 func TestControlsRejectUnavailableNativeActivities(t *testing.T) {
 	for _, activity := range []string{"initializing", "stopped", "unknown"} {
 		t.Run(activity, func(t *testing.T) {
-			f, v := connectFixture(t)
-			state := controlState()
-			state.Activity = activity
-			publishState(t, f, v, state)
 			for _, kind := range []string{"update_setting", "execute_command", "refresh_controls"} {
-				if _, err := f.s.Submit(context.Background(), f.p, f.project, f.task, v.SessionID, controlCommand(v, kind)); err == nil {
-					t.Fatal("unavailable activity accepted control", activity, kind)
-				}
+				t.Run(kind, func(t *testing.T) {
+					state := controlState()
+					state.Activity = activity
+					execution, current, currentTask := taskControlAuthorizationFixture(state)
+					requireControlConflict(t, execution.authorizeCommand(context.Background(), nil, current, currentTask, controlCommand(current.Snapshot, kind)))
+				})
 			}
 		})
 	}
@@ -358,12 +430,16 @@ func TestControlActivityRecheckedAtDispatch(t *testing.T) {
 			state := controlState()
 			publishState(t, f, v, state)
 			c := controlCommand(v, kind)
-			if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
+			if _, err := f.s.Submit(f.BrowserPhase(ctx, map[string]int{"SessionOperation": 1, "PendingSessionOperationCount": 1, "InsertSessionOperation": 1, "SaveSession": 1}), f.p, f.project, f.task, v.SessionID, c); err != nil {
 				t.Fatal(err)
 			}
-			if offers, err := f.s.Poll(ctx, v.ControllerFence); err != nil || len(offers) != 1 {
+			f.SelectOperationWrite(t)
+			f.SelectSessionWrite(t)
+			f.data.AcceptedIDs = []string{c.OperationID}
+			if offers, err := f.s.Poll(f.ControllerPhase(ctx, map[string]int{"AcceptedSessionOperations": 1, "SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationEpoch": 1, "SetSessionOperationReceipt": 1, "SaveSession": 1}), v.ControllerFence); err != nil || len(offers) != 1 {
 				t.Fatal(offers, err)
 			}
+			selectContentOffer(t, f)
 			state.Activity = "unknown"
 			publishState(t, f, v, state)
 			assertRejectedBegin(t, f, v, c.OperationID)
@@ -371,9 +447,15 @@ func TestControlActivityRecheckedAtDispatch(t *testing.T) {
 	}
 }
 
-func assertRejectedBegin(t *testing.T, f fixture, v sp.Snapshot, id string) {
+func assertRejectedBegin(t *testing.T, f fixture, v sp.Snapshot, id string, overrides ...map[string]int) {
 	t.Helper()
-	reply, err := f.s.Handle(context.Background(), sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: id})
+	counts := map[string]int{"SessionOperation": 1, "LockCredential": 2, "ProjectAccess": 2, "SetSessionOperationReceipt": 1, "TouchSession": 1, "SaveSession": 1}
+	for _, override := range overrides {
+		counts = mergeFixtureCounts(counts, override)
+	}
+	phase := f.ControllerPhase(context.Background(), counts)
+	defer f.dao.FinishContext(phase)
+	reply, err := f.s.Handle(phase, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: id})
 	if err != nil || reply["type"] != "receipt_ack" {
 		t.Fatal("stale operation closed channel", reply, err)
 	}
@@ -381,7 +463,9 @@ func assertRejectedBegin(t *testing.T, f fixture, v sp.Snapshot, id string) {
 	if !ok || operation.OperationID != id || operation.State != "rejected" {
 		t.Fatal("stale operation was authorized", reply)
 	}
-	stored, err := f.s.Operation(context.Background(), f.p, f.project, f.task, v.SessionID, id)
+	f.SelectReceiptWrite(t)
+	selectContentHandle(t, f)
+	stored, err := fixtureOperation(f, context.Background(), v, id)
 	if err != nil || stored.State != "rejected" {
 		t.Fatal("rejection not durable", stored, err)
 	}

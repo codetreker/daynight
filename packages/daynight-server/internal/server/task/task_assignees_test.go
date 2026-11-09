@@ -4,19 +4,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
@@ -35,17 +37,6 @@ type assigneeHTTPResult struct {
 
 func taskAssigneesPath(projectID string) string {
 	return "/api/v1/projects/" + projectID + "/task-assignees"
-}
-
-func assigneeHTTPIdentity(t *testing.T, database *store.Store, handler *resourceTestHandler, userID string) *resourceTestHandler {
-	t.Helper()
-	entropy := sha256.Sum256([]byte(userID + uuid.NewString()))
-	token := "dnpat_" + base64.RawURLEncoding.EncodeToString(entropy[:])
-	digest := sha256.Sum256([]byte(token))
-	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'assignee HTTP reader',now(),now()+interval '1 hour')`, uuid.NewString(), userID, digest[:]); err != nil {
-		t.Fatal(err)
-	}
-	return &resourceTestHandler{Handler: handler.Handler, token: token}
 }
 
 func assigneeHTTPQuery(ids ...string) string {
@@ -122,139 +113,165 @@ func assigneeHTTPEntries(t *testing.T, actual assigneeHTTPResult, expected map[s
 	return result
 }
 
-func taskAssigneeHTTPFacts(t *testing.T, database *store.Store, projectID string) string {
+func assigneeFact(id string, access bool, name, avatar *string) model.TaskAssignee {
+	return model.TaskAssignee{UserID: id, Version: strings.Repeat("a", 64), Name: name, AvatarURL: avatar, HasProjectAccess: access}
+}
+
+func assigneeResult(items []model.TaskAssignee, unresolved []string) model.TaskAssignees {
+	items = slices.Clone(items)
+	slices.SortFunc(items, func(a, b model.TaskAssignee) int { return strings.Compare(a.UserID, b.UserID) })
+	unresolved = slices.Clone(unresolved)
+	slices.Sort(unresolved)
+	return model.TaskAssignees{Items: items, UnresolvedUserIDs: unresolved}
+}
+
+func requireAssigneeCall(t *testing.T, ctx context.Context, principal model.Principal, projectID string, expected model.Principal, input, expectedInput taskservice.TaskAssigneesRequest) {
 	t.Helper()
-	var facts string
-	if err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t WHERE project_id=$1`, projectID).Scan(&facts); err != nil {
-		t.Fatal(err)
+	if ctx.Err() != nil || httpx.RequestID(ctx) != "project-test" || principal != expected || projectID != testProjectID || !reflect.DeepEqual(input, expectedInput) {
+		t.Fatalf("assignee request changed: principal=%#v project=%s input=%#v expected=%#v", principal, projectID, input, expectedInput)
 	}
-	return facts
 }
 
 func TestTaskAssigneesHTTPCatalogueAndBoundedResolution(t *testing.T) {
-	database := projectTestStore(t)
-	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	project := taskProject(t, handler)
-	emptyProfile := assignmentHTTPMember(t, database, project.ID)
-	named := assignmentHTTPMember(t, database, project.ID)
+	emptyProfile := "a5555555-a555-4555-8555-a55555555555"
+	named := "b6666666-b666-4666-8666-b66666666666"
+	retained := []string{"d7777777-d777-4777-8777-d77777777777", "e8888888-e888-4888-8888-e88888888888", "f9999999-f999-4999-8999-f99999999999"}
+	deletedOnly, unrelated, missing, otherOnly := "11111111-1111-4111-8111-111111111110", "11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111112", "11111111-1111-4111-8111-111111111113"
 	name, avatar := "Directory 中文", "https://images.example.test/assignee.png"
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE users SET name=$2,avatar_url=$3,email='directory-private-email@example.test' WHERE id=$1`, named, name, avatar); err != nil {
-		t.Fatal(err)
+	catalogue := []model.TaskAssignee{assigneeFact(testUserID, true, nil, nil), assigneeFact(emptyProfile, true, nil, nil), assigneeFact(named, true, &name, &avatar)}
+	for _, id := range retained {
+		catalogue = append(catalogue, assigneeFact(id, false, nil, nil))
 	}
-	expected := map[string]bool{handler.principal.UserID: true, emptyProfile: true, named: true}
-	var retained []string
-	for _, state := range []string{"todo", "in_progress", "done"} {
-		id := assignmentHTTPMember(t, database, project.ID)
-		task := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Retained " + state, "assignedTo": id})), http.StatusCreated)
-		if state != "todo" {
-			setHTTPTask(t, handler, task, state)
-		}
-		if state == "todo" {
-			decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Repeated reference", "assignedTo": id})), http.StatusCreated)
-		}
-		if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, id); err != nil {
-			t.Fatal(err)
-		}
-		expected[id] = false
-		retained = append(retained, id)
-	}
-	deletedOnly := assignmentHTTPMember(t, database, project.ID)
-	deletedTask := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Deleted reference", "assignedTo": deletedOnly})), http.StatusCreated)
-	if response := projectRequest(handler, http.MethodDelete, taskPath(deletedTask), jsonBody(t, api.TaskDeleteRequest{Version: deletedTask.Version})); response.Code != http.StatusNoContent {
-		t.Fatalf("delete fixture: %d %s", response.Code, response.Body)
-	}
-	if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, deletedOnly); err != nil {
-		t.Fatal(err)
-	}
-	unrelated := assignmentHTTPUser(t, database)
-	missing := uuid.NewString()
-	otherProject := taskProject(t, handler)
-	otherOnly := assignmentHTTPMember(t, database, otherProject.ID)
-	decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(otherProject.ID), jsonBody(t, map[string]any{"title": "Foreign project reference", "assignedTo": otherOnly})), http.StatusCreated)
-	before := taskAssigneeHTTPFacts(t, database, project.ID)
-	path := taskAssigneesPath(project.ID)
-	catalogueResponse := projectRequest(handler, http.MethodGet, path, "")
-	catalogue := decodeAssigneeHTTPResult(t, catalogueResponse, handler.principal.UserID)
-	entries := assigneeHTTPEntries(t, catalogue, expected, nil)
-	if entries[emptyProfile].Name != nil || entries[emptyProfile].AvatarURL != nil || entries[named].Name == nil || *entries[named].Name != name || entries[named].AvatarURL == nil || *entries[named].AvatarURL != avatar {
-		t.Fatalf("nullable/current profile data changed: %#v", entries)
-	}
+	expected := map[string]bool{testUserID: true, emptyProfile: true, named: true, retained[0]: false, retained[1]: false, retained[2]: false}
 	requested := []string{otherOnly, retained[2], missing, strings.ToUpper(emptyProfile), unrelated, retained[0], deletedOnly, retained[1]}
-	resolved := decodeAssigneeHTTPResult(t, projectRequest(handler, http.MethodGet, path+assigneeHTTPQuery(requested...), ""), handler.principal.UserID)
-	assigneeHTTPEntries(t, resolved, map[string]bool{emptyProfile: true, retained[0]: false, retained[1]: false, retained[2]: false}, []string{deletedOnly, unrelated, missing, otherOnly})
-	one := decodeAssigneeHTTPResult(t, projectRequest(handler, http.MethodGet, path+assigneeHTTPQuery(named), ""), handler.principal.UserID)
-	assigneeHTTPEntries(t, one, map[string]bool{named: true}, nil)
-	unresolvedOnly := decodeAssigneeHTTPResult(t, projectRequest(handler, http.MethodGet, path+assigneeHTTPQuery(unrelated, missing), ""), handler.principal.UserID)
-	assigneeHTTPEntries(t, unresolvedOnly, map[string]bool{}, []string{unrelated, missing})
-	member := assigneeHTTPIdentity(t, database, handler, emptyProfile)
-	memberResult := decodeAssigneeHTTPResult(t, projectRequest(member, http.MethodGet, path, ""), emptyProfile)
-	assigneeHTTPEntries(t, memberResult, expected, nil)
-	if taskAssigneeHTTPFacts(t, database, project.ID) != before {
-		t.Fatal("people reads changed task data or versions")
+	cases := []struct {
+		name   string
+		input  taskservice.TaskAssigneesRequest
+		result model.TaskAssignees
+		access map[string]bool
+		actor  string
+	}{
+		{"catalogue", taskservice.TaskAssigneesRequest{}, assigneeResult(catalogue, nil), expected, testUserID},
+		{"resolution", taskservice.TaskAssigneesRequest{UserIDs: requested}, assigneeResult([]model.TaskAssignee{assigneeFact(emptyProfile, true, nil, nil), assigneeFact(retained[0], false, nil, nil), assigneeFact(retained[1], false, nil, nil), assigneeFact(retained[2], false, nil, nil)}, []string{deletedOnly, unrelated, missing, otherOnly}), map[string]bool{emptyProfile: true, retained[0]: false, retained[1]: false, retained[2]: false}, testUserID},
+		{"one", taskservice.TaskAssigneesRequest{UserIDs: []string{named}}, assigneeResult([]model.TaskAssignee{assigneeFact(named, true, &name, &avatar)}, nil), map[string]bool{named: true}, testUserID},
+		{"unresolved only", taskservice.TaskAssigneesRequest{UserIDs: []string{unrelated, missing}}, assigneeResult(nil, []string{unrelated, missing}), map[string]bool{}, testUserID},
+		{"member catalogue", taskservice.TaskAssigneesRequest{}, assigneeResult(catalogue, nil), expected, emptyProfile},
 	}
-	for _, private := range []string{"directory-private-email", "assignment-" + named, unrelated, otherOnly} {
-		if strings.Contains(catalogueResponse.Body.String(), private) || strings.Contains(logs.String(), private) {
-			t.Fatalf("assignee catalogue or logs leaked private input %q", private)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := newHTTPFixture(t, &logs)
+			h.principal.UserID = tc.actor
+			h.Tasks.AssigneesFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskAssigneesRequest) (model.TaskAssignees, error) {
+				requireAssigneeCall(t, ctx, p, projectID, h.principal, input, tc.input)
+				return tc.result, nil
+			}
+			path := taskAssigneesPath(testProjectID)
+			if tc.input.UserIDs != nil {
+				path += assigneeHTTPQuery(tc.input.UserIDs...)
+			}
+			response := projectRequest(h, http.MethodGet, path, "")
+			actual := decodeAssigneeHTTPResult(t, response, h.principal.UserID)
+			entries := assigneeHTTPEntries(t, actual, tc.access, tc.result.UnresolvedUserIDs)
+			if entry, ok := entries[emptyProfile]; ok && (entry.Name != nil || entry.AvatarURL != nil) {
+				t.Fatal("nullable profile fields became defaults")
+			}
+			if entry, ok := entries[named]; ok && (entry.Name == nil || *entry.Name != name || entry.AvatarURL == nil || *entry.AvatarURL != avatar) {
+				t.Fatal("public profile fields changed")
+			}
+			for _, private := range []string{"directory-private-email", "assignment-" + named, unrelated, otherOnly} {
+				if strings.Contains(logs.String(), private) || tc.input.UserIDs == nil && strings.Contains(response.Body.String(), private) {
+					t.Fatalf("assignee resource or logs leaked %q: %s %s", private, response.Body, &logs)
+				}
+			}
+		})
 	}
 }
 
 func TestTaskAssigneesHTTPStrictQueryAndHundredIDBoundary(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	project := taskProject(t, handler)
-	path := taskAssigneesPath(project.ID)
-	for _, query := range []string{
-		"?userId=", "?userId=me", "?userId=unassigned", "?userId=invalid", "?userId=%xx", "?userId=%ff", "?userId=%00", "?%xx=x", "?unknown=x", "?UserId=" + handler.principal.UserID, "?userId=" + handler.principal.UserID + "&userId=" + handler.principal.UserID,
-		"?userId=" + handler.principal.UserID + "&userId=" + strings.ToUpper(handler.principal.UserID), "?userId=%20" + handler.principal.UserID, "?;", "?=x",
+	for _, tc := range []struct {
+		query string
+		raw   []string
+	}{
+		{"?userId=", nil}, {"?userId=me", []string{"me"}}, {"?userId=unassigned", []string{"unassigned"}}, {"?userId=invalid", []string{"invalid"}},
+		{"?userId=%xx", nil}, {"?userId=%ff", []string{"\xff"}}, {"?userId=%00", []string{"\x00"}}, {"?%xx=x", nil}, {"?unknown=x", nil}, {"?UserId=" + testUserID, nil},
+		{"?userId=" + testUserID + "&userId=" + testUserID, []string{testUserID, testUserID}},
+		{"?userId=" + testUserID + "&userId=" + strings.ToUpper(testUserID), []string{testUserID, strings.ToUpper(testUserID)}},
+		{"?userId=%20" + testUserID, []string{" " + testUserID}}, {"?;", nil}, {"?=x", nil},
 	} {
-		response := projectRequest(handler, http.MethodGet, path+query, "")
-		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
-		if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != handler.principal.UserID {
-			t.Fatal("invalid assignee query lost request admission headers")
-		}
+		t.Run(tc.query, func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			if tc.raw != nil {
+				h.Tasks.AssigneesFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskAssigneesRequest) (model.TaskAssignees, error) {
+					requireAssigneeCall(t, ctx, p, projectID, h.principal, input, taskservice.TaskAssigneesRequest{UserIDs: tc.raw})
+					return model.TaskAssignees{}, &model.Fault{Code: "invalid_input", Message: "Invalid assignee identities."}
+				}
+			}
+			response := projectRequest(h, http.MethodGet, taskAssigneesPath(testProjectID)+tc.query, "")
+			assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+			if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != h.principal.UserID {
+				t.Fatal("invalid query lost admission/cache headers")
+			}
+			if tc.raw == nil && h.Tasks.TotalCalls() != 0 {
+				t.Fatal("invalid HTTP query reached service")
+			}
+		})
 	}
-	ids := []string{handler.principal.UserID}
+	ids := []string{testUserID}
 	for len(ids) < 100 {
 		ids = append(ids, uuid.NewString())
 	}
-	response := projectRequest(handler, http.MethodGet, path+assigneeHTTPQuery(ids...), "")
-	result := decodeAssigneeHTTPResult(t, response, handler.principal.UserID)
-	assigneeHTTPEntries(t, result, map[string]bool{handler.principal.UserID: true}, ids[1:])
+	h := newHTTPFixture(t, io.Discard)
+	result := assigneeResult([]model.TaskAssignee{assigneeFact(testUserID, true, nil, nil)}, ids[1:])
+	h.Tasks.AssigneesFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskAssigneesRequest) (model.TaskAssignees, error) {
+		requireAssigneeCall(t, ctx, p, projectID, h.principal, input, taskservice.TaskAssigneesRequest{UserIDs: ids[:100]})
+		return result, nil
+	}
+	actual := decodeAssigneeHTTPResult(t, projectRequest(h, http.MethodGet, taskAssigneesPath(testProjectID)+assigneeHTTPQuery(ids...), ""), testUserID)
+	assigneeHTTPEntries(t, actual, map[string]bool{testUserID: true}, ids[1:])
 	ids = append(ids, uuid.NewString())
-	assertProjectError(t, projectRequest(handler, http.MethodGet, path+assigneeHTTPQuery(ids...), ""), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, projectRequest(h, http.MethodGet, taskAssigneesPath(testProjectID)+assigneeHTTPQuery(ids...), ""), http.StatusBadRequest, "invalid_input")
+	if h.Tasks.Calls("Assignees") != 1 {
+		t.Fatal("101-ID boundary reached service")
+	}
 }
 
 func TestTaskAssigneesHTTPAdmissionMethodsAndRemovedReader(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
-	path := taskAssigneesPath(project.ID)
-	readerID := assignmentHTTPMember(t, database, project.ID)
-	reader := assigneeHTTPIdentity(t, database, handler, readerID)
-	task := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Assignment gives no read permission", "assignedTo": readerID})), http.StatusCreated)
-	decodeAssigneeHTTPResult(t, projectRequest(reader, http.MethodGet, path, ""), readerID)
-	anonymous := projectRequest(handler.Handler, http.MethodGet, path, "")
+	h := newHTTPFixture(t, io.Discard)
+	path := taskAssigneesPath(testProjectID)
+	readerID := "a5555555-a555-4555-8555-a55555555555"
+	h.Tasks.ExpectCalls("Assignees", 2)
+	calls := 0
+	h.Tasks.AssigneesFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskAssigneesRequest) (model.TaskAssignees, error) {
+		calls++
+		want := taskservice.TaskAssigneesRequest{}
+		if calls == 2 {
+			want.UserIDs = []string{readerID}
+		}
+		requireAssigneeCall(t, ctx, p, projectID, h.principal, input, want)
+		return assigneeResult([]model.TaskAssignee{assigneeFact(readerID, true, nil, nil)}, nil), nil
+	}
+	decodeAssigneeHTTPResult(t, projectRequest(h, http.MethodGet, path, ""), testUserID)
+	anonymous := projectRequest(h.Handler, http.MethodGet, path, "")
 	assertProjectError(t, anonymous, http.StatusUnauthorized, "unauthenticated")
 	if anonymous.Header().Get("Daynight-User-ID") != "" {
-		t.Fatal("unauthenticated assignee response disclosed identity")
+		t.Fatal("anonymous response disclosed identity")
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodGet, taskAssigneesPath(uuid.NewString()), ""), http.StatusNotFound, "not_found")
-	assertProjectError(t, projectRequest(handler, http.MethodGet, taskAssigneesPath("invalid"), ""), http.StatusBadRequest, "invalid_input")
+	assertProjectError(t, projectRequest(h, http.MethodGet, taskAssigneesPath("invalid"), ""), http.StatusBadRequest, "invalid_input")
 	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
-		response := projectRequest(handler, method, path, "private request body")
+		response := projectRequest(h, method, path, "private request body")
 		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
 		if response.Header().Get("Allow") != "GET, HEAD" || response.Header().Get("Cache-Control") != "no-store" {
-			t.Fatalf("assignee methods: %#v", response.Header())
+			t.Fatalf("assignee method headers: %#v", response.Header())
 		}
 	}
-	server := httptest.NewServer(handler)
-	defer server.Close()
+	server := httptest.NewServer(h)
+	t.Cleanup(server.Close)
 	request, err := http.NewRequest(http.MethodHead, server.URL+path+assigneeHTTPQuery(readerID), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorizeResourceRequest(handler, request)
+	authorizeResourceRequest(h, request)
 	request.Header.Set("X-Request-ID", "project-test")
 	response, err := server.Client().Do(request)
 	if err != nil {
@@ -262,54 +279,65 @@ func TestTaskAssigneesHTTPAdmissionMethodsAndRemovedReader(t *testing.T) {
 	}
 	body, readErr := io.ReadAll(response.Body)
 	response.Body.Close()
-	if readErr != nil || len(body) != 0 || response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Daynight-User-ID") != handler.principal.UserID || response.Header.Get("Content-Type") != "application/json" {
+	if readErr != nil || len(body) != 0 || response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Daynight-User-ID") != testUserID || response.Header.Get("Content-Type") != "application/json" {
 		t.Fatalf("HEAD assignees: %#v %s %v", response, body, readErr)
 	}
-	if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, readerID); err != nil {
-		t.Fatal(err)
-	}
 	for _, suffix := range []string{"", assigneeHTTPQuery(readerID)} {
-		assertProjectError(t, projectRequest(reader, http.MethodGet, path+suffix, ""), http.StatusNotFound, "not_found")
+		t.Run("removed reader"+suffix, func(t *testing.T) {
+			removed := newHTTPFixture(t, io.Discard)
+			removed.principal.UserID = readerID
+			want := taskservice.TaskAssigneesRequest{}
+			if suffix != "" {
+				want.UserIDs = []string{readerID}
+			}
+			removed.Tasks.AssigneesFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskAssigneesRequest) (model.TaskAssignees, error) {
+				requireAssigneeCall(t, ctx, p, projectID, removed.principal, input, want)
+				return model.TaskAssignees{}, &model.Fault{Code: "not_found", Message: "Project not found."}
+			}
+			assertProjectError(t, projectRequest(removed, http.MethodGet, path+suffix, ""), http.StatusNotFound, "not_found")
+		})
 	}
-	if stored := readHTTPTask(t, handler, task); stored.AssignedTo == nil || *stored.AssignedTo != readerID {
-		t.Fatal("removing reader cleared retained assignment")
+	missing := newHTTPFixture(t, io.Discard)
+	missing.Tasks.AssigneesFunc = func(ctx context.Context, p model.Principal, projectID string, input taskservice.TaskAssigneesRequest) (model.TaskAssignees, error) {
+		if p != missing.principal || projectID != testEpoch || input.UserIDs != nil {
+			t.Fatal("missing project identity changed")
+		}
+		return model.TaskAssignees{}, &model.Fault{Code: "not_found", Message: "Project not found."}
 	}
+	assertProjectError(t, projectRequest(missing, http.MethodGet, taskAssigneesPath(testEpoch), ""), http.StatusNotFound, "not_found")
 }
 
 func TestTaskAssigneesHTTPMissingQualifiedUsersFailWithoutPartialData(t *testing.T) {
-	for _, retained := range []bool{false, true} {
-		t.Run(map[bool]string{false: "member", true: "retained assignee"}[retained], func(t *testing.T) {
-			database := projectTestStore(t)
-			var logs bytes.Buffer
-			handler := projectTestHandler(t, database, &logs)
-			project := taskProject(t, handler)
-			missing := assignmentHTTPMember(t, database, project.ID)
-			if retained {
-				decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Missing retained user", "assignedTo": missing})), http.StatusCreated)
-				if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, missing); err != nil {
-					t.Fatal(err)
+	missing := "a5555555-a555-4555-8555-a55555555555"
+	for _, name := range []string{"member", "retained assignee"} {
+		for _, suffix := range []string{"", assigneeHTTPQuery(testUserID, missing)} {
+			t.Run(name+suffix, func(t *testing.T) {
+				var logs bytes.Buffer
+				h := newHTTPFixture(t, &logs)
+				input := taskservice.TaskAssigneesRequest{}
+				if suffix != "" {
+					input.UserIDs = []string{testUserID, missing}
 				}
-			}
-			if _, err := database.Pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, missing); err != nil {
-				t.Fatal(err)
-			}
-			for _, suffix := range []string{"", assigneeHTTPQuery(handler.principal.UserID, missing)} {
-				response := projectRequest(handler, http.MethodGet, taskAssigneesPath(project.ID)+suffix, "")
+				h.Tasks.AssigneesFunc = func(ctx context.Context, p model.Principal, projectID string, actual taskservice.TaskAssigneesRequest) (model.TaskAssignees, error) {
+					requireAssigneeCall(t, ctx, p, projectID, h.principal, actual, input)
+					return model.TaskAssignees{}, errors.New("qualified user " + missing + " is missing")
+				}
+				response := projectRequest(h, http.MethodGet, taskAssigneesPath(testProjectID)+suffix, "")
 				assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
 				var fields map[string]json.RawMessage
 				if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
 					t.Fatal(err)
 				}
 				if _, ok := fields["items"]; ok {
-					t.Fatal("qualified user corruption returned partial people")
+					t.Fatal("integrity failure returned partial people")
 				}
 				if _, ok := fields["unresolvedUserIds"]; ok {
-					t.Fatal("qualified user corruption became unresolved")
+					t.Fatal("integrity failure became unresolved")
 				}
-			}
-			if strings.Contains(logs.String(), missing) {
-				t.Fatal("integrity failure logs leaked the requested identity")
-			}
-		})
+				if strings.Contains(logs.String(), missing) || strings.Contains(response.Body.String(), missing) {
+					t.Fatal("integrity failure disclosed requested identity")
+				}
+			})
+		}
 	}
 }

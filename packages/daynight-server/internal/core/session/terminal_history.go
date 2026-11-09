@@ -62,7 +62,7 @@ func (s *Execution) TerminalArchiveState(ctx context.Context, p model.Principal,
 
 func (s *Execution) CurrentTerminal(ctx context.Context, p model.Principal, project, taskID string) (map[string]any, error) {
 	var out map[string]any
-	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, admin bool, _ func(string) (*Access, error)) error {
+	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, _ func(string) (*Access, error)) error {
 		_, tx := op.scoped(scope)
 		t := task.task
 		if t.Worker == nil || t.Worker.AgentControlMode != model.AgentControlModeHerdr {
@@ -81,7 +81,7 @@ func (s *Execution) CurrentTerminal(ctx context.Context, p model.Principal, proj
 		if err != nil {
 			return err
 		}
-		out, err = s.terminalState(ctx, tx, r, t, admin || p.UserID == r.Owner.OwnerUserID)
+		out, err = s.terminalState(ctx, tx, r, t, p.UserID == r.Owner.OwnerUserID)
 		return err
 	})
 	return out, err
@@ -90,7 +90,7 @@ func (s *Execution) CurrentTerminal(ctx context.Context, p model.Principal, proj
 type terminalHistoryCursor struct{ Project, Task, Created, ID string }
 
 func (s *Execution) TerminalHistory(ctx context.Context, p model.Principal, project, taskID, token string, limit int) (map[string]any, error) {
-	if limit < 1 || limit > 200 || len(token) > 1024 {
+	if limit < 1 || limit > 200 || len(token) > v2.MaxHistoryCursorBytes {
 		return nil, fault("invalid_payload", "Invalid Session history page.")
 	}
 	var position terminalHistoryCursor
@@ -112,7 +112,7 @@ func (s *Execution) TerminalHistory(ctx context.Context, p model.Principal, proj
 		beforeID = &position.ID
 	}
 	var out map[string]any
-	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, _ *TaskAccess, _ bool, _ func(string) (*Access, error)) error {
+	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, _ *TaskAccess, _ func(string) (*Access, error)) error {
 		_, tx := op.scoped(scope)
 		rows, err := tx.dao.TerminalHistory(ctx, project, taskID, before, beforeID, limit+1)
 		if err != nil {

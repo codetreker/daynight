@@ -17,11 +17,12 @@ type WorkerProjectConfiguration struct {
 }
 
 type WorkerConfiguration struct {
-	MaxConcurrent  int64                        `json:"maxConcurrent"`
-	PollIntervalMs int64                        `json:"pollIntervalMs"`
-	RecoveryLimit  int64                        `json:"recoveryLimit"`
-	Native         WorkerNativeConfiguration    `json:"native"`
-	Projects       []WorkerProjectConfiguration `json:"projects"`
+	PreferPlatformSpecificTasks bool                         `json:"preferPlatformSpecificTasks"`
+	MaxConcurrent               int64                        `json:"maxConcurrent"`
+	PollIntervalMs              int64                        `json:"pollIntervalMs"`
+	RecoveryLimit               int64                        `json:"recoveryLimit"`
+	Native                      WorkerNativeConfiguration    `json:"native"`
+	Projects                    []WorkerProjectConfiguration `json:"projects"`
 }
 
 type WorkerDesiredConfiguration struct {

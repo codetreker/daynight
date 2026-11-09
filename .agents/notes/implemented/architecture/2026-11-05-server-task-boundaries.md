@@ -17,6 +17,11 @@ Session effects, and interprets completion. `server/task` adapts Task HTTP
 resources. The [Task data decision](2026-11-05-task-data-ownership.md) owns the
 shared property and encoding definitions.
 
+For assignment changes, `core/task` checks the Task state and produces the
+candidate with agent permission disabled. The service validates a non-null new
+assignee's Project access in the same write scope before adopting that candidate.
+Unchanged assignments do not require renewed access.
+
 Task changes, Session freezing and cache invalidation share the Project write
 transaction. `core/session` selects the claim fence and draining transition. Thread
 writes use a dedicated scope that locks Task, credential, authorization and head
@@ -32,9 +37,13 @@ to inspect or reuse.
 **Use Project writes for Thread messages.** Prelocking Project changes the
 existing lock order and serializes unrelated messages and Project writes.
 
+**Set agent permission in the service.** Project admission belongs there, but
+the permission reset is a Task rule and would have a separate owner from the
+assignment transition.
+
 ## Consequences
 
 Transaction-bound capabilities remain valid only inside their callback. Domain
 refusals cannot mask completion failures. Thread messages preserve the Task
-version and do not wake Workers. SQL stays in the existing store implementation
-until its separately owned physical migration.
+version and do not wake Workers. The [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns SQL and
+transaction-bound Task DAOs.

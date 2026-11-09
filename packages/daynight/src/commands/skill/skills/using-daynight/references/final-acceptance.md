@@ -8,6 +8,10 @@ Define the acceptance scope, requirement sources, actual delivery inputs, and ob
 Read the complete confirmed requirements and changes, actual deliverables, and acceptance criteria.
 Use manual verification, existing checks, or temporary helpers as needed to verify required implementation and actual PR merges.
 Conclusions must cover the entire agreed scope; do not report the original task or Goal as having passed when required outcomes are unmet or unverified.
+Done and cancelled both end scheduling, but only done claims successful delivery.
+A cancelled task satisfies dependency readiness without proving its output exists;
+acceptance must assess the current confirmed requirements and actual combined
+results rather than count cancelled tasks as delivered requirements.
 
 Deliver requirement-based conclusions, defects, unverified items, and the evaluated sources, key observations, and material limitations needed to support those conclusions in the owning task.
 Content ownership follows the [task content standard](task-content.md); managed acceptance must also meet the evidence attachment requirements of the [complete delivery standard](autopilot-managed-task.md#complete-delivery-standard).

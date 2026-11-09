@@ -3,7 +3,10 @@ package team
 import (
 	"context"
 	"errors"
+	"fmt"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -23,6 +26,65 @@ func Members(ctx context.Context, dao store.TeamReader, p model.Principal, id st
 	}
 	return dao.TeamMembers(ctx, id)
 }
+
+// MemberPage is a bounded directory in membership creation order.
+type MemberPage struct {
+	Items      []model.TeamMemberProfile
+	NextCursor *string
+}
+
+func memberScope(p model.Principal, id string) query.ListScope {
+	return query.ListScope{Kind: "team_members", UserID: p.UserID, TeamID: id}
+}
+
+// EncodeMemberCursor binds a position to the actor and selected Team.
+func EncodeMemberCursor(p model.Principal, id string, member model.TeamMemberProfile) (string, error) {
+	return query.EncodeListCursor(memberScope(p, id), member.Membership.CreatedAt, member.Membership.UserID)
+}
+
+func MembersPage(ctx context.Context, dao store.TeamReader, p model.Principal, id string, request model.PageRequest) (MemberPage, error) {
+	page, err := query.ListPage(request, memberScope(p, id))
+	if err != nil {
+		return MemberPage{}, err
+	}
+	if err := teamAccess(ctx, dao, p, id); err != nil {
+		return MemberPage{}, err
+	}
+	result, err := dao.TeamMembersPage(ctx, id, page)
+	if err != nil {
+		return MemberPage{}, err
+	}
+	response := MemberPage{Items: result.Items}
+	if result.HasMore {
+		last := result.Items[len(result.Items)-1]
+		cursor, err := EncodeMemberCursor(p, id, last)
+		if err != nil {
+			return MemberPage{}, fmt.Errorf("encode Team member cursor: %w", err)
+		}
+		response.NextCursor = &cursor
+	}
+	return response, nil
+}
+
+func teamAccess(ctx context.Context, dao store.TeamReader, p model.Principal, id string) error {
+	err := dao.TeamAccess(ctx, p.UserID, id)
+	if errors.Is(err, model.ErrNotFound) {
+		return &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
+	}
+	return err
+}
+
+func Member(ctx context.Context, dao store.TeamReader, p model.Principal, id, userID string) (model.TeamMember, error) {
+	if err := teamAccess(ctx, dao, p, id); err != nil {
+		return model.TeamMember{}, err
+	}
+	member, err := dao.InvitationTeamMember(ctx, id, userID)
+	if errors.Is(err, model.ErrNotFound) {
+		return model.TeamMember{}, &model.Fault{Code: "not_found", Message: "Team member was not found.", Cause: err}
+	}
+	return member, err
+}
+
 func ValidateMemberChange(p model.Principal, id, userID string, input ChangeTeamMember, remove bool) (string, string, error) {
 	if err := RequireActor(p, input.ExpectedUserID); err != nil {
 		return "", "", err

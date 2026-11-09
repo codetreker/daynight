@@ -9,7 +9,7 @@ import { updateConfigurationFile } from "../../../src/config/files.js";
 import { parseWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import {
   assertWorkerConfigurationIsLocal, parseWorkerCloudBootstrap, parseWorkerLocalConfiguration,
-  readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForProject,
+  readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForId, workerLocalRepositoryForProject,
 } from "../../../src/commands/worker/configuration-source.js";
 import { resolveWorkerCloudProjectNative } from "../../../src/commands/worker/configuration.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -22,7 +22,7 @@ const time = "2026-11-04T00:00:00Z";
 const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
 const user = { id: uuid(1), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(2), kind: "personal", name: null } };
 const native = { agent: "codex" as const, model: "global", args: ["--search"] };
-const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 2000, recoveryLimit: 3, native, projects: [] };
+const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 2000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: [] };
 const connection = { serverUrl: "https://service.example", serverToken: token };
 const directories: string[] = [];
 const fixture = async (data: Record<string, unknown> = {}) => {
@@ -56,6 +56,15 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration sources", () => {
+  it("rejects a 129-Project bootstrap before remote lookup and leaves the source unchanged", async () => {
+    const repositories = Array.from({ length: 129 }, (_, n) => ({ projectId: uuid(n + 10), remote: `https://git.example/team/repo${n}.git`, path: `../repo${n}` }));
+    const f = await fixture({ worker: { repositories } });
+    const resolve = vi.fn(async () => ({ id: uuid(1) }));
+    await expect(parseWorkerCloudBootstrap(f.source, f.paths, resolve, new AbortController().signal)).rejects.toThrow("128");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(() => parseWorkerConfiguration(f.source, f.paths)).toThrow("128");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
   it("reads only local-owned values while obsolete managed values are invalid", async () => {
     const f = await fixture({ worker: { agent: "unsupported", args: null, maxConcurrent: -1, repositories: "obsolete", repositoryRoot: "../local-repositories", agentControlMode: "web" } });
     const local = await readWorkerLocalConfiguration(f.paths);
@@ -98,6 +107,18 @@ describe("Worker cloud configuration sources", () => {
     expect(() => resolveCloudNative(seed.native, "herdr", seed.recoveryLimit)).toThrow();
   });
 
+  it("imports the optional platform preference with a false default and strict explicit booleans", async () => {
+    const f = await fixture();
+    const resolve = vi.fn(async () => ({ id: project.id }));
+    for (const preference of [true, false]) {
+      const seed = await parseWorkerCloudBootstrap(stringify({ worker: { preferPlatformSpecificTasks: preference } }), f.paths, resolve, new AbortController().signal);
+      expect(seed.preferPlatformSpecificTasks).toBe(preference);
+    }
+    expect((await parseWorkerCloudBootstrap(f.source, f.paths, resolve, new AbortController().signal)).preferPlatformSpecificTasks).toBe(false);
+    await expect(parseWorkerCloudBootstrap(stringify({ worker: { preferPlatformSpecificTasks: "true" } }), f.paths, resolve, new AbortController().signal)).rejects.toThrow();
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it("does not replace invalid explicit first-import values with defaults", async () => {
     const f = await fixture({ worker: { maxConcurrent: 0 } });
     await expect(parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal)).rejects.toThrow();
@@ -110,6 +131,8 @@ describe("Worker cloud configuration sources", () => {
     ] } });
     const local = await readWorkerLocalConfiguration(f.paths);
     expect(await workerLocalRepositoryForProject(local, f.paths, project)).toEqual({ projectId: project.id, remote: project.repoUrl, path: path.join(f.directory, "retained") });
+    expect(await workerLocalRepositoryForId(local, f.paths, project.id)).toEqual({ projectId: project.id, remote: project.repoUrl, path: path.join(f.directory, "retained") });
+    expect(await workerLocalRepositoryForId(local, f.paths, uuid(8))).toBeUndefined();
   });
 
   it("rejects selected mapping conflicts and physical overlaps with local state", async () => {

@@ -39,7 +39,7 @@ lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`re
 
 具有 not_submitted 事实的 `prepared` 运行可以重新接入，但在 `agent.start` 前必须核对原 daemon、shell 和端点。随后将 `launch_requested` 与 `nativeLaunch=requested` 同一事务持久化，再调用 `HerdrAgentManager.launch`；该调用只启动原生进程，不发送 assignment，也不以 `nativeSessionId` 出现作为启动成功的前提。每次实际 `agent.start`（包括明确 shell busy 后的重试）之前，再核对原 claim、daemon、端点与 shell 出生身份；变化时不发出下一次启动请求。取得原 native agent 的进程身份时，将追加身份、`active` 与 `nativeLaunch=observed` 同一事务保存，建立采集段后才进入输入阶段。启动结果尚未持久确认的崩溃恢复为 `stop_unknown`，不能再次启动。manager.launch 内即使前提检查先失败，已经写入的 requested 仍不回退；某次 not-submitted 异常不能证明完整启动历史从未提交。
 
-首次 assignment 保存为 `pending`，递交前写 `dispatching` 和本次 admission。`submitInitialPrompt`、后续 `submitPrompt`、网页输入和 cleanup 进入同一持久仲裁器；`durable.ts` 不使用 legacy `agent.prompt` 递交正文。严格 terminal 输入每帧之前再次核对原 claim、paused、运行身份、服务端控制状态和 admission。明确未发送可回到 pending；已知菜单/禁用输入的零写入等待须保留原类型，输入 journal 先登记 rejected，生命周期再清除本次 admission 并为首次 assignment 保留 pending，不能因跨层序列化而计作执行失败。成功传输保存为 `transport_completed`；一旦可能已写，任何失败仍保存为 unknown 并阻断重放。独立人工处置可以授权继续，但不会改写原始 unknown。这里的成功仅表示输入传输完成，不证明业务完成或模型已处理正文。
+首次 assignment 保存为 `pending`，递交前写 `dispatching` 和本次 admission。`submitInitialPrompt`、后续 `submitPrompt`、网页输入和 cleanup 进入同一持久仲裁器；`durable.ts` 不使用 legacy `agent.prompt` 递交正文。严格 terminal 输入每帧之前再次核对原 claim、运行身份、服务端控制状态和 admission，并按输入用途检查 paused：自动输入受暂停约束，人工输入仍须通过原有身份、lease 和 fence 校验。明确未发送可回到 pending；任务暂停、合法人工控制或挂起以及已知菜单/禁用输入的零写入等待须保留明确的内部类型。仲裁器已登记时输入 journal 先登记 rejected，生命周期再清除本次 admission 并为首次 assignment 保留 pending，不能因跨层序列化而计作执行失败。成功传输保存为 `transport_completed`；一旦可能已写，任何失败仍保存为 unknown 并阻断重放。独立人工处置可以授权继续，但不会改写原始 unknown。这里的成功仅表示输入传输完成，不证明业务完成或模型已处理正文。
 
 `nativeSessionId` 可以在首次输入之后补齐，但已知值不可更换。输入后的观察与普通轮询负责同步补齐后的完整 ledger，未确认请求继续读回对账；确认后恢复同段缓存画面的投递。快照的 ledger hash 与 fence 校验始终保留，已传输输入不因 ledger 同步失败而重发。重连不重发 assignment；恢复已确认停止的运行时仍使用原 native conversation；只有原自动状态安全、身份有效且 `resume` 用途的输入检查通过时才恢复自动 continuation，人工状态继续 suspended。恢复自动执行的真实空字段证明与日常 automatic/cleanup 的已知阻塞排除不同；后者报告 composer unavailable，不能被用于把未知布局或草稿推断为空。自动输入未知、原生 ID 未知或原运行未确认停止，都不能通过新开对话规避。
 
@@ -47,7 +47,7 @@ lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`re
 
 普通 Worker 重启接入仍存活的原运行时，重新确认 Session 连接并增加 `connectionEpoch`，保持 `sessionId` 与 `executionGeneration`。只有原运行具有普通 shell+agent 停止证明、原 claim 仍有效且原 native ID 与首次输入结果可用于恢复，才创建下一代实际运行。准备资源停止证明不授予下一代运行或自动恢复，即使该代继承了前代非空 nativeSessionId。
 
-仅 relay 连接断开、Worker 与原生运行仍存活时，普通 observe 也会核对连接是否缺失，不依赖 nativeSessionId、账本或画面发生变化。重连前再次验证原 claim、allowAgents 与原 daemon/socket peer/shell/agent 身份，并沿用持久注册和未知请求只读对账路径。重连只提高 connectionEpoch，保持原 Session、运行代次和录制段；先前断线造成的 suspended、未知输入回执和草稿责任不解除，不触发原始输入或 continuation。任务 paused 仍可恢复只读观察连接，但不由此获得输入或自动恢复权限。claim 已失效、执行权限被撤销或原进程身份不能确认时不创建新连接。浏览器隐藏、租约撤销或过期只暂停输入，仍在线的原 relay 连接保持已确认状态；不能据此重注册或提高 connectionEpoch。只有输入通道实际关闭后才清除连接标记。
+仅 relay 连接断开、Worker 与原生运行仍存活时，普通 observe 也会核对连接是否缺失，不依赖 nativeSessionId、账本或画面发生变化。重连前再次验证原 claim、allowAgents 与原 daemon/socket peer/shell/agent 身份，并沿用持久注册和未知请求只读对账路径。重连只提高 connectionEpoch，保持原 Session、运行代次和录制段；先前断线造成的 suspended、未知输入回执和草稿责任不解除，不触发原始输入或 continuation。任务 paused 仍可恢复只读观察连接，但不由此获得自动输入或自动恢复权限；合法人工控制仍按独立协议准入。claim 已失效、执行权限被撤销或原进程身份不能确认时不创建新连接。浏览器隐藏、租约撤销或过期只暂停输入，仍在线的原 relay 连接保持已确认状态；不能据此重注册或提高 connectionEpoch。只有输入通道实际关闭后才清除连接标记。
 
 注册请求先落盘再发送。请求或响应未知时读取原 Session 状态核对，不自动重放或生成替代注册。服务端历史可以落后于本地停止或 native ID 补齐，但不能替换原 owner、binding、已确认停止记录或段前缀。准备好下一代但尚未发布 ledger 时，先按服务端仍注册的代次 reconnect，再提交新运行。
 
@@ -82,7 +82,7 @@ Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdow
 
 终态清理由共享 `cleanup_schedules` 保存原资源身份、首个期限和每 claim 重试策略，不能用 schedule 中的步骤标记替代 lifecycle 原身份、停止证明或服务端 ledger 确认。失败按 1、2、4、8、16、32 秒及最多 60 秒退避，到期后的正常对账才重试；不会消耗业务恢复预算，也不能清除尚未确认的停止责任。调度写失败保留原错误与 SQLite 错误，进程内继续有界退避，不能宣称本次调度已持久保存。
 
-共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation、结构化状态就绪且没有已知菜单或禁用输入时，通过同一仲裁器发送一次有界 cleanup prompt；cleanup 不要求正向空 composer，读取结果仍为 unavailable。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
+共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation、任务未暂停、结构化状态就绪且没有已知菜单或禁用输入时，通过同一仲裁器发送一次有界 cleanup prompt；cleanup 不要求正向空 composer，读取结果仍为 unavailable。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
 
 Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止与本地封段后可以结束本机执行行并释放槽；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。正常归档删除和显式 delete 都必须从原持久删除记录收敛对应本机任务与清理计划；崩溃在删除确认与 SQLite 更新之间时，调度恢复继续该收敛，不将已删除资源变成永久占槽或缺失原始证据。
 

@@ -16,7 +16,7 @@ func (s *Service) registerTask(ctx context.Context, p model.Principal, project, 
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		if err := scope.SessionDAO().LockTaskRegistration(ctx, project, taskID); err != nil {
 			return err
 		}
@@ -27,7 +27,7 @@ func (s *Service) registerTask(ctx context.Context, p model.Principal, project, 
 		if err = op.LockCredential(ctx, scope, p); err != nil {
 			return err
 		}
-		if _, err = op.ProjectAdmin(ctx, scope, p, project); err != nil {
+		if err = op.CheckProjectAccess(ctx, scope, p, project); err != nil {
 			return err
 		}
 		if err = op.CheckRegistration(task, p, input); err != nil {
@@ -54,7 +54,7 @@ func (s *Service) registerTest(ctx context.Context, p model.Principal, input sp.
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		if err := op.LockCredential(ctx, scope, p); err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ func (s *Service) controllerGrant(ctx context.Context, hash []byte, work func(*s
 		return err
 	}
 	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
+	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
 		location, err := scope.SessionDAO().SessionLocationByGrant(ctx, hash)
 		if errors.Is(err, model.ErrNotFound) {
 			return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
@@ -117,7 +117,7 @@ func (s *Service) controllerGrant(ctx context.Context, hash []byte, work func(*s
 			if err = op.LockCredential(ctx, scope, parent); err != nil {
 				return err
 			}
-			if _, err = op.ProjectAdmin(ctx, scope, parent, authority.ProjectID); err != nil {
+			if err = op.CheckProjectAccess(ctx, scope, parent, authority.ProjectID); err != nil {
 				return err
 			}
 		}

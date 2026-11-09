@@ -3,7 +3,7 @@ package prompt
 import (
 	"context"
 	"errors"
-	"strconv"
+	"reflect"
 	"testing"
 	"time"
 
@@ -18,110 +18,104 @@ const project = "44444444-4444-4444-8444-444444444444"
 
 var principal = model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: other}
 
-type memory struct {
-	store.PromptSnapshot
-	store.ProjectReader
-	values                                                                       map[string]model.PromptResource
-	writes, texts                                                                int
-	denied                                                                       bool
-	failure                                                                      error
-	metadataError, textError, accessError, workerError, resourceError, saveError error
-	outcome                                                                      store.TransactionOutcome
+type call struct {
+	name   string
+	args   []any
+	result any
+	err    error
+}
+type promptMock struct {
+	t        *testing.T
+	expected []call
 }
 
-func (m *memory) key(u string, s model.PromptScope, id string) string { return u + string(s) + id }
-func (m *memory) ReadPromptSnapshot(ctx context.Context, fn func(store.PromptSnapshot) error) error {
-	if m.failure != nil {
-		return m.failure
+func (m *promptMock) expect(name string, result any, err error, args ...any) {
+	m.expected = append(m.expected, call{name, args, result, err})
+}
+func (m *promptMock) next(name string, args ...any) call {
+	m.t.Helper()
+	if len(m.expected) == 0 {
+		m.t.Fatalf("unexpected %s(%v)", name, args)
+	}
+	c := m.expected[0]
+	m.expected = m.expected[1:]
+	if c.name != name || !reflect.DeepEqual(c.args, args) {
+		m.t.Fatalf("got %s(%v), expected %s(%v)", name, args, c.name, c.args)
+	}
+	return c
+}
+func (m *promptMock) check() {
+	m.t.Helper()
+	if len(m.expected) > 0 {
+		m.t.Fatalf("unconsumed calls: %+v", m.expected)
+	}
+}
+func (m *promptMock) snapshot() { m.expect("snapshot", nil, nil) }
+func (m *promptMock) write(outcome store.TransactionOutcome) {
+	m.expect("write", store.Completion{Outcome: outcome}, nil)
+}
+func (m *promptMock) ReadPromptSnapshot(ctx context.Context, fn func(store.PromptSnapshot) error) error {
+	c := m.next("snapshot")
+	if c.err != nil {
+		return c.err
 	}
 	return fn(m)
 }
-func (m *memory) PromptDAO() store.PromptReader   { return m }
-func (m *memory) ProjectDAO() store.ProjectReader { return m }
-func (m *memory) ProjectAccess(context.Context, model.Principal, string) (model.ProjectAccess, error) {
-	if m.accessError != nil {
-		return model.ProjectAccess{}, m.accessError
+func (m *promptMock) WritePrompt(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error) {
+	c := m.next("write")
+	if c.err != nil {
+		return store.Completion{}, c.err
 	}
-	if m.denied {
-		return model.ProjectAccess{}, model.ErrNotFound
-	}
-	return model.ProjectAccess{}, nil
-}
-func (m *memory) PromptWorkerExists(context.Context, string, string) error {
-	if m.workerError != nil {
-		return m.workerError
-	}
-	if m.denied {
-		return model.ErrNotFound
-	}
-	return nil
-}
-func (m *memory) PromptMetadata(_ context.Context, u string, s model.PromptScope, id string) (store.PromptMetadata, error) {
-	if m.metadataError != nil {
-		return store.PromptMetadata{}, m.metadataError
-	}
-	v := m.values[m.key(u, s, id)]
-	if v.Revision == "" {
-		return store.PromptMetadata{}, nil
-	}
-	n, _ := strconv.ParseInt(v.Revision, 10, 64)
-	return store.PromptMetadata{Revision: n, UpdatedAt: v.UpdatedAt}, nil
-}
-func (m *memory) PromptText(_ context.Context, u string, s model.PromptScope, id string) (string, error) {
-	m.texts++
-	if m.textError != nil {
-		return "", m.textError
-	}
-	return m.values[m.key(u, s, id)].Text, nil
-}
-func (m *memory) PromptResource(_ context.Context, u string, s model.PromptScope, id string) (model.PromptResource, error) {
-	if m.resourceError != nil {
-		return model.PromptResource{}, m.resourceError
-	}
-	v, ok := m.values[m.key(u, s, id)]
-	if !ok {
-		return model.PromptResource{Scope: s, ScopeID: id, Revision: "0"}, nil
-	}
-	return v, nil
-}
-func (m *memory) LockPromptProject(context.Context, model.Principal, string) error {
-	if m.denied {
-		return model.ErrNotFound
-	}
-	return nil
-}
-func (m *memory) CreatePrompt(_ context.Context, u string, s model.PromptScope, id, text string) (model.PromptResource, error) {
-	if m.saveError != nil {
-		return model.PromptResource{}, m.saveError
-	}
-	return m.save(u, s, id, 1, text), nil
-}
-func (m *memory) UpdatePrompt(_ context.Context, u string, s model.PromptScope, id string, next, expected int64, text string) (model.PromptResource, error) {
-	if m.saveError != nil {
-		return model.PromptResource{}, m.saveError
-	}
-	return m.save(u, s, id, next, text), nil
-}
-func (m *memory) save(u string, s model.PromptScope, id string, n int64, text string) model.PromptResource {
-	m.writes++
-	now := time.Now()
-	v := model.PromptResource{Scope: s, ScopeID: id, Revision: strconv.FormatInt(n, 10), Text: text, UpdatedAt: &now}
-	m.values[m.key(u, s, id)] = v
-	return v
-}
-func (m *memory) WritePrompt(_ context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error) {
-	if m.failure != nil {
-		return store.Completion{}, m.failure
-	}
-	err := fn(m)
-	if err != nil {
+	completion := c.result.(store.Completion)
+	if err := fn(m); err != nil {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: err}
 	}
-	out := m.outcome
-	if out == "" {
-		out = store.TransactionCommitted
+	return completion, nil
+}
+func (m *promptMock) ProjectAccess(_ context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+	c := m.next("access", p, id)
+	return model.ProjectAccess{}, c.err
+}
+func (m *promptMock) LockPromptProject(_ context.Context, p model.Principal, id string) error {
+	return m.next("lock", p, id).err
+}
+func (m *promptMock) PromptWorkerExists(_ context.Context, u, id string) error {
+	return m.next("worker", u, id).err
+}
+func (m *promptMock) PromptMetadata(_ context.Context, u string, s model.PromptScope, id string) (store.PromptMetadata, error) {
+	c := m.next("metadata", u, s, id)
+	if c.err != nil {
+		return store.PromptMetadata{}, c.err
 	}
-	return store.Completion{Outcome: out}, nil
+	return c.result.(store.PromptMetadata), nil
+}
+func (m *promptMock) PromptText(_ context.Context, u string, s model.PromptScope, id string) (string, error) {
+	c := m.next("text", u, s, id)
+	if c.err != nil {
+		return "", c.err
+	}
+	return c.result.(string), nil
+}
+func (m *promptMock) PromptResource(_ context.Context, u string, s model.PromptScope, id string) (model.PromptResource, error) {
+	c := m.next("resource", u, s, id)
+	if c.err != nil {
+		return model.PromptResource{}, c.err
+	}
+	return c.result.(model.PromptResource), nil
+}
+func (m *promptMock) CreatePrompt(_ context.Context, u string, s model.PromptScope, id, text string) (model.PromptResource, error) {
+	c := m.next("create", u, s, id, text)
+	if c.err != nil {
+		return model.PromptResource{}, c.err
+	}
+	return c.result.(model.PromptResource), nil
+}
+func (m *promptMock) UpdatePrompt(_ context.Context, u string, s model.PromptScope, id string, next, expected int64, text string) (model.PromptResource, error) {
+	c := m.next("update", u, s, id, next, expected, text)
+	if c.err != nil {
+		return model.PromptResource{}, c.err
+	}
+	return c.result.(model.PromptResource), nil
 }
 func fault(t *testing.T, err error, code string) {
 	t.Helper()
@@ -130,62 +124,102 @@ func fault(t *testing.T, err error, code string) {
 		t.Fatalf("want %s, got %v", code, err)
 	}
 }
+func mock(t *testing.T) *promptMock { m := &promptMock{t: t}; t.Cleanup(m.check); return m }
+
 func TestGetPutIdentityAndVersions(t *testing.T) {
-	m := &memory{values: map[string]model.PromptResource{}}
+	m := mock(t)
 	svc := New(m)
 	ctx := context.Background()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	empty := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "0"}
+	first := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "1", Text: "text", UpdatedAt: &now}
+	cleared := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "2", UpdatedAt: &now}
+	m.snapshot()
+	m.expect("metadata", store.PromptMetadata{}, nil, user, model.PromptScopeUser, user)
 	v, err := svc.Get(ctx, principal, model.PromptScopeUser, user)
-	if err != nil || v.Revision != "0" || v.UpdatedAt != nil {
+	if err != nil || v != empty {
 		t.Fatalf("empty: %+v %v", v, err)
 	}
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, other, "0", "unsafe")
 	fault(t, err, "identity_mismatch")
-	if m.writes != 0 {
-		t.Fatal("wrong identity wrote")
-	}
+	m.write(store.TransactionCommitted)
+	m.expect("resource", empty, nil, user, model.PromptScopeUser, user)
 	v, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "0", "")
-	if err != nil || m.writes != 0 {
+	if err != nil || v != empty {
 		t.Fatalf("empty no-op: %+v %v", v, err)
 	}
+	m.write(store.TransactionCommitted)
+	m.expect("resource", empty, nil, user, model.PromptScopeUser, user)
+	m.expect("create", first, nil, user, model.PromptScopeUser, user, "text")
 	v, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "0", "text")
-	if err != nil || v.Revision != "1" {
+	if err != nil || v != first {
 		t.Fatalf("create: %+v %v", v, err)
 	}
+	m.write(store.TransactionNotCommitted)
+	m.expect("resource", first, nil, user, model.PromptScopeUser, user)
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "0", "text")
 	fault(t, err, "version_conflict")
+	m.write(store.TransactionCommitted)
+	m.expect("resource", first, nil, user, model.PromptScopeUser, user)
+	m.expect("update", cleared, nil, user, model.PromptScopeUser, user, int64(2), int64(1), "")
 	v, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "")
-	if err != nil || v.Revision != "2" {
+	if err != nil || v != cleared {
 		t.Fatalf("clear: %+v %v", v, err)
 	}
+	m.snapshot()
+	m.expect("metadata", store.PromptMetadata{Revision: 2, UpdatedAt: &now}, nil, user, model.PromptScopeUser, user)
+	m.expect("text", "", nil, user, model.PromptScopeUser, user)
 	v, err = svc.Get(ctx, principal, model.PromptScopeUser, user)
-	if err != nil || v.Revision != "2" || v.Text != "" {
+	if err != nil || v != cleared {
 		t.Fatalf("read: %+v %v", v, err)
 	}
-	m.denied = true
+	m.snapshot()
+	m.expect("access", nil, model.ErrNotFound, principal, project)
 	_, err = svc.Get(ctx, principal, model.PromptScopeProject, project)
 	fault(t, err, "not_found")
+	m.write(store.TransactionNotCommitted)
+	m.expect("lock", nil, model.ErrNotFound, principal, project)
 	_, err = svc.Put(ctx, principal, model.PromptScopeProject, project, user, "0", "x")
 	fault(t, err, "not_found")
+	m.write(store.TransactionNotCommitted)
+	m.expect("worker", nil, model.ErrNotFound, user, worker)
 	_, err = svc.Put(ctx, principal, model.PromptScopeWorker, worker, user, "0", "x")
 	fault(t, err, "not_found")
 }
+
 func TestBatchKnownAndVisibility(t *testing.T) {
-	m := &memory{values: map[string]model.PromptResource{}}
-	m.save(user, model.PromptScopeUser, user, 1, "known")
+	m := mock(t)
 	ctx := context.Background()
-	known := "1"
-	zero := "0"
+	known, zero := "1", "0"
 	selectors := []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}, KnownRevision: &known}, {Key: model.PromptKey{Scope: model.PromptScopeWorker}, KnownRevision: &zero}, {Key: model.PromptKey{Scope: model.PromptScopeProject, ProjectID: project}}}
+	setup := func(withText, denied bool) {
+		m.snapshot()
+		m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
+		if withText {
+			m.expect("text", "known", nil, user, model.PromptScopeUser, user)
+		}
+		if denied {
+			m.expect("worker", nil, model.ErrNotFound, user, worker)
+			m.expect("access", nil, model.ErrNotFound, principal, project)
+			return
+		}
+		m.expect("worker", nil, nil, user, worker)
+		m.expect("metadata", store.PromptMetadata{}, nil, user, model.PromptScopeWorker, worker)
+		m.expect("access", nil, nil, principal, project)
+		m.expect("metadata", store.PromptMetadata{}, nil, user, model.PromptScopeProject, project)
+	}
+	setup(false, false)
 	result, err := Batch(ctx, m, principal, worker, selectors)
-	if err != nil || len(result) != 3 || result[0].Status != "unchanged" || result[1].Status != "unchanged" || result[2].Value == nil || result[2].Value.Revision != "0" || m.texts != 0 {
-		t.Fatalf("batch %+v, %v, text queries %d", result, err, m.texts)
+	if err != nil || len(result) != 3 || result[0].Status != "unchanged" || result[1].Status != "unchanged" || result[2].Value == nil || result[2].Value.Revision != "0" {
+		t.Fatalf("batch %+v, %v", result, err)
 	}
 	selectors[0].KnownRevision = nil
+	setup(true, false)
 	result, err = Batch(ctx, m, principal, worker, selectors)
-	if err != nil || result[0].Value.Text != "known" || m.texts != 1 {
+	if err != nil || result[0].Value.Text != "known" {
 		t.Fatalf("value %+v %v", result, err)
 	}
-	m.denied = true
+	setup(true, true)
 	result, err = Batch(ctx, m, principal, worker, selectors)
 	if err != nil || result[1].Status != "unavailable" || result[2].Status != "unavailable" {
 		t.Fatalf("unavailable %+v %v", result, err)
@@ -194,15 +228,16 @@ func TestBatchKnownAndVisibility(t *testing.T) {
 	fault(t, err, "invalid_input")
 	_, err = Batch(ctx, m, principal, worker, []model.PromptSelector{selectors[0], selectors[0]})
 	fault(t, err, "invalid_input")
-	m.failure = errors.New("offline")
-	if _, err = Batch(ctx, m, principal, worker, selectors); !errors.Is(err, m.failure) {
+	offline := errors.New("offline")
+	m.expect("snapshot", nil, offline)
+	if _, err = Batch(ctx, m, principal, worker, selectors); !errors.Is(err, offline) {
 		t.Fatal(err)
 	}
 }
 
 func TestFailuresAndInputRejection(t *testing.T) {
 	ctx := context.Background()
-	m := &memory{values: map[string]model.PromptResource{}}
+	m := mock(t)
 	svc := New(m)
 	marker := errors.New("private storage failure")
 	bad := model.Principal{}
@@ -224,42 +259,48 @@ func TestFailuresAndInputRejection(t *testing.T) {
 	fault(t, err, "invalid_input")
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "0", "\x00")
 	fault(t, err, "invalid_input")
-	m.metadataError = marker
+	m.snapshot()
+	m.expect("metadata", nil, marker, user, model.PromptScopeUser, user)
 	_, err = svc.Get(ctx, principal, model.PromptScopeUser, user)
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
-	m.metadataError = nil
-	m.save(user, model.PromptScopeUser, user, 1, "x")
-	m.textError = marker
+	m.snapshot()
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
+	m.expect("text", nil, marker, user, model.PromptScopeUser, user)
 	_, err = svc.Get(ctx, principal, model.PromptScopeUser, user)
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
+	m.snapshot()
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
+	m.expect("text", nil, marker, user, model.PromptScopeUser, user)
 	_, err = svc.Batch(ctx, principal, worker, []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}}})
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
-	m.textError = nil
-	m.resourceError = marker
+	m.write(store.TransactionNotCommitted)
+	m.expect("resource", nil, marker, user, model.PromptScopeUser, user)
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "y")
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
-	m.resourceError = nil
-	m.saveError = marker
+	first := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "1", Text: "x"}
+	m.write(store.TransactionNotCommitted)
+	m.expect("resource", first, nil, user, model.PromptScopeUser, user)
+	m.expect("update", nil, marker, user, model.PromptScopeUser, user, int64(2), int64(1), "y")
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "y")
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
 	}
-	m.saveError = nil
-	m.outcome = store.TransactionUnknown
+	m.write(store.TransactionUnknown)
+	m.expect("resource", first, nil, user, model.PromptScopeUser, user)
 	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "x")
 	if err == nil {
 		t.Fatal("unconfirmed transaction accepted")
 	}
-	m.outcome = ""
-	m.accessError = marker
+	m.snapshot()
+	m.expect("access", nil, marker, principal, project)
 	_, err = svc.Batch(ctx, principal, worker, []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeProject, ProjectID: project}}})
 	if !errors.Is(err, marker) {
 		t.Fatal(err)
@@ -275,4 +316,40 @@ func TestFailuresAndInputRejection(t *testing.T) {
 	invalidRevision := "01"
 	_, err = svc.Batch(ctx, principal, worker, []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}, KnownRevision: &invalidRevision}})
 	fault(t, err, "invalid_input")
+}
+
+func TestCorruptStoredTextFailsWithoutClientFault(t *testing.T) {
+	ctx := context.Background()
+	m := mock(t)
+	svc := New(m)
+	badText := "bad\x01text"
+	check := func(err error) {
+		t.Helper()
+		var f *model.Fault
+		if err == nil || errors.As(err, &f) {
+			t.Fatalf("corrupt storage must be internal: %v", err)
+		}
+	}
+	m.snapshot()
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
+	m.expect("text", badText, nil, user, model.PromptScopeUser, user)
+	_, err := svc.Get(ctx, principal, model.PromptScopeUser, user)
+	check(err)
+	m.snapshot()
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
+	m.expect("text", badText, nil, user, model.PromptScopeUser, user)
+	_, err = svc.Batch(ctx, principal, worker, []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}}})
+	check(err)
+	current := model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "1", Text: badText}
+	m.write(store.TransactionNotCommitted)
+	m.expect("resource", current, nil, user, model.PromptScopeUser, user)
+	_, err = svc.Put(ctx, principal, model.PromptScopeUser, user, user, "1", "safe")
+	check(err)
+	known := "1"
+	m.snapshot()
+	m.expect("metadata", store.PromptMetadata{Revision: 1}, nil, user, model.PromptScopeUser, user)
+	results, err := svc.Batch(ctx, principal, worker, []model.PromptSelector{{Key: model.PromptKey{Scope: model.PromptScopeUser}, KnownRevision: &known}})
+	if err != nil || len(results) != 1 || results[0].Status != "unchanged" {
+		t.Fatalf("unchanged: %+v %v", results, err)
+	}
 }

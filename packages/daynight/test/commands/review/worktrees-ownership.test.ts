@@ -1,6 +1,5 @@
 import path from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import Database from "better-sqlite3";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { GitCommandError } from "../../../src/commands/review/adapters/worktrees.js";
 import { executeCommand } from "../../../src/commands/review/adapters/github.js";
@@ -182,26 +181,24 @@ describe("cleanup diagnostics", () => {
     if (prepared.kind !== "prepared") throw new Error("Expected a prepared worktree.");
     f.update({ state: "closed" });
     f.store.supersedeReview(review.id, proof, 21);
-    const diagnostic = new Database(path.join(f.directory, "state.sqlite"));
-    try {
-      diagnostic.exec(`CREATE TRIGGER fail_cleanup_diagnostic BEFORE UPDATE OF cleanup_error ON pull_requests
-        WHEN NEW.cleanup_error IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture diagnostic write failed'); END;`);
-      const removalError = Object.assign(new Error("fixture removal failed"), { code: 1 });
-      f.setIntercept(async (file, args, options) => args.includes("remove")
-        ? { stdout: "", stderr: "fixture removal failed", error: removalError }
-        : executeCommand(file, args, options));
-      let failure: unknown;
-      try { await f.manager.cleanupWorktree(f.store, local, review, proof); } catch (error) { failure = error; }
-      expect(failure).toBeInstanceOf(AggregateError);
-      const errors = (failure as AggregateError).errors as Error[];
-      expect(errors[0]).toBeInstanceOf(GitCommandError);
-      expect(errors[0]!.cause).toBe(removalError);
-      expect(errors[1]!.message).toContain("fixture diagnostic write failed");
-      expect((failure as AggregateError).cause).toBe(errors[0]);
-      expect(f.store.getPullRequest(review)).toMatchObject({ cleanupPending: true, worktreePath: prepared.path });
-      expect(existsSync(prepared.path)).toBe(true);
-    } finally { diagnostic.close(); }
-  });
+    const diagnostic = f.database;
+    diagnostic.exec(`CREATE TRIGGER fail_cleanup_diagnostic BEFORE UPDATE OF cleanup_error ON pull_requests
+      WHEN NEW.cleanup_error IS NOT NULL BEGIN SELECT RAISE(ABORT, 'fixture diagnostic write failed'); END;`);
+    const removalError = Object.assign(new Error("fixture removal failed"), { code: 1 });
+    f.setIntercept(async (file, args, options) => args.includes("remove")
+      ? { stdout: "", stderr: "fixture removal failed", error: removalError }
+      : executeCommand(file, args, options));
+    let failure: unknown;
+    try { await f.manager.cleanupWorktree(f.store, local, review, proof); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(AggregateError);
+    const errors = (failure as AggregateError).errors as Error[];
+    expect(errors[0]).toBeInstanceOf(GitCommandError);
+    expect(errors[0]!.cause).toBe(removalError);
+    expect(errors[1]!.message).toContain("fixture diagnostic write failed");
+    expect((failure as AggregateError).cause).toBe(errors[0]);
+    expect(f.store.getPullRequest(review)).toMatchObject({ cleanupPending: true, worktreePath: prepared.path });
+    expect(existsSync(prepared.path)).toBe(true);
+  }, 60_000);
 });
 
 describe("dedicated review environment artifacts", () => {

@@ -1,5 +1,8 @@
+import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { fireEvent, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project, TaskSummary, WorkerClaim } from '../src/api/types';
 import { projectSummaries } from '../src/features/task-cache/projection';
 import { ProjectTaskWorkspace } from '../src/features/projects/ProjectTaskWorkspace';
@@ -9,15 +12,19 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const time = '2026-11-04T00:00:00Z';
 const project: Project = { id: id(100), name: 'Project', repoUrl: 'https://example.com/project', ownership: { teamId: id(101), version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true, version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true, version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 const claim = (name: string, state: WorkerClaim['state'], agentControlMode: WorkerClaim['agentControlMode'] = 'web'): WorkerClaim => ({
   claimId: id(201), state, userId: id(202), workerId: id(203), machine: { id: id(204), name }, platform: 'linux', agent: 'codex', agentControlMode, worktreeId: id(205), phase: 'executing', herdr: agentControlMode === 'web' ? null : { session: 'session', workspaceId: 'workspace', paneId: 'pane' }, nativeSessionId: null, claimedAt: time,
 });
 const root = task(1, { status: 'done' });
 const child = (n: number, changes: Partial<TaskSummary> = {}) => task(n, { dependsOn: [root.id], ...changes });
 const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, time), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
+let sessionScope: TaskCacheScope;
+let sessionStore: TaskSessionSummaryStore;
+beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
+afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
-const workspace = (value: GraphSnapshot, onOpenTask = noop) => <ProjectTaskWorkspace projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
+const workspace = (value: GraphSnapshot, onOpenTask = noop) => <ProjectTaskWorkspace sessionStore={sessionStore} projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
   chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
   standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} />;
 const row = (n: number) => document.getElementById(`chain-task-${root.id}-${id(n)}`)!;

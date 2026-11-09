@@ -1,6 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
-import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { TaskSessionSummaryStore } from './store';
+import type { TaskSessionSummaryStore } from './store';
 import { aggregateSessionIndicators, type SessionIndicator, type TaskSessionSummary } from './summary';
 
 const Context = createContext<TaskSessionSummaryStore | null>(null);
@@ -8,13 +7,10 @@ const empty: ReadonlyMap<string, TaskSessionSummary> = new Map();
 const emptySnapshot = () => empty;
 const noopSubscribe = () => () => {};
 
-export function TaskSessionSummaryProvider({ projectId, active = true, children }: {
-  readonly projectId: string; readonly active?: boolean; readonly children: ReactNode;
+export function TaskSessionSummaryProvider({ store, active = true, children }: {
+  readonly store: TaskSessionSummaryStore; readonly active?: boolean; readonly children: ReactNode;
 }) {
-  const scope = useTaskCacheScope();
-  const store = useMemo(() => new TaskSessionSummaryStore(scope, projectId), [scope, projectId]);
-  useEffect(() => { store.setActive(active); store.start(); return () => store.dispose(); }, [store]);
-  useEffect(() => { store.setActive(active); }, [store, active]);
+  useEffect(() => { store.setActive(active); return () => store.setActive(false); }, [store, active]);
   return <Context.Provider value={store}>{children}</Context.Provider>;
 }
 

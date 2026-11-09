@@ -187,3 +187,19 @@ describe('terminal production view', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not connect to load the Session. Try again.');
   });
 });
+
+it('preserves the terminal screen and read controls for a non-owner with all input controls disabled', async () => {
+  const other = '00000000-0000-4000-8000-000000000099';
+  const renderOther = createLocaleRender('en', { taskCache: { viewerId: other } });
+  const f = fixture(); renderOther(f.element());
+  await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce()); f.show();
+  expect(screen.getByRole('region', { name: 'Terminal screen' })).toBeVisible();
+  expect(screen.getByLabelText('Terminal input')).toHaveAttribute('readonly');
+  expect(screen.getByRole('button', { name: 'Take control' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Paste text' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Enter' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(f.api.state).toHaveBeenCalled());
+  expect(f.api.command).not.toHaveBeenCalled();
+});

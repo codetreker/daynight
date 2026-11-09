@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"errors"
 	"io"
 	"testing"
 	"time"
@@ -11,33 +10,23 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
-func endArchiveTask(t *testing.T, f fixture, state string) model.Task {
+func endArchiveTask(t *testing.T, f fixture, state string) {
 	t.Helper()
-	ctx := context.Background()
-	tasks := taskservice.NewTasks(f.db)
-	var ended model.Task
-	var err error
-	if state == "released" {
-		ended, err = tasks.ReleaseWorker(ctx, f.p, f.project, f.task, taskcore.ReleaseWorker{Version: 1, ClaimID: f.r.ClaimID, StoppedConfirmed: true})
-	} else {
-		ended, err = tasks.SetStatus(ctx, f.p, f.project, f.task, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone, ClaimID: &f.r.ClaimID})
+	worker := *f.data.Task.Worker
+	worker.State = model.WorkerState(state)
+	f.data.Task.Worker = &worker
+	f.data.Session.Snapshot.Lifecycle = "draining"
+	if state == "completed" {
+		f.data.Task.Status = "done"
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ended
 }
 
-func deleteArchiveTask(t *testing.T, f fixture, version int64) {
-	t.Helper()
-	if err := taskservice.NewTasks(f.db).Delete(context.Background(), f.p, f.project, f.task, taskcore.DeleteTask{Version: version}); err != nil {
-		t.Fatal(err)
-	}
+func deleteArchiveTask(f fixture) {
+	f.data.TaskDeleted = true
+	f.data.ArchiveMetadata.TaskDeleted = true
 }
 
 func TestDeletedTaskArchiveCanFinishWithoutReopeningSession(t *testing.T) {
@@ -45,51 +34,74 @@ func TestDeletedTaskArchiveCanFinishWithoutReopeningSession(t *testing.T) {
 		for _, stage := range []string{"unavailable", "pending", "ready"} {
 			t.Run(state+"/"+stage, func(t *testing.T) {
 				f, v, data := archiveFixture(t)
+				f.dao.Expect("SetSessionArchiveReady", 1)
+				stateWrites := 1
+				if stage == "pending" {
+					stateWrites = 2
+				}
+				f.dao.Expect("SetSessionArchiveState", stateWrites)
 				ctx := context.Background()
-				ended := endArchiveTask(t, f, state)
+				endArchiveTask(t, f, state)
 				update := sp.ArchiveUpdate{Fence: v.Fence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, State: "pending"}
 				if stage != "unavailable" {
-					if _, err := f.s.UpdateArchive(ctx, f.p, f.project, f.task, v.SessionID, update); err != nil {
+					if _, err := fixtureArchiveUpdate(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, update, map[string]int{"SetSessionArchiveState": 1}); err != nil {
 						t.Fatal(err)
 					}
+					acceptArchiveState(t, f, "pending")
 				}
 				if stage == "ready" {
-					if _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); err != nil {
+					if _, err := fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, data, map[string]int{"SetSessionArchiveReady": 1}); err != nil {
 						t.Fatal(err)
 					}
+					acceptArchiveWrites(t, f, v.SessionID, data)
 				}
-				deleteArchiveTask(t, f, ended.Version)
-				status, err := f.s.ArchiveStatus(ctx, f.p, f.project, f.task, v.SessionID)
+				deleteArchiveTask(f)
+				status, err := fixtureArchiveStatus(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, nil)
 				if err != nil || status.State != stage {
 					t.Fatalf("deleted task archive status: %#v %v", status, err)
 				}
-				if status, err = f.s.UpdateArchive(ctx, f.p, f.project, f.task, v.SessionID, update); err != nil || (status.State != "pending" && status.State != "ready") {
+				stateWork := map[string]int{}
+				if stage != "ready" {
+					stateWork["SetSessionArchiveState"] = 1
+				}
+				if status, err = fixtureArchiveUpdate(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, update, stateWork); err != nil || (status.State != "pending" && status.State != "ready") {
 					t.Fatal(status, err)
 				}
-				for range 2 {
-					if status, err = f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); err != nil || status.State != "ready" {
+				if stage != "ready" {
+					acceptArchiveState(t, f, "pending")
+				}
+				for i := range 2 {
+					readyWork := map[string]int{}
+					if stage != "ready" && i == 0 {
+						readyWork["SetSessionArchiveReady"] = 1
+					}
+					if status, err = fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, data, readyWork); err != nil || status.State != "ready" {
 						t.Fatal("deleted task upload or identical retry", status, err)
 					}
+					if stage != "ready" && i == 0 {
+						acceptArchiveWrites(t, f, v.SessionID, data)
+					}
 				}
-				if _, err = f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, append(data, ' ')); err == nil {
+				if _, err = fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, append(data, ' '), nil); err == nil {
 					t.Fatal("deleted task replaced immutable archive")
 				}
-				if got, err := f.s.ArchiveStatus(ctx, f.p, f.project, f.task, v.SessionID); err != nil || got.State != "ready" || got.SHA256 == nil || status.SHA256 == nil || *got.SHA256 != *status.SHA256 {
+				if got, err := fixtureArchiveStatus(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, nil); err != nil || got.State != "ready" || got.SHA256 == nil || status.SHA256 == nil || *got.SHA256 != *status.SHA256 {
 					t.Fatal("lost upload reply cannot be reconciled", got, err)
 				}
-				if _, err = f.s.ArchiveContent(ctx, f.p, f.project, f.task, v.SessionID); err == nil {
+				if _, err = fixtureArchiveContent(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, archivePreflightOnly(1, 1, 1)); err == nil {
 					t.Fatal("deleted task archive content reopened")
 				}
-				if _, err = f.s.Current(ctx, f.p, f.project, f.task); err == nil {
+				phase := f.dao.ContextPhase(ctx, map[string]int{"LockTask": 1})
+				_, err = f.s.Current(phase, f.p, f.project, f.task)
+				f.dao.FinishContext(phase)
+				if err == nil {
 					t.Fatal("deleted task session reopened")
 				}
-				if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, sp.Command{Fence: v.Fence, Kind: "refresh_controls", OperationID: uuid.NewString()}); err == nil {
+				phase = f.dao.ContextPhase(ctx, map[string]int{"LockTask": 1})
+				_, err = f.s.Submit(phase, f.p, f.project, f.task, v.SessionID, sp.Command{Fence: v.Fence, Kind: "refresh_controls", OperationID: uuid.NewString()})
+				f.dao.FinishContext(phase)
+				if err == nil {
 					t.Fatal("deleted task allowed control")
-				}
-				_, err = taskservice.NewTasks(f.db).Get(ctx, f.p, f.project, f.task)
-				var fault *model.Fault
-				if !errors.As(err, &fault) || fault.Code != "task_deleted" {
-					t.Fatal("ordinary deleted task became visible", err)
 				}
 			})
 		}
@@ -100,9 +112,11 @@ func TestDeletedTaskArchiveRequiresCurrentOwnerCredentialAndMembership(t *testin
 	for _, kind := range []string{"browser", "other member", "removed member", "revoked", "expired"} {
 		t.Run(kind, func(t *testing.T) {
 			f, v, data := archiveFixture(t)
+			f.dao.Expect("SetSessionArchiveReady", 0)
+			f.dao.Expect("SetSessionArchiveState", 0)
 			ctx := context.Background()
-			ended := endArchiveTask(t, f, "completed")
-			deleteArchiveTask(t, f, ended.Version)
+			endArchiveTask(t, f, "completed")
+			deleteArchiveTask(f)
 			principal := f.p
 			var err error
 			switch kind {
@@ -110,25 +124,36 @@ func TestDeletedTaskArchiveRequiresCurrentOwnerCredentialAndMembership(t *testin
 				principal = listCredential(t, f, f.p.UserID, model.SessionCredential)
 			case "other member":
 				principal = listCredential(t, f, uuid.NewString(), model.PATCredential)
-				_, err = f.db.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, f.project, principal.UserID)
+				allowFixtureProject(t, f, principal, "admin")
 			case "removed member":
-				_, err = f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, principal.UserID)
+				f.dao.ProjectAccessFn = func(context.Context, string, string) (model.ProjectAccess, error) {
+					return model.ProjectAccess{}, model.ErrNotFound
+				}
 			case "revoked":
-				_, err = f.db.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, principal.CredentialID)
+				f.dao.ReadCredentialFn = func(context.Context, model.Principal, time.Time) error { return model.ErrNotFound }
+				f.dao.LockCredentialFn = func(context.Context, model.Principal, time.Time) error { return model.ErrNotFound }
 			case "expired":
-				_, err = f.db.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=now()-interval '2 seconds',expires_at=now()-interval '1 second' WHERE id=$1`, principal.CredentialID)
+				f.dao.ReadCredentialFn = func(context.Context, model.Principal, time.Time) error { return model.ErrNotFound }
+				f.dao.LockCredentialFn = func(context.Context, model.Principal, time.Time) error { return model.ErrNotFound }
 			}
-			if err != nil {
-				t.Fatal(err)
+			refusalWork := map[string]int{"SessionArchive": 0}
+			preflightWork := archivePreflightOnly(1, 1, 1)
+			switch kind {
+			case "removed member":
+				refusalWork["SessionBotID"], refusalWork["LockSession"] = 0, 0
+				preflightWork = archivePreflightOnly(1, 1, 0)
+			case "revoked", "expired":
+				refusalWork["ProjectAccess"], refusalWork["SessionBotID"], refusalWork["LockSession"] = 0, 0, 0
+				preflightWork = archivePreflightOnly(1, 0, 0)
 			}
-			if _, err = f.s.ArchiveStatus(ctx, principal, f.project, f.task, v.SessionID); err == nil {
+			if _, err = fixtureArchiveStatus(f, f.s, ctx, principal, f.project, f.task, v.SessionID, refusalWork); err == nil {
 				t.Fatal("unauthorized archive status")
 			}
 			update := sp.ArchiveUpdate{Fence: v.Fence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, State: "pending"}
-			if _, err = f.s.UpdateArchive(ctx, principal, f.project, f.task, v.SessionID, update); err == nil {
+			if _, err = fixtureArchiveUpdate(f, f.s, ctx, principal, f.project, f.task, v.SessionID, update, refusalWork); err == nil {
 				t.Fatal("unauthorized archive update")
 			}
-			if _, err = f.s.PutArchive(ctx, principal, f.project, f.task, v.SessionID, data); err == nil {
+			if _, err = fixtureArchivePut(f, f.s, ctx, principal, f.project, f.task, v.SessionID, data, preflightWork); err == nil {
 				t.Fatal("unauthorized archive upload")
 			}
 		})
@@ -137,17 +162,17 @@ func TestDeletedTaskArchiveRequiresCurrentOwnerCredentialAndMembership(t *testin
 
 func TestDeletedTaskArchiveRetainsScopeFenceAndNativeIdentity(t *testing.T) {
 	f, v, data := archiveFixture(t)
+	f.dao.Expect("SetSessionArchiveReady", 1)
+	f.dao.Expect("SetSessionArchiveState", 0)
 	ctx := context.Background()
-	ended := endArchiveTask(t, f, "released")
-	deleteArchiveTask(t, f, ended.Version)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{identity,nativeSessionId}','"original-native"') WHERE id=$1`, v.SessionID); err != nil {
-		t.Fatal(err)
-	}
+	endArchiveTask(t, f, "released")
+	deleteArchiveTask(f)
+	native := "original-native"
+	f.data.Session.Snapshot.Identity.NativeSessionID = &native
 	doc, err := sp.DecodeArchive(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	native := "original-native"
 	doc.NativeSessionID = &native
 	for name, mutate := range map[string]func(*sp.ArchiveDocument){
 		"generation": func(d *sp.ArchiveDocument) { d.ExecutionGeneration = "2" },
@@ -161,92 +186,92 @@ func TestDeletedTaskArchiveRetainsScopeFenceAndNativeIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bad := doc
 			mutate(&bad)
-			if _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, encode(bad)); err == nil {
+			if _, err := fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, encode(bad), map[string]int{"SessionArchive": 0}); err == nil {
 				t.Fatal("mismatched execution accepted")
 			}
 			if name != "provider" && name != "native" {
 				update := sp.ArchiveUpdate{Fence: bad.Fence, ControllerID: bad.ControllerID, ControllerInstanceID: bad.ControllerInstanceID, State: "pending"}
-				if _, err := f.s.UpdateArchive(ctx, f.p, f.project, f.task, v.SessionID, update); err == nil {
+				if _, err := fixtureArchiveUpdate(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, update, map[string]int{"SessionArchive": 0}); err == nil {
 					t.Fatal("mismatched state update accepted")
 				}
 			}
 		})
 	}
-	for _, scope := range [][3]string{{uuid.NewString(), f.task, v.SessionID}, {f.project, uuid.NewString(), v.SessionID}, {f.project, f.task, uuid.NewString()}, {"", "", v.SessionID}} {
-		if _, err := f.s.ArchiveStatus(ctx, f.p, scope[0], scope[1], scope[2]); err == nil {
+	for index, scope := range [][3]string{{uuid.NewString(), f.task, v.SessionID}, {f.project, uuid.NewString(), v.SessionID}, {f.project, f.task, uuid.NewString()}, {"", "", v.SessionID}} {
+		scopeWork := archiveTaskRefusal()
+		if index == 2 {
+			scopeWork = map[string]int{"LockSession": 0, "SessionArchive": 0}
+			f.dao.SessionBotIDFn = func(context.Context, string) (*string, error) { return nil, model.ErrNotFound }
+		}
+		if index == 3 {
+			scopeWork = map[string]int{"LockArchiveTask": 0, "LockCredential": 0, "ProjectAccess": 0, "SessionArchive": 0}
+			f.dao.SessionBotIDFn = func(context.Context, string) (*string, error) { return nil, nil }
+		}
+		if _, err := fixtureArchiveStatus(f, f.s, ctx, f.p, scope[0], scope[1], scope[2], scopeWork); err == nil {
 			t.Fatal("mismatched task or session accepted", scope)
 		}
 	}
+	f.dao.SessionBotIDFn = func(context.Context, string) (*string, error) { return nil, nil }
 	storage := &failingArchiveStorage{Storage: f.s.files, fail: true}
 	f.s.files = storage
-	if _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, encode(doc)); err == nil {
+	if _, err := fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, encode(doc), nil); err == nil {
 		t.Fatal("storage failure ignored")
 	}
 	storage.fail = false
-	if status, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, encode(doc)); err != nil || status.State != "ready" {
+	if status, err := fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, encode(doc), map[string]int{"SetSessionArchiveReady": 1}); err != nil || status.State != "ready" {
 		t.Fatal("deleted task retry failed", status, err)
 	}
-}
-
-func waitArchiveLock(ctx context.Context, f fixture, prefix string) error {
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var waiting bool
-		if err := f.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE $1)`, prefix+"%").Scan(&waiting); err != nil {
-			return err
-		}
-		if waiting {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
+	acceptArchiveWrites(t, f, v.SessionID, encode(doc))
 }
 
 func TestArchiveWaitsForDeletionCommitThenFinalizes(t *testing.T) {
 	f, v, data := archiveFixture(t)
+	f.dao.Expect("SetSessionArchiveReady", 1)
+	f.dao.Expect("SetSessionArchiveState", 0)
 	endArchiveTask(t, f, "completed")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	deleted := make(chan struct{})
-	release := make(chan struct{})
-	deletion := make(chan error, 1)
-	go func() {
-		_, err := f.db.WriteProject(ctx, f.project, func(tx store.ProjectWriteScope) error {
-			if _, err := tx.TaskDAO().Task(ctx, f.task); err != nil {
-				return err
-			}
-			if err := tx.TaskDAO().DeleteTask(ctx, f.task, false); err != nil {
-				return err
-			}
-			close(deleted)
+	entered, release := make(chan struct{}), make(chan struct{})
+	called := false
+	f.dao.LockArchiveTaskFn = func(ctx context.Context, project, id string) (store.SessionTask, bool, error) {
+		if project != f.project || id != f.task {
+			t.Error("archive acquired another task", project, id)
+			return store.SessionTask{}, false, model.ErrNotFound
+		}
+		if !called {
+			called = true
+			close(entered)
 			select {
 			case <-release:
-				return nil
 			case <-ctx.Done():
-				return ctx.Err()
+				return store.SessionTask{}, false, ctx.Err()
 			}
-		})
-		deletion <- err
-	}()
-	select {
-	case <-deleted:
-	case err := <-deletion:
-		t.Fatal("deletion did not reach transaction barrier", err)
+		}
+		return f.data.Task, f.data.TaskDeleted, nil
 	}
 	upload := make(chan error, 1)
-	go func() { _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); upload <- err }()
-	waitErr := waitArchiveLock(ctx, f, "SELECT status,deleted_at IS NOT NULL FROM tasks WHERE")
-	close(release)
-	deleteErr, uploadErr := <-deletion, <-upload
-	if waitErr != nil || deleteErr != nil || uploadErr != nil {
-		t.Fatal("delete-first serialization", waitErr, deleteErr, uploadErr)
+	go func() {
+		_, err := fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, data, map[string]int{"SetSessionArchiveReady": 1})
+		upload <- err
+	}()
+	select {
+	case <-entered:
+	case err := <-upload:
+		t.Fatal("archive did not reach task barrier", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
-	if status, err := f.s.ArchiveStatus(ctx, f.p, f.project, f.task, v.SessionID); err != nil || status.State != "ready" {
+	if f.dao.Called("SetSessionArchiveReady") != 0 {
+		t.Error("archive wrote a receipt before task admission")
+	}
+	f.data.TaskDeleted = true
+	f.data.ArchiveMetadata.TaskDeleted = true
+	close(release)
+	if err := <-upload; err != nil {
+		t.Fatal("finalize after deletion facts", err)
+	}
+	acceptArchiveWrites(t, f, v.SessionID, data)
+	if status, err := fixtureArchiveStatus(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, nil); err != nil || status.State != "ready" {
 		t.Fatal(status, err)
 	}
 }
@@ -267,31 +292,40 @@ func (s *blockingArchiveStorage) Put(ctx context.Context, bucket, path string, r
 	}
 }
 
-func TestDeletionWaitsForArchiveCommitAndPreservesReceipt(t *testing.T) {
+func TestArchiveReceiptIsCapturedOnlyAfterStorageCompletes(t *testing.T) {
 	f, v, data := archiveFixture(t)
-	ended := endArchiveTask(t, f, "released")
+	f.dao.Expect("SetSessionArchiveReady", 1)
+	f.dao.Expect("SetSessionArchiveState", 0)
+	endArchiveTask(t, f, "released")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	files := &blockingArchiveStorage{Storage: f.s.files, entered: make(chan struct{}), release: make(chan struct{})}
 	f.s.files = files
 	upload := make(chan error, 1)
-	go func() { _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); upload <- err }()
+	go func() {
+		_, err := fixtureArchivePut(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, data, map[string]int{"SetSessionArchiveReady": 1})
+		upload <- err
+	}()
 	select {
 	case <-files.entered:
 	case err := <-upload:
 		t.Fatal("upload did not reach storage barrier", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
-	deletion := make(chan error, 1)
-	go func() {
-		deletion <- taskservice.NewTasks(f.db).Delete(ctx, f.p, f.project, f.task, taskcore.DeleteTask{Version: ended.Version})
-	}()
-	waitErr := waitArchiveLock(ctx, f, "SELECT t.id::text")
+	if f.dao.Called("SetSessionArchiveReady") != 0 {
+		t.Error("archive receipt preceded storage completion")
+	}
 	close(files.release)
-	uploadErr, deleteErr := <-upload, <-deletion
-	if waitErr != nil || deleteErr != nil || uploadErr != nil {
-		t.Fatal("archive-first serialization", waitErr, deleteErr, uploadErr)
+	if err := <-upload; err != nil {
+		t.Fatal(err)
 	}
-	if status, err := f.s.ArchiveStatus(ctx, f.p, f.project, f.task, v.SessionID); err != nil || status.State != "ready" {
-		t.Fatal("lost upload reply cannot be reconciled after deletion", status, err)
+	if f.dao.Called("SetSessionArchiveReady") != 1 {
+		t.Fatal("archive did not propose exactly one ready receipt")
+	}
+	acceptArchiveWrites(t, f, v.SessionID, data)
+	deleteArchiveTask(f)
+	if status, err := fixtureArchiveStatus(f, f.s, ctx, f.p, f.project, f.task, v.SessionID, nil); err != nil || status.State != "ready" {
+		t.Fatal("captured upload reply cannot be reconciled after deleted task facts", status, err)
 	}
 }

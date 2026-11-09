@@ -5,6 +5,47 @@ import { browserNavigation } from './navigation';
 export type TaskDetailTab = "overview" | "steps" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
 
+export type WebhookRoute = {
+  readonly kind: "webhooks";
+  readonly owner: "personal" | "team";
+  readonly teamId: string | null;
+  readonly endpointId: string | null;
+  readonly tab: "configuration" | "subscriptions" | "deliveries";
+  readonly deliveryId?: string | null;
+  readonly error: string | null;
+};
+
+const webhookRoute = (search: string): WebhookRoute => {
+  const params = new URLSearchParams(search);
+  const fallback = { kind: "webhooks", owner: "personal", teamId: null, endpointId: null, tab: "configuration" } as const;
+  const allowed = ["owner", "teamId", "endpointId", "deliveryId", "tab", "authError"];
+  if ([...params.keys()].some((key) => !allowed.includes(key) || params.getAll(key).length !== 1)) return { ...fallback, error: "invalid_query" };
+  const owner = params.get("owner") ?? "personal";
+  const team = params.get("teamId");
+  const endpoint = params.get("endpointId");
+  const delivery = params.get("deliveryId");
+  const tab = params.get("tab") ?? "configuration";
+  const teamId = team === null ? null : canonicalId(team);
+  const endpointId = endpoint === null ? null : canonicalId(endpoint);
+  const deliveryId = delivery === null ? null : canonicalId(delivery);
+  if ((owner !== "personal" && owner !== "team") || (tab !== "configuration" && tab !== "subscriptions" && tab !== "deliveries") ||
+      (owner === "personal" && team !== null) || (team !== null && teamId === null) || (endpoint !== null && endpointId === null) ||
+      (owner === "team" && teamId === null && endpointId !== null) ||
+      (delivery !== null && (deliveryId === null || endpointId === null || tab !== "deliveries"))) return { ...fallback, error: "invalid_query" };
+  return { kind: "webhooks", owner, teamId, endpointId, tab, ...(delivery === null ? {} : { deliveryId }), error: null };
+};
+
+export const webhookUrl = (selection: Pick<WebhookRoute, "owner" | "teamId" | "endpointId" | "deliveryId" | "tab">): string => {
+  const params = new URLSearchParams({ owner: selection.owner });
+  if (selection.teamId !== null) params.set("teamId", selection.teamId);
+  if (selection.endpointId !== null) params.set("endpointId", selection.endpointId);
+  if (selection.deliveryId !== undefined && selection.deliveryId !== null) params.set("deliveryId", selection.deliveryId);
+  if (selection.tab !== "configuration") params.set("tab", selection.tab);
+  const url = `/webhooks?${params}`;
+  if (webhookRoute(`?${params}`).error !== null) throw new ApiError("protocol");
+  return url;
+};
+
 export type Route =
   | { readonly kind: "projects" }
   | { readonly kind: "project"; readonly projectId: string }
@@ -13,6 +54,7 @@ export type Route =
   | { readonly kind: "notFound" };
 
 export type ProtectedRoute = Route
+  | WebhookRoute
   | { readonly kind: "team" | "teamSettings" | "teamMembers"; readonly teamId: string }
   | { readonly kind: "sharedProjects" }
   | { readonly kind: "bots" }
@@ -23,6 +65,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "testSession"; readonly sessionId: string }
   | { readonly kind: "account" | "invitations" | "teamInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
+  | { readonly kind: "oauthConsent"; readonly requestId: string | null }
   | { readonly kind: "members" | "settings"; readonly projectId: string };
 export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly returnPath: string | null };
 
@@ -64,6 +107,7 @@ export const parseRoute = (pathname: string, search = ""): Route => {
 };
 
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
+  if (pathname === "/webhooks") return webhookRoute(search);
   if (pathname === "/shared-projects") return { kind: "sharedProjects" };
   const team = /^\/teams\/([^/]+)(\/(?:settings|members))?$/.exec(pathname);
   if (team !== null) {
@@ -91,6 +135,11 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/account") return { kind: "account" };
   if (pathname === "/invitations") return { kind: "invitations" };
   if (pathname === "/team-invitations") return { kind: "teamInvitations" };
+  if (pathname === "/oauth/consent") {
+    const params = new URLSearchParams(search);
+    const ids = params.getAll("request");
+    return { kind: "oauthConsent", requestId: ids.length === 1 && [...params.keys()].every((key) => key === "request") ? canonicalId(ids[0]!) : null };
+  }
   if (pathname === "/device") {
     const codes = new URLSearchParams(search).getAll("user_code");
     return { kind: "device", userCode: codes.length === 0 ? null : codes.length === 1 ? codes[0]! : "" };
@@ -109,6 +158,7 @@ export const isLoginReturnPath = (value: string): boolean => {
     if (/[\\\u0000-\u001f\u007f]/.test(decodeURIComponent(value))) return false;
     const target = new URL(value, "https://daynight.invalid");
     if (target.origin !== "https://daynight.invalid") return false;
+    if (target.pathname === "/oauth/consent") return parseProtectedRoute(target.pathname, target.search).kind === "oauthConsent" && (parseProtectedRoute(target.pathname, target.search) as { requestId: string | null }).requestId !== null;
     return target.pathname === "/" || target.pathname === "/setup" || parseProtectedRoute(target.pathname, target.search).kind !== "notFound";
   } catch {
     return false;

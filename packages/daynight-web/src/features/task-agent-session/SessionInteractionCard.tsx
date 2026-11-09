@@ -1,23 +1,27 @@
+import { operationErrorMessage } from './operation-error';
+import type { SessionState } from './state';
 import { useState, type FormEvent } from 'react';
 import type { InteractionResponse, SessionInteraction } from '../../api/types';
 import { useSessionMessages } from './messages';
 
 // Native interaction cards follow the typed controls in ARC's FormCard and QuestionCard:
 // https://github.com/xuangong/agent-remote-control/tree/f166d2f570bbcf8f6c68bd009c701e85b8457943/packages/agent-remote-web/src/react/interactions
-export function SessionInteractionCard({ interaction, enabled, onRespond }: {
+export function SessionInteractionCard({ interaction, enabled, onRespond, operations = new Map() }: {
+  readonly operations?: SessionState['operations'];
   readonly interaction: SessionInteraction; readonly enabled: boolean; readonly onRespond: (response: InteractionResponse) => Promise<void>;
 }) {
   const m = useSessionMessages();
   const [values, setValues] = useState<Record<string, string | readonly string[]>>({});
   const [resolved, setResolved] = useState(false);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorCause, setError] = useState<string | Error | null>(null);
+  const error = operationErrorMessage(errorCause, operations, m.operationFailed);
   const disabled = !enabled || resolved || pending || interaction.state !== 'pending';
   const change = (key: string, value: string | readonly string[]) => { setValues((current) => ({ ...current, [key]: value })); setError(null); };
   async function respond(response: InteractionResponse) {
     if (disabled) return;
     setPending(true); setError(null);
-    try { await onRespond(response); setResolved(true); } catch (cause) { setError(cause instanceof Error ? cause.message : m.failure); }
+    try { await onRespond(response); setResolved(true); } catch (cause) { setError(cause instanceof Error ? cause : m.failure); }
     finally { setPending(false); }
   }
   function submit(event: FormEvent) {
@@ -71,7 +75,6 @@ export function SessionInteractionCard({ interaction, enabled, onRespond }: {
         </label>) : null}
         {interaction.kind !== 'approval' ? <div className="session-actions"><button className="button button-primary" type="submit">{m.submit}</button>{interaction.canDismiss ? <button className="button" type="button" onClick={() => void respond({ kind: 'dismiss' })}>{m.dismiss}</button> : null}</div> : null}
       </fieldset>
-      {pending ? <p role="status">{m.pending}</p> : null}
       {error ? <p className="session-error" role="alert">{error}</p> : null}
     </form>}
   </section>;

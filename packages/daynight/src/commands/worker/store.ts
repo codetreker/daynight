@@ -1,10 +1,19 @@
 import path from "node:path";
-import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { workerStoreFormat } from "./store-format.js";
 import { canonicalId } from "../../api/parse.js";
 import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
 import type { ClaimIdentity, CleanupSchedule, CleanupScheduleRecord, LocalTask, ProjectIdentity, ResourceOwner, WorkerProject } from "./types.js";
+import { parseWorkerCloudNative, type WorkerCloudNative } from "../../api/worker-configuration.js";
+type FrozenNativeConfiguration = WorkerCloudNative & { validateNativeSelection?: true };
+const parseFrozenNative = (value: unknown): FrozenNativeConfiguration => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid frozen native configuration.");
+  const data = value as Record<string, unknown>, selection = Object.hasOwn(data, "validateNativeSelection");
+  if (selection && data.validateNativeSelection !== true) throw new Error("Invalid frozen native validation policy.");
+  const { validateNativeSelection: _selection, ...native } = data;
+  return { ...parseWorkerCloudNative(native), ...(selection ? { validateNativeSelection: true as const } : {}) };
+};
 
 const text = (value: unknown, name: string): string => {
   if (typeof value !== "string" || value.trim().length === 0) throw new TypeError(`${name} must be a nonempty string.`);
@@ -46,8 +55,8 @@ const asTask = (row: LocalTask): LocalTask => {
   if (row.status !== "pending" && row.status !== "active" && row.status !== "done") throw new TypeError("Worker task status must be pending, active or done.");
   return { ...claimKey(row), status: row.status, agent: agent(row.agent), agentControlMode: mode(row.agentControlMode), sessionId: row.sessionId === null ? null : id(row.sessionId, "Native session ID") };
 };
-export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
-  absolutePath(databaseFile, "The SQLite database path");
+export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
+  if (typeof databaseFile === "string") absolutePath(databaseFile, "The SQLite database path");
   const busyTimeoutMs = options.busyTimeoutMs === undefined ? 5000 : options.busyTimeoutMs;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > 60_000) throw new TypeError("SQLite busy timeout must be a safe integer between 1 and 60000 milliseconds.");
   const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowCreate: true, timeoutMs: busyTimeoutMs,
@@ -86,8 +95,24 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     if (task === null) throw new Error("The claimed task is not registered.");
     return task;
   };
+  const getNativeConfiguration = (identity: ClaimIdentity): FrozenNativeConfiguration | null => read(() => {
+    const row = db.prepare("SELECT configuration FROM claim_native_configurations WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId").get(claimKey(identity)) as { configuration: string } | undefined;
+    return row === undefined ? null : parseFrozenNative(JSON.parse(row.configuration));
+  });
+  const freezeNativeConfiguration = (identity: ClaimIdentity, input: FrozenNativeConfiguration): FrozenNativeConfiguration => atomic(() => {
+    const task = needTask(identity), configuration = parseFrozenNative({ agent: input.agent, model: input.model, args: input.args, ...(input.validateNativeSelection === undefined ? {} : { validateNativeSelection: input.validateNativeSelection }) }), previous = getNativeConfiguration(identity);
+    if (task.agent !== configuration.agent) throw new Error("Frozen configuration does not match the claimed agent.");
+    if (previous !== null) {
+      if (JSON.stringify(previous) !== JSON.stringify(configuration)) throw new Error("The claim's native configuration is already frozen.");
+      return previous;
+    }
+    if (task.sessionId !== null) throw new Error("An existing native session cannot acquire an invented frozen configuration.");
+    if (task.status === "done") throw new Error("The local execution is already done.");
+    db.prepare("INSERT INTO claim_native_configurations(project_id, task_id, claim_id, configuration) VALUES (@projectId, @taskId, @claimId, @configuration)").run({ ...claimKey(identity), configuration: JSON.stringify(configuration) });
+    return configuration;
+  });
   return {
-    close: (): void => { closeSqliteDatabase(db, { file: databaseFile, format: workerStoreFormat }); },
+    close: (): void => { closeSqliteDatabase(db, { file: typeof databaseFile === "string" ? databaseFile : databaseFile.name, format: workerStoreFormat }); },
     getProject,
     listProjects: (): WorkerProject[] => read(() => (db.prepare(`SELECT ${projectColumns} FROM projects ORDER BY project_id`).all() as WorkerProject[]).map(asProject)),
     registerProject: (input: WorkerProject): WorkerProject => atomic(() => {
@@ -122,9 +147,11 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       db.prepare("DELETE FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId").run(claimKey(identity));
     }),
     getTask,
+    getNativeConfiguration,
+    freezeNativeConfiguration,
     listTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
     listUnfinishedTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE status <> 'done' ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
-    registerPending: (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: AgentControlMode; sessionId?: string | null }): LocalTask => atomic(() => {
+    registerPending: (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: AgentControlMode; sessionId?: string | null; nativeConfiguration?: FrozenNativeConfiguration }): LocalTask => atomic(() => {
       const key = claimKey(input);
       const tool = agent(input.agent);
       const sessionId = input.sessionId === undefined || input.sessionId === null ? null : id(input.sessionId, "Native session ID");
@@ -136,6 +163,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       }
       db.prepare(`INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode)
         VALUES (@projectId, @taskId, @claimId, 'pending', @agent, @sessionId, @agentControlMode)`).run({ ...key, agent: tool, sessionId, agentControlMode: mode(input.agentControlMode) });
+      if (input.nativeConfiguration !== undefined) freezeNativeConfiguration(key, input.nativeConfiguration);
       return needTask(key);
     }),
     activateTask: (identity: ClaimIdentity): LocalTask => atomic(() => {

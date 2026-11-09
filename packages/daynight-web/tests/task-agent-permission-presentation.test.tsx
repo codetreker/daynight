@@ -10,7 +10,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 const detail: TaskDetail = { assignedTo: null,
   requiredPlatform: null, allowAgents: false, id: 'task', projectId: 'project', title: 'Deployment acceptance', description: '',
   properties: { pullRequests: [] }, status: 'todo', version: 12n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
-  startedAt: null, completedAt: null, createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z',
+  startedAt: null, completedAt: null, cancelledAt: null, createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z',
 };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
 const permission: TaskMutationState = { ...idle, operation: { action: 'allowAgents', allowAgents: true, version: detail.version } };
@@ -68,8 +68,8 @@ describe('automatic execution presentation', () => {
   });
 
   it('keeps both write and reconciliation errors visible until the actual task is confirmed', () => {
-    const writeError = new ApiError('network', null, 'network', 'permission-write', undefined, new Error('connection reset'));
-    const readError = new ApiError('protocol', 200, 'protocol', 'permission-read', undefined, new Error('malformed response'));
+    const writeError = new ApiError('network', null, 'network', 'permission-write', new Error('connection reset'));
+    const readError = new ApiError('protocol', 200, 'protocol', 'permission-read', new Error('malformed response'));
     const failed: TaskMutationState = { ...permission, phase: 'unknown', error: writeError, reconciliationError: readError };
     const view = mount(failed, detail, true);
     expect(screen.getByText('permission-write')).toBeVisible();

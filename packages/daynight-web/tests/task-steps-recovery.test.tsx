@@ -92,7 +92,11 @@ it("reconciles an unknown Step write when another page advances the stored summa
     detail: { version: 6n }, mutation: { phase: "reconciled", reconciledFrom: "unknown", reconciling: false, reconciliationError: null },
   });
   expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: resource(6n), stale: false, error: null });
-  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+  const writes = fetcher.mock.calls.filter(([, options]) => options.method === "PUT");
+  expect(writes).toHaveLength(1);
+  const requestId = (writes[0]![1].headers as Record<string, string>)["X-Request-ID"];
+  expect(requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  expect(fetcher.mock.calls.some(([, options]) => (options.headers as Record<string, string> | undefined)?.["X-Request-ID"]?.startsWith(`${requestId}.r`))).toBe(true);
   releaseSteps();
   releaseDetail();
 });

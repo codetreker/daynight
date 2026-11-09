@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	promptservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/prompt"
 )
 
@@ -70,7 +72,7 @@ func (s *Workers) ReportSync(ctx context.Context, principal model.Principal, wor
 
 type WorkerPage struct {
 	ObservedAt time.Time
-	Items      []model.WorkerSnapshot
+	Items      []workerprotocol.WorkerSummary
 	NextCursor *string
 }
 
@@ -91,6 +93,9 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
+	if _, err := workerprotocol.EncodeTelemetry(io.Discard, input.Telemetry, workercore.MaxTelemetryJSONBytes); err != nil {
+		return WorkerReportResult{}, workercore.InputLimit(err)
+	}
 	if input.Configuration != nil {
 		raw, marshalErr := json.Marshal(input.Configuration)
 		if marshalErr != nil {
@@ -104,10 +109,14 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 	var result WorkerReportResult
 	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
 		tx := scope.WorkerDAO()
-		observedAt, err := scope.ObservedAt(ctx)
+		admission, err := scope.AdmitWorker(ctx, principal.UserID, workerID, workercore.ActiveWindow)
 		if err != nil {
 			return err
 		}
+		if err := workercore.AdmitActiveWorker(admission); err != nil {
+			return err
+		}
+		observedAt := admission.ObservedAt
 		var items []model.WorkerObservedTask
 		if input.TaskInventory != nil {
 			sources, err := tx.ReportTaskSnapshots(ctx, principal.UserID, *input.TaskInventory)
@@ -123,10 +132,25 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 		if err != nil {
 			return err
 		}
+		if _, err := workerprotocol.EncodeItem(io.Discard, stored, workercore.MaxWorkerJSONBytes); err != nil {
+			return workercore.InputLimit(err)
+		}
 		if input.Configuration != nil {
 			result.Configuration, err = workercore.ExchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
 			if err != nil {
 				return err
+			}
+			if result.Configuration.ObservationAccepted {
+				configuration, err := tx.WorkerConfiguration(ctx, principal.UserID, workerID)
+				if err != nil {
+					return err
+				}
+				if configuration.Observation == nil {
+					return fmt.Errorf("accepted worker configuration observation is missing")
+				}
+				if _, err := workerprotocol.EncodeObservation(io.Discard, *configuration.Observation, workercore.MaxConfigurationJSONBytes); err != nil {
+					return workercore.InputLimit(err)
+				}
 			}
 		}
 		result.LastReportedAt = stored.LastReportedAt
@@ -150,26 +174,28 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 	if err != nil {
 		return WorkerPage{}, err
 	}
-	var result WorkerPage
-	var records store.WorkerPage
+	result := WorkerPage{Items: []workerprotocol.WorkerSummary{}}
+	var records store.WorkerSummaryPage
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		records, err = snapshot.WorkerDAO().Workers(ctx, principal.UserID, result.ObservedAt, page)
+		records, err = snapshot.WorkerDAO().WorkerSummaries(ctx, principal.UserID, result.ObservedAt, page)
 		return err
 	})
 	if err != nil {
 		return WorkerPage{}, fmt.Errorf("list workers: %w", err)
 	}
-	result.Items = records.Items
+	for _, item := range records.Items {
+		result.Items = append(result.Items, workerprotocol.WorkerSummary{WorkerID: item.WorkerID, Machine: workerprotocol.WorkerMachine{ID: item.Machine.ID, Name: item.Machine.Name}, Platform: string(item.Platform), LastReportedAt: item.LastReportedAt, TaskObservationState: string(item.TaskObservationState), TaskObservedAt: item.TaskObservedAt, ActiveTaskCount: item.ActiveTaskCount})
+	}
 	if records.HasMore {
 		last := records.Items[len(records.Items)-1]
 		cursor, err := workercore.ListCursor(principal.UserID, last.CreatedAt, last.WorkerID)
 		if err != nil {
-			return WorkerPage{}, fmt.Errorf("encode worker cursor: %w", err)
+			return WorkerPage{}, fmt.Errorf("list workers: %w", err)
 		}
 		result.NextCursor = &cursor
 	}

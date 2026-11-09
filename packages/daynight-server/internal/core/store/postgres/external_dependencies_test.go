@@ -1,0 +1,153 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"slices"
+	"testing"
+	"time"
+
+	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+func externalDependencyFacts(t *testing.T, database *Store) map[string]string {
+	t.Helper()
+	facts := make(map[string]string)
+	for name, query := range map[string]string{
+		"projects":     `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]'::jsonb)::text FROM projects t`,
+		"tasks":        `SELECT coalesce(jsonb_agg(to_jsonb(t)-'required_platform' ORDER BY id),'[]'::jsonb)::text FROM tasks t`,
+		"attachments":  `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY task_id,path),'[]'::jsonb)::text FROM task_attachments t`,
+		"dependencies": `SELECT coalesce(jsonb_agg(to_jsonb(t)-'external' ORDER BY project_id,task_id,depends_on_task_id),'[]'::jsonb)::text FROM task_dependencies t`,
+	} {
+		var value string
+		if err := database.Pool.QueryRow(context.Background(), query).Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		facts[name] = value
+	}
+	return facts
+}
+
+func TestExternalDependencyMigrationPreservesExistingFactsAndDefaults(t *testing.T) {
+	ctx := context.Background()
+	pool := emptyPool(t)
+	if err := migrate(ctx, pool, schemaMigrations[:11]); err != nil {
+		t.Fatal(err)
+	}
+	database := &Store{Pool: pool}
+	project := queryProject(t, database, 1)
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
+	for number, status := range map[int]model.TaskStatus{10: model.TaskDone, 11: model.TaskTodo, 12: model.TaskStatus("proposed")} {
+		mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,description,status,version,created_at,updated_at,started_at,completed_at,properties)
+			VALUES ($1,$2,'Preserved title','Preserved description',$3,17,$4,$5,$4,$5,'{"pullRequests":[{"url":"https://example.com/pr/1","title":"Preserved"}]}')`,
+			queryID(number), project.ID, status, stamp, stamp.Add(time.Hour))
+	}
+	mustQueryExec(t, database, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES ($1,$2,$3),($1,$4,$3)`, project.ID, queryID(11), queryID(10), queryID(12))
+	mustQueryExec(t, database, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES ($1,$2,'plan.md','text/markdown',123)`, project.ID, queryID(11))
+	before := externalDependencyFacts(t, database)
+	var ledger string
+	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(t) ORDER BY version)::text FROM schema_migrations t`).Scan(&ledger); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:12]); err != nil {
+		t.Fatal(err)
+	}
+	if after := externalDependencyFacts(t, database); !reflect.DeepEqual(after, before) {
+		t.Fatalf("external dependency migration changed existing facts: before=%v after=%v", before, after)
+	}
+	var preserved string
+	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(t) ORDER BY version)::text FROM schema_migrations t WHERE version<=11`).Scan(&preserved); err != nil || preserved != ledger {
+		t.Fatalf("migration changed the existing ledger: %v", err)
+	}
+	for _, number := range []int{11, 12} {
+		task := snapshotHistoricalTask(t, database, project.ID, queryID(number))
+		if task.ExternalDependsOn == nil || len(task.ExternalDependsOn) != 0 || !slices.Equal(task.DependsOn, []string{queryID(10)}) {
+			t.Fatalf("historical edge was not normal: %#v", task)
+		}
+	}
+	mustQueryExec(t, database, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES ($1,$2,$3)`, project.ID, queryID(12), queryID(11))
+	var external bool
+	if err := pool.QueryRow(ctx, `SELECT external FROM task_dependencies WHERE task_id=$1 AND depends_on_task_id=$2`, queryID(12), queryID(11)).Scan(&external); err != nil || external {
+		t.Fatalf("new edge did not default to normal: %v, %v", external, err)
+	}
+	_, err := pool.Exec(ctx, `UPDATE task_dependencies SET external=NULL WHERE task_id=$1`, queryID(12))
+	var constraint *pgconn.PgError
+	if !errors.As(err, &constraint) || constraint.Code != "23502" {
+		t.Fatalf("external marker accepted NULL: %v", err)
+	}
+	var applied time.Time
+	if err := pool.QueryRow(ctx, "SELECT applied_at FROM schema_migrations WHERE version=12").Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:12]); err != nil {
+		t.Fatal(err)
+	}
+	var repeated time.Time
+	if err := pool.QueryRow(ctx, "SELECT applied_at FROM schema_migrations WHERE version=12").Scan(&repeated); err != nil || !repeated.Equal(applied) {
+		t.Fatalf("repeated migration changed ledger: %v, %v", repeated, err)
+	}
+}
+
+func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := context.Background()
+	project, foreign := queryProject(t, database, 1), queryProject(t, database, 2)
+	done := queryTask(t, database, project.ID, 10, model.TaskDone)
+	pending := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	target := queryTask(t, database, project.ID, 12, model.TaskTodo, pending.ID, done.ID)
+	foreignDone := queryTask(t, database, foreign.ID, 20, model.TaskDone)
+	foreignTarget := queryTask(t, database, foreign.ID, 21, model.TaskTodo, foreignDone.ID)
+	mustQueryExec(t, database, `UPDATE tasks SET allow_agents=true WHERE id=$1`, target.ID)
+	mustQueryExec(t, database, `UPDATE task_dependencies SET external=true WHERE task_id=ANY($1::uuid[])`, []string{target.ID, foreignTarget.ID})
+	target = snapshotTask(t, database, project.ID, target.ID)
+	if !slices.Equal(target.ExternalDependsOn, []string{done.ID, pending.ID}) || !slices.Equal(target.BlockedBy, []string{pending.ID}) || target.Ready {
+		t.Fatalf("external edges changed scheduling or ordering: %#v", target)
+	}
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		created, err := tx.TaskDAO().CreateTask(ctx, queryID(13), TaskWrite{Title: "Mixed edge task", Status: model.TaskTodo, DependsOn: []string{pending.ID, done.ID}, ExternalDependsOn: []string{done.ID}})
+		if err != nil || !slices.Equal(created.ExternalDependsOn, []string{done.ID}) || !slices.Equal(created.BlockedBy, []string{pending.ID}) {
+			t.Fatalf("store did not persist mixed edge classification: %#v, %v", created, err)
+		}
+		read, err := tx.TaskDAO().TasksByID(ctx, []string{target.ID, foreignTarget.ID})
+		if err != nil || len(read) != 1 || !reflect.DeepEqual(read[0], target) {
+			t.Fatalf("transaction read lost classification or scope: %#v, %v", read, err)
+		}
+		reachable, err := tx.TaskDAO().Reachable(ctx, target.ID, pending.ID, DependencyReplacement{TaskID: target.ID, DependsOn: target.DependsOn})
+		if err != nil || !reachable {
+			t.Fatalf("external edge disappeared from reachability: %v, %v", reachable, err)
+		}
+		updated, err := tx.TaskDAO().UpdateTask(ctx, target.ID, TaskWrite{AllowAgents: target.AllowAgents, Title: "Preserved external edges", Status: target.Status, DependsOn: target.DependsOn, ExternalDependsOn: target.ExternalDependsOn})
+		if err != nil || !updated.AllowAgents || !slices.Equal(updated.ExternalDependsOn, target.ExternalDependsOn) {
+			t.Fatalf("store replacement lost external classification: %#v, %v", updated, err)
+		}
+		target = updated
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		page, err := snapshot.TaskDAO().Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
+		if err != nil || len(page.Items) != 4 || !reflect.DeepEqual(page.Items[2], target) {
+			t.Fatalf("scoped list lost classification: %#v, %v", page, err)
+		}
+		graph, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, target.ID, testGraphSelection(), 160)
+		if err != nil || len(graph) != 3 || !slices.Equal(graph[2].ExternalDependsOn, target.ExternalDependsOn) {
+			t.Fatalf("scoped graph lost classification: %#v, %v", graph, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.TaskDAO().UpdateTask(ctx, target.ID, TaskWrite{AllowAgents: target.AllowAgents, Title: "Rolled back", Status: target.Status, DependsOn: []string{done.ID, target.ID}, ExternalDependsOn: []string{done.ID}})
+		return err
+	})
+	var constraint *pgconn.PgError
+	if !errors.As(err, &constraint) || constraint.Code != "23514" || !reflect.DeepEqual(snapshotTask(t, database, project.ID, target.ID), target) {
+		t.Fatalf("failed edge replacement lost metadata/classification rollback: %v", err)
+	}
+}

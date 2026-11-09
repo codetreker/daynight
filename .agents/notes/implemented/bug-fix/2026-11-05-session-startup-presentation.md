@@ -29,7 +29,7 @@ safe errors.
 Startup and connection diagnostics are localized and appear once in the header.
 Fixed safe reasons expand with native keyboard-accessible details. Normal native
 activity and operation labels keep the English behavior selected by the
-[operation label decision](2026-11-04-english-session-operation-labels.md); this
+[operation label decision](../../archived/bug-fix/2026-11-04-english-session-operation-labels.md); this
 partially supersedes its blanket header-language rule for lifecycle diagnostics.
 The [requirements](../../../../docs/spec/task-sessions.md#启动结果与恢复阻断) and
 [design](../../../../docs/design/task-session-protocol.md#session-view-的启动状态选择)
@@ -53,7 +53,7 @@ interaction without granting input outside the existing native operation gates.
 
 Users can distinguish blocked recovery from active synchronization without
 exposing private logs. Stable drafts, timeline identity and archive reads retain
-their existing owners. Active task views incur one current read every three
-seconds; standalone and Bot sessions do not poll Worker reports. Controlled
+their existing owners. Selected Task Session views in visible documents incur one current read every
+three seconds under the [current-read visibility decision](../architecture/2026-11-08-task-current-read-visibility.md); standalone and Bot sessions do not poll Worker reports. Controlled
 browser fixtures demonstrate rendering and HTTP/WebSocket behavior, not the cause
 or repair of a real provider initialization timeout.

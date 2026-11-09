@@ -12,7 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -194,5 +196,62 @@ func TestPromptRouteRegistration(t *testing.T) {
 				t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body)
 			}
 		}
+	}
+}
+
+type identityMismatchPrompts struct {
+	currentRevision              string
+	gets, puts                   int
+	principal                    model.Principal
+	scope                        model.PromptScope
+	id, expected, revision, text string
+}
+
+func (f *identityMismatchPrompts) Get(context.Context, model.Principal, model.PromptScope, string) (model.PromptResource, error) {
+	f.gets++
+	return model.PromptResource{}, errors.New("unexpected read")
+}
+
+func (f *identityMismatchPrompts) Put(_ context.Context, principal model.Principal, scope model.PromptScope, id, expected, revision, text string) (model.PromptResource, error) {
+	f.puts++
+	f.principal, f.scope, f.id, f.expected, f.revision, f.text = principal, scope, id, expected, revision, text
+	return model.PromptResource{}, &model.Fault{Code: "identity_mismatch", Message: "The prompt belongs to another user."}
+}
+
+func TestPromptPutPreservesDraftIdentityAcrossCookieSwitch(t *testing.T) {
+	const accountB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	const credentialID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	principal := model.Principal{Kind: model.SessionCredential, UserID: accountB, CredentialID: credentialID}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	authCalls := 0
+	auth, err := authhttp.NewRequestAuthentication(func(_ context.Context, kind model.CredentialKind, credential string) (model.Principal, error) {
+		authCalls++
+		if kind != model.SessionCredential || credential != "account-b-cookie" {
+			return model.Principal{}, authhttp.Failure()
+		}
+		return principal, nil
+	}, config.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &identityMismatchPrompts{currentRevision: "7"}
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, service, auth, logger)
+	body := fmt.Sprintf(`{"expectedUserId":%q,"revision":"7","text":"account A draft"}`, userID)
+	r := httptest.NewRequest(http.MethodPut, "/api/v1/me/worker-prompt", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Origin", "https://daynight.example")
+	r.Header.Set("X-Request-ID", "identity-switch")
+	r.AddCookie(&http.Cookie{Name: auth.SessionCookieName(), Value: "account-b-cookie"})
+	w := httptest.NewRecorder()
+	httpx.RequestLogging(logger, mux).ServeHTTP(w, r)
+	if authCalls != 1 || service.gets != 0 || service.puts != 1 || service.principal != principal || service.scope != model.PromptScopeUser || service.id != accountB || service.expected != userID || service.revision != service.currentRevision || service.text != "account A draft" {
+		t.Fatalf("identity propagation: auth=%d service=%+v", authCalls, service)
+	}
+	var response struct {
+		Error struct{ Code, Message, RequestID string }
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != http.StatusConflict || response.Error.Code != "identity_mismatch" || response.Error.RequestID != "identity-switch" || strings.Contains(w.Body.String(), "account A draft") || w.Header().Get("Daynight-User-ID") != accountB || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("identity refusal: %d %s headers=%v err=%v", w.Code, w.Body, w.Header(), err)
 	}
 }

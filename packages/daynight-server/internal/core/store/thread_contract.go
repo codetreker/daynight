@@ -13,6 +13,7 @@ type ThreadWriter interface {
 }
 
 type ThreadScope interface {
+	CaptureDAO() WebhookCaptureDAO
 	TaskDAO() ThreadTaskDAO
 	CredentialDAO() ThreadCredentialDAO
 	ProjectDAO() ThreadProjectDAO
@@ -41,10 +42,3 @@ type ThreadDAO interface {
 	PrepareTimestamp(context.Context, *model.ThreadMessage, *model.ThreadPosition) error
 	AdvanceHead(context.Context, string, model.ThreadPosition) error
 }
-
-var _ ThreadWriter = (*Store)(nil)
-var _ ThreadScope = (*ThreadTx)(nil)
-var _ ThreadTaskDAO = (*ThreadTx)(nil)
-var _ ThreadCredentialDAO = (*ThreadTx)(nil)
-var _ ThreadProjectDAO = (*ThreadTx)(nil)
-var _ ThreadDAO = (*ThreadTx)(nil)

@@ -6,7 +6,7 @@ import { readCachedDetail, saveDetail } from '../src/features/task-detail/detail
 import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), deleteTask: vi.fn(), getTask: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, deleteTask: vi.fn(), getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }) }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const target = '20000000-0000-4000-8000-000000000001'; const ordinary = '20000000-0000-4000-8000-000000000002'; const external = '20000000-0000-4000-8000-000000000003'; const downstream = '20000000-0000-4000-8000-000000000004';
 const deleted = detailFixture(project, target, { version: 9n });
@@ -30,7 +30,7 @@ describe('combined deletion snapshot admission', () => {
     const after = [ordinaryAfter, externalAfter, downstreamBefore]; const byId = new Map(after.map((detail) => [detail.id, detail]));
     const replacement = await admitTaskGraph(world.scope, graphFixture(after), { epoch: crypto.randomUUID(), versionForTask: (node) => byId.get(node.id)!.version, propertiesForTask: (node) => byId.get(node.id)!.properties });
     expect(replacement.manifest.cacheGeneration).not.toBe(oldTicket.cacheGeneration); expect(replacement.index.nodes.has(target)).toBe(false); expect(replacement.index.successors.has(target)).toBe(false);
-    expect(replacement.graph.summary).toEqual({ total: 3, todo: 3, inProgress: 0, done: 0, ready: 2, blocked: 1 });
+    expect(replacement.graph.summary).toEqual({ total: 3, todo: 3, inProgress: 0, done: 0, cancelled: 0, ready: 2, blocked: 1 });
     expect(replacement.versions.get(ordinary)).toBe(5n); expect(replacement.versions.get(external)).toBe(9n); expect(replacement.versions.get(downstream)).toBe(1n);
     expect(replacement.index.nodes.get(ordinary)).toMatchObject({ dependsOn: [], blockedBy: [], ready: true }); expect(replacement.index.nodes.get(external)).toMatchObject({ dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
     expect(replacement.index.nodes.get(downstream)).toMatchObject({ dependsOn: [ordinary], blockedBy: [ordinary], ready: false });

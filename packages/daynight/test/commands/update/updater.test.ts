@@ -76,6 +76,21 @@ describe("npm global self-update", () => {
     expect(JSON.parse(f.contents.get(f.paths.join(f.root, "package.json"))!).version).toBe("2.0.0");
   });
 
+  it("repairs a failed skill refresh on the next update without reinstalling the already updated package", async () => {
+    const f = fixture(); const run = f.options.operations!.run;
+    const refresh = f.paths.join(f.root, "dist", "commands", "skill", "refresh-installed.js");
+    let blocked = true;
+    f.options.operations!.run = async (command) => {
+      if (command.arguments[0] === refresh && blocked) throw new Error("skill parent access denied");
+      return run(command);
+    };
+    await expect(updateSelf(f.options)).rejects.toThrow("package was updated from 1.0.0 to 2.0.0");
+    blocked = false;
+    await expect(updateSelf(f.options)).resolves.toEqual({ status: "current", previousVersion: "2.0.0", targetVersion: "2.0.0" });
+    expect(f.commands.filter((command) => command.arguments[1] === "install")).toHaveLength(1);
+    expect(f.commands.at(-1)!.arguments).toEqual([refresh]);
+  });
+
   it("resolves an exact prerelease target before installing", async () => {
     const f = fixture("linux", "1.0.0-beta.2", "1.0.0-beta.10");
     await updateSelf(f.options);

@@ -1,7 +1,8 @@
 package server
 
 import (
-	"io"
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -10,27 +11,51 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
+func workerHTTPSummary(task model.Task) model.TaskViewRecord {
+	return model.TaskViewRecord{ID: task.ID, TitlePreview: task.Title, Status: task.Status, Version: task.Version,
+		Properties: task.Properties, DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn,
+		RequiredPlatform: task.RequiredPlatform, AssignedTo: task.AssignedTo, AllowAgents: task.AllowAgents,
+		CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, StartedAt: task.StartedAt, CompletedAt: task.CompletedAt}
+}
+
 func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Interoperable execution"), map[string]any{"allowAgents": true})
-	baseline := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
+	f := newTaskHTTPFixture(t)
+	current := workerHTTPTask(t)
+	path := taskCollection(current.ProjectID) + "/" + current.ID
+	f.expectSync([]model.TaskViewRecord{workerHTTPSummary(current)}, []model.TaskAssigneeFact{}, nil)
+	baseline := decodeResponse[api.TaskSync](t, projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID), ""), http.StatusOK)
 	epoch, observed := baseline.Epoch, baseline.ObservedAt
-	assertSummary := func(full api.Task) {
+	if epoch != taskHTTPEpoch || !observed.Equal(f.observed) {
+		t.Fatal("baseline summary changed its declared observation")
+	}
+	assertSummary := func(full api.Task, expected model.Task) {
 		t.Helper()
-		// Synchronization carries canonical properties even when the ordinary task
-		// request uses the legacy Worker projection.
-		properties := propertyResource(t, handler, http.MethodGet, taskPath(full)+"/properties", nil)
-		if properties.Version != full.Version {
-			t.Fatal("worker property resource advanced unexpectedly")
+		expected = copyTaskHTTPTask(expected)
+		f.expectSnapshot(map[string]int{"task": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+			reader.TaskFn = func(ctx context.Context, projectID, id string) (model.Task, error) {
+				f.require(ctx, projectID)
+				plan.Called("task")
+				if id != expected.ID {
+					t.Fatal("property read changed Task identity")
+				}
+				return copyTaskHTTPTask(expected), nil
+			}
+		})
+		properties := propertyResource(t, f.handler, http.MethodGet, path+"/properties", nil)
+		if properties.Version != full.Version || !reflect.DeepEqual(properties.Properties, map[string]json.RawMessage(expected.Properties)) {
+			t.Fatal("worker property resource advanced or changed canonical values")
 		}
 		query := "?epoch=" + epoch + "&since=" + url.QueryEscape(observed.Format(time.RFC3339Nano))
-		response := projectRequest(handler, http.MethodGet, syncPath(project.ID)+query, "")
+		lower := observed.Add(-10 * time.Second)
+		f.observed = f.observed.Add(time.Second)
+		f.expectSync([]model.TaskViewRecord{workerHTTPSummary(expected)}, []model.TaskAssigneeFact{}, &lower)
+		response := projectRequest(f.handler, http.MethodGet, syncPath(f.project.ID)+query, "")
 		window := decodeResponse[api.TaskSync](t, response, http.StatusOK)
-		if window.Mode != "delta" || window.Epoch != epoch || window.ObservedAt.Before(observed) {
-			t.Fatal("worker mutation changed the summary epoch or invalidated its observation window")
+		if window.Mode != "delta" || window.Epoch != epoch || !window.ObservedAt.Equal(f.observed) {
+			t.Fatal("worker mutation changed summary epoch or observation window")
 		}
 		found := false
 		for _, summary := range window.Tasks {
@@ -39,38 +64,77 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 			}
 			found = true
 			if summary.AllowAgents != full.AllowAgents || summary.Status != full.Status || summary.Version != strconv.FormatInt(full.Version, 10) || !summary.UpdatedAt.Equal(full.UpdatedAt) || !reflect.DeepEqual(summary.StartedAt, full.StartedAt) || !reflect.DeepEqual(summary.CompletedAt, full.CompletedAt) || summary.Properties == nil || !reflect.DeepEqual(summary.Properties, properties.Properties) {
-				t.Fatalf("worker change summary disagrees with the full task: summary=%+v task=%+v", summary, full)
+				t.Fatalf("worker summary disagrees with full task: summary=%+v task=%+v", summary, full)
 			}
 		}
 		if !found {
-			t.Fatal("summary overlap window omitted the recently changed worker task")
+			t.Fatal("summary overlap omitted recently changed Worker task")
 		}
 		observed = window.ObservedAt
 	}
-	body := workerClaimBody(task.Version)
-	task = claimHTTPWorker(t, handler, task, body)
-	assertSummary(task)
-	update := map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "private-pane"}, "nativeSessionId": "private-native-session"}
-	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPatch, taskPath(task)+"/worker-claim", jsonBody(t, update)), http.StatusOK)
-	assertSummary(task)
-	update["version"] = task.Version
-	noop := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPatch, taskPath(task)+"/worker-claim", jsonBody(t, update)), http.StatusOK)
-	if !reflect.DeepEqual(noop, task) {
-		t.Fatal("same-value worker update changed task version, timing or summary-relevant fields")
+	body := workerClaimBody(current.Version)
+	claimedAt := current.UpdatedAt.Add(time.Second)
+	worker := model.WorkerClaim{ClaimID: body["claimId"].(string), WorkerID: body["workerId"].(string), UserID: f.principal.UserID,
+		Machine:  model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"},
+		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr,
+		WorktreeID: body["worktreeId"].(string), State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
+	claimed := current
+	claimed.Status, claimed.Version, claimed.Ready = model.TaskInProgress, current.Version+1, false
+	claimed.StartedAt, claimed.UpdatedAt = &claimedAt, claimedAt
+	claimed.Properties = workerHTTPProperties(t, current.Properties, &worker)
+	values := workerHTTPWriteValues(claimed)
+	plan := expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, claimed, &claimedAt)
+	full := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim", jsonBody(t, body)), http.StatusOK)
+	plan.check()
+	assertSummary(full, claimed)
+	current = claimed
+	native := "private-native-session"
+	worker.Phase, worker.Herdr, worker.NativeSessionID = model.WorkerExecuting, &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "private-pane"}, &native
+	executing := current
+	executing.Version, executing.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Second)
+	executing.Properties = workerHTTPProperties(t, current.Properties, &worker)
+	update := map[string]any{"version": current.Version, "claimId": worker.ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "private-pane"}, "nativeSessionId": native}
+	values = workerHTTPWriteValues(executing)
+	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, executing, nil)
+	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPatch, path+"/worker-claim", jsonBody(t, update)), http.StatusOK)
+	plan.check()
+	assertSummary(full, executing)
+	current = executing
+	update["version"] = current.Version
+	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, nil, model.Task{}, nil)
+	noop := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPatch, path+"/worker-claim", jsonBody(t, update)), http.StatusOK)
+	plan.check()
+	if !reflect.DeepEqual(noop, full) {
+		t.Fatal("same-value Worker update changed version, timing or summary fields")
 	}
-	assertSummary(noop)
-	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "stoppedConfirmed": true})), http.StatusOK)
-	assertSummary(task)
-	if task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
-		t.Fatal("release did not retain the task status timing contract")
+	assertSummary(noop, current)
+	worker.State = model.WorkerReleased
+	released := current
+	released.Status, released.Version, released.Ready = model.TaskTodo, current.Version+1, true
+	released.StartedAt, released.CompletedAt, released.UpdatedAt = nil, nil, current.UpdatedAt.Add(time.Second)
+	released.Properties = workerHTTPProperties(t, current.Properties, &worker)
+	values = workerHTTPWriteValues(released)
+	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, released, nil)
+	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim/release", jsonBody(t, map[string]any{"version": current.Version, "claimId": worker.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
+	plan.check()
+	assertSummary(full, released)
+	if full.Status != "todo" || full.StartedAt != nil || full.CompletedAt != nil {
+		t.Fatal("release lost status timing contract")
 	}
-	if current := readHTTPTask(t, handler, task); !reflect.DeepEqual(current, task) || apiWorker(t, current.Properties).NativeSessionID == nil || *apiWorker(t, current.Properties).NativeSessionID != "private-native-session" {
-		t.Fatal("summary projection unexpectedly changed the full execution resource")
+	f.expectRead(released)
+	if read := readHTTPTask(t, f.handler, full); !reflect.DeepEqual(read, full) || apiWorker(t, read.Properties).NativeSessionID == nil || *apiWorker(t, read.Properties).NativeSessionID != native {
+		t.Fatal("summary projection changed full execution resource")
 	}
-	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/withdraw", jsonBody(t, map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID})), http.StatusOK)
-	assertSummary(task)
-	if apiWorker(t, task.Properties) != nil || task.AllowAgents || task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
-		t.Fatal("withdrawal did not clear the released record and automatic permission")
+	current = released
+	withdrawn := current
+	withdrawn.AllowAgents, withdrawn.Version, withdrawn.UpdatedAt = false, current.Version+1, current.UpdatedAt.Add(time.Second)
+	withdrawn.Properties = workerHTTPProperties(t, current.Properties, nil)
+	values = workerHTTPWriteValues(withdrawn)
+	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, withdrawn, nil)
+	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim/withdraw", jsonBody(t, map[string]any{"version": current.Version, "claimId": worker.ClaimID})), http.StatusOK)
+	plan.check()
+	assertSummary(full, withdrawn)
+	if apiWorker(t, full.Properties) != nil || full.AllowAgents || full.Status != "todo" || full.StartedAt != nil || full.CompletedAt != nil {
+		t.Fatal("withdrawal retained released record or automatic permission")
 	}
-
 }

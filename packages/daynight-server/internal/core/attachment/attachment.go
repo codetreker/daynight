@@ -5,6 +5,7 @@ import (
 	"errors"
 	"mime"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -12,6 +13,21 @@ import (
 )
 
 const Bucket = "task-attachments"
+
+// MaxPathCharacters counts Unicode code points, including path separators.
+const MaxPathCharacters = 1024
+
+// MaxContentTypeBytes limits the original MIME value on new writes.
+const MaxContentTypeBytes = 2048
+
+// ValidateWritePath rejects new writes beyond the path length limit. Existing
+// metadata may still refer to longer paths, which remain readable and removable.
+func ValidateWritePath(path string) error {
+	if utf8.RuneCountInString(path) > MaxPathCharacters {
+		return &model.Fault{Code: "invalid_input", Message: "Attachment path must not exceed 1024 characters."}
+	}
+	return nil
+}
 
 type Address struct {
 	ProjectID    string
@@ -42,6 +58,9 @@ func TaskStoragePath(projectID, taskID string) string {
 }
 
 func ValidateContentType(contentType string) error {
+	if len(contentType) > MaxContentTypeBytes {
+		return &model.Fault{Code: "invalid_input", Message: "Attachment content type must not exceed 2048 bytes."}
+	}
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil || !strings.Contains(mediaType, "/") {
 		return &model.Fault{Code: "invalid_input", Message: "Attachment content type is invalid."}

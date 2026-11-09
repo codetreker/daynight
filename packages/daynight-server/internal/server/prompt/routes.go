@@ -4,16 +4,11 @@ package prompt
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"log/slog"
-	"mime"
 	"net/http"
-	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
 
@@ -115,21 +110,14 @@ func (h *handler) resource(w http.ResponseWriter, r *http.Request, principal mod
 }
 
 func decodePut(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
-	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" || params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8") {
-		return nil, httpx.InvalidInput("Content-Type must be application/json with UTF-8 encoding")
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, httpx.MaxJSONBody))
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		return nil, &model.Fault{Code: "payload_too_large", Message: "Request body exceeds the 1 MiB limit."}
-	}
-	if err != nil || !jsonunicode.Valid(body) {
-		return nil, httpx.InvalidInput("request body must be valid Unicode JSON")
-	}
-	fields, err := jsonobject.Decode(body, "request body", "expectedUserId", "revision", "text")
+	fields, err := httpx.DecodeObject(w, r, "expectedUserId", "revision", "text")
 	if err != nil {
-		return nil, httpx.InvalidInput(err.Error())
+		return nil, err
+	}
+	for _, raw := range fields {
+		if !jsonunicode.Valid(raw) {
+			return nil, httpx.InvalidInput("request body must be valid Unicode JSON")
+		}
 	}
 	return fields, nil
 }

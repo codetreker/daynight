@@ -3,6 +3,8 @@ package task
 import (
 	"context"
 
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
@@ -18,7 +20,7 @@ func WithLegacyWorkerProtocol(ctx context.Context) context.Context {
 // LegacyWorkerCompatible reports whether the original WorkerClaim representation
 // preserves the provider and execution backend without substituting identities.
 func LegacyWorkerCompatible(worker *model.WorkerClaim) bool {
-	return worker == nil || ((worker.AgentControlMode == "" || worker.AgentControlMode == model.AgentControlModeHerdr) && (worker.Agent == model.AgentCodex || worker.Agent == model.AgentCopilot))
+	return taskprotocol.LegacyWorkerCompatible(worker)
 }
 
 func RequireCompatibleWorker(ctx context.Context, worker *model.WorkerClaim) error {

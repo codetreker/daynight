@@ -47,6 +47,9 @@ type syncScope struct{ store.WorkerWriteDAO }
 
 func (s syncScope) WorkerDAO() store.WorkerWriteDAO               { return s }
 func (s syncScope) ObservedAt(context.Context) (time.Time, error) { return time.Unix(42, 0).UTC(), nil }
+func (s syncScope) AdmitWorker(context.Context, string, string, time.Duration) (store.WorkerAdmission, error) {
+	return store.WorkerAdmission{ObservedAt: time.Unix(42, 0).UTC()}, nil
+}
 func (s syncScope) UpsertWorker(_ context.Context, input model.WorkerSnapshot) (model.WorkerSnapshot, error) {
 	input.LastReportedAt = time.Unix(41, 0).UTC()
 	return input, nil

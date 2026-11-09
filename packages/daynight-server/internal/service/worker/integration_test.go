@@ -21,8 +21,10 @@ func pointer[T any](value T) *T { return &value }
 func requireFault(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
 	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != code {
-		t.Fatalf("expected %s, got %v", code, err)
+	var transaction *store.TransactionError
+	wrapped := errors.As(err, &transaction) && transaction.Phase == "operation" && transaction.Outcome == store.TransactionNotCommitted && !transaction.CleanupFailed
+	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" || (!wrapped && err.Error() != fault.Message) {
+		t.Fatalf("expected %s fault, got %#v", code, err)
 	}
 	return fault
 }

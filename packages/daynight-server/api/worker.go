@@ -1,11 +1,12 @@
 package api
 
-import "time"
+import (
+	"time"
 
-type WorkerMachine struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
+)
+
+type WorkerMachine = workerprotocol.WorkerMachine
 
 type WorkerHerdr struct {
 	Session     string `json:"session"`

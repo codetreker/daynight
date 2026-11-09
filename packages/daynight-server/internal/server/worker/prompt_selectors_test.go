@@ -1,14 +1,34 @@
 package worker
 
 import (
+	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 )
+
+type promptReportMock struct {
+	workerService
+	calls     int
+	principal model.Principal
+	workerID  string
+	input     model.WorkerReport
+	selectors []model.PromptSelector
+	result    service.ConfigurationSyncResult
+}
+
+func (m *promptReportMock) ReportSync(_ context.Context, principal model.Principal, workerID string, input model.WorkerReport, selectors []model.PromptSelector) (service.ConfigurationSyncResult, error) {
+	m.calls++
+	m.principal, m.workerID, m.input, m.selectors = principal, workerID, input, selectors
+	return m.result, nil
+}
 
 func TestPromptSelectorProtocol(t *testing.T) {
 	project := "11111111-1111-4111-8111-111111111111"
@@ -67,7 +87,8 @@ func TestPromptSelectorProtocol(t *testing.T) {
 }
 
 func TestInvalidPromptHeadersRejectBeforeReport(t *testing.T) {
-	h := &workersHandler{logger: slog.Default()}
+	mock := &promptReportMock{}
+	h := &workersHandler{workers: mock, logger: slog.Default()}
 	for _, header := range []string{"", `[{"key":{"scope":"user"},"knownRevision":"01"}]`, `[] []`} {
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/me/workers/11111111-1111-4111-8111-111111111111/report", strings.NewReader("{}"))
 		r.SetPathValue("workerId", "11111111-1111-4111-8111-111111111111")
@@ -78,5 +99,51 @@ func TestInvalidPromptHeadersRejectBeforeReport(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("header %q: %d %s", header, w.Code, w.Body)
 		}
+	}
+	if mock.calls != 0 {
+		t.Fatalf("invalid headers invoked report %d times", mock.calls)
+	}
+}
+
+func TestPromptReportProtocol2PreservesFullBodyAndReceipt(t *testing.T) {
+	const user = "22222222-2222-4222-8222-222222222222"
+	const workerID = "11111111-1111-4111-8111-111111111111"
+	principal := model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: workerID}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	resource := &model.PromptResource{Scope: model.PromptScopeUser, ScopeID: user, Revision: "0"}
+	mock := &promptReportMock{result: service.ConfigurationSyncResult{
+		Native:  service.WorkerReportResult{ObservedAt: now, LastReportedAt: now, Configuration: &model.WorkerConfigurationReceipt{ObservationRevision: "0"}},
+		Prompts: []model.PromptResult{{Key: model.PromptKey{Scope: model.PromptScopeUser}, Status: "value", Value: resource}},
+	}}
+	h := &workersHandler{workers: mock, logger: slog.Default()}
+	body := workerSnapshotReportBody()
+	body["configuration"] = map[string]any{"bootstrap": nil, "observation": nil}
+	encoded := jsonBody(t, body)
+	encoded += strings.Repeat(" ", (1<<20)-len(encoded))
+	r := httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(encoded))
+	r.SetPathValue("workerId", strings.ToUpper(workerID))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set(workerConfigurationHeader, "2")
+	r.Header.Set(workerPromptsHeader, `[{"key":{"scope":"user"},"knownRevision":null}]`)
+	w := httptest.NewRecorder()
+	h.report(w, r, principal)
+	var receipt configurationSyncReceipt
+	err := json.Unmarshal(w.Body.Bytes(), &receipt)
+	if w.Code != http.StatusOK || w.Header().Get(workerConfigurationHeader) != "2" || err != nil || receipt.Configuration.WorkerConfigurationReceipt == nil || receipt.Configuration.ObservationRevision != "0" || len(receipt.Configuration.Prompts) != 1 || receipt.Configuration.Prompts[0].Value == nil || receipt.Configuration.Prompts[0].Value.ScopeID != user || receipt.Configuration.Prompts[0].Value.Revision != "0" {
+		t.Fatalf("protocol 2 response: %d %s (%v)", w.Code, w.Body, err)
+	}
+	if mock.calls != 1 || mock.principal != principal || mock.workerID != workerID || mock.input.Configuration == nil || mock.input.TaskInventory == nil || len(mock.selectors) != 1 || mock.selectors[0].Key.Scope != model.PromptScopeUser || mock.selectors[0].KnownRevision != nil {
+		t.Fatalf("report arguments: %+v", mock)
+	}
+
+	r = httptest.NewRequest(http.MethodPost, "/report", strings.NewReader(encoded+" "))
+	r.SetPathValue("workerId", workerID)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set(workerConfigurationHeader, "2")
+	r.Header.Set(workerPromptsHeader, `[]`)
+	w = httptest.NewRecorder()
+	h.report(w, r, principal)
+	if w.Code != http.StatusRequestEntityTooLarge || mock.calls != 1 {
+		t.Fatalf("oversize: status=%d calls=%d", w.Code, mock.calls)
 	}
 }
