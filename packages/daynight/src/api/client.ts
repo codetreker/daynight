@@ -344,9 +344,19 @@ export const createApiClient = (options: {
       const url = new URL(`/api/v1${path}`, origin);
       const remaining = operation.remainingMs();
       const timeout = Math.min(operation.limits.requestMs, remaining, requestMs ?? Infinity);
-      totalBudgetCapped = remaining <= operation.limits.requestMs;
+      totalBudgetCapped = remaining <= timeout;
       requestDeadline = performance.now() + timeout;
-      timer = setTimeout(() => controller.abort(new OperationError(totalBudgetCapped ? "deadline" : "request_timeout")), Math.ceil(timeout));
+      const expireRequest = (): void => {
+        if (controller.signal.aborted) return;
+        const remaining = requestDeadline - performance.now();
+        if (remaining > 0) {
+          timer = setTimeout(expireRequest, Math.ceil(remaining));
+          timer.unref();
+          return;
+        }
+        controller.abort(new OperationError(totalBudgetCapped ? "deadline" : "request_timeout"));
+      };
+      timer = setTimeout(expireRequest, Math.ceil(timeout));
       timer.unref();
       const cancel = (): void => controller.abort(operation.signal.reason);
       operation.signal.addEventListener("abort", cancel, { once: true });

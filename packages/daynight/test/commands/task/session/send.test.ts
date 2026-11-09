@@ -136,9 +136,19 @@ it.skipIf(process.platform === "win32").each(["directory", "prepared-file", "pre
   }
 });
 it("includes the first recovery GET in the total receipt wait deadline", async () => {
-  const f = await fixture(root); await f.run(sendArgs()); const base = f.fetch.getMockImplementation()!;
-  f.fetch.mockImplementation(async (url, init) => String(url).endsWith(`/operations/${operationId}`) ? new Promise(() => {}) : base(url, init));
-  const start = performance.now(); expect(await f.run(sendArgs().map(value => value === "0" ? "1" : value))).toBe(3);
+  const f = await fixture(root);
+  const setupCode = await f.run(sendArgs()); expect(setupCode, f.errors() + f.output()).toBe(3);
+  const base = f.fetch.getMockImplementation()!;
+  const clock: { requestAt?: number; abortedAt?: number; reason?: unknown } = {};
+  f.fetch.mockImplementation(async (url, init) => {
+    if (!String(url).endsWith(`/operations/${operationId}`)) return base(url, init);
+    clock.requestAt = performance.now();
+    init!.signal!.addEventListener("abort", () => { clock.abortedAt = performance.now(); clock.reason = init!.signal!.reason; }, { once: true });
+    return new Promise(() => {});
+  });
+  const start = performance.now(), code = await f.run(sendArgs().map(value => value === "0" ? "1" : value));
+  expect(code, JSON.stringify({ stdout: f.output(), stderr: f.errors(), clock })).toBe(3);
+  expect(clock.reason).toMatchObject({ kind: "request_timeout" });
   expect(performance.now() - start).toBeLessThan(2_000); expect(JSON.parse(f.output())).toMatchObject({ state: "unknown", waitExpired: true, operationId });
 });
 it("binds every subsequent response to the authenticated actor", async () => {
@@ -186,4 +196,17 @@ it("keeps a fully received malformed receipt a protocol failure during the wait"
   });
   expect(await f.run(sendArgs().map(value => value === "0" ? "1" : value))).toBe(1);
   expect(JSON.parse(f.output())).toMatchObject({ state: "accepted", waitExpired: false, operationId });
+});
+
+it.each([
+  { source: "default request", limits: { requestMs: 500 } },
+  { source: "overall operation", limits: { totalMs: 500, requestMs: 5_000 } },
+])("keeps an earlier $source timeout distinct from receipt wait expiry", async ({ limits }) => {
+  const f = await fixture(root), setupCode = await f.run(sendArgs());
+  expect(setupCode, f.errors() + f.output()).toBe(3);
+  const base = f.fetch.getMockImplementation()!;
+  f.fetch.mockImplementation(async (url, init) => String(url).endsWith(`/operations/${operationId}`) ? new Promise(() => {}) : base(url, init));
+  const code = await f.run(sendArgs().map(value => value === "0" ? "2" : value), limits);
+  expect(code, f.errors() + f.output()).toBe(1);
+  expect(JSON.parse(f.output())).toMatchObject({ state: "unknown", waitExpired: false, operationId });
 });

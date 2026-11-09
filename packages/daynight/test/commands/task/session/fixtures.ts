@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { vi } from "vitest";
+import type { OperationLimits } from "../../../../src/api/operation.js";
 import type { CliContext } from "../../../../src/cli/context.js";
 import { runCli } from "../../../../src/cli/application.js";
 import { taskDefinition } from "../../../../src/commands/task/definition.js";
@@ -29,9 +30,9 @@ export const fixture = async (root: string) => {
     if (init?.method === "POST") return response({ operation: receipt(), operationUrl }, 202, actorId, { Location: operationUrl });
     return missing();
   });
-  const run = async (args: string[]) => {
+  const run = async (args: string[], operationLimits?: Partial<OperationLimits>) => {
     output = ""; errors = "";
-    return runCli(["task", "session", ...args], context, [{ ...taskDefinition, load: async () => ({ run: (args, context) => runTaskCommand(args, context, { resolveProject: async () => { throw new Error("Unexpected project resolution"); }, runServerCommand: (ctx, command) => runServerCommand(ctx, command, { fetch, signalEmitter: signals }) }) }) }]);
+    return runCli(["task", "session", ...args], context, [{ ...taskDefinition, load: async () => ({ run: (args, context) => runTaskCommand(args, context, { resolveProject: async () => { throw new Error("Unexpected project resolution"); }, runServerCommand: (ctx, command) => runServerCommand(ctx, command, { fetch, signalEmitter: signals, ...(operationLimits === undefined ? {} : { operationLimits }) }) }) }) }]);
   };
   return { home, state, context, fetch, signals, run, output: () => output, errors: () => errors };
 };

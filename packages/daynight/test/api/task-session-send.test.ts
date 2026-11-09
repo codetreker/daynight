@@ -35,3 +35,29 @@ it("bounds an in-flight receipt GET by the supplied remaining deadline", async (
   await expect(client(fetch).readTaskSessionOperation(target, undefined, 30)).rejects.toMatchObject({ phase: "request", outcomeUnconfirmed: false });
   expect(performance.now() - start).toBeLessThan(400); expect(fetch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[0]![1]!.signal!.aborted).toBe(true);
 });
+it("does not expire a receipt request when its timer wakes before the monotonic deadline", async () => {
+  const { performance } = await import("node:perf_hooks");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let elapsed = 0;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+  const operation = createOperation({ limits: { totalMs: 60_000 } });
+  let outcome: unknown;
+  const fetch = vi.fn<typeof globalThis.fetch>(() => new Promise(() => {}));
+  try {
+    const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch }).withExpectedUserId(actorId);
+    const pending = api.readTaskSessionOperation(target, undefined, 1_000).catch(error => { outcome = error; });
+    // The timer queue advances before the monotonic clock, as an early platform wakeup can do.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(outcome).toBeUndefined(); expect(fetch.mock.calls[0]![1]!.signal!.aborted).toBe(false);
+    elapsed = 1_000; await vi.advanceTimersByTimeAsync(1_000); await pending;
+    expect(outcome).toMatchObject({ cause: { kind: "request_timeout" } });
+  } finally { operation.dispose(); clock.mockRestore(); vi.useRealTimers(); }
+});
+it("attributes a shorter receipt budget to request timeout even when the operation also has a short budget", async () => {
+  const operation = createOperation({ limits: { totalMs: 1_000, requestMs: 30_000 } });
+  try {
+    const fetch = vi.fn<typeof globalThis.fetch>(() => new Promise(() => {}));
+    const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch }).withExpectedUserId(actorId);
+    await expect(api.readTaskSessionOperation(target, undefined, 30)).rejects.toMatchObject({ cause: { kind: "request_timeout" } });
+  } finally { operation.dispose(); }
+});

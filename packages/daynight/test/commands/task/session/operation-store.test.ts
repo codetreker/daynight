@@ -9,6 +9,7 @@ import type { OperationStore, SessionOperationRecord } from "../../../../src/com
 import { actorId, origin, inspection, operationId, projectId, sessionId, taskId } from "./fixtures.js";
 let root: string;
 const stores: OperationStore[] = [];
+const aclProcessMs = 10_000;
 afterEach(async () => { for (const store of stores.splice(0)) await store.close(); });
 beforeAll(async () => { const tmp = fileURLToPath(new URL("../../../../../../.tmp/", import.meta.url)); await mkdir(tmp, { recursive: true }); root = await mkdtemp(path.join(tmp, "session-store-")); });
 afterAll(async () => { await rm(root, { recursive: true, force: true }); });
@@ -72,11 +73,28 @@ it.skipIf(process.platform !== "win32")("uses real protected current-user Window
   const f = await create(); await f.store.acquire(); await f.store.write(base); await f.store.close();
   const { execFile } = await import("node:child_process"), { promisify } = await import("node:util");
   const execute = promisify(execFile), target = path.join(f.actor, `${operationId}.json`);
+  const runNative = async (stage: string, executable: string, args: string[], environment?: NodeJS.ProcessEnv) => {
+    const started = performance.now();
+    process.stderr.write(`${JSON.stringify({ kind: "session-acl-probe", stage, state: "started", deadlineMs: aclProcessMs })}\n`);
+    const pending = execute(executable, args, { timeout: aclProcessMs, killSignal: "SIGKILL", ...(environment === undefined ? {} : { env: environment }) });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => pending.child.once("close", (code, signal) => resolve({ code, signal })));
+    try {
+      const output = await pending, exit = await closed;
+      expect(exit, `${stage} process must exit successfully`).toEqual({ code: 0, signal: null });
+      process.stderr.write(`${JSON.stringify({ kind: "session-acl-probe", stage, state: "completed", elapsedMs: Math.round(performance.now() - started), ...exit })}\n`);
+      return output;
+    } catch (cause) {
+      const exit = await closed;
+      throw new Error(`Windows ACL ${stage} failed after process close (code=${exit.code}, signal=${exit.signal}).`, { cause });
+    }
+  };
   const script = "$ErrorActionPreference='Stop'; $a=Get-Acl -LiteralPath $env:DAYNIGHT_ACL_PROBE; $s=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if (!$a.AreAccessRulesProtected -or $a.Access.Count -ne 1 -or $a.Access[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $s -or $a.Access[0].IsInherited) { throw 'Unexpected ACL' }; Write-Output 'private'";
-  const observed = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, DAYNIGHT_ACL_PROBE: target }, timeout: 10_000 }); expect(observed.stdout.trim()).toBe("private");
-  await execute("icacls.exe", [target, "/grant", "*S-1-1-0:(R)"], { timeout: 10_000 });
-  await expect(f.store.read()).rejects.toThrow();
-});
+  const observed = await runNative("private-acl-readback", "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { ...process.env, DAYNIGHT_ACL_PROBE: target });
+  expect(observed.stdout.trim()).toBe("private");
+  await runNative("public-ace-grant", "icacls.exe", [target, "/grant", "*S-1-1-0:(R)"]);
+  await expect(f.store.read()).rejects.toThrow("exactly one current-user allow ACE");
+  process.stderr.write(`${JSON.stringify({ kind: "session-acl-probe", stage: "unsafe-acl-rejection", state: "completed" })}\n`);
+}, 2 * aclProcessMs + 5_000);
 
 it.skipIf(process.platform !== "win32")("durably writes and recovers Windows records whose directory and files exceed MAX_PATH", async () => {
   const directory = path.join(root, "deep-state-" + "x".repeat(110), "next-level-" + "y".repeat(110));

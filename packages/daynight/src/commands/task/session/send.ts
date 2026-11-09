@@ -28,7 +28,7 @@ const expectation = (record: SessionOperationRecord): TaskSessionOperationExpect
 const cancelled = (operation: Operation): boolean => operation.signal.aborted && operation.signal.reason instanceof OperationError && operation.signal.reason.kind === "cancelled";
 const receiptWaitExpired = (error: unknown, deadline: number, operation: Operation): boolean =>
   !cancelled(operation) && performance.now() >= deadline && error instanceof ApiError && error.status !== 401 && error.status !== 403 &&
-  error.cause instanceof OperationError && (error.cause.kind === "request_timeout" || error.cause.kind === "deadline");
+  error.cause instanceof OperationError && error.cause.kind === "request_timeout";
 const commandBody = (target: TaskSessionOperationTarget, fence: TaskSessionInspection["fence"], expectedTurnId: string | null, text: string): SessionCommand => {
   const command = parseSessionCommand({ protocol: SESSION_PROTOCOL, operationId: target.operationId, requestId: target.operationId, sessionId: target.sessionId, claimId: fence.claimId, executionGeneration: fence.executionGeneration, kind: "send_message", payload: { content: [{ type: "text", text }], expectedTurnId } });
   if (Buffer.byteLength(JSON.stringify(command), "utf8") > SESSION_COMMAND_BYTES) throw new UsageError("Complete Session command JSON exceeds 2 MiB.", "daynight task session send --help");
