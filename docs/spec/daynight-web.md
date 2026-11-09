@@ -350,7 +350,7 @@ requiredPlatform 的 null/三个枚举、缺失拒绝、创建默认与设置/�
 
 ## 暂停展示与解除
 
-暂停状态只来自完整属性中的 `paused=true`。缺席或显式 false 均不显示暂停标识；存在但不是布尔值的属性必须报协议错误，不能显示为未暂停。它独立于任务四态、`allowAgents` 和 worker.phase，既不改变任务状态统计、ready、进度或领取资格，也不表示 Agent 已停止。周期 continuation ping 的实际门禁由[属性需求](daynight-task-properties.md#暂停周期-ping)及[Worker 需求](daynight-worker.md)拥有。
+暂停状态只来自完整属性中的 `paused=true`。缺席或显式 false 均不显示暂停标识；存在但不是布尔值的属性必须报协议错误，不能显示为未暂停。它独立于任务四态、`allowAgents` 和 worker.phase，既不改变任务状态统计、ready、进度或领取资格，也不表示 Agent 已停止。自动输入的实际门禁由[属性需求](daynight-task-properties.md#暂停自动输入)及[Worker 需求](daynight-worker.md)拥有。
 
 独立任务行、任务链的代表及子任务、图节点各自显示自身的暂停标识。任务链标题的暂停数量仅统计完整普通分量成员，包含代表任务、排除链外前置；项目概览与任务列表标题的数量统计完整项目集合，均按任务 ID 去重，不受当前分页、负责人筛选、状态筛选或图的可见范围影响。数量为零时隐藏暂停汇总。概览入口可以定位具体暂停任务，沿用已有任务列表、任务链与详情导航，不新增 Task 状态或改变六项统计与页签未完成数量的含义。
 

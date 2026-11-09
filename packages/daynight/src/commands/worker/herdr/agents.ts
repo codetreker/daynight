@@ -82,9 +82,15 @@ export class HerdrAgentActionError extends Error {
     this.promptSubmission = options?.promptSubmission === undefined ? null : options.promptSubmission;
   }
 }
-export class HerdrInputBlockedError extends HerdrAgentActionError {
+export class HerdrInputWaitingError extends HerdrAgentActionError {
+  constructor(readonly reason: "task_paused" | "control_suspended" | "native_blocked", message: string, options?: ErrorOptions) {
+    super(message, "agent.prompt", "not-submitted", { ...options, promptSubmission: "not-submitted" });
+    this.name = "HerdrInputWaitingError";
+  }
+}
+export class HerdrInputBlockedError extends HerdrInputWaitingError {
   constructor(readonly blocker: NativeInputBlocker) {
-    super(`The native agent has ${blocker === "menu" ? "an open menu" : "disabled input"}; use daynight worker attach to resolve it.`, "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+    super("native_blocked", `The native agent has ${blocker === "menu" ? "an open menu" : "disabled input"}; use daynight worker attach to resolve it.`);
     this.name = "HerdrInputBlockedError";
   }
 }
