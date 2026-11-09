@@ -174,3 +174,102 @@ func TestMonitoringProjectionActualEscapedBudget(t *testing.T) {
 	}
 	t.Logf("legal normalized input: %d bytes; encoded detail: %d bytes; %d labels omitted", len(raw), len(b)+1, omitted)
 }
+
+func TestMonitoringScopesUsesEveryAssociationAndDeduplicates(t *testing.T) {
+	const projectOnly = "20000000-0000-4000-8000-000000000001"
+	const observed = "2026-01-01T00:00:00Z"
+	base := fmt.Sprintf(`{"runId":%q,"sequence":"1","capturedAt":%q,"lifecycle":"running","scheduler":{"phase":"waiting-poll","coverage":"complete","cycleId":null,"lastCompletedAt":null,"lastSuccessfulAt":null,"lastOutcome":null,"nextPollAt":null},"capacity":null,"admission":{"observedAt":%q,"coverage":"complete","reasons":[]},"reservations":[],"activities":[],"currentFailures":[],"lastRecovery":null,"detailCoverage":"complete","delivery":{"lastSucceededAt":null,"lastFailure":null}}`, monitorClaim, observed, observed)
+	parse := func(raw string) monitoring.Observation {
+		t.Helper()
+		o, err := monitoring.ParseObservation([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	item := func(raw string) any {
+		t.Helper()
+		var result any
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	projectScope := fmt.Sprintf(`{"kind":"project","projectId":%q}`, projectOnly)
+	claimScope := fmt.Sprintf(`{"kind":"claim","projectId":%q,"taskId":%q,"claimId":%q}`, monitorProject, monitorTask, monitorClaim)
+	workerScope := `{"kind":"worker"}`
+	reason := item(fmt.Sprintf(`{"code":"project-unavailable","scope":%s,"observedAt":%q,"nextAttemptAt":null}`, projectScope, observed))
+	reservation := item(fmt.Sprintf(`{"reservationId":%q,"scope":%s,"roles":["cleanup"],"occupied":true,"observedAt":%q}`, monitorWorker, claimScope, observed))
+	activity := item(fmt.Sprintf(`{"kind":"cleanup","phase":"archive","operationId":%q,"status":"running","scope":%s,"startedAt":%q,"lastProgressAt":null,"elapsedMs":0,"deadlineAt":null,"waitReason":null,"nextAttemptAt":null}`, monitorClaim, claimScope, observed))
+	failure := item(fmt.Sprintf(`{"operationId":%q,"component":"project","phase":"project-preparation","scope":%s,"error":{"type":"operation","code":"unknown","cause":"The operation failed; inspect local Worker diagnostics for details.","causeTruncated":false},"firstObservedAt":%q,"lastObservedAt":%q,"occurrencesInRun":1,"retryState":"none","nextAttemptAt":null}`, monitorClaim, projectScope, observed, observed))
+	recovery := item(fmt.Sprintf(`{"operationId":%q,"component":"cleanup","scope":%s,"observedAt":%q,"explanation":"The operation recovered.","explanationTruncated":false}`, monitorClaim, claimScope, observed))
+	workerReason := item(fmt.Sprintf(`{"code":"cleanup-capacity-blocked","scope":%s,"observedAt":%q,"nextAttemptAt":null}`, workerScope, observed))
+	cases := []struct {
+		name, key       string
+		value           any
+		projects, tasks []string
+	}{
+		{"reason", "reasons", reason, []string{projectOnly}, nil},
+		{"reservation", "reservations", reservation, []string{monitorProject}, []string{monitorTask}},
+		{"activity", "activities", activity, []string{monitorProject}, []string{monitorTask}},
+		{"failure", "currentFailures", failure, []string{projectOnly}, nil},
+		{"recovery", "lastRecovery", recovery, []string{monitorProject}, []string{monitorTask}},
+		{"worker scope", "reasons", workerReason, nil, nil},
+		{"no associations", "", nil, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := parse(base)
+			switch tc.key {
+			case "reasons":
+				o["admission"].(map[string]any)["reasons"] = []any{tc.value}
+			case "lastRecovery":
+				o[tc.key] = tc.value
+			case "":
+			default:
+				o[tc.key] = []any{tc.value}
+			}
+			raw, err := json.Marshal(o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			o = parse(string(raw))
+			projects, tasks := MonitoringScopes(o)
+			if !sameMonitoringIDs(projects, tc.projects) || !sameMonitoringIDs(tasks, tc.tasks) {
+				t.Fatalf("got projects %v tasks %v; want %v %v", projects, tasks, tc.projects, tc.tasks)
+			}
+		})
+	}
+	o := parse(base)
+	o["admission"].(map[string]any)["reasons"] = []any{reason, workerReason}
+	o["reservations"] = []any{reservation}
+	o["activities"] = []any{activity}
+	o["currentFailures"] = []any{failure}
+	o["lastRecovery"] = recovery
+	raw, err := json.Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o = parse(string(raw))
+	projects, tasks := MonitoringScopes(o)
+	if !sameMonitoringIDs(projects, []string{monitorProject, projectOnly}) || !sameMonitoringIDs(tasks, []string{monitorTask}) {
+		t.Fatalf("deduplicated IDs projects %v tasks %v", projects, tasks)
+	}
+}
+
+func sameMonitoringIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	counts := make(map[string]int, len(got))
+	for _, id := range got {
+		counts[id]++
+	}
+	for _, id := range want {
+		counts[id]--
+		if counts[id] < 0 {
+			return false
+		}
+	}
+	return true
+}

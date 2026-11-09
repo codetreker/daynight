@@ -481,3 +481,131 @@ func TestFailureClassificationPreservesCause(t *testing.T) {
 		})
 	}
 }
+
+// malformedRangeReplyHook replaces only the returned Lua tuple after the real
+// command finishes, so the public store path still executes against Redis.
+type malformedRangeReplyHook struct {
+	script   string
+	reply    []any
+	observed bool
+}
+
+func (h *malformedRangeReplyHook) DialHook(next redisclient.DialHook) redisclient.DialHook {
+	return next
+}
+func (h *malformedRangeReplyHook) ProcessPipelineHook(next redisclient.ProcessPipelineHook) redisclient.ProcessPipelineHook {
+	return next
+}
+func (h *malformedRangeReplyHook) ProcessHook(next redisclient.ProcessHook) redisclient.ProcessHook {
+	return func(ctx context.Context, cmd redisclient.Cmder) error {
+		err := next(ctx, cmd)
+		args := cmd.Args()
+		if err != nil || len(args) < 2 || args[0] != "eval" || args[1] != h.script {
+			return err
+		}
+		result, ok := cmd.(*redisclient.Cmd)
+		if !ok {
+			return errors.New("unexpected Redis command type")
+		}
+		if h.script == readScript {
+			original, ok := result.Val().([]any)
+			if !ok || len(original) != 3 {
+				return errors.New("unexpected Redis read response")
+			}
+			result.SetVal([]any{original[0], original[1], h.reply})
+		} else {
+			result.SetVal(h.reply)
+		}
+		h.observed = true
+		return nil
+	}
+}
+
+func TestMalformedRangeScriptReplyIsRejected(t *testing.T) {
+	replies := []struct {
+		name  string
+		value []any
+	}{
+		{"empty tuple", []any{}},
+		{"missing data", []any{int64(1)}},
+		{"extra data", []any{int64(0), "", "extra"}},
+		{"non-integer presence", []any{"1", "frame"}},
+		{"non-string data", []any{int64(1), int64(42)}},
+		{"negative presence", []any{int64(-1), ""}},
+		{"out of range presence", []any{int64(2), ""}},
+		{"absent with data", []any{int64(0), "frame"}},
+	}
+	for _, operation := range []string{"read", "summary", "compare-and-set"} {
+		for _, tc := range replies {
+			t.Run(operation+"/"+tc.name, func(t *testing.T) {
+				s, id, k := fixture(t)
+				script := readScript
+				if operation == "compare-and-set" {
+					script = rangeScript
+				}
+				hook := &malformedRangeReplyHook{script: script, reply: tc.value}
+				s.client.AddHook(hook)
+				var err error
+				switch operation {
+				case "read":
+					result, e := s.Read(context.Background(), id)
+					err = e
+					if result.Value != nil {
+						t.Fatalf("malformed read returned value: %+v", result)
+					}
+				case "summary":
+					result, e := s.ReadSummaries(context.Background(), []store.MonitoringIdentity{id})
+					err = e
+					if result.Values != nil {
+						t.Fatalf("malformed read returned summaries: %+v", result)
+					}
+				case "compare-and-set":
+					result, e := s.CompareAndSet(context.Background(), id, nil, candidate(uuid.NewString(), "1", `{}`))
+					err = e
+					if result.Receipt != nil || result.Kind != "" {
+						t.Fatalf("malformed preflight returned receipt: %+v", result)
+					}
+					if errors.Is(err, store.ErrMonitoringWriteOutcomeUnknown) {
+						t.Fatalf("preflight incorrectly reported an unknown write: %v", err)
+					}
+				}
+				var failure *store.MonitoringError
+				if !hook.observed || !errors.Is(err, ErrInvalidFrame) || !errors.As(err, &failure) || failure.Kind != "format" {
+					t.Fatalf("malformed response: observed=%v, error=%v", hook.observed, err)
+				}
+				if exists, e := s.client.Exists(context.Background(), k).Result(); e != nil || exists != 0 {
+					t.Fatalf("malformed response changed key: exists=%d err=%v", exists, e)
+				}
+			})
+		}
+	}
+}
+
+func TestRangeScriptDistinguishesMissingFromEmptyValue(t *testing.T) {
+	s, id, k := fixture(t)
+	ctx := context.Background()
+	result, err := s.Read(ctx, id)
+	if err != nil || result.Value != nil {
+		t.Fatalf("missing key: %+v %v", result, err)
+	}
+	summaries, err := s.ReadSummaries(ctx, []store.MonitoringIdentity{id})
+	if err != nil || len(summaries.Values) != 1 || summaries.Values[0] != nil {
+		t.Fatalf("missing summary: %+v %v", summaries, err)
+	}
+	if err := s.client.Set(ctx, k, "", time.Minute).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Read(ctx, id); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("empty value read: %v", err)
+	}
+	if _, err := s.ReadSummaries(ctx, []store.MonitoringIdentity{id}); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("empty value summary: %v", err)
+	}
+	if _, err := s.CompareAndSet(ctx, id, nil, candidate(uuid.NewString(), "1", `{}`)); !errors.Is(err, ErrInvalidFrame) {
+		t.Fatalf("empty value preflight: %v", err)
+	}
+	value, err := s.client.Get(ctx, k).Result()
+	if err != nil || value != "" {
+		t.Fatalf("empty value changed: %q %v", value, err)
+	}
+}

@@ -172,3 +172,16 @@ func TestAppMonitoringAndMetricsAssembly(t *testing.T) {
 		})
 	}
 }
+
+func TestMonitoringBackendConstructionDoesNotRequireRedisAvailability(t *testing.T) {
+	backend, err := openMonitoring("redis://127.0.0.1:1")
+	if err != nil || backend == nil {
+		t.Fatalf("construct unavailable monitoring backend: %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("close unused monitoring backend: %v", err)
+	}
+	if backend, err = openMonitoring("not-a-redis-url"); err == nil || backend != nil {
+		t.Fatalf("invalid monitoring backend: %v", err)
+	}
+}

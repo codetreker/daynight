@@ -117,7 +117,7 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	return openApp(ctx, c, logger, appOpeners{
 		files:      func(root string) (appStorage, error) { return local.New(root) },
 		database:   openPostgres,
-		monitoring: func(url string) (monitoringBackend, error) { return monitoringredis.New(url) },
+		monitoring: openMonitoring,
 	})
 }
 
@@ -129,6 +129,15 @@ type appStorage interface {
 type monitoringBackend interface {
 	store.MonitoringStore
 	Close() error
+}
+
+// openMonitoring constructs the monitoring dependency without connecting to Redis.
+func openMonitoring(rawURL string) (monitoringBackend, error) {
+	backend, err := monitoringredis.New(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return backend, nil
 }
 
 type appOpeners struct {
