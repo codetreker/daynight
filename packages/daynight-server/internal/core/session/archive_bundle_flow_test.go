@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -28,6 +29,16 @@ type archiveFlowDAO struct {
 	leases      int
 	migration   *store.ArchiveMigration
 	archivePath string
+}
+
+func (d *archiveFlowDAO) ListSessionUploadsForSettlement(context.Context, string, time.Time) ([]store.SessionUploadRecord, error) {
+	return []store.SessionUploadRecord{}, nil
+}
+func (d *archiveFlowDAO) MarkSessionResourceReclaim(context.Context, string, string) (bool, error) {
+	return false, errors.New("unconfigured archive resource reclamation")
+}
+func (d *archiveFlowDAO) DeleteReclaimedSessionResource(context.Context, string, string) error {
+	return errors.New("unconfigured archive resource reclamation")
 }
 
 func (d *archiveFlowDAO) SessionArchiveBundle(context.Context, string) (store.ArchiveBundle, error) {
@@ -98,7 +109,7 @@ func TestArchiveBundlePublishesOnlyAfterExactTimelineAndBlobClosure(t *testing.T
 		t.Fatal(err)
 	}
 	defer files.Close()
-	engine := NewEngine(files)
+	engine := NewEngine(&imageRuleStorage{Storage: files, free: 1 << 45, total: 1 << 46})
 	d := &archiveFlowDAO{files: map[string]store.ArchiveBundleFile{}, chunks: map[string][]store.ArchiveBundleChunk{}, resources: map[string]store.SessionResourceRecord{}}
 	owner, session, claim, controller, instance := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	p := model.Principal{Kind: model.PATCredential, UserID: owner}
@@ -215,7 +226,7 @@ func TestLegacyArchiveMigrationKeepsOriginalBytesAndVerifiesNewClosure(t *testin
 		t.Fatal(err)
 	}
 	defer files.Close()
-	engine := NewEngine(files)
+	engine := NewEngine(&imageRuleStorage{Storage: files, free: 1 << 45, total: 1 << 46})
 	d := &archiveFlowDAO{files: map[string]store.ArchiveBundleFile{}, chunks: map[string][]store.ArchiveBundleChunk{}, resources: map[string]store.SessionResourceRecord{}}
 	owner, id, claim := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	p := model.Principal{Kind: model.PATCredential, UserID: owner}
@@ -300,7 +311,7 @@ func archiveFlowFixture(t *testing.T) (*ArchiveOperation, *archiveFlowDAO, *reco
 			t.Error(err)
 		}
 	})
-	engine := NewEngine(files)
+	engine := NewEngine(&imageRuleStorage{Storage: files, free: 1 << 45, total: 1 << 46})
 	d := &archiveFlowDAO{files: map[string]store.ArchiveBundleFile{}, chunks: map[string][]store.ArchiveBundleChunk{}, resources: map[string]store.SessionResourceRecord{}}
 	owner, id, claim, controller, instance := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	p := model.Principal{Kind: model.PATCredential, UserID: owner}

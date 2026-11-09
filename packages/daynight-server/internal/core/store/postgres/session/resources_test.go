@@ -119,7 +119,7 @@ func TestExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion(t *testing.
 	})
 	lease := uuid.NewString()
 	run(func(d store.SessionResourceDAO) error {
-		return d.AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: actor.UserID, Kind: "read", ResourceID: blobID, DeleteEpoch: 0})
+		return d.AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: id, ID: lease, OwnerID: actor.UserID, Kind: "read", ResourceID: blobID, DeleteEpoch: 0})
 	})
 	run(func(d store.SessionResourceDAO) error {
 		epoch, e := d.BeginSessionResourceDeletion(t.Context(), id)
@@ -136,7 +136,7 @@ func TestExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion(t *testing.
 		if n != 1 {
 			t.Fatalf("deletion erased active reader: %d", n)
 		}
-		if e = d.AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{SessionID: id, ID: uuid.NewString(), OwnerID: actor.UserID, Kind: "read", DeleteEpoch: 0}); e == nil {
+		if e = d.AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: id, ID: uuid.NewString(), OwnerID: actor.UserID, Kind: "read", DeleteEpoch: 0}); e == nil {
 			t.Fatal("deleting Session admitted a reader")
 		}
 		return d.ReleaseSessionResourceLease(t.Context(), id, lease)
@@ -285,6 +285,7 @@ func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
 		return d.(store.SessionResourceDAO).SaveSessionCapture(t.Context(), capture)
 	})
 	v := sp.ValidatedImage{MediaType: "image/png", ByteLength: "10", SHA256: string(bytes.Repeat([]byte("a"), 64)), Width: 2, Height: 3, FrameCount: 1}
+	capture.Expected = &store.SessionCaptureState{Receipt: capture.Receipt, Validated: capture.Validated}
 	capture.Validated = &v
 	capture.Receipt.State = "copying"
 	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
@@ -313,6 +314,7 @@ func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
 		return e
 	})
 	alias := capture
+	alias.Expected = nil
 	alias.Request.CaptureID = uuid.NewString()
 	alias.Request.Occurrence.ImageID = uuid.NewString()
 	_, e := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
@@ -328,12 +330,12 @@ func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
 	for i := 0; i < 32; i++ {
 		for n := 0; n < 2; n++ {
 			sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-				return d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{SessionID: sessions[i], ID: uuid.NewString(), OwnerID: owners[i/4], Kind: "read"})
+				return d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: sessions[i], ID: uuid.NewString(), OwnerID: owners[i/4], Kind: "read"})
 			})
 		}
 		if i == 0 {
 			sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-				e := d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{SessionID: id, ID: uuid.NewString(), OwnerID: owners[0], Kind: "write"})
+				e := d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: id, ID: uuid.NewString(), OwnerID: owners[0], Kind: "write"})
 				if e == nil {
 					t.Fatal("third Session lease admitted")
 				}
@@ -342,7 +344,7 @@ func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
 		}
 		if i == 3 {
 			sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-				e := d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{SessionID: sessions[4], ID: uuid.NewString(), OwnerID: owners[0], Kind: "archive"})
+				e := d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: sessions[4], ID: uuid.NewString(), OwnerID: owners[0], Kind: "archive"})
 				if e == nil {
 					t.Fatal("ninth account lease admitted")
 				}
@@ -351,7 +353,7 @@ func TestExternalMediaLedgerReconnectCaptureAndAdmission(t *testing.T) {
 		}
 	}
 	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-		e := d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{SessionID: sessions[32], ID: uuid.NewString(), OwnerID: owners[8], Kind: "read"})
+		e := d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: sessions[32], ID: uuid.NewString(), OwnerID: owners[8], Kind: "read"})
 		if e == nil {
 			t.Fatal("65th deployment lease admitted")
 		}

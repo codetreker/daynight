@@ -60,19 +60,17 @@ func archiveStatusWithMigration(ctx context.Context, tx *operationTx, id string)
 func (s *Execution) ArchiveStatus(ctx context.Context, p model.Principal, project, taskID, id string) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
 	convertLegacy := false
-	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, _ *record, _ task) error {
+	ownerFinalization := false
+	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *record, _ task) error {
 		var err error
 		out, err = archiveStatusWithMigration(ctx, tx, id)
 		_, capable := tx.dao.(store.SessionArchiveDAO)
 		convertLegacy = capable && out.State == "ready" && out.SchemaVersion != 3
+		ownerFinalization = p.Kind == model.PATCredential && p.UserID == r.Owner
 		return err
 	})
 	if err == nil && convertLegacy {
-		content, e := s.ArchiveContent(ctx, p, project, taskID, id)
-		if e != nil {
-			return out, e
-		}
-		if e = content.Close(); e != nil {
+		if e := s.migrateArchiveForStatus(ctx, p, project, taskID, id, ownerFinalization); e != nil {
 			return out, e
 		}
 		err = s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, _ *record, _ task) error {
@@ -82,6 +80,26 @@ func (s *Execution) ArchiveStatus(ctx context.Context, p model.Principal, projec
 		})
 	}
 	return out, err
+}
+
+func (s *Execution) migrateArchiveForStatus(ctx context.Context, p model.Principal, project, taskID, id string, ownerFinalization bool) (result error) {
+	if !ownerFinalization {
+		content, err := s.ArchiveContent(ctx, p, project, taskID, id)
+		if err != nil {
+			return err
+		}
+		return content.Close()
+	}
+	op, err := s.BeginArchive(ctx, p, project, taskID, id, ArchiveV1Upload)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, op.Close()) }()
+	op.finalizeMigration = true
+	// This internal owner operation discards content and exposes only the status
+	// receipt. Public archive and resource readers retain ordinary read scopes.
+	_, err = s.archiveContent(ctx, op)
+	return err
 }
 func archiveWriter(p model.Principal, r *record, f sp.Fence, controller, instance string) error {
 	if p.Kind != model.PATCredential || p.UserID != r.Owner {
@@ -94,6 +112,9 @@ func archiveWriter(p model.Principal, r *record, f sp.Fence, controller, instanc
 }
 func (s *Execution) UpdateArchive(ctx context.Context, p model.Principal, project, taskID, id string, in sp.ArchiveUpdate) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
+	if _, err := sp.DecodeArchiveUpdate(encode(in)); err != nil {
+		return out, fault("invalid_input", "Invalid archive update.")
+	}
 	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *record, _ task) error {
 		if err := archiveWriter(p, r, in.Fence, in.ControllerID, in.ControllerInstanceID); err != nil {
 			return err
@@ -217,7 +238,7 @@ func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (j
 	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out json.RawMessage
 	legacyPath := ""
-	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *record, _ task) (result error) {
+	err := s.archiveAccess(ctx, p, project, taskID, id, op.finalizeMigration, func(tx *operationTx, r *record, _ task) (result error) {
 		if r.Owner != op.owner {
 			return conflict()
 		}

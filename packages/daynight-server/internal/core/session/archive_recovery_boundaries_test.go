@@ -23,6 +23,12 @@ type archiveSourceRecoveryDAO struct {
 func (d *archiveSourceRecoveryDAO) SessionSourceHash(ctx context.Context, h store.SessionSourceHash) ([]byte, error) {
 	return d.hashes.SessionSourceHash(ctx, h)
 }
+func (d *archiveSourceRecoveryDAO) PruneSessionSourceHashes(ctx context.Context, session, epoch string, cutoff int64) error {
+	return d.hashes.PruneSessionSourceHashes(ctx, session, epoch, cutoff)
+}
+func (d *archiveSourceRecoveryDAO) SessionSourceHashCount(ctx context.Context, session string) (int, error) {
+	return d.hashes.SessionSourceHashCount(ctx, session)
+}
 func (d *archiveSourceRecoveryDAO) SaveSessionSourceHash(ctx context.Context, h store.SessionSourceHash) error {
 	return d.hashes.SaveSessionSourceHash(ctx, h)
 }

@@ -17,7 +17,7 @@ var _ store.SessionIntentDAO = (*DAO)(nil)
 func (tx *DAO) SavedSessionResource(ctx context.Context, s, id string) (store.SessionResourceRecord, error) {
 	r := store.SessionResourceRecord{SessionID: s}
 	var raw []byte
-	err := tx.tx.QueryRow(ctx, `SELECT descriptor,COALESCE(blob_id::text,''),COALESCE(blob_path,''),COALESCE(migration_id::text,'') FROM session_resources WHERE session_id=$1 AND resource_id=$2`, s, id).Scan(&raw, &r.BlobID, &r.BlobPath, &r.MigrationID)
+	err := tx.tx.QueryRow(ctx, `SELECT descriptor,COALESCE(blob_id::text,''),COALESCE(blob_path,''),COALESCE(migration_id::text,''),gc_pending FROM session_resources WHERE session_id=$1 AND resource_id=$2`, s, id).Scan(&raw, &r.BlobID, &r.BlobPath, &r.MigrationID, &r.GCPending)
 	if err != nil {
 		return r, mediaQueryError("read saved session resource", err)
 	}
@@ -71,8 +71,24 @@ func (tx *DAO) InsertSessionResource(ctx context.Context, r store.SessionResourc
 	return mediaQueryError("insert saved resource", err)
 }
 func (tx *DAO) AddSessionResourceReference(ctx context.Context, r store.SessionResourceReference) error {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO session_resource_references(session_id,resource_id,kind,reference_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, r.SessionID, r.ResourceID, r.Kind, r.ReferenceID)
-	return mediaQueryError("pin session resource", err)
+	tag, err := tx.tx.Exec(ctx, `INSERT INTO session_resource_references(session_id,resource_id,kind,reference_id)
+ SELECT $1,$2,$3,$4 FROM session_resources WHERE session_id=$1 AND resource_id=$2 AND NOT gc_pending
+ ON CONFLICT DO NOTHING`, r.SessionID, r.ResourceID, r.Kind, r.ReferenceID)
+	if err != nil {
+		return mediaQueryError("pin session resource", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var retained bool
+	err = tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_resource_references ref JOIN session_resources resource USING(session_id,resource_id) WHERE ref.session_id=$1 AND ref.resource_id=$2 AND ref.kind=$3 AND ref.reference_id=$4 AND NOT resource.gc_pending)`, r.SessionID, r.ResourceID, r.Kind, r.ReferenceID).Scan(&retained)
+	if err != nil {
+		return mediaQueryError("read existing resource pin", err)
+	}
+	if !retained {
+		return &model.Fault{Code: "resource_conflict", Message: "The original resource is being reclaimed or no longer exists."}
+	}
+	return nil
 }
 func (tx *DAO) RemoveSessionResourceReference(ctx context.Context, r store.SessionResourceReference) error {
 	_, err := tx.tx.Exec(ctx, `DELETE FROM session_resource_references WHERE session_id=$1 AND resource_id=$2 AND kind=$3 AND reference_id=$4`, r.SessionID, r.ResourceID, r.Kind, r.ReferenceID)
@@ -194,24 +210,21 @@ func (tx *DAO) SaveSessionCapture(ctx context.Context, r store.SessionCaptureRec
 	if r.Validated != nil {
 		validated, _ = json.Marshal(r.Validated)
 	}
-	tag, e := tx.tx.Exec(ctx, `INSERT INTO session_image_captures(session_id,capture_id,image_id,request,receipt,validated)
-VALUES($1,$2,$3,$4,$5,$6)
-ON CONFLICT(session_id,capture_id) DO UPDATE SET receipt=EXCLUDED.receipt,validated=EXCLUDED.validated
-WHERE session_image_captures.request=EXCLUDED.request AND (
-  (session_image_captures.receipt->>'attemptId'=EXCLUDED.receipt->>'attemptId'
-   AND (session_image_captures.validated IS NULL OR session_image_captures.validated=EXCLUDED.validated)
-   AND (session_image_captures.receipt->>'state'='reserved'
-     OR session_image_captures.receipt->>'state'='copying' AND EXCLUDED.receipt->>'state' IN ('copying','failed','committed')
-     OR session_image_captures.receipt=EXCLUDED.receipt))
-  OR (session_image_captures.receipt->>'state'='failed' AND EXCLUDED.receipt->>'state'='reserved'
-    AND EXCLUDED.validated IS NULL
-    AND session_image_captures.receipt->>'attemptId'<>EXCLUDED.receipt->>'attemptId'
-    AND NOT EXISTS(SELECT 1 FROM session_image_uploads uploads
-      WHERE uploads.session_id=session_image_captures.session_id
-        AND uploads.upload_id=(session_image_captures.receipt->>'attemptId')::uuid AND NOT uploads.storage_released)
-    AND NOT EXISTS(SELECT 1 FROM session_image_uploads uploads
-      WHERE uploads.session_id=session_image_captures.session_id AND uploads.upload_id=(EXCLUDED.receipt->>'attemptId')::uuid))
-)`, r.SessionID, r.Request.CaptureID, r.Request.Occurrence.ImageID, request, receipt, validated)
+	var tag pgconn.CommandTag
+	if r.Expected == nil {
+		tag, e = tx.tx.Exec(ctx, `INSERT INTO session_image_captures(session_id,capture_id,image_id,request,receipt,validated) VALUES($1,$2,$3,$4,$5,$6)`, r.SessionID, r.Request.CaptureID, r.Request.Occurrence.ImageID, request, receipt, validated)
+	} else {
+		expectedReceipt, err := json.Marshal(r.Expected.Receipt)
+		if err != nil {
+			return err
+		}
+		var expectedValidated any
+		if r.Expected.Validated != nil {
+			expectedValidated, _ = json.Marshal(r.Expected.Validated)
+		}
+		tag, e = tx.tx.Exec(ctx, `UPDATE session_image_captures SET receipt=$4,validated=$5
+WHERE session_id=$1 AND capture_id=$2 AND request=$3 AND receipt=$6 AND validated IS NOT DISTINCT FROM $7::jsonb`, r.SessionID, r.Request.CaptureID, request, receipt, validated, expectedReceipt, expectedValidated)
+	}
 	if e != nil {
 		return mediaQueryError("save image capture", e)
 	}
@@ -236,12 +249,21 @@ func (tx *DAO) AcquireSessionResourceLease(ctx context.Context, r store.SessionR
 	if deleting || epoch != r.DeleteEpoch {
 		return &model.Fault{Code: "resource_conflict", Message: "Session resource deletion has begun."}
 	}
-	if n >= 64 || account >= 8 || session >= 2 {
+	if n >= r.Admission.Global || account >= r.Admission.Owner || session >= r.Admission.Session {
 		return &model.Fault{Code: "rate_limited", Message: "Media transfer capacity is unavailable."}
 	}
 	var resource any
+	var reclaiming bool
 	if r.ResourceID != "" {
+		if err = tx.tx.QueryRow(ctx, `SELECT gc_pending FROM session_resources WHERE session_id=$1 AND resource_id=$2`, r.SessionID, r.ResourceID).Scan(&reclaiming); err != nil {
+			return mediaQueryError("check resource reclamation", err)
+		}
 		resource = r.ResourceID
+	} else if err = tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_resources WHERE session_id=$1 AND gc_pending)`, r.SessionID).Scan(&reclaiming); err != nil {
+		return mediaQueryError("check session resource reclamation", err)
+	}
+	if reclaiming {
+		return &model.Fault{Code: "resource_conflict", Message: "The original resource is being reclaimed."}
 	}
 	_, err = tx.tx.Exec(ctx, `INSERT INTO session_resource_leases(session_id,lease_id,owner_id,kind,resource_id,delete_epoch) VALUES($1,$2,$3,$4,$5,$6)`, r.SessionID, r.ID, r.OwnerID, r.Kind, resource, r.DeleteEpoch)
 	return mediaQueryError("acquire resource lease", err)
@@ -283,7 +305,7 @@ func mediaQueryError(phase string, err error) error {
 
 func (tx *DAO) UnsettledSessionResourceWrites(ctx context.Context, s string) (int, error) {
 	var n int
-	err := tx.tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM session_image_uploads WHERE session_id=$1 AND (receipt->>'state' IN ('receiving','verifying') OR NOT storage_released AND receipt->>'state' IN ('failed','expired','released')))+(SELECT count(*) FROM session_image_captures WHERE session_id=$1 AND receipt->>'state' IN ('reserved','copying'))+(SELECT count(*) FROM session_operations operations
+	err := tx.tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM session_image_uploads WHERE session_id=$1 AND (receipt->>'state' IN ('receiving','verifying') OR receipt->>'state' IN ('failed','expired','released') AND (NOT storage_released OR EXISTS(SELECT 1 FROM session_resources resources WHERE resources.session_id=session_image_uploads.session_id AND resources.blob_id=session_image_uploads.blob_id))))+(SELECT count(*) FROM session_image_captures WHERE session_id=$1 AND receipt->>'state' IN ('reserved','copying'))+(SELECT count(*) FROM session_operations operations
 WHERE session_id=$1 AND receipt->>'state' IN ('accepted','offered','dispatching','unknown')
 AND (command->>'kind' IN ('send_message','interaction_response','execute_command','cancel')
  OR EXISTS(SELECT 1 FROM session_resource_references refs

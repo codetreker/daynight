@@ -300,6 +300,8 @@ blobId 仅用于内部对象解析，不是对外下载能力；manifest 包含 
 
 准备查询与驱动使用上文严格 ImageArchivePrepareRequest/Receipt：原 stopped writer 通过 POST 协调原准备，通过 GET 只观察。回执的 resources 只在 sealed 时提供完整冻结集合，historyEpoch/sourceThrough 保持原来源屏障；sealed 表示出现终态及资源映射已冻结，不是 ready。一次响应≤4 MiB，不携 locator、凭据或对象路径。timelineRevision 只在 sealed 时为正 Decimal；Controller 提交文件必须来自同 revision，服务从账本逐项核对，不信 Controller 自报完整。
 
+活动连接成功重连时，服务在校验原 grant、hello 与 controller 身份的同一事务内，将现有活动账本的最终目标 epoch 推进到新连接的 historyEpoch。账本保留上一完整同步的原 epoch、entry/hash/长度及所有完整、未完成文件回执；连续重连只能从最新已验证目标继续，不能回退到旧 epoch。重连后仍须完整同步才能恢复图片准入。若此前即停止，prepare 和 stopped source tail 沿已验证目标结算，先保留旧完整前缀，再由最终同步核验该前缀并提交新 epoch 的完整账本；未完成轮次只在停止与服务 IO lease 屏障通过后转 failed，已确认块和原文件身份保留。没有这条持久连接关系的跨 epoch 同步继续拒绝。
+
 settling 下的最终同步使用有界原字节文件传输，避免一条合法但 JSON 转义后大于普通历史页的 entry 永远无法同步。`PUT {base}/archive/prepare/history/{syncId}?offset=<Decimal>` 的原 stopped writer 权限与完整归档身份由 prepare 账本绑定。文件原内容严格为 `{historyEpoch,sourceThrough,entries,resources}`，前两项是原历史身份和最后已确认连续源序号，entries 为全部有序 TimelineEntry，resources 为统一描述符、不含 Base64；正文只在临时文件和有界解析中存在，不写 DB 正文表。原 timeline≤64MiB，再加有界同步 envelope 最多16KiB，故同步文件≤67125248 bytes；实际 timeline 独立64MiB检查不被这个传输余量放宽。
 
 每块1..1048576原bytes，完整文件长度/hash和块hash使用下节相同三个Daynight-* header，offset连续或精确同边界重传；syncId由Controller为一次冻结本地源分配，首次offset=0绑定不可变完整文件身份。成功与`GET .../history/{syncId}/status`返回`{syncId,state,acceptedOffset,byteLength,sha256,timelineRevision,error}`；state=receiving/complete/failed，Decimal/UUID/SHA沿公共协议，timelineRevision仅complete非null，error仅failed非null。最后完整文件经长度/hash、strict JSON、全集合、原停止证明、source完整性及pending-content gap校验后，原子替换全部预算元数据并返回complete及持久revision。确定失败保留原syncId与原因，暂时IO故障保持receiving可协调；查询未知不换ID。最多一个活跃同步轮次，原sealed/manifest提交后不能新建同步。
@@ -345,6 +347,8 @@ PUT/DB提交回执未知时先GET archive与原prepare/file状态。相同manife
 
 所有status/manifest/timeline/图片块/下载复用原Session resolver、真实项目访问（含Team继承）、Test owner/parent credential、Bot→Session屏障；actor不能由body自报。IO前检查，数据交付和提交前重核。只读浏览器无prepare/file/manifest写权限；仅原stopped Controller owner PAT与精确身份可归档。现有deleted Task允许原owner完成归档的finalize例外不向浏览器开放，也不授予新的图片源读取或已删除记录恢复；Bot删除屏障保持更严格的拒绝，不绕过load。
 
+原件读取在 IO 前与结果交付前各执行一次普通 historical archive scope 授权，继承当前项目成员访问、Test parent credential、Bot 与删除屏障；原历史 claim 无须等于任务当前 claim。该读取路径不使用 finalize 例外，deleted Task 的内容继续拒绝。原 owner PAT 查询 legacy schema1 状态时，内部迁移可沿 owner finalize 权限完成原回执的升级对账，各阶段重新授权，仅返回状态和迁移源身份；它不返回归档 bytes，也不开放普通 manifest、timeline 或原件读取。
+
 预览模块缓存key至少含origin/account/owner/recordId/resourceId/hash；权限无变化不重新挂图，实际账户切换、访问拒绝、Session/record删除、Bot `resource_conflict`屏障立即abort在途读取、丢弃旧结果、撤销Blob URL并关闭敏感预览/下载。每次重新使用缓存先经过当前scope授权；页面后台恢复和身份重验失败保持拒绝。已经下载到用户磁盘的bytes无法召回，不以此承诺可撤销文件。纯文字阅读位置、已展开工具和稳定图片组件由现有scope生命周期保留。
 
 服务图片原件使用服务媒体存储独立media namespace，按projects/users与原Session owner隔离、禁止跨Session物理去重。多个消息/归档可共享同Session blob；timeline/manifest留在记录namespace。现有DeleteSessionArchives只删记录文件，不直接递归media目录。新的原件删除通过同一引用集合：事务锁父scope→Session→预算→排序资源，禁止新关联，移除本次删除涵盖的消息/记录引用；有其他合法记录/operation引用则保留。不能只看到在线Session结束就删除归档所用原件。
@@ -360,6 +364,8 @@ Bot删除仍需全部worker停止/cleanup证明、服务文件清理成功后才
 ## 旧记录、迁移与回滚
 
 旧 schema1 在读取/迁移边界使用同一转换库：校验原文件及每个真实Base64资源，将原bytes外置到统一资源库，保留session/resource/entry/operation身份、hash和unknown状态。缺失bytes保持明确unavailable，不伪造available。迁移记录使用原migration/prepare身份，按 prepared→files_durable→committed→verified 推进；新闭包fsync、DB提交和读回完成前保留原文件、旧journal及marker，重启先观察原状态，不能删旧后重建。schema2只交Herdr decoder，不借给原生媒体。
+
+已有同 resourceId 的资源须在迁移准备和提交时核对完整描述符及原存储、迁移身份。已外置的 available 原件保持原 blobId/path，先核验原对象，再复用同一行；已存在的 unavailable 行保持原身份。旧 inline available 行只在原件已外置耐久、原描述符与迁移身份仍匹配且 blobId/path 均为空时原子转换，并清除数据库 content，不保留长期双份原件。只有尚不存在的资源可 INSERT；描述符、外置对象或并发转换身份变化均拒绝，不能覆盖已有资源消除冲突。
 
 新写入仅生成schema3的manifest、timeline及统一资源引用，不生成schema1文字兼容副本或长期双投影。旧客户端/Worker缺所需revision时明确升级；旧文字和原operation查询保留。Controller journal迁移需原writer已经停止，保留完整旧intent/hash/未决身份，转换只发生在入口边界。
 

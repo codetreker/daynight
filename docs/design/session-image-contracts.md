@@ -392,7 +392,7 @@ message 是 ≤256 UTF-8 bytes 的非空安全说明，不含 token、凭据 URL
 
 图片内容走独立有界通道：512 KiB 原字节块，2 MiB 控制帧上限保持。每个 Session 至多两个媒体块同时在途，控制/receipt/历史请求优先；不能一次将整张图/Base64写入 command、事件批次或归档 JSON。服务/Controller按块持久化和摘要，不能每读一块全量解码图；浏览器允许为预览持有本次完整10 MiB Blob，但不得把全历史图片预加载到内存。全服务并发/背压/磁盘水位算法由 服务上传与鉴权模块/Controller 存储模块 设计，不能破坏这些单通道边界。
 
-已保存图片先存在服务的 Session 私有 blob 存储，输入成功与采集 available 均在服务保存完成后成立；Controller 本地文件作为原生消费缓存，不是唯一历史副本。关联消息前是上传引用，关联后是消息引用，归档可添加记录引用。清理最后一个有效引用才能物理删除，unknown operation 是有效引用。草稿删除只释放草稿准备；Session或记录删除走其原有权限和删除屏障，并同步失效对应客户端缓存。
+已保存图片先存在服务的 Session 私有 blob 存储，输入成功与采集 available 均在服务保存完成后成立；Controller 本地文件作为原生消费缓存，不是唯一历史副本。关联消息前是上传引用，关联后是消息引用，归档可添加记录引用。清理最后一个有效引用才能物理删除，unknown operation 是有效引用。草稿删除释放自己的准备引用；未发送 complete 原件失去最后引用后还须完成物理回收，不能只撤 pin 而永久占用资源配额。Session 或记录删除走其原有权限和删除屏障，并同步失效对应客户端缓存。
 
 ## 协商与旧数据边界
 
@@ -428,6 +428,18 @@ Cookie 写必须精确 Origin；PAT 沿既有认证，不增加 CORS/query token
 
 Task → 访问/Session、Bot → Session 为父锁顺序，随后预算、upload、resource/引用；多资源按 UUID 排序。网络、文件、解码不持数据库锁。块 ACK、available 发布、异步恢复和 operation 授权提交前，短事务再次核对凭据、权限、target、删除屏障、原 revision/intent/fence。撤权先提交则停止推进；上传先提交的 bytes 仍可能存在，但后续读取受新权限约束。取消请求不能收回已经取得的 bytes 或证明回滚。
 
+### 规则校验与存储原子性
+
+core 拥有图片协议、状态转换、期限、正文和摘要的校验，以及账户令牌桶的容量、补充与消耗决策。DAO 保存明确的记录和候选值；SQL 中的身份、原值、引用与 lease 条件负责在实际写入时拒绝并发变化。新媒体表保留主键和必要的并发唯一索引，不增加业务 CHECK 或外键级联；Bot Session 的最终删除按 intent→operation、reference→resource、chunk→upload 的依赖顺序显式清理。账户速率桶独立于 Session，不随单个 Session 删除而重置。既有 schema1/2 归档约束保持原保证，schema3 不增加对应数据库业务校验，其合法性由共享协议解析和 core 的闭包验证拥有。
+
+账号速率桶只锁定该 owner/category 的一行，core 在同一授权事务内读取并计算明确的替换值。新准备按 control→prepare 固定顺序处理两个桶；短事务中的行锁避免两桶分离竞争后重放整个已授权操作，不跨文件或网络 I/O。时钟回拨保留原时间，越界持久值明确拒绝；提交未知仍沿原操作身份核对。
+
+采集的单调状态转换、失败重试资格和旧 staging 已释放由 core 在 Session 锁内判断；DAO 对原 request、receipt 和 validated 做精确预期值校验，再保存明确的候选结果，零命中返回冲突。媒体 lease 的全局64、账户8、Session2上限由 core 作为明确的原子占用条件传入，DAO 在部署准入锁内比较实际计数，不能用默认零值跳过检查。
+
+source ACK 的保留策略由 core 拥有：先核原 identity/hash，再按当前 epoch 和通过序列计算2048序列窗口，将明确 cutoff 交给 DAO 删除旧记录；读取真实 count 后执行8192条准入。相同原 ACK 重放先返回既有摘要，不因满额清理或创建新身份；窗口外缺失的旧 ACK 明确拒绝，未知提交不重放。
+
+资源容量和并发准入涉及跨 Session、账户与部署的集合，单个资源版本不能覆盖其他 Session 新增的占用。对应短事务先取得部署级预算或准入 advisory lock，再读取集合事实、由 core 判定并登记占用；Session 锁保护本会话的资源、引用与删除 epoch。所有改变同一集合的入口参与相同保护，防止多个实例各自依据未满的快照超额接纳。锁等待传递 context 与 deadline，取得容量后即结束事务，后续 I/O 由 durable lease 和精确文件锁保护。
+
 ### 两端块确认与提交恢复
 
 正常路径服务持久暂存块并转发 Controller。服务 receipt 直接返回，不包 `{upload:...}`；JSON 请求上限 16384 bytes。块 body 1..524288 bytes，单值摘要 header、规范 offset，无未知/重复 query、不允许压缩/multipart/Range；Content-Length 不符、非 identity Content-Encoding、重复摘要或超长实际流均拒绝，确认前缀不变。无 Content-Length 的正常有界流允许。框架 401/405、协议错误和非业务 envelope 保留 HTTP 语义。
@@ -451,9 +463,15 @@ Task → 访问/Session、Bot → Session 为父锁顺序，随后预算、uploa
 
 ### 发送、释放与到期
 
-发送授权在一个事务校验完整有序输入、全部 complete/upload 身份、目标、能力、20MiB/8张、统一 timeline 的精确元数据预算，持久 intent 并取得全部 pin。任何一图失败整条拒绝。DELETE 先提交使 released，迟到验证不能复活；complete 先提交而无 operation pin 仍可释放；发送先取得 pin 则 upload_in_use。仅取消浏览器等待不是 DELETE。
+发送授权在一个事务校验完整有序输入、全部 complete/upload 身份、目标、能力、20MiB/8张、统一 timeline 的精确元数据预算，持久 intent 并取得全部 pin。任何一图失败整条拒绝。DELETE 先提交使 released，迟到验证不能复活；complete 先提交而无其他有效引用时仍可释放；发送先取得 pin 则 upload_in_use。DELETE 保留原 uploadId、BlobID、spec 和固定 expiry 的 tombstone。仅取消浏览器等待不是 DELETE。
+
+零引用回收在授权的 Session 锁内将资源标记为 `gc_pending`。标记保留原 descriptor、blob 路径和资源行，暂不返还 committed 配额；它拒绝新增该资源的引用和 lease，也拒绝可能使用任意 Session 原件的无 resourceId lease。其他仍有合法引用、尚未进入 GC 的资源可正常交接 message/archive pin。清理持有原 upload 的 `PrivateGate`，对已有相关 reader/writer 取得其原 lease 的 exact gate，证明执行单元退出后才撤销 durable lease；活跃 owner 返回 busy。原件及 staging 物理删除并完成文件存储屏障后，最终事务复核原身份、零引用和无相关 lease，再删除资源行并确认 staging 已释放，此后才返配额。任何物理失败、事务失败或 unknown 结果保留可观察状态和未确认额度，通过同一 tombstone 重入；receipt 已变 released 或 expired 不证明磁盘空间已释放。
 
 24h 从首次创建固定，精确重传、读取、重连不续期，每次事务和有界清理扫描均检查。未占用 receiving/verifying/complete 可到期；sending/unknown/消息/记录引用不随 TTL 释放。failed/expired/released 保存最小 tombstone 到所属保留期结束，相同 uploadId 不复活；Session 最多10000上传身份，超限 policy_restricted，不能删 tombstone 腾身份。
+
+GET 通过原 Session 的历史读取 scope 复核认证、项目访问与 upload actor，不要求 Task 仍处于原 claim；它不授予新目标或发送资格。固定到期后，receiving/verifying 转为 expired；complete 只有在 Session 锁内确认不存在自身 upload pin 之外的有效引用时，才撤销自身 pin、清空 receipt.resource 并转为 expired。原 operation/unknown/message/archive/native_resume 引用存在时保持 complete；complete 重放沿同一存储保留规则返回原状态，精确 prepare 重放只返回原身份当前终态，不延长 expiry。其他引用只保留原件，不授予到期后的新发送资格；新发送准入拒绝过期准备。已经登记的原 operation 精确重传返回原回执，其派发重核只接受绑定该 operationId 的原 operation pin，不能借另一操作或历史消息的引用创建新 intent。
+
+停止后的 archive prepare 和 seal 使用相同规则主动结算到期上传，不依赖原客户端再发 GET 或 DELETE。结算先在数据库 scope 外取得原 upload 的 `PrivateGate`，再重读固定 expiry 和当前身份，确认 writer 已退出才进入 expired 并清理 staging；不能仅从归档屏障中过滤过期行。failed/expired/released 的 staging 或原件尚未清理时，同一结算入口继续回收，未完成者仍阻止 seal。曾创建远端 preparation 的上传必须读到原 prepare/release 身份下完整且匹配的 Controller release 确认；离线、verifying、缺失结果或 unknown 均不能推断远端已释放，不返还相应容量。
 
 明确未派发或可信未接受结论解除 operation 占用，尚未过期上传可保留；原生接受后先建消息引用再解除冗余上传引用。unknown 保留。归档先建立记录引用再允许 Session 清理。浏览器移除只释放其草稿，权限撤销只取消该 actor 访问，均不能删除其他合法引用。
 

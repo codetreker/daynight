@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,28 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+const mediaRequestBodyBytes = 1 << 20
+
+func saveMediaRequest(ctx context.Context, dao store.SessionMediaDAO, row store.SessionMediaRequest) error {
+	var body bytes.Buffer
+	if err := json.Compact(&body, row.Body); err != nil {
+		return fault("invalid_input", "Controller media requests require a valid JSON body.")
+	}
+	// JSONB readback adds insignificant spaces. Admission measures the compact
+	// protocol body so rebinding does not shrink the original byte allowance.
+	if body.Len() > mediaRequestBodyBytes {
+		return fault("quota_exceeded", "The controller media body exceeds its storage budget.")
+	}
+	if row.Complete && (row.Result != nil) == (row.Error != nil) || !row.Complete && (row.Result != nil || row.Error != nil) {
+		return fault("invalid_input", "Controller media completion requires exactly one result or error.")
+	}
+	if row.Result != nil && (!json.Valid(row.Result) || bytes.Equal(bytes.TrimSpace(row.Result), []byte("null"))) {
+		return fault("invalid_input", "Controller media results require a nonnull JSON value.")
+	}
+	row.Body = body.Bytes()
+	return dao.SaveSessionMediaRequest(ctx, row)
+}
 
 func mediaDAO(tx *operationTx) (store.SessionMediaDAO, error) {
 	d, ok := tx.dao.(store.SessionMediaDAO)
@@ -23,14 +46,22 @@ func mediaIdentity(id, action string) string {
 	return uuid.NewSHA1(uuid.MustParse(id), []byte(action)).String()
 }
 func (s *Execution) controllerMedia(ctx context.Context, p model.Principal, project, taskID, id, requestID, action string, body any) (json.RawMessage, error) {
-	var out json.RawMessage
-	var remote *sp.ImageError
-	complete := false
-	observe := func(create bool) error {
+	access := func(ctx context.Context, work func(*operationTx, *record) error) error {
 		return s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 			if !write {
 				return denied()
 			}
+			return work(tx, r)
+		})
+	}
+	return s.controllerMediaWithAccess(ctx, id, requestID, action, body, access)
+}
+func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID, action string, body any, access imageStorageAccess) (json.RawMessage, error) {
+	var out json.RawMessage
+	var remote *sp.ImageError
+	complete := false
+	observe := func(create bool) error {
+		return access(ctx, func(tx *operationTx, r *record) error {
 			if r.Snapshot.ContentRevision != 2 {
 				return fault("component_unsupported", "Upgrade the original controller for media operations.")
 			}
@@ -47,7 +78,7 @@ func (s *Execution) controllerMedia(ctx context.Context, p model.Principal, proj
 					return e
 				}
 				row = store.SessionMediaRequest{SessionID: id, RequestID: requestID, Action: action, Fence: r.Snapshot.ControllerFence, Body: encode(body)}
-				return d.SaveSessionMediaRequest(ctx, row)
+				return saveMediaRequest(ctx, d, row)
 			}
 			if row.Action != action || row.Fence.Fence != r.Snapshot.Fence || !jsonEqual(row.Body, encode(body)) {
 				return fault("resource_conflict", "Media request identity changed.")
@@ -59,7 +90,7 @@ func (s *Execution) controllerMedia(ctx context.Context, p model.Principal, proj
 			}
 			if !row.Complete && row.Fence.ConnectionEpoch != r.Snapshot.ConnectionEpoch {
 				row.Fence = r.Snapshot.ControllerFence
-				if e = d.SaveSessionMediaRequest(ctx, row); e != nil {
+				if e = saveMediaRequest(ctx, d, row); e != nil {
 					return e
 				}
 			}
@@ -110,7 +141,7 @@ func (s *Execution) mediaOffers(ctx context.Context, tx *operationTx, r *record)
 		}
 		if row.Fence != r.Snapshot.ControllerFence {
 			row.Fence = r.Snapshot.ControllerFence
-			if e = d.SaveSessionMediaRequest(ctx, row); e != nil {
+			if e = saveMediaRequest(ctx, d, row); e != nil {
 				return nil, e
 			}
 		}
@@ -158,10 +189,11 @@ func (s *Execution) acceptMediaResponse(ctx context.Context, tx *operationTx, r 
 	}
 	row.Complete = true
 	row.Error = m.MediaError
+	row.Result = nil
 	if m.MediaError == nil {
 		row.Result = m.MediaResult
 	}
-	if e = d.SaveSessionMediaRequest(ctx, row); e != nil {
+	if e = saveMediaRequest(ctx, d, row); e != nil {
 		return nil, e
 	}
 	return nil, nil

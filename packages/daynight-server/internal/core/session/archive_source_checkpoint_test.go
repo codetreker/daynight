@@ -28,6 +28,12 @@ func (d *sourceCheckpointDAO) SessionSourceHash(_ context.Context, h store.Sessi
 	}
 	return append([]byte(nil), digest...), nil
 }
+func (d *sourceCheckpointDAO) PruneSessionSourceHashes(context.Context, string, string, int64) error {
+	return nil
+}
+func (d *sourceCheckpointDAO) SessionSourceHashCount(context.Context, string) (int, error) {
+	return len(d.hashes), nil
+}
 func (d *sourceCheckpointDAO) SaveSessionSourceHash(_ context.Context, h store.SessionSourceHash) error {
 	if d.fail {
 		return errors.New("hash commit outcome unknown")

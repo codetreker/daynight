@@ -167,7 +167,7 @@ func (s *Execution) RetryImageOccurrence(ctx context.Context, p model.Principal,
 		}
 		// The reservation and original request share one transaction. A lost
 		// response can then recover through the same durable attempt and offer.
-		if e = media.SaveSessionMediaRequest(ctx, store.SessionMediaRequest{SessionID: id, RequestID: mediaIdentity(capture.Receipt.AttemptID, "retry_capture"), Action: "retry_capture", Fence: r.Snapshot.ControllerFence, Body: encode(map[string]any{"captureId": capture.Request.CaptureID, "attemptId": capture.Receipt.AttemptID})}); e != nil {
+		if e = saveMediaRequest(ctx, media, store.SessionMediaRequest{SessionID: id, RequestID: mediaIdentity(capture.Receipt.AttemptID, "retry_capture"), Action: "retry_capture", Fence: r.Snapshot.ControllerFence, Body: encode(map[string]any{"captureId": capture.Request.CaptureID, "attemptId": capture.Receipt.AttemptID})}); e != nil {
 			return e
 		}
 		capture, e = d.SessionCapture(ctx, id, capture.Request.CaptureID)

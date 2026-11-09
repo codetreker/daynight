@@ -3,8 +3,12 @@ package bot
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
@@ -257,5 +261,177 @@ func TestBotCleanupFailureCoordinatesCoreResultsAndIndependentCompletion(t *test
 				t.Fatal("concurrent successful cleanup was downgraded")
 			}
 		})
+	}
+}
+
+type resourceLifetimeWriter func(context.Context, func(store.SessionScope) error) (store.Completion, error)
+
+func (w resourceLifetimeWriter) WriteSession(ctx context.Context, run func(store.SessionScope) error) (store.Completion, error) {
+	return w(ctx, run)
+}
+
+type resourceLifetimeDAO struct {
+	*resourceBoundaryDAO
+	lease  string
+	joined func()
+}
+
+func (d resourceLifetimeDAO) ListSessionResourceLeases(context.Context, string) ([]store.SessionResourceLease, error) {
+	return []store.SessionResourceLease{{ID: d.lease}}, nil
+}
+func (d resourceLifetimeDAO) ReleaseSessionResourceLease(_ context.Context, session, lease string) error {
+	if session != d.session.ID || lease != d.lease {
+		return errors.New("resource cleanup changed the original lease identity")
+	}
+	d.joined()
+	return nil
+}
+
+type resourceLifetimeStorage struct {
+	*local.Storage
+	gateAttempt chan struct{}
+	beforeSweep func()
+}
+
+func (s resourceLifetimeStorage) AcquireGate(ctx context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
+	if domain != filestorage.MediaLeaseGate {
+		return nil, errors.New("unconfigured resource cleanup gate")
+	}
+	close(s.gateAttempt)
+	return s.Storage.AcquireGate(ctx, domain, key)
+}
+func (s resourceLifetimeStorage) DeleteSessionResources(ctx context.Context, n sessionresource.Namespace) error {
+	s.beforeSweep()
+	return s.Storage.DeleteSessionResources(ctx, n)
+}
+
+func TestBotResourceCleanupRequiresConfirmedFirstAdmissionBeforeIO(t *testing.T) {
+	var calls []string
+	p := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString()}
+	id, deletion, session := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Deletion: &model.BotDeletion{DeletionID: deletion, ServerCleanup: model.BotCleanupResult{State: "pending"}}}}
+	dao := &resourceBoundaryDAO{deletionDAO: &deletionDAO{calls: &calls}, session: store.BotSession{ID: session, Owner: p.UserID, Scope: "test", Backend: "web"}}
+	writer := &resourceBoundaryWriter{t: t, scope: resourceBoundaryScope{dao: dao, bot: bots}, outcomes: []store.TransactionOutcome{store.TransactionUnknown}}
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = files.Close() })
+	namespace, _ := sessionresource.NewNamespace("", p.UserID, session)
+	path, _ := namespace.BlobPath(uuid.NewString())
+	if _, err = files.Put(t.Context(), sessionresource.Bucket, path, strings.NewReader("original")); err != nil {
+		t.Fatal(err)
+	}
+	storage := resourceLifetimeStorage{Storage: files, gateAttempt: make(chan struct{}), beforeSweep: func() { t.Error("unknown admission swept original storage") }}
+	live := &resourceBoundaryLive{}
+	service := NewDeletions(writer, storage, nil)
+	err = service.cleanSessionResourcesUsing(t.Context(), p, id, deletion, live, resourceCleanupCoreFixture(t, bots, p, id, deletion))
+	if err == nil || writer.calls != 1 || live.calls != 0 {
+		t.Fatal("unknown admission started I/O or another transaction", err, writer.calls, live.calls)
+	}
+	select {
+	case <-storage.gateAttempt:
+		t.Fatal("unknown admission attempted to join a lease")
+	default:
+	}
+	object, err := files.Open(t.Context(), sessionresource.Bucket, path)
+	if err != nil {
+		t.Fatal("unknown admission removed the retained original", err)
+	}
+	_ = object.Body.Close()
+	if bots.bot.Deletion.ServerCleanup.State != "pending" {
+		t.Fatal("unknown admission lost the original retry obligation")
+	}
+}
+
+func TestBotResourceCleanupJoinsRealExactGateBeforeConfirmedLeaseRemovalAndSweep(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	var calls []string
+	p := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString()}
+	id, deletion, session, lease := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Deletion: &model.BotDeletion{DeletionID: deletion, ServerCleanup: model.BotCleanupResult{State: "pending"}}}}
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = files.Close() })
+	namespace, _ := sessionresource.NewNamespace("", p.UserID, session)
+	path, _ := namespace.BlobPath(uuid.NewString())
+	if _, err = files.Put(ctx, sessionresource.Bucket, path, strings.NewReader("original")); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := files.AcquireGate(ctx, filestorage.MediaLeaseGate, "session-resource-lease/"+lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Close()
+	joined, confirmed, swept, transactions := false, false, false, 0
+	dao := resourceLifetimeDAO{resourceBoundaryDAO: &resourceBoundaryDAO{deletionDAO: &deletionDAO{calls: &calls}, session: store.BotSession{ID: session, Owner: p.UserID, Scope: "test", Backend: "web"}}, lease: lease, joined: func() {
+		joined = true
+		probe, e := filestorage.TryAcquireMediaLease(ctx, files, "session-resource-lease/"+lease)
+		if e == nil {
+			_ = probe.Close()
+		}
+		if !errors.Is(e, filestorage.ErrGateBusy) {
+			t.Error("durable lease removal ran without owning the exact physical gate", e)
+		}
+	}}
+	writer := resourceLifetimeWriter(func(actual context.Context, run func(store.SessionScope) error) (store.Completion, error) {
+		transactions++
+		if actual != ctx || transactions > 3 {
+			t.Error("unexpected resource cleanup transaction", transactions)
+		}
+		e := run(resourceBoundaryScope{dao: dao, bot: bots})
+		if transactions == 3 {
+			confirmed = true
+		}
+		return store.Completion{Outcome: store.TransactionCommitted}, e
+	})
+	storage := resourceLifetimeStorage{Storage: files, gateAttempt: make(chan struct{}), beforeSweep: func() {
+		if !joined || !confirmed {
+			t.Error("physical sweep preceded exact lease join and confirmed completion")
+		}
+		swept = true
+	}}
+	live := &resourceBoundaryLive{}
+	service := NewDeletions(writer, storage, nil)
+	operations := resourceCleanupCoreFixture(t, bots, p, id, deletion)
+	done := make(chan error, 1)
+	go func() { done <- service.cleanSessionResourcesUsing(ctx, p, id, deletion, live, operations) }()
+	select {
+	case <-storage.gateAttempt:
+	case <-ctx.Done():
+		t.Fatal("cleanup never attempted the exact owner gate", ctx.Err())
+	}
+	if transactions != 2 || live.calls != 1 || joined || swept {
+		t.Fatal("live physical owner was reaped before its gate exited", transactions, live.calls, joined, swept)
+	}
+	select {
+	case e := <-done:
+		t.Fatal("cleanup completed while the original reader still owned its gate", e)
+	default:
+	}
+	object, err := files.Open(ctx, sessionresource.Bucket, path)
+	if err != nil {
+		t.Fatal("live reader lost its original", err)
+	}
+	_ = object.Body.Close()
+	if err = gate.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-done:
+		if err != nil || !joined || !confirmed || !swept || transactions != 3 {
+			t.Fatal("cleanup did not continue after exact owner exit", err, transactions)
+		}
+	case <-ctx.Done():
+		t.Fatal("cleanup did not drain after owner exit", ctx.Err())
+	}
+	if object, err = files.Open(ctx, sessionresource.Bucket, path); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			_ = object.Body.Close()
+		}
+		t.Fatal("confirmed cleanup retained original bytes", err)
 	}
 }

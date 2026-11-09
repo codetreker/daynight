@@ -3,52 +3,124 @@ package session
 import (
 	"context"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 type mediaRateDAO struct {
 	store.SessionDAO
-	calls []string
-	deny  string
-	err   error
+	t                    *testing.T
+	ctx                  context.Context
+	now                  time.Time
+	calls                []string
+	deny, corrupt        string
+	lockError, saveError error
 }
 
-func (d *mediaRateDAO) TakeSessionMediaRate(_ context.Context, owner, kind string, _ time.Time, rate, burst int) (bool, error) {
-	d.calls = append(d.calls, kind)
-	if owner != "actor" || kind == "prepare" && (rate != 2 || burst != 8) || kind != "prepare" && (rate != 20 || burst != 40) {
-		panic("wrong rate policy")
+func (d *mediaRateDAO) LockSessionMediaRate(ctx context.Context, owner, kind string, initial store.SessionMediaRate) (store.SessionMediaRate, error) {
+	d.t.Helper()
+	capacity := int64(40_000_000)
+	if kind == "prepare" {
+		capacity = 8_000_000
 	}
-	return kind != d.deny, d.err
+	if ctx != d.ctx || owner != "actor" || initial.Tokens != capacity || !initial.UpdatedAt.Equal(d.now) {
+		d.t.Fatal("rate storage input changed", owner, kind, initial)
+	}
+	d.calls = append(d.calls, "lock/"+kind)
+	if kind == d.deny {
+		initial.Tokens = 0
+	}
+	if kind == d.corrupt {
+		initial.Tokens = -1
+	}
+	return initial, d.lockError
 }
+func (d *mediaRateDAO) SaveSessionMediaRate(ctx context.Context, owner, kind string, next store.SessionMediaRate) error {
+	d.t.Helper()
+	capacity := int64(40_000_000)
+	if kind == "prepare" {
+		capacity = 8_000_000
+	}
+	if ctx != d.ctx || owner != "actor" || next.Tokens != capacity-1_000_000 || !next.UpdatedAt.Equal(d.now) {
+		d.t.Fatal("rate decision changed before storage", owner, kind, next)
+	}
+	d.calls = append(d.calls, "save/"+kind)
+	return d.saveError
+}
+
 func TestImageRateSeparatesPrepareAndObservation(t *testing.T) {
+	for _, kind := range []string{"prepare", "control", "observe", "release"} {
+		t.Run(kind, func(t *testing.T) {
+			s := &Execution{Engine: NewEngine(nil)}
+			now := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+			s.now = func() time.Time { return now }
+			d := &mediaRateDAO{t: t, ctx: t.Context(), now: now}
+			if e := s.admitImageRate(t.Context(), &operationTx{dao: d}, "actor", kind); e != nil {
+				t.Fatal(e)
+			}
+			want := []string{"lock/" + kind, "save/" + kind}
+			if kind == "prepare" {
+				want = []string{"lock/control", "save/control", "lock/prepare", "save/prepare"}
+			}
+			if !reflect.DeepEqual(d.calls, want) {
+				t.Fatal(d.calls, want)
+			}
+		})
+	}
+}
+
+func TestImageRateStopsAfterRefusalCorruptionOrUnknownStorage(t *testing.T) {
+	for _, point := range []string{"control denied", "prepare denied", "corrupt", "lock failed", "save unknown", "invalid policy", "invalid clock"} {
+		t.Run(point, func(t *testing.T) {
+			s := &Execution{Engine: NewEngine(nil)}
+			now := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+			s.now = func() time.Time { return now }
+			d := &mediaRateDAO{t: t, ctx: t.Context(), now: now}
+			cause := &store.TransactionError{Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("commit confirmation lost")}
+			category := "prepare"
+			switch point {
+			case "control denied":
+				d.deny = "control"
+			case "prepare denied":
+				d.deny = "prepare"
+			case "corrupt":
+				d.corrupt = "control"
+			case "lock failed":
+				d.lockError = cause
+			case "save unknown":
+				d.saveError = cause
+			case "invalid policy":
+				category = "invalid"
+			case "invalid clock":
+				s.now = func() time.Time { return time.Time{} }
+			}
+			err := s.admitImageRate(t.Context(), &operationTx{dao: d}, "actor", category)
+			if err == nil {
+				t.Fatal("unsafe rate admission succeeded")
+			}
+			if (d.lockError != nil || d.saveError != nil) && !errors.Is(err, cause) {
+				t.Fatal("storage cause lost", err)
+			}
+			want := []string{"lock/control"}
+			if point == "save unknown" {
+				want = append(want, "save/control")
+			}
+			if point == "prepare denied" {
+				want = []string{"lock/control", "save/control", "lock/prepare"}
+			}
+			if point == "invalid policy" || point == "invalid clock" {
+				want = nil
+			}
+			if !reflect.DeepEqual(d.calls, want) {
+				t.Fatal("continued or retried unsafe rate decision", d.calls, want)
+			}
+		})
+	}
 	s := &Execution{Engine: NewEngine(nil)}
-	d := &mediaRateDAO{}
-	tx := &operationTx{dao: d}
-	if e := s.admitImageRate(t.Context(), tx, "actor", "prepare"); e != nil || !reflect.DeepEqual(d.calls, []string{"control", "prepare"}) {
-		t.Fatal(d.calls, e)
-	}
-	d.deny = "prepare"
-	if e := s.admitImageRate(t.Context(), tx, "actor", "prepare"); e == nil {
-		t.Fatal("exhausted prepare accepted")
-	}
-	for _, kind := range []string{"observe", "release", "control"} {
-		if e := s.admitImageRate(t.Context(), tx, "actor", kind); e != nil {
-			t.Fatal(e)
-		}
-	}
-	d.err = errors.New("database unavailable")
-	if !errors.Is(s.admitImageRate(t.Context(), tx, "actor", "observe"), d.err) {
-		t.Fatal("database failure hidden")
-	}
-	d.err = nil
-	if s.admitImageRate(t.Context(), tx, "actor", "invalid") == nil {
-		t.Fatal("unknown policy accepted")
-	}
-	tx.dao = &mediaRateMissingDAO{}
-	if s.admitImageRate(t.Context(), tx, "actor", "control") == nil {
+	if s.admitImageRate(t.Context(), &operationTx{dao: &mediaRateMissingDAO{}}, "actor", "control") == nil {
 		t.Fatal("old adapter enabled media")
 	}
 }

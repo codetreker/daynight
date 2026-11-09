@@ -30,7 +30,10 @@ func (s *Execution) savedResource(ctx context.Context, p model.Principal, projec
 	}
 	ctx = ioContext
 	defer func() { result = joinImageCleanup(result, finishIO) }()
-	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
+	// Immutable originals belong to their original Session, even after the Task
+	// starts another claim. Ordinary archive access retains the deletion barrier.
+	err := s.archiveRun(ctx, p, project, taskID, id, false, func(a *Access) error {
+		tx, r := a.tx, a.record
 		d, e := resourceDAO(tx)
 		if e != nil {
 			return e
@@ -66,7 +69,7 @@ func (s *Execution) savedResource(ctx context.Context, p model.Principal, projec
 		if e != nil {
 			return e
 		}
-		return d.AcquireSessionResourceLease(ctx, store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: r.Owner, Kind: "read", ResourceID: resourceID, DeleteEpoch: usage.DeleteEpoch})
+		return acquireImageResourceLease(ctx, d, store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: r.Owner, Kind: "read", ResourceID: resourceID, DeleteEpoch: usage.DeleteEpoch})
 	})
 	if err != nil {
 		return nil, descriptor, err
@@ -86,7 +89,8 @@ func (s *Execution) savedResource(ctx context.Context, p model.Principal, projec
 		return nil, descriptor, fault("resource_conflict", "Saved resource content is missing or corrupt.")
 	}
 	// Revocation and deletion racing the read cannot publish a late successful body.
-	err = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, _ *record, _ task, _ bool) error {
+	err = s.archiveRun(ctx, p, project, taskID, id, false, func(a *Access) error {
+		tx := a.tx
 		d, e := resourceDAO(tx)
 		if e != nil {
 			return e

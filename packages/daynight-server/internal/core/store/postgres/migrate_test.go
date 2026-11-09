@@ -30,7 +30,7 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		t.Fatalf("versions: %d, %v", count, err)
 	}
 	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f'
-	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'private_upload_chunks'::regclass,'session_resource_state'::regclass,'session_image_uploads'::regclass,'session_image_chunks'::regclass,'session_image_captures'::regclass,'session_resource_references'::regclass,'session_resource_leases'::regclass,'session_operation_intents'::regclass,'session_media_requests'::regclass,'session_source_hashes'::regclass,'session_archive_chunks'::regclass,'session_media_rates'::regclass)
+	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'private_upload_chunks'::regclass)
 	 AND NOT (conrelid='task_sessions'::regclass AND conname='session_bot_owner')`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
 		t.Fatalf("legacy tables gained foreign keys: %d, %v", foreignKeys, err)
 	}
@@ -55,23 +55,8 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 			"FOREIGN KEY (transfer_id) REFERENCES private_transfers(id) ON DELETE CASCADE": true,
 		},
 	}
-	for table, definition := range map[string]string{
-		"session_resource_state":      "FOREIGN KEY (session_id) REFERENCES task_sessions(id) ON DELETE CASCADE",
-		"session_image_uploads":       "FOREIGN KEY (session_id) REFERENCES task_sessions(id) ON DELETE CASCADE",
-		"session_image_chunks":        "FOREIGN KEY (session_id, upload_id) REFERENCES session_image_uploads(session_id, upload_id) ON DELETE CASCADE",
-		"session_image_captures":      "FOREIGN KEY (session_id) REFERENCES task_sessions(id) ON DELETE CASCADE",
-		"session_resource_references": "FOREIGN KEY (session_id, resource_id) REFERENCES session_resources(session_id, resource_id) ON DELETE CASCADE",
-		"session_resource_leases":     "FOREIGN KEY (session_id) REFERENCES task_sessions(id) ON DELETE CASCADE",
-		"session_operation_intents":   "FOREIGN KEY (session_id, operation_id) REFERENCES session_operations(session_id, operation_id) ON DELETE CASCADE",
-		"session_media_requests":      "FOREIGN KEY (session_id) REFERENCES task_sessions(id) ON DELETE CASCADE",
-		"session_source_hashes":       "FOREIGN KEY (session_id) REFERENCES task_sessions(id) ON DELETE CASCADE",
-		"session_media_rates":         "FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE",
-		"session_archive_chunks":      "FOREIGN KEY (session_id, file_id) REFERENCES session_archive_files(session_id, file_id)",
-	} {
-		wantedKeys[table] = map[string]bool{definition: true}
-	}
 	rows, err := database.Pool.Query(ctx, `SELECT conrelid::regclass::text,pg_get_constraintdef(oid) FROM pg_constraint
- WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'task_sessions'::regclass,'private_upload_chunks'::regclass,'session_resource_state'::regclass,'session_image_uploads'::regclass,'session_image_chunks'::regclass,'session_image_captures'::regclass,'session_resource_references'::regclass,'session_resource_leases'::regclass,'session_operation_intents'::regclass,'session_media_requests'::regclass,'session_source_hashes'::regclass,'session_archive_chunks'::regclass,'session_media_rates'::regclass) AND contype='f'`)
+ WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'task_sessions'::regclass,'private_upload_chunks'::regclass) AND contype='f'`)
 	if err != nil {
 		t.Fatal(err)
 	}

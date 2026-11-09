@@ -39,10 +39,18 @@ type archiveLedgerEntry struct {
 type archiveLedger struct {
 	HistoryEpoch, SourceThrough, HistoryID string
 	FinalSourceThrough                     string `json:",omitempty"`
+	FinalHistoryEpoch                      string `json:",omitempty"`
 	Sealable                               bool
 	Entries                                []archiveLedgerEntry
 	Resources                              []sp.Resource
 	Occurrences                            []archiveLedgerOccurrence
+}
+
+func (l archiveLedger) latestHistoryEpoch() string {
+	if l.FinalHistoryEpoch != "" {
+		return l.FinalHistoryEpoch
+	}
+	return l.HistoryEpoch
 }
 
 func archiveDigest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
@@ -190,7 +198,7 @@ func bundleReceipt(bundle store.ArchiveBundle) sp.ArchivePrepareReceipt {
 	}
 	var ledger archiveLedger
 	_ = json.Unmarshal(bundle.Ledger, &ledger)
-	out := sp.ArchivePrepareReceipt{RecordID: bundle.SessionID, Phase: phase, Resources: refs, TimelineRevision: revision, HistoryEpoch: ledger.HistoryEpoch, SourceThrough: ledger.SourceThrough}
+	out := sp.ArchivePrepareReceipt{RecordID: bundle.SessionID, Phase: phase, Resources: refs, TimelineRevision: revision, HistoryEpoch: ledger.latestHistoryEpoch(), SourceThrough: ledger.SourceThrough}
 	if ledger.FinalSourceThrough != "" {
 		out.SourceThrough = ledger.FinalSourceThrough
 	}
@@ -251,6 +259,9 @@ func (op *ArchiveOperation) PrepareArchive(ctx context.Context, in sp.ArchivePre
 	}
 	if _, err = sp.DecodeArchivePrepareRequest(encode(in)); err != nil {
 		return out, fault("invalid_input", "Invalid archive preparation.")
+	}
+	if err = op.SettleExpiredUploads(ctx); err != nil {
+		return out, err
 	}
 	identity := in
 	identity.ExpectedTimelineRevision = ""
@@ -514,7 +525,7 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 		} else if offset != file.AcceptedOffset || file.State != "receiving" {
 			return archiveConflict()
 		}
-		return media.AcquireSessionResourceLease(ctx, store.SessionResourceLease{SessionID: op.id, ID: leaseID, Kind: "archive", OwnerID: op.owner, DeleteEpoch: epoch})
+		return acquireImageResourceLease(ctx, media, store.SessionResourceLease{SessionID: op.id, ID: leaseID, Kind: "archive", OwnerID: op.owner, DeleteEpoch: epoch})
 	})
 	if err != nil {
 		return out, err
@@ -729,6 +740,9 @@ func (op *ArchiveOperation) SealArchive(ctx context.Context) (out sp.ArchivePrep
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	if err = op.SettleExpiredUploads(ctx); err != nil {
+		return out, err
+	}
 	err = op.bundleAccess(ctx, func(tx *operationTx, _ *record, dao store.SessionArchiveDAO, bundle store.ArchiveBundle) error {
 		if bundle.Phase == "sealed" || bundle.Phase == "committed" || bundle.Phase == "verified" {
 			out = bundleReceipt(bundle)
@@ -884,7 +898,7 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 		if e = dao.SaveSessionArchiveBundle(ctx, bundle); e != nil {
 			return e
 		}
-		return media.AcquireSessionResourceLease(ctx, store.SessionResourceLease{SessionID: op.id, ID: leaseID, Kind: "archive", OwnerID: op.owner, DeleteEpoch: epoch})
+		return acquireImageResourceLease(ctx, media, store.SessionResourceLease{SessionID: op.id, ID: leaseID, Kind: "archive", OwnerID: op.owner, DeleteEpoch: epoch})
 	})
 	if err != nil {
 		return out, err
@@ -1023,7 +1037,7 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 		if usage.Deleting {
 			return conflict()
 		}
-		return media.AcquireSessionResourceLease(ctx, store.SessionResourceLease{SessionID: id, ID: leaseID, Kind: "read", OwnerID: r.Owner, DeleteEpoch: usage.DeleteEpoch})
+		return acquireImageResourceLease(ctx, media, store.SessionResourceLease{SessionID: id, ID: leaseID, Kind: "read", OwnerID: r.Owner, DeleteEpoch: usage.DeleteEpoch})
 	})
 	if err != nil {
 		return nil, err
@@ -1146,7 +1160,7 @@ func verifyArchiveHistoryAdvance(previous, next archiveLedger) error {
 }
 
 func verifyStoppedHistoryAdvance(previous, next archiveLedger) error {
-	if previous.HistoryEpoch != next.HistoryEpoch || number(next.SourceThrough) < number(previous.SourceThrough) || len(next.Entries) < len(previous.Entries) {
+	if previous.latestHistoryEpoch() != next.HistoryEpoch || number(next.SourceThrough) < number(previous.SourceThrough) || len(next.Entries) < len(previous.Entries) {
 		return archiveConflict()
 	}
 	sameSource := next.SourceThrough == previous.SourceThrough

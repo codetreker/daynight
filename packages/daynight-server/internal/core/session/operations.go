@@ -396,7 +396,7 @@ func (s *Execution) Submit(ctx context.Context, p model.Principal, project, task
 }
 func (s *Execution) Operation(ctx context.Context, p model.Principal, project, taskID, id, operationID string) (sp.Operation, error) {
 	var out sp.Operation
-	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
+	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, _ *record, _ task) error {
 		o, e := loadOperation(ctx, tx, id, operationID)
 		out = o.Receipt
 		return e

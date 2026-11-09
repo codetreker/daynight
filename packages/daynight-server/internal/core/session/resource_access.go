@@ -4,9 +4,11 @@ import (
 	"context"
 	"io"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/google/uuid"
 )
 
 // ImageDecoder consumes the complete image in an isolated decoder process.
@@ -46,6 +48,20 @@ func (a *Access) ListSavedResources(ctx context.Context) ([]store.SessionResourc
 	return d.ListSessionResources(ctx, a.record.Snapshot.SessionID)
 }
 func (a *Access) AddResourceReference(ctx context.Context, id, kind, reference string) error {
+	for _, value := range []string{a.record.Snapshot.SessionID, id} {
+		canonical, err := model.CanonicalID(value)
+		if err != nil || canonical != value || canonical == uuid.Nil.String() {
+			return fault("invalid_input", "Resource references require canonical Session and resource identities.")
+		}
+	}
+	switch kind {
+	case "upload", "operation", "message", "unknown", "native_resume", "archive":
+	default:
+		return fault("invalid_input", "Unknown Session resource reference kind.")
+	}
+	if reference == "" {
+		return fault("invalid_input", "Session resource references require an identity.")
+	}
 	d, e := resourceDAO(a.tx)
 	if e != nil {
 		return e

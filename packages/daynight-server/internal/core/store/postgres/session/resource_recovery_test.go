@@ -96,7 +96,7 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 	leases := make([]store.SessionResourceLease, 0, 64)
 	for i := 0; i < 32; i++ {
 		for n := 0; n < 2; n++ {
-			r := store.SessionResourceLease{SessionID: sessions[i], ID: uuid.NewString(), OwnerID: owners[i/4], Kind: "read"}
+			r := store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: sessions[i], ID: uuid.NewString(), OwnerID: owners[i/4], Kind: "read"}
 			leases = append(leases, r)
 			sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
 				return d.(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), r)
@@ -106,7 +106,7 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 	requireLimited := func(id, owner string) {
 		t.Helper()
 		_, err := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
-			return scope.SessionDAO().(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{SessionID: id, ID: uuid.NewString(), OwnerID: owner, Kind: "read"})
+			return scope.SessionDAO().(store.SessionResourceDAO).AcquireSessionResourceLease(t.Context(), store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: id, ID: uuid.NewString(), OwnerID: owner, Kind: "read"})
 		})
 		var f *model.Fault
 		if !errors.As(err, &f) || f.Code != "rate_limited" {
@@ -175,7 +175,7 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 	requireLimited(sessions[0], owners[0])
 	// The account and deployment no longer inherit unrelated crashed owners.
 	for _, owner := range []string{owners[0], owners[8]} {
-		r := store.SessionResourceLease{SessionID: sessions[32], ID: uuid.NewString(), OwnerID: owner, Kind: "read"}
+		r := store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: sessions[32], ID: uuid.NewString(), OwnerID: owner, Kind: "read"}
 		sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
 			return d.(store.SessionResourceDAO).AcquireSessionResourceLease(ctx, r)
 		})
@@ -197,7 +197,7 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 		t.Fatalf("crash-released owners retained: %v", remaining)
 	}
 	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-		return d.(store.SessionResourceDAO).AcquireSessionResourceLease(ctx, store.SessionResourceLease{SessionID: sessions[0], ID: uuid.NewString(), OwnerID: owners[0], Kind: "write"})
+		return d.(store.SessionResourceDAO).AcquireSessionResourceLease(ctx, store.SessionResourceLease{Admission: store.SessionResourceLeaseAdmission{Global: 64, Owner: 8, Session: 2}, SessionID: sessions[0], ID: uuid.NewString(), OwnerID: owners[0], Kind: "write"})
 	})
 }
 

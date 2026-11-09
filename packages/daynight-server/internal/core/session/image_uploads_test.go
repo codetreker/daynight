@@ -43,9 +43,15 @@ func (d *imageRuleDAO) SessionArchiveBundle(context.Context, string) (store.Arch
 	}
 	return d.bundle, nil
 }
-func (d *imageRuleDAO) TakeSessionMediaRate(_ context.Context, _ string, kind string, _ time.Time, _, _ int) (bool, error) {
+func (d *imageRuleDAO) LockSessionMediaRate(_ context.Context, _ string, kind string, initial store.SessionMediaRate) (store.SessionMediaRate, error) {
 	d.rateCalls = append(d.rateCalls, kind)
-	return kind != d.rateDeny, nil
+	if kind == d.rateDeny {
+		initial.Tokens = 0
+	}
+	return initial, nil
+}
+func (d *imageRuleDAO) SaveSessionMediaRate(context.Context, string, string, store.SessionMediaRate) error {
+	return nil
 }
 func (d *imageRuleDAO) SessionImageUploadExists(_ context.Context, _, image string) (bool, error) {
 	for _, u := range d.uploads {
@@ -123,9 +129,66 @@ func (d *imageRuleDAO) SessionResourceUsage(context.Context, string) (store.Sess
 	}
 	return u, nil
 }
+func (d *imageRuleDAO) MarkSessionResourceReclaim(_ context.Context, s, id string) (bool, error) {
+	for ref := range d.references {
+		if ref.SessionID == s && ref.ResourceID == id {
+			return false, nil
+		}
+	}
+	if resource, ok := d.resources[id]; ok {
+		resource.GCPending = true
+		d.resources[id] = resource
+	}
+	return true, nil
+}
+func (d *imageRuleDAO) DeleteReclaimedSessionResource(_ context.Context, s, id string) error {
+	for ref := range d.references {
+		if ref.SessionID == s && ref.ResourceID == id {
+			return fault("resource_in_use", "Original remains referenced.")
+		}
+	}
+	for _, lease := range d.leases {
+		if lease.SessionID == s && (lease.ResourceID == "" || lease.ResourceID == id) {
+			return fault("resource_busy", "Original has an active reader.")
+		}
+	}
+	delete(d.resources, id)
+	return nil
+}
+func (d *imageRuleDAO) ListSessionUploadsForSettlement(_ context.Context, s string, now time.Time) ([]store.SessionUploadRecord, error) {
+	out := []store.SessionUploadRecord{}
+	for _, upload := range d.uploads {
+		expired := !now.Before(upload.ExpiresAt) && (upload.Receipt.State == "receiving" || upload.Receipt.State == "verifying" || upload.Receipt.State == "complete")
+		_, original := d.resources[upload.BlobID]
+		terminal := upload.Receipt.State == "failed" || upload.Receipt.State == "expired" || upload.Receipt.State == "released"
+		if upload.SessionID == s && (expired || terminal && (!upload.StorageReleased || original)) {
+			out = append(out, upload)
+		}
+	}
+	return out, nil
+}
+func (d *imageRuleDAO) ListSessionResourceLeases(_ context.Context, s string) ([]store.SessionResourceLease, error) {
+	out := []store.SessionResourceLease{}
+	for _, lease := range d.leases {
+		if lease.SessionID == s {
+			out = append(out, lease)
+		}
+	}
+	return out, nil
+}
 func (d *imageRuleDAO) AcquireSessionResourceLease(_ context.Context, r store.SessionResourceLease) error {
 	if d.usage.Deleting {
 		return conflict()
+	}
+	if r.ResourceID != "" && d.resources[r.ResourceID].GCPending {
+		return conflict()
+	}
+	if r.ResourceID == "" {
+		for _, resource := range d.resources {
+			if resource.SessionID == r.SessionID && resource.GCPending {
+				return conflict()
+			}
+		}
 	}
 	d.leases[r.ID] = r
 	return nil
@@ -156,6 +219,9 @@ func (d *imageRuleDAO) InsertSessionResource(_ context.Context, r store.SessionR
 	return nil
 }
 func (d *imageRuleDAO) AddSessionResourceReference(_ context.Context, r store.SessionResourceReference) error {
+	if d.resources[r.ResourceID].GCPending {
+		return conflict()
+	}
 	d.references[r] = true
 	return nil
 }
@@ -215,9 +281,14 @@ func (d *imageRuleDAO) SessionCapture(_ context.Context, _, id string) (store.Se
 	return row, nil
 }
 func (d *imageRuleDAO) SaveSessionCapture(_ context.Context, row store.SessionCaptureRecord) error {
-	if old, ok := d.captures[row.Request.CaptureID]; ok && !jsonEqual(encode(old.Request), encode(row.Request)) {
+	if old, ok := d.captures[row.Request.CaptureID]; ok {
+		if row.Expected == nil || !jsonEqual(encode(old.Request), encode(row.Request)) || !jsonEqual(encode(old.Receipt), encode(row.Expected.Receipt)) || !jsonEqual(encode(old.Validated), encode(row.Expected.Validated)) {
+			return conflict()
+		}
+	} else if row.Expected != nil {
 		return conflict()
 	}
+	row.Expected = nil
 	d.captures[row.Request.CaptureID] = row
 	return nil
 }
@@ -279,6 +350,12 @@ func newImageRuleFixture(t *testing.T, raw []byte) imageRuleFixture {
 			return denied()
 		}
 		return fn(&Access{tx: &operationTx{dao: d, op: &Operation{}}, record: r, write: true})
+	}
+	s.archiveRun = func(ctx context.Context, actor model.Principal, project, task, id string, finalize bool, fn func(*Access) error) error {
+		if finalize {
+			t.Fatal("resource reader requested owner finalization access")
+		}
+		return s.browserRun(ctx, actor, project, task, id, fn)
 	}
 	engine.SetMediaLeaseCleanup(func(_ context.Context, id, lease string) error {
 		return d.ReleaseSessionResourceLease(context.Background(), id, lease)

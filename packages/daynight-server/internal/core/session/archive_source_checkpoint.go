@@ -95,12 +95,12 @@ func (s *Execution) applyStoppedSourceTail(ctx context.Context, tx *operationTx,
 		if seq != current+1 {
 			return out, fault("source_gap", "The missing original source tail must be supplied before archive history.")
 		}
-		if e = dao.SaveSessionSourceHash(ctx, key); e != nil {
+		if e = saveSourceHash(ctx, dao, key); e != nil {
 			return out, e
 		}
 		current = seq
 	}
-	if e = dao.SaveSessionSourceHash(ctx, batchKey); e != nil {
+	if e = saveSourceHash(ctx, dao, batchKey); e != nil {
 		return out, e
 	}
 	r.SourceSeq = current

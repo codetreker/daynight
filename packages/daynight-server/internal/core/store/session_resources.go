@@ -10,6 +10,7 @@ import (
 // SessionResourceRecord binds one immutable descriptor to its durable blob.
 // MigrationID preserves the original conversion identity until verified readback.
 type SessionResourceRecord struct {
+	GCPending                     bool
 	SessionID                     string
 	Resource                      sp.Resource
 	BlobID, BlobPath, MigrationID string
@@ -27,10 +28,18 @@ type SessionUploadChunk struct {
 	Offset, ByteLength                int64
 }
 type SessionCaptureRecord struct {
+	Expected  *SessionCaptureState
 	Validated *sp.ValidatedImage
 	SessionID string
 	Request   sp.ImageCaptureRequest
 	Receipt   sp.ImageCaptureReceipt
+}
+
+// SessionCaptureState is an observed write precondition, never persisted data.
+// A nil Expected requires absence; updates compare the original request and state.
+type SessionCaptureState struct {
+	Receipt   sp.ImageCaptureReceipt
+	Validated *sp.ValidatedImage
 }
 type SessionResourceUsage struct {
 	Frozen                                         bool
@@ -40,7 +49,16 @@ type SessionResourceUsage struct {
 	DeleteEpoch                                    int64
 	Deleting                                       bool
 }
+
+// SessionResourceLeaseAdmission contains caller-decided occupancy upper bounds.
+// Acquisition checks all three against actual counts under the deployment gate.
+// Zero bounds refuse admission; they never disable a capacity check.
+type SessionResourceLeaseAdmission struct {
+	Global, Owner, Session int
+}
+
 type SessionResourceLease struct {
+	Admission                                SessionResourceLeaseAdmission
 	SessionID, ID, Kind, OwnerID, ResourceID string
 	DeleteEpoch                              int64
 }

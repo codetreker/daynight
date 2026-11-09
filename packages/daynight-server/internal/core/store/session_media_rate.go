@@ -5,8 +5,14 @@ import (
 	"time"
 )
 
-// SessionMediaRateDAO shares account limits across Sessions and relay processes.
-// Each decision belongs to the caller's authorized transaction.
+type SessionMediaRate struct {
+	Tokens    int64
+	UpdatedAt time.Time
+}
+
+// SessionMediaRateDAO serializes an account bucket inside the caller's authorized
+// transaction. Core supplies both the initial state and each decided replacement.
 type SessionMediaRateDAO interface {
-	TakeSessionMediaRate(context.Context, string, string, time.Time, int, int) (bool, error)
+	LockSessionMediaRate(context.Context, string, string, SessionMediaRate) (SessionMediaRate, error)
+	SaveSessionMediaRate(context.Context, string, string, SessionMediaRate) error
 }

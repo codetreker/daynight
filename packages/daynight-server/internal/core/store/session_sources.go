@@ -11,5 +11,8 @@ type SessionSourceHash struct {
 }
 type SessionSourceDAO interface {
 	SessionSourceHash(context.Context, SessionSourceHash) ([]byte, error)
+	PruneSessionSourceHashes(context.Context, string, string, int64) error
+	SessionSourceHashCount(context.Context, string) (int, error)
+	// SaveSessionSourceHash inserts the caller's decided immutable identity.
 	SaveSessionSourceHash(context.Context, SessionSourceHash) error
 }

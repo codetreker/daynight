@@ -362,13 +362,7 @@ CREATE TABLE "session_archive_bundles" (
     "timeline_id" "uuid",
     "manifest_path" "text" DEFAULT ''::"text" NOT NULL,
     "manifest_hash" "text" DEFAULT ''::"text" NOT NULL,
-    "manifest_length" "text" DEFAULT ''::"text" NOT NULL,
-    CONSTRAINT "session_archive_bundles_identity_check" CHECK ((("jsonb_typeof"("identity") = 'object'::"text") AND ("octet_length"(("identity")::"text") <= 32768))),
-    CONSTRAINT "session_archive_bundles_ledger_check" CHECK ((("jsonb_typeof"("ledger") = 'object'::"text") AND ("octet_length"(("ledger")::"text") <= 67108864))),
-    CONSTRAINT "session_archive_bundles_manifest_hash_check" CHECK ((("manifest_hash" = ''::"text") OR ("manifest_hash" ~ '^[a-f0-9]{64}$'::"text"))),
-    CONSTRAINT "session_archive_bundles_phase_check" CHECK (("phase" = ANY (ARRAY['active'::"text", 'settling'::"text", 'sealed'::"text", 'committed'::"text", 'verified'::"text", 'failed'::"text"]))),
-    CONSTRAINT "session_archive_bundles_resources_check" CHECK ((("jsonb_typeof"("resources") = 'array'::"text") AND ("octet_length"(("resources")::"text") <= 4194304))),
-    CONSTRAINT "session_archive_bundles_revision_check" CHECK (("revision" > 0))
+    "manifest_length" "text" DEFAULT ''::"text" NOT NULL
 );
 
 CREATE TABLE "session_archive_chunks" (
@@ -377,10 +371,7 @@ CREATE TABLE "session_archive_chunks" (
     "chunk_offset" bigint NOT NULL,
     "byte_length" bigint NOT NULL,
     "sha256" "text" NOT NULL,
-    "object_path" "text" NOT NULL,
-    CONSTRAINT "session_archive_chunks_byte_length_check" CHECK ((("byte_length" >= 1) AND ("byte_length" <= 1048576))),
-    CONSTRAINT "session_archive_chunks_chunk_offset_check" CHECK (("chunk_offset" >= 0)),
-    CONSTRAINT "session_archive_chunks_sha256_check" CHECK (("sha256" ~ '^[a-f0-9]{64}$'::"text"))
+    "object_path" "text" NOT NULL
 );
 
 CREATE TABLE "session_archive_files" (
@@ -394,13 +385,7 @@ CREATE TABLE "session_archive_files" (
     "byte_length" bigint NOT NULL,
     "accepted_offset" bigint NOT NULL,
     "state" "text" NOT NULL,
-    "object_path" "text" NOT NULL,
-    CONSTRAINT "session_archive_files_byte_length_check" CHECK ((("byte_length" >= 1) AND ("byte_length" <= 67125248))),
-    CONSTRAINT "session_archive_files_check" CHECK ((("accepted_offset" >= 0) AND ("accepted_offset" <= "byte_length"))),
-    CONSTRAINT "session_archive_files_purpose_check" CHECK (("purpose" = ANY (ARRAY['history'::"text", 'timeline'::"text", 'resource'::"text"]))),
-    CONSTRAINT "session_archive_files_sha256_check" CHECK (("sha256" ~ '^[a-f0-9]{64}$'::"text")),
-    CONSTRAINT "session_archive_files_state_check" CHECK (("state" = ANY (ARRAY['receiving'::"text", 'complete'::"text", 'failed'::"text"]))),
-    CONSTRAINT "session_archive_files_timeline_revision_check" CHECK (("timeline_revision" > 0))
+    "object_path" "text" NOT NULL
 );
 
 CREATE TABLE "session_archive_migrations" (
@@ -411,11 +396,7 @@ CREATE TABLE "session_archive_migrations" (
     "source_byte_length" bigint NOT NULL,
     "target_path" "text" DEFAULT ''::"text" NOT NULL,
     "target_hash" "text" DEFAULT ''::"text" NOT NULL,
-    "phase" "text" NOT NULL,
-    CONSTRAINT "session_archive_migrations_phase_check" CHECK (("phase" = ANY (ARRAY['prepared'::"text", 'files_durable'::"text", 'committed'::"text", 'verified'::"text"]))),
-    CONSTRAINT "session_archive_migrations_source_byte_length_check" CHECK ((("source_byte_length" >= 1) AND ("source_byte_length" <= 67108864))),
-    CONSTRAINT "session_archive_migrations_source_hash_check" CHECK (("source_hash" ~ '^[a-f0-9]{64}$'::"text")),
-    CONSTRAINT "session_archive_migrations_target_hash_check" CHECK ((("target_hash" = ''::"text") OR ("target_hash" ~ '^[a-f0-9]{64}$'::"text")))
+    "phase" "text" NOT NULL
 );
 
 CREATE TABLE "session_archives" (
@@ -430,13 +411,9 @@ CREATE TABLE "session_archives" (
     "completeness" "text",
     "finalization_id" "uuid",
     "receipt" "jsonb",
-    CONSTRAINT "session_archive_body" CHECK (((("state" = 'ready'::"text") AND ("sha256" ~ '^[a-f0-9]{64}$'::"text") AND ("sha256" IS NOT NULL) AND (("byte_length" >= 1) AND ("byte_length" <=
-CASE
-    WHEN ("schema_version" = 3) THEN 4194304
-    ELSE 67108864
-END)) AND ("object_path" IS NOT NULL) AND ("error_code" IS NULL)) OR (("state" <> 'ready'::"text") AND ("sha256" IS NULL) AND ("byte_length" IS NULL) AND ("object_path" IS NULL)))),
+    CONSTRAINT "session_archive_body" CHECK ((("schema_version" = 3) OR (("state" = 'ready'::"text") AND ("sha256" ~ '^[a-f0-9]{64}$'::"text") AND ("sha256" IS NOT NULL) AND (("byte_length" >= 1) AND ("byte_length" <= 67108864)) AND ("byte_length" IS NOT NULL) AND ("object_path" IS NOT NULL) AND ("error_code" IS NULL)) OR (("state" <> 'ready'::"text") AND ("sha256" IS NULL) AND ("byte_length" IS NULL) AND ("object_path" IS NULL)))),
     CONSTRAINT "session_archive_state" CHECK (("state" = ANY (ARRAY['pending'::"text", 'ready'::"text", 'failed'::"text", 'unavailable'::"text"]))),
-    CONSTRAINT "session_archive_version" CHECK (((("schema_version" = 1) AND ("state" <> 'unavailable'::"text") AND (("state" <> 'pending'::"text") OR ("error_code" IS NULL)) AND ("completeness" IS NULL) AND ("finalization_id" IS NULL) AND ("receipt" IS NULL)) OR (("schema_version" = 2) AND ((("state" = 'ready'::"text") AND ("completeness" = ANY (ARRAY['complete'::"text", 'partial'::"text"])) AND ("finalization_id" IS NOT NULL) AND ("receipt" IS NOT NULL)) OR (("state" = 'unavailable'::"text") AND ("completeness" IS NULL) AND ("finalization_id" IS NOT NULL) AND ("receipt" IS NOT NULL)) OR (("state" = ANY (ARRAY['pending'::"text", 'failed'::"text"])) AND ("completeness" IS NULL) AND ("receipt" IS NULL)))) OR (("schema_version" = 3) AND ("finalization_id" IS NULL) AND ("receipt" IS NULL) AND ((("state" = 'ready'::"text") AND ("completeness" = ANY (ARRAY['complete'::"text", 'partial'::"text"]))) OR (("state" <> 'ready'::"text") AND ("completeness" IS NULL)))))),
+    CONSTRAINT "session_archive_version" CHECK ((("schema_version" = 3) OR (("schema_version" = 1) AND ("state" <> 'unavailable'::"text") AND (("state" <> 'pending'::"text") OR ("error_code" IS NULL)) AND ("completeness" IS NULL) AND ("finalization_id" IS NULL) AND ("receipt" IS NULL)) OR (("schema_version" = 2) AND ((("state" = 'ready'::"text") AND ("completeness" = ANY (ARRAY['complete'::"text", 'partial'::"text"])) AND ("finalization_id" IS NOT NULL) AND ("receipt" IS NOT NULL)) OR (("state" = 'unavailable'::"text") AND ("completeness" IS NULL) AND ("finalization_id" IS NOT NULL) AND ("receipt" IS NOT NULL)) OR (("state" = ANY (ARRAY['pending'::"text", 'failed'::"text"])) AND ("completeness" IS NULL) AND ("receipt" IS NULL)))))),
     CONSTRAINT "session_archives_error_code_check" CHECK (("error_code" ~ '^[a-z_]{1,64}$'::"text"))
 );
 
@@ -466,10 +443,7 @@ CREATE TABLE "session_image_chunks" (
     "chunk_offset" bigint NOT NULL,
     "byte_length" bigint NOT NULL,
     "sha256" "text" NOT NULL,
-    "blob_path" "text" NOT NULL,
-    CONSTRAINT "session_image_chunks_byte_length_check" CHECK ((("byte_length" >= 1) AND ("byte_length" <= 524288))),
-    CONSTRAINT "session_image_chunks_chunk_offset_check" CHECK (("chunk_offset" >= 0)),
-    CONSTRAINT "session_image_chunks_sha256_check" CHECK (("sha256" ~ '^[0-9a-f]{64}$'::"text"))
+    "blob_path" "text" NOT NULL
 );
 
 CREATE TABLE "session_image_uploads" (
@@ -481,17 +455,14 @@ CREATE TABLE "session_image_uploads" (
     "spec" "jsonb" NOT NULL,
     "receipt" "jsonb" NOT NULL,
     "expires_at" timestamp with time zone NOT NULL,
-    "storage_released" boolean DEFAULT false NOT NULL,
-    CONSTRAINT "session_image_uploads_receipt_check" CHECK ((("receipt" ->> 'state'::"text") = ANY (ARRAY['receiving'::"text", 'verifying'::"text", 'complete'::"text", 'failed'::"text", 'expired'::"text", 'released'::"text"])))
+    "storage_released" boolean DEFAULT false NOT NULL
 );
 
 CREATE TABLE "session_media_rates" (
     "owner_user_id" "uuid" NOT NULL,
     "category" "text" NOT NULL,
     "tokens" bigint NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL,
-    CONSTRAINT "session_media_rates_category_check" CHECK (("category" = ANY (ARRAY['prepare'::"text", 'control'::"text", 'observe'::"text", 'release'::"text"]))),
-    CONSTRAINT "session_media_rates_tokens_check" CHECK ((("tokens" >= 0) AND ("tokens" <= 40000000)))
+    "updated_at" timestamp with time zone NOT NULL
 );
 
 CREATE TABLE "session_media_requests" (
@@ -502,16 +473,13 @@ CREATE TABLE "session_media_requests" (
     "body" "jsonb" NOT NULL,
     "result" "jsonb",
     "error" "jsonb",
-    "complete" boolean DEFAULT false NOT NULL,
-    CONSTRAINT "session_media_requests_body_check" CHECK (("octet_length"(("body")::"text") <= 1048576)),
-    CONSTRAINT "session_media_requests_check" CHECK ((("complete" AND (("result" IS NULL) <> ("error" IS NULL))) OR ((NOT "complete") AND ("result" IS NULL) AND ("error" IS NULL))))
+    "complete" boolean DEFAULT false NOT NULL
 );
 
 CREATE TABLE "session_operation_intents" (
     "session_id" "uuid" NOT NULL,
     "operation_id" "uuid" NOT NULL,
-    "canonical_bytes" "bytea" NOT NULL,
-    CONSTRAINT "session_operation_intents_canonical_bytes_check" CHECK (("octet_length"("canonical_bytes") <= 2097152))
+    "canonical_bytes" "bytea" NOT NULL
 );
 
 CREATE TABLE "session_operations" (
@@ -546,24 +514,20 @@ CREATE TABLE "session_resource_leases" (
     "owner_id" "uuid" NOT NULL,
     "kind" "text" NOT NULL,
     "resource_id" "uuid",
-    "delete_epoch" bigint NOT NULL,
-    CONSTRAINT "session_resource_leases_delete_epoch_check" CHECK (("delete_epoch" >= 0)),
-    CONSTRAINT "session_resource_leases_kind_check" CHECK (("kind" = ANY (ARRAY['read'::"text", 'write'::"text", 'archive'::"text"])))
+    "delete_epoch" bigint NOT NULL
 );
 
 CREATE TABLE "session_resource_references" (
     "session_id" "uuid" NOT NULL,
     "resource_id" "uuid" NOT NULL,
     "kind" "text" NOT NULL,
-    "reference_id" "text" NOT NULL,
-    CONSTRAINT "session_resource_references_kind_check" CHECK (("kind" = ANY (ARRAY['upload'::"text", 'operation'::"text", 'message'::"text", 'unknown'::"text", 'native_resume'::"text", 'archive'::"text"])))
+    "reference_id" "text" NOT NULL
 );
 
 CREATE TABLE "session_resource_state" (
     "session_id" "uuid" NOT NULL,
     "delete_epoch" bigint DEFAULT 0 NOT NULL,
-    "deleting" boolean DEFAULT false NOT NULL,
-    CONSTRAINT "session_resource_state_delete_epoch_check" CHECK (("delete_epoch" >= 0))
+    "deleting" boolean DEFAULT false NOT NULL
 );
 
 CREATE TABLE "session_resources" (
@@ -572,9 +536,9 @@ CREATE TABLE "session_resources" (
     "descriptor" "jsonb" NOT NULL,
     "content" "bytea",
     "blob_id" "uuid",
+    "gc_pending" boolean DEFAULT false NOT NULL,
     "blob_path" "text",
     "migration_id" "uuid",
-    CONSTRAINT "session_resource_blob_pair" CHECK ((("blob_id" IS NULL) = ("blob_path" IS NULL))),
     CONSTRAINT "session_resources_content_check" CHECK ((("content" IS NULL) OR ("octet_length"("content") <= 8388608)))
 );
 
@@ -584,11 +548,7 @@ CREATE TABLE "session_source_hashes" (
     "kind" "text" NOT NULL,
     "source_seq" bigint NOT NULL,
     "identity" "text" NOT NULL,
-    "digest" "bytea" NOT NULL,
-    CONSTRAINT "session_source_hashes_digest_check" CHECK (("octet_length"("digest") = 32)),
-    CONSTRAINT "session_source_hashes_identity_check" CHECK ((("octet_length"("identity") >= 1) AND ("octet_length"("identity") <= 36))),
-    CONSTRAINT "session_source_hashes_kind_check" CHECK (("kind" = ANY (ARRAY['event'::"text", 'batch'::"text"]))),
-    CONSTRAINT "session_source_hashes_source_seq_check" CHECK (("source_seq" >= 0))
+    "digest" "bytea" NOT NULL
 );
 
 CREATE TABLE "session_timeline" (
@@ -1676,41 +1636,8 @@ ALTER TABLE ONLY "bots"
 ALTER TABLE ONLY "private_upload_chunks"
     ADD CONSTRAINT "private_upload_chunks_transfer_id_fkey" FOREIGN KEY ("transfer_id") REFERENCES "private_transfers"("id") ON DELETE CASCADE;
 
-ALTER TABLE ONLY "session_archive_chunks"
-    ADD CONSTRAINT "session_archive_chunks_session_id_file_id_fkey" FOREIGN KEY ("session_id", "file_id") REFERENCES "session_archive_files"("session_id", "file_id");
-
 ALTER TABLE ONLY "task_sessions"
     ADD CONSTRAINT "session_bot_owner" FOREIGN KEY ("bot_id", "owner_user_id") REFERENCES "bots"("id", "owner_user_id");
-
-ALTER TABLE ONLY "session_image_captures"
-    ADD CONSTRAINT "session_image_captures_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "task_sessions"("id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_image_chunks"
-    ADD CONSTRAINT "session_image_chunks_session_id_upload_id_fkey" FOREIGN KEY ("session_id", "upload_id") REFERENCES "session_image_uploads"("session_id", "upload_id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_image_uploads"
-    ADD CONSTRAINT "session_image_uploads_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "task_sessions"("id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_media_rates"
-    ADD CONSTRAINT "session_media_rates_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "users"("id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_media_requests"
-    ADD CONSTRAINT "session_media_requests_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "task_sessions"("id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_operation_intents"
-    ADD CONSTRAINT "session_operation_intents_session_id_operation_id_fkey" FOREIGN KEY ("session_id", "operation_id") REFERENCES "session_operations"("session_id", "operation_id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_resource_leases"
-    ADD CONSTRAINT "session_resource_leases_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "task_sessions"("id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_resource_references"
-    ADD CONSTRAINT "session_resource_references_session_id_resource_id_fkey" FOREIGN KEY ("session_id", "resource_id") REFERENCES "session_resources"("session_id", "resource_id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_resource_state"
-    ADD CONSTRAINT "session_resource_state_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "task_sessions"("id") ON DELETE CASCADE;
-
-ALTER TABLE ONLY "session_source_hashes"
-    ADD CONSTRAINT "session_source_hashes_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "task_sessions"("id") ON DELETE CASCADE;
 
 INSERT INTO "oauth_authorization_cleanup_cursor" ("singleton", "next_kind") VALUES (true, 0);
 

@@ -323,16 +323,52 @@ func (s *Execution) copyCapture(ctx context.Context, p model.Principal, project,
 func imageBytesHash(data []byte) string { h := sha256.Sum256(data); return hex.EncodeToString(h[:]) }
 
 func saveImageCapture(ctx context.Context, d store.SessionResourceDAO, row store.SessionCaptureRecord) error {
+	refuse := func() error {
+		return fault("resource_conflict", "Image capture identity already has different content.")
+	}
 	old, e := d.SessionCapture(ctx, row.SessionID, row.Request.CaptureID)
 	if e == nil {
+		if !jsonEqual(encode(old.Request), encode(row.Request)) {
+			return refuse()
+		}
 		if jsonEqual(encode(old.Receipt), encode(row.Receipt)) && jsonEqual(encode(old.Validated), encode(row.Validated)) {
 			return nil
 		}
+		if old.Receipt.AttemptID == row.Receipt.AttemptID {
+			if old.Validated != nil && !jsonEqual(encode(old.Validated), encode(row.Validated)) {
+				return refuse()
+			}
+			if old.Receipt.State != "reserved" && (old.Receipt.State != "copying" || row.Receipt.State != "copying" && row.Receipt.State != "failed" && row.Receipt.State != "committed") {
+				return refuse()
+			}
+		} else {
+			if old.Receipt.State != "failed" || row.Receipt.State != "reserved" || row.Validated != nil {
+				return refuse()
+			}
+			// The authorized Session lock also protects upload staging and identity
+			// observations until the capture's expected-state update completes.
+			upload, err := d.SessionUpload(ctx, row.SessionID, old.Receipt.AttemptID)
+			if err != nil && !errors.Is(err, model.ErrNotFound) {
+				return err
+			}
+			if err == nil && !upload.StorageReleased {
+				return refuse()
+			}
+			if _, err = d.SessionUpload(ctx, row.SessionID, row.Receipt.AttemptID); err == nil {
+				return refuse()
+			} else if !errors.Is(err, model.ErrNotFound) {
+				return err
+			}
+		}
+		row.Expected = &store.SessionCaptureState{Receipt: old.Receipt, Validated: old.Validated}
 		row.Receipt.Revision = next(old.Receipt.Revision)
 	} else if !errors.Is(e, model.ErrNotFound) {
 		return e
-	} else if row.Receipt.Revision == "" {
-		row.Receipt.Revision = "1"
+	} else {
+		row.Expected = nil
+		if row.Receipt.Revision == "" {
+			row.Receipt.Revision = "1"
+		}
 	}
 	return d.SaveSessionCapture(ctx, row)
 }

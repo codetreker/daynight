@@ -35,6 +35,42 @@ requires its original actor and matching complete receipt. Operation, unknown,
 native-resume and temporary archive pins retain bytes without granting access.
 The authorized transaction checks references before I/O and again before
 returning the bytes, so releasing a private reference cannot publish a late read.
+Both checks use ordinary historical Session access rather than current-claim
+browser admission. Published originals remain readable after a Task starts a new
+claim, without transferring any authority over its new execution. Project and
+parent-credential authorization, Bot deletion and the ordinary Task deletion
+barrier apply at both checks; owner finalization never grants content access.
+
+Releasing an unused complete upload retires its preparation pin and retains its
+upload tombstone. A resource with no remaining references receives a durable
+`gc_pending` marker under the Session lock. New references and covering leases
+cannot revive it; existing exact reader and writer locks remain held through
+physical cleanup and the final database confirmation. Its row and quota remain
+until those barriers finish. A cleanup error or unknown commit therefore leaves
+the original identity available for reconciliation rather than returning space
+that might still be occupied. Fixed upload expiry follows the same mechanism;
+stopped archive preparation and sealing reconcile abandoned uploads without the
+original client. Occupied operation, unknown, message, record and native-resume
+references survive expiry. Historical upload queries retain the original actor
+check without requiring the Task's current claim. Original operation queries
+also use historical access, preserving unknown receipts without dispatching or
+rewriting their original hashes and fences.
+
+New media tables keep identity and concurrency uniqueness in PostgreSQL while
+protocol, state, expiry and rate policy belong to core. Account token buckets
+retain a short owner/category row lock so a preparation can debit control and
+prepare buckets together without replaying the authorized operation on a second
+bucket conflict. Aggregate volume and transfer admission retain deployment locks
+because a single resource version cannot cover occupancy added by other
+Sessions. These locks end before I/O. Core supplies the lease occupancy limits as explicit
+atomic conditions and decides capture transitions before a compare-and-swap of
+the original request, receipt and validation facts. Source ACK retention likewise
+belongs to core: original identity/hash checks precede its bounded prune and
+admission decision; Store executes only the supplied cutoff and immutable insert.
+Bot Session cleanup explicitly removes all
+media children after joining leases and sweeping files; account rate state
+survives that cleanup. Historical schema1/2 archive checks keep their existing
+guarantees while schema3 relies on shared protocol and closure validation.
 
 Historical display snapshots use the same complete resource-reference traversal
 as archives, including Markdown, reasoning and retained bindings. They retain
@@ -54,6 +90,16 @@ manifest, one timeline and references to the same immutable resource store.
 Legacy schema1 conversion belongs only at the data boundary. Its recoverable
 migration preserves the original files and identities until the new closure has
 been durably committed and read back. New writes do not generate a schema1 copy.
+Existing resources are reused only after descriptor and storage-identity checks
+at preparation and commit. Inline conversion compares the original row and
+clears its old bytes atomically; an external original keeps its existing blob.
+The deleted-Task owner's status reconciliation can perform this conversion
+under private finalization access, while public content readers retain the
+ordinary deletion refusal.
+An active connection handoff persists its latest target history epoch together
+with the consumed grant. It retains acknowledged entries, source hashes and
+file identities, allowing stopped synchronization to finish that verified
+connection without accepting arbitrary epoch changes or reverting the chain.
 The 132 MiB archive reservation remains a conservative capacity commitment.
 Deletion closes admission and joins physical operations before its final sweep.
 Ordinary media admission also reaps crash-orphaned leases across the deployment.

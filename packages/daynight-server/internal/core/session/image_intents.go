@@ -11,6 +11,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
+const maxSessionIntentBytes = 2 << 20
+
 func canonicalIntent(c sp.Command) ([]byte, error) {
 	raw := encode(c)
 	var value map[string]any
@@ -69,6 +71,15 @@ func (s *Execution) authorizeImages(ctx context.Context, tx *operationTx, r *rec
 		if u.ActorID != r.Owner || u.Spec.ImageID != part.ImageID || u.Receipt.State != "complete" || u.Receipt.Resource == nil || u.Receipt.Resource.ResourceID != part.ResourceID || u.Spec.SHA256 != part.SHA256 || u.Spec.ByteLength != part.ByteLength || !jsonEqual(encode(u.Spec.Target), encode(input.Target)) {
 			return fault("resource_conflict", "Image intent does not match its completed upload.")
 		}
+		if !s.now().Before(u.ExpiresAt) {
+			original, e := d.SessionResourceReferenceExists(ctx, store.SessionResourceReference{SessionID: c.SessionID, ResourceID: part.ResourceID, Kind: "operation", ReferenceID: c.OperationID})
+			if e != nil {
+				return e
+			}
+			if !original {
+				return fault("upload_expired", "The original image upload expired before input admission.")
+			}
+		}
 		saved, e := d.SavedSessionResource(ctx, r.Snapshot.SessionID, part.ResourceID)
 		if e != nil {
 			return e
@@ -94,6 +105,9 @@ func persistIntent(ctx context.Context, tx *operationTx, c sp.Command) error {
 	bytes, e := canonicalIntent(c)
 	if e != nil {
 		return e
+	}
+	if len(bytes) > maxSessionIntentBytes {
+		return fault("quota_exceeded", "The canonical operation intent exceeds its storage budget.")
 	}
 	if e = d.InsertSessionOperationIntent(ctx, c.SessionID, c.OperationID, bytes); e != nil {
 		return e
@@ -129,6 +143,9 @@ func persistedIntent(ctx context.Context, tx *operationTx, session, id string) (
 	}
 	if e != nil {
 		return sp.Command{}, false, e
+	}
+	if len(raw) > maxSessionIntentBytes {
+		return sp.Command{}, false, fault("resource_conflict", "Persisted operation intent exceeds its storage budget.")
 	}
 	var c sp.Command
 	if json.Unmarshal(raw, &c) != nil || c.SessionID != session || c.OperationID != id {

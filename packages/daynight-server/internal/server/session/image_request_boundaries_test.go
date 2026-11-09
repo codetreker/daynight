@@ -44,22 +44,50 @@ func TestImageReadAndCompletionRejectMalformedRequestsBeforeCallingService(t *te
 }
 
 func TestImageServiceRefusalPreservesPublicCodeAndScope(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	base := f.base + "/" + f.snapshot.SessionID
-	resource := uuid.NewString()
-	f.backend.Configure(func(c *sessionhttp.ServiceCallsForTest) {
-		c.ReadResource = func(ctx context.Context, p model.Principal, project, task, id string, input sp.ImageReadRequest) (sp.ImageReadChunk, error) {
-			if err := f.scopeArguments(ctx, p, project, task, id); err != nil {
-				return sp.ImageReadChunk{}, err
+	for _, tc := range []struct {
+		name, code string
+		chunk      bool
+		status     int
+	}{{"expired lease", "lease_expired", true, http.StatusConflict}, {"private chunk", "not_found", true, http.StatusNotFound}, {"private legacy", "not_found", false, http.StatusNotFound}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := sessionHTTPSetup(t)
+			base := f.base + "/" + f.snapshot.SessionID
+			resource := uuid.NewString()
+			refusal := &model.Fault{Code: tc.code, Message: "Original resource is unavailable."}
+			f.backend.Configure(func(c *sessionhttp.ServiceCallsForTest) {
+				if tc.chunk {
+					c.ReadResource = func(ctx context.Context, p model.Principal, project, task, id string, input sp.ImageReadRequest) (sp.ImageReadChunk, error) {
+						if err := f.scopeArguments(ctx, p, project, task, id); err != nil {
+							return sp.ImageReadChunk{}, err
+						}
+						if input.ResourceID != resource || input.Offset != "0" || input.Limit != 1 {
+							t.Fatal("resource refusal changed the original range", input)
+						}
+						return sp.ImageReadChunk{}, refusal
+					}
+				} else {
+					c.Resource = func(ctx context.Context, p model.Principal, project, task, id, requested string) ([]byte, sp.Resource, error) {
+						if err := f.scopeArguments(ctx, p, project, task, id); err != nil {
+							return nil, sp.Resource{}, err
+						}
+						if requested != resource {
+							t.Fatal("legacy refusal changed the original resource", requested)
+						}
+						return nil, sp.Resource{}, refusal
+					}
+				}
+			})
+			path := base + "/resources/" + resource + "/content"
+			if tc.chunk {
+				path += "?offset=0&limit=1"
 			}
-			if input.ResourceID != resource || input.Offset != "0" || input.Limit != 1 {
-				t.Fatal("resource refusal changed the original range", input)
+			response := imageHTTPRequest(f, http.MethodGet, path, "", nil)
+			if response.Code != tc.status || !strings.Contains(response.Body.String(), `"code":"`+tc.code+`"`) {
+				t.Fatal(response.Code, response.Body.String())
 			}
-			return sp.ImageReadChunk{}, &model.Fault{Code: "lease_expired", Message: "Original lease expired."}
-		}
-	})
-	response := imageHTTPRequest(f, http.MethodGet, base+"/resources/"+resource+"/content?offset=0&limit=1", "", nil)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"lease_expired"`) {
-		t.Fatal(response.Code, response.Body.String())
+			if f.backend.TotalCalls() != 1 {
+				t.Fatal("resource refusal retried or bypassed its direct use case", f.backend.TotalCalls())
+			}
+		})
 	}
 }

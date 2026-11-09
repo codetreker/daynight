@@ -350,7 +350,11 @@ func (s *Execution) Connect(ctx context.Context, token string, h sp.ControllerMe
 		now := s.now()
 		r.LastSeen = &now
 		r.ConnectionExpiry = r.GrantExpiry
-		v.HistoryEpoch = uuid.NewString()
+		historyEpoch := uuid.NewString()
+		if err := handoffConnectedHistory(ctx, tx, r, historyEpoch); err != nil {
+			return err
+		}
+		v.HistoryEpoch = historyEpoch
 		if err := createLive(tx, r); err != nil {
 			return err
 		}

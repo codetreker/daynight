@@ -73,7 +73,7 @@ func TestArchiveFileInventoryAndImmutableWrites(t *testing.T) {
 	})
 }
 
-func TestSourceAcknowledgementLedgerCapacityAndReadFailures(t *testing.T) {
+func TestSourceAcknowledgementLedgerCountAndCanceledStorageCalls(t *testing.T) {
 	database, _, id := sessionArchiveLockFixture(t)
 	ctx := t.Context()
 	epoch := uuid.NewString()
@@ -81,23 +81,35 @@ func TestSourceAcknowledgementLedgerCapacityAndReadFailures(t *testing.T) {
 		t.Fatal(e)
 	}
 	sessionDAOTransaction(t, database, func(base store.SessionDAO) error {
-		dao := base.(store.SessionSourceDAO)
-		h := store.SessionSourceHash{SessionID: id, SourceEpoch: epoch, Kind: "event", Identity: "8193", Through: 1, Digest: []byte(strings.Repeat("a", 32))}
-		e := dao.SaveSessionSourceHash(ctx, h)
-		var fault *model.Fault
-		if !errors.As(e, &fault) || fault.Code != "quota_exceeded" {
-			t.Fatal("full acknowledgement ledger silently accepted another identity", e)
-		}
-		canceled, cancel := context.WithCancel(ctx)
-		cancel()
-		if e = dao.SaveSessionSourceHash(canceled, h); e == nil {
-			t.Fatal("canceled source hash read accepted a write")
+		count, e := base.(store.SessionSourceDAO).SessionSourceHashCount(ctx, id)
+		if e != nil || count != 8192 {
+			t.Fatal("source ledger count is not actual persisted inventory", count, e)
 		}
 		return nil
 	})
+	for _, point := range []string{"read", "count", "prune"} {
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		completion, e := database.WriteSession(ctx, func(scope store.SessionScope) error {
+			dao := scope.SessionDAO().(store.SessionSourceDAO)
+			switch point {
+			case "read":
+				_, e := dao.SessionSourceHash(canceled, store.SessionSourceHash{SessionID: id, SourceEpoch: epoch, Kind: "event", Identity: "1"})
+				return e
+			case "count":
+				_, e := dao.SessionSourceHashCount(canceled, id)
+				return e
+			default:
+				return dao.PruneSessionSourceHashes(canceled, id, epoch, 1)
+			}
+		})
+		if !errors.Is(e, context.Canceled) || completion.Outcome != store.TransactionNotCommitted {
+			t.Fatal("canceled source storage operation succeeded", point, completion, e)
+		}
+	}
 	var count int
 	if e := database.Pool.QueryRow(ctx, `SELECT count(*) FROM session_source_hashes WHERE session_id=$1`, id).Scan(&count); e != nil || count != 8192 {
-		t.Fatal("failed admission changed original acknowledgement window", count, e)
+		t.Fatal("canceled pruning changed persisted window", count, e)
 	}
 }
 

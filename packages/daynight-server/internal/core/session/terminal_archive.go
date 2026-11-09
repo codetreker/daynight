@@ -230,10 +230,15 @@ func (s *Execution) UpdateTerminalArchive(ctx context.Context, p model.Principal
 	if m.Type != "archive_status" && m.Type != "receipt" {
 		return out, fault("invalid_payload", "Expected archive status or unavailable receipt.")
 	}
-	if err := validTerminalMessage(m, m.Type); err != nil {
-		return out, err
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return out, fault("invalid_payload", "Invalid terminal message.")
 	}
-	err := s.terminalAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
+	m, err = v2.DecodeMessage(raw)
+	if err != nil {
+		return out, fault("invalid_payload", "Invalid terminal message.")
+	}
+	err = s.terminalAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
 		if err := terminalOwner(p, r); err != nil {
 			return err
 		}

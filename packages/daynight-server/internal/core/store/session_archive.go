@@ -47,3 +47,9 @@ type SessionArchiveDAO interface {
 type SessionArchiveHandoffDAO interface {
 	RebindSessionArchiveBundle(context.Context, string, json.RawMessage, json.RawMessage) error
 }
+
+// SessionArchiveResourceMigrationDAO converts an unchanged legacy inline row
+// after its original bytes are durable in external storage.
+type SessionArchiveResourceMigrationDAO interface {
+	MigrateSessionArchiveResource(context.Context, SessionResourceRecord, SessionResourceRecord) error
+}

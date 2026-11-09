@@ -27,6 +27,7 @@ const (
 // A caller must keep it open until it has finished using all large input and output.
 type ArchiveOperation struct {
 	historyWriter            *ActiveHistoryWriter
+	finalizeMigration        bool
 	mu                       sync.Mutex
 	execution                *Execution
 	principal                model.Principal

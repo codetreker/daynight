@@ -63,6 +63,9 @@ func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, projec
 			if old.ActorID != p.UserID || !jsonEqual(encode(old.Spec), encode(spec)) {
 				return fault("resource_conflict", "Upload identity already has different content.")
 			}
+			if old, e = s.expireUploadLocked(ctx, tx, r, old); e != nil {
+				return e
+			}
 			out = old.Receipt
 			return nil
 		}
@@ -136,9 +139,16 @@ func (s *Execution) upload(ctx context.Context, tx *operationTx, r *record, p mo
 	}
 	return d, u, nil
 }
-func (s *Execution) GetUpload(ctx context.Context, p model.Principal, project, taskID, id, uploadID string) (sp.ImageUploadReceipt, error) {
-	var out sp.ImageUploadReceipt
-	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
+func (s *Execution) GetUpload(ctx context.Context, p model.Principal, project, taskID, id, uploadID string) (out sp.ImageUploadReceipt, result error) {
+	access := func(ctx context.Context, work func(*operationTx, *record) error) error {
+		return s.archiveAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *record, _ task) error {
+			if _, _, e := s.upload(ctx, tx, r, p, uploadID); e != nil {
+				return e
+			}
+			return work(tx, r)
+		})
+	}
+	err := access(ctx, func(tx *operationTx, r *record) error {
 		if e := s.admitImageRate(ctx, tx, p.UserID, "observe"); e != nil {
 			return e
 		}
@@ -146,12 +156,8 @@ func (s *Execution) GetUpload(ctx context.Context, p model.Principal, project, t
 		if e != nil {
 			return e
 		}
-		if !s.now().Before(u.ExpiresAt) && (u.Receipt.State == "receiving" || u.Receipt.State == "verifying") {
-			u.Receipt.State = "expired"
-			u.Receipt.Error = &sp.ImageError{Code: "upload_expired", Message: "The original image upload expired."}
-			if e = s.saveImageUpload(ctx, tx, r, u); e != nil {
-				return e
-			}
+		if u, e = s.expireUploadLocked(ctx, tx, r, u); e != nil {
+			return e
 		}
 		out = u.Receipt
 		return nil
@@ -160,11 +166,19 @@ func (s *Execution) GetUpload(ctx context.Context, p model.Principal, project, t
 		if s.files == nil {
 			return out, fault("component_unsupported", "Resource storage is unavailable.")
 		}
+		ioContext, finish, e := s.beginImageIO(ctx, id, uuid.NewString())
+		if e != nil {
+			return out, e
+		}
+		ctx = ioContext
+		defer func() { result = joinImageCleanup(result, finish) }()
 		gate, e := s.files.AcquireGate(ctx, filestorage.PrivateGate, "session-image-upload/"+id+"/"+uploadID)
 		if e != nil {
 			return out, e
 		}
-		err = s.cleanupUploadFiles(ctx, p, project, taskID, id, uploadID)
+		err = s.cleanupUploadStorage(ctx, project, id, uploadID, access, func(ctx context.Context) error {
+			return s.releaseControllerPreparationWithAccess(ctx, id, uploadID, access)
+		})
 		err = errors.Join(err, gate.Close())
 	}
 	return out, err
@@ -257,7 +271,7 @@ func (s *Execution) writeUploadChunk(ctx context.Context, p model.Principal, pro
 			return e
 		}
 		previousUpload = u
-		return d.AcquireSessionResourceLease(ctx, store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: r.Owner, Kind: "write", DeleteEpoch: usage.DeleteEpoch})
+		return acquireImageResourceLease(ctx, d, store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: r.Owner, Kind: "write", DeleteEpoch: usage.DeleteEpoch})
 	})
 	if e != nil {
 		return out, e
@@ -366,6 +380,13 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 			return fault("resource_conflict", "Completion must match the original upload specification.")
 		}
 		if u.Receipt.State == "complete" {
+			expired, err := imageUploadExpiryEligible(ctx, d, u, s.now())
+			if err != nil {
+				return err
+			}
+			if expired {
+				return fault("upload_expired", "The original image upload expired before completion replay.")
+			}
 			out = u.Receipt
 			upload = u
 			completed = true
@@ -385,7 +406,7 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		if e != nil {
 			return e
 		}
-		if e = d.AcquireSessionResourceLease(ctx, store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: r.Owner, Kind: "write", DeleteEpoch: usage.DeleteEpoch}); e != nil {
+		if e = acquireImageResourceLease(ctx, d, store.SessionResourceLease{SessionID: id, ID: lease, OwnerID: r.Owner, Kind: "write", DeleteEpoch: usage.DeleteEpoch}); e != nil {
 			return e
 		}
 		path, e = BlobAddress(project, r.Owner, id, u.BlobID)
@@ -571,16 +592,21 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 	}
 	return out, nil
 }
-func (s *Execution) ReleaseUpload(ctx context.Context, p model.Principal, project, taskID, id, uploadID string) (sp.ImageUploadReceipt, error) {
-	var out sp.ImageUploadReceipt
+func (s *Execution) ReleaseUpload(ctx context.Context, p model.Principal, project, taskID, id, uploadID string) (out sp.ImageUploadReceipt, result error) {
 	if s.files == nil {
 		return out, fault("component_unsupported", "Resource storage is unavailable.")
 	}
+	ioContext, finish, e := s.beginImageIO(ctx, id, uuid.NewString())
+	if e != nil {
+		return out, e
+	}
+	ctx = ioContext
+	defer func() { result = joinImageCleanup(result, finish) }()
 	gate, e := s.files.AcquireGate(ctx, filestorage.PrivateGate, "session-image-upload/"+id+"/"+uploadID)
 	if e != nil {
 		return out, e
 	}
-	defer gate.Close()
+	defer func() { result = errors.Join(result, gate.Close()) }()
 	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 		if !write {
 			return denied()
@@ -640,55 +666,37 @@ func (s *Execution) CompleteUpload(ctx context.Context, p model.Principal, proje
 // cleanupUploadFiles returns staging quota only after deletion and its storage
 // barriers complete. Receipt state alone never proves that disk space was freed.
 func (s *Execution) cleanupUploadFiles(ctx context.Context, p model.Principal, project, taskID, id, uploadID string) error {
-	var chunks []store.SessionUploadChunk
-	released, releaseController := false, false
-	if e := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
-		d, u, e := s.upload(ctx, tx, r, p, uploadID)
-		if e != nil {
-			return e
-		}
-		released = u.StorageReleased
-		releaseController = u.Receipt.State == "released" || u.Receipt.State == "expired" || u.Receipt.State == "failed"
-		if released {
-			return nil
-		}
-		chunks, e = d.SessionUploadChunks(ctx, id, uploadID)
-		return e
-	}); e != nil {
-		return e
+	access := func(ctx context.Context, work func(*operationTx, *record) error) error {
+		return s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
+			if _, _, e := s.upload(ctx, tx, r, p, uploadID); e != nil {
+				return e
+			}
+			return work(tx, r)
+		})
 	}
-	if releaseController {
-		if e := s.releaseControllerPreparation(ctx, p, project, taskID, id, uploadID); e != nil {
-			return e
-		}
-	}
-	if released {
-		return nil
-	}
-	for _, chunk := range chunks {
-		if e := s.files.Delete(ctx, sessionresource.Bucket, chunk.Path); e != nil {
-			return e
-		}
-	}
-	return s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
-		_, u, e := s.upload(ctx, tx, r, p, uploadID)
-		if e != nil {
-			return e
-		}
-		if u.Receipt.State == "receiving" || u.Receipt.State == "verifying" {
-			return conflict()
-		}
-		u.StorageReleased = true
-		return s.saveImageUpload(ctx, tx, r, u)
+	return s.cleanupUploadStorage(ctx, project, id, uploadID, access, func(ctx context.Context) error {
+		return s.releaseControllerPreparation(ctx, p, project, taskID, id, uploadID)
 	})
 }
 
 // Completed remote preparations are released under their original identity.
 // A missing prepare request proves this service never created remote staging.
 func (s *Execution) releaseControllerPreparation(ctx context.Context, p model.Principal, project, taskID, id, uploadID string) error {
+	access := func(ctx context.Context, work func(*operationTx, *record) error) error {
+		return s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
+			if !write {
+				return denied()
+			}
+			return work(tx, r)
+		})
+	}
+	return s.releaseControllerPreparationWithAccess(ctx, id, uploadID, access)
+}
+
+func (s *Execution) releaseControllerPreparationWithAccess(ctx context.Context, id, uploadID string, access imageStorageAccess) error {
 	remote := false
 	var spec sp.ImageUploadSpec
-	if e := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, _ *record, _ task, _ bool) error {
+	if e := access(ctx, func(tx *operationTx, _ *record) error {
 		d, ok := tx.dao.(store.SessionMediaDAO)
 		if !ok {
 			return nil
@@ -710,10 +718,10 @@ func (s *Execution) releaseControllerPreparation(ctx context.Context, p model.Pr
 	}
 	// Reconcile an earlier uncertain prepare before asking the original remote
 	// identity to release. This also handles release racing the first RPC offer.
-	if _, e := s.controllerMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "prepare"), "prepare", spec); e != nil {
+	if _, e := s.controllerMediaWithAccess(ctx, id, mediaIdentity(uploadID, "prepare"), "prepare", spec, access); e != nil {
 		return e
 	}
-	raw, e := s.controllerMedia(ctx, p, project, taskID, id, mediaIdentity(uploadID, "release"), "release", map[string]any{"uploadId": uploadID})
+	raw, e := s.controllerMediaWithAccess(ctx, id, mediaIdentity(uploadID, "release"), "release", map[string]any{"uploadId": uploadID}, access)
 	if e != nil {
 		return e
 	}

@@ -90,7 +90,8 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 	}
 
 	reused := map[string]bool{}
-	err = s.archiveAccess(ctx, op.principal, op.project, op.task, op.id, false, func(tx *operationTx, r *record, _ task) error {
+	originals := map[string]store.SessionResourceRecord{}
+	err = s.archiveAccess(ctx, op.principal, op.project, op.task, op.id, op.finalizeMigration, func(tx *operationTx, r *record, _ task) error {
 		if r.Owner != op.owner {
 			return conflict()
 		}
@@ -106,10 +107,15 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 			if e != nil {
 				return e
 			}
-			if !jsonEqual(encode(existing.Resource), encode(record.Resource)) {
+			if !jsonEqual(encode(existing.Resource), encode(record.Resource)) || existing.GCPending || (existing.BlobID == "") != (existing.BlobPath == "") {
 				return archiveConflict()
 			}
+			originals[record.Resource.ResourceID] = existing
 			if existing.Resource.Status == "available" && existing.BlobID != "" {
+				path, e := BlobAddress(op.project, op.owner, op.id, existing.BlobID)
+				if e != nil || path != existing.BlobPath {
+					return archiveConflict()
+				}
 				plan.Resources[i] = existing
 				reused[record.Resource.ResourceID] = true
 				for j, ref := range plan.Manifest.Resources {
@@ -150,7 +156,7 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 	}()
 	migration := store.ArchiveMigration{SessionID: op.id, MigrationID: migrationID.String(), SourcePath: sourcePath, SourceHash: sourceHash, SourceLength: int64(len(source)), TargetPath: manifestPath, TargetHash: manifestHash, Phase: "prepared"}
 	access := func(work func(*operationTx, *record, store.SessionArchiveDAO, store.SessionResourceDAO) error) error {
-		return s.archiveAccess(ctx, op.principal, op.project, op.task, op.id, false, func(tx *operationTx, r *record, _ task) error {
+		return s.archiveAccess(ctx, op.principal, op.project, op.task, op.id, op.finalizeMigration, func(tx *operationTx, r *record, _ task) error {
 			if r.Owner != op.owner {
 				return conflict()
 			}
@@ -184,7 +190,7 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 		if usage.Deleting {
 			return conflict()
 		}
-		return media.AcquireSessionResourceLease(ctx, store.SessionResourceLease{SessionID: op.id, ID: leaseID, Kind: "archive", OwnerID: op.owner, DeleteEpoch: usage.DeleteEpoch})
+		return acquireImageResourceLease(ctx, media, store.SessionResourceLease{SessionID: op.id, ID: leaseID, Kind: "archive", OwnerID: op.owner, DeleteEpoch: usage.DeleteEpoch})
 	})
 	if err != nil {
 		return nil, err
@@ -250,7 +256,30 @@ func (s *Execution) migrateLegacyArchive(ctx context.Context, op *ArchiveOperati
 			return conflict()
 		}
 		for _, record := range plan.Resources {
-			if e = media.InsertSessionResource(ctx, record); e != nil {
+			existing, lookupErr := media.SavedSessionResource(ctx, op.id, record.Resource.ResourceID)
+			original, existed := originals[record.Resource.ResourceID]
+			if existed {
+				if lookupErr != nil {
+					return errors.Join(archiveConflict(), lookupErr)
+				}
+				if !jsonEqual(encode(existing), encode(original)) {
+					return archiveConflict()
+				}
+				if original.Resource.Status == "available" && original.BlobID == "" {
+					migrationDAO, capable := tx.dao.(store.SessionArchiveResourceMigrationDAO)
+					if !capable {
+						return archiveConflict()
+					}
+					e = migrationDAO.MigrateSessionArchiveResource(ctx, original, record)
+				}
+			} else if errors.Is(lookupErr, model.ErrNotFound) {
+				e = media.InsertSessionResource(ctx, record)
+			} else if lookupErr != nil {
+				return lookupErr
+			} else {
+				return archiveConflict()
+			}
+			if e != nil {
 				return e
 			}
 			if e = media.AddSessionResourceReference(ctx, store.SessionResourceReference{SessionID: op.id, ResourceID: record.Resource.ResourceID, Kind: "archive", ReferenceID: migrationID.String()}); e != nil {

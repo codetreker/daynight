@@ -281,7 +281,7 @@ func (s *Execution) events(ctx context.Context, tx *operationTx, r *record, m sp
 			return nil, fault("invalid_input", "Unsupported source event.")
 		}
 		if durable != nil {
-			if err := durable.SaveSessionSourceHash(ctx, store.SessionSourceHash{SessionID: r.Snapshot.SessionID, SourceEpoch: m.SourceEpoch, Kind: "event", Identity: e.SourceSeq, Through: n, Digest: hash[:]}); err != nil {
+			if err := saveSourceHash(ctx, durable, store.SessionSourceHash{SessionID: r.Snapshot.SessionID, SourceEpoch: m.SourceEpoch, Kind: "event", Identity: e.SourceSeq, Through: n, Digest: hash[:]}); err != nil {
 				return nil, err
 			}
 		}
@@ -302,7 +302,7 @@ func (s *Execution) events(ctx context.Context, tx *operationTx, r *record, m sp
 		}
 	}
 	if durable != nil {
-		if err := durable.SaveSessionSourceHash(ctx, store.SessionSourceHash{SessionID: r.Snapshot.SessionID, SourceEpoch: m.SourceEpoch, Kind: "batch", Identity: m.BatchID, Through: number(m.Events[len(m.Events)-1].SourceSeq), Digest: batchHash[:]}); err != nil {
+		if err := saveSourceHash(ctx, durable, store.SessionSourceHash{SessionID: r.Snapshot.SessionID, SourceEpoch: m.SourceEpoch, Kind: "batch", Identity: m.BatchID, Through: number(m.Events[len(m.Events)-1].SourceSeq), Digest: batchHash[:]}); err != nil {
 			return nil, err
 		}
 	}

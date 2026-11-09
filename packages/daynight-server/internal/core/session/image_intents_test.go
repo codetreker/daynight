@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -96,6 +97,36 @@ func TestImageIntentRequiresCompletedOriginalAndCurrentProviderProfile(t *testin
 				}
 			} else if e == nil {
 				t.Fatal("changed image intent accepted")
+			}
+		})
+	}
+}
+
+func TestNewImageIntentRejectsExpiredPreparationWithoutInvalidatingOriginalOperation(t *testing.T) {
+	for _, kind := range []string{"unused", "operation", "unknown", "message", "archive", "native_resume", "original operation"} {
+		t.Run(kind, func(t *testing.T) {
+			f, command, _ := imageIntentFixture(t)
+			upload := f.d.uploads[f.spec.UploadID]
+			upload.ExpiresAt = time.Now().Add(-time.Hour)
+			f.d.uploads[f.spec.UploadID] = upload
+			if kind != "unused" {
+				ref := store.SessionResourceReference{SessionID: command.SessionID, ResourceID: upload.BlobID, Kind: kind, ReferenceID: "other operation"}
+				if kind == "original operation" {
+					ref.Kind, ref.ReferenceID = "operation", command.OperationID
+				}
+				f.d.references[ref] = true
+			}
+			err := f.s.authorizeImages(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, command)
+			if kind != "original operation" {
+				var refusal *model.Fault
+				if !errors.As(err, &refusal) || refusal.Code != "upload_expired" {
+					t.Fatal("new intent accepted an expired preparation", kind, err)
+				}
+			} else if err != nil {
+				t.Fatal("expiry invalidated the original operation", err)
+			}
+			if len(f.d.resources) != 1 || f.d.uploads[f.spec.UploadID].Receipt.State != "complete" {
+				t.Fatal("input admission retired storage without cleanup")
 			}
 		})
 	}

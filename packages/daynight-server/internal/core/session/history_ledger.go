@@ -56,7 +56,7 @@ func settleActiveHistory(ctx context.Context, tx *operationTx, dao store.Session
 		return archiveConflict()
 	}
 	var ledger archiveLedger
-	if json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.HistoryEpoch != r.Snapshot.HistoryEpoch {
+	if json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.latestHistoryEpoch() != r.Snapshot.HistoryEpoch {
 		return archiveConflict()
 	}
 	if err := retireActiveHistory(ctx, tx, dao, *bundle); err != nil {
@@ -70,6 +70,31 @@ func settleActiveHistory(ctx context.Context, tx *operationTx, dao store.Session
 	bundle.HistoryID = ""
 	bundle.Ledger = encode(ledger)
 	return dao.SaveSessionArchiveBundle(ctx, *bundle)
+}
+
+// Connect calls this in the same transaction that consumes the validated grant
+// and saves the new connection. Only the latest verified connection can advance
+// the target epoch; the acknowledged ledger and file receipts remain unchanged.
+func handoffConnectedHistory(ctx context.Context, tx *operationTx, r *record, nextEpoch string) error {
+	dao, capable := tx.dao.(store.SessionArchiveDAO)
+	if !capable {
+		return nil
+	}
+	bundle, err := dao.SessionArchiveBundle(ctx, r.Snapshot.SessionID)
+	if errors.Is(err, model.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	identity := sp.ArchivePrepareRequest{Fence: r.Snapshot.Fence, ControllerID: r.Snapshot.Identity.ControllerID, ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID}
+	var ledger archiveLedger
+	if bundle.Phase != "active" || !jsonEqual(bundle.Identity, encode(identity)) || bundle.TimelineID != "" || bundle.ManifestHash != "" || bundle.ManifestPath != "" || json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.latestHistoryEpoch() != r.Snapshot.HistoryEpoch {
+		return archiveConflict()
+	}
+	ledger.FinalHistoryEpoch = nextEpoch
+	bundle.Ledger = encode(ledger)
+	return dao.SaveSessionArchiveBundle(ctx, bundle)
 }
 
 // The grant caller has validated the exact previous generation and stop proof.
