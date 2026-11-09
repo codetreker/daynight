@@ -42,22 +42,18 @@ func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newCapacityHTTPFixture(t, uuid.NewString(), io.Discard)
+			f := newCapacityReportOperationFixture(t, uuid.NewString())
 			body := workerSnapshotReportBody()
 			value := boundedUTF8(tc.size)
 			tc.set(body, value)
-			stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-			plan := f.report(body, stored)
-			reportSnapshotHTTP(t, f.handler, f.worker, body)
-			plan.check()
-			f.rejectBeforeWrite()
+			f.success(body)
 			tc.set(body, value+"x")
-			assertProjectError(t, projectRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(t, body)), 400, "invalid_input")
+			assertProjectError(t, f.request(body, 1, &model.Fault{Code: "invalid_input", Message: "Worker report exceeds its capacity."}), http.StatusBadRequest, "invalid_input")
 		})
 	}
 	for _, kind := range []string{"claims", "projects"} {
 		t.Run(kind, func(t *testing.T) {
-			f := newCapacityHTTPFixture(t, uuid.NewString(), io.Discard)
+			f := newCapacityReportOperationFixture(t, uuid.NewString())
 			body := workerSnapshotReportBody()
 			set := func(n int) {
 				items := make([]any, n)
@@ -79,13 +75,9 @@ func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 				maximum = 128
 			}
 			set(maximum)
-			stored := capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)
-			plan := f.report(body, stored)
-			reportSnapshotHTTP(t, f.handler, f.worker, body)
-			plan.check()
-			f.rejectBeforeWrite()
+			f.success(body)
 			set(maximum + 1)
-			assertProjectError(t, projectRequest(f.handler, http.MethodPost, "/api/v1/me/workers/"+f.worker+"/report", jsonBody(t, body)), 400, "invalid_input")
+			assertProjectError(t, f.request(body, 0, nil), http.StatusBadRequest, "invalid_input")
 		})
 	}
 }

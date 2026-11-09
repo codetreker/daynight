@@ -53,7 +53,7 @@ func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult
 	return result
 }
 
-func RegisterRoutes(mux *http.ServeMux, workers *service.Workers, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, workers workerService, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &workersHandler{workers: workers, logger: logger}
 	registerRoutes(mux, handler, auth.Require)
 }

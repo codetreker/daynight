@@ -937,6 +937,33 @@ and persisted readback. The remaining Worker suites retain their existing fixtur
 requirements. The [admission test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-admission-test-owners.md)
 records these proof owners.
 
+### Worker Report capacity tests
+
+The root `TestWorkerReportCapacityHTTPRejectsBeforeWrite` matrix registers the
+real Worker HTTP routes and credential middleware with direct Worker operation
+mocks. It checks full Report arguments, exact calls, response content and private
+headers. Byte-field overflows arrive at Report and receive a supplied service
+refusal; collection overflow is rejected by the actual wire parser before any
+Report call. Configuration and assistant-host capacity tests retain their
+separate fixtures.
+
+`internal/core/worker` owns the original thirteen byte/count boundaries and
+`invalid_input` overflow refusals. Its capacity matrix runs real validation,
+matching and snapshot projection with independent full expected values. Run these
+selections without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^(TestWorkerReportCapacityHTTPRejectsBeforeWrite|TestWorkerReportCapacityValidationAndSnapshot)$' \
+  ./internal/server ./internal/core/worker
+```
+
+The [Worker Report capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-report-capacity-test-owners.md)
+records the protocol, rule and projection proof owners. Other root HTTP tests
+retain their own environment requirements.
+
 ### Identity service tests
 
 `internal/service/identity` tests mock the directly invoked Core Identity and
