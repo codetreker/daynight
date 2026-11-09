@@ -85,6 +85,21 @@ func TestDAOPromptKeysAndConditionalWrites(t *testing.T) {
 	if err != nil || created.Revision != "1" {
 		t.Fatalf("create: %+v %v", created, err)
 	}
+	metadata, err := dao.PromptMetadata(ctx, user, model.PromptScopeProject, id)
+	if err != nil || metadata.Revision != 1 || metadata.UpdatedAt == nil || metadata.UpdatedAt.Location() != time.UTC || !metadata.UpdatedAt.Equal(*created.UpdatedAt) {
+		t.Fatalf("metadata time: %+v %v", metadata, err)
+	}
+	text, err := dao.PromptText(ctx, user, model.PromptScopeProject, id)
+	if err != nil || text != "first" {
+		t.Fatalf("text: %q %v", text, err)
+	}
+	if _, err = dao.PromptText(ctx, other, model.PromptScopeProject, id); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing text: %v", err)
+	}
+	virtual, err := dao.PromptResource(ctx, other, model.PromptScopeProject, id)
+	if err != nil || virtual.Revision != "0" || virtual.Text != "" || virtual.UpdatedAt != nil {
+		t.Fatalf("virtual: %+v %v", virtual, err)
+	}
 	_, err = dao.CreatePrompt(ctx, user, model.PromptScopeProject, id, "duplicate")
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "version_conflict" {
@@ -105,5 +120,57 @@ func TestDAOPromptKeysAndConditionalWrites(t *testing.T) {
 	resource, err := dao.PromptResource(ctx, user, model.PromptScopeProject, id)
 	if err != nil || !reflect.DeepEqual(resource, updated) {
 		t.Fatalf("read: %+v %v", resource, err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for name, operation := range map[string]func() error{
+		"metadata": func() error { _, err := dao.PromptMetadata(ctx, user, model.PromptScopeProject, id); return err },
+		"text":     func() error { _, err := dao.PromptText(ctx, user, model.PromptScopeProject, id); return err },
+		"resource": func() error { _, err := dao.PromptResource(ctx, user, model.PromptScopeProject, id); return err },
+		"create":   func() error { _, err := dao.CreatePrompt(ctx, user, model.PromptScopeProject, id, "x"); return err },
+		"update": func() error {
+			_, err := dao.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 2, 1, "x")
+			return err
+		},
+	} {
+		if err := operation(); err == nil || errors.Is(err, model.ErrNotFound) {
+			t.Errorf("%s on closed transaction: %v", name, err)
+		}
+	}
+}
+
+func TestDAOWorkerExistenceUsesOwnerAndNotRecency(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := postgres.Open(ctx, testutil.ScopedDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	owner, other, id := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	_, err = db.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now()-interval '1 year',now()-interval '1 year','{}','{}')`, owner, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackPromptTest(t, tx)
+	dao := prompt.NewDAO(tx)
+	if err = dao.PromptWorkerExists(ctx, owner, id); err != nil {
+		t.Fatalf("own offline worker: %v", err)
+	}
+	for _, key := range [][2]string{{other, id}, {owner, uuid.NewString()}} {
+		if err = dao.PromptWorkerExists(ctx, key[0], key[1]); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing worker %v: %v", key, err)
+		}
+	}
+	if err = tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = dao.PromptWorkerExists(ctx, owner, id); err == nil || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("closed transaction mistaken for absent worker: %v", err)
 	}
 }

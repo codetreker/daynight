@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -155,5 +156,51 @@ func TestPromptMigrationSchema(t *testing.T) {
 	err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM worker_prompts`).Scan(&count)
 	if err != nil || count != 0 {
 		t.Fatalf("new table rows %d %v", count, err)
+	}
+}
+
+func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	user, id := uuid.NewString(), uuid.NewString()
+	completion, err := db.WritePrompt(ctx, func(tx PromptWriteScope) error {
+		_, err := tx.CreatePrompt(ctx, user, model.PromptScopeProject, id, "saved")
+		return err
+	})
+	if err != nil || completion.Outcome != TransactionCommitted {
+		t.Fatalf("commit: %+v %v", completion, err)
+	}
+	check := func(expected string) {
+		t.Helper()
+		err := db.ReadPromptSnapshot(ctx, func(scope PromptSnapshot) error {
+			text, err := scope.PromptText(ctx, user, model.PromptScopeProject, id)
+			if err == nil && text != expected {
+				t.Errorf("read %q, want %q", text, expected)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("saved")
+	refusal := errors.New("cancel proposed update")
+	completion, err = db.WritePrompt(ctx, func(tx PromptWriteScope) error {
+		if _, err := tx.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 2, 1, "rolled back"); err != nil {
+			return err
+		}
+		return refusal
+	})
+	if completion.Outcome != TransactionNotCommitted || !errors.Is(err, refusal) {
+		t.Fatalf("rollback: %+v %v", completion, err)
+	}
+	check("saved")
+	cancelled, cancelNow := context.WithCancel(ctx)
+	cancelNow()
+	called := false
+	completion, err = db.WritePrompt(cancelled, func(PromptWriteScope) error { called = true; return nil })
+	if completion.Outcome != TransactionNotCommitted || !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("cancelled begin: %+v %v called %v", completion, err, called)
 	}
 }

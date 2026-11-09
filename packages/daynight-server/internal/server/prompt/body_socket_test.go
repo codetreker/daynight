@@ -130,7 +130,8 @@ func TestPromptBodySocketOversize(t *testing.T) {
 		})
 	})
 	conn := promptSocket(t, server.Listener.Addr().String())
-	_, err := fmt.Fprintf(conn, "PUT /api/v1/me/worker-prompt HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nX-Request-ID: prompt-large\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", httpx.MaxJSONBody+1, strings.Repeat("x", httpx.MaxJSONBody+1))
+	// Leave one chunk byte and the terminator unsent so EOF cannot race the limit.
+	_, err := fmt.Fprintf(conn, "PUT /api/v1/me/worker-prompt HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nX-Request-ID: prompt-large\r\n\r\n%x\r\n%s", httpx.MaxJSONBody+2, strings.Repeat("x", httpx.MaxJSONBody+1))
 	if err != nil {
 		t.Fatal(err)
 	}
