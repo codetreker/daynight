@@ -12,10 +12,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type appLogCapture struct {
@@ -57,7 +55,7 @@ func TestOpenAppWithLoggerReportsMaintenance(t *testing.T) {
 	c := appTestConfig(t)
 	logs := &appLogCapture{changed: make(chan struct{}, 1)}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	app, err := OpenAppWithLogger(context.Background(), c, logger)
+	app, _, err := openTestApp(t, context.Background(), c, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,23 +77,11 @@ func TestOpenAppWithLoggerReportsMaintenance(t *testing.T) {
 
 func TestOpenAppReportsBackgroundMaintenanceFailure(t *testing.T) {
 	c := appTestConfig(t)
-	first, err := OpenApp(context.Background(), c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := first.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := pgxpool.New(context.Background(), c.DatabaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if _, err := pool.Exec(context.Background(), `DROP TABLE private_upload_chunks, private_transfers`); err != nil {
-		t.Fatal(err)
-	}
+	backend := newAppBackend(t)
+	backend.privateCompletion = store.Completion{Outcome: store.TransactionNotCommitted}
+	backend.privateErr = &store.Error{Phase: "fixture private maintenance", Cause: errors.New("private_transfers unavailable")}
 	logs := &appLogCapture{changed: make(chan struct{}, 1)}
-	app, err := OpenAppWithLogger(context.Background(), c, slog.New(slog.NewJSONHandler(logs, nil)))
+	app, err := openApp(context.Background(), c, slog.New(slog.NewJSONHandler(logs, nil)), appTestOpeners(t, c, backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,23 +100,11 @@ func TestOpenAppReportsBackgroundMaintenanceFailure(t *testing.T) {
 
 func TestOpenAppReportsOAuthMaintenanceFailure(t *testing.T) {
 	c := appTestConfig(t)
-	first, err := OpenApp(context.Background(), c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := first.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := pgxpool.New(context.Background(), c.DatabaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if _, err := pool.Exec(context.Background(), `DROP TABLE oauth_clients`); err != nil {
-		t.Fatal(err)
-	}
+	backend := newAppBackend(t)
+	backend.oauthCompletion = store.Completion{Outcome: store.TransactionNotCommitted}
+	backend.oauthErr = &store.Error{Phase: "fixture OAuth maintenance", Cause: errors.New("oauth_clients unavailable")}
 	logs := &appLogCapture{changed: make(chan struct{}, 1)}
-	app, err := OpenAppWithLogger(context.Background(), c, slog.New(slog.NewJSONHandler(logs, nil)))
+	app, err := openApp(context.Background(), c, slog.New(slog.NewJSONHandler(logs, nil)), appTestOpeners(t, c, backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,16 +122,20 @@ func TestOpenAppReportsOAuthMaintenanceFailure(t *testing.T) {
 }
 
 func TestAppCloseWaitsForPrivateTransferPermit(t *testing.T) {
-	tasks, db, project, url, principal := testsupport.TaskService(t)
-	task := testsupport.CreateTask(t, tasks, principal, project.ID, "transfer")
-	now := time.Now().UTC()
-	pat := uuid.NewString()
-	if _, err := db.Pool.Exec(context.Background(), `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'test',$4,$5)`, pat, principal.UserID, secret.Hash(uuid.NewString()), now, now.Add(time.Hour)); err != nil {
+	c := appTestConfig(t)
+	principal := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	actor := mcptransfer.Actor{Principal: principal, AuthorityKind: "pat", AuthorityID: principal.CredentialID}
+	binding := mcptransfer.Binding{ID: uuid.NewString(), Direction: "upload", ProjectID: uuid.NewString(), TaskID: uuid.NewString(), Path: "file", ContentType: "text/plain"}
+	record, err := mcptransfer.NewRecord(actor, binding, time.Now().UTC())
+	if err != nil {
 		t.Fatal(err)
 	}
-	c := appTestConfig(t)
-	c.DatabaseURL = url
-	app, err := OpenAppWithLogger(context.Background(), c, nil)
+	record.Version = 1
+	updated := record
+	updated.Version = 2
+	backend := newAppBackend(t)
+	backend.privateActor, backend.privateRecord, backend.privateUpdated = &principal, &record, &updated
+	app, err := openApp(context.Background(), c, nil, appTestOpeners(t, c, backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,11 +146,6 @@ func TestAppCloseWaitsForPrivateTransferPermit(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	actor := mcptransfer.Actor{Principal: model.Principal{Kind: model.PATCredential, UserID: principal.UserID, CredentialID: pat}, AuthorityKind: "pat", AuthorityID: pat}
-	binding := mcptransfer.Binding{ID: uuid.NewString(), Direction: "upload", ProjectID: project.ID, TaskID: task.ID, Path: "file", ContentType: "text/plain"}
-	if _, _, err := app.PrivateContent.OpenRecord(context.Background(), actor, binding); err != nil {
-		t.Fatal(err)
-	}
 	permit, err := app.PrivateContent.AcquirePermit(context.Background(), actor, binding.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -202,5 +175,8 @@ func TestAppCloseWaitsForPrivateTransferPermit(t *testing.T) {
 	}
 	if err := app.Ready(ctx); err == nil {
 		t.Fatal("database remained open after shutdown")
+	}
+	if backend.privateGets != 2 || backend.privatePuts != 1 {
+		t.Fatalf("permit operations: gets=%d puts=%d", backend.privateGets, backend.privatePuts)
 	}
 }

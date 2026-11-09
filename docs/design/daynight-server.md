@@ -522,6 +522,16 @@ Mock 明确检查方法、参数、调用次数与错误，独立提供返回值
 用例边界；Session 的私有类型化回调、不透明归档能力及实际 socket 证明由
 [Session HTTP 用例决策](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)维护。
 
+根 `internal/service` 测试拥有 App 组装、启动、readiness、后台监督和关闭重试。
+公开入口与测试共用同一 `openApp` 组装流程，通过实例级资源 factory 控制下层；
+`openPersistence` 将同一个 backend 绑定为 Transactions、Ready 和 Close，应用与
+公开持久化入口共用这段绑定。测试保留实际 Engine、文件、permit 和 worker 生命周期，
+不自行拼装替代 App。普通和显式 tagged 部分启动测试都清理数据库与认证 fixture 变量，
+未配置的后台调用必须失败并完成取消与 drain。真实配置、存储和数据库打开失败仍通过
+公开入口验证；成功的原生组装归独立 startup/shutdown 入口。领域规则和完成结果矩阵
+归 core 或对应子 service，物理事务及持久化归 Store，具体依据由
+[根 service 测试归属决策](../../.agents/notes/implemented/testing/2026-11-09-root-service-test-ownership.md)维护。
+
 根 server 单元测试组装真实模块、路由和认证适配。HTTP/TCP、MCP SDK、WebSocket、
 Session Engine、文件和 runtime 生命周期按实际机制运行；HTTP control 与 WebSocket
 共享同一 application 和 Engine。UniAuth 浏览器绑定、一次性结果及 SDK 断流测试保留隔离的

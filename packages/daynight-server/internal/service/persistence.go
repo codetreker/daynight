@@ -15,8 +15,22 @@ type Persistence struct {
 	Close        func()
 }
 
+type persistenceBackend interface {
+	store.Transactions
+	Ready(context.Context) error
+	Close()
+}
+
+func openPostgres(ctx context.Context, databaseURL string) (persistenceBackend, error) {
+	return postgres.Open(ctx, databaseURL)
+}
+
 func OpenPersistence(ctx context.Context, databaseURL string) (*Persistence, error) {
-	database, err := postgres.Open(ctx, databaseURL)
+	return openPersistence(ctx, databaseURL, openPostgres)
+}
+
+func openPersistence(ctx context.Context, databaseURL string, open func(context.Context, string) (persistenceBackend, error)) (*Persistence, error) {
+	database, err := open(ctx, databaseURL)
 	if err != nil {
 		return nil, err
 	}

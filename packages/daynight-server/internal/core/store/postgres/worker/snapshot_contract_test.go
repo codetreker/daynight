@@ -92,6 +92,9 @@ func TestWorkerSnapshotNormalizesTaskReferencesWithoutChangingTasks(t *testing.T
 	otherProject := testutil.QueryProject(t, database.Pool, database, 11)
 	testutil.MustExec(t, database.Pool, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, userID)
 	valid := testutil.SetSnapshotTaskClaim(t, database.Pool, database, project.ID, 20, userID, workerID)
+	testutil.MustExec(t, database.Pool, `UPDATE tasks SET title='Worker task' WHERE id=$1`, valid.TaskID)
+	testutil.MustExec(t, database.Pool, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{phase}','"preparing"')::text WHERE task_id=$1 AND name='worker'`, valid.TaskID)
+	testutil.PutTaskProperty(t, database.Pool, valid.TaskID, "pullRequests", []byte(`[{"url":"opaque\u0000","title":"Unrelated PR"}]`))
 	otherUser := testutil.SetSnapshotTaskClaim(t, database.Pool, database, project.ID, 21, testutil.QueryID(3), workerID)
 	otherWorker := testutil.SetSnapshotTaskClaim(t, database.Pool, database, project.ID, 22, userID, testutil.QueryID(4))
 	wrongClaim := testutil.SetSnapshotTaskClaim(t, database.Pool, database, project.ID, 23, userID, workerID)
@@ -129,7 +132,8 @@ func TestWorkerSnapshotNormalizesTaskReferencesWithoutChangingTasks(t *testing.T
 	seen := make(map[string]bool, len(items))
 	for _, item := range items {
 		seen[item.Task.ID] = true
-		if item.ProjectName != project.Name || item.Task.ID == valid.TaskID && (testutil.Worker(t, item.Task.Properties).ClaimID != valid.ClaimID || testutil.Worker(t, item.Task.Properties).UserID != userID || testutil.Worker(t, item.Task.Properties).WorkerID != workerID) {
+		claim := testutil.Worker(t, item.Task.Properties)
+		if item.ProjectName != project.Name || item.Task.ID == valid.TaskID && (claim.ClaimID != valid.ClaimID || claim.UserID != userID || claim.WorkerID != workerID || claim.Agent != model.AgentClaude || claim.AgentControlMode != model.AgentControlModeWeb || claim.Phase != model.WorkerPreparing || item.Task.Title != "Worker task" || item.Task.Status != model.TaskInProgress) {
 			t.Fatalf("reported source lost its current claim or Project name: %#v", item)
 		}
 	}
@@ -158,7 +162,28 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	for id, role := range map[string]string{project.ID: "admin", revoked.ID: "member"} {
 		testutil.MustExec(t, database.Pool, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,$3)`, id, userID, role)
 	}
+	personalTeam := testutil.QueryID(3)
+	testutil.MustExec(t, database.Pool, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, userID, userID)
+	testutil.MustExec(t, database.Pool, `INSERT INTO teams(id,personal_user_id) VALUES($1,$2)`, personalTeam, userID)
+	testutil.MustExec(t, database.Pool, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, personalTeam, userID)
+	testutil.MustExec(t, database.Pool, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, project.ID, personalTeam)
+	testutil.MustExec(t, database.Pool, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, userID)
+	var grants int
+	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, userID).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("Personal owner still has a direct grant: %d %v", grants, err)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		access, err := scope.ProjectDAO().ProjectAccess(ctx, model.Principal{UserID: userID}, project.ID)
+		if err == nil && (access.OwnerTeam.Kind != "personal" || access.Ownership.TeamID != personalTeam || access.DirectGrant != nil || access.TeamRole == nil || *access.TeamRole != model.ProjectAdmin) {
+			t.Errorf("worker fixture lacks inherited Personal owner access: %+v", access)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	active := testutil.SetSnapshotTaskClaim(t, database.Pool, database, project.ID, 20, userID, workerID)
+	testutil.MustExec(t, database.Pool, `UPDATE tasks SET title='Worker task' WHERE id=$1`, active.TaskID)
+	testutil.PutTaskProperty(t, database.Pool, active.TaskID, "pullRequests", []byte(`[{"url":"opaque\u0000","title":"Unrelated PR"}]`))
 	removed := testutil.SetSnapshotTaskClaim(t, database.Pool, database, project.ID, 21, userID, workerID)
 	private := testutil.SetSnapshotTaskClaim(t, database.Pool, database, revoked.ID, 22, userID, workerID)
 	stamp := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
@@ -176,10 +201,14 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 		}
 		for _, ref := range []model.WorkerTaskReference{active, removed, private} {
 			source := byID[ref.TaskID]
+			phase := model.WorkerExecuting
+			if ref.TaskID == active.TaskID {
+				phase = model.WorkerPreparing
+			}
 			worker.TaskSnapshot.Items = append(worker.TaskSnapshot.Items, model.WorkerObservedTask{
 				TaskID: ref.TaskID, ProjectID: ref.ProjectID, ClaimID: ref.ClaimID,
 				Title: source.Task.Title, ProjectName: source.ProjectName, Status: source.Task.Status,
-				Phase: model.WorkerExecuting, Agent: model.AgentClaude,
+				Phase: phase, Agent: model.AgentClaude,
 			})
 		}
 		_, err = tx.WorkerDAO().UpsertWorker(ctx, worker)
@@ -197,13 +226,20 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	testutil.MustExec(t, database.Pool, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, removed.TaskID)
 	testutil.MustExec(t, database.Pool, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, revoked.ID, userID)
 	read := testutil.ReadWorkerSnapshot(t, database, userID, workerID, stamp.Add(time.Hour))
-	if len(read.TaskSnapshot.Items) != 1 || read.TaskSnapshot.Items[0].TaskID != active.TaskID || read.TaskSnapshot.Items[0].Status != model.TaskInProgress || read.TaskSnapshot.Items[0].Title != "Task" || read.TaskSnapshot.Items[0].Phase != model.WorkerExecuting {
+	if len(read.TaskSnapshot.Items) != 1 || read.TaskSnapshot.Items[0].TaskID != active.TaskID || read.TaskSnapshot.Items[0].Status != model.TaskInProgress || read.TaskSnapshot.Items[0].Title != "Worker task" || read.TaskSnapshot.Items[0].Phase != model.WorkerPreparing {
 		t.Fatalf("current permission filtering changed saved state or leaked rows: %#v", read.TaskSnapshot)
 	}
 	var page WorkerPage
 	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
 		page, err = snapshot.WorkerDAO().Workers(ctx, userID, stamp.Add(time.Hour), Page{Limit: 50})
+		if err != nil {
+			return err
+		}
+		summaries, err := snapshot.WorkerDAO().WorkerSummaries(ctx, userID, stamp.Add(time.Hour), Page{Limit: 50})
+		if err == nil && (len(summaries.Items) != 1 || summaries.Items[0].WorkerID != workerID || summaries.Items[0].ActiveTaskCount == nil || *summaries.Items[0].ActiveTaskCount != 1) {
+			t.Errorf("inherited-only task missing from worker summary: %+v", summaries)
+		}
 		return err
 	})
 	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], read) {
@@ -233,6 +269,9 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	}
 	if !reflect.DeepEqual(saved, worker) || !reflect.DeepEqual(testutil.CurrentTaskFacts(t, database.Pool), before) {
 		t.Fatal("visibility checks changed the saved snapshot or task facts")
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, userID).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("worker access recreated a removed Personal owner grant: %d %v", grants, err)
 	}
 }
 
@@ -302,6 +341,19 @@ func TestWorkerSnapshotConcurrentAdmissionResamplesAfterLock(t *testing.T) {
 			if _, err := tx.WorkerDAO().UpsertWorker(ctx, firstWorker); err != nil {
 				return err
 			}
+			if _, err := tx.WorkerDAO().SetWorkerConfiguration(ctx, worker.UserID, worker.WorkerID, 1, testutil.WorkerConfiguration()); err != nil {
+				return err
+			}
+			current, err := tx.WorkerDAO().WorkerConfiguration(ctx, worker.UserID, worker.WorkerID)
+			if err != nil {
+				return err
+			}
+			if current.ObservationRevision != "0" {
+				return errors.New("initial observation revision is not zero")
+			}
+			if err := tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, worker.UserID, worker.WorkerID, 1, model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []model.WorkerConfigurationItem{}}); err != nil {
+				return err
+			}
 			close(ready)
 			select {
 			case <-release:
@@ -329,6 +381,13 @@ func TestWorkerSnapshotConcurrentAdmissionResamplesAfterLock(t *testing.T) {
 			worker.LastReportedAt = admission.ObservedAt
 			worker.Telemetry.Machine.Name = "Second report"
 			result, err = tx.WorkerDAO().UpsertWorker(ctx, worker)
+			if err != nil {
+				return err
+			}
+			configuration, err := tx.WorkerDAO().WorkerConfiguration(ctx, worker.UserID, worker.WorkerID)
+			if err == nil && (configuration.Desired == nil || configuration.Desired.Revision != "1" || configuration.ObservationRevision != "1") {
+				return errors.New("waiting report did not observe the accepted configuration observation")
+			}
 			return err
 		})
 	}()

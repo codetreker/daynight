@@ -89,6 +89,18 @@ func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
 		}
 	}
 	mustQueryExec(t, database, `DROP TRIGGER reject_second_edge ON task_dependencies; DROP FUNCTION reject_second_edge()`)
+	values.ExternalDependsOn = slices.Clone(dependencies)
+	mustQueryExec(t, database, `CREATE FUNCTION reject_external_edge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'private external edge diagnostic'; END $$;
+		CREATE TRIGGER reject_external_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_external_edge()`)
+	completion, err := database.WriteProject(ctx, project.ID, func(scope ProjectWriteScope) error {
+		_, err := scope.TaskDAO().UpdateTask(ctx, target.ID, values)
+		return err
+	})
+	var cause *pgconn.PgError
+	if completion.Outcome != TransactionNotCommitted || !errors.As(err, &cause) || cause.Code != "P0001" || strings.Contains(err.Error(), "private external") || before != taskMutationProjectFacts(t, database, project.ID) {
+		t.Fatalf("classification failure lost rollback or exposed its native cause: %+v %v", completion, err)
+	}
+	mustQueryExec(t, database, `DROP TRIGGER reject_external_edge ON task_dependencies; DROP FUNCTION reject_external_edge()`)
 	var updated model.Task
 	if err := writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
 		var err error
@@ -97,7 +109,7 @@ func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if updated.Version != target.Version+1 || updated.Title != values.Title || updated.Description != values.Description || !slices.Equal(updated.DependsOn, dependencies) || !reflect.DeepEqual(updated.Properties, values.Properties) || !reflect.DeepEqual(snapshotTask(t, database, project.ID, target.ID), updated) {
+	if updated.Version != target.Version+1 || updated.Title != values.Title || updated.Description != values.Description || !slices.Equal(updated.DependsOn, dependencies) || !slices.Equal(updated.ExternalDependsOn, dependencies) || !reflect.DeepEqual(updated.Properties, values.Properties) || !reflect.DeepEqual(snapshotTask(t, database, project.ID, target.ID), updated) {
 		t.Fatalf("reused transaction did not persist the complete replacement: %#v", updated)
 	}
 }

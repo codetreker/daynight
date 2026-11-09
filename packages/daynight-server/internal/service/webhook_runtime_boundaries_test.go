@@ -9,7 +9,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
-	"github.com/jackc/pgx/v5"
 )
 
 func TestWebhookRuntimeRejectsInvalidAndFailedStarts(t *testing.T) {
@@ -75,7 +74,7 @@ func TestWebhookRuntimeRetentionStartFailureDrainsStartedRunner(t *testing.T) {
 	c := appTestConfig(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	app, err := OpenApp(ctx, c)
+	app, backend, err := openTestApp(t, ctx, c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +85,7 @@ func TestWebhookRuntimeRetentionStartFailureDrainsStartedRunner(t *testing.T) {
 			t.Error(e)
 		}
 	})
+	backend.blockWebhookRuntime()
 	if err = app.webhookRuntime.retention.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -111,12 +111,8 @@ func TestOpenAppCleansUpAfterOAuthCompositionFailure(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	observer, err := pgx.Connect(ctx, c.DatabaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer observer.Close(context.Background())
-	app, err := OpenApp(ctx, c)
+	backend := newAppBackend(t)
+	app, err := openApp(ctx, c, nil, appTestOpeners(t, c, backend))
 	if app != nil {
 		_ = app.Close(ctx)
 		t.Fatal("OAuth composition unexpectedly succeeded")
@@ -124,10 +120,10 @@ func TestOpenAppCleansUpAfterOAuthCompositionFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "OAuth public profile is unavailable") {
 		t.Fatalf("OAuth composition failure: app=%v err=%v", app, err)
 	}
-	// The same database and storage must be usable by a corrected application.
+	// Failed composition must leave the storage root reusable by a new backend.
 	c.PublicOrigin = "https://daynight.example"
 	c.UniAuthCallbackURL = c.PublicOrigin + "/api/v1/auth/callback"
-	app, err = OpenApp(ctx, c)
+	app, corrected, err := openTestApp(t, ctx, c, nil)
 	if err != nil {
 		t.Fatalf("retry after cleanup: %v", err)
 	}
@@ -137,8 +133,10 @@ func TestOpenAppCleansUpAfterOAuthCompositionFailure(t *testing.T) {
 	if err = app.Close(ctx); err != nil {
 		t.Fatalf("corrected application close: %v", err)
 	}
-	var one int
-	if err = observer.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil || one != 1 {
-		t.Fatalf("observer: %d %v", one, err)
+	if err := backend.Ready(ctx); err == nil {
+		t.Fatal("failed composition retained its persistence backend")
+	}
+	if err := corrected.Ready(ctx); err == nil {
+		t.Fatal("corrected application retained its persistence backend")
 	}
 }

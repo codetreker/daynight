@@ -80,7 +80,7 @@ func appTestConfig(t *testing.T) config.Config {
 		}
 	})
 	return config.Config{
-		DatabaseURL: serviceDatabaseURL(t), StorageRoot: filepath.Join(root, "storage"),
+		DatabaseURL: "postgres://app:app@database.invalid/app?sslmode=disable", StorageRoot: filepath.Join(root, "storage"),
 		ListenAddress: "127.0.0.1:0", StartupTimeout: 10 * time.Second,
 		ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second,
 		PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example",
@@ -91,7 +91,7 @@ func appTestConfig(t *testing.T) config.Config {
 
 func TestAppCloseRetainsResourcesUntilOperationFinishes(t *testing.T) {
 	c := appTestConfig(t)
-	app, err := OpenApp(context.Background(), c)
+	app, _, err := openTestApp(t, context.Background(), c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestOpenAppClosesStorageWhenDatabaseOpenFails(t *testing.T) {
 }
 
 func TestConcurrentCloseHonorsCallerDeadline(t *testing.T) {
-	app, err := OpenApp(context.Background(), appTestConfig(t))
+	app, _, err := openTestApp(t, context.Background(), appTestConfig(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

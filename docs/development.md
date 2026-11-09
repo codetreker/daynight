@@ -539,6 +539,15 @@ describes the actual check. The complete module check requires an isolated
 PostgreSQL instance and fails if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
+The root application service suite and its tagged partial-start witness execute
+without database or UniAuth fixtures. They use the production assembly path with
+instance-owned resource openers and the shared transaction/readiness/close
+binding, retaining actual Engine, file, permit and worker lifetimes. Native
+open-error paths still use the public entries; successful native composition is
+covered by the startup/shutdown check. The
+[application service guide](../packages/daynight-server/README.md#application-service-tests)
+owns focused commands and the separate domain and Store proof owners.
+
 The [test-writing rules](writing_tests.md) define test ownership. Task HTTP unit
 tests mock the directly called service/use-case operations while exercising real
 routing, credential middleware, parsing, responses and request lifecycle. Core
