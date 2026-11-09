@@ -121,9 +121,11 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       && claim.agent === task.agent && claim.agentControlMode === (task.agentControlMode ?? "herdr")
       && current !== null && current.status === "active";
   };
-  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal, beforeSubmit?: HerdrPromptGuard): Promise<{ observation: HerdrAgentObservation; submitted: boolean }> => {
+  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal, beforeSubmit?: HerdrPromptGuard, initialOnly = false): Promise<{ observation: HerdrAgentObservation; submitted: boolean }> => {
     const identity = key(task);
-    const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation, beforeSubmit), signal).catch((error: unknown) => {
+    const receipt = await workerOperation((operation) => initialOnly
+      ? deps.herdr.tasks.submitInitialPrompt(context, observed.binding, prompt, operation, beforeSubmit)
+      : deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation, beforeSubmit), signal).catch((error: unknown) => {
       if (error instanceof HerdrInputWaitingError) { /* A zero-write wait preserves the previous input baseline. */ }
       else if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") lastInput.delete(identity);
       else lastInput.set(identity, null);
@@ -172,12 +174,22 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         // until native progress makes another continuation a new decision.
         if (lastInput.has(identity) && lastInput.get(identity) === null) lastInput.set(identity, inputState(observed));
         if (observed.status === "working") lastInput.delete(identity);
-        const pending = pendingInput.get(identity);
+        let pending = pendingInput.get(identity);
+        if (pending === undefined) {
+          const initialPrompt = deps.herdr.lifecycle?.pendingInitialPrompt?.(input.owner);
+          if (initialPrompt != null) {
+            pending = { binding: actual.binding, prompt: initialPrompt, continuation: false };
+          }
+        }
         if (pending !== undefined && pending.binding.terminalId === actual.binding.terminalId && pending.binding.paneId === actual.binding.paneId && observed.status !== "blocked" && observed.interactiveReady && !observed.launchPending) {
           try {
-            const result = await submitInput(task, context, observed, pending.prompt, signal, pending.continuation ? continuationGuard(task, context) : undefined);
+            const initialOnly = deps.herdr.lifecycle !== undefined && !pending.continuation;
+            const result = await submitInput(task, context, observed, pending.prompt, signal, pending.continuation ? continuationGuard(task, context) : undefined, initialOnly);
             observed = result.observation;
-            if (result.submitted) pendingInput.delete(identity);
+            if (result.submitted || initialOnly) {
+              pendingInput.delete(identity);
+              if (!result.submitted) lastInput.set(identity, inputState(observed));
+            }
           } catch (error) {
             if (!(error instanceof HerdrAgentActionError) || error.promptSubmission !== "not-submitted") pendingInput.delete(identity);
             throw error;

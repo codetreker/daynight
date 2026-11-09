@@ -1232,6 +1232,80 @@ it.each(["initial", "deferred"] as const)("keeps the %s assignment pending throu
   } finally { store.close(); }
 });
 
+it.each(["unknown", "oversized"] as const)("reattaches a fixed initial input before consulting %s prompt configuration", async latest => {
+  const f = fixture(false, true); f.settings.nativeAtLaunch = true; f.settings.nativeStatus = "blocked";
+  f.register(); const binding = await f.prepare();
+  await expect(f.start(binding)).rejects.toMatchObject({ reason: "native_blocked", promptSubmission: "not-submitted" });
+  const original = f.read(), journal = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+  const operationId = journal.get(original.sessionId)!.initialOperationId;
+  journal.close(); f.reopen(); f.settings.nativeStatus = "idle";
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
+  store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
+  const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: scope === "project" ? project.projectId : uuid(5), text, revision: "1", updatedAt: "2026-11-09T00:00:00Z" });
+  const current = vi.fn(() => latest === "unknown" ? null : { user: resource("user", "x".repeat(17_000)), project: resource("project", ""), worker: resource("worker", "") });
+  const sync = vi.fn(async () => { throw new Error("A fixed input must not synchronize new prompt values"); });
+  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+    herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "New assignment must not be used",
+    promptSource: { current }, preparePromptSource: sync, emit: () => {}, now: Date.now });
+  const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 } };
+  const originalTask = await f.readTask();
+  try {
+    f.changeTask({ properties: { ...originalTask.properties, paused: true } });
+    await expect(driver.advance(input)).rejects.toMatchObject({ reason: "task_paused", promptSubmission: "not-submitted" });
+    expect(f.inputs).toEqual([]);
+    f.changeTask({ properties: originalTask.properties });
+    await expect(driver.advance(input)).rejects.toMatchObject({ reason: "control_suspended", promptSubmission: "not-submitted" });
+    const record = f.read(), arbiter = f.facade.input!, state = arbiter.state(f.context), actorUserId = uuid(5);
+    const request = { operationId: uuid(155), connectionEpoch: record.connectionEpoch!, controlEpoch: state.controlEpoch, action: "resume_automation" as const, browserClientId: uuid(101), leaseId: null, draftHandled: true, initialUnknownDisposition: null };
+    const requestDigest = createHash("sha256").update(canonicalSessionJson({ actorUserId, request })).digest("hex");
+    const ack = await arbiter.control(f.context, { protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: record.sessionId, claimId: record.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", type: "control_dispatch", payload: { actorUserId, requestDigest, request } }, operation());
+    expect(ack.result.state).toBe("transport_completed"); f.acknowledgeControl(ack.controlState);
+    await driver.advance(input); await driver.advance(input);
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(f.launches).toHaveLength(1);
+    expect(current).not.toHaveBeenCalled(); expect(sync).not.toHaveBeenCalled();
+    const saved = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    try { expect(saved.get(original.sessionId)).toMatchObject({ initialOperationId: operationId, initialOutcome: "transport_completed" }); }
+    finally { saved.close(); }
+  } finally { store.close(); }
+});
+
+it("does not replay a pending initial input after a human marks its uncertain outcome delivered", async () => {
+  const f = fixture(false, true); f.register(); f.settings.nativeStatus = "blocked";
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
+  store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
+  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+    herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now });
+  const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 } };
+  try {
+    await driver.advance(input);
+    const record = f.read(), journal = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    try { journal.update(journal.get(record.sessionId)!, draft => { draft.initialOutcome = "unconfirmed"; draft.unknownInput = true; draft.state = "suspended"; }); }
+    finally { journal.close(); }
+    expect(f.facade.lifecycle!.pendingInitialPrompt!(f.context)).toBeNull();
+    f.settings.nativeStatus = "idle";
+    const arbiter = f.facade.input!, actorUserId = uuid(5);
+    let sequence = 170;
+    const control = async (action: "resolve_initial_assignment" | "resume_automation") => {
+      const state = arbiter.state(f.context);
+      const request = { operationId: uuid(sequence++), connectionEpoch: state.connectionEpoch, controlEpoch: state.controlEpoch, action, browserClientId: uuid(101), leaseId: null,
+        draftHandled: action === "resume_automation", initialUnknownDisposition: action === "resolve_initial_assignment" ? "delivered_continue" as const : null };
+      const requestDigest = createHash("sha256").update(canonicalSessionJson({ actorUserId, request })).digest("hex");
+      const ack = await arbiter.control(f.context, { protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: record.sessionId, claimId: record.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", type: "control_dispatch", payload: { actorUserId, requestDigest, request } }, operation());
+      expect(ack.result.state).toBe("transport_completed"); f.acknowledgeControl(ack.controlState);
+    };
+    await control("resolve_initial_assignment"); await control("resume_automation");
+    expect(f.facade.lifecycle!.pendingInitialPrompt!(f.context)).toBeNull();
+    await driver.advance(input); await driver.advance(input);
+    expect(f.inputs).toEqual([]);
+    expect(f.launches).toHaveLength(1);
+  } finally { store.close(); }
+});
+
 it("keeps a blocked macOS recovery input fixed and respects a later task pause", async () => {
   const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
   const originalTask = await f.readTask();
