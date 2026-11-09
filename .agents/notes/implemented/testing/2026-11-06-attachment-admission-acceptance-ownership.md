@@ -13,7 +13,7 @@ failures harder to assess.
 
 ## Decision
 
-The Go module test
+The Go startup/shutdown test
 `TestAttachmentGrantRevocationWithFreshProcess` owns
 the admitted attachment mutation and direct grant removal race. It admits a real
 1 MiB HTTP upload and keeps its body incomplete while Project member DELETE
@@ -26,7 +26,9 @@ cleanup against isolated PostgreSQL and the real service. Its UniAuth fixture us
 forced termination reports the missed graceful deadline, and an unconfirmed
 service or database-session cleanup retains the guarded gateway and its directory.
 An unconfirmed gateway exit also fails cleanup and retains that directory.
-The module gate explicitly tests the fixture cleanup guard. Web module tests and
+The module gate explicitly tests the fixture cleanup guard, while the independent
+[startup/shutdown gate](2026-11-09-independent-go-startup-shutdown.md) executes the
+real command process witness. Web module tests and
 independent browser fixtures exercise presentation and local behavior with controlled responses;
 they do not establish installed-CLI or live-service integration. The former
 Web combined runner, including its ten-check native/container receipts, was
@@ -40,7 +42,7 @@ retained Task and authorization-source locks through mutation completion; under
 that condition, a grant DELETE had to wait for the upload. The later [attachment
 admission decision](../bug-fix/2026-11-06-attachment-admission-locks.md) keeps the
 Task lock but reads authorization without holding source locks through file IO.
-The current module test therefore proves that grant removal completes while the
+The current process test therefore proves that grant removal completes while the
 admitted upload is still open, rather than expecting a grant-lock waiter.
 
 The [server guide](../../../../packages/daynight-server/README.md) and

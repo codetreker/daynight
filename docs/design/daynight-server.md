@@ -573,11 +573,14 @@ HTTP 测试保留路由、DTO、错误映射、Project 范围、分页筛选、c
 网络不共享自动事务，必须分别核对实际提交与副作用的所有权。最终交付仍需提供需求
 V1–V10 的全部验收证据，覆盖率不能替代并发、回滚、进程或调用方行为证明。
 
-`bash scripts/check.sh` 使用隔离 `DAYNIGHT_TEST_DATABASE_URL`、单测资源 overlay、
-固定 UniAuth fixture，运行 build、vet 与 go-cov 的当前门禁：package 85%、function 80%，
-total 门槛 90%；实际总语句比较严格大于 90%。
-原始覆盖率保留 atomic 与全部生产 package 的 coverpkg，语句门禁精确要求
-`covered * 10 > total * 9`，恰好 90% 失败。诊断 mutation 与计时 overlay 必须确认实际
+`bash scripts/check.sh` 与 `bash scripts/startup-shutdown.sh` 使用隔离
+`DAYNIGHT_TEST_DATABASE_URL`、单测资源 overlay 与固定 UniAuth fixture。普通模块入口
+验证命令包以外的生产包；命令生命周期入口使用 `startupshutdown` tag 验证
+`cmd/daynight-server`，并执行 Webhook Runner 的独立进程恢复证明。两者分别运行
+适用的 build、vet 与 go-cov：package 85%、function 80%、total 门槛 90%，实际各自
+的未取整语句比较都要求严格大于 90%。全部生产包均有覆盖率归属；模块分区保留
+分区内全部生产 package 的 coverpkg，命令分区只度量命令实现，两者都保留 atomic。
+各分区均满足 `covered * 10 > total * 9`，因此总合也严格大于 90%；恰好 90% 失败。诊断 mutation 与计时 overlay 必须确认实际
 进入执行代码；诊断 instrumentation 与正常验收分别记录，不修改质量门禁。
 
 需求 V8 要求本地与 main CI 开启 race、PR CI 关闭并阻断关键代码块缺口。
@@ -586,7 +589,8 @@ total 门槛 90%；实际总语句比较严格大于 90%。
 [服务端验证说明](../../packages/daynight-server/README.md#validate)维护。
 
 PR 按[仓库 CI 路由](../../README.md#ci-selection)选择模块，main push 执行全部应用检查。
-Go job 使用独立 PostgreSQL 服务并归档原始覆盖率；最终 `checks` 接受前置 job 的
-`success` 或按路由允许的 `skipped`，失败、取消及其他结果使汇总失败。包耗时、组合命令、
+Go 模块与 startup/shutdown job 分别使用独立 PostgreSQL 服务并归档各自原始覆盖率。
+最终 `checks` 要求已选中的两个 Go job 实际 `success`；未选中时可按路由
+`skipped`，失败、取消及其他结果使汇总失败。包耗时、组合命令、
 完整门禁与 hosted job 时间分别记录，保持源码、toolchain、cache、instrumentation 和资源
 预算可核对。性能比较包括承接原有物理证明的所有者，不能用本地包提速推断托管收益。

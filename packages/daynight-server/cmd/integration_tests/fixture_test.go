@@ -360,7 +360,14 @@ func newFixture(t *testing.T) *fixture {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(transport.CloseIdleConnections)
 	f := &fixture{context: ctx, origin: origin, process: process, client: &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: token, next: transport}}}
-	response, _ := f.request(t, http.MethodGet, "/api/v1/projects", "", nil, http.StatusOK)
+	response, body := f.request(t, http.MethodGet, "/api/v1/projects", "", nil, http.StatusOK)
+	var page api.ProjectPage
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Items == nil || response.Header.Get("X-Request-ID") == "" {
+		t.Fatalf("project list envelope or request correlation is missing: %s", body)
+	}
 	f.userID = response.Header.Get("Daynight-User-ID")
 	if f.userID == "" {
 		t.Fatal("authenticated API did not identify its principal")

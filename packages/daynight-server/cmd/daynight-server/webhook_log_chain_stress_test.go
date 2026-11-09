@@ -1,4 +1,4 @@
-//go:build webhooktest && stress
+//go:build startupshutdown && webhooktest && stress
 
 package main
 

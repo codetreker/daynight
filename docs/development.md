@@ -518,16 +518,22 @@ and pnpm 11.28.6. From `packages/daynight-server/`, set
 
 ```bash
 bash scripts/check.sh
+bash scripts/startup-shutdown.sh
 ```
 
-The check builds and vets the Go module using a unit-test Web resource overlay,
-prepares the pinned UniAuth fixture, checks the focused Webhook Runner process
-recovery witness with its dedicated test build, clears cached Go test results and
-runs module tests and coverage. Its ordinary Node.js tool tests remain portable;
-production builds use real Web assets. The configured package and function thresholds are 85% and 80%, with no production exclusions;
-the raw statement coverage must be strictly greater than 90%. Critical-block
-failure is disabled; race is enabled locally and for main pushes, while PR CI
-disables it explicitly. The
+The module check builds and vets with a unit-test Web resource overlay, prepares
+the pinned UniAuth fixture, clears cached Go test results, and runs module tests
+and coverage. The startup/shutdown check owns the explicitly tagged command
+tests and the focused Webhook Runner abrupt-recovery witness. It vets the tagged
+command tests and measures only the command package's production statements.
+The module check measures all other production packages, including cross-package
+calls within that partition. Every production package belongs to one coverage
+partition; both independently retain the configured package and function
+thresholds of 85% and 80% and raw statement coverage strictly greater than 90%.
+Their combined production statement coverage therefore also exceeds 90%.
+Ordinary Node.js tool tests remain portable; production builds use real Web
+assets. Critical-block failure is disabled; race is enabled locally and for main
+pushes, while PR CI disables it explicitly. The
 [server guide](../packages/daynight-server/README.md#race-instrumentation)
 describes the actual check. The complete module check requires an isolated
 PostgreSQL instance and fails if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
@@ -608,7 +614,7 @@ Runtime startup initializes an empty target namespace atomically from the
 snapshot and replays historical migrations for an existing namespace. Missing
 ledger metadata alone does not establish that the namespace is empty.
 
-The Go module's [fresh-process attachment test](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+The startup/shutdown suite's [fresh-process attachment test](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 checks grant removal and new project denial while an admitted upload remains
 incomplete, then verifies the upload and cleanup against real HTTP and PostgreSQL.
 
@@ -871,8 +877,11 @@ Malformed manifests or Git failures fail detection.
 CLI selection runs ordinary and installed phases independently on Linux,
 Windows and macOS ARM64, plus Node compatibility and shell checks. The Go module
 job runs its PostgreSQL-backed module gate and uploads coverage. The independent
-Linux `verify-api-integration` job waits only for detection, prepares its own
-Node.js, pnpm, Go and PostgreSQL service, and runs its required Linux runtime-tool
+`verify-server-startup-shutdown` job uses the same server selection, waits only
+for detection, and owns its PostgreSQL-backed command lifecycle tests and
+command-package coverage. Selected Go module and startup/shutdown jobs must both
+actually succeed. The independent Linux `verify-api-integration` job waits only
+for detection, prepares its own Node.js, pnpm, Go and PostgreSQL service, and runs its required Linux runtime-tool
 unit tests before production Web preparation and the explicit normal API suite. Its always-run
 reconciliation step retains original command and cleanup failures; it uploads
 only safe API build/result/log evidence. The

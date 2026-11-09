@@ -2271,7 +2271,7 @@ tabs with Chromium's IndexedDB and BroadcastChannel. It exercises withdrawal,
 late reads and fresh access, but does not call a real service. Their configured
 fixtures and cleanup belong to each suite. These checks cover
 browser interaction under controlled responses; they do not prove live service,
-PostgreSQL, installed-CLI or native/container integration. The Go module test
+PostgreSQL, installed-CLI or native/container integration. The Go startup/shutdown test
 [`TestAttachmentGrantRevocationWithFreshProcess`](../daynight-server/cmd/daynight-server/attachment_grant_revocation_test.go)
 separately verifies that member removal and new Project-access refusal complete
 while an admitted 1 MiB upload is incomplete, followed by its successful

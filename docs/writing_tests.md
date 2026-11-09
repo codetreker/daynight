@@ -75,7 +75,7 @@ Shared fixtures receive required DAO or scope capabilities through existing cont
 
 Actual database query cancellation, connection release, lock order, lost commit confirmation, cross-operation reads and consistency are proved by the store implementations that own them. Upper cancellation propagation and mock transaction outcomes cannot replace this evidence.
 
-Process startup, shutdown, migration and recovery mechanisms belong to their process or runtime tests, using the real processes and resources needed to prove them. Their errors and races remain with the mechanism owner; they do not move into the normal-flow-only `cmd/integration_tests` suite.
+Process startup, shutdown, migration and recovery mechanisms belong to their process or runtime tests, using the real processes and resources needed to prove them. Command tests in `cmd/daynight-server` use the explicit `startupshutdown` build tag and run through their independent startup/shutdown entry and CI job. The module coverage entry excludes this command package from both test selection and its production coverage partition; the startup/shutdown entry owns the command package's coverage. Both partitions retain the configured thresholds and require unrounded statement coverage strictly greater than 90%, with every production package assigned to an owner. Their errors and races remain with the mechanism owner; they do not move into the normal-flow-only `cmd/integration_tests` suite.
 
 These Go tests do not install or execute CLI, or run Web tests. Preparing production Web resources needed for Server embedding is a build dependency, not permission for Go test commands to invoke Web tests.
 

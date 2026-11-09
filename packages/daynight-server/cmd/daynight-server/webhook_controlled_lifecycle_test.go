@@ -1,4 +1,4 @@
-//go:build webhooktest
+//go:build startupshutdown && webhooktest
 
 package main
 

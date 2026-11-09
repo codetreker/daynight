@@ -353,8 +353,11 @@ SQLite SQL directories with the compiled dist tree; the
 [development guide](docs/development.md#cli-development) owns packaging details.
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
-18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
-`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. Task HTTP, complete
+18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` and
+`bash scripts/startup-shutdown.sh` with `DAYNIGHT_TEST_DATABASE_URL` pointing to
+an isolated database. The first validates module tests; the second owns command
+startup, shutdown, migration and recovery tests. Each production-code partition
+requires statement coverage strictly greater than 90%. Task HTTP, complete
 Session core and Webhook service unit suites run independently without
 PostgreSQL; the
 [server test guide](packages/daynight-server/README.md#business-rules-and-dao-mocks)
@@ -406,8 +409,8 @@ preserves the source boundary and normal gates.
 |---|---|
 | CLI production source, manifest, build configuration and resources | CLI and product E2E |
 | CLI tests and other CLI/installer test tooling | CLI |
-| Go production source, embedded data and module dependencies | Go, Go API integration and product E2E |
-| Go tests, fixtures and validation tooling | Go and Go API integration |
+| Go production source, embedded data and module dependencies | Go module, Go server startup & shutdown, Go API integration and product E2E |
+| Go tests, fixtures and validation tooling | Go module, Go server startup & shutdown and Go API integration |
 | Web production source, resources and build inputs | Web, Go API integration and product E2E |
 | Web tests, other Web validation tooling and `deployment/` | Web |
 | `packages/e2e_tests/` code, fixtures, scenarios and configuration | Product E2E |
@@ -427,14 +430,16 @@ records the complete product runtime.
 
 CLI has ordinary and installed phases on Linux, Windows and macOS ARM64, a Node
 runtime matrix and shell-completion checks. Go module validation owns its
-ordinary tools and coverage. Go API integration owns an independent Linux job
+ordinary tools and coverage. The independent Go server startup & shutdown job
+owns command lifecycle tests and their command-package coverage, using the same
+Go directory selection. Go API integration owns an independent Linux job
 that checks its Linux runtime tools, prepares production Web resources and runs
 the real Server with its own database and auth. Web owns independent quality and frontend browser jobs.
 Product E2E owns an independent Linux job that builds and runs the complete
 system with its own database and auth. Final `checks` reject failures and
-cancellations and explicitly require selected API, Web and product E2E jobs to
-succeed. A newer PR run cancels its older run; main runs queue without cancelling
-an active run.
+cancellations and explicitly require selected Go module, Go server startup &
+shutdown, API, Web and product E2E jobs to succeed. A newer PR run cancels its
+older run; main runs queue without cancelling an active run.
 
 ## Validation
 

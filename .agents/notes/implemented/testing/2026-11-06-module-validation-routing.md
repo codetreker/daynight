@@ -12,7 +12,8 @@ input as a Go input adds validation without a Go dependency on that tooling.
 ## Decision
 
 PR application jobs follow module directories. `packages/daynight/` and installer
-tooling in `scripts/` select CLI; `packages/daynight-server/` selects Go;
+tooling in `scripts/` select CLI; `packages/daynight-server/` selects both the Go
+module and [startup/shutdown job](2026-11-09-independent-go-startup-shutdown.md);
 `packages/daynight-web/` and `deployment/` select Web. Implementations, fixtures
 and test tooling follow the same ownership, without cross-module file lists.
 
@@ -39,8 +40,8 @@ retains CLI selection. The strict version-only CLI manifest exception remains.
 CI workflow, routing and unknown paths select every module, API integration and
 product E2E. Complete merge-base diffs retain deletions and both sides of renames;
 every main push runs them all. Final checks retain failure and cancellation
-propagation and explicitly require selected API, Web and product E2E jobs to
-succeed.
+propagation and explicitly require selected Go module, startup/shutdown, API,
+Web and product E2E jobs to succeed.
 
 The [README routing table](../../../../README.md#ci-selection) owns the directory
 map, and the [development guide](../../../../docs/development.md#ci-selection)
