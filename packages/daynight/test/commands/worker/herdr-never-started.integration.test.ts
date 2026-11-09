@@ -123,6 +123,9 @@ it("retains a real Git worktree created before any native preparation journal", 
   onTestFailed(() => { console.error(JSON.stringify({ kind: "never-started-git-diagnostic", pending: pending.map(stage => ({ phase: stage.phase, elapsedMs: performance.now() - stage.startedAt })), completed })); });
   const git = (phase: string, ...args: string[]) => { const end = begin(phase); try { return execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10000 }); } finally { end(); } };
   git("init", "init"); git("config", "config", "remote.origin.url", f.project.repoUrl); git("commit", "-c", "core.hooksPath=" + path.join(f.root, "no-hooks"), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--no-gpg-sign", "--allow-empty", "-m", "Fixture");
+  const bare = path.join(f.root, "origin.git");
+  git("bare", "clone", "--bare", f.project.localPath, bare);
+  git("rewrite", "config", `url.${bare}.insteadOf`, f.project.repoUrl);
   const manager = createWorkerGitManager({ temporaryDirectory: f.paths.temporaryDirectory, runGit: async (...args) => {
     const command = args[1][4]!, end = begin(`manager:${command.startsWith("--git-dir=") ? args[1][5] : command}`);
     try { return await runRepositoryGit(...args); } finally { end(); }
@@ -177,6 +180,9 @@ it("retains real Git worktrees and durable stop evidence when their Project retu
     git(project.localPath, "init");
     git(project.localPath, "config", "remote.origin.url", project.repoUrl);
     git(project.localPath, "-c", "core.hooksPath=" + path.join(f.root, "no-hooks"), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--no-gpg-sign", "--allow-empty", "-m", "Fixture");
+    const bare = path.join(f.root, `${project.projectId}.git`);
+    git(project.localPath, "clone", "--bare", project.localPath, bare);
+    git(project.localPath, "config", `url.${bare}.insteadOf`, project.repoUrl);
   }
   const manager = createWorkerGitManager({ temporaryDirectory: f.paths.temporaryDirectory });
   const operation = createOperation();
