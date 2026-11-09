@@ -3,11 +3,9 @@ package attachment
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"reflect"
 	"strings"
 	"sync"
@@ -18,13 +16,7 @@ import (
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 type pausedAttachmentReader struct {
@@ -45,101 +37,96 @@ func (r *pausedAttachmentReader) Read(p []byte) (int, error) {
 	}
 }
 
-func TestAdmittedAttachmentUploadDoesNotBlockGrantRevocation(t *testing.T) {
+func TestAdmittedAttachmentUploadDoesNotReauthorizeStream(t *testing.T) {
 	for _, overwrite := range []bool{false, true} {
 		t.Run(fmt.Sprintf("overwrite=%t", overwrite), func(t *testing.T) {
-			attachments, _, database, files, task, owner := attachmentService(t)
-			member := testsupport.ServicePrincipal(t, database)
-			memberships := projectservice.NewMemberships(database)
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			invitation, err := memberships.CreateInvitation(ctx, owner, task.ProjectID, owner.UserID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			joined, err := memberships.AcceptInvitation(ctx, member, invitation.Secret, member.UserID)
-			if err != nil || joined.Access.TeamRole != nil {
-				t.Fatalf("direct-only project membership: %#v %v", joined, err)
-			}
-			var previous model.Attachment
+			subject, m, files, task, p := attachmentUnit(t)
 			if overwrite {
-				previous = putAttachment(t, attachments, member, task, "file", "before")
+				if _, err := files.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"), strings.NewReader("before")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			const prefix, suffix = "before revocation\x00", "after revocation\xff\n"
-			reader := &pausedAttachmentReader{Reader: strings.NewReader(suffix), ctx: ctx, reached: make(chan struct{}), release: make(chan struct{})}
-			type uploadResult struct {
-				metadata model.Attachment
-				created  bool
-				err      error
+			item := attachmentItem(task, "file", "application/octet-stream", int64(len(prefix+suffix)))
+			if overwrite {
+				item.UpdatedAt = item.CreatedAt.Add(time.Second)
 			}
-			result, finished := make(chan uploadResult, 1), make(chan struct{})
+			planAttachmentPut(m, p, task, item, !overwrite)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			reader := &pausedAttachmentReader{Reader: strings.NewReader(suffix), ctx: ctx, reached: make(chan struct{}), release: make(chan struct{})}
+			type result struct {
+				item    model.Attachment
+				created bool
+				err     error
+			}
+			finished := make(chan result, 1)
 			var release sync.Once
 			unblock := func() { release.Do(func() { close(reader.release) }) }
+			done := make(chan struct{})
 			go func() {
-				defer close(finished)
-				metadata, created, err := attachments.Put(ctx, member, task.ProjectID, task.ID, "file", "application/octet-stream", io.MultiReader(strings.NewReader(prefix), reader))
-				result <- uploadResult{metadata: metadata, created: created, err: err}
+				defer close(done)
+				item, created, err := subject.Put(ctx, p, task.ProjectID, task.ID, "file", "application/octet-stream", io.MultiReader(strings.NewReader(prefix), reader))
+				finished <- result{item, created, err}
 			}()
 			defer func() {
 				cancel()
 				unblock()
 				select {
-				case <-finished:
-				case <-time.After(5 * time.Second):
-					t.Error("attachment upload did not finish after cancellation")
+				case <-done:
+				case <-time.After(time.Second):
+					t.Error("attachment upload did not drain")
 				}
 			}()
 			select {
 			case <-reader.reached:
-			case got := <-result:
-				t.Fatalf("upload did not reach its streamed body: %v", got.err)
+			case got := <-finished:
+				t.Fatalf("upload did not stream: %v", got.err)
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			// Reaching the suffix proves admission and file streaming have begun.
-			// Revocation must finish while that admitted stream remains paused.
-			revokeCtx, revokeCancel := context.WithTimeout(ctx, 5*time.Second)
-			defer revokeCancel()
-			_, err = memberships.RemoveGrant(revokeCtx, owner, task.ProjectID, member.UserID, coreproject.RemoveProjectMember{Version: joined.DirectGrant.Version, ExpectedUserID: owner.UserID})
-			if err != nil {
-				t.Fatalf("grant revocation waited for the admitted attachment stream: %v", err)
-			}
+			// The later refusal is a separate lower outcome. No new authorization is
+			// supplied to the stream that already passed admission.
 			select {
-			case got := <-result:
-				t.Fatalf("upload finished before releasing its body: %v", got.err)
+			case got := <-finished:
+				t.Fatalf("upload finished before body release: %v", got.err)
 			default:
 			}
 			unblock()
-			var uploaded uploadResult
+			var got result
 			select {
-			case uploaded = <-result:
+			case got = <-finished:
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			if uploaded.err != nil || uploaded.created == overwrite {
-				t.Fatalf("admitted upload: %#v", uploaded)
+			if got.err != nil || got.created == overwrite || !reflect.DeepEqual(got.item, item) {
+				t.Fatalf("admitted result: %#v", got)
 			}
-			metadata, object, err := attachments.Open(ctx, owner, task.ProjectID, task.ID, "file")
+			object, err := files.Open(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			content, readErr := io.ReadAll(object.Body)
-			closeErr := object.Body.Close()
-			if readErr != nil || closeErr != nil || !bytes.Equal(content, []byte(prefix+suffix)) || !reflect.DeepEqual(metadata, uploaded.metadata) || metadata.SizeBytes != int64(len(content)) || metadata.ContentType != "application/octet-stream" {
-				t.Fatalf("upload bytes/metadata changed across revocation: metadata=%#v uploaded=%#v content=%q read=%v close=%v", metadata, uploaded.metadata, content, readErr, closeErr)
+			body, readErr := io.ReadAll(object.Body)
+			if err := errors.Join(readErr, object.Body.Close()); err != nil || !bytes.Equal(body, []byte(prefix+suffix)) {
+				t.Fatalf("admitted bytes: %q %v", body, err)
 			}
-			if overwrite && !metadata.CreatedAt.Equal(previous.CreatedAt) {
-				t.Fatalf("overwrite changed creation time: before=%v after=%v", previous.CreatedAt, metadata.CreatedAt)
-			}
+			refused := newAttachmentMock(t)
 			observed := &observedAttachmentStorage{Storage: files}
-			refused := newAttachmentService(database, observed)
-			_, _, err = refused.Put(ctx, member, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("must not replace"))
+			rejected := NewAttachments(refused, refused, observed)
+			refused.expect("snapshot").callback = true
+			refused.expect("access", p, task.ProjectID).err = model.ErrNotFound
+			refused.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+			refused.expect("authorize", p, task.ProjectID).err = model.ErrNotFound
+			_, _, err = rejected.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("must not replace"))
 			requireFault(t, err, "not_found")
-			requireFault(t, refused.Delete(ctx, member, task.ProjectID, task.ID, "file"), "not_found")
-			_, _, err = refused.Open(ctx, member, task.ProjectID, task.ID, "file")
+			refused.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+			refused.expect("authorize", p, task.ProjectID).err = model.ErrNotFound
+			requireFault(t, rejected.Delete(t.Context(), p, task.ProjectID, task.ID, "file"), "not_found")
+			refused.expect("snapshot").callback = true
+			refused.expect("access", p, task.ProjectID).err = model.ErrNotFound
+			_, _, err = rejected.Open(t.Context(), p, task.ProjectID, task.ID, "file")
 			requireFault(t, err, "not_found")
 			if observed.calls.Load() != 0 {
-				t.Fatalf("revoked request reached file mutation: %d", observed.calls.Load())
+				t.Fatal("refused operation reached file storage")
 			}
 		})
 	}
@@ -154,7 +141,7 @@ type observedAttachmentStorage struct {
 
 func (s *observedAttachmentStorage) Put(ctx context.Context, bucket, path string, body io.Reader) (filestorage.FileInfo, error) {
 	s.calls.Add(1)
-	result, err := s.Storage.Put(ctx, bucket, path, body)
+	info, err := s.Storage.Put(ctx, bucket, path, body)
 	if err == nil && s.reached != nil {
 		close(s.reached)
 		select {
@@ -163,9 +150,12 @@ func (s *observedAttachmentStorage) Put(ctx context.Context, bucket, path string
 			return filestorage.FileInfo{}, ctx.Err()
 		}
 	}
-	return result, err
+	return info, err
 }
-
+func (s *observedAttachmentStorage) Open(ctx context.Context, bucket, path string) (filestorage.Object, error) {
+	s.calls.Add(1)
+	return s.Storage.Open(ctx, bucket, path)
+}
 func (s *observedAttachmentStorage) Delete(ctx context.Context, bucket, path string) error {
 	s.calls.Add(1)
 	err := s.Storage.Delete(ctx, bucket, path)
@@ -179,37 +169,13 @@ func (s *observedAttachmentStorage) Delete(ctx context.Context, bucket, path str
 	}
 	return err
 }
-
-func attachmentMutation(ctx context.Context, attachments *Attachments, principal model.Principal, task model.Task, operation string) error {
+func attachmentMutation(ctx context.Context, subject *Attachments, p model.Principal, task model.Task, operation string) error {
 	if operation == "delete" {
-		return attachments.Delete(ctx, principal, task.ProjectID, task.ID, "file")
+		return subject.Delete(ctx, p, task.ProjectID, task.ID, "file")
 	}
-	_, _, err := attachments.Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
+	_, _, err := subject.Put(ctx, p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
 	return err
 }
-
-func waitAttachmentBlocked(t *testing.T, ctx context.Context, database *postgres.Store, blocker int32) int32 {
-	t.Helper()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var pid int32
-		err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity
-          WHERE application_name=current_schema() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) LIMIT 1),0)`, blocker).Scan(&pid)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if pid != 0 {
-			return pid
-		}
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			t.Fatalf("no database waiter blocked by %d: %v", blocker, ctx.Err())
-		}
-	}
-}
-
 func attachmentWaitResult(t *testing.T, ctx context.Context, result <-chan error) error {
 	t.Helper()
 	select {
@@ -221,188 +187,114 @@ func attachmentWaitResult(t *testing.T, ctx context.Context, result <-chan error
 	}
 }
 
-func assertAttachmentState(t *testing.T, ctx context.Context, database *postgres.Store, files filestorage.Storage, task model.Task, exists bool, content string) {
-	t.Helper()
-	var size int64
-	var contentType string
-	err := database.Pool.QueryRow(ctx, `SELECT size_bytes,content_type FROM task_attachments WHERE project_id=$1 AND task_id=$2 AND path='file'`, task.ProjectID, task.ID).Scan(&size, &contentType)
-	object, fileErr := files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
-	if !exists {
-		if !errors.Is(err, pgx.ErrNoRows) || !errors.Is(fileErr, fs.ErrNotExist) {
-			t.Fatalf("unexpected metadata/file: %v, %v", err, fileErr)
-		}
-		return
-	}
-	if err != nil || fileErr != nil {
-		t.Fatalf("missing metadata/file: %v, %v", err, fileErr)
-	}
-	bytes, readErr := io.ReadAll(object.Body)
-	closeErr := object.Body.Close()
-	wantType := "text/plain"
-	if content == "before" {
-		wantType = "text/plain; charset=utf-8"
-	}
-	if readErr != nil || closeErr != nil || string(bytes) != content || size != int64(len(content)) || contentType != wantType {
-		t.Fatalf("metadata/file mismatch: size=%d type=%q content=%q read=%v close=%v", size, contentType, bytes, readErr, closeErr)
-	}
-}
-
-// The local gate deliberately shares 256 stripes across targets; see
-// docs/design/daynight-task-attachments.md. This fixture tests database lock
-// isolation, so unrelated writes must not wait for the paused storage stripe.
-func independentAttachmentPath(t *testing.T, held, independent model.Task) string {
-	t.Helper()
-	heldAddress, err := attachmentcore.NewAddress(held.ProjectID, held.ID, "file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	heldStripe := sha256.Sum256([]byte(heldAddress.StoragePath))[0]
-	for index := range 4096 {
-		path := fmt.Sprintf("independent-%d", index)
-		address, err := attachmentcore.NewAddress(independent.ProjectID, independent.ID, path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if sha256.Sum256([]byte(address.StoragePath))[0] != heldStripe {
-			return path
-		}
-	}
-	t.Fatal("no independent attachment gate stripe found")
-	return ""
-}
-
-func TestAttachmentMutationBlocksTaskDeletion(t *testing.T) {
+func TestAttachmentMutationsUseLifecycleScope(t *testing.T) {
 	for _, operation := range []string{"put", "overwrite", "delete"} {
 		t.Run(operation, func(t *testing.T) {
-			attachments, tasks, database, files, task, principal := attachmentService(t)
+			_, m, files, task, p := attachmentUnit(t)
+			before := attachmentItem(task, "file", "text/plain", 6)
 			if operation != "put" {
-				putAttachment(t, attachments, principal, task, "file", "before")
+				if _, err := files.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"), strings.NewReader("before")); err != nil {
+					t.Fatal(err)
+				}
 			}
-			other := createTask(t, tasks, principal, task.ProjectID, "Independent task")
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			otherProject, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Independent project", RepoURL: "host:independent"})
-			if err != nil {
-				t.Fatal(err)
+			if operation == "delete" {
+				planAttachmentDelete(m, p, task, before)
+			} else {
+				planAttachmentPut(m, p, task, attachmentItem(task, "file", "text/plain", 5), operation == "put")
 			}
-			otherProjectTask := createTask(t, tasks, principal, otherProject.ID, "Independent project task")
-			otherPath := independentAttachmentPath(t, task, other)
-			otherProjectPath := independentAttachmentPath(t, task, otherProjectTask)
 			observed := &observedAttachmentStorage{Storage: files, reached: make(chan struct{}), release: make(chan struct{})}
-			mutation := make(chan error, 1)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			finished := make(chan error, 1)
+			done := make(chan struct{})
+			var once sync.Once
+			release := func() { once.Do(func() { close(observed.release) }) }
 			go func() {
-				mutation <- attachmentMutation(ctx, newAttachmentService(database, observed), principal, task, operation)
+				defer close(done)
+				finished <- attachmentMutation(ctx, NewAttachments(m, m, observed), p, task, operation)
+			}()
+			defer func() {
+				cancel()
+				release()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Error("mutation did not drain")
+				}
 			}()
 			select {
 			case <-observed.reached:
-			case err := <-mutation:
-				t.Fatalf("mutation did not reach file operation: %v", err)
+			case err := <-finished:
+				t.Fatalf("mutation did not enter file operation: %v", err)
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			var blocker int32
-			if err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity
-              WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE '%task_attachments%' LIMIT 1),0)`).Scan(&blocker); err != nil || blocker == 0 {
-				t.Fatalf("mutation transaction not found: %d %v", blocker, err)
+			m.mu.Lock()
+			pending := len(m.plan)
+			m.mu.Unlock()
+			// Only the metadata write remains after the file effect; the scope's Task
+			// lock and lifecycle/authority calls have already completed.
+			if pending != 1 {
+				t.Errorf("pending calls during file operation: %d", pending)
 			}
-			deletion := make(chan error, 1)
-			go func() {
-				deletion <- tasks.Delete(ctx, principal, task.ProjectID, task.ID, taskcore.DeleteTask{Version: task.Version})
-			}()
-			waitAttachmentBlocked(t, ctx, database, blocker)
-			if _, _, err := attachments.Put(ctx, principal, other.ProjectID, other.ID, otherPath, "text/plain", strings.NewReader("ok")); err != nil {
-				t.Fatalf("independent Task blocked or failed: %v", err)
+			release()
+			if err := attachmentWaitResult(t, ctx, finished); err != nil {
+				t.Fatal(err)
 			}
-			if _, _, err := attachments.Put(ctx, principal, otherProjectTask.ProjectID, otherProjectTask.ID, otherProjectPath, "text/plain", strings.NewReader("ok")); err != nil {
-				t.Fatalf("independent Project blocked or failed: %v", err)
+			if observed.calls.Load() != 1 {
+				t.Fatalf("file operations=%d", observed.calls.Load())
 			}
-			close(observed.release)
-			if err := attachmentWaitResult(t, ctx, mutation); err != nil {
-				t.Fatalf("attachment mutation: %v", err)
-			}
-			if err := attachmentWaitResult(t, ctx, deletion); err != nil {
-				t.Fatalf("Task deletion: %v", err)
-			}
-			assertAttachmentState(t, ctx, database, files, task, operation != "delete", "after")
 		})
 	}
 }
 
-func TestTaskDeletionOrdersAttachmentMutations(t *testing.T) {
+func TestTaskPresenceControlsAttachmentMutations(t *testing.T) {
 	for _, operation := range []string{"put", "overwrite", "delete"} {
-		for _, commits := range []bool{true, false} {
-			t.Run(fmt.Sprintf("%s/commit=%t", operation, commits), func(t *testing.T) {
-				attachments, tasks, database, files, task, principal := attachmentService(t)
+		for _, deleted := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/deleted=%t", operation, deleted), func(t *testing.T) {
+				_, m, files, task, p := attachmentUnit(t)
+				item := attachmentItem(task, "file", "text/plain", 6)
 				if operation != "put" {
-					putAttachment(t, attachments, principal, task, "file", "before")
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				var originalMetadata *string
-				if err := database.Pool.QueryRow(ctx, `SELECT (SELECT to_jsonb(a)::text FROM task_attachments a WHERE task_id=$1 AND path='file')`, task.ID).Scan(&originalMetadata); err != nil {
-					t.Fatal(err)
-				}
-				action := "RETURN NEW"
-				if !commits {
-					action = "RAISE EXCEPTION 'injected delete rollback'"
-				}
-				if _, err := database.Pool.Exec(ctx, `CREATE FUNCTION block_task_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(13629018); `+action+`; END $$;
-                  CREATE TRIGGER block_task_delete BEFORE UPDATE OF deleted_at ON tasks FOR EACH ROW EXECUTE FUNCTION block_task_delete()`); err != nil {
-					t.Fatal(err)
-				}
-				locker, err := database.Pool.Acquire(ctx)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer locker.Release()
-				if _, err := locker.Exec(ctx, `SELECT pg_advisory_lock(13629018)`); err != nil {
-					t.Fatal(err)
-				}
-				defer locker.Exec(context.Background(), `SELECT pg_advisory_unlock(13629018)`)
-				deletion := make(chan error, 1)
-				go func() {
-					deletion <- tasks.Delete(ctx, principal, task.ProjectID, task.ID, taskcore.DeleteTask{Version: task.Version})
-				}()
-				deletingPID := waitAttachmentBlocked(t, ctx, database, int32(locker.Conn().PgConn().PID()))
-				observed := &observedAttachmentStorage{Storage: files}
-				mutation := make(chan error, 1)
-				go func() {
-					mutation <- attachmentMutation(ctx, newAttachmentService(database, observed), principal, task, operation)
-				}()
-				waitAttachmentBlocked(t, ctx, database, deletingPID)
-				if observed.calls.Load() != 0 {
-					t.Fatal("file operation ran before deletion completed")
-				}
-				if _, err := locker.Exec(ctx, `SELECT pg_advisory_unlock(13629018)`); err != nil {
-					t.Fatal(err)
-				}
-				deleteErr := attachmentWaitResult(t, ctx, deletion)
-				mutationErr := attachmentWaitResult(t, ctx, mutation)
-				if commits {
-					if deleteErr != nil {
-						t.Fatalf("Task deletion: %v", deleteErr)
-					}
-					requireFault(t, mutationErr, "task_deleted")
-					if observed.calls.Load() != 0 {
-						t.Fatal("deleted Task changed physical content")
-					}
-					assertAttachmentState(t, ctx, database, files, task, operation != "put", "before")
-					var metadata *string
-					if err := database.Pool.QueryRow(ctx, `SELECT (SELECT to_jsonb(a)::text FROM task_attachments a WHERE task_id=$1 AND path='file')`, task.ID).Scan(&metadata); err != nil {
+					if _, err := files.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"), strings.NewReader("before")); err != nil {
 						t.Fatal(err)
 					}
-					if (metadata == nil) != (originalMetadata == nil) || metadata != nil && *metadata != *originalMetadata {
-						t.Fatalf("metadata changed: before=%v after=%v", originalMetadata, metadata)
-					}
+				}
+				if operation != "delete" {
+					m.read(p, task)
+				}
+				transaction := m.expect("mutation")
+				transaction.callback = true
+				if !deleted {
+					transaction.completion = store.Completion{Outcome: store.TransactionCommitted}
+				}
+				presence := store.TaskPresence{Found: true}
+				if deleted {
+					at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+					presence.DeletedAt = &at
+				}
+				m.expect("lock", task.ProjectID, task.ID).result = presence
+				if operation == "delete" {
+					m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
 				} else {
-					var databaseError *pgconn.PgError
-					if !errors.As(deleteErr, &databaseError) || databaseError.Message != "injected delete rollback" {
-						t.Fatalf("missing injected rollback: %v", deleteErr)
+					m.expect("live", task.ProjectID)
+				}
+				if !deleted {
+					if operation == "delete" {
+						m.metadata(task, item)
+						m.expect("delete", task.ProjectID, task.ID, "file")
+					} else {
+						m.conflict(task, "file", false)
+						m.expect("put", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: "file", ContentType: "text/plain", SizeBytes: 5}).result = attachmentPutResult{attachmentItem(task, "file", "text/plain", 5), operation == "put"}
 					}
-					if mutationErr != nil || observed.calls.Load() != 1 {
-						t.Fatalf("mutation after rollback: %v calls=%d", mutationErr, observed.calls.Load())
+				}
+				observed := &observedAttachmentStorage{Storage: files}
+				err := attachmentMutation(t.Context(), NewAttachments(m, m, observed), p, task, operation)
+				if deleted {
+					requireFault(t, err, "task_deleted")
+					if observed.calls.Load() != 0 {
+						t.Fatal("deleted Task reached file storage")
 					}
-					assertAttachmentState(t, ctx, database, files, task, operation != "delete", "after")
+				} else if err != nil || observed.calls.Load() != 1 {
+					t.Fatalf("live mutation: %v calls=%d", err, observed.calls.Load())
 				}
 			})
 		}

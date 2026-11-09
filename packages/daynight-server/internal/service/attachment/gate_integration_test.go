@@ -5,18 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func TestAttachmentGateOrdersConcurrentInstances(t *testing.T) {
 	for _, operations := range [][2]string{{"put", "put"}, {"put", "delete"}, {"delete", "put"}, {"put", "open"}} {
 		t.Run(operations[0]+"-"+operations[1], func(t *testing.T) {
-			tasks, database, project, _, principal := taskService(t)
-			task := createTask(t, tasks, principal, project.ID, "Gate ordering")
+			_, firstMock, _, task, p := attachmentUnit(t)
+			secondMock := newAttachmentMock(t)
 			root := t.TempDir()
 			first, err := local.New(root)
 			if err != nil {
@@ -28,50 +32,89 @@ func TestAttachmentGateOrdersConcurrentInstances(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer second.Close()
-			a, b := newAttachmentService(database, first), newAttachmentService(database, second)
-			putAttachment(t, a, principal, task, "file", "before")
-			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-			defer cancel()
-			oldMetadata, old, err := a.Open(ctx, principal, task.ProjectID, task.ID, "file")
+			if _, err := first.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"), strings.NewReader("before")); err != nil {
+				t.Fatal(err)
+			}
+			old, err := first.Open(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer old.Body.Close()
+			before := attachmentItem(task, "file", "text/plain", 6)
+			after := attachmentItem(task, "file", "text/plain", 5)
+			next := attachmentItem(task, "file", "text/plain", 13)
+			if operations[0] == "delete" {
+				planAttachmentDelete(firstMock, p, task, before)
+			} else {
+				planAttachmentPut(firstMock, p, task, after, false)
+			}
 			observed := &observedAttachmentStorage{Storage: first, reached: make(chan struct{}), release: make(chan struct{})}
-			writer := newAttachmentService(database, observed)
-			firstResult := make(chan error, 1)
-			go func() { firstResult <- attachmentMutation(ctx, writer, principal, task, operations[0]) }()
+			a := NewAttachments(firstMock, firstMock, observed)
+			b := NewAttachments(secondMock, secondMock, second)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			var once sync.Once
+			release := func() { once.Do(func() { close(observed.release) }) }
+			firstDone, secondDone := make(chan struct{}), make(chan struct{})
+			firstResult, secondResult := make(chan error, 1), make(chan error, 1)
+			secondStarted := false
+			defer func() {
+				cancel()
+				release()
+				select {
+				case <-firstDone:
+				case <-time.After(time.Second):
+					t.Error("first mutation did not drain")
+				}
+				if secondStarted {
+					select {
+					case <-secondDone:
+					case <-time.After(time.Second):
+						t.Error("second operation did not drain")
+					}
+				}
+			}()
+			go func() { defer close(firstDone); firstResult <- attachmentMutation(ctx, a, p, task, operations[0]) }()
 			select {
 			case <-observed.reached:
 			case err := <-firstResult:
-				t.Fatalf("first operation did not reach file effect: %v", err)
+				t.Fatalf("first mutation did not reach file effect: %v", err)
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
+			if operations[0] == "put" && operations[1] == "put" {
+				secondMock.read(p, task)
+			} else if operations[1] == "put" {
+				planAttachmentPut(secondMock, p, task, next, true)
+			} else if operations[1] == "delete" {
+				planAttachmentDelete(secondMock, p, task, after)
+			} else {
+				planAttachmentOpen(secondMock, p, task, after)
+			}
 			started := make(chan struct{})
-			secondResult := make(chan error, 1)
+			secondStarted = true
 			go func() {
+				defer close(secondDone)
 				close(started)
-				if operations[1] == "open" {
-					metadata, object, err := b.Open(ctx, principal, task.ProjectID, task.ID, "file")
-					if err != nil {
-						secondResult <- err
-						return
-					}
-					content, readErr := io.ReadAll(object.Body)
-					closeErr := object.Body.Close()
-					if readErr != nil || closeErr != nil || string(content) != "after" || metadata.SizeBytes != int64(len(content)) || metadata.ContentType != "text/plain" {
-						secondResult <- fmt.Errorf("mismatched open: %#v %q %v %v", metadata, content, readErr, closeErr)
-						return
-					}
-					secondResult <- nil
-					return
-				}
 				if operations[1] == "put" {
-					_, _, err := b.Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("second-writer"))
+					_, _, err := b.Put(ctx, p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("second-writer"))
 					secondResult <- err
 					return
 				}
-				secondResult <- attachmentMutation(ctx, b, principal, task, "delete")
+				if operations[1] == "delete" {
+					secondResult <- b.Delete(ctx, p, task.ProjectID, task.ID, "file")
+					return
+				}
+				metadata, object, err := b.Open(ctx, p, task.ProjectID, task.ID, "file")
+				if err != nil {
+					secondResult <- err
+					return
+				}
+				body, readErr := io.ReadAll(object.Body)
+				if err := errors.Join(readErr, object.Body.Close()); err != nil || string(body) != "after" || metadata.SizeBytes != int64(len(body)) || metadata.ContentType != "text/plain" {
+					secondResult <- fmt.Errorf("mismatched open: %#v %q %v", metadata, body, err)
+					return
+				}
+				secondResult <- nil
 			}()
 			<-started
 			if operations[0] == "put" && operations[1] == "put" {
@@ -85,12 +128,13 @@ func TestAttachmentGateOrdersConcurrentInstances(t *testing.T) {
 					t.Fatal(ctx.Err())
 				}
 			}
-			close(observed.release)
+			release()
 			if err := attachmentWaitResult(t, ctx, firstResult); err != nil {
 				t.Fatal(err)
 			}
 			if operations[0] == "put" && operations[1] == "put" {
-				if _, _, err := b.Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("second-writer")); err != nil {
+				planAttachmentPut(secondMock, p, task, next, false)
+				if _, _, err := b.Put(ctx, p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("second-writer")); err != nil {
 					t.Fatal(err)
 				}
 			} else if err := attachmentWaitResult(t, ctx, secondResult); err != nil {
@@ -100,85 +144,103 @@ func TestAttachmentGateOrdersConcurrentInstances(t *testing.T) {
 			if operations[1] == "put" {
 				content = "second-writer"
 			}
-			assertAttachmentState(t, ctx, database, second, task, operations[1] != "delete", content)
-			oldContent, readErr := io.ReadAll(old.Body)
-			closeErr := old.Body.Close()
-			if readErr != nil || closeErr != nil || string(oldContent) != "before" || oldMetadata.SizeBytes != int64(len(oldContent)) {
-				t.Fatalf("old handle: %#v %q %v %v", oldMetadata, oldContent, readErr, closeErr)
+			object, fileErr := second.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
+			if operations[1] == "delete" {
+				if !errors.Is(fileErr, fs.ErrNotExist) {
+					if fileErr == nil {
+						object.Body.Close()
+					}
+					t.Fatalf("delete file result: %v", fileErr)
+				}
+			} else {
+				if fileErr != nil {
+					t.Fatal(fileErr)
+				}
+				body, readErr := io.ReadAll(object.Body)
+				if err := errors.Join(readErr, object.Body.Close()); err != nil || string(body) != content {
+					t.Fatalf("final file: %q %v", body, err)
+				}
+			}
+			body, err := io.ReadAll(old.Body)
+			if err != nil || string(body) != "before" {
+				t.Fatalf("old handle: %q %v", body, err)
 			}
 		})
 	}
 }
 
-func TestAttachmentGateProtectsOpenAndSurvivesDatabaseConnectionLoss(t *testing.T) {
-	tasks, database, project, _, principal := taskService(t)
-	task := createTask(t, tasks, principal, project.ID, "Gate")
-	root := t.TempDir()
-	first, err := local.New(root)
+type pausedAttachmentCompletion struct {
+	inner   store.AttachmentMutationWriter
+	reached chan struct{}
+	release chan struct{}
+	cause   error
+}
+
+func (w pausedAttachmentCompletion) WriteAttachmentMutation(ctx context.Context, fn func(store.AttachmentMutationScope) error) (store.Completion, error) {
+	completion, err := w.inner.WriteAttachmentMutation(ctx, fn)
 	if err != nil {
-		t.Fatal(err)
+		return completion, err
 	}
-	defer first.Close()
-	second, err := local.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Close()
-	a := newAttachmentService(database, first)
-	b := newAttachmentService(database, second)
-	putAttachment(t, a, principal, task, "file", "before")
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	metadata, old, err := a.Open(ctx, principal, task.ProjectID, task.ID, "file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	observed := &observedAttachmentStorage{Storage: first, reached: make(chan struct{}), release: make(chan struct{})}
-	writer := newAttachmentService(database, observed)
-	written := make(chan error, 1)
-	go func() { written <- attachmentMutation(ctx, writer, principal, task, "put") }()
+	close(w.reached)
 	select {
-	case <-observed.reached:
-	case err := <-written:
-		t.Fatalf("writer did not publish: %v", err)
+	case <-w.release:
+	case <-ctx.Done():
+		return store.Completion{Outcome: store.TransactionUnknown}, ctx.Err()
+	}
+	return store.Completion{Outcome: store.TransactionUnknown}, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: w.cause}
+}
+
+func TestAttachmentGateHeldThroughFailedCompletion(t *testing.T) {
+	_, m, files, task, p := attachmentUnit(t)
+	item := attachmentItem(task, "file", "text/plain", 5)
+	planAttachmentPut(m, p, task, item, true)
+	writer := pausedAttachmentCompletion{inner: m, reached: make(chan struct{}), release: make(chan struct{}), cause: errors.New("commit response lost")}
+	subject := NewAttachments(m, writer, files)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	var once sync.Once
+	release := func() { once.Do(func() { close(writer.release) }) }
+	done := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() { defer close(done); finished <- attachmentMutation(ctx, subject, p, task, "put") }()
+	defer func() {
+		cancel()
+		release()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("mutation did not drain")
+		}
+	}()
+	select {
+	case <-writer.reached:
+	case err := <-finished:
+		t.Fatalf("completion was not reached: %v", err)
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	var pid int32
-	if err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE '%task_attachments%' LIMIT 1),0)`).Scan(&pid); err != nil || pid == 0 {
-		t.Fatalf("writer transaction not found: %d %v", pid, err)
+	blocked, cancelBlocked := context.WithTimeout(ctx, 200*time.Millisecond)
+	_, _, err := subject.Open(blocked, p, task.ProjectID, task.ID, "file")
+	cancelBlocked()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("open passed pending completion: %v", err)
 	}
-	if _, err := database.Pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid); err != nil {
+	release()
+	if err := attachmentWaitResult(t, ctx, finished); !errors.Is(err, writer.cause) || !FileEffectPossible(err) {
+		t.Fatalf("failed completion: %v", err)
+	}
+	subject = NewAttachments(m, m, files)
+	final := attachmentItem(task, "file", "text/plain", 5)
+	planAttachmentPut(m, p, task, final, false)
+	if _, _, err := subject.Put(ctx, p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("final")); err != nil {
 		t.Fatal(err)
 	}
-	blockedCtx, blockedCancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer blockedCancel()
-	if _, _, err := b.Open(blockedCtx, principal, task.ProjectID, task.ID, "file"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("open passed live writer after database loss: %v", err)
-	}
-	close(observed.release)
-	if err := attachmentWaitResult(t, ctx, written); err == nil {
-		t.Fatal("writer succeeded after connection loss")
-	}
-	if _, _, err := b.Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("final")); err != nil {
-		t.Fatal(err)
-	}
-	current, object, err := b.Open(ctx, principal, task.ProjectID, task.ID, "file")
+	planAttachmentOpen(m, p, task, final)
+	_, object, err := subject.Open(ctx, p, task.ProjectID, task.ID, "file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, readErr := io.ReadAll(object.Body)
-	closeErr := object.Body.Close()
-	if readErr != nil || closeErr != nil || string(content) != "final" || current.SizeBytes != int64(len(content)) || current.ContentType != "text/plain" {
-		t.Fatalf("current metadata/content: %#v %q %v %v", current, content, readErr, closeErr)
+	body, readErr := io.ReadAll(object.Body)
+	if err := errors.Join(readErr, object.Body.Close()); err != nil || string(body) != "final" {
+		t.Fatalf("recovered file: %q %v", body, err)
 	}
-	oldContent, readErr := io.ReadAll(old.Body)
-	closeErr = old.Body.Close()
-	if readErr != nil || closeErr != nil || string(oldContent) != "before" || metadata.SizeBytes != int64(len(oldContent)) {
-		t.Fatalf("opened object changed: %#v %q %v %v", metadata, oldContent, readErr, closeErr)
-	}
-	if err := b.Delete(ctx, principal, task.ProjectID, task.ID, "file"); err != nil {
-		t.Fatal(err)
-	}
-	assertAttachmentState(t, ctx, database, second, task, false, "")
 }

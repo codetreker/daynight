@@ -111,32 +111,38 @@ func TestUploadLeaseAcquireFailureReleasesPartialPermits(t *testing.T) {
 }
 
 func TestPutLeaseCleanupAndRetention(t *testing.T) {
-	_, _, db, files, task, principal := attachmentService(t)
+	_, m, files, task, p := attachmentUnit(t)
 	closeFailure := errors.New("lease close failed")
-	subject := newAttachmentService(db, injectedResidencyStorage{Storage: files, closeErr: closeFailure})
-	item, created, err := subject.Put(t.Context(), principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("saved"))
+	subject := NewAttachments(m, m, injectedResidencyStorage{Storage: files, closeErr: closeFailure})
+	planAttachmentPut(m, p, task, attachmentItem(task, "file", "text/plain", 5), true)
+	item, created, err := subject.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("saved"))
 	var transaction *store.TransactionError
 	if !created || item.Path != "file" || !errors.Is(err, closeFailure) || !FileEffectPossible(err) || filestorage.PublicationOutcome(err) != filestorage.Published || !errors.As(err, &transaction) || transaction.Outcome != store.TransactionCommitted || !transaction.CleanupFailed {
-		t.Fatalf("committed cleanup facts: %#v %v %v", item, created, err)
+		t.Fatalf("committed cleanup: %+v %t %v", item, created, err)
 	}
-	assertAttachmentState(t, t.Context(), db, files, task, true, "saved")
-	_, _, err = subject.Put(t.Context(), principal, task.ProjectID, task.ID, "bad", "text/plain", strings.NewReader(strings.Repeat("x", 5242881)))
+	requireTransferContent(t, files, task, "file", "saved")
+	m.read(p, task)
+	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+	m.expect("live", task.ProjectID)
+	m.conflict(task, "bad", false)
+	_, _, err = subject.Put(t.Context(), p, task.ProjectID, task.ID, "bad", "text/plain", strings.NewReader(strings.Repeat("x", 5242881)))
 	if !errors.Is(err, closeFailure) || FileEffectPossible(err) || filestorage.PublicationOutcome(err) != filestorage.NotPublished {
 		t.Fatalf("prepublication cleanup: %v", err)
 	}
 	requireFault(t, err, "payload_too_large")
 	var held io.Closer
 	ctx := WithUploadLeaseRetainer(t.Context(), func(lease io.Closer) { held = lease })
-	_, _, err = subject.Put(ctx, principal, task.ProjectID, task.ID, "retained", "text/plain", strings.NewReader("ok"))
+	planAttachmentPut(m, p, task, attachmentItem(task, "retained", "text/plain", 2), true)
+	_, _, err = subject.Put(ctx, p, task.ProjectID, task.ID, "retained", "text/plain", strings.NewReader("ok"))
 	if err != nil || held == nil {
 		t.Fatalf("retained result: %v", err)
 	}
-	_, err = subject.AcquireUploadLease(t.Context(), principal, task.ProjectID, task.ID)
+	_, err = subject.AcquireUploadLease(t.Context(), p, task.ProjectID, task.ID)
 	requireFault(t, err, "resource_busy")
 	if err := held.Close(); !errors.Is(err, closeFailure) {
 		t.Fatalf("retained cleanup: %v", err)
 	}
-	lease, err := subject.AcquireUploadLease(t.Context(), principal, task.ProjectID, task.ID)
+	lease, err := subject.AcquireUploadLease(t.Context(), p, task.ProjectID, task.ID)
 	if err != nil {
 		t.Fatalf("slot not released: %v", err)
 	}
@@ -144,9 +150,9 @@ func TestPutLeaseCleanupAndRetention(t *testing.T) {
 }
 
 func TestTransferPutFromLeaseCleanupAndRetention(t *testing.T) {
-	_, _, db, files, task, principal := attachmentService(t)
+	_, m, files, task, p := attachmentUnit(t)
 	closeFailure := errors.New("lease close failed")
-	subject := newAttachmentService(db, injectedResidencyStorage{Storage: files, closeErr: closeFailure})
+	subject := NewAttachments(m, m, injectedResidencyStorage{Storage: files, closeErr: closeFailure})
 	source := func(store.AttachmentMutationScope) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("saved")), nil
 	}
@@ -156,7 +162,8 @@ func TestTransferPutFromLeaseCleanupAndRetention(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		admission, err := subject.AdmitTransfer(t.Context(), principal, task.ProjectID, task.ID, "file", "text/plain", namespace)
+		expectTransferAdmission(m, p, task, "file")
+		admission, err := subject.AdmitTransfer(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", namespace)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,6 +172,8 @@ func TestTransferPutFromLeaseCleanupAndRetention(t *testing.T) {
 		if retain {
 			ctx = WithUploadLeaseRetainer(ctx, func(lease io.Closer) { held = lease })
 		}
+		expectTransferMutation(m, task, "file", store.Completion{Outcome: store.TransactionCommitted})
+		expectTransferMetadata(m, task, "file", "text/plain", 5, attachmentItem(task, "file", "text/plain", 5), !retain)
 		item, _, err := admission.PutFrom(ctx, source)
 		if retain {
 			if err != nil || held == nil {
@@ -176,7 +185,7 @@ func TestTransferPutFromLeaseCleanupAndRetention(t *testing.T) {
 		} else {
 			var transaction *store.TransactionError
 			if !errors.Is(err, closeFailure) || !FileEffectPossible(err) || filestorage.PublicationOutcome(err) != filestorage.Published || !errors.As(err, &transaction) || transaction.Outcome != store.TransactionCommitted || !transaction.CleanupFailed {
-				t.Fatalf("transfer cleanup: %#v %v", item, err)
+				t.Fatalf("transfer cleanup: %+v %v", item, err)
 			}
 		}
 		if err := admission.Close(); err != nil {
@@ -192,14 +201,16 @@ func TestTransferPutFromLeaseCleanupAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer private.Close()
-	admission, err := subject.AdmitTransfer(t.Context(), principal, task.ProjectID, task.ID, "failure", "text/plain", namespace)
+	expectTransferAdmission(m, p, task, "failure")
+	admission, err := subject.AdmitTransfer(t.Context(), p, task.ProjectID, task.ID, "failure", "text/plain", namespace)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admission.Close()
+	expectTransferMutation(m, task, "failure", store.Completion{Outcome: store.TransactionNotCommitted})
 	sourceFailure := errors.New("source failed")
 	_, _, err = admission.PutFrom(t.Context(), func(store.AttachmentMutationScope) (io.ReadCloser, error) { return nil, sourceFailure })
 	if !errors.Is(err, sourceFailure) || !errors.Is(err, closeFailure) || FileEffectPossible(err) || filestorage.PublicationOutcome(err) != filestorage.NotPublished {
-		t.Fatalf("source/cleanup facts: %v", err)
+		t.Fatalf("source cleanup: %v", err)
 	}
 }

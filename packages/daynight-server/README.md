@@ -850,6 +850,42 @@ queries and process crash recovery retain their PostgreSQL boundaries. The
 [record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
 records which storage facts are mocked and which durable operations remain real.
 
+### Attachment service and store tests
+
+The complete `internal/service/attachment` suite uses synthetic principals,
+Project and Task facts with strict expectations on the existing snapshot,
+attachment mutation and DAO interfaces. Each operation has an explicit call
+plan; unconfigured, extra or unconsumed calls fail. Query results are configured
+independently of captured writes. Callback execution and transaction completion
+remain separate, including `committed`, `not_committed` and `unknown` outcomes.
+The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_UNIAUTH_FIXTURE`, including during complete module validation.
+
+Run the complete suite without database or authentication fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m ./internal/service/attachment
+```
+
+Service tests retain admission and call order, exact canonical addresses,
+metadata and byte propagation, error chains, completion facts, cancellation,
+upload leases and transfer cleanup. Real temporary files and permits remain
+where the assertion concerns their use and lifetime. The content reader still
+crosses the actual 5 MiB boundary; test-local fixtures do not reduce production
+limits or timing defaults.
+
+PostgreSQL attachment DAO tests own SQL mapping, upsert identity, pagination,
+literal wildcard prefixes, legacy metadata and affected-row failures. Root
+PostgreSQL scope tests own actual Task and Project deletion barriers, concurrent
+grant removal, transaction completion and readback after file publication or
+backend loss. Local storage tests own sibling namespace byte isolation and
+pruning, native case behavior, target gates, old readers and transfer publication.
+The [Attachment service ownership decision](../../.agents/notes/implemented/testing/2026-11-09-attachment-service-test-ownership.md)
+records the proof allocation. Measurements include these receiving packages;
+a shorter service-package time alone does not establish a faster complete job.
+
 ### Attachment HTTP tests
 
 The `internal/server/attachment` suite assembles the real HTTP, authentication
@@ -878,8 +914,10 @@ assertions. The consumed-body metadata failure case uses direct `PutRetained`
 and `List` callbacks, controlled credential middleware and an actual TCP
 connection to verify the following keepalive request. Existing store metadata
 tests retain actual SQL, transaction and
-unchanged-state readback; native attachment lifecycle and process tests retain
-admission/publication barriers and exact metadata and bytes across restart. The
+unchanged-state readback. Root PostgreSQL scope tests retain physical admission
+and deletion barriers; service tests verify the corresponding calls and resource
+lifetime with controlled lower results. Process tests retain exact metadata and
+bytes across restart. The
 [Attachment HTTP ownership decision](../../.agents/notes/implemented/testing/2026-11-08-attachment-http-test-ownership.md)
 records this correction of existing tests and their retained proof boundaries.
 

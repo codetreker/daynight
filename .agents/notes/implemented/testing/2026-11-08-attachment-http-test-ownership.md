@@ -29,9 +29,13 @@ Native resource boundaries remain real. TCP tests use actual HTTP connections
 and incomplete request bodies. Local-storage tests exercise real files,
 publication, returned bytes and resource cleanup. Existing
 [metadata DAO tests](../../../../packages/daynight-server/internal/core/store/postgres/attachment/dao_integration_test.go)
-retain SQL, transaction and unchanged-state readback. Attachment lifecycle
-witnesses retain admitted-stream publication and Task-deletion barriers, while
-the [fresh-process witness](../../../../packages/daynight-server/cmd/daynight-server/persistence_process_test.go)
+retain SQL, transaction and unchanged-state readback. Root PostgreSQL scope
+witnesses retain actual admission, Task and Project deletion barriers and
+transaction completion after file publication. The
+[Attachment service ownership decision](2026-11-09-attachment-service-test-ownership.md)
+separates those physical observations from service call order, completion facts
+and resource lifetime. The
+[fresh-process witness](../../../../packages/daynight-server/cmd/daynight-server/persistence_process_test.go)
 retains exact metadata and bytes across restart. The
 [test-writing rules](../../../../docs/writing_tests.md) define these dependencies
 and keep API integration and product E2E focused on normal flows.
