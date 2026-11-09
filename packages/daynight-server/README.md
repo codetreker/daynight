@@ -1320,18 +1320,33 @@ records this correction of existing tests and their retained proof boundaries.
 
 ### Task service and store tests
 
-The complete `internal/service/task` suite uses synthetic domain inputs and
-strict mocks of the existing DAO, snapshot and transaction scopes. Unconfigured
-calls fail explicitly. Callback execution and proposed writes remain separate
-from `committed`, `not_committed` and `unknown` results; tests retain their
-permission, version, error-chain, cancellation and source-fact assertions.
+Task service tests use synthetic domain inputs and controlled DAO, snapshot and
+transaction boundaries. Unconfigured calls fail explicitly. Callback execution
+and proposed writes remain separate from `committed`, `not_committed` and
+`unknown` results; tests retain permission, version, error-chain, cancellation
+and source-fact assertions.
 
-Run this suite without a database from the module:
+The List coordination suite controls directly invoked project authorization and
+Task read operations. It checks the original context, principal, canonical IDs,
+snapshot-bound capability identity and call order. Domain faults are staged
+until snapshot completion, whose failures suppress partial pages and refusals.
+Pure `SelectList` planning and `ProjectList` encoding execute normally, including
+actual cursor encoding errors. Core owns the original three assignment functions,
+with all 360 combinations, complete returned Task data, pagination, Worker
+inventory, historical assignment and version-2 cursor scope. Shared platform and
+agent-permission service fixtures retain their DAO-based List scope.
+
+Run the service suite and receiving Core tests without database or UniAuth
+fixtures from the module:
 
 ```bash
 source scripts/env.sh
-env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 -timeout=5m ./internal/service/task
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m ./internal/service/task ./internal/core/task
 ```
+
+The [List test decision](../../.agents/notes/implemented/testing/2026-11-09-task-list-direct-operation-tests.md)
+records the direct-operation boundary and retained query/cursor proofs.
 
 PostgreSQL witnesses follow their implementation owners under
 `internal/core/store/postgres/`. Domain subpackages test direct DAO queries,

@@ -82,14 +82,14 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 	var result store.TaskPage
 	var missing *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := s.listOperations.requireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &missing) {
 				return nil
 			}
 			return err
 		}
 		var err error
-		result, missing, err = taskcore.ReadList(ctx, snapshot.TaskDAO(), projectID, selection)
+		result, missing, err = s.listOperations.readList(ctx, snapshot.TaskDAO(), projectID, selection)
 		return err
 	})
 	if err != nil {
