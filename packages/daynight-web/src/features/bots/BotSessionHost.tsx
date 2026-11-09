@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from 'react';
 import { authRequestsPaused } from '../../api/client';
+import { browserNavigation } from '../../app/navigation';
+import { parseAuthRoute } from '../../app/router';
 import type { BotSessionBinding } from '../../api/sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { SessionView } from '../task-agent-session/SessionView';
@@ -24,20 +26,40 @@ export function useBotSessionCache(): BotSessionCache {
     if (scope.signal.aborted) abort(); else cache.syncAvailability();
     return () => { scope.signal.removeEventListener('abort', abort); clearInterval(timer); cache.close(); };
   }, [cache, scope]);
+  useLayoutEffect(() => {
+    const navigation = browserNavigation();
+    const target = () => { const route = parseAuthRoute(navigation.snapshot().pathname); return route.kind === 'bot' ? route.botId : null; };
+    let observedBotId = target();
+    // The existing owner notifies only admitted locations. Query/fragment changes
+    // keep the same target; a new target or leaving Bots freezes before commit.
+    const detach = navigation.subscribe(() => {
+      const nextBotId = target();
+      if (nextBotId === observedBotId) return;
+      observedBotId = nextBotId; cache.suspendActions();
+    });
+    return () => { detach(); cache.suspendActions(); };
+  }, [cache]);
   return cache;
 }
 
 /** The caller supplies only an authenticated Bot's real Session binding, or null while it is unknown. */
-export function BotSessionHost({ cache, binding, active = true, fullscreenBoundary, presentation }: {
+export function BotSessionHost({ cache, displayBinding, actionBinding = null, botId = displayBinding?.botId ?? null, active = true, fullscreenBoundary, presentation }: {
   readonly cache: BotSessionCache;
-  readonly binding: BotSessionBinding | null;
+  readonly displayBinding: BotSessionBinding | null;
+  readonly actionBinding?: BotSessionBinding | null;
+  readonly botId?: string | null;
   readonly active?: boolean;
   readonly presentation?: SessionPresentationSlots;
   readonly fullscreenBoundary?: RefObject<HTMLElement | null>;
 }) {
   const panes = useSyncExternalStore(cache.subscribe, cache.snapshot), m = useSessionMessages();
+  const navigation = browserNavigation();
+  const location = useSyncExternalStore(navigation.subscribe, navigation.snapshot);
   const guardRevision = useSyncExternalStore(cache.subscribe, cache.guardSnapshot);
+  const binding = displayBinding?.botId === botId ? displayBinding : null;
   const key = binding ? botSessionKey(binding) : null;
+  const action = actionBinding?.botId === botId && active ? actionBinding : null;
+  const actionKey = action ? botSessionKey(action) : null;
   const current = cache.isCurrent();
   const assistantPresentation: SessionPresentationSlots = {
     ...presentation,
@@ -45,7 +67,9 @@ export function BotSessionHost({ cache, binding, active = true, fullscreenBounda
     renderEmpty: slot => <BotConversationEmpty {...slot} />,
     composer: { ...presentation?.composer, compactMenus: true },
   };
-  useLayoutEffect(() => { cache.select(binding); }, [cache, key, current, guardRevision]);
+  // Two admitted navigations can return to this same selection in one commit.
+  // The navigation owner's snapshot still changes, so that commit must readmit it.
+  useLayoutEffect(() => { cache.select(binding, current ? action : null); }, [cache, key, actionKey, botId, active, current, guardRevision, location]);
   const selected = current && panes.some(pane => pane.key === key);
   return <section className="bot-session-host" aria-label={m.title}>
     {!selected ? <p className="session-empty" role="status">{current ? m.loading : m.unavailable}</p> : null}

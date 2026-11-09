@@ -69,9 +69,17 @@ Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩�
 
 `api/sessions.ts` 导出 `BotSessionBinding` 和 `createBotSessionApi(binding, onPrincipalMismatch)`。factory 复用独立 Session 的 `/api/v1/test-sessions/{sessionId}` API，额外核对真实 `testExecutionId`。`TaskSessionClient` 的独立分支接受 `bot`，在 HTTP current 与 channel snapshot 上重新验证账号、Session、执行及 Web 模式；草稿范围包含 Bot 身份。既有 fence 继续约束请求结果，旧代请求的迟到权限错误不能撤销新代客户端。
 
-页面在已认证的 `TaskCacheProvider` 内调用一次 `useBotSessionCache()`，把返回值与已验证的 `binding` 传给 `BotSessionHost`。选中项尚未取得绑定时传 `null`，不沿用旧绑定。缓存 hook 应放在选中项与详情面板之上，不能以选中 Bot 或详情开关作为 key。关闭页面内容时可传 `active=false`；删除或权威拒绝访问调用 `cache.invalidateBot(botId)`。同一账号 scope 内被撤销的 Bot 不接受陈旧选择，页面重挂不撤销该标记；重新授权须在新的有效身份范围建立缓存。
+页面在已认证的 `TaskCacheProvider` 内调用一次 `useBotSessionCache()` 和 `useBotDetail()`。两者的所有者均在选中项与详情面板之上，不以 Bot ID 或详情开关作 key。页面从真实 pane 集合推导最多三席驻留 Bot ID，详情缓存仅保留这些目标及当前冷目标。详情的 `displayBinding` 提供当前目标同账号范围内仍有效的显示身份，`actionBinding` 只来自当前选择代次的有效确认；`confirmed` 暴露同一确认事实，让没有 Session 的启动详情也能正确判定操作资格。列表名称仅作为当前目标的标题回退，不创建绑定或授权。
 
-`BotSessionHost` 始终渲染同一个 shell，pane 以完整绑定的 JSON key 区分。当前选择直接控制 `hidden`、`inert` 和 `active`，布局 effect 才创建新客户端。`isCurrent` 由账号范围、撤权状态和 pane 的实际客户端身份决定，不依赖当前可见项。非当前 pane 可同步消息；共享 View 的发送和交互控件还要求 `active`，不会将可见性变化当成身份撤销。普通后台检查不改变当前已确认绑定或 Host 的展示 active；client 的 `authPaused` 暂停发送和结果发布，保留原 pane、Timeline 和本地交互状态。可复用的 channel 在暂停期间保留，现有 60 秒和消息缓冲边界或真实传输中断会触发必要的断开与恢复；重连等待当前准入，并沿用 cursor 重放和代际拒绝。详情布局与模式使用共享组件，未复制聊天 renderer 或 reducer。
+`BotSessionHost` 接收独立的 `displayBinding`、`actionBinding` 和当前 `botId`。完整身份使用 `botSessionKey`，包含 `ownerUserId`、`botId`、`sessionId`、`testExecutionId`；不属于当前目标或账号的绑定不能显示或准入。Host 保留同一 shell 和完整绑定 key 下的 Timeline、Composer 与 reading handle，当前选择直接控制 `hidden`、`inert` 和 `active`。布局 effect 以已提交选择和两份完整绑定更新 cache，render 不创建 client 或修改 cache。回切有效驻留目标时先恢复原内容，本次详情请求不隐藏会话；无可信显示绑定时传 null，不借用另一目标。
+
+`BotSessionCache.select(displayBinding, actionBinding = null)` 每次先同步撤销全部 pane 的新操作资格，再仅为有效且完整相等的当前目标开放；命中已有 pane 也执行这个更新。Bot client 创建时显式使用 `initialActionAdmitted: false`。`suspendActions()` 只撤销新操作，不关闭读取或原回执恢复。导航仍由既有 `BrowserNavigation` 拥有；实际采纳通知在 React 提交前同步冻结旧 client，布局 effect 再处理已提交目标。相同 URL、未采纳或被取消的导航不能让当前目标永久冻结。外部导航、active 变化及账号/删除 guards 也在提交边界关闭旧操作，不依赖 250ms availability 定时器。
+
+共享 `TaskSessionClient` 用 `SessionViewState.actionAdmitted` 发布新操作资格，`setActionAdmission(boolean)` 同步更新，同值不重复发布。`execute` 在创建 requestId/operationId 和写入 unknown、草稿 submission、setting intent、进度之前检查；`respond` 在 submissionId 之前先检查，最终 execute 仍再检查。所有写入口复用这道门禁，拒绝不排队、不自动补发、不制造未知操作。Task/Test 省略 `initialActionAdmitted` 时默认为 true，保留原行为。图片后续入口必须在其冻结或提交副作用之前消费同一准入。
+
+操作资格不加入 `canInteract`、`owned`、`live`、认证 `admitted` 或 `authPaused`。`isCurrent` 仍由账号范围、撤权状态和实际 pane client 身份决定，不依赖当前可见项；隐藏 pane 可以同步历史和查询原 operation。SessionView 将资格分别传给 Composer 与 Timeline/InteractionCard，只禁止发送、取消、设置、命令、controls refresh 和回答提交。原 textarea、菜单浏览、live interaction 本地填写、待处理定位和展开保持原能力与身份规则；原 unknown 的 Check 继续按原 ID 查询。详情普通后台轮询保留当前确认，真实失败撤销，取消读取不伪造结果。
+
+真正 auth pause 继续暂停受限写入与结果发布，保留原 pane、Timeline 和本地状态。可复用的 channel 在暂停期间保留，现有 60 秒和消息缓冲边界或真实传输中断会触发必要断开与恢复；重连等待原认证准入，并沿用 cursor 重放和代际拒绝。删除或权威失权使用原失效机制撤下内容；详情布局与显示模式不复制 renderer 或 reducer。
 
 ## 有界资源与轻量保留
 

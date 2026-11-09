@@ -52,13 +52,15 @@
 
 ## 读取与展示
 
-`useBotRead` 为列表、defaults 和选中详情分别管理请求。资源 key 与账号 scope 共同约束结果；每五秒在页面可见且身份准入时刷新，不重叠请求。隐藏、资源变化和 scope abort 取消旧读取，结果发布前再次检查准入。暂停与实际失败分开：普通后台检查保留同 scope、同 key 已确认的值，实际失败保留上次值并标记 stale；切换资源不显示前一个资源的值。首次加载、显式刷新和实际错误各自保留原有语义。
+`useBotRead` 分别管理列表和 defaults。资源 key 与账号 scope 共同约束结果；每五秒在页面可见且身份准入时刷新，不重叠请求。隐藏、资源变化和 scope abort 取消旧读取，结果发布前再次检查准入。临时身份检查保留同 scope、同 key 已确认的值，实际失败保留上次值并标记 stale。
 
-列表遍历到末页后一次发布，检查重复 ID/cursor，搜索在完整快照中进行。defaults 单独读取，因此 Worker 观测失败不会清空助手列表。`ready` 仅显示已启动，当前同步和输入可用性继续由 Session View 解释。服务端 defaults 的 Worker 状态不替代 Session 同步事实。
+选中详情由既有 `useBotDetail` / `BotDetailCache` 管理，按账号 scope、选择对象和请求代次隔离。页面传实际三席 pane 的 Bot ID 集合；新选择可读取自己的缓存详情与 `displayBinding`，但上次选择的确认不能成为本次 `actionBinding`。普通五秒轮询开始保留确认，真实网络、协议或服务错误撤确认，取消不产生成功或失败。`confirmed` 与 actionBinding 使用同一当前确认规则；无 Session 的启动详情仍可得到确认，不把空 binding 误解释成持续加载。
 
-`BotsPage` 在选中项之上创建一次缓存，`/bots` 与 `/bots/{id}` 使用同一个组件位置。SessionHost 始终挂载；未知绑定传 null，已缓存的 pane 隐藏，只有当前目标同 scope 的已确认详情提供真实绑定。临时准入暂停不会使已确认绑定消失，Host 的 active 表示实际选中和展示；Session client 自行暂停请求、发送及结果发布。关闭聊天只导航回列表。删除或权威拒绝访问调用 `cache.invalidateBot`；普通读取失败撤下输入但不销毁可恢复状态。
+列表遍历到末页后一次发布，检查重复 ID/cursor，搜索在完整快照中进行。defaults 单独读取，Worker 观测失败不会清空助手列表。当前可信列表名称可在冷详情等待时提供标题，不带入上一助手状态。`ready` 仅显示已启动，当前同步和输入可用性继续由 Session View 解释。服务端 defaults 不替代 Session 同步事实。
 
-路由进入既有身份检查与页面标题流程，保留原生链接修改键行为。全局侧栏提供助手入口，并按助手路由显示选中状态；导航不替换本页身份或会话缓存模型。列表搜索、详情展开与布局尺寸不参与缓存身份。绑定继续由 owner、Bot、Session 和执行 ID 共同确定，隐藏 pane 保持 hidden/inert；删除与失效仍由原协调机制处理。
+`BotsPage` 在选中项之上创建一次 cache，`/bots` 与 `/bots/{id}` 使用同一个组件位置。Host 始终挂载，展示不受详情 stale 隐藏；它接收当前目标独立的显示与操作绑定，原 DOM、草稿和阅读先恢复，远端提交待当前完整身份确认。临时失败保留可读内容并显示局部错误和重试，权威拒绝访问及删除撤下失效内容。具体准入和原回执继续的责任见[Session 设计](bot-session-view.md#绑定和消费接口)。
+
+路由进入既有身份检查与导航草稿准入，不创建另一份 route state，保留原生链接修改键行为。已采纳导航同步冻结旧 client，提交后的布局 effect 选择当前目标；同 URL 或取消导航维持原选择。关闭聊天只导航回列表。搜索、详情展开与布局尺寸不参与缓存身份；完整绑定仍由 owner、Bot、Session 和执行 ID 共同确定，隐藏 pane 保持 hidden/inert，删除与失效由原协调机制处理。
 
 ## 统一标题与状态来源
 
