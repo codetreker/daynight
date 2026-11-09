@@ -8,7 +8,9 @@ import { parseAuthRoute } from '../src/app/router';
 import { BotsPage } from '../src/features/bots/BotsPage';
 import { BotDetailCache } from '../src/features/bots/detail-cache';
 import { BotSessionCache } from '../src/features/bots/session-cache';
+import type { TaskSessionClient } from '../src/features/task-agent-session/client';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
+import { sessionFence, type SessionCommand, type SessionOperation } from '../../daynight/src/session/protocol';
 import { botFixture } from './helpers/bot-session';
 import { BOT_USER, botDefaults, botDefinition, botError, botId, botResponse } from './helpers/bots';
 import { mockWideAssistantWorkspace } from './helpers/assistant-ui';
@@ -55,6 +57,31 @@ function fixture(configure?: (live: ReturnType<typeof botFixture>[]) => void) {
   return { scope, bots, live, delayed, reads, view, navigation, resident, input, choose, delay, enabled: (enabled: boolean) => view.rerender(<Page enabled={enabled} />) };
 }
 
+const interaction = { interactionId: 'approval', revision: '1', state: 'pending' as const, kind: 'approval' as const, title: 'Run tool', detail: 'Tool request', actions: ['allow_once' as const] };
+function receipt(command: SessionCommand, state: SessionOperation['state'] = 'confirmed'): SessionOperation {
+  return { protocol: command.protocol, ...sessionFence(command), operationId: command.operationId, kind: command.kind, state, providerResult: 'handled', error: null };
+}
+function actionFixture() {
+  return fixture(live => {
+    const a = live[0]!;
+    a.change({ ...a.snapshot(), activity: 'working', currentTurnId: 'turn-1', operations: { canSend: true, canCancel: true, canRespond: true }, controls: {
+      revision: '4', settings: [{ id: 'model', category: 'model', label: 'Model', value: 'a', description: null, mutable: true, scope: 'session', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] }],
+      commands: [{ id: 'compact', name: 'compact', description: 'Compact', argumentHint: null, available: true }], settingsError: null, commandsError: null,
+    } });
+    vi.mocked(a.api.timeline).mockResolvedValue({ ...a.page, items: [...a.page.items, { kind: 'interaction', entryId: 'approval', entrySeq: '2', revision: '1', interaction }] });
+    vi.mocked(a.api.command).mockImplementation(async (_id, command) => receipt(command));
+  });
+}
+const actions = [
+  { name: 'send', kind: 'send_message', invoke: (client: TaskSessionClient) => client.send('Local draft') },
+  { name: 'cancel', kind: 'cancel', invoke: (client: TaskSessionClient) => client.cancel() },
+  { name: 'respond', kind: 'interaction_response', invoke: (client: TaskSessionClient) => client.respond(interaction, { kind: 'approval', action: 'allow_once' }) },
+  { name: 'updateSetting', kind: 'update_setting', invoke: (client: TaskSessionClient) => client.updateSetting('model', 'b', '4') },
+  { name: 'executeCommand', kind: 'execute_command', invoke: (client: TaskSessionClient) => client.executeCommand('compact', '', '4', 'Local draft') },
+  { name: 'refreshControls', kind: 'refresh_controls', invoke: (client: TaskSessionClient) => client.refreshControls() },
+];
+const stored = () => Object.fromEntries(Object.keys(sessionStorage).map(key => [key, sessionStorage.getItem(key)]));
+
 it('restores the original resident DOM and local state before the returning detail responds', async () => {
   localStorage.setItem(`daynight.web.session.display.v1:${JSON.stringify([BOT_USER, botId(101)])}`, '"standard"');
   // JSDOM has no layout. Supply a long Timeline with an earlier tool row in view.
@@ -97,15 +124,92 @@ it('restores the original resident DOM and local state before the returning deta
   await waitFor(() => expect(pane.client.snapshot().actionAdmitted).toBe(true));
 });
 
-it('freezes the old client synchronously when navigation is admitted before React commits', async () => {
-  const f = fixture(); await screen.findByRole('textbox', { name: 'Message' });
-  await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot().actionAdmitted).toBe(true));
-  const a = f.resident().snapshot()[0]!; f.delay(2);
+it.each(actions)('freezes $name before the navigation commit and rejects it until the returning detail is confirmed', async ({ invoke, kind }) => {
+  const f = actionFixture(), input = await screen.findByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot()).toMatchObject({ actionAdmitted: true, historyReady: true }));
+  fireEvent.change(input, { target: { value: 'Local draft' } });
+  const a = f.resident().snapshot()[0]!, api = f.live[0]!.api, staleCall = () => invoke(a.client);
+  const before = a.client.snapshot(), disk = stored(), uuid = vi.spyOn(crypto, 'randomUUID');
+  const unchanged = () => {
+    const current = a.client.snapshot();
+    expect(current).toMatchObject({ actionAdmitted: false, connected: true, authPaused: false });
+    expect(current.state.operations).toBe(before.state.operations);
+    expect(current.state.responseTargets).toBe(before.state.responseTargets);
+    expect(current.operationProgress).toBe(before.operationProgress);
+    expect(current.settingIntents).toBe(before.settingIntents);
+    expect(current.draft).toBe(before.draft);
+    expect(current.draft.submission).toBeNull();
+    expect(stored()).toEqual(disk);
+    expect(uuid).not.toHaveBeenCalled();
+    expect(api.command).not.toHaveBeenCalled();
+  };
+  f.delay(2);
   let rejected: Promise<void>;
-  act(() => { f.navigation.navigate(`/bots/${f.bots[1]!.id}`); rejected = expect(a.client.send('before the commit')).rejects.toThrow(); });
-  await rejected!;
-  expect(f.live[0]!.api.command).not.toHaveBeenCalled(); expect(a.client.snapshot().draft.submission).toBeNull();
+  act(() => {
+    f.navigation.navigate(`/bots/${f.bots[1]!.id}`);
+    expect(screen.getByRole('heading', { name: 'Assistant 1' })).toBeVisible();
+    rejected = expect(staleCall()).rejects.toThrow('Session actions are not currently admitted.');
+    unchanged();
+  });
+  await rejected!; unchanged();
   expect(screen.getByRole('heading', { name: 'Assistant 2' })).toBeVisible();
+
+  const pending = f.delay(1); f.choose(1);
+  expect(f.input()).toBe(input);
+  await expect(staleCall()).rejects.toThrow('Session actions are not currently admitted.');
+  unchanged();
+  await act(async () => pending.resolve(botResponse(f.bots[0])));
+  await waitFor(() => expect(a.client.snapshot().actionAdmitted).toBe(true));
+  expect(api.command).not.toHaveBeenCalled();
+  expect(uuid).not.toHaveBeenCalled();
+  expect(a.client.snapshot().state.operations.size).toBe(0);
+  expect(a.client.snapshot().draft.submission).toBeNull();
+  expect(a.client.snapshot().settingIntents.size).toBe(0);
+
+  await act(async () => staleCall());
+  expect(api.command).toHaveBeenCalledExactlyOnceWith(a.binding.sessionId, expect.objectContaining({ kind }), expect.any(AbortSignal));
+  expect(uuid).toHaveBeenCalled();
+  expect(api.current).toHaveBeenCalledOnce(); expect(api.channel).toHaveBeenCalledOnce();
+});
+
+it('queries an original unknown operation while the returning detail is frozen without replaying or clearing a newer draft', async () => {
+  const f = actionFixture(), input = await screen.findByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(f.resident().snapshot()[0]!.client.snapshot()).toMatchObject({ actionAdmitted: true, historyReady: true }));
+  const a = f.resident().snapshot()[0]!, api = f.live[0]!.api;
+  fireEvent.change(input, { target: { value: 'Original submission' } });
+  vi.mocked(api.command).mockRejectedValueOnce(new Error('Lost command receipt'));
+  await act(async () => { await expect(a.client.send('Original submission')).rejects.toThrow('Lost command receipt'); });
+  const command = vi.mocked(api.command).mock.calls[0]![1];
+  expect(a.client.snapshot().state.operations.get(command.operationId)?.state).toBe('unknown');
+  expect(a.client.snapshot().draft.submission?.operationId).toBe(command.operationId);
+
+  f.choose(2); await screen.findByText(`Message ${f.bots[1]!.id}`);
+  const pending = f.delay(1); f.choose(1);
+  expect(f.input()).toBe(input); expect(input).toHaveValue('Original submission');
+  expect(a.client.snapshot().actionAdmitted).toBe(false);
+  fireEvent.change(input, { target: { value: 'Edited while checking the original receipt' } });
+  const draft = a.client.snapshot().draft, uuid = vi.spyOn(crypto, 'randomUUID');
+  const queried = Promise.withResolvers<SessionOperation>();
+  vi.mocked(api.operation).mockReturnValueOnce(queried.promise);
+  fireEvent.click(screen.getByRole('button', { name: 'Check original operation' }));
+  expect(api.operation).toHaveBeenCalledExactlyOnceWith(command.sessionId, command.operationId, expect.any(AbortSignal));
+  expect(a.client.snapshot().checking.has(command.operationId)).toBe(true);
+  expect(a.client.snapshot().actionAdmitted).toBe(false);
+  await act(async () => queried.resolve(receipt(command, 'provider_accepted')));
+  expect(a.client.snapshot().state.operations.get(command.operationId)?.state).toBe('provider_accepted');
+  expect(a.client.snapshot().checking.size).toBe(0);
+  expect(a.client.snapshot().actionAdmitted).toBe(false);
+  expect(a.client.snapshot().draft).toMatchObject({ text: draft.text, revision: draft.revision, submission: null });
+  expect(input).toHaveValue('Edited while checking the original receipt');
+  expect(uuid).not.toHaveBeenCalled(); expect(api.command).toHaveBeenCalledOnce();
+
+  await act(async () => pending.resolve(botResponse(f.bots[0])));
+  await waitFor(() => expect(a.client.snapshot().actionAdmitted).toBe(true));
+  expect(api.command).toHaveBeenCalledOnce(); expect(api.operation).toHaveBeenCalledOnce();
+  expect(a.client.snapshot().state.operations.size).toBe(1);
+  expect(input).toHaveValue('Edited while checking the original receipt');
+  expect(uuid).not.toHaveBeenCalled();
+  expect(api.current).toHaveBeenCalledOnce(); expect(api.channel).toHaveBeenCalledOnce();
 });
 
 it('does not freeze the current client on same-target or cancelled guarded navigation', async () => {
