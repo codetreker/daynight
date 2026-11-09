@@ -25,6 +25,7 @@ const fail = (status: number, code = "internal_error") => json({ error: { code, 
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const install = (handler: (url: string, init: RequestInit) => Response | Promise<Response> = (url) => url.endsWith("/members") ? json(members()) : json(project())) => {
   const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+    if (url === `/api/v1/me/projects/${id}/worker-prompt`) return wireResponse({ scope: 'project', scopeId: id, revision: '0', text: '', updatedAt: null }, { headers: { 'Daynight-User-ID': serverActor } });
     const response = await handler(url.endsWith("/access") ? url.replace(/access$/, "members") : url, init);
     if (!url.endsWith("/access")) { if (url === "/api/v1/me" && response.ok) serverActor = (await response.clone().json()).id; return response; }
     if (!response.ok) { response.headers.set("Daynight-User-ID", userId); return response; }
@@ -200,10 +201,10 @@ describe("project settings form", () => {
     const resume = pauseAuthRequests(); holdPermission = true; fireEvent(window, new Event("focus"));
     saved = true; await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
     resume(); await act(async () => permission.resolve(fail(503)));
-    await screen.findByText("设置已保存。"); await screen.findByRole("alert");
+    await screen.findByText("设置已保存。"); const alert = (await screen.findByText("safe-request")).closest('[role="alert"]') as HTMLElement;
     expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
-    holdPermission = false; fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    holdPermission = false; fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(screen.queryByText("safe-request")).toBeNull());
     expect(screen.getByLabelText("提醒阈值")).toHaveValue(90);
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
   });

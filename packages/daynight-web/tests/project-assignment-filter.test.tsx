@@ -74,6 +74,127 @@ const chain = (value: number) => document.getElementById(`task-root-${id(value)}
 const pagination = (name: string) => screen.getByRole('navigation', { name: `${name}分页` });
 
 describe('project assignee filtering', () => {
+  it.each([
+    ['分配给我', { kind: 'me' }, [1]],
+    ['未分配', { kind: 'unassigned' }, [2]],
+    ['Former person', { kind: 'user', userId: formerUser }, [3]],
+    ['所有负责人', { kind: 'all' }, [1, 2, 3]],
+  ] as const)('restores %s before applying either list projection', async (label, saved, matching) => {
+    install([
+      task(1, TEST_VIEWER_ID), task(2, null), task(3, formerUser),
+      task(11, TEST_VIEWER_ID), task(12, TEST_VIEWER_ID, { dependsOn: [id(11)] }),
+      task(21, null), task(22, null, { dependsOn: [id(21)] }),
+      task(31, formerUser), task(32, formerUser, { dependsOn: [id(31)] }),
+    ]);
+    const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+    const matchingIds = new Set<number>(matching);
+    localStorage.setItem(preference, JSON.stringify(saved));
+    const view = await mount();
+    await waitFor(() => expect(chain(matching[0]! * 10 + 1)).toBeVisible());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
+    for (const n of [1, 2, 3]) {
+      if (matchingIds.has(n)) expect(chain(n * 10 + 1)).toBeVisible();
+      else expect(chain(n * 10 + 1)).toBeNull();
+    }
+    fireEvent.click(standalone());
+    for (const n of [1, 2, 3]) {
+      if (matchingIds.has(n)) expect(row(n)).toBeVisible();
+      else expect(row(n)).toBeNull();
+    }
+    view.unmount();
+    await mount();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
+    await waitFor(() => expect(row(matching[0]!)).toBeVisible());
+    for (const n of [1, 2, 3]) if (!matchingIds.has(n)) expect(row(n)).toBeNull();
+  });
+
+  it('persists each selection made through the control and restores it on reopening', async () => {
+    install([task(1, TEST_VIEWER_ID), task(2, null), task(3, formerUser)]);
+    const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+    for (const [label, saved] of [
+      ['分配给我', { kind: 'me' }], ['未分配', { kind: 'unassigned' }],
+      ['Former person', { kind: 'user', userId: formerUser }], ['所有负责人', { kind: 'all' }],
+    ] as const) {
+      const view = await mount();
+      await filter(label === 'Former person' ? /^Former person/ : label);
+      expect(JSON.parse(localStorage.getItem(preference)!)).toEqual(saved);
+      view.unmount();
+      const reopened = await mount();
+      await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
+      reopened.unmount();
+    }
+  });
+
+  it('shows localized write failure while keeping the current list usable, and clears it after saving', async () => {
+    install([task(1, TEST_VIEWER_ID), task(2, null)]);
+    const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+    localStorage.setItem(preference, JSON.stringify({ kind: 'unassigned' }));
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+      if (key === preference) throw new DOMException('denied', 'SecurityError');
+      return setItem.call(this, key, value);
+    });
+    await mount(); fireEvent.click(standalone());
+    await waitFor(() => expect(row(2)).toBeVisible());
+    await filter('分配给我');
+    expect(row(1)).toBeVisible(); expect(row(2)).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('负责人筛选无法保存到浏览器');
+    expect(JSON.parse(localStorage.getItem(preference)!)).toEqual({ kind: 'unassigned' });
+    vi.mocked(Storage.prototype.setItem).mockRestore();
+    await filter('所有负责人');
+    expect(row(1)).toBeVisible(); expect(row(2)).toBeVisible();
+    expect(screen.queryByText(/负责人筛选无法保存到浏览器/)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(preference)!)).toEqual({ kind: 'all' });
+  });
+
+  it('shows read errors in both locales while allowing a filter selection', async () => {
+    install([task(1, TEST_VIEWER_ID), task(2, null)]);
+    const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+    const getItem = Storage.prototype.getItem;
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key) {
+      if (key === preference) throw new DOMException('denied', 'SecurityError');
+      return getItem.call(this, key);
+    });
+    const view = await mount(); fireEvent.click(standalone());
+    await waitFor(() => expect(row(1)).toBeVisible());
+    expect(screen.getByText(/无法读取浏览器保存的负责人筛选/)).toBeVisible();
+    view.setLocale('en');
+    expect(screen.getByText(/The saved assignee filter could not be read/)).toBeVisible();
+    view.setLocale('zh-CN');
+    await filter('分配给我');
+    expect(row(1)).toBeVisible(); expect(row(2)).toBeNull();
+    expect(screen.queryByText(/无法读取浏览器保存的负责人筛选/)).toBeNull();
+  });
+
+  it('reports an invalid preference and defaults to all without blocking later choices', async () => {
+    install([task(1, TEST_VIEWER_ID), task(2, null)]);
+    const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+    localStorage.setItem(preference, '{');
+    await mount(); fireEvent.click(standalone());
+    await waitFor(() => expect(row(1)).toBeVisible());
+    expect(row(2)).toBeVisible();
+    expect(screen.getByText(/浏览器保存的负责人筛选无效/)).toBeVisible();
+    await filter('分配给我');
+    expect(row(1)).toBeVisible(); expect(row(2)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(preference)!)).toEqual({ kind: 'me' });
+  });
+
+  it('saves the actual filter after overview navigation clears a blocking preference', async () => {
+    install([task(1, otherUser), task(2, otherUser, { dependsOn: [id(1)] })]);
+    const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+    const view = await mount();
+    await filter('分配给我');
+    expect(JSON.parse(localStorage.getItem(preference)!)).toEqual({ kind: 'me' });
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    fireEvent.click(screen.getByRole('button', { name: /Task 1，/ }));
+    await waitFor(() => expect(chain(1)).toHaveFocus());
+    expect(JSON.parse(localStorage.getItem(preference)!)).toEqual({ kind: 'all' });
+    view.unmount();
+    await mount();
+    expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('所有负责人');
+    await waitFor(() => expect(chain(1)).toBeVisible());
+  });
+
   it('retains the real Goal and all children with full progress when a child matches', async () => {
     const fixture = install([
       task(1, otherUser, { status: 'done', completedAt: '2026-10-22T10:00:00Z' }), task(2, otherUser, { dependsOn: [id(1)], status: 'in_progress', startedAt: '2026-10-22T10:00:00Z' }),

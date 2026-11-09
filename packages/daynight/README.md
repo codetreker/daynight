@@ -2250,6 +2250,15 @@ it clears the pause and confirms false or absence before continuing. Independent
 user restrictions still apply. The [managed workflow](src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction)
 owns readback, failure and conflict handling.
 
+The Worker appends the latest confirmed personal user, project and Worker prompt
+texts to newly assembled startup, recovery and continuation inputs, in that
+order. It receives them through the existing configuration report and keeps them
+only in memory. An unknown or oversized input waits without consuming recovery
+attempts or changing the claim; a later configuration update can make it ready.
+Already assembled inputs retain their original delivery identity. See the
+[prompt contract](../../docs/spec/worker-prompts.md#worker-输入) for the text,
+synchronization and input limits.
+
 Pending PR review, required reviewer approval and CI remain ongoing execution,
 including reviews performed by a person. Pending results and polling timeouts
 do not justify setting `properties.paused=true`, requesting user intervention

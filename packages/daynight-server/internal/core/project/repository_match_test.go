@@ -22,13 +22,16 @@ func TestRepositoryMatchSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := match.Select(false); err == nil {
+	if err := RequireRepositoryCreationConfirmation(false); err == nil {
 		t.Fatal("unconfirmed creation accepted")
 	} else {
 		check(err, "invalid_input")
 	}
-	if _, create, err := match.Select(true); err != nil || !create {
-		t.Fatalf("confirmed creation: %v %v", create, err)
+	if err := RequireRepositoryCreationConfirmation(true); err != nil {
+		t.Fatalf("confirmed creation: %v", err)
+	}
+	if _, found := match.Result(); found {
+		t.Fatal("unexpected match")
 	}
 	if err := match.Add(model.Project{ID: "other", RepoURL: "https://github.com/org/Repo"}); err != nil {
 		t.Fatal(err)
@@ -36,8 +39,8 @@ func TestRepositoryMatchSelection(t *testing.T) {
 	if err := match.Add(model.Project{ID: "match", RepoURL: "git@github.com:Org/Repo"}); err != nil {
 		t.Fatal(err)
 	}
-	if project, create, err := match.Select(false); err != nil || create || project.ID != "match" {
-		t.Fatalf("reuse: %#v %v %v", project, create, err)
+	if project, found := match.Result(); !found || project.ID != "match" {
+		t.Fatalf("reuse: %#v %v", project, found)
 	}
 	if err := match.Add(model.Project{ID: "second", RepoURL: "ssh://git@github.com:22/Org/Repo.git"}); err == nil {
 		t.Fatal("ambiguous match accepted")

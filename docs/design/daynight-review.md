@@ -232,7 +232,8 @@ PR 预留，但不占审查 Worker 容量。待处理期间的多次更新合并
 | `instance-lock.ts` | 实例锁持有者校验、存活探测与并发接管 |
 | `runtime.ts` | review 模块组装、实例持有关系、信号与有序关闭 |
 | `skill.ts` 与 `skills/daynight-review/` | 发布资源校验、内容寻址快照、发现结果校验，以及内置审查方法 |
-| `processes.ts` | 本次执行的进程组或 Windows 进程树停止与执行证据 |
+| `processes.ts` | 本次执行的进程组或 Windows Job 停止与执行证据 |
+| `windows-phase.ts` 与 `windows-job-scope.ts` | Windows guardian 准入、原命令结果及持有的 Job 和进程对象 |
 | `publication.ts` | 稳定审查发布身份和完整远端结果的匹配规则 |
 | `adapters/github.ts` | 通过 `gh` 读取仓库、PR、分页、当前 CI、review 和 conversation 完整状态，不登记本地状态 |
 | `adapters/worktrees.ts` | 克隆校验、fetch、PR worktree 准备与清理 |
@@ -698,13 +699,46 @@ SQLite。review agent 遵守前台执行契约：返回前结束自己启动的�
 Linux/macOS 为直接子进程建立独立进程组，同时保留引用、pipes 和 await，不调用 unref。
 停止时向本次执行的进程组发送 TERM，超过宽限期再发 KILL。探测返回 EPERM 时仍检查
 目标 PGID 的已有状态；仅无匹配执行成员或全部为 zombie 时确认不再执行。有执行成员时
-保留原权限错误，状态读取或解析失败也保留不确定状态。Windows 在根进程仍存活时使用 `taskkill /PID ... /T /F` 停止普通进程树，避免
-先杀包装脚本而丢失树根。正常、未被强制的退出及排空的 stdio 按前台契约处理。
+保留原权限错误，状态读取或解析失败也保留不确定状态。
 
-取消时根已消失、进程终止失败、输出被强制放弃或其他执行证据不确定时，阻止该 PR
-复用和清理，并保留实例锁及状态供人工确认。系统只操作本次运行实时持有的进程，
-不根据持久化 PID 杀旧进程，也不重建已消失的任意进程树。Windows 包装脚本、后代进程
-和信号差异在各平台使用受控执行文件验证。
+Windows 的 skill 发现和正式审查各自使用一个受信任的 Node guardian。guardian 启动时
+移除 `NODE_OPTIONS`，在收到准入消息前不执行目标命令；目标命令的原环境在准入后传入。
+父进程创建禁止 breakaway、启用 kill-on-close 的独立 Job，持有 guardian 的原进程对象，
+核对 PID、父身份、未 signaled 状态，使用该 handle 分配到 Job，再确认成员身份与存活。
+只有这些步骤成功且未取消、断开 IPC 或超过整体截止时间，才通过 IPC 放行原命令。
+目标仍使用 `cross-spawn` 解析 `.cmd` 等包装入口，stdin、stdout 和 stderr 直接继承
+既有 pipes，保持提示词背压、完整日志和末行解析；实际目标的退出码、signal 和结构化
+command-not-found 通过 guardian receipt 返回，不能用 guardian 的退出码替代。
+
+正常结束、取消、超时及启动失败均汇合到同一个 Job stop；新阶段不使用 `taskkill /T`。
+停止关闭准入，先盘点 Job 中可打开的进程对象并用 `IsProcessInJob` 核对归属，再对
+持有的 Job 调用 `TerminateJobObject`。PID 清单中已被复用为无关对象的条目只释放观察
+handle，不会成为终止目标。Job 包含普通创建方式继承成员身份的后代，即使它们晚于
+盘点出生，或中间父进程、目标根进程已经退出，仍由同一个 Job 拥有。最后一个非继承
+Job handle 随 owner 退出而关闭时，kill-on-close 提供相同的成员终止边界。
+
+成功排除要求所有实际捕获的进程对象均 signaled、Job 的 active count 为零，以及
+原 guardian 退出并关闭所有直接 pipes。`ChildProcess.close` 或独立的 exit、每条 pipe
+close 和 IPC disconnect 联合证明直接关闭，避免把 Node 的事件遗漏当成未完成退出。
+空 PID 清单和 active count 为零都不能替代已捕获对象的 signaled 证明；未被观察的历史
+成员不获得逐对象 signaled 保证。盘点、身份、成员查询、wait、终止或 handle 释放错误
+均保留失败；已确认 signaled 的 handle 逐个释放，其余和 Job handle 保留，不释放执行
+归属。`platform/windows-job.ts` 复用既有 `koffi` 依赖提供 native 边界，Bot Job lease
+复用该边界，保留其原有生命周期。
+
+旧的非 Job helper 仍以受核验的实时祖先关系盘点并使用 `taskkill`，其有界
+`Windows review ancestry` 诊断和 fail-closed 规则保持独立；产品的两个 review 阶段均
+走 Job 路径。机制与旧方案取舍见
+[Windows Job 归属](../../.agents/notes/implemented/bug-fix/2026-11-09-windows-review-job-ownership.md)
+及[原 Windows 终止确认](../../.agents/notes/implemented/bug-fix/2026-11-07-windows-review-termination-completion.md)。
+
+进程终止失败、输出被强制放弃或其他执行证据不确定时，阻止该 PR 复用和清理，
+并保留实例锁及状态供人工确认。系统只操作本次运行实时持有的进程和 Job，
+不根据持久化 PID 杀旧进程，也不重建已消失的任意进程树。Job 不是 sandbox；通过
+WMI、外部 broker 或特权创建而未继承 Job 的进程不在保证范围内。Windows 包装脚本、
+迟生后代、根退出和 owner 丢失的验证使用真实 native Job 与独立保留的 fixture handles；
+可移植协议测试和受控 native 接口测试分别验证流、准入顺序与 fail-closed 决策，
+不能替代 Windows 运行证据。
 
 每个状态目录只能由一个 daemon 实例持有。`instance.lock` 保存 `owner`、`pid` 和
 `startedAt`。读取既有锁时严格校验元数据，其中 PID 必须是正整数且不超过

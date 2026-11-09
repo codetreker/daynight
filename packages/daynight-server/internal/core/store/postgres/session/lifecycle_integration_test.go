@@ -22,9 +22,16 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 	_, actor, _ := testAuthRecords(t, db)
 	bot, worker, id := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC()
+	parent := model.Principal{Kind: model.PATCredential, UserID: actor.UserID, CredentialID: uuid.NewString()}
+	current := model.Principal{Kind: model.PATCredential, UserID: actor.UserID, CredentialID: uuid.NewString()}
+	for _, credential := range []model.Principal{parent, current} {
+		hash := sha256.Sum256([]byte(credential.CredentialID))
+		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'bot runtime',$4,$5)`, credential.CredentialID, credential.UserID, hash[:], now, now.Add(time.Hour))
+	}
 	mustQueryExec(t, db, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,$3,$3,'{}','{}')`, actor.UserID, worker, now)
 	mustQueryExec(t, db, `INSERT INTO bots(id,owner_user_id,worker_id,name,request_fingerprint,requested_overrides,resolved_configuration,startup_result,session_id) VALUES($1,$2,$3,'Private Bot',$4,'{"args":[]}','{"provider":"codex"}','{}',$5)`, bot, actor.UserID, worker, strings.Repeat("a", 64), id)
-	registration := store.SessionRegistration{Location: store.SessionLocation{SessionID: id}, OwnerID: actor.UserID, TestExecutionID: uuid.NewString(), RegistrationID: uuid.NewString(), Registration: []byte(`{}`), Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: id, ExecutionGeneration: "1"}}, Lifecycle: "active"}, ParentCredentialID: actor.CredentialID, BotID: &bot}
+	registration := store.SessionRegistration{Location: store.SessionLocation{SessionID: id}, OwnerID: actor.UserID, TestExecutionID: uuid.NewString(), RegistrationID: uuid.NewString(), Registration: []byte(`{}`), Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: id, ExecutionGeneration: "1"}}, Lifecycle: "active"}, ParentCredentialID: parent.CredentialID, BotID: &bot}
+	epoch := uuid.NewString()
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		inserted, err := dao.InsertBotSession(ctx, registration)
 		if err != nil || !inserted {
@@ -34,6 +41,11 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 		if err != nil || inserted {
 			t.Fatalf("duplicate bot session: %v %v", inserted, err)
 		}
+		// The inserted parent is checked before SetSessionGrant can overwrite it.
+		registered, err := dao.LockSession(ctx, id)
+		if err != nil || registered.Parent != parent.CredentialID || registered.BotID == nil || *registered.BotID != bot || registered.Owner != actor.UserID {
+			t.Fatalf("inserted Bot Session lost its parent association: %+v %v", registered, err)
+		}
 		bound, err := dao.SessionBotID(ctx, id)
 		if err != nil || bound == nil || *bound != bot {
 			t.Fatalf("session binding: %v %v", bound, err)
@@ -42,7 +54,7 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 		if err != nil || len(sessions) != 1 || sessions[0].ID != id || sessions[0].Owner != actor.UserID {
 			t.Fatalf("bot sessions: %+v %v", sessions, err)
 		}
-		if err := dao.SetSessionGrant(ctx, store.SessionGrant{SessionID: id, Hash: []byte("bot grant"), ExpiresAt: now.Add(time.Hour), Kind: "bootstrap", ParentCredentialID: actor.CredentialID}); err != nil {
+		if err := dao.SetSessionGrant(ctx, store.SessionGrant{SessionID: id, Hash: []byte("bot grant"), ExpiresAt: now.Add(time.Hour), Kind: "bootstrap", ParentCredentialID: parent.CredentialID}); err != nil {
 			return err
 		}
 		if err := dao.ConnectSession(ctx, id, uuid.NewString(), now, ptrTime(now.Add(time.Hour))); err != nil {
@@ -52,7 +64,6 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		epoch := uuid.NewString()
 		record.SourceEpoch = &epoch
 		record.SourceEpochs = []string{epoch}
 		record.SourceSeq = 7
@@ -65,6 +76,39 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 		if err != nil || record.SourceEpoch == nil || *record.SourceEpoch != epoch || len(record.SourceEpochs) != 1 || record.SourceSeq != 7 || record.OperationSeq != 8 || record.Snapshot.SessionRevision != "4" {
 			t.Fatalf("saved ledger versions: %+v %v", record, err)
 		}
+		return nil
+	})
+	assertCredentials := func(parentExists bool) {
+		sessionBotDAOTransaction(t, db, func(dao store.SessionDAO, bots store.BotWriteDAO) error {
+			bound, err := bots.Bot(ctx, bot)
+			if err != nil {
+				return err
+			}
+			record, err := dao.LockSession(ctx, id)
+			if err != nil {
+				return err
+			}
+			if bound.SessionID == nil || *bound.SessionID != id || record.BotID == nil || *record.BotID != bot || record.Owner != actor.UserID || record.Parent != parent.CredentialID || record.ConnectionParent != parent.CredentialID || string(record.GrantHash) != "bot grant" || record.ConnectionExpiry == nil {
+				t.Fatalf("stored live Bot Session lost its parent association: bot=%+v session=%+v", bound, record)
+			}
+			if err := dao.LockCredential(ctx, current, now); err != nil {
+				t.Fatalf("current PAT rejected while checking parent: %v", err)
+			}
+			registered := model.Principal{Kind: model.PATCredential, UserID: record.Owner, CredentialID: record.Parent}
+			err = dao.LockCredential(ctx, registered, now)
+			if parentExists {
+				return err
+			}
+			if !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("deleted stored parent PAT accepted: %v", err)
+			}
+			return nil
+		})
+	}
+	assertCredentials(true)
+	mustQueryExec(t, db, `DELETE FROM personal_access_tokens WHERE id=$1`, parent.CredentialID)
+	assertCredentials(false)
+	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		if err := dao.RevokeBotSessions(ctx, bot); err != nil {
 			return err
 		}
@@ -72,7 +116,7 @@ func TestBotSessionCleanupIsTransactional(t *testing.T) {
 		if err != nil || !proof.Consumed || proof.SourceEpoch == nil || *proof.SourceEpoch != epoch {
 			t.Fatalf("bot stop proof: %+v %v", proof, err)
 		}
-		record, err = dao.LockSession(ctx, id)
+		record, err := dao.LockSession(ctx, id)
 		if err != nil || record.GrantHash != nil || record.ConnectionExpiry != nil {
 			t.Fatalf("revocation: %+v %v", record, err)
 		}

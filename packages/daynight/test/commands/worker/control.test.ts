@@ -8,6 +8,7 @@ import { ApiError } from "../../../src/api/client.js";
 import type { Task, WorkerClaim } from "../../../src/api/types.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import type { WorkerControlRequest } from "../../../src/commands/worker/control.js";
+import type { WorkerInputWait } from "../../../src/commands/worker/coordinator.js";
 import type { WorkerEvent } from "../../../src/commands/worker/execution.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -39,7 +40,7 @@ const fixture = (local = true) => {
   const coordinator = {
     assertCanAcquire: vi.fn(),
     registerClaim: vi.fn((granted: Task) => { const grantedClaim = readWorkerClaim(granted.properties)!; expect(store.getTask({ projectId: granted.projectId, taskId: granted.id, claimId: grantedClaim.claimId })?.status).toBe("pending"); }),
-    advanceRetry: vi.fn(async () => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
+    advanceRetry: vi.fn(async (): Promise<WorkerInputWait | void> => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
     cleanupSource: vi.fn(async (_identity: typeof identity, settings: { deleteWorktree?: boolean }) => { expect(settings.deleteWorktree).toBe(false); order.push("stop-close"); return resourceOwner; }),
     completeSource: vi.fn(async (actualOwner: ResourceOwner) => { expect(actualOwner).toBe(resourceOwner); order.push("delete-done"); const worker = readWorkerClaim(observed.properties); expect(worker?.claimId !== claimId || worker.state !== "active").toBe(true); store.completeTask(identity); }),
   };
@@ -159,6 +160,17 @@ describe("synchronous worker source management", () => {
     expect(result.task).toMatchObject({ ...f.identity, status: "active", agent: "copilot", sessionId: uuid(40) });
     expect(f.remote.resume).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.coordinator.cleanupSource).not.toHaveBeenCalled();
     expect(f.store.listTasks()).toHaveLength(1);
+  });
+
+  it.each(["prompt_unknown", "prompt_too_large"] as const)("reports %s as unsubmitted input while retaining the original claim", async reason => {
+    const f = fixture();
+    f.coordinator.advanceRetry.mockResolvedValue({ kind: "waiting_input", reason });
+    const result = await f.submit({ kind: "retry", taskId, claimId });
+    expect(result.message).toMatch(/not submitted.*waiting/i);
+    expect(result.message).not.toContain("attempt completed");
+    expect(result.task).toMatchObject({ ...f.identity, status: "active", sessionId: null });
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(f.remote.release).not.toHaveBeenCalled();
   });
 
   it("does not grant a retry to an administrator or a pending local claim", async () => {

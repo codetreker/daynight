@@ -76,6 +76,17 @@ UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含�
 但不得包含密码；查询参数和 fragment 不属于仓库地址。无效或超限输入返回 `400 invalid_input`，
 不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
 
+MCP 认证客户端可以通过标准 Resources 目录发现七篇英文产品手册，并按固定
+`daynight://manuals/<主题>.md` URI 读取完整 Markdown。服务器 instructions 提供简短导航；
+无 Project 的有效账户也可读取。手册不修改业务数据，不建立 Worker assignment 或操作授权。
+文稿随服务版本发布，内部主题引用指向可读取的固定 URI；重新请求取得当前服务的内容。
+未知 URI 返回协议错误，不返回空正文或替代内容。公开 GET/HEAD 安装说明保持独立。
+
+MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调用者可见项目。唯一匹配返回普通 Project，
+其 ID 位于 `data.id`；零匹配返回 `not_found`，多个匹配返回 `resource_conflict`，非法或超限地址返回
+`invalid_input`。读取及快照完成故障不得伪装成无匹配。该操作不创建项目、改变默认绑定或访问宿主及远端仓库；
+后续操作仍检查当前权限。
+
 接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，
 列表在数据库中先按当前成员关系过滤，再进行分页。创建后 `repoUrl` 不可通过 task 或设置更新改变。

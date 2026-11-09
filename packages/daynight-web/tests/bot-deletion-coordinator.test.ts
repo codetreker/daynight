@@ -122,6 +122,9 @@ it.each(['pending', 'completed', 'unknown', 'unavailable'] as const)('handles a 
     for (const binding of bindings) cache.select(binding);
     const [a, b] = cache.snapshot();
     await vi.waitFor(() => { expect(a!.client.snapshot().connected).toBe(true); expect(b!.client.snapshot().connected).toBe(true); });
+    cache.select(bindings[0]!, bindings[0]!);
+    expect(a!.client.snapshot().actionAdmitted).toBe(true);
+    expect(b!.client.snapshot().actionAdmitted).toBe(false);
     a!.client.setDraft('deleted Bot draft'); b!.client.setDraft('other Bot draft');
     vi.mocked(bots[0]!.api.command).mockRejectedValue(new Error('receipt unknown'));
     await expect(a!.client.send('deleted Bot draft')).rejects.toThrow();

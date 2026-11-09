@@ -23,8 +23,9 @@ export type SessionTimelineReadingHandle = Pick<ReturnType<typeof useTimelineScr
 // SessionTimeline adds the actual session fence and history epoch.
 export type SessionTimelineReading = { readonly scope: string; readonly ref: Ref<SessionTimelineReadingHandle> };
 
-export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null, suppressEmpty = false, displayMode = 'standard', historyReady = false, historyComplete = false, historyRevision = 0, connectionGeneration = 0, reading }: {
+export function SessionTimeline({ state, active, canRespond, actionAdmitted = true, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null, suppressEmpty = false, displayMode = 'standard', historyReady = false, historyComplete = false, historyRevision = 0, connectionGeneration = 0, reading }: {
   readonly state: SessionState; readonly active: boolean; readonly canRespond: boolean;
+  readonly actionAdmitted?: boolean;
   readonly onRespond: (interaction: SessionInteraction, response: InteractionResponse) => Promise<void>;
   readonly hasOlder: boolean; readonly loadingOlder: boolean; readonly onLoadOlder: () => Promise<void>;
   readonly onLoadResource: (resourceId: string, signal: AbortSignal) => Promise<Blob>; readonly historyError?: string | null;
@@ -63,7 +64,7 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
       <div ref={scroll.content} className="session-timeline-content">
         {loadingOlder ? <div className="session-history-loading" role="status" aria-live="polite">{m.loadingOlder}</div> : null}
         {history.error ? <div role="alert" className="session-error session-history-error"><span>{history.error}</span>{hasOlder ? <button type="button" className="inline-link" disabled={!active || !historyReady || loadingOlder} onClick={history.retry}>{m.retryHistory}</button> : null}</div> : null}
-        {entries.length === 0 ? (suppressEmpty ? null : <p className="session-empty">{displayMode === 'conversation' && !historyEmpty ? m.conversationEmpty : m.empty}</p>) : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} operations={entry.kind === 'interaction' ? state.operations : undefined} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
+        {entries.length === 0 ? (suppressEmpty ? null : <p className="session-empty">{displayMode === 'conversation' && !historyEmpty ? m.conversationEmpty : m.empty}</p>) : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} operations={entry.kind === 'interaction' ? state.operations : undefined} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} actionAdmitted={actionAdmitted} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
       </div>
     </div>
     {pending.target || scroll.showLatest ? <div className="session-timeline-navigation">
@@ -79,6 +80,7 @@ function LazyDetails({ className, summary, children }: { readonly className: str
 }
 type EntryProps = {
   readonly operations: SessionState['operations'] | undefined;
+  readonly actionAdmitted: boolean;
   readonly entry: TimelineEntry; readonly resources: SessionState['resources']; readonly active: boolean; readonly canRespond: boolean; readonly pendingResponse: boolean;
   readonly onRespond: (interaction: SessionInteraction, response: InteractionResponse) => Promise<void>;
   readonly onLoadResource: (resourceId: string, signal: AbortSignal) => Promise<Blob>;
@@ -92,13 +94,13 @@ function SessionParts({ content, resources, active, onLoadResource, raw = false 
     return <SessionResourceView key={`${part.resourceId}/${resource?.status}/${resource?.sha256}`} resource={resource} label={part.label} active={active} onLoad={onLoadResource} />;
   });
 }
-const SessionEntry = memo(function SessionEntry({ entry, operations, resources, active, canRespond, pendingResponse, onRespond, onLoadResource }: EntryProps) {
+const SessionEntry = memo(function SessionEntry({ entry, operations, resources, active, canRespond, actionAdmitted, pendingResponse, onRespond, onLoadResource }: EntryProps) {
   const m = useSessionMessages(), labels = useTimelineMessages();
   switch (entry.kind) {
       case 'user_message': case 'assistant_message': return <div className={`session-message ${entry.kind} markdown-content`}><SessionParts content={entry.content} resources={resources} active={active} onLoadResource={onLoadResource} /></div>;
       case 'reasoning': return <LazyDetails className="session-reasoning" summary={m.reasoning}><SessionMarkdown text={entry.text} /></LazyDetails>;
       case 'tool_call': return <LazyDetails className={`session-tool session-tool-${entry.status}`} summary={<><svg className="session-tool-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg><strong className="session-tool-name" title={entry.name} lang={entry.name === 'commandExecution' || entry.name === 'fileChange' ? 'en' : undefined}>{entry.name === 'commandExecution' ? timelineNativeLabels.command : entry.name === 'fileChange' ? timelineNativeLabels.fileChanges : entry.name}</strong><span className="session-tool-summary">{toolSummary(entry.input, entry.name)}</span><small className="session-tool-status">{labels[entry.status]}</small></>}><h5>{m.input}</h5><pre className="session-tool-input" tabIndex={0}>{entry.input}</pre><h5>{m.output}</h5><div>{entry.output.length ? <SessionParts raw content={entry.output} resources={resources} active={active} onLoadResource={onLoadResource} /> : <p>{labels.noOutput}</p>}</div>{entry.truncated ? <p className="session-notice">{m.truncated}</p> : null}</LazyDetails>;
-      case 'interaction': return <SessionInteractionCard key={`${entry.interaction.interactionId}/${entry.interaction.revision}`} interaction={entry.interaction} {...(operations ? { operations } : {})} enabled={canRespond && !pendingResponse} onRespond={(response) => onRespond(entry.interaction, response)} />;
+      case 'interaction': return <SessionInteractionCard key={`${entry.interaction.interactionId}/${entry.interaction.revision}`} interaction={entry.interaction} {...(operations ? { operations } : {})} enabled={canRespond && !pendingResponse} actionAdmitted={actionAdmitted} onRespond={(response) => onRespond(entry.interaction, response)} />;
       case 'error': {
         if (entry.code === 'input_cancelled' || entry.code === 'turn_interrupted') return <p className="session-cancellation" role="status">{entry.code === 'input_cancelled' ? labels.inputCancelled : labels.turnInterrupted}</p>;
         const activity = legacySubagentActivity(entry);

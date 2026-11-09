@@ -4,16 +4,83 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/google/uuid"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	t.Run("personal worker prompts", func(t *testing.T) { serverAPIPromptNormalFlow(t, f) })
+	t.Run("MCP manual and repository project context", func(t *testing.T) {
+		const repository = "https://github.com/example/manual-integration"
+		project := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "MCP manual integration", RepoURL: repository, ExpectedUserID: f.userID}, http.StatusCreated)
+		if project.ID == "" || project.RepoURL != repository {
+			t.Fatalf("created Project differs: %+v", project)
+		}
+		task := createTask(t, f, project, "MCP context task", nil)
+
+		client := sdk.NewClient(&sdk.Implementation{Name: "daynight-manual-integration", Version: "1"}, nil)
+		session, err := client.Connect(f.context, &sdk.StreamableClientTransport{Endpoint: f.origin + "/mcp", HTTPClient: f.client, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = session.Close() })
+		listing, err := session.ListResources(f.context, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const uri = "daynight://manuals/concepts.md"
+		var manual *sdk.Resource
+		for _, resource := range listing.Resources {
+			if resource.URI == uri {
+				manual = resource
+			}
+		}
+		if len(listing.Resources) != 7 || listing.NextCursor != "" || manual == nil || manual.MIMEType != "text/markdown" {
+			t.Fatalf("manual discovery differs: %+v", listing)
+		}
+		read, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: manual.URI})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(read.Contents) != 1 || read.Contents[0].URI != uri || read.Contents[0].MIMEType != "text/markdown" || int64(len(read.Contents[0].Text)) != manual.Size || !strings.Contains(read.Contents[0].Text, "project_resolve") {
+			t.Fatalf("manual content differs: %+v", read)
+		}
+
+		call := func(name string, arguments map[string]any) map[string]any {
+			t.Helper()
+			result, err := session.CallTool(f.context, &sdk.CallToolParams{Name: name, Arguments: arguments})
+			if err != nil || result == nil || result.IsError {
+				t.Fatalf("%s: result=%+v error=%v", name, result, err)
+			}
+			encoded, err := json.Marshal(result.StructuredContent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				Data map[string]any `json:"data"`
+			}
+			if err := json.Unmarshal(encoded, &envelope); err != nil || envelope.Data == nil {
+				t.Fatalf("%s structured content: %s (%v)", name, encoded, err)
+			}
+			return envelope.Data
+		}
+		resolved := call("project_resolve", map[string]any{"repoUrl": "git@github.com:example/manual-integration.git"})
+		if resolved["id"] != project.ID || resolved["repoUrl"] != repository {
+			t.Fatalf("resolved Project differs: %+v", resolved)
+		}
+		actual := call("task_show", map[string]any{"projectId": resolved["id"], "taskId": task.ID, "view": "full"})
+		if actual["id"] != task.ID || actual["projectId"] != project.ID || actual["title"] != task.Title {
+			t.Fatalf("Task from resolved Project differs: %+v", actual)
+		}
+	})
 	t.Run("task lifecycle", func(t *testing.T) {
 		project := createProject(t, f, "API lifecycle")
 		task := createTask(t, f, project, "Created task", nil)
@@ -185,6 +252,10 @@ func TestServerAPINormalFlows(t *testing.T) {
 		empty := requestJSON[api.AttachmentPage](t, f, http.MethodGet, taskPath(task)+"/attachments", nil, http.StatusOK)
 		if len(empty.Items) != 0 {
 			t.Fatalf("deleted attachment remained in list: %+v", empty)
+		}
+		readProject := requestJSON[api.Project](t, f, http.MethodGet, "/api/v1/projects/"+project.ID, nil, http.StatusOK)
+		if readProject.ID != project.ID || readProject.Name != project.Name {
+			t.Fatalf("attachment flow changed its owning Project: %+v", readProject)
 		}
 	})
 	t.Run("worker claim and Agent discussion", func(t *testing.T) {

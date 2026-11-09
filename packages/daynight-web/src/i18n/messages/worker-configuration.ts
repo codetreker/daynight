@@ -27,6 +27,7 @@ export type WorkerConfigurationMessages = {
   readonly pollIntervalMs: string;
   readonly recoveryLimit: string;
   readonly preferPlatformSpecificTasks: string;
+  readonly preferPlatformTasks: (values: { platform: string }) => string;
   readonly platformPreferenceDetail: string;
   readonly enabled: string;
   readonly disabled: string;

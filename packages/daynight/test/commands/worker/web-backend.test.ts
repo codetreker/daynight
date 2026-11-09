@@ -7,6 +7,8 @@ import { expect, it, vi } from "vitest";
 import { createWorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
+import { PromptInputLimitError } from "../../../src/commands/worker/prompt-input-limit.js";
+import type { WorkerPromptTuple } from "../../../src/commands/worker/prompt-source.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
@@ -16,6 +18,40 @@ import type { requestController } from "../../../src/commands/controller/local-c
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
+
+it("waits for new Web prompts and retries only after a rejected revision changes", async () => {
+  const f = await fixture();
+  const input = f.store.getTask(f.identity)!;
+  const resource = (scope: "user" | "project" | "worker", revision: string, text: string) => ({ scope, scopeId: randomUUID(), revision, text, updatedAt: new Date(0).toISOString() });
+  const tuple = (revision: string): WorkerPromptTuple => ({ user: resource("user", revision, "personal"), project: resource("project", "1", "project"), worker: resource("worker", "1", "worker") });
+  let value: WorkerPromptTuple | null = null;
+  const promptSource = { current: vi.fn(() => value) };
+  const captured: string[] = [];
+  const launcher = {
+    prepare: vi.fn(async (_task: LocalTask, prompt: string | (() => string)): Promise<ControllerLaunchTicket> => {
+      value = tuple(value!.user.revision === "1" ? "2" : value!.user.revision);
+      captured.push(typeof prompt === "function" ? prompt() : prompt);
+      throw new PromptInputLimitError("web_ticket", 7, 6);
+    }), launch: vi.fn(), refreshGrant: vi.fn(),
+  };
+  const emit = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "linux", buildPrompt: () => "builtin", promptSource, emit, now: () => 10 });
+  const signal = new AbortController().signal;
+  expect(await backend.advanceResult(input, signal)).toMatchObject({ kind: "waiting_input", reason: "prompt_unknown" });
+  expect(launcher.prepare).not.toHaveBeenCalled();
+  value = tuple("1");
+  expect(await backend.advanceResult(input, signal)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+  expect(captured[0]).toContain("----- begin user prompt -----\npersonal");
+  expect(emit).toHaveBeenCalledOnce();
+  await backend.advanceResult(input, signal);
+  expect(launcher.prepare).toHaveBeenCalledOnce();
+  value = tuple("3");
+  expect(await backend.advanceResult(input, signal)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+  expect(launcher.prepare).toHaveBeenCalledTimes(2);
+  expect(emit).toHaveBeenCalledTimes(2);
+  expect(launcher.launch).not.toHaveBeenCalled();
+  expect(f.store.getTask(input)).toMatchObject({ recovery: { count: 0, pauseReason: null }, webExecution: { initialPrompt: null, launchSubmission: "not-submitted" } });
+});
 
 it("revalidates a worktree obstruction without native recovery, launch, or initial input replay", async () => {
   const f = await orchestrationFixture();
@@ -190,7 +226,8 @@ it.each(["worker", "claim", "native", "short", "time", "reason", "revision"] as 
 it.each([false,true])("submits once and reobserves unknown first input, including a lazy native identity (lazy=%s)",async(lazyIdentity)=>{
  const f=await fixture();let snapshot:ControllerSnapshot;let launches=0;let submissions=0;
  const launcher={
-  prepare:vi.fn(async(task:LocalTask,prompt:string):Promise<ControllerLaunchTicket>=>{
+  prepare:vi.fn(async(task:LocalTask,input:string | (()=>string)):Promise<ControllerLaunchTicket>=>{
+   const prompt = typeof input === "function" ? input() : input;
    if(task.webExecution!.sessionId===null)task=f.store.updateWebExecution(task,{sessionId:randomUUID(),initialPrompt:prompt},3);
    const e=task.webExecution!;snapshot??={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"ready",nativeSessionId:lazyIdentity?null:randomUUID(),initialInputState:"not_submitted",activity:"idle",currentTurnId:null,capabilities:{send:true,steer:true,cancel:true,respond:true},controllerProcess:null,nativeProcesses:[],nativeStopped:false,stoppedAt:null,error:null};
    return {schemaVersion:1,launchId:e.launchId,executionId:e.executionId,controllerId:e.controllerId,controllerInstanceId:e.controllerInstanceId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,serverOrigin:task.serverOrigin,projectId:task.projectId,taskId:task.taskId,claimId:task.claimId,workerId:task.workerId,worktreeId:task.worktreeId,userId:task.userId!,provider:"codex",cwd:task.resources.worktree!.worktreePath,nativeHome:path.join(f.home,".codex"),configuration:task.configuration!,initialOperationId:e.initialOperationId,initialPrompt:prompt,resumeNativeSessionId:null,credentialFile:path.join(f.home,"grant.json"),ipcEndpoint:path.join(f.home,"c.sock"),ipcSecret:"a".repeat(64),createdAt:new Date(0).toISOString()};

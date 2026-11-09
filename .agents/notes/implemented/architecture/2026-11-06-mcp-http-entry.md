@@ -31,6 +31,10 @@ headers. This preserves the stateless SDK's authenticated GET refusal while
 letting browsers and agents discover installation instructions at the endpoint.
 Both paths prohibit caching and retain response delivery error logging.
 
+Authenticated product manual Resources share this entry and its delivery lifetime;
+the [manual decision](../feature/2026-11-09-mcp-product-manuals.md) owns their
+content and admission.
+
 Registered tools advertise input and output schemas. The low-level wrapper
 validates inputs, supplies safe structured errors and preserves explicit
 completion facts. Successful reads use ordinary JSON encoding without runtime

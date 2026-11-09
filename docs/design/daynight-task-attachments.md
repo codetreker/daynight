@@ -702,6 +702,15 @@ MCP 附件列表使用普通批量数据库读取及完整项的条数分页；c
 
 inspect 打开稳定文件并使用内容 I/O 预算。open 查询已登记状态时使用控制预算；新快照在任何文件等待前切换到独立的内容 I/O 预算，资源饱和时明确拒绝，避免阻塞状态与取消调用。服务登记调用方 UUID 后，使用受目标 gate 保护的稳定附件句柄流式创建私有快照并记录完整大小及 SHA-256。重复 open 只返回已登记状态，不重新复制；preparing 不提供可读内容。chunk 在私有 permit 下直接定位快照偏移，每次重新检查当前凭据、稳定授权主体和任务访问权限。覆盖原路径不会改变快照，close 只请求清理私有命名空间。设计权衡见[不可变下载决策](../../.agents/notes/implemented/architecture/2026-11-06-mcp-attachment-download.md)，普通元数据和页面职责见[读取简化决策](../../.agents/notes/implemented/simplification/2026-11-09-canonical-resource-pages.md)。
 
+私有传输 service 测试使用明确的 DAO、事务结果和直接下层附件操作预期，保留实际
+Lifecycle、permit、文件、gate、取消与 drain、续期、chunk stream、hash，以及完整容量
+边界。写入与后续读取的给定事实独立，逻辑回执不作为持久化证据。Store 使用真实
+PostgreSQL 验证回执与预留账目的原子性、失败回滚、授权替换、晚到回执及 Project
+生命周期锁；core 拥有精确 JSON 绑定等价与有界极端指数证明。独立 startup/shutdown
+入口保留真实跨进程 gate、活跃写者清理拒绝及强制退出后的孤儿回收，不加入正常 API
+集成场景。当前验证职责及取舍见
+[MCP 传输测试归属决策](../../.agents/notes/implemented/testing/2026-11-09-mcptransfer-test-ownership.md)。
+
 各实现任务运行所影响模块的既有检查；CLI 使用 `pnpm typecheck`、`pnpm test`、
 `pnpm build` 及相关安装验收，Web 使用 README 拥有的 `web:*` 验证，Go 服务使用
 隔离 PostgreSQL 下的 `bash scripts/check.sh` 与 `bash scripts/startup-shutdown.sh`。服务既有 build、vet、按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)选择的 race、go-cov

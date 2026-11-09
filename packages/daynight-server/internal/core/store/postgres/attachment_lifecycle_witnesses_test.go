@@ -365,9 +365,13 @@ func TestAttachmentAdmissionDoesNotLockGrantAcrossMutation(t *testing.T) {
 }
 
 func TestAttachmentRollbackRetainsExternalFileEffects(t *testing.T) {
+	f := attachmentWitnessFixture(t)
+	before, _, err := f.database.PutAttachment(t.Context(), f.metadata("before"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, operation := range []string{"put failure", "put canceled", "delete failure", "suppressed delete"} {
-		t.Run(operation, func(t *testing.T) {
-			f := attachmentWitnessFixture(t)
+		if !t.Run(operation, func(t *testing.T) {
 			ctx := t.Context()
 			files, err := local.New(t.TempDir())
 			if err != nil {
@@ -376,10 +380,6 @@ func TestAttachmentRollbackRetainsExternalFileEffects(t *testing.T) {
 			defer files.Close()
 			const bucket, path = "task-attachments", "fixture/file"
 			if _, err := files.Put(ctx, bucket, path, strings.NewReader("before")); err != nil {
-				t.Fatal(err)
-			}
-			before, _, err := f.database.PutAttachment(ctx, f.metadata("before"))
-			if err != nil {
 				t.Fatal(err)
 			}
 			if operation != "put canceled" {
@@ -460,7 +460,13 @@ func TestAttachmentRollbackRetainsExternalFileEffects(t *testing.T) {
 				}
 				t.Fatalf("external deletion was lost: %v", err)
 			}
-		})
+			if operation != "put canceled" {
+				mustQueryExec(t, f.database, `DROP TRIGGER refuse_attachment_metadata ON task_attachments; DROP FUNCTION refuse_attachment_metadata()`)
+				assertFaultTriggerRemoved(t, f.database, "refuse_attachment_metadata", "task_attachments")
+			}
+		}) {
+			return
+		}
 	}
 }
 

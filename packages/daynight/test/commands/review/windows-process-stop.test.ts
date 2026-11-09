@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { stopWindowsProcessTree, type WindowsProcessStopKernel } from "../../../src/commands/review/windows-process-stop.js";
+import { stopWindowsProcessTree } from "../../../src/commands/review/windows-process-stop.js";
+import type { WindowsProcessStopKernel } from "../../../src/commands/review/windows-process-stop.js";
+import { formatError } from "../../../src/platform/diagnostics.js";
 
 type Identity = { pid: number; parentPid: number; birth: bigint };
 const fixture = () => {
@@ -24,6 +26,16 @@ const fixture = () => {
 const messages = (error: unknown): string => error instanceof AggregateError ? `${error.message}: ${error.errors.map(messages).join("; ")}` : String(error);
 const failure = async (operation: Promise<void>): Promise<string> => {
   try { await operation; throw new Error("Expected failure."); } catch (error) { return messages(error); }
+};
+const diagnosticFailure = async (operation: Promise<void>) => {
+  try { await operation; throw new Error("Expected failure."); }
+  catch (error) {
+    const text = formatError(error);
+    const prefix = "Windows review ancestry: ";
+    const line = text.split("\n").find(value => value.startsWith(prefix));
+    expect(line).toBeDefined();
+    return { text, ancestry: JSON.parse(line!.slice(prefix.length)) };
+  }
 };
 
 describe("Windows review termination confirmation", () => {
@@ -64,7 +76,10 @@ describe("Windows review termination confirmation", () => {
 
   it("retains a live descendant beyond a vanished intermediate as uncertain while still attempting taskkill", async () => {
     const f = fixture(); f.identities.delete(20);
-    expect(await failure(stopWindowsProcessTree(f.options, f.api))).toContain("cannot be attributed");
+    const { ancestry } = await diagnosticFailure(stopWindowsProcessTree(f.options, f.api));
+    expect(ancestry).toEqual({ schemaVersion: 1, root: { pid: 10, parentPid: process.pid, birth: "1" }, liveRejected: 1, omitted: 0,
+      candidates: [{ reason: "parent-unproven", snapshot: { pid: 30, parentPid: 20 },
+        member: { pid: 30, parentPid: 20, birth: "3" }, parent: null, signaled: false }] });
     expect(f.api.open).toHaveBeenCalledWith(30);
     expect(f.options.terminate).toHaveBeenCalledOnce();
     expect(f.api.close).toHaveBeenCalledTimes(2);
@@ -73,9 +88,64 @@ describe("Windows review termination confirmation", () => {
   it.each(["different parent", "older child"])("rejects a reused PID with %s and retains the original kill attempt", async kind => {
     const f = fixture();
     f.identities.set(30, { pid: 30, parentPid: kind === "different parent" ? 90 : 20, birth: kind === "older child" ? 1n : 3n });
-    expect(await failure(stopWindowsProcessTree(f.options, f.api))).toContain("cannot be attributed");
+    Object.assign(f.rows.find(row => row.pid === 30)!, { commandLine: "fixture-command-line", environment: "fixture-environment" });
+    Object.assign(f.identities.get(30)!, { commandLine: "fixture-command-line", environment: "fixture-environment" });
+    const { text, ancestry } = await diagnosticFailure(stopWindowsProcessTree(f.options, f.api));
+    expect(ancestry.candidates).toEqual([{ reason: kind === "different parent" ? "parent-changed" : "child-predates-parent",
+      snapshot: { pid: 30, parentPid: 20 }, member: { pid: 30, parentPid: kind === "different parent" ? 90 : 20, birth: kind === "older child" ? "1" : "3" },
+      parent: { pid: 20, parentPid: 10, birth: "2" }, signaled: false }]);
+    expect(text).not.toContain("fixture-command-line"); expect(text).not.toContain("fixture-environment");
     expect(f.options.terminate).toHaveBeenCalledOnce();
     expect(f.api.close).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains the failure for an unrelated old branch alongside a stopped owned tree", async () => {
+    const f = fixture();
+    for (const identity of f.identities.values()) identity.birth += 9_007_199_254_740_999n;
+    // Windows can reuse an exited parent's PID while its old descendants live:
+    // https://devblogs.microsoft.com/oldnewthing/20150403-00/?p=44313
+    for (const identity of [
+      { pid: 40, parentPid: 10, birth: 1n }, { pid: 50, parentPid: 40, birth: 2n },
+      { pid: 60, parentPid: 50, birth: 3n }, { pid: 70, parentPid: 60, birth: 4n },
+    ]) { f.identities.set(identity.pid, identity); f.rows.push({ pid: identity.pid, parentPid: identity.parentPid }); }
+    // Only the known owned processes stop. This does not model taskkill's native target selection.
+    f.options.terminate = vi.fn(async () => { for (const pid of [10, 20, 30]) f.signaled.add(pid); });
+    const { ancestry } = await diagnosticFailure(stopWindowsProcessTree(f.options, f.api));
+    expect(ancestry.root).toEqual({ pid: 10, parentPid: process.pid, birth: "9007199254741000" });
+    expect(ancestry.liveRejected).toBe(4);
+    expect(ancestry.omitted).toBe(0);
+    expect(ancestry.candidates.map((candidate: { reason: string }) => candidate.reason)).toEqual([
+      "child-predates-parent", "parent-unproven", "parent-unproven", "parent-unproven",
+    ]);
+    expect([...f.signaled]).toEqual([10, 20, 30]);
+    expect(f.options.terminate).toHaveBeenCalledOnce();
+    expect(f.api.close).toHaveBeenCalledTimes(7);
+  });
+
+  it("does not report an already signaled older child as a live ancestry failure", async () => {
+    const f = fixture(); f.identities.get(30)!.birth = 1n; f.signaled.add(30);
+    await stopWindowsProcessTree(f.options, f.api);
+    expect(f.options.terminate).toHaveBeenCalledOnce();
+    expect(f.api.close).toHaveBeenCalledTimes(3);
+  });
+
+  it("bounds ancestry facts without truncating inventory, failure or handle cleanup", async () => {
+    const f = fixture();
+    for (const identity of f.identities.values()) identity.birth += 100n;
+    for (let pid = 40; pid < 60; pid++) {
+      f.identities.set(pid, { pid, parentPid: 10, birth: 1n }); f.rows.push({ pid, parentPid: 10 });
+    }
+    f.options.terminate = vi.fn(async () => { for (const pid of [10, 20, 30]) f.signaled.add(pid); throw new Error("taskkill failed"); });
+    f.api.close = vi.fn(handle => { if (handle === 10) throw new Error("close failed"); });
+    const { text, ancestry } = await diagnosticFailure(stopWindowsProcessTree(f.options, f.api));
+    expect(ancestry.liveRejected).toBe(20);
+    expect(ancestry.candidates).toHaveLength(8);
+    expect(ancestry.omitted).toBe(12);
+    expect(ancestry.candidates.every((candidate: { reason: string }) => candidate.reason === "child-predates-parent")).toBe(true);
+    expect(text).toContain("taskkill failed"); expect(text).toContain("close failed");
+    expect(f.api.open).toHaveBeenCalledWith(59);
+    expect(f.options.terminate).toHaveBeenCalledOnce();
+    expect(f.api.close).toHaveBeenCalledTimes(23);
   });
 
   it("does not target the root PID after the root signals during inventory", async () => {

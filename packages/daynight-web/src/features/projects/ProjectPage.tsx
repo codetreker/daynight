@@ -12,7 +12,7 @@ import { useOverviewProgress } from "./useOverviewProgress";
 import { taskPageSize, usePagination } from "./usePagination";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
-import { useProjectSection, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
+import { useProjectAssigneeFilter, useProjectSection, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
 import { compareTaskStatus } from "./task-order";
@@ -57,7 +57,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const graphOwner = useRef(Symbol());
   useProjectAssigneeReceipt(projectId, graphOwner.current, graph.snapshot?.revision ?? 0);
   const viewer = useTaskCacheScope();
-  const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>({ kind: "all" });
+  const { filter: assigneeFilter, onFilterChange: setAssigneeFilter, issue: assigneeIssue } = useProjectAssigneeFilter(projectId, viewer.userId);
   const [statusFilter, setStatusFilter] = useState<TaskStatus | "all">("all");
   const sessions = useTaskDetailSessions();
   useEffect(() => sessions.subscribeProject(projectId, graph.refresh), [sessions, projectId, graph.refresh]);
@@ -222,14 +222,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, target.kind === "standalone");
       if (filters.assignee !== assigneeFilter || filters.status !== statusFilter) {
         chainPagination.onPageChange(1); standalonePagination.onPageChange(1);
-        setAssigneeFilter(filters.assignee);
+        if (filters.assignee !== assigneeFilter) setAssigneeFilter(filters.assignee);
         setStatusFilter(filters.status);
       }
     }
     setListTarget(target);
     selectView(target.kind === "chain" ? "chains" : "standalone");
     selectSection("tasks");
-  }, [selectSection, selectView, snapshot, progress.recentStandaloneIds, assigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear]);
+  }, [selectSection, selectView, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear]);
 
   const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
     const index = snapshot!.index;
@@ -297,6 +297,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         <div className="project-section-content">
           {sectionIssue !== null && <p className="snapshot-notice" role="status">{preferences.section[sectionIssue.kind]}</p>}
           {tabIssue !== null && <p className="snapshot-notice" role="status">{preferences.tab[tabIssue.kind]}</p>}
+          {assigneeIssue !== null && <p className="snapshot-notice" role="status">{preferences.assignee[assigneeIssue.kind]}</p>}
           {scrollIssue !== null && <p className="snapshot-notice" role="status">{preferences.scroll[scrollIssue.kind]}</p>}
           {graph.status === "loading" && (
             <section className="state-box" role="status" aria-label={m.loading}>

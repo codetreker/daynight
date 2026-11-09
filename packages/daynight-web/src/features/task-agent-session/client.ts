@@ -35,6 +35,7 @@ export function clearIndependentSessionStorage(userId: string, sessionId: string
 export type SessionSettingIntent = { readonly operationId: string; readonly settingId: string; readonly value: string; readonly confirmedValue: string | null };
 type CommandInput = { [K in SessionCommand['kind']]: Pick<Extract<SessionCommand, { kind: K }>, 'kind' | 'payload'> }[SessionCommand['kind']];
 export type SessionViewState = {
+  readonly actionAdmitted: boolean;
   readonly startupReport: SessionStartupReport | null;
   readonly environmentConnected: boolean;
   readonly errorCode: string | null;
@@ -47,7 +48,7 @@ export type SessionViewState = {
   readonly historyError: string | null; readonly checking: ReadonlySet<string>;
   readonly historyReady: boolean; readonly historyRevision: number; readonly connectionGeneration: number;
 };
-type Options = { readonly api: SessionApi; readonly userId: string; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly onInvalidate?: () => void; readonly storage: Storage | null } & (
+type Options = { readonly api: SessionApi; readonly userId: string; readonly initialActionAdmitted?: boolean; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly onInvalidate?: () => void; readonly storage: Storage | null } & (
   { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly ownerUserId: string; readonly testSessionId?: never; readonly bot?: never } |
   { readonly testSessionId: string; readonly bot?: BotSessionBinding; readonly projectId?: never; readonly taskId?: never; readonly claimId?: never }
 );
@@ -63,7 +64,7 @@ class HistoryCursorError extends Error {}
 type CurrentReadFlight = { readonly kind: 'start' | 'observation' | 'archive'; readonly controller: AbortController; readonly generation: number; readonly archive: { readonly snapshot: SessionSnapshot; readonly generation: number } | null };
 
 export class TaskSessionClient {
-  private view: SessionViewState = { operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyRevision: 0, connectionGeneration: 0 };
+  private view: SessionViewState = { actionAdmitted: true, operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyRevision: 0, connectionGeneration: 0 };
   private archive: LoadedSessionArchive | null = null;
   private media: { readonly key: string; readonly client: SessionResourceClient } | null = null;
   private listeners = new Set<() => void>();
@@ -104,9 +105,12 @@ export class TaskSessionClient {
   private draftKey: string | null = null;
   private operationPolls = new Set<ReturnType<typeof setTimeout>>();
   private progressTimers = new Map<string, readonly ReturnType<typeof setTimeout>[]>();
-  constructor(private readonly options: Options) {}
+  constructor(private readonly options: Options) { this.view = { ...this.view, actionAdmitted: options.initialActionAdmitted ?? true }; }
   snapshot = (): SessionViewState => this.view;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
+  setActionAdmission = (admitted: boolean): void => {
+    if (this.view.actionAdmitted !== admitted) this.publish({ actionAdmitted: admitted });
+  };
   private owned = (): boolean => !this.lifetime.signal.aborted && this.options.isCurrent();
   private paused = (): boolean => this.options.isPaused?.() ?? false;
   private live = (): boolean => this.owned() && !this.paused();
@@ -684,6 +688,7 @@ export class TaskSessionClient {
     if (!this.canInteract() || !this.live() || !sessionRespondGate(this.view.state, this.view.connected, interaction) || interaction.state !== 'pending') return Promise.reject(new Error('This interaction is no longer available.'));
     const current = this.view.state.entries.find((entry) => entry.kind === 'interaction' && entry.interaction.interactionId === interaction.interactionId);
     if (!current || current.kind !== 'interaction' || current.interaction.revision !== interaction.revision || current.interaction.state !== 'pending') return Promise.reject(new Error('This interaction changed. Refresh the session.'));
+    if (!this.view.actionAdmitted) return Promise.reject(new Error('Session actions are not currently admitted.'));
     return this.execute({ kind: 'interaction_response', payload: { interactionId: interaction.interactionId, interactionRevision: interaction.revision, submissionId: crypto.randomUUID(), response } });
   };
   private clearProgressTimers(id: string) {
@@ -712,6 +717,7 @@ export class TaskSessionClient {
     if (!this.canInteract()) throw new Error("Only the Session owner can interact.");
     const s = this.view.state.snapshot;
     if (!this.live() || !s || (input.kind === 'interaction_response' ? hasPendingResponse(this.view.state, { interactionId: input.payload.interactionId, revision: input.payload.interactionRevision }) : [...this.view.state.operations.values()].some((op) => op.kind === input.kind && uncertain(op)))) throw new Error('Check the original pending operation before continuing.');
+    if (!this.view.actionAdmitted) throw new Error('Session actions are not currently admitted.');
     const command: SessionCommand = { protocol: SESSION_PROTOCOL, ...sessionFence(s), requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), ...input };
     const pending: SessionOperation = { protocol: SESSION_PROTOCOL, ...sessionFence(s), operationId: command.operationId, kind: command.kind, state: 'unknown', providerResult: null, error: null };
     if ((command.kind === 'send_message' && command.payload.content[0]?.type === 'text' && this.view.draft.text.trim() === command.payload.content[0].text) || (command.kind === 'execute_command' && draftText !== undefined && this.view.draft.text === draftText)) {

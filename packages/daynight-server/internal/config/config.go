@@ -26,6 +26,7 @@ type Config struct {
 	DatabaseURL             string
 	StorageRoot             string
 	ListenAddress           string
+	MetricsListenAddress    string
 	StartupTimeout          time.Duration
 	ShutdownTimeout         time.Duration
 	TaskSyncOverlap         time.Duration
@@ -92,6 +93,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		DatabaseURL:             getenv("DAYNIGHT_DATABASE_URL"),
 		StorageRoot:             getenv("DAYNIGHT_STORAGE_ROOT"),
 		ListenAddress:           address,
+		MetricsListenAddress:    getenv("DAYNIGHT_METRICS_LISTEN_ADDR"),
 		StartupTimeout:          startupTimeout,
 		ShutdownTimeout:         shutdownTimeout,
 		TaskSyncOverlap:         taskSyncOverlap,
@@ -193,6 +195,23 @@ func (c Config) Validate() error {
 	number, err := strconv.Atoi(port)
 	if err != nil || number < 0 || number > 65535 || strconv.Itoa(number) != port {
 		return &ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must use a port from 0 to 65535"}
+	}
+	if c.MetricsListenAddress != "" {
+		metricsHost, metricsPort, err := net.SplitHostPort(c.MetricsListenAddress)
+		if err != nil {
+			return &ConfigurationError{Field: "DAYNIGHT_METRICS_LISTEN_ADDR", Rule: "must contain a numeric IP and port"}
+		}
+		metricsAddress, err := netip.ParseAddr(metricsHost)
+		if err != nil || metricsAddress.Zone() != "" {
+			return &ConfigurationError{Field: "DAYNIGHT_METRICS_LISTEN_ADDR", Rule: "must use a numeric IP without a scope"}
+		}
+		metricsNumber, err := strconv.Atoi(metricsPort)
+		if err != nil || metricsNumber < 0 || metricsNumber > 65535 || strconv.Itoa(metricsNumber) != metricsPort {
+			return &ConfigurationError{Field: "DAYNIGHT_METRICS_LISTEN_ADDR", Rule: "must use a port from 0 to 65535"}
+		}
+		if metricsNumber != 0 && metricsNumber == number {
+			return &ConfigurationError{Field: "DAYNIGHT_METRICS_LISTEN_ADDR", Rule: "must use a different nonzero port from DAYNIGHT_LISTEN_ADDR"}
+		}
 	}
 	if c.StartupTimeout <= 0 || c.ShutdownTimeout <= 0 || c.ShutdownTimeout > 10*time.Second {
 		return &ConfigurationError{Field: "timeouts", Rule: "startup and shutdown must be positive and shutdown must not exceed 10 seconds"}

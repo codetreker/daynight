@@ -49,6 +49,34 @@ func isolatedStore(t *testing.T) *Store {
 	return testutil.OpenStoreAt(t, Open, scopedDatabaseURL(t))
 }
 
+func closedStore(t *testing.T) *Store {
+	t.Helper()
+	raw := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
+	if raw == "" {
+		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
+	}
+	pool, err := pgxpool.New(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Close()
+	return &Store{Pool: pool}
+}
+
+func assertFaultTriggerRemoved(t *testing.T, database *Store, name, table string) {
+	t.Helper()
+	var retained bool
+	if err := database.Pool.QueryRow(t.Context(), `SELECT
+ EXISTS(SELECT FROM pg_trigger WHERE tgname=$1 AND tgrelid=$2::regclass)
+ OR EXISTS(SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE p.proname=$1 AND n.nspname=current_schema())`, name, table).Scan(&retained); err != nil {
+		t.Fatal(err)
+	}
+	if retained {
+		t.Fatalf("fault trigger or function %s was retained", name)
+	}
+}
+
 func emptyPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), scopedDatabaseURL(t))

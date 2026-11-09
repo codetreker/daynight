@@ -10,7 +10,9 @@ import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerP
 import { WorktreePreconditionError } from "../worktrees.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { workerOperation, type WorkerGitManager } from "../execution.js";
-import { workerCleanupPrompt } from "../prompts.js";
+import { appendWorkerPrompts, workerCleanupPrompt } from "../prompts.js";
+import { PromptInputLimitError } from "../prompt-input-limit.js";
+import type { WorkerPromptSource, WorkerPromptTuple } from "../prompt-source.js";
 import { WorkerCleanupError, type WorkerCleanupStage } from "../cleanup-error.js";
 import { taskAgentControlMode, type CleanupState, type LocalTask, type RecoveryState } from "./web-types.js";
 import type { WebExecutionStore } from "./web-store.js";
@@ -19,6 +21,8 @@ import type { createWebControllerLauncher } from "./web-process.js";
 export type WebBackendOptions = {
   homeDirectory: string; store: WebExecutionStore; git: WorkerGitManager; launcher: ReturnType<typeof createWebControllerLauncher>;
   platform: TaskPlatform; buildPrompt: (task: LocalTask, platform: TaskPlatform) => string; emit: (event: { kind: string; message: string; task?: LocalTask }) => void; now: () => number;
+  promptSource?: Pick<WorkerPromptSource, "current">;
+  preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>;
   request?: typeof requestController;
   archive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<void>;
 };
@@ -26,8 +30,14 @@ export class WebRecoveryBlockedError extends Error {
   constructor(readonly reasonCode: NonNullable<RecoveryState["reasonCode"]>, message: string, options?: ErrorOptions) { super(message, options); }
 }
 export type WebCleanupOutcome = { task: LocalTask; complete: boolean };
+export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large";
+export type WebAdvanceResult = { kind: "observed"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
+class PromptUnknownError extends Error {}
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const request = options.request ?? requestController;
+  const waiting = new Map<string, WebInputWaitingReason>();
+  const rejected = new Map<string, string>();
+  const signature = (task: LocalTask, tuple: WorkerPromptTuple): string => JSON.stringify([tuple.user.revision, tuple.project.revision, tuple.worker.revision, task.configuration]);
   const current = (task: LocalTask): LocalTask => { const latest = options.store.getTask(task); if (latest === null || taskAgentControlMode(latest) !== "web") throw new Error("The frozen Web execution disappeared."); return latest; };
   const journal = (task: LocalTask): string => path.join(controllerExecutionDirectory(options.homeDirectory, task.webExecution!.executionId), "journal.sqlite");
   const remember = (input: LocalTask, snapshot: ControllerSnapshot): LocalTask => {
@@ -138,10 +148,11 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     }
     return { task, live: true };
   };
-  return {
+  const backend = {
     observeStartupReport,
     advance: async (input: LocalTask, signal: AbortSignal): Promise<LocalTask> => {
       let task = current(input);
+      waiting.delete(task.claimId);
       if (task.cleanup !== null || task.control !== null || task.configuration === null) throw new Error("Ordinary Web execution is fenced by cleanup or management.");
       if (legacyBranchLatch(task)) {
         await verifyLegacyBranchProvenance(options.homeDirectory, task, signal);
@@ -157,6 +168,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       }
       const retryAttempt = task.recovery.retryAuthorized;
       let recovering = retryAttempt;
+      let capturedSignature: string | null = null;
       const pause = (error: unknown): LocalTask => options.store.pauseRecovery(task, error instanceof Error ? error.message : String(error), options.now(), error instanceof WebRecoveryBlockedError ? error.reasonCode : undefined);
       const originalSnapshot = (): ControllerSnapshot => {
         const saved = readControllerSnapshot(journal(task)), execution = task.webExecution!;
@@ -206,7 +218,23 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         task = await verifyWorktree(task, signal);
         task = options.store.initializeWebExecution(task, options.now());
-        let ticket = await options.launcher.prepare(task, task.webExecution!.initialPrompt ?? options.buildPrompt(task, options.platform), signal);
+        if (task.webExecution!.initialPrompt === null && options.promptSource !== undefined) {
+          await options.preparePromptSource?.(task.projectId, signal);
+          const tuple = options.promptSource.current(task.projectId);
+          if (tuple === null) { waiting.set(task.claimId, "prompt_unknown"); return task; }
+          if (rejected.get(task.claimId) === signature(task, tuple)) { waiting.set(task.claimId, "prompt_too_large"); return task; }
+        }
+        const preparedTask = task;
+        const prompt = task.webExecution!.initialPrompt ?? (options.promptSource === undefined
+          ? options.buildPrompt(task, options.platform)
+          : () => {
+            const tuple = options.promptSource!.current(preparedTask.projectId);
+            if (tuple === null) throw new PromptUnknownError();
+            capturedSignature = signature(preparedTask, tuple);
+            return appendWorkerPrompts(options.buildPrompt(preparedTask, options.platform), tuple);
+          });
+        let ticket = await options.launcher.prepare(task, prompt, signal);
+        rejected.delete(task.claimId);
         task = current(task);
         await options.launcher.launch(task, ticket, signal);
         task = current(task);
@@ -255,6 +283,15 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         options.emit({ kind: "web-observed", task, message: `Original ${ticket.provider} controller generation ${ticket.executionGeneration} is bound to session ${ticket.sessionId}.` });
         return current(task);
       } catch (error) {
+        if (!signal.aborted && error instanceof PromptUnknownError) { waiting.set(task.claimId, "prompt_unknown"); return current(task); }
+        if (!signal.aborted && error instanceof PromptInputLimitError && capturedSignature !== null) {
+          if (rejected.get(task.claimId) !== capturedSignature) {
+            rejected.set(task.claimId, capturedSignature);
+            options.emit({ kind: "waiting", task: current(task), message: `Prompt input ${error.inputPath} exceeds ${error.maxBytes} bytes (${error.actualBytes} bytes); revisions ${JSON.parse(capturedSignature).slice(0, 3).join(", ")}.` });
+          }
+          waiting.set(task.claimId, "prompt_too_large");
+          return current(task);
+        }
         if (!signal.aborted && !(error instanceof WorktreePreconditionError) && (recovering && (retryAttempt || current(task).recovery.count >= task.configuration!.recoveryLimit))) pause(error);
         throw error;
       }
@@ -364,10 +401,19 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
         await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
         if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+        waiting.delete(task.claimId); rejected.delete(task.claimId);
         return { task, complete: true };
       } catch (error) {
         throw new WorkerCleanupError(stage, error);
       }
+    },
+  };
+  return {
+    ...backend,
+    advanceResult: async (task: LocalTask, signal: AbortSignal): Promise<WebAdvanceResult> => {
+      const result = await backend.advance(task, signal);
+      const reason = waiting.get(task.claimId);
+      return reason === undefined ? { kind: "observed", task: result } : { kind: "waiting_input", reason, task: result };
     },
   };
 };

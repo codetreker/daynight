@@ -81,6 +81,24 @@ func ErrorKind(err error) string {
 // KnownFault returns only faults whose completion and cleanup remain reliable.
 func KnownFault(err error) (*model.Fault, bool) { return operation.KnownFault(err) }
 
+func runtimeComponent(err error) *RuntimeError {
+	if err == nil {
+		return nil
+	}
+	if failure, ok := err.(*RuntimeError); ok && failure.Component != "" {
+		return failure
+	}
+	if causes, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range causes.Unwrap() {
+			if failure := runtimeComponent(cause); failure != nil {
+				return failure
+			}
+		}
+		return nil
+	}
+	return runtimeComponent(errors.Unwrap(err))
+}
+
 func LogFailure(logger *slog.Logger, ctx context.Context, component, phase string, err error) {
 	diagnostic := "operation failed"
 	kind, code := ErrorKind(err), "internal_error"
@@ -93,6 +111,9 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	var configurationError *config.ConfigurationError
 	var databaseError *store.Error
 	var runtimeFailure *RuntimeError
+	if failure := runtimeComponent(err); failure != nil {
+		component, phase = failure.Component, failure.Phase
+	}
 	var identityFailure *model.IdentityProviderError
 	fault, domainFailure := KnownFault(err)
 	switch {

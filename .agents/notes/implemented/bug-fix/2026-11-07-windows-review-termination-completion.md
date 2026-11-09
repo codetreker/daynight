@@ -14,7 +14,13 @@ confirm completion.
 
 ## Decision
 
-The Windows review stop path retains `taskkill /T /F` and adds native exit
+The captured-process completion rule remains in effect. The
+[Job ownership decision](2026-11-09-windows-review-job-ownership.md) replaces
+ancestry-based termination for both product review phases. This note owns the
+remaining legacy helper and the rationale for waiting on original process
+objects, including its bounded ancestry diagnostics.
+
+The legacy unowned Windows stop helper retains `taskkill /T /F` and native exit
 confirmation for the process objects captured before termination. After native
 library loading, it rechecks the original `ChildProcess`, opens its process
 object with query and synchronization rights, and verifies that the root remains
@@ -36,6 +42,17 @@ If descendant observation fails but the original root remains verifiably live,
 the supervisor still attempts its existing tree termination and preserves the
 observation failure. It does not issue `taskkill` after root identity or liveness
 has become uncertain.
+
+Live ancestry rejections share one diagnostic in that failure chain. It records
+the held root identity and at most eight candidate observations, distinguishing
+an unproven parent, a parent PID that differs from the snapshot, and a child
+created before its held parent. Each observation contains only the snapshot
+PID/parent PID, held identities and the unsignaled result; creation times remain
+decimal strings without precision loss. Total and omitted candidate counts
+preserve the scale of a larger rejected branch. The cap applies only to recorded
+facts: inventory, failure retention and handle cleanup continue for every
+candidate. Command lines, environment values and native handle addresses are
+not collected.
 
 After `taskkill`, the supervisor polls every accepted original process handle
 with `WaitForSingleObject(handle, 0)` until all are signaled or the confirmation
@@ -65,13 +82,25 @@ objects observes the required state directly.
 **Replace review startup with a gated Job Object guardian.** Assigning a job before
 allowing the agent to create descendants would provide a stronger ownership
 boundary, but changes the launch protocol and its lifecycle. The termination
-completion defect does not require that larger change. Job containment remains
-a separate design decision if arbitrary later descendants must be covered.
+completion defect did not require that larger change. The later
+[Job ownership decision](2026-11-09-windows-review-job-ownership.md) adopts this
+launch boundary to cover ordinary descendants after inventory and across parent
+exit while preserving the captured-object completion rule.
 
 **Treat a quiet snapshot as complete containment.** Snapshot enumeration cannot
 prove that no process was born afterward or recover a chain through an
 intermediate process that exited before enumeration. Repeated snapshots do not
 remove those limitations.
+
+**Accept exclusion after ignoring a provably older branch.** Windows can retain
+an old parent PID after that PID has been reused by an unrelated process, as
+explained in the [Toolhelp ancestry example](https://devblogs.microsoft.com/oldnewthing/20150403-00/?p=44313).
+The older branch is not owned by the new parent. Dropping its wait requirement
+does not establish that the existing `taskkill /T` will avoid targeting it.
+Exclusion remains refused until the termination boundary is qualified; bounded
+classification supplies evidence without weakening that refusal. Replacing
+tree termination with retained-handle termination would also need to preserve
+the existing handling of descendants born after inventory.
 
 ## Consequences
 
@@ -84,8 +113,16 @@ wall-clock bound.
 The confirmation applies to the captured members. It does not strengthen
 `taskkill /T` into arbitrary descendant containment or change the Windows normal
 completion path. Access denial and ambiguous ancestry retain failure rather than
-silently dropping a potentially live member. The implementation uses the existing
-`koffi` dependency and changes neither POSIX signaling nor adapter startup.
+silently dropping a potentially live member. The legacy helper uses the existing `koffi` dependency and does not change POSIX
+signaling. Product adapter startup and normal completion now follow the linked
+Job ownership decision.
+
+An old unrelated branch can still make stopping fail after every owned process
+has exited. The deterministic kernel witness preserves that case alongside
+valid descendants, parent-identity changes, missing intermediates, already
+signaled candidates, diagnostic truncation and cleanup failures. Controlled
+termination callbacks do not qualify native `taskkill` target selection, and a
+passing native run without rejected candidates cannot explain a past failure.
 
 The native contracts are documented by Microsoft's
 [TerminateProcess reference](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess),

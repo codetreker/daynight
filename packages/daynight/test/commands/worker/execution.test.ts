@@ -6,6 +6,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { JsonValue, Task } from "../../../src/api/types.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createExecutionDriver, settleWorkerStops } from "../../../src/commands/worker/execution.js";
+import { appendWorkerPrompts, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { createHerdrAgentManager, HerdrInputBlockedError, herdrExecutionAgentName, herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
@@ -117,6 +118,78 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
 };
 
 describe("execution from current Herdr resources", () => {
+  it("waits for the initial tuple and captures the value received during workspace preparation", async () => {
+    const f = await fixture("codex", null);
+    const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision: "1", text, updatedAt: "2026-11-09T00:00:00Z" });
+    let tuple: ReturnType<NonNullable<ExecutionDependencies["promptSource"]>["current"]> = null;
+    f.dependencies.promptSource = { current: () => tuple };
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_unknown", observation: null });
+    expect(f.calls.filter(call => call.method === "agent.start" || call.method === "agent.prompt")).toEqual([]);
+    tuple = { user: resource("user", "old"), project: resource("project", ""), worker: resource("worker", "worker") };
+    const prepare = f.manager.prepareWorkspace.bind(f.manager);
+    vi.spyOn(f.manager, "prepareWorkspace").mockImplementation(async (...args) => {
+      const binding = await prepare(...args);
+      tuple = { user: resource("user", "new"), project: resource("project", "project"), worker: resource("worker", "worker") };
+      return binding;
+    });
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    const prompt = String(f.calls.find(call => call.method === "agent.prompt")!.params.text);
+    expect(prompt).toContain("----- begin user prompt -----\nnew\n----- end user prompt -----");
+    expect(prompt).toContain("----- begin project prompt -----\nproject\n----- end project prompt -----");
+    expect(prompt).not.toContain("\nold\n");
+  });
+
+  it("rejects an oversized complete request before native launch and retries after a revision changes", async () => {
+    const f = await fixture("codex", null);
+    const resource = (scope: "user" | "project" | "worker", revision: string, text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision, text, updatedAt: "2026-11-09T00:00:00Z" });
+    let tuple = { user: resource("user", "1", "x".repeat(1_100_000)), project: resource("project", "1", ""), worker: resource("worker", "1", "") };
+    f.dependencies.promptSource = { current: () => tuple };
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+    expect(f.calls.filter(call => call.method === "agent.start" || call.method === "agent.prompt")).toEqual([]);
+    expect(f.events.filter(event => event.kind === "waiting")).toHaveLength(1);
+    tuple = { ...tuple, user: resource("user", "2", "small") };
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it("revalidates the same revisions when an oversized ping is followed by a shorter startup", async () => {
+    const f = await fixture("codex", null);
+    const resource = (scope: "user" | "project" | "worker", revision: string, text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision, text, updatedAt: "2026-11-09T00:00:00Z" });
+    let tuple = { user: resource("user", "1", ""), project: resource("project", "1", ""), worker: resource("worker", "1", "") };
+    f.dependencies.promptSource = { current: () => tuple };
+    const initial = await f.driver.advance(f.input);
+    const pane = f.agents.find(value => value.pane_id === initial.observation!.binding.paneId)!;
+    pane.agent_status = "idle"; pane.state_change_seq = 7;
+    const base = { ...tuple, user: resource("user", "2", "x") };
+    const size = Buffer.byteLength(JSON.stringify({ id: uuid(0), method: "agent.prompt", params: { target: "new-pane-2", text: appendWorkerPrompts("managed assignment", base) } }));
+    tuple = { ...base, user: resource("user", "2", "x".repeat(1 + 1_048_576 - size - 100)) };
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    f.agents.splice(0);
+    const exited = f.panes.find(value => value.pane_id === initial.observation!.binding.paneId)!;
+    exited.agent_session = { source: "herdr:codex", agent: "codex", kind: "id", value: freshId };
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(2);
+  });
+
+  it("revalidates the same ping revisions when the actual target changes", async () => {
+    const f = await fixture("codex", staleId);
+    const longTarget = "p".repeat(500);
+    f.panes[0]!.pane_id = longTarget;
+    const current: Entry = { ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
+    f.agents.push(current);
+    const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision: "1", text, updatedAt: "2026-11-09T00:00:00Z" });
+    const tuple = { user: resource("user", "x"), project: resource("project", ""), worker: resource("worker", "") };
+    const shortTarget = "p";
+    const size = Buffer.byteLength(JSON.stringify({ id: uuid(0), method: "agent.prompt", params: { target: shortTarget, text: appendWorkerPrompts(workerPingPrompt(f.input.task), tuple) } }));
+    tuple.user = resource("user", "x".repeat(1 + 1_048_576 - size - 100));
+    f.dependencies.promptSource = { current: () => tuple };
+    expect(await f.driver.advance(f.input)).toMatchObject({ kind: "waiting_input", reason: "prompt_too_large" });
+    current.pane_id = shortTarget; f.panes[0]!.pane_id = shortTarget;
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+  });
   it("refuses worktree and native mutations when durable launch provenance is unknown", async () => {
     const f = await fixture("codex", null);
     Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => { throw new Error("Original run is stop_unknown"); } } });
@@ -144,7 +217,7 @@ describe("execution from current Herdr resources", () => {
     const stop = vi.fn(async () => { throw new Error("A prepared run has not launched an agent"); });
     Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => {}, hasPreparedRun: () => true, stop } });
     const result = await f.driver.advance(f.input);
-    expect(result.binding).toEqual(f.binding);
+    expect(result.observation!.binding).toEqual(f.binding);
     expect(f.launches).toHaveLength(1);
     expect(stop).not.toHaveBeenCalled();
     expect(f.calls.some(call => call.method === "workspace.close")).toBe(false);
@@ -153,7 +226,7 @@ describe("execution from current Herdr resources", () => {
   it.each(["codex", "copilot"] as const)("replaces a cold inactive %s pane before a NULL-session fresh launch", async (agent) => {
     const f = await fixture(agent, null);
     const result = await f.driver.advance(f.input);
-    expect(result.binding.workspaceId).not.toBe(f.binding.workspaceId);
+    expect(result.observation!.binding.workspaceId).not.toBe(f.binding.workspaceId);
     expect(f.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
     expect(f.launches).toHaveLength(1); expect(f.launches[0]!.environment).toEqual(f.expectedNativeEnvironment);
     expect(f.workerEnvironment.COPILOT_ALLOW_ALL).toBe("false"); expect(f.workerEnvironment.COPILOT_ASSISTED_APPROVAL).toBe("true");
@@ -169,7 +242,7 @@ describe("execution from current Herdr resources", () => {
   it.each(["codex", "copilot"] as const)("recreates a cold inactive %s workspace and resumes the saved ID", async (agent) => {
     const f = await fixture(agent, savedId);
     const result = await f.driver.advance(f.input);
-    expect(result.nativeSession?.sessionId).toBe(savedId); expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
+    expect(result.observation!.nativeSession?.sessionId).toBe(savedId); expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
     expect(f.launches[0]!.environment).toEqual(f.expectedNativeEnvironment);
     expect(f.launches[0]!.args).toEqual(expect.arrayContaining(agent === "codex" ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"] : ["--allow-all", "--no-ask-user", "--no-sandbox"]));
     if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(codexProjectTrustArguments(f.context.cwd).at(-1));
@@ -182,7 +255,7 @@ describe("execution from current Herdr resources", () => {
     const f = await fixture(agent, staleId);
     f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
     const result = await f.driver.advance(f.input);
-    expect(result.nativeSession?.sessionId).toBe(staleId);
+    expect(result.observation!.nativeSession?.sessionId).toBe(staleId);
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 
@@ -191,7 +264,7 @@ describe("execution from current Herdr resources", () => {
     const first = await f.driver.advance(f.input);
     const originalTask = f.store.getTask(f.input.task);
     f.agents.splice(0);
-    const exitedPane = f.panes.find((pane) => pane.pane_id === first.binding.paneId)!;
+    const exitedPane = f.panes.find((pane) => pane.pane_id === first.observation!.binding.paneId)!;
     exitedPane.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: savedId };
     const request = f.rpc.request;
     const busy = new HerdrRpcError("replacement shell is initializing", { method: "agent.start", requestId: "restart", submission: "unknown", code: "agent_pane_busy" });
@@ -204,8 +277,8 @@ describe("execution from current Herdr resources", () => {
 
     const recovered = await f.driver.advance(f.input);
     expect(attempts).toBe(2);
-    expect(recovered.binding.workspaceId).not.toBe(first.binding.workspaceId);
-    expect(recovered.nativeSession?.sessionId).toBe(savedId);
+    expect(recovered.observation!.binding.workspaceId).not.toBe(first.observation!.binding.workspaceId);
+    expect(recovered.observation!.nativeSession?.sessionId).toBe(savedId);
     expect(f.store.getTask(f.input.task)).toEqual(originalTask);
     expect(f.launches).toHaveLength(2);
     expect(f.launches[1]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
@@ -533,8 +606,8 @@ describe("execution from current Herdr resources", () => {
       const f = await fixture(agent, sessionId);
       f.finishFirstTurnBeforeDiscovery(status);
       const first = await f.driver.advance(f.input);
-      expect(first.status).toBe(status); expect(first.completionSeq).toBe(1);
-      expect(first.nativeSession?.sessionId).toBe(sessionId === null ? freshId : savedId);
+      expect(first.observation!.status).toBe(status); expect(first.observation!.completionSeq).toBe(1);
+      expect(first.observation!.nativeSession?.sessionId).toBe(sessionId === null ? freshId : savedId);
       expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
       await f.driver.advance(f.input);
       await f.driver.advance(f.input);
@@ -688,7 +761,7 @@ describe("execution from current Herdr resources", () => {
     expect(scheduled[0]!.panes[0]!.kind).toBeNull();
     f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
     const result = await f.driver.advance(f.input);
-    expect(result.binding).toEqual(f.binding);
+    expect(result.observation!.binding).toEqual(f.binding);
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 
@@ -705,7 +778,7 @@ describe("execution from current Herdr resources", () => {
   it.each(["codex", "copilot"] as const)("rejects a mismatched live %s session before sending a deferred first prompt", async (agent) => {
     const f = await fixture(agent, savedId); f.blockOnLaunch();
     const blocked = await f.driver.advance(f.input);
-    expect(blocked.status).toBe("blocked"); expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    expect(blocked.observation!.status).toBe("blocked"); expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
     f.agents[0]!.agent_status = "idle";
     f.agents[0]!.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: staleId };
     await expect(f.driver.advance(f.input)).rejects.toThrow(/native session/);

@@ -15,9 +15,13 @@ type database interface {
 	store.PromptSnapshotReader
 	store.PromptWriter
 }
-type Prompts struct{ store database }
+type versionDecision func(model.PromptResource, int64, string) (int64, bool, error)
+type Prompts struct {
+	store         database
+	decideVersion versionDecision
+}
 
-func New(db database) *Prompts { return &Prompts{store: db} }
+func New(db database) *Prompts { return &Prompts{store: db, decideVersion: core.Next} }
 func invalid() error           { return &model.Fault{Code: "invalid_input", Message: "Prompt input is invalid."} }
 func notFound(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
@@ -123,7 +127,7 @@ func (p *Prompts) Put(ctx context.Context, principal model.Principal, scope mode
 		if err := storedTextError(current.Text); err != nil {
 			return err
 		}
-		next, changed, err := core.Next(current, expected, text)
+		next, changed, err := p.decideVersion(current, expected, text)
 		if err != nil {
 			return err
 		}

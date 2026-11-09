@@ -31,7 +31,11 @@ owns the current lifecycle and operational bounds. The shared gate's original
 
 `core/mcptransfer` owns transfer state, operation identity and admission rules.
 The service coordinates current authority, ledger transactions and file permits;
-the DAO executes locked data operations without owning the state graph.
+the DAO executes locked data operations without owning the state graph. The
+[MCP transfer test ownership decision](../testing/2026-11-09-mcptransfer-test-ownership.md)
+separates service coordination over explicit lower facts from real receipt and
+ledger transactions, cross-process cleanup and pure binding equivalence. A
+supplied receipt or completion result cannot establish physical persistence.
 
 ## Alternatives
 

@@ -1,7 +1,7 @@
-import { decodeWorkerCloudJsonSource, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
-import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "./worker-configuration.js";
+import { decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
+import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
 import { workerReportBody } from "./worker-report.js";
-import { jsonObjectSources } from "./json-source.js";
+import { jsonContainerSources, jsonObjectSources } from "./json-source.js";
 import { randomUUID } from "node:crypto";
 import { parseCreatedTeamInvitation, parseTeamInvitations, parseTeamInvitationRevoke } from "./team-invitations.js";
 import { sameStartupReport } from "../session/startup.js";
@@ -25,7 +25,7 @@ import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreated
 import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
 import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true; readonly promptSelectors?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
 export class ApiError extends Error {
@@ -172,7 +172,7 @@ export type ApiClient = {
   deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   getWorkerConfiguration(workerId: string): Promise<WorkerCloudResource>;
-  reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport): Promise<WorkerCloudReportReceipt>;
+  reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   createProject(input: CreateProjectInput, requestId?: string): Promise<Project>;
   getProject(projectId: string, userId?: string): Promise<Project>;
   getProjectAccess(projectId: string): Promise<ProjectAccess>;
@@ -348,7 +348,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -1086,16 +1086,26 @@ export const createApiClient = (options: {
         },
       }, [200], undefined, true);
     },
-    reportWorkerConfiguration: (workerId, input, configuration) => {
+    reportWorkerConfiguration: (workerId, input, configuration, selectors) => {
       const worker = resourceId(workerId), parsed = parseWorkerCloudReport(configuration);
-      return exchange({ operation: "worker.configuration.report", workerConfiguration: true }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
+      const promptSelectors = selectors === undefined ? undefined : parseWorkerPromptSelectors(selectors);
+      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
-        decodeJsonSource: (source, response) => response.success ? decodeWorkerCloudJsonSource(source) : parseApiJson(source),
+        ...(promptSelectors === undefined ? {} : { responseBytes: 48 * 1_048_576 }),
+        decodeJsonSource: (source, response) => !response.success ? parseApiJson(source) : promptSelectors === undefined ? decodeWorkerCloudJsonSource(source) : decodeWorkerCloudSyncSource(source),
         parse: (value, response) => {
-          if (response.configurationHeader !== "1") throw new ProtocolError("The server does not support Worker configuration exchange version 1.");
-          const receipt = parseWorkerCloudReportReceipt(value);
+          if (response.configurationHeader !== (promptSelectors === undefined ? "1" : "2")) throw new ProtocolError("The server does not support the requested Worker configuration exchange version.");
+          const sync = promptSelectors === undefined ? undefined : value as { native: unknown; promptSource: string | undefined };
+          const receipt = parseWorkerCloudReportReceipt(sync === undefined ? value : sync.native);
           if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
-          return receipt;
+          if (sync === undefined || promptSelectors === undefined) return receipt;
+          let prompts: WorkerPromptResults;
+          try {
+            if (sync.promptSource === undefined || response.principalId === undefined) throw new ProtocolError();
+            jsonContainerSources(sync.promptSource);
+            prompts = { ok: true, results: parseWorkerPromptResults(JSON.parse(sync.promptSource) as unknown, promptSelectors, response.principalId, worker) };
+          } catch { prompts = { ok: false }; }
+          return { ...receipt, prompts };
         },
       }, [200], workerReportBody({ ...input, configuration: parsed }), true);
     },

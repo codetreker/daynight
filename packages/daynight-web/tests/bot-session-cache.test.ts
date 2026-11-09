@@ -10,7 +10,7 @@ function fixture(storage: Storage | null = null) {
   const bots = [1, 2, 3, 4].map(n => botFixture(botBinding(n)));
   const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage, createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api });
   caches.push(cache);
-  async function select(n: number) { cache.select(bots[n - 1]!.binding); const pane = cache.snapshot().find(p => p.binding.botId === bots[n - 1]!.binding.botId)!; await vi.waitFor(() => expect(pane.client.snapshot().connected).toBe(true)); return pane; }
+  async function select(n: number) { cache.select(bots[n - 1]!.binding, bots[n - 1]!.binding); const pane = cache.snapshot().find(p => p.binding.botId === bots[n - 1]!.binding.botId)!; await vi.waitFor(() => expect(pane.client.snapshot().connected).toBe(true)); return pane; }
   return { bots, cache, select };
 }
 it('keeps three clients, selects without restarting, and evicts the least recently visited inactive pane', async () => {
@@ -19,6 +19,37 @@ it('keeps three clients, selects without restarting, and evicts the least recent
   expect(f.cache.snapshot().map(p => p.binding.botId)).toEqual([1, 3, 4].map(n => botBinding(n).botId));
   expect(f.bots[1]!.channel.close).toHaveBeenCalledOnce(); expect(f.bots[0]!.channel.close).not.toHaveBeenCalled();
   expect(a.client.snapshot().draft.text).toBe('draft A'); expect(f.bots[0]!.api.current).toHaveBeenCalledOnce();
+});
+it('keeps a display-only resident editable while refusing a new remote operation', async () => {
+  const f = fixture(), a = await f.select(1);
+  f.cache.select(a.binding, null);
+  a.client.setDraft('local text during detail confirmation');
+  expect(a.client.snapshot().draft.text).toBe('local text during detail confirmation');
+  expect(a.client.snapshot().actionAdmitted).toBe(false);
+  await expect(a.client.send('must not leave this page')).rejects.toThrow();
+  expect(f.bots[0]!.api.command).not.toHaveBeenCalled();
+  expect(a.client.snapshot().draft.submission).toBeNull();
+  expect(a.client.snapshot().state.operations.size).toBe(0);
+});
+it.each(['ownerUserId', 'botId', 'sessionId', 'testExecutionId'] as const)('refuses action admission when the %s binding differs', async field => {
+  const f = fixture(), a = await f.select(1);
+  f.cache.select(a.binding, { ...a.binding, [field]: botBinding(2)[field] === a.binding[field] ? 'another-user' : botBinding(2)[field] });
+  await expect(a.client.send('wrong complete binding')).rejects.toThrow();
+  expect(f.bots[0]!.api.command).not.toHaveBeenCalled();
+});
+it('synchronously freezes every resident without closing channels or losing local drafts', async () => {
+  const f = fixture(), a = await f.select(1), b = await f.select(2);
+  f.cache.select(a.binding, a.binding); a.client.setDraft('A'); b.client.setDraft('B');
+  f.cache.suspendActions();
+  await expect(a.client.send('old callback')).rejects.toThrow();
+  await expect(b.client.send('hidden callback')).rejects.toThrow();
+  expect(f.bots.every(bot => vi.mocked(bot.api.command).mock.calls.length === 0)).toBe(true);
+  expect(a.client.snapshot().draft.text).toBe('A'); expect(b.client.snapshot().draft.text).toBe('B');
+  expect(f.bots[0]!.channel.close).not.toHaveBeenCalled(); expect(f.bots[1]!.channel.close).not.toHaveBeenCalled();
+  f.cache.select(a.binding, a.binding);
+  expect(a.client.snapshot().actionAdmitted).toBe(true); expect(b.client.snapshot().actionAdmitted).toBe(false);
+  f.cache.select(null, a.binding);
+  expect(a.client.snapshot().actionAdmitted).toBe(false);
 });
 it('restores a draft and queries the original uncertain operation after eviction with storage denied', async () => {
   const broken: Storage = { get length(): number { throw Error('denied'); }, key: () => { throw Error('denied'); }, getItem: () => { throw Error('denied'); }, setItem: () => { throw Error('denied'); }, removeItem: () => { throw Error('denied'); }, clear: () => { throw Error('denied'); } };
@@ -49,6 +80,7 @@ it('discards obsolete generation state and refuses invalidated Bot or account bi
 it.each(['available', 'enumeration', 'removal'] as const)('revokes an earlier visit before selecting in the new cache when storage is %s', async mode => {
   const first = fixture(sessionStorage), a = await first.select(1), b = await first.select(2);
   a.client.setDraft('revoked secret'); b.client.setDraft('unrelated draft');
+  first.cache.select(a.binding, a.binding);
   vi.mocked(first.bots[0]!.api.command).mockRejectedValue(new Error('lost receipt'));
   await expect(a.client.send('revoked secret')).rejects.toThrow();
   const operation = a.client.snapshot().draft.submission!.operationId;
@@ -113,6 +145,7 @@ it('invalidates cold account state before the replacement cache has selected any
 it('blocks an unknown deletion without discarding the original draft, operation or bookmark', async () => {
   const f = fixture(sessionStorage), a = await f.select(1), b = await f.select(2);
   a.client.setDraft('keep until deletion is confirmed'); b.client.setDraft('other Bot');
+  f.cache.select(a.binding, a.binding);
   vi.mocked(f.bots[0]!.api.command).mockRejectedValue(new Error('unknown delivery'));
   await expect(a.client.send('keep until deletion is confirmed')).rejects.toThrow();
   const operationId = a.client.snapshot().draft.submission!.operationId;

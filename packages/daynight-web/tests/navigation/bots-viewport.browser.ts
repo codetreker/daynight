@@ -603,3 +603,74 @@ test('creation dialog leaves the active Session, draft and reading position inta
   expect(await page.evaluate(() => ({ ...window.botViewport.metrics }))).toEqual(metrics);
   expect(writes).toEqual([]);
 });
+
+for (const width of [1440, 390, 320]) {
+  test(`restores the resident A before detail revalidation at ${width}px`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.addInitScript(() => { window.botViewportOptions = { scenario: 'hot-switch' }; });
+    const writes = await install(page, { items: bots.slice(0, 3) });
+    let frozen = false, release: (() => void) | undefined, reads = 0;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    await page.route(`**/api/v1/me/bots/${botId(1)}`, async route => {
+      if (!frozen) return route.fallback();
+      reads++; await barrier;
+      await route.fulfill({ json: bots[0], headers: { 'Daynight-User-ID': BOT_USER } });
+    });
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    try {
+      await page.goto(`/bots/${botId(1)}`);
+      const message = page.locator(`${visiblePane} textarea`), timeline = page.locator(`${visiblePane} .session-timeline`);
+      await expect(message).toBeEnabled();
+      await expect(page.locator(`${visiblePane} .session-entry`)).toHaveCount(99);
+      await page.getByRole('button', { name: 'Display', exact: true }).click();
+      await page.getByRole('menuitemradio', { name: 'Standard', exact: true }).click();
+      await page.keyboard.press('Escape');
+      await expect(page.locator(`${visiblePane} .session-entry`)).toHaveCount(100);
+      const tool = page.locator(`${visiblePane} .session-tool`);
+      await tool.locator('summary').click();
+      await expect(tool).toHaveAttribute('open', '');
+      await expect(tool).toContainText('Retained tool output');
+      await message.fill('Draft A before revalidation');
+      const scrollStart = await timeline.evaluate(node => node.scrollTop);
+      await timeline.hover(); await page.mouse.wheel(0, -700);
+      await expect.poll(() => timeline.evaluate((node, expected) => Math.abs(node.scrollTop - expected), Math.max(0, scrollStart - 700))).toBeLessThanOrEqual(1);
+      await expect(page.locator(`${visiblePane} .session-latest`)).toBeVisible();
+      const before = await anchor(page);
+      const originalInput = await message.elementHandle(), originalTimeline = await timeline.elementHandle(), originalTool = await tool.elementHandle();
+      const select = async (id: string) => {
+        await closeBotConversation(page);
+        await page.locator(`.bot-list a[href="/bots/${id}"]`).click();
+      };
+      await select(botId(2));
+      await expect(message).toBeEnabled(); await message.fill('Draft B');
+      frozen = true;
+      await select(botId(1));
+      await expect.poll(() => reads).toBeGreaterThan(0);
+      // The response is still blocked. These are the original production DOM nodes.
+      await expect(message).toHaveValue('Draft A before revalidation');
+      await expect(message).toBeEnabled();
+      expect(await message.evaluate((node, old) => node === old, originalInput)).toBe(true);
+      expect(await timeline.evaluate((node, old) => node === old, originalTimeline)).toBe(true);
+      expect(await tool.evaluate((node, old) => node === old, originalTool)).toBe(true);
+      await expect(tool).toHaveAttribute('open', '');
+      const restored = await anchor(page);
+      expect(restored.key).toBe(before.key); expect(Math.abs(restored.offset - before.offset)).toBeLessThanOrEqual(3);
+      await expect(page.locator(`${visiblePane} .session-actions button[type=submit]`)).toBeDisabled();
+      expect(await message.evaluate(node => document.activeElement === node)).toBe(false);
+      await message.fill('Local edit during revalidation');
+      await message.press('Enter');
+      await expect(message).toHaveValue('Local edit during revalidation');
+      const held = await page.evaluate(() => ({ ...window.botViewport.metrics }));
+      expect(held.bindings).toHaveLength(2); expect(held.channels).toBe(2); expect(held.closed).toBe(0); expect(held.commands).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      await page.screenshot({ path: info.outputPath(`hot-switch-${width}.png`) });
+      frozen = false; release!();
+      await expect(page.locator(`${visiblePane} .session-actions button[type=submit]`)).toBeEnabled();
+      await expect(message).toHaveValue('Local edit during revalidation');
+      expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
+      expect(writes).toEqual([]); expect(errors).toEqual([]);
+      await writeFile(info.outputPath(`hot-switch-${width}.json`), JSON.stringify({ boundary: 'Production Web DOM in Chromium with controlled HTTP and SessionApi; no Worker or Provider.', width, before, restored, held, writes, errors }, null, 2));
+    } finally { frozen = false; release?.(); }
+  });
+}

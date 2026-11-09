@@ -8,7 +8,11 @@ import { HerdrInputWaitingError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
 import type { WorkerRemote } from "./remote.js";
 import type { ManagedAssignment } from "./prompts.js";
-import { workerPingPrompt } from "./prompts.js";
+import { appendWorkerPrompts, workerPingPrompt } from "./prompts.js";
+import type { WorkerPromptTuple } from "./prompt-source.js";
+import { PromptInputLimitError } from "./prompt-input-limit.js";
+import { validateHerdrPromptInput } from "./herdr/rpc.js";
+import { validateMacosPromptInput } from "./herdr/terminal-input.js";
 import type { WorkerStore } from "./store.js";
 import type { ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 import type { createWorkerGitManager } from "./worktrees.js";
@@ -16,6 +20,10 @@ import type { createWorkerGitManager } from "./worktrees.js";
 export type WorkerEvent = { kind: string; message: string; task?: LocalTask; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
 export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration };
+export type ExecutionAdvance = { kind: "observed"; observation: HerdrAgentObservation } | { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large"; observation: HerdrAgentObservation | null };
+class PromptInputWaiting extends Error {
+  constructor(readonly reason: "prompt_unknown" | "prompt_too_large") { super(reason); }
+}
 export type ExecutionDependencies = {
   store: WorkerStore;
   git: WorkerGitManager;
@@ -25,6 +33,8 @@ export type ExecutionDependencies = {
   workerId: string;
   serverOrigin: string;
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
+  promptSource?: { current(projectId: string): WorkerPromptTuple | null };
+  preparePromptSource?: (projectId: string, signal?: AbortSignal) => Promise<void>;
   emit: (event: WorkerEvent) => void;
   now: () => number;
 };
@@ -69,10 +79,33 @@ const assertNativeSession = (task: LocalTask, observation: HerdrAgentObservation
 };
 
 export const createExecutionDriver = (deps: ExecutionDependencies) => {
-  const pendingInput = new Map<string, { binding: HerdrTaskBinding; prompt: string }>();
+  const pendingInput = new Map<string, { binding: HerdrTaskBinding; prompt: string; continuation: boolean }>();
   const lastInput = new Map<string, string | null>();
   const observations = new Map<string, string>();
+  const rejected = new Map<string, string>();
   const key = (task: Pick<LocalTask, "projectId" | "taskId" | "claimId">): string => `${task.projectId}/${task.taskId}/${task.claimId}`;
+  const promptSignature = (tuple: WorkerPromptTuple, configuration: ExecutionConfiguration, binding: HerdrTaskBinding, kind: "startup" | "ping" | "recovery"): string => JSON.stringify([[tuple.user.revision, tuple.project.revision, tuple.worker.revision], configuration, deps.platform, binding.paneId, kind]);
+  const preparePrompt = (task: LocalTask, configuration: ExecutionConfiguration, binding: HerdrTaskBinding, kind: "startup" | "ping" | "recovery", builtin: () => string): string => {
+    if (deps.promptSource === undefined) return builtin();
+    const tuple = deps.promptSource.current(task.projectId);
+    if (tuple === null) throw new PromptInputWaiting("prompt_unknown");
+    const identity = key(task);
+    const revisions = [tuple.user.revision, tuple.project.revision, tuple.worker.revision];
+    const signature = promptSignature(tuple, configuration, binding, kind);
+    if (rejected.get(identity) === signature) throw new PromptInputWaiting("prompt_too_large");
+    const prompt = appendWorkerPrompts(builtin(), tuple);
+    try {
+      if (deps.platform === "macos") validateMacosPromptInput(prompt);
+      else validateHerdrPromptInput(binding.paneId, prompt);
+    } catch (error) {
+      if (!(error instanceof PromptInputLimitError)) throw error;
+      rejected.set(identity, signature);
+      deps.emit({ kind: "waiting", task, message: JSON.stringify({ reason: "prompt_too_large", inputPath: error.inputPath, actualBytes: error.actualBytes, maxBytes: error.maxBytes, revisions }) });
+      throw new PromptInputWaiting("prompt_too_large");
+    }
+    rejected.delete(identity);
+    return prompt;
+  };
   const inputState = (observation: HerdrAgentObservation): string => {
     const { session, workspaceId, paneId, terminalId } = observation.binding;
     return JSON.stringify([session, workspaceId, paneId, terminalId, observation.status, observation.stateChangeSeq, observation.completionSeq]);
@@ -88,9 +121,11 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       && claim.agent === task.agent && claim.agentControlMode === (task.agentControlMode ?? "herdr")
       && current !== null && current.status === "active";
   };
-  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal, beforeSubmit?: HerdrPromptGuard): Promise<{ observation: HerdrAgentObservation; submitted: boolean }> => {
+  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal, beforeSubmit?: HerdrPromptGuard, initialOnly = false): Promise<{ observation: HerdrAgentObservation; submitted: boolean }> => {
     const identity = key(task);
-    const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation, beforeSubmit), signal).catch((error: unknown) => {
+    const receipt = await workerOperation((operation) => initialOnly
+      ? deps.herdr.tasks.submitInitialPrompt(context, observed.binding, prompt, operation, beforeSubmit)
+      : deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation, beforeSubmit), signal).catch((error: unknown) => {
       if (error instanceof HerdrInputWaitingError) { /* A zero-write wait preserves the previous input baseline. */ }
       else if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") lastInput.delete(identity);
       else lastInput.set(identity, null);
@@ -112,15 +147,15 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
     deps.emit({
       kind: waiting ? "waiting" : started ? "started" : "reconnected",
       task,
-      message: pending ? "The first managed input is waiting in this worker process; use daynight worker attach to resolve the native screen."
+      message: pending ? pendingInput.get(identity)!.continuation ? "The recovery input is waiting in this worker process; use daynight worker attach to resolve the native screen." : "The first managed input is waiting in this worker process; use daynight worker attach to resolve the native screen."
         : blocked ? "The native agent is waiting for input; use daynight worker attach."
         : started ? "Started the managed task conversation."
         : "Connected to the existing agent without repeating its managed assignment.",
     });
   };
   return {
-    forget: (task: LocalTask): void => { pendingInput.delete(key(task)); lastInput.delete(key(task)); observations.delete(key(task)); },
-    advance: async (input: ExecutionInput, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
+    forget: (task: LocalTask): void => { pendingInput.delete(key(task)); lastInput.delete(key(task)); observations.delete(key(task)); rejected.delete(key(task)); },
+    advance: async (input: ExecutionInput, signal?: AbortSignal): Promise<ExecutionAdvance> => {
       let task = deps.store.getTask(input.task);
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
       const identity = key(task);
@@ -139,23 +174,46 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         // until native progress makes another continuation a new decision.
         if (lastInput.has(identity) && lastInput.get(identity) === null) lastInput.set(identity, inputState(observed));
         if (observed.status === "working") lastInput.delete(identity);
-        const pending = pendingInput.get(identity);
+        let pending = pendingInput.get(identity);
+        if (pending === undefined) {
+          const initialPrompt = deps.herdr.lifecycle?.pendingInitialPrompt?.(input.owner);
+          if (initialPrompt != null) {
+            pending = { binding: actual.binding, prompt: initialPrompt, continuation: false };
+          }
+        }
         if (pending !== undefined && pending.binding.terminalId === actual.binding.terminalId && pending.binding.paneId === actual.binding.paneId && observed.status !== "blocked" && observed.interactiveReady && !observed.launchPending) {
           try {
-            const result = await submitInput(task, context, observed, pending.prompt, signal);
+            const initialOnly = deps.herdr.lifecycle !== undefined && !pending.continuation;
+            const result = await submitInput(task, context, observed, pending.prompt, signal, pending.continuation ? continuationGuard(task, context) : undefined, initialOnly);
             observed = result.observation;
-            if (result.submitted) pendingInput.delete(identity);
+            if (result.submitted || initialOnly) {
+              pendingInput.delete(identity);
+              if (!result.submitted) lastInput.set(identity, inputState(observed));
+            }
           } catch (error) {
             if (!(error instanceof HerdrAgentActionError) || error.promptSubmission !== "not-submitted") pendingInput.delete(identity);
             throw error;
           }
         } else if (pending === undefined && (observed.status === "idle" || observed.status === "done") && observed.interactiveReady && !observed.launchPending && lastInput.get(identity) !== inputState(observed)) {
-          observed = (await submitInput(task, context, observed, workerPingPrompt(task), signal, continuationGuard(task, context))).observation;
+          await deps.preparePromptSource?.(task.projectId, signal);
+          let prompt: string;
+          try { prompt = preparePrompt(task, input.configuration, observed.binding, "ping", () => workerPingPrompt(task!)); }
+          catch (error) {
+            if (!(error instanceof PromptInputWaiting)) throw error;
+            if (observed.nativeSession !== null) deps.store.setSessionId(task, observed.nativeSession.sessionId);
+            return { kind: "waiting_input", reason: error.reason, observation: observed };
+          }
+          observed = (await submitInput(task, context, observed, prompt, signal, continuationGuard(task, context))).observation;
         }
         assertNativeSession(task, observed);
         if (observed.nativeSession !== null) task = deps.store.setSessionId(task, observed.nativeSession.sessionId);
         reportObservation(task, observed);
-        return observed;
+        return { kind: "observed", observation: observed };
+      }
+      if (deps.herdr.lifecycle === undefined && deps.promptSource !== undefined && deps.preparePromptSource === undefined) {
+        const tuple = deps.promptSource.current(task.projectId);
+        if (tuple === null) return { kind: "waiting_input", reason: "prompt_unknown", observation: null };
+        if (actual !== undefined && rejected.get(identity) === promptSignature(tuple, input.configuration, actual.binding, "startup")) return { kind: "waiting_input", reason: "prompt_too_large", observation: null };
       }
       if (actual !== undefined && !deps.herdr.lifecycle?.hasPreparedRun(input.owner)) {
         // Cold restore drops workspace environment overrides and retains the old native reference.
@@ -167,20 +225,36 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
           : deps.herdr.tasks.stopAndClose(context, actual.binding, operation), signal);
       }
       const binding = await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, input.title, operation), signal);
+      if (deps.herdr.lifecycle === undefined) await deps.preparePromptSource?.(task.projectId, signal);
       if (task.sessionId === null) deps.emit({ kind: "info", task, message: "Starting a new native conversation in the task worktree." });
       const assignment: ManagedAssignment = { ...task, serverOrigin: deps.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree, configuration: input.configuration };
-      const prompt = deps.buildPrompt(assignment, deps.platform);
-      pendingInput.set(identity, { binding, prompt });
+      let prompt: string;
+      try { prompt = deps.herdr.lifecycle === undefined
+        ? preparePrompt(task, input.configuration, binding, "startup", () => deps.buildPrompt(assignment, deps.platform))
+        : deps.buildPrompt(assignment, deps.platform); }
+      catch (error) {
+        if (!(error instanceof PromptInputWaiting)) throw error;
+        return { kind: "waiting_input", reason: error.reason, observation: null };
+      }
+      pendingInput.set(identity, { binding, prompt, continuation: false });
       lastInput.delete(identity);
       let observation: HerdrAgentObservation;
       try {
         observation = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, {
           configuration: input.configuration, prompt,
+          ...(deps.herdr.lifecycle === undefined ? {} : { preparePrompt: (recovery: boolean) => {
+            return preparePrompt(task!, input.configuration, binding, recovery ? "recovery" : "startup", () => recovery ? "Continue the original assigned task under its existing authorization." : deps.buildPrompt(assignment, deps.platform));
+          }, ...(deps.preparePromptSource === undefined ? {} : { preparePromptSource: (operation: Operation) => deps.preparePromptSource!(task!.projectId, operation.signal) }),
+          onPromptPrepared: (prepared: string, recovery: boolean) => { pendingInput.set(identity, { binding, prompt: prepared, continuation: recovery }); } }),
           ...(assignment.sessionId === null ? {} : { resumeSessionId: assignment.sessionId }),
           onPromptSubmitted: (receipt) => { pendingInput.delete(identity); lastInput.set(identity, inputState(receipt.observation)); },
         }, operation), signal);
         if (!deps.herdr.lifecycle) pendingInput.delete(identity);
       } catch (error) {
+        if (error instanceof PromptInputWaiting) {
+          pendingInput.delete(identity);
+          return { kind: "waiting_input", reason: error.reason, observation: null };
+        }
         if (pendingInput.has(identity) && error instanceof HerdrAgentActionError && error.action === "agent.prompt" && error.promptSubmission === "unknown") {
           pendingInput.delete(identity);
           lastInput.set(identity, null);
@@ -193,7 +267,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       assertNativeSession(task, observation);
       if (observation.nativeSession !== null) task = deps.store.setSessionId(task, observation.nativeSession.sessionId);
       reportObservation(task, observation, true);
-      return observation;
+      return { kind: "observed", observation };
     },
   };
 };

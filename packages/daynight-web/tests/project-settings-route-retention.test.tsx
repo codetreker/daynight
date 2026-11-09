@@ -37,6 +37,7 @@ beforeEach(() => {
 
 const setup = () => {
   const save = Promise.withResolvers<Response>();
+  const promptSave = Promise.withResolvers<Response>();
   const transfer = Promise.withResolvers<Response>();
   const permission = Promise.withResolvers<Response>();
   let savedProject = project();
@@ -51,6 +52,7 @@ const setup = () => {
   let nextProjectRead: PromiseWithResolvers<Response> | null = null;
   let heldProjectReadSignal: AbortSignal | undefined;
   let saveSignal: AbortSignal | undefined;
+  let promptSaveSignal: AbortSignal | undefined;
   let transferSignal: AbortSignal | undefined;
   const respond = (body: unknown, status = 200) => new Response(stringifyWireJson(body), {
     status, headers: viewerHeaders(identity.id, { "Content-Type": "application/json" }),
@@ -76,6 +78,10 @@ const setup = () => {
       if (denyAccess) { denials++; return Promise.resolve(fail(404, "not_found", "revoked-access")); }
       return Promise.resolve(respond({ ...currentAccess, directGrant: { ...currentAccess.directGrant!, userId: identity.id } }));
     }
+    if (url === `/api/v1/me/projects/${projectId}/worker-prompt`) {
+      if (init?.method === "PUT") { promptSaveSignal = init.signal as AbortSignal; return promptSave.promise; }
+      return Promise.resolve(respond({ scope: "project", scopeId: projectId, revision: "0", text: "", updatedAt: null }));
+    }
     if (url === `/api/v1/projects/${projectId}/settings` && init?.method === "PATCH") {
       saveSignal = init.signal as AbortSignal;
       return save.promise;
@@ -95,8 +101,9 @@ const setup = () => {
   vi.stubGlobal("fetch", fetcher);
   render(<AuthenticatedApp />);
   return {
-    save, transfer, permission, fetcher,
+    save, promptSave, transfer, permission, fetcher,
     get saveSignal() { return saveSignal; }, get transferSignal() { return transferSignal; },
+    get promptSaveSignal() { return promptSaveSignal; },
     get heldProjectReadSignal() { return heldProjectReadSignal; },
     get projectReads() { return projectReads; },
     get deniedProjectReads() { return deniedProjectReads; },
@@ -144,6 +151,20 @@ const startTransfer = async () => {
   const dialog = await previewTransfer();
   fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
 };
+
+it("keeps a dispatched personal project prompt owner across route navigation", async () => {
+  const app = setup();
+  const field = await screen.findByRole("textbox", { name: "Prompt text" });
+  fireEvent.change(field, { target: { value: "project instructions" } });
+  fireEvent.click(within(field.closest("form")!).getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(app.promptSaveSignal).toBeDefined());
+  leave(); fireEvent.click(screen.getByRole("button", { name: "Discard and leave" }));
+  expect(app.promptSaveSignal?.aborted).toBe(false);
+  returnToSettings();
+  expect(await screen.findByRole("textbox", { name: "Prompt text" })).toBe(field);
+  await act(async () => app.promptSave.resolve(json({ scope: "project", scopeId: projectId, revision: "1", text: "project instructions", updatedAt: time })));
+  expect(app.fetcher.mock.calls.filter(([url, init]) => url.endsWith("/worker-prompt") && init?.method === "PUT")).toHaveLength(1);
+});
 
 it("keeps transfer blocked while a settings save is dispatched, including after route changes", async () => {
   const app = setup(); await submitSave();
@@ -316,10 +337,10 @@ it("keeps the confirmed save while failed access is retried on the same route", 
   app.setSavedProject(project(90, 2n));
   await act(async () => { app.save.resolve(json(project(90, 2n))); app.permission.resolve(fail(503, "unavailable", "access-failed")); });
   expect(await screen.findByText("Settings saved.")).toBeVisible();
-  expect(await screen.findByRole("alert")).toBeVisible();
+  const alert = (await screen.findByText("access-failed")).closest('[role="alert"]')!; expect(alert).toBeVisible();
   const field = screen.getByLabelText("Alert threshold"); expect(field).toBeDisabled();
   app.setHoldPermission(false);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  fireEvent.click(within(alert as HTMLElement).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(screen.getByLabelText("Alert threshold")).toBeEnabled());
   expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
   expect(app.saves()).toBe(1);
@@ -333,9 +354,9 @@ it("preserves a draft edited before access fails through the later retry", async
   await waitForState(() => expect(app.fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(accessReads));
   fireEvent.change(field, { target: { value: "110" } });
   await act(async () => app.permission.resolve(fail(503, "unavailable", "access-failed")));
-  expect(await screen.findByRole("alert")).toBeVisible();
+  const alert = (await screen.findByText("access-failed")).closest('[role="alert"]')!; expect(alert).toBeVisible();
   expect(field).toBeDisabled(); expect(field).toHaveValue(110);
-  app.setHoldPermission(false); fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  app.setHoldPermission(false); fireEvent.click(within(alert as HTMLElement).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(settings().getByRole("button", { name: "Save settings" })).toBeEnabled());
   expect(screen.getByLabelText("Alert threshold")).toHaveValue(110);
   expect(app.saves()).toBe(0);
@@ -851,7 +872,7 @@ it.each([
   expect(settings().getByRole("button", { name: "Save settings" })).toBeDisabled();
   app.setHoldPermission(false);
   const readsAfterFailure = app.projectReads;
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  fireEvent.click(within(screen.getByText(requestId).closest('[role="alert"]') as HTMLElement).getByRole("button", { name: "Retry" }));
   await waitForState(() => expect(app.projectReads).toBeGreaterThan(readsAfterFailure));
   if (action === "restore") {
     expect(await screen.findByText(/settings changed while you were away/i)).toBeVisible();

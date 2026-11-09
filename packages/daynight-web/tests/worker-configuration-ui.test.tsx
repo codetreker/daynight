@@ -21,7 +21,7 @@ const item = (key: WorkerConfigurationKey, appliedValue: WorkerConfigurationOutc
 const globals = (value: WorkerConfigurationValue, revision = '1') => [item({ kind: 'maxConcurrent' }, value.maxConcurrent, revision), item({ kind: 'pollIntervalMs' }, value.pollIntervalMs, revision), item({ kind: 'recoveryLimit' }, value.recoveryLimit, revision), item({ kind: 'preferPlatformSpecificTasks' }, value.preferPlatformSpecificTasks, revision), item({ kind: 'native' }, value.native, revision)];
 const observed = (revision: string, value: WorkerConfigurationValue, items: readonly WorkerConfigurationOutcome[], observationRevision = '1'): WorkerConfigurationResource => ({ ...configurationResource(revision, value), observationRevision, observation: { baseRevision: String(BigInt(observationRevision) - 1n), desiredRevision: revision, items, reportedAt: WORKER_TIME } });
 const install = (handler: (url: string, init: RequestInit) => Response | Promise<Response>, projects: readonly Project[] = []) => {
-  const fetch = vi.fn((url: string, init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? projectPage(projects) : handler(url, init));
+  const fetch = vi.fn((url: string, init: RequestInit = {}) => url.startsWith('/api/v1/projects?') ? projectPage(projects) : url === `/api/v1/me/workers/${workerId(1)}/prompt` ? workerResponse({ scope: 'worker', scopeId: workerId(1), revision: '0', text: '', updatedAt: null }) : handler(url, init));
   vi.stubGlobal('fetch', fetch); return fetch;
 };
 const mount = (props: Partial<Parameters<typeof WorkerConfigurationPanel>[0]> = {}) => renderWithLocale(<WorkerConfigurationPanel workerId={workerId(1)} readEnabled online tasks={[]} {...props} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
@@ -64,7 +64,7 @@ describe('Worker configuration form', () => {
     mount(); await flush();
     const preference = screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' });
     fireEvent.click(preference); expect(preference).toBeChecked();
-    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    fireEvent.click(within(document.querySelector('.configuration-form') as HTMLElement).getByRole('button', { name: 'Discard changes' }));
     expect(preference).not.toBeChecked(); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
     expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
   });
@@ -330,11 +330,36 @@ describe('Worker configuration form', () => {
 });
 
 describe('Worker detail configuration integration', () => {
+  it.each([['macos', 'macOS'], ['windows', 'Windows'], ['linux', 'Linux']] as const)('labels the %s Worker using its reported platform in both languages', async (platform, name) => {
+    const detail = workerDetail(); detail.worker.platform = platform; detail.worker.telemetry.platform = platform;
+    vi.stubGlobal('navigator', { ...navigator, platform: 'a different browser platform' });
+    install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerResponse(detail));
+    const view = renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    expect(screen.getByRole('checkbox', { name: `Prefer ${name} tasks` })).toBeInTheDocument();
+    view.setLocale('zh-CN');
+    expect(screen.getByRole('checkbox', { name: `优先领取 ${name} 的任务` })).toBeInTheDocument();
+  });
+  it('updates the label when switching Workers and does not retain the old platform while loading', async () => {
+    const second = deferred<Response>();
+    const first = workerDetail(1); first.worker.platform = 'macos'; first.worker.telemetry.platform = 'macos';
+    const next = workerDetail(2); next.worker.platform = 'windows'; next.worker.telemetry.platform = 'windows';
+    install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : url.endsWith(workerId(2)) ? second.promise : workerResponse(first));
+    const view = renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Prefer macOS tasks' })).toBeInTheDocument();
+    view.rerender(<WorkerDetailPage workerId={workerId(2)} readEnabled />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' })).toBeInTheDocument();
+    second.resolve(workerResponse(next)); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Prefer Windows tasks' })).toBeInTheDocument();
+  });
   it('keeps configuration available after telemetry404 and preserves its mounted draft across keyboard tabs', async () => {
     install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerError(404));
     renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
     expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' })).toBeInTheDocument();
     const args = input('Startup arguments'); change('Startup arguments', '[unfinished');
     const overview = screen.getByRole('tab', { name: 'Runtime overview' }); fireEvent.click(overview); expect(args).not.toBeVisible();
     fireEvent.keyDown(overview, { key: 'ArrowRight' }); await flush();

@@ -54,6 +54,7 @@ export const workspace: WorkspaceMessages = {
   preferences: {
     section: { read: "The saved project view could not be read. You can continue browsing.", invalid: "The saved project view is invalid. Overview is shown by default. You can continue browsing.", write: "The project view could not be saved. It may not return after a reload. You can continue browsing." },
     tab: { read: "The saved task tab could not be read. You can continue browsing.", invalid: "The saved task tab is invalid. Task chains are shown by default. You can continue browsing.", write: "The task tab could not be saved. It may not return after a reload. You can continue browsing." },
+    assignee: { read: "The saved assignee filter could not be read. You can continue browsing.", invalid: "The saved assignee filter is invalid. All assignees are shown by default. You can continue browsing.", write: "The assignee filter could not be saved. It may not return after a reload. You can continue browsing." },
     scroll: { read: "The saved task browsing position could not be read. You can continue browsing.", invalid: "The saved task browsing position is invalid. Browsing starts at the top. You can continue browsing.", write: "The task browsing position could not be saved. It may not return after a reload. You can continue browsing." },
   },
 };

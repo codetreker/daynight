@@ -18,34 +18,21 @@ func (s *Projects) RegisterRepository(ctx context.Context, principal model.Princ
 	if err != nil {
 		return model.Project{}, false, err
 	}
-	request := core.ProjectListRequest{Page: model.PageRequest{Limit: 100}}
+	var selected model.Project
+	var found bool
 	err = read(ctx, s.store, func(dao store.ProjectReader) error {
-		for {
-			page, err := core.ReadList(ctx, dao, principal, request)
-			if err != nil {
-				return err
-			}
-			for _, candidate := range page.Items {
-				if err := match.Add(candidate); err != nil {
-					return err
-				}
-			}
-			if !page.HasMore {
-				return nil
-			}
-			finished, err := core.FinishList(principal, request, page)
-			if err != nil {
-				return err
-			}
-			request.Page.Cursor = finished.NextCursor
-		}
+		var err error
+		selected, found, err = core.FindRepository(ctx, dao, principal, match)
+		return err
 	})
 	if err != nil {
 		return model.Project{}, false, err
 	}
-	selected, create, err := match.Select(confirm)
-	if err != nil || !create {
-		return selected, false, err
+	if found {
+		return selected, false, nil
+	}
+	if err := core.RequireRepositoryCreationConfirmation(confirm); err != nil {
+		return model.Project{}, false, err
 	}
 	created, _, err := s.createValidated(ctx, principal, input)
 	if err != nil {
