@@ -321,6 +321,14 @@ func (c *listOperationCapability) TaskGraphTasks(context.Context, string, string
 	return nil, c.fail("TaskGraphTasks")
 }
 
+func (c *listOperationCapability) TaskWorkGroups(context.Context, string, store.TaskWorkQuery) (store.TaskWorkGroups, error) {
+	return store.TaskWorkGroups{}, c.fail("TaskWorkGroups")
+}
+
+func (c *listOperationCapability) TaskWorkTargets(context.Context, string, []string, *store.TaskWorkTargetPosition, int) (store.TaskWorkTargets, error) {
+	return store.TaskWorkTargets{}, c.fail("TaskWorkTargets")
+}
+
 func (c *listOperationCapability) TaskCacheEpoch(context.Context, string) (string, error) {
 	return "", c.fail("TaskCacheEpoch")
 }
