@@ -126,6 +126,68 @@ func (d *creationHistoryDAO) verify() {
 	}
 }
 
+func TestCreationRejectsWorkerChangeHiddenByRetiredPreference(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		name := "unchanged Worker accepts discovered fallback"
+		if changed {
+			name = "changed Worker rejects stale discovery"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			principal := model.Principal{UserID: "df339d36-1b78-46c2-88ce-52f80a95a8fb"}
+			now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+			worker := availableWorker(workerID, now)
+			worker.Telemetry.AssistantHost.CreationConfigurationVersion = 1
+			worker.Telemetry.AssistantHost.Providers[0].Model = ptr("model-a")
+			preference := model.BotNativePreference{Model: ptr("retired")}
+			earlier := model.BotDefaultsInput{ObservedAt: now, Workers: []model.WorkerSnapshot{worker}, WorkerPreferences: map[string]model.BotWorkerPreference{workerID: {Native: map[string]model.BotNativePreference{"codex": preference}}}}
+			input, fingerprint, err := NormalizeBotRequest(CreateBot{ID: botID, Name: "Retired preference"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := &creationHistoryDAO{t: t, ctx: ctx, principal: principal, id: input.ID, defaults: earlier, wantCalls: []string{"preferred", "candidates", "defaults"}}
+			_, observed, err := CreationDefaults(ctx, snapshot, principal.UserID, input.Overrides)
+			snapshot.verify()
+			if err != nil || observed.Configuration == nil || observed.Configuration.Model == nil || *observed.Configuration.Model != "retired" {
+				t.Fatalf("preference did not mask the Worker model: %#v %v", observed, err)
+			}
+			baseline, err := WorkerNativeDefaults(earlier, input.Overrides, workerID)
+			if err != nil || baseline.Model == nil || *baseline.Model != "model-a" {
+				t.Fatalf("discovery baseline: %#v %v", baseline, err)
+			}
+			input.Resolution = &CreationResolution{Expected: *observed.Configuration, ExpectedBaseline: baseline, ExpectedPreference: preference, Configuration: baseline}
+			current := earlier
+			if changed {
+				changedWorker := availableWorker(workerID, now)
+				changedWorker.Telemetry.AssistantHost.CreationConfigurationVersion = 1
+				changedWorker.Telemetry.AssistantHost.Providers[0].Model = ptr("model-b")
+				current.Workers = []model.WorkerSnapshot{changedWorker}
+			}
+			latest, err := ResolveBotDefaults(current, input.Overrides)
+			if err != nil || !reflect.DeepEqual(latest.Configuration, observed.Configuration) {
+				t.Fatalf("retired preference no longer masks the Worker change: %#v %v", latest, err)
+			}
+			dao := &creationHistoryDAO{t: t, ctx: ctx, principal: principal, id: input.ID, defaults: current, reads: []creationHistoryRead{{err: model.ErrNotFound}}, wantCalls: []string{"credential", "lock", "bot", "preferred", "candidates", "defaults"}}
+			frozen := model.Bot{ID: input.ID, OwnerUserID: principal.UserID, WorkerID: workerID, Name: input.Name, RequestFingerprint: fingerprint, RequestedOverrides: input.Overrides, ResolvedConfiguration: baseline}
+			if !changed {
+				dao.wantInsert = &frozen
+				dao.reads = append(dao.reads, creationHistoryRead{bot: frozen})
+				dao.wantCalls = append(dao.wantCalls, "worker", "insert", "bot", "credential")
+			}
+			created, err := Create(ctx, dao, principal, input, fingerprint, true)
+			if changed {
+				assertFault(t, err, "resource_conflict")
+				if !reflect.DeepEqual(created, model.Bot{}) || len(dao.inserts) != 0 {
+					t.Fatalf("stale discovery inserted a Bot: %#v inserts=%#v", created, dao.inserts)
+				}
+			} else if err != nil || !reflect.DeepEqual(created, frozen) {
+				t.Fatalf("unchanged Worker lost discovered fallback: %#v %v; want %#v", created, err, frozen)
+			}
+			dao.verify()
+		})
+	}
+}
+
 func TestCreationRejectsNewEffortHistoryWithoutDiscovery(t *testing.T) {
 	for _, winner := range []bool{false, true} {
 		name := "new history requires discovery"
