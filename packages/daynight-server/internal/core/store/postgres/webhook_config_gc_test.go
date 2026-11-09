@@ -2,15 +2,29 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func configGCTransactionCleanup(t *testing.T, tx pgx.Tx) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
+			t.Errorf("rollback configuration GC transaction: %v", err)
+		}
+	})
+}
 
 func TestWebhookConfigGCKeyExpiryWithoutOwner(t *testing.T) {
 	s := isolatedStore(t)
@@ -37,19 +51,25 @@ func TestWebhookConfigGCKeyExpiryWithoutOwner(t *testing.T) {
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("fixture %v %v", completion, err)
 	}
-	collector := &core.ConfigCollector{}
-	removed := 0
-	for i := 0; i < 100 && removed == 0; i++ {
-		removed, err = collector.Pass(ctx, passedConfigBarrier{s}, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if removed == 0 {
-			time.Sleep(10 * time.Millisecond)
-		}
+	want := store.WebhookConfigGCCandidate{Order: 1, Kind: "key", ID: old.ID, EndpointID: ep.ID, Owner: webhook.Owner{Kind: "personal", ID: owner.ID}}
+	scan, err := s.ScanWebhookConfigGC(ctx, nil, 1)
+	if err != nil || scan.Barrier == "" || !reflect.DeepEqual(scan.Candidates, []store.WebhookConfigGCCandidate{want}) {
+		t.Fatalf("overlap key scan: %+v %v", scan, err)
 	}
-	if removed != 1 {
-		t.Fatalf("removed=%d", removed)
+	removed := false
+	completion, err = s.WriteWebhookConfigGC(ctx, scan.Candidates[0], func(sc store.WebhookConfigGCScope) error {
+		facts, err := sc.LockConfigCandidate(ctx, scan.Candidates[0])
+		if err != nil {
+			return err
+		}
+		if !facts.Present || !facts.Retired || facts.Referenced || !facts.Expiry.Equal(expired.Truncate(time.Microsecond)) || !facts.ObservedAt.After(facts.Expiry) {
+			return fmt.Errorf("locked expired key facts: %+v", facts)
+		}
+		removed, err = sc.DeleteConfigCandidate(ctx, scan.Candidates[0])
+		return err
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted || !removed {
+		t.Fatalf("expired key deletion: removed=%v completion=%+v err=%v", removed, completion, err)
 	}
 	var currents, overlaps int
 	if err = s.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE slot='current'),count(*) FILTER (WHERE slot='overlap') FROM webhook_signing_keys WHERE endpoint_id=$1`, ep.ID).Scan(&currents, &overlaps); err != nil || currents != 1 || overlaps != 0 {
@@ -86,14 +106,18 @@ func TestWebhookConfigGCWaitsForUnrelatedTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(context.Background())
+	configGCTransactionCleanup(t, tx)
 	if _, err = tx.Exec(ctx, `SELECT pg_current_xact_id()`); err != nil {
 		t.Fatal(err)
 	}
-	collector := &core.ConfigCollector{}
-	n, err := collector.Pass(ctx, s, 1)
-	if err != nil || n != 0 {
-		t.Fatalf("while unrelated transaction active: %d %v", n, err)
+	want := store.WebhookConfigGCCandidate{Order: 2, Kind: "binding", ID: binding.ID, EndpointID: ep.ID, ProjectID: sub.ProjectID, Owner: webhook.Owner{Kind: "personal", ID: owner.ID}}
+	scan, err := s.ScanWebhookConfigGC(ctx, nil, 1)
+	if err != nil || scan.Barrier == "" || !reflect.DeepEqual(scan.Candidates, []store.WebhookConfigGCCandidate{want}) {
+		t.Fatalf("retired binding scan: %+v %v", scan, err)
+	}
+	passed, err := s.WebhookConfigGCBarrierPassed(ctx, scan.Barrier)
+	if err != nil || passed {
+		t.Fatalf("barrier passed while the earlier transaction remained active: %v %v", passed, err)
 	}
 	var present bool
 	if err = s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM webhook_bindings WHERE id=$1)`, binding.ID).Scan(&present); err != nil || !present {
@@ -102,33 +126,26 @@ func TestWebhookConfigGCWaitsForUnrelatedTransaction(t *testing.T) {
 	if err = tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Other packages may retain unrelated XIDs in the same PostgreSQL cluster.
-	// Continue with an explicitly passed barrier to test the locked recheck;
-	// the prepared-transaction stress test proves real barrier convergence.
-	for i := 0; i < 100 && present; i++ {
-		_, err = collector.Pass(ctx, passedConfigBarrier{s}, 1)
+	// Other packages may retain older XIDs; this write proves the locked
+	// recheck. The prepared-transaction stress test owns global convergence.
+	removed := false
+	completion, err := s.WriteWebhookConfigGC(ctx, scan.Candidates[0], func(sc store.WebhookConfigGCScope) error {
+		facts, err := sc.LockConfigCandidate(ctx, scan.Candidates[0])
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		if err = s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM webhook_bindings WHERE id=$1)`, binding.ID).Scan(&present); err != nil {
-			t.Fatal(err)
+		if !facts.Present || !facts.Retired || facts.Referenced {
+			return fmt.Errorf("locked retired binding facts: %+v", facts)
 		}
-		if present {
-			time.Sleep(10 * time.Millisecond)
-		}
+		removed, err = sc.DeleteConfigCandidate(ctx, scan.Candidates[0])
+		return err
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted || !removed {
+		t.Fatalf("retired binding deletion: removed=%v completion=%+v err=%v", removed, completion, err)
 	}
-	if present {
-		t.Fatal("retired binding was not reclaimed after barrier")
+	if err = s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM webhook_bindings WHERE id=$1)`, binding.ID).Scan(&present); err != nil || present {
+		t.Fatalf("retired binding was not reclaimed: present=%v err=%v", present, err)
 	}
-}
-
-// This test exercises lock timeouts after a successful barrier. PostgreSQL's
-// actual cluster-wide barrier is covered independently, including prepared
-// transactions; parallel suites may otherwise keep an unrelated XID active.
-type passedConfigBarrier struct{ *Store }
-
-func (s passedConfigBarrier) WebhookConfigGCBarrierPassed(context.Context, string) (bool, error) {
-	return true, nil
 }
 
 func TestWebhookConfigGCBusyCandidateDoesNotBlockBatch(t *testing.T) {
@@ -141,7 +158,7 @@ func TestWebhookConfigGCBusyCandidateDoesNotBlockBatch(t *testing.T) {
 			if _, err := s.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'gc')`, team); err != nil {
 				t.Fatal(err)
 			}
-			var firstEndpoint, firstProject string
+			var candidates []store.WebhookConfigGCCandidate
 			for i := 1; i <= 2; i++ {
 				owner, ep, _, op := webhookStoredFixture(t)
 				project := uuid.NewString()
@@ -167,27 +184,49 @@ func TestWebhookConfigGCBusyCandidateDoesNotBlockBatch(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if i == 1 {
-					firstEndpoint, firstProject = ep.ID, project
-				}
+				candidates = append(candidates, store.WebhookConfigGCCandidate{Order: 2, Kind: "binding", ID: binding.ID, EndpointID: ep.ID, ProjectID: project, Owner: webhook.Owner{Kind: "personal", ID: owner.ID}})
+			}
+			scan, err := s.ScanWebhookConfigGC(ctx, nil, 2)
+			if err != nil || scan.Barrier == "" || !reflect.DeepEqual(scan.Candidates, candidates) {
+				t.Fatalf("ordered binding scan: %+v %v", scan, err)
 			}
 			lock, err := s.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer lock.Rollback(context.Background())
+			configGCTransactionCleanup(t, lock)
 			if lockKind == "project" {
-				_, err = lock.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, firstProject)
+				_, err = lock.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, candidates[0].ProjectID)
 			} else {
-				_, err = lock.Exec(ctx, `SELECT id FROM webhook_endpoints WHERE id=$1 FOR UPDATE`, firstEndpoint)
+				_, err = lock.Exec(ctx, `SELECT id FROM webhook_endpoints WHERE id=$1 FOR UPDATE`, candidates[0].EndpointID)
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			collector := &core.ConfigCollector{}
-			n, err := collector.Pass(ctx, passedConfigBarrier{s}, 2)
-			if err != nil || n != 1 {
-				t.Fatalf("skip busy %s: %d %v", lockKind, n, err)
+			called := false
+			completion, err := s.WriteWebhookConfigGC(ctx, scan.Candidates[0], func(sc store.WebhookConfigGCScope) error {
+				called = true
+				_, err := sc.LockConfigCandidate(ctx, scan.Candidates[0])
+				return err
+			})
+			var cause *pgconn.PgError
+			if completion.Outcome != store.TransactionNotCommitted || !errors.As(err, &cause) || cause.Code != "55P03" || called != (lockKind == "endpoint") {
+				t.Fatalf("busy %s completion=%+v callback=%v err=%v", lockKind, completion, called, err)
+			}
+			removed := false
+			completion, err = s.WriteWebhookConfigGC(ctx, scan.Candidates[1], func(sc store.WebhookConfigGCScope) error {
+				facts, err := sc.LockConfigCandidate(ctx, scan.Candidates[1])
+				if err != nil {
+					return err
+				}
+				if !facts.Present || !facts.Retired || facts.Referenced {
+					return fmt.Errorf("locked second binding facts: %+v", facts)
+				}
+				removed, err = sc.DeleteConfigCandidate(ctx, scan.Candidates[1])
+				return err
+			})
+			if err != nil || completion.Outcome != store.TransactionCommitted || !removed {
+				t.Fatalf("second binding deletion: removed=%v completion=%+v err=%v", removed, completion, err)
 			}
 			var first, second bool
 			if err = s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM webhook_bindings WHERE id='00000000-0000-4000-8000-000000000001'),EXISTS(SELECT 1 FROM webhook_bindings WHERE id='00000000-0000-4000-8000-000000000002')`).Scan(&first, &second); err != nil || !first || second {
