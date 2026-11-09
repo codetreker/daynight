@@ -53,14 +53,10 @@ type taskArguments struct {
 // RegisterTaskTools exposes complete Task operations through the shared service.
 // Operations that read or write Tasks reserve for their full materialization.
 // The static property schema uses the independent control budget.
-func RegisterTaskTools(e *Entry, tasks *taskservice.Tasks) error {
-	if e == nil || tasks == nil {
+func RegisterTaskTools(e *Entry, tasks taskResourceOperations) error {
+	if e == nil || tasks == nil || tasks == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP task tools require an entry and Tasks service")
 	}
-	return registerTaskTools(e, tasks)
-}
-
-func registerTaskTools(e *Entry, tasks taskResourceOperations) error {
 	var definitions []*sdk.Tool
 	if err := json.Unmarshal(taskToolDefinitions, &definitions); err != nil {
 		return err

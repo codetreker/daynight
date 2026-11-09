@@ -25,9 +25,10 @@ results, errors and completion facts and verify principals, authority, context,
 addresses, inputs and call counts. They do not model Task persistence or execute
 lower business rules to manufacture HTTP responses.
 
-Task response admission remains in the Task service. Its typed response context
-exposes request ID, RPC ID, protocol, batch and projection facts to both the
-adapter and the admission consumer. Protocol tests observe those exact facts;
+Task dependency partitioning, version-first admission and response admission
+remain in the Task service. Its typed response context exposes request ID, RPC
+ID, protocol, batch and projection facts to both the adapter and the admission
+consumer. Protocol tests observe those exact facts;
 service tests exercise the actual admission encoder, including exact and excess
 byte boundaries. Store tests retain physical rollback and committed readback.
 An operation mock's response is never treated as evidence of persistence.

@@ -130,7 +130,7 @@ func newTaskResourceFixture(t *testing.T) *taskResourceFixture {
 		t.Fatal(err)
 	}
 	f.entry = entry
-	if err := registerTaskTools(entry, f.operations); err != nil {
+	if err := RegisterTaskTools(entry, f.operations); err != nil {
 		t.Fatal(err)
 	}
 	f.server = httptest.NewServer(httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
