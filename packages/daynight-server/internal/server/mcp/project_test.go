@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -79,6 +80,77 @@ func TestProjectCreateBusinessBodyMatchesJSONAndLimit(t *testing.T) {
 		t.Fatal("oversized body accepted")
 	}
 }
+
+type projectListOperation struct {
+	projectOperations
+	list func(context.Context, model.Principal, coreproject.ProjectListRequest) (coreproject.ProjectPage, error)
+}
+
+func (operation projectListOperation) ListScoped(ctx context.Context, principal model.Principal, request coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
+	return operation.list(ctx, principal, request)
+}
+
+func TestProjectListMapsPagesAndForwardsInputs(t *testing.T) {
+	at := time.Date(2026, 11, 9, 12, 34, 56, 0, time.FixedZone("local", 8*60*60))
+	items := []model.Project{
+		{ID: testProjectID, Name: "First <>& 中文", RepoURL: "git@github.com:org/first", CreatedAt: at, UpdatedAt: at.Add(time.Minute), Settings: model.ProjectSettings{Version: 9007199254740993, ExecutionWarningMinutes: 17}, Ownership: model.ProjectOwnership{TeamID: testTeamID, Version: 9007199254740994, UpdatedAt: at.Add(2 * time.Minute)}},
+		{ID: testTargetID, Name: "Second", RepoURL: "https://example.com/org/second", CreatedAt: at.Add(3 * time.Minute), UpdatedAt: at.Add(4 * time.Minute), Settings: model.ProjectSettings{Version: 2}, Ownership: model.ProjectOwnership{TeamID: testTargetID, Version: 3, UpdatedAt: at.Add(4 * time.Minute)}},
+	}
+	mapped := []Project{
+		{ID: testProjectID, Name: "First <>& 中文", RepoURL: "git@github.com:org/first", CreatedAt: at.UTC(), UpdatedAt: at.Add(time.Minute).UTC(), Settings: ProjectSettings{Version: "9007199254740993", ExecutionWarningMinutes: 17}, Ownership: ProjectOwnership{TeamID: testTeamID, Version: "9007199254740994", UpdatedAt: at.Add(2 * time.Minute).UTC()}},
+		{ID: testTargetID, Name: "Second", RepoURL: "https://example.com/org/second", CreatedAt: at.Add(3 * time.Minute).UTC(), UpdatedAt: at.Add(4 * time.Minute).UTC(), Settings: ProjectSettings{Version: "2"}, Ownership: ProjectOwnership{TeamID: testTargetID, Version: "3", UpdatedAt: at.Add(4 * time.Minute).UTC()}},
+	}
+	cursor, limit := "project-page-2", 2
+	failure := errors.New("Project list use case failed")
+	for _, tc := range []struct {
+		name    string
+		input   projectListInput
+		request coreproject.ProjectListRequest
+		page    coreproject.ProjectPage
+		want    projectPage
+		err     error
+	}{
+		{name: "default count", request: coreproject.ProjectListRequest{Page: model.PageRequest{Limit: 50}}, page: coreproject.ProjectPage{Items: items, NextCursor: &cursor}, want: projectPage{Items: mapped, NextCursor: &cursor}},
+		{name: "explicit count and cursor", input: projectListInput{Limit: &limit, Cursor: &cursor}, request: coreproject.ProjectListRequest{Page: model.PageRequest{Limit: 2, Cursor: &cursor}}, page: coreproject.ProjectPage{Items: items[1:]}, want: projectPage{Items: mapped[1:]}},
+		{name: "use case failure", input: projectListInput{Limit: &limit, Cursor: &cursor}, request: coreproject.ProjectListRequest{Page: model.PageRequest{Limit: 2, Cursor: &cursor}}, err: failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			actor := projectActor()
+			actor.Principal = model.Principal{Kind: model.PATCredential, UserID: testUserID, CredentialID: testTeamID}
+			calls := 0
+			operations := projectListOperation{list: func(actual context.Context, principal model.Principal, request coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
+				calls++
+				if actual != ctx || principal != actor.Principal || !reflect.DeepEqual(request, tc.request) {
+					t.Fatalf("list use case context/principal/request: %v %+v %+v; want %+v", actual == ctx, principal, request, tc.request)
+				}
+				return tc.page, tc.err
+			}}
+			t.Cleanup(func() {
+				if calls != 1 {
+					t.Errorf("list use case calls=%d; want 1", calls)
+				}
+			})
+			result, err := (&projectTools{projects: operations}).list(ctx, actor, tc.input)
+			if err != tc.err {
+				t.Fatalf("error=%v; want original %v", err, tc.err)
+			}
+			if result.Outcome != "" || result.WriteOutcome != "" || result.Phase != "" || result.Refs != nil {
+				t.Fatalf("read result carried mutation facts: %+v", result)
+			}
+			if tc.err != nil {
+				if result.Data != nil {
+					t.Fatalf("failed list exposed data: %+v", result)
+				}
+				return
+			}
+			if page, ok := result.Data.(projectPage); !ok || !reflect.DeepEqual(page, tc.want) {
+				t.Fatalf("page=%+v; want %+v", result.Data, tc.want)
+			}
+		})
+	}
+}
+
 func TestProjectIdentifierAcceptsOnlySameServiceExactLinks(t *testing.T) {
 	tests := []struct {
 		input string
