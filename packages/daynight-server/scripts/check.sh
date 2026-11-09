@@ -12,7 +12,7 @@ fi
 source "$(dirname -- "${BASH_SOURCE[0]}")/validation-env.sh"
 rm -f coverage.out
 
-node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts
+node --test scripts/coverage.test.mts scripts/check.test.mts scripts/validation-env.test.mts scripts/command-timeout.test.mts
 GOFLAGS="$unit_go_flags" go vet ./...
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE

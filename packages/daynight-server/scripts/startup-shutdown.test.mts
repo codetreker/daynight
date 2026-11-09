@@ -14,6 +14,10 @@ test('startup and shutdown runner owns only command coverage and the process rec
   assert.ok(coverage.includes(`CWD=${join(fixture, 'cmd/daynight-server')}`));
   assert.doesNotMatch(coverage, /--exclude|--skip-result|-coverpkg=[^ ]*(?:example\/api|internal)/);
   assert.match(trace, /go build .*\.\/cmd\/daynight-server .* -tags=startupshutdown/);
+  assert.match(trace, /node scripts\/command-timeout.mts 300000 5000 env GOFLAGS=/);
+  assert.match(trace, /node scripts\/command-timeout.mts 240000 5000 env GOFLAGS=/);
+  assert.match(trace, /node scripts\/command-timeout.mts 180000 5000 go install/);
+  assert.ok(trace.includes(`node ${join(fixture, 'scripts/command-timeout.mts')} 720000 5000 env GOFLAGS=`));
   assert.match(trace, /go vet \.\/cmd\/daynight-server .* -tags=startupshutdown/);
   assert.match(trace, /go test -count=1 -timeout=3m -tags=webhooktest -run \^TestWebhookRunnerAbruptProcessRecovery\$ \.\/internal\/server .* -race=true/);
   assert.doesNotMatch(trace, /go test .*\.\/testdata\/testauth|--tags=stress/);

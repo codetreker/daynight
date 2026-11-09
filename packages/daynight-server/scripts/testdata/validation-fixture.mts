@@ -19,7 +19,7 @@ export const runValidation = async (t: TestContext, entry: 'check' | 'startup-sh
   await mkdir(scripts);
   await mkdir(tools);
   await mkdir(join(fixture, 'cmd/daynight-server'), { recursive: true });
-  for (const file of [`${entry}.sh`, 'env.sh', 'validation-env.sh', 'unit-overlay.json', 'coverage.mts']) {
+  for (const file of [`${entry}.sh`, 'env.sh', 'validation-env.sh', 'unit-overlay.json', 'coverage.mts', 'command-timeout.mts']) {
     await copyFile(join(moduleRoot, 'scripts', file), join(scripts, file));
   }
   await copyFile(join(moduleRoot, '.go-cov.toml'), join(fixture, '.go-cov.toml'));
@@ -56,7 +56,7 @@ esac
   const fakeNode = `#!/usr/bin/env bash
 set -eu
 printf 'node %s\\n' "$*" >> "$TRACE"
-if [[ "$1" == --input-type=module || "$1" == *coverage.mts ]]; then exec ${shellQuote(process.execPath)} "$@"; fi
+if [[ "$1" == --input-type=module || "$1" == *coverage.mts || "$1" == *command-timeout.mts ]]; then exec ${shellQuote(process.execPath)} "$@"; fi
 if [[ "$1" == scripts/prepare-uniauth-fixture.mts ]]; then printf '%s\\n' fixture; fi
 `;
   await writeFile(join(tools, 'go'), fakeGo);

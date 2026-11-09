@@ -46,6 +46,14 @@ fresh-process build returns to the module root. Production builds retain real
 Web resources. Each runner clears test-result caches and exposes preparation,
 compiler, assertion, coverage and cleanup failures.
 
+Lifecycle command deadlines use the existing Node.js runtime instead of GNU
+`timeout`, which native macOS does not provide. The command wrapper streams
+output, preserves ordinary exit codes, and reports expiry or interruption as
+failure. It sends TERM to the owned process group, escalates to KILL after the
+grace period, and terminates remaining group members when the leader exits.
+Portable process tests verify expiry, cancellation and descendant cleanup;
+ordinary module tooling requires no additional command-line dependency.
+
 The normal Project/Task flow is consolidated into the existing API lifecycle
 scenario: create the same Project and Task, verify initial state and version,
 advance status, and read back the completed Task through the original filters.
@@ -70,6 +78,11 @@ original coverage universe, but requires coordinating source-bound profiles,
 additional artifact transfer and a dependent gate. Disjoint ownership with the
 same strict threshold on each partition retains the full-production threshold
 without that coordination.
+
+**Require GNU timeout for native validation.** Linux CI provides it, but standard
+macOS does not. Requiring it would add a dependency to both lifecycle validation
+and the module entry's portable runner tests. Node.js is already required by
+both entries and supplies process groups, signal handling and bounded timers.
 
 ## Consequences
 

@@ -11,7 +11,7 @@ test('module check leaves command execution and coverage to its independent owne
   assert.doesNotMatch(coverage, /-coverpkg=[^ ]*cmd\/daynight-server/);
   assert.match(trace, /go test -count=1 -timeout=30s .\/testdata\/testauth .* -race=true/);
   assert.doesNotMatch(trace, /TestWebhookRunnerAbruptProcessRecovery|go build |--tags=startupshutdown/);
-  assert.match(trace, /node --test scripts\/coverage.test.mts scripts\/check.test.mts scripts\/validation-env.test.mts/);
+  assert.match(trace, /node --test scripts\/coverage.test.mts scripts\/check.test.mts scripts\/validation-env.test.mts scripts\/command-timeout.test.mts/);
   assert.match(trace, /node scripts\/coverage.mts coverage.out/);
 });
 

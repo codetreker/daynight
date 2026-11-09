@@ -734,6 +734,11 @@ tests; listener-origin binding and cancellation stay in the command lifecycle
 tests. Real authentication, SQL, locks and subprocesses remain where they are
 necessary to prove the owned mechanism.
 
+The lifecycle runner uses Node.js for command deadlines on Linux and macOS;
+GNU `timeout` is not required. Expiry and interruption fail validation after
+TERM and bounded KILL escalation, including descendants left by an exited
+command leader. Ordinary exit codes and streamed output are preserved.
+
 The independent `verify-server-startup-shutdown` CI job follows the server's
 directory selection, uses its own PostgreSQL service and does not wait for
 module validation. The final gate requires actual success for both selected Go
