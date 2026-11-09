@@ -2184,9 +2184,11 @@ Webhook page tests independently observe request preparation, dispatch and the
 resulting UI. Native SHA-256 preparation is held by explicit promise gates in the
 restrictive cleanup case; each release retains the real digest computation.
 Exact write counts and distinct operation IDs identify sequential mutations.
-Team selection waits for its current named option. Controlled management and
-receipt responses settle within React `act` before authorization, draft, secret,
-original-operation and no-replay assertions. Late-denial tests complete the newer
+Team selection waits for its current named option. Malformed owner-list response
+cases release their initial endpoint detail within async React `act` before
+revealing a secret, so endpoint effects settle before the read begins. Controlled
+management and receipt responses settle within React `act` before authorization,
+draft, secret, original-operation and no-replay assertions. Late-denial tests complete the newer
 Team membership refresh or owner selection before releasing the old response.
 Rotation confirmation waits for dialog removal and an enabled Check operation
 action. Rendered errors, secrets, dialogs and focus use DOM readiness predicates;
