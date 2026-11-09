@@ -392,7 +392,10 @@ module ownership. The independent product E2E job follows the framework and its
 actual production build inputs. Mixed changes select the union of their jobs.
 The [selector](.github/scripts/ci-modules.mts) owns exact path rules; the
 [development guide](docs/development.md#ci-selection) owns execution details.
-Main pushes select every module and product E2E.
+Main pushes select every module and product E2E. Each selected job runs its ordinary event checkout and
+its checked-in tests. Validation does not compose remote test PRs or require
+pairing receipts; the [checkout-source decision](.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
+preserves the source boundary and normal gates.
 
 | Changed paths | PR application jobs |
 |---|---|

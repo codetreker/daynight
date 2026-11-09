@@ -808,7 +808,12 @@ Deletions and both sides of renames count. The
 [selector](../.github/scripts/ci-modules.mts) assigns module tests by directory
 and product E2E by its framework and production build inputs; the
 [root routing table](../README.md#ci-selection) owns the summary map. Mixed
-changes select their union, and unknown paths select all jobs.
+changes select their union, and unknown paths select all jobs. Selected jobs
+validate the source and tests in their ordinary event checkout. Remote test PRs
+do not replace test files or produce an additional composed checkout commit.
+The [checkout-source decision](../.agents/notes/implemented/testing/2026-11-09-checkout-source-ci-validation.md)
+owns this input boundary; each runner retains its own source/artifact receipts,
+validation commands, coverage and resource-cleanup obligations.
 
 Implementations, fixtures and test tooling select their containing module.
 Production CLI, Web and Go inputs additionally select product E2E; module-only
