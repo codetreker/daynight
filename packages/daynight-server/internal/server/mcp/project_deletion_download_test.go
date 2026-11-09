@@ -2,138 +2,82 @@ package mcp
 
 import (
 	"context"
-	"io"
-	"log/slog"
-	"net/http/httptest"
-	"strings"
+	"reflect"
 	"testing"
-	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
-	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
-	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestMCPDownloadRejectsDeletedProject(t *testing.T) {
-	ctx := context.Background()
-	tasks, db, project, _, owner := testsupport.TaskService(t)
-	live := testsupport.CreateTask(t, tasks, owner, project.ID, "live")
-	historical := testsupport.CreateTask(t, tasks, owner, project.ID, "historical")
-	token := secretutil.Random("dnpat_")
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'MCP download test',now())`, uuid.NewString(), owner.UserID, secretutil.Hash(token)); err != nil {
-		t.Fatal(err)
-	}
-	oauthToken, grantID := secretutil.Random(model.OAuthAccessPrefix), uuid.NewString()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'test','{}','https://daynight.test/mcp','daynight:mcp',now(),now()+interval '1 hour')`, grantID, owner.UserID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,now(),now()+interval '30 minutes')`, uuid.NewString(), grantID, owner.UserID, secretutil.Hash(oauthToken)); err != nil {
-		t.Fatal(err)
-	}
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := files.Close(); err != nil {
-			t.Error(err)
+func TestMCPDownloadMapsDeletedProjectRefusals(t *testing.T) {
+	f := newEntryFixture(t)
+	f.entry.oauth = downloadTestOAuth{}
+	var expected mcpdownload.Input
+	var expectedActor mcptransfer.Actor
+	calls, admittedCalls := 0, 0
+	refuse := func(ctx context.Context, actor mcptransfer.Actor, input mcpdownload.Input) (map[string]any, error) {
+		calls++
+		if ctx.Err() != nil || !reflect.DeepEqual(actor, expectedActor) || input != expected {
+			t.Errorf("incorrect read call: actor=%+v want=%+v input=%+v want=%+v", actor, expectedActor, input, expected)
 		}
-	})
-	lifecycle, err := mcptransfer.New(db, files, files, 1<<30, 0)
-	if err != nil {
+		return nil, &model.Fault{Code: "not_found", Message: "Project not found."}
+	}
+	if err := RegisterDownloadTool(f.entry, attachmentReadOperations{t: t, read: refuse, readAdmitted: func(ctx context.Context, actor mcptransfer.Actor, input mcpdownload.Input, admit func(context.Context) error) (map[string]any, error) {
+		admittedCalls++
+		if admit == nil {
+			t.Error("open omitted admission callback")
+		}
+		return refuse(ctx, actor, input)
+	}}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := lifecycle.Close(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	attachments := attachmentservice.NewAttachments(db, db, files)
-	for _, id := range []string{live.ID, historical.ID} {
-		if _, _, err = attachments.Put(ctx, owner, project.ID, id, "content.txt", "text/plain", strings.NewReader("private content")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	entry, err := New(identityservice.New(db, nil, ""), "https://daynight.test", nil, logger, oauthservice.NewAuthenticator(db))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = RegisterDownloadTool(entry, mcpdownload.New(attachments, lifecycle, files)); err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(httpx.RequestLogging(logger, entry))
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := entry.Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
-		server.Close()
-	})
-	fixture := &entryFixture{entry: entry, server: server}
-	client := fixture.client(t, "2026-07-28", token)
-	oauthClient := fixture.client(t, "2026-07-28", oauthToken)
-	args := func(taskID string, fields map[string]any) map[string]any {
-		out := map[string]any{"projectId": project.ID, "taskId": taskID}
-		for key, value := range fields {
-			out[key] = value
-		}
-		return out
-	}
-	first, second := uuid.NewString(), uuid.NewString()
 	pairs := []struct {
-		task, transfer string
-		client         *sdk.ClientSession
-	}{{live.ID, first, client}, {historical.ID, second, oauthClient}}
-	for _, pair := range pairs {
-		data := object(t, invitationCall(t, pair.client, "task_attachment_read", args(pair.task, map[string]any{"action": "open", "path": "content.txt", "transferId": pair.transfer}), false)["data"])
-		if data["state"] != "readable" || data["transferId"] != pair.transfer {
-			t.Fatalf("open snapshot: %#v", data)
-		}
-	}
-	before := object(t, invitationCall(t, client, "task_attachment_read", args(live.ID, map[string]any{"action": "chunk", "transferId": first, "offset": "0", "format": "text"}), false)["data"])
-	if before["text"] != "private content" {
-		t.Fatalf("snapshot content: %#v", before)
-	}
-	if err = tasks.Delete(ctx, owner, project.ID, historical.ID, taskcore.DeleteTask{Version: historical.Version}); err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := projectservice.NewProjects(db).Delete(ctx, owner, project.ID)
-	if err != nil || !receipt.Deleted || receipt.ProjectID != project.ID {
-		t.Fatalf("project delete: %+v %v", receipt, err)
+		task   string
+		client *sdk.ClientSession
+		actor  mcptransfer.Actor
+	}{
+		{testTargetID, f.client(t, "2026-07-28", "alice"), mcptransfer.Actor{Principal: model.Principal{Kind: model.PATCredential, UserID: "alice", CredentialID: "credential-alice"}, AuthorityKind: "pat", AuthorityID: "credential-alice"}},
+		{testTeamID, f.client(t, "2026-07-28", model.OAuthAccessPrefix+"download"), mcptransfer.Actor{Principal: model.Principal{Kind: model.OAuthCredential, UserID: testUserID, CredentialID: testTargetID}, AuthorityKind: "oauth", AuthorityID: testTeamID}},
 	}
 	for _, pair := range pairs {
-		for name, fields := range map[string]map[string]any{
-			"inspect":       {"action": "inspect", "path": "content.txt"},
-			"inline":        {"action": "inline", "path": "content.txt", "format": "text"},
-			"open-new":      {"action": "open", "path": "content.txt", "transferId": uuid.NewString()},
-			"open-existing": {"action": "open", "path": "content.txt", "transferId": pair.transfer},
-			"chunk":         {"action": "chunk", "transferId": pair.transfer, "offset": "0", "format": "text"},
-			"close":         {"action": "close", "transferId": pair.transfer},
+		for _, tc := range []struct {
+			name  string
+			input mcpdownload.Input
+		}{
+			{"inspect", mcpdownload.Input{Action: "inspect", Path: "content.txt"}},
+			{"inline", mcpdownload.Input{Action: "inline", Path: "content.txt", Format: "text"}},
+			{"open-new", mcpdownload.Input{Action: "open", Path: "content.txt", TransferID: uuid.NewString()}},
+			{"open-existing", mcpdownload.Input{Action: "open", Path: "content.txt", TransferID: testUserID}},
+			{"chunk", mcpdownload.Input{Action: "chunk", TransferID: testUserID, Offset: "0", Format: "text"}},
+			{"close", mcpdownload.Input{Action: "close", TransferID: testUserID}},
 		} {
-			t.Run(pair.task+"/"+name, func(t *testing.T) {
-				out := invitationCall(t, pair.client, "task_attachment_read", args(pair.task, fields), true)
-				if fault := object(t, out["error"]); fault["code"] != "not_found" {
-					t.Fatalf("expected scoped not_found: %#v", out)
+			t.Run(pair.task+"/"+tc.name, func(t *testing.T) {
+				expected, expectedActor = tc.input, pair.actor
+				expected.ProjectID, expected.TaskID = testProjectID, pair.task
+				args := map[string]any{"projectId": testProjectID, "taskId": pair.task, "action": tc.input.Action}
+				if tc.input.Path != "" {
+					args["path"] = tc.input.Path
 				}
-				if out["data"] != nil {
-					t.Fatalf("deleted content returned: %#v", out)
+				if tc.input.TransferID != "" {
+					args["transferId"] = tc.input.TransferID
+				}
+				if tc.input.Offset != "" {
+					args["offset"] = tc.input.Offset
+				}
+				if tc.input.Format != "" {
+					args["format"] = tc.input.Format
+				}
+				out := invitationCall(t, pair.client, "task_attachment_read", args, true)
+				if object(t, out["error"])["code"] != "not_found" || out["data"] != nil {
+					t.Fatalf("scoped refusal: %#v", out)
 				}
 			})
 		}
+	}
+	if calls != 12 || admittedCalls != 4 {
+		t.Fatalf("read calls=%d admitted=%d", calls, admittedCalls)
 	}
 }

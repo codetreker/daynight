@@ -305,24 +305,42 @@ func TestStepFullBudgetsAndCursorContinuity(t *testing.T) {
 	}
 }
 
+type boundedStepReadMock struct {
+	t     *testing.T
+	calls int
+	err   error
+}
+
+func (m *boundedStepReadMock) ListPageAdmitted(context.Context, model.Principal, string, string, int64, int, *int64, bool, func(model.TaskHeader, store.TaskStepProjection, bool) (bool, error)) (taskservice.StepsPage, error) {
+	m.t.Error("unexpected Step list operation")
+	return taskservice.StepsPage{}, errors.New("unexpected Step list operation")
+}
+func (m *boundedStepReadMock) GetSummary(context.Context, model.Principal, string, string, string) (taskservice.StepSummary, error) {
+	m.t.Error("unexpected Step summary operation")
+	return taskservice.StepSummary{}, errors.New("unexpected Step summary operation")
+}
+func (m *boundedStepReadMock) GetBounded(ctx context.Context, principal model.Principal, project, task, step string) (taskservice.StepDocument, error) {
+	m.calls++
+	if ctx.Err() != nil || principal.UserID != "alice" || principal.Kind != model.PATCredential || project != testProjectID || task != testTargetID || step != "00000000" {
+		m.t.Error("full Step read changed the active context, principal or scoped identity")
+	}
+	return taskservice.StepDocument{}, m.err
+}
+
 func TestStepFullShowRejectsInvalidOversizedTitle(t *testing.T) {
-	client, project, _, _, database, entry, _ := taskResourceClient(t)
-	if err := RegisterStepReadTools(entry, taskservice.NewTaskSteps(database)); err != nil {
+	fixture := newEntryFixture(t)
+	ops := &boundedStepReadMock{t: t, err: errors.New("invalid stored Step title")}
+	if err := RegisterStepReadTools(fixture.entry, ops); err != nil {
 		t.Fatal(err)
 	}
-	parent := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Parent"})
-	taskID := parent["id"].(string)
-	_, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,'00000000',0,$2,repeat('x',4194304),'todo',clock_timestamp(),clock_timestamp())`, taskID, "\u0085")
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := map[string]any{"projectId": project, "taskId": taskID, "stepId": "00000000", "view": "full"}
+	client := fixture.client(t, "2026-07-28", "alice")
+	args := map[string]any{"projectId": testProjectID, "taskId": testTargetID, "stepId": "00000000", "view": "full"}
 	taskError(t, client, "task_step_show", args, "internal_error")
-	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_steps SET title='valid' WHERE task_id=$1`, taskID); err != nil {
-		t.Fatal(err)
-	}
+	ops.err = &model.Fault{Code: "resource_limit_exceeded", Message: "Step exceeds the single resource budget."}
 	taskError(t, client, "task_step_show", args, "resource_limit_exceeded")
+	if ops.calls != 2 {
+		t.Fatalf("full Step operation calls = %d, want 2", ops.calls)
+	}
 }
 
 func TestStepReadAdmissionFollowsMaterialization(t *testing.T) {

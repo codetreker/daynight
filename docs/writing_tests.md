@@ -60,7 +60,7 @@ Service 单元测试验证其编排、组装与共享资源生命周期。被编
 
 Mock 只实现当前测试需要的能力，未配置或额外调用必须使测试失败，后台未预期调用也必须独立标记失败并完成取消与 drain。事务 callback、拟写参数和 committed、not_committed、unknown 结果须分开；记录写入调用不等于已持久化，unknown 不能解释为回滚。不要 mock SQL 字符串或另建完整内存数据库模拟 PostgreSQL。
 
-这些单元测试不得连接真实数据库，也不为取得固定模型数据启动 PostgreSQL。选中的 core、service 或 server 单元测试必须在未设置 `DAYNIGHT_TEST_DATABASE_URL` 时实际执行，不能通过跳过测试或默认空结果满足隔离。Task HTTP 的普通 TestMain 在执行整套测试前清除数据库与 UniAuth fixture 环境变量，因此完整 Go 检查向其他包提供基础设施时仍保留该包的隔离；独立 stress 入口不使用这个 TestMain。没有数据访问依赖的纯逻辑无需 DAO mock。
+这些单元测试不得连接真实数据库，也不为取得固定模型数据启动 PostgreSQL。选中的 core、service 或 server 单元测试必须在未设置 `DAYNIGHT_TEST_DATABASE_URL` 时实际执行，不能通过跳过测试或默认空结果满足隔离。Task HTTP 与 MCP 的普通 TestMain 在执行整套测试前清除数据库与 UniAuth fixture 环境变量，因此完整 Go 检查向其他包提供基础设施时仍保留这些协议测试的隔离；Task HTTP 的独立 stress 入口不使用其普通 TestMain。没有数据访问依赖的纯逻辑无需 DAO mock。
 
 ### Go store 与进程机制
 

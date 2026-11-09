@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,49 +15,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-type taskResourceAuthenticator struct{ principal model.Principal }
-
-func (a taskResourceAuthenticator) Authenticate(_ context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
-	if kind != model.PATCredential || token != "alice" {
-		return model.Principal{}, &model.Fault{Code: "unauthenticated", Message: "invalid credential"}
-	}
-	return a.principal, nil
-}
-
-func taskResourceClient(t *testing.T) (*sdk.ClientSession, string, model.Principal, *taskservice.Tasks, *postgres.Store, *Entry, *httptest.Server) {
-	t.Helper()
-	tasks, database, project, _, principal := testsupport.TaskService(t)
-	principal.Kind = model.PATCredential
-	principal.CredentialID = uuid.NewString()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	entry, err := New(taskResourceAuthenticator{principal}, "https://daynight.test", nil, logger, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := RegisterTaskTools(entry, tasks); err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(httpx.RequestLogging(logger, entry))
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := entry.Shutdown(ctx); err != nil {
-			t.Errorf("shutdown: %v", err)
-		}
-		server.Close()
-	})
-	fixture := &entryFixture{entry: entry, server: server}
-	return fixture.client(t, "2026-07-28", "alice"), project.ID, principal, tasks, database, entry, server
-}
 
 func callTaskResource(t *testing.T, client *sdk.ClientSession, name string, args map[string]any) (*sdk.CallToolResult, map[string]any) {
 	t.Helper()
@@ -88,293 +48,394 @@ func taskError(t *testing.T, client *sdk.ClientSession, name string, args map[st
 	}
 }
 
-func TestMCPTaskResourcesDependenciesVersionsAndDeletion(t *testing.T) {
-	client, project, principal, _, database, _, _ := taskResourceClient(t)
-	prerequisite := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Prerequisite", "returnView": "full"})
-	preID := prerequisite["id"].(string)
-	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Dependent", "externalDependsOn": []string{preID}, "returnView": "full"})
-	id := task["id"].(string)
-	if task["assignedTo"] != principal.UserID || task["status"] != "todo" || task["allowAgents"] != false || task["projection"] != "full" || !reflect.DeepEqual(task["dependsOn"], []any{preID}) || !reflect.DeepEqual(task["externalDependsOn"], []any{preID}) {
-		t.Fatalf("create defaults and external dependency: %#v", task)
+func taskResourceFault(code string) error {
+	return &model.Fault{Code: code, Message: "Task operation refused."}
+}
+func taskResourceString(value string) *string    { return &value }
+func taskResourceList(value ...string) *[]string { return &value }
+
+func expectTaskGet(t *testing.T, f *taskResourceFixture, result model.Task, err error) {
+	t.Helper()
+	f.operations.wantCalls["Get"]++
+	f.operations.GetFunc = func(_ context.Context, _ model.Principal, _, id string) (model.Task, error) {
+		if id != result.ID {
+			t.Errorf("Get Task ID: got %s want %s", id, result.ID)
+		}
+		return result, err
 	}
-	key := map[string]any{"projectId": project, "taskId": id}
-	show := taskData(t, client, "task_show", key)
+}
+func expectTaskCreate(t *testing.T, f *taskResourceFixture, input taskcore.CreateTask, result model.Task, err error) {
+	t.Helper()
+	f.operations.wantCalls["Create"]++
+	f.operations.CreateFunc = func(_ context.Context, _ model.Principal, _ string, actual taskcore.CreateTask) (model.Task, error) {
+		if !reflect.DeepEqual(actual, input) {
+			t.Error("Create changed the Task input")
+		}
+		return result, err
+	}
+}
+func expectTaskUpdate(t *testing.T, f *taskResourceFixture, input taskcore.UpdateTask, ordinary, external *[]string, result model.Task, err error) {
+	t.Helper()
+	f.operations.wantCalls["Update"]++
+	f.operations.UpdateFunc = func(_ context.Context, _ model.Principal, _, id string, actual taskcore.UpdateTask, gotOrdinary, gotExternal *[]string) (model.Task, error) {
+		if id != result.ID || !reflect.DeepEqual(actual, input) || !reflect.DeepEqual(gotOrdinary, ordinary) || !reflect.DeepEqual(gotExternal, external) {
+			t.Error("Update changed the Task ID, input or dependency partition")
+		}
+		return result, err
+	}
+}
+func expectTaskStatus(t *testing.T, f *taskResourceFixture, input taskcore.SetTaskStatus, result model.Task, err error) {
+	t.Helper()
+	f.operations.wantCalls["SetStatus"]++
+	f.operations.SetStatusFunc = func(_ context.Context, _ model.Principal, _, id string, actual taskcore.SetTaskStatus) (model.Task, error) {
+		if id != result.ID || !reflect.DeepEqual(actual, input) {
+			t.Error("SetStatus changed the Task ID, version, status or claim")
+		}
+		return result, err
+	}
+}
+
+func TestMCPTaskResourcesDependenciesVersionsAndDeletion(t *testing.T) {
+	f := newTaskResourceFixture(t)
+	prerequisite := taskFixtureTask()
+	prerequisite.ID, prerequisite.Title = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "Prerequisite"
+	expectTaskCreate(t, f, taskcore.CreateTask{Title: prerequisite.Title, AssignedTo: &f.principal.UserID}, prerequisite, nil)
+	pre := taskData(t, f.client, "task_create", map[string]any{"projectId": f.project, "title": prerequisite.Title, "returnView": "full"})
+	if pre["id"] != prerequisite.ID {
+		t.Fatalf("prerequisite identity: %#v", pre)
+	}
+	current := taskFixtureTask()
+	current.Title, current.Ready = "Dependent", false
+	current.DependsOn, current.ExternalDependsOn, current.BlockedBy = []string{prerequisite.ID}, []string{prerequisite.ID}, []string{prerequisite.ID}
+	expectTaskCreate(t, f, taskcore.CreateTask{Title: current.Title, AssignedTo: &f.principal.UserID, DependsOn: current.DependsOn, ExternalDependsOn: current.ExternalDependsOn}, current, nil)
+	created := taskData(t, f.client, "task_create", map[string]any{"projectId": f.project, "title": current.Title, "externalDependsOn": current.ExternalDependsOn, "returnView": "full"})
+	if created["assignedTo"] != f.principal.UserID || created["status"] != "todo" || created["allowAgents"] != false || created["projection"] != "full" || !reflect.DeepEqual(created["dependsOn"], []any{prerequisite.ID}) || !reflect.DeepEqual(created["externalDependsOn"], []any{prerequisite.ID}) {
+		t.Fatalf("create resource: %#v", created)
+	}
+	key := map[string]any{"projectId": f.project, "taskId": current.ID}
+	expectTaskGet(t, f, current, nil)
+	show := taskData(t, f.client, "task_show", key)
 	if show["projection"] != "summary" || show["version"] != "1" {
 		t.Fatalf("default projection: %#v", show)
 	}
 	if _, present := show["description"]; present {
 		t.Fatalf("summary included full content: %#v", show)
 	}
-	full := taskData(t, client, "task_show", map[string]any{"projectId": project, "taskId": id, "view": "full"})
+	expectTaskGet(t, f, current, nil)
+	full := taskData(t, f.client, "task_show", map[string]any{"projectId": f.project, "taskId": current.ID, "view": "full"})
 	if full["projection"] != "full" || full["description"] != "" {
 		t.Fatalf("explicit full view: %#v", full)
 	}
-	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "title": "Dependent", "ifVersion": "9223372036854775808"}, "invalid_input")
-	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "in_progress"}, "dependency_unsatisfied")
-	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": preID, "dependsOn": []string{id}}, "dependency_cycle")
-	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "dependsOn": []string{preID}, "externalDependsOn": []string{preID}}, "invalid_input")
-	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "dependsOn": []string{preID, preID}}, "invalid_input")
+	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "title": "Dependent", "ifVersion": "9223372036854775808"}, "invalid_input")
+	expectTaskGet(t, f, current, nil)
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 1, Status: model.TaskInProgress}, current, taskResourceFault("dependency_unsatisfied"))
+	taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "in_progress"}, "dependency_unsatisfied")
+	expectTaskGet(t, f, prerequisite, nil)
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1}, taskResourceList(current.ID), nil, prerequisite, taskResourceFault("dependency_cycle"))
+	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": prerequisite.ID, "dependsOn": []string{current.ID}}, "dependency_cycle")
+	expectTaskGet(t, f, current, nil)
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1}, taskResourceList(prerequisite.ID), taskResourceList(prerequisite.ID), current, taskResourceFault("invalid_input"))
+	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "dependsOn": []string{prerequisite.ID}, "externalDependsOn": []string{prerequisite.ID}}, "invalid_input")
+	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "dependsOn": []string{prerequisite.ID, prerequisite.ID}}, "invalid_input")
 
-	task = taskData(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "dependsOn": []string{preID}, "ifVersion": "1", "returnView": "full"})
-	if !reflect.DeepEqual(task["dependsOn"], []any{preID}) || !reflect.DeepEqual(task["externalDependsOn"], []any{}) || task["version"] != "2" {
-		t.Fatalf("ordinary dependency reclassification: %#v", task)
+	current.Version, current.ExternalDependsOn = 2, []string{}
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1}, taskResourceList(prerequisite.ID), nil, current, nil)
+	updated := taskData(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "dependsOn": []string{prerequisite.ID}, "ifVersion": "1", "returnView": "full"})
+	if updated["version"] != "2" || !reflect.DeepEqual(updated["dependsOn"], []any{prerequisite.ID}) || !reflect.DeepEqual(updated["externalDependsOn"], []any{}) {
+		t.Fatalf("ordinary reclassification: %#v", updated)
 	}
-	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "dependsOn": []string{preID}, "ifVersion": "1"}, "version_conflict")
-	task = taskData(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "description": "changed", "returnView": "full"})
-	if !reflect.DeepEqual(task["dependsOn"], []any{preID}) || !reflect.DeepEqual(task["externalDependsOn"], []any{}) {
-		t.Fatalf("omitted dependencies should remain: %#v", task)
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1}, taskResourceList(prerequisite.ID), nil, current, taskResourceFault("version_conflict"))
+	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "dependsOn": []string{prerequisite.ID}, "ifVersion": "1"}, "version_conflict")
+	expectTaskGet(t, f, current, nil)
+	current.Description, current.Version = "changed", 3
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 2, Description: taskResourceString("changed")}, nil, nil, current, nil)
+	updated = taskData(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "description": "changed", "returnView": "full"})
+	if !reflect.DeepEqual(updated["dependsOn"], []any{prerequisite.ID}) || !reflect.DeepEqual(updated["externalDependsOn"], []any{}) {
+		t.Fatalf("omitted dependency projection: %#v", updated)
 	}
-	task = taskData(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "externalDependsOn": []string{}, "returnView": "full"})
-	if !reflect.DeepEqual(task["dependsOn"], []any{}) || !reflect.DeepEqual(task["externalDependsOn"], []any{}) {
-		t.Fatalf("empty collection should clear both: %#v", task)
+	expectTaskGet(t, f, current, nil)
+	current.DependsOn, current.ExternalDependsOn, current.BlockedBy, current.Version = []string{}, []string{}, []string{}, 4
+	empty := []string{}
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 3}, nil, &empty, current, nil)
+	updated = taskData(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "externalDependsOn": []string{}, "returnView": "full"})
+	if !reflect.DeepEqual(updated["dependsOn"], []any{}) || !reflect.DeepEqual(updated["externalDependsOn"], []any{}) {
+		t.Fatalf("empty collection projection: %#v", updated)
 	}
-	task = taskData(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "assignedTo": nil, "requiredPlatform": "linux", "returnView": "full"})
-	if task["assignedTo"] != nil || task["requiredPlatform"] != "linux" {
-		t.Fatalf("nullable assignment and platform: %#v", task)
+	var cleared *string
+	platform := model.PlatformLinux
+	expectTaskGet(t, f, current, nil)
+	current.AssignedTo, current.RequiredPlatform, current.Version = nil, &platform, 5
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 4, AssignedTo: &cleared, RequiredPlatform: &current.RequiredPlatform}, nil, nil, current, nil)
+	updated = taskData(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "assignedTo": nil, "requiredPlatform": "linux", "returnView": "full"})
+	if updated["assignedTo"] != nil || updated["requiredPlatform"] != "linux" {
+		t.Fatalf("nullable assignment/platform: %#v", updated)
 	}
-	task = taskData(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "requiredPlatform": nil, "returnView": "full"})
-	if task["assignedTo"] != nil || task["requiredPlatform"] != nil {
-		t.Fatalf("nullable platform clearing: %#v", task)
+	expectTaskGet(t, f, current, nil)
+	var clearedPlatform *model.TaskPlatform
+	current.RequiredPlatform, current.Version = nil, 6
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 5, RequiredPlatform: &clearedPlatform}, nil, nil, current, nil)
+	updated = taskData(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "requiredPlatform": nil, "returnView": "full"})
+	if updated["assignedTo"] != nil || updated["requiredPlatform"] != nil {
+		t.Fatalf("nullable platform clearing: %#v", updated)
 	}
-	started := taskData(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "in_progress"})
+	expectTaskGet(t, f, current, nil)
+	current.Status, current.Version = model.TaskInProgress, 7
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 6, Status: model.TaskInProgress}, current, nil)
+	started := taskData(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "in_progress"})
 	if started["status"] != "in_progress" || started["projection"] != "summary" {
 		t.Fatalf("start response: %#v", started)
 	}
-	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "in_progress", "claimId": uuid.NewString()}, "invalid_input")
-	var beforeEpoch string
-	if err := database.Pool.QueryRow(context.Background(), "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project).Scan(&beforeEpoch); err != nil {
-		t.Fatal(err)
+	claim := uuid.NewString()
+	taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "in_progress", "claimId": claim}, "invalid_input")
+	expectTaskGet(t, f, current, nil)
+	f.operations.wantCalls["Delete"]++
+	f.operations.DeleteFunc = func(_ context.Context, _ model.Principal, _, id string, in taskcore.DeleteTask) error {
+		if id != current.ID || in.Version != current.Version || in.RemoveDepends {
+			t.Error("Delete changed scoped ID, version or removal mode")
+		}
+		return nil
 	}
-	deleted := taskData(t, client, "task_delete", map[string]any{"projectId": project, "taskId": id})
-	if deleted["projectId"] != project || deleted["taskId"] != id || deleted["deleted"] != true {
+	deleted := taskData(t, f.client, "task_delete", key)
+	if deleted["projectId"] != f.project || deleted["taskId"] != current.ID || deleted["deleted"] != true {
 		t.Fatalf("delete receipt: %#v", deleted)
 	}
-	taskError(t, client, "task_show", key, "task_deleted")
-	var deletedAt *time.Time
-	var afterEpoch, title string
-	if err := database.Pool.QueryRow(context.Background(), "SELECT deleted_at, title FROM tasks WHERE project_id=$1 AND id=$2", project, id).Scan(&deletedAt, &title); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.Pool.QueryRow(context.Background(), "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project).Scan(&afterEpoch); err != nil {
-		t.Fatal(err)
-	}
-	if deletedAt == nil || title != "Dependent" || beforeEpoch == afterEpoch {
-		t.Fatalf("soft delete/cache state: deleted=%v title=%q before=%q after=%q", deletedAt, title, beforeEpoch, afterEpoch)
-	}
+	expectTaskGet(t, f, current, taskResourceFault("task_deleted"))
+	taskError(t, f.client, "task_show", key, "task_deleted")
 }
 
 func TestMCPTaskProperties(t *testing.T) {
-	client, project, _, _, _, _, _ := taskResourceClient(t)
-	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Properties"})
-	id := task["id"].(string)
-	schema := taskData(t, client, "task_properties", map[string]any{"mode": "schema"})
+	f := newTaskResourceFixture(t)
+	current := taskFixtureTask()
+	schema := taskData(t, f.client, "task_properties", map[string]any{"mode": "schema"})
 	if _, ok := object(t, schema["properties"])["pullRequests"]; !ok {
 		t.Fatalf("missing property definition: %#v", schema)
 	}
-	taskError(t, client, "task_properties", map[string]any{"mode": "schema", "projectId": project}, "invalid_input")
-	taskError(t, client, "task_properties", map[string]any{"mode": "values", "projectId": project}, "invalid_input")
-	set := map[string]any{"projectId": project, "taskId": id, "name": "pullRequests", "valueText": "[]", "returnView": "full"}
-	task = taskData(t, client, "task_set_property", set)
-	if !reflect.DeepEqual(object(t, task["properties"])["pullRequests"], []any{}) {
-		t.Fatalf("empty property: %#v", task)
+	taskError(t, f.client, "task_properties", map[string]any{"mode": "schema", "projectId": f.project}, "invalid_input")
+	taskError(t, f.client, "task_properties", map[string]any{"mode": "values", "projectId": f.project}, "invalid_input")
+	expectTaskGet(t, f, current, nil)
+	current.Version, current.Properties = 2, model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}
+	f.operations.wantCalls["SetProperty"]++
+	f.operations.SetPropertyFunc = func(_ context.Context, _ model.Principal, _, id, name, value string, version int64) (model.Task, error) {
+		if id != current.ID || name != "pullRequests" || value != "[]" || version != 1 {
+			t.Error("SetProperty changed identity, text or inferred version")
+		}
+		return current, nil
 	}
-	values := taskData(t, client, "task_properties", map[string]any{"projectId": project, "taskId": id, "mode": "values"})
-	if values["version"] != task["version"] || !reflect.DeepEqual(object(t, values["properties"])["pullRequests"], []any{}) {
+	set := map[string]any{"projectId": f.project, "taskId": current.ID, "name": "pullRequests", "valueText": "[]", "returnView": "full"}
+	resource := taskData(t, f.client, "task_set_property", set)
+	if !reflect.DeepEqual(object(t, resource["properties"])["pullRequests"], []any{}) {
+		t.Fatalf("empty property: %#v", resource)
+	}
+	expectTaskGet(t, f, current, nil)
+	values := taskData(t, f.client, "task_properties", map[string]any{"projectId": f.project, "taskId": current.ID, "mode": "values"})
+	if values["version"] != "2" || !reflect.DeepEqual(object(t, values["properties"])["pullRequests"], []any{}) {
 		t.Fatalf("property resource: %#v", values)
 	}
-	taskError(t, client, "task_set_property", map[string]any{"projectId": project, "taskId": id, "name": "pullRequests", "valueText": "null"}, "invalid_input")
-	taskError(t, client, "task_set_property", map[string]any{"projectId": project, "taskId": id, "name": "pullRequests", "valueText": "[]", "ifVersion": "1"}, "version_conflict")
-	removed := taskData(t, client, "task_remove_property", map[string]any{"projectId": project, "taskId": id, "name": "pullRequests", "returnView": "full"})
-	if _, exists := object(t, removed["properties"])["pullRequests"]; exists {
-		t.Fatalf("property not removed: %#v", removed)
+	for _, tc := range []struct{ value, version, code string }{{"null", "2", "invalid_input"}, {"[]", "1", "version_conflict"}} {
+		f.operations.wantCalls["SetProperty"]++
+		f.operations.SetPropertyFunc = func(_ context.Context, _ model.Principal, _, id, name, value string, version int64) (model.Task, error) {
+			if id != current.ID || name != "pullRequests" || value != tc.value || Decimal(version) != tc.version {
+				t.Error("SetProperty changed refusal input")
+			}
+			return model.Task{}, taskResourceFault(tc.code)
+		}
+		taskError(t, f.client, "task_set_property", map[string]any{"projectId": f.project, "taskId": current.ID, "name": "pullRequests", "valueText": tc.value, "ifVersion": tc.version}, tc.code)
 	}
-	values = taskData(t, client, "task_properties", map[string]any{"projectId": project, "taskId": id, "mode": "values"})
+	expectTaskGet(t, f, current, nil)
+	removed := taskFixtureTask()
+	removed.Version = 3
+	f.operations.wantCalls["RemoveProperty"]++
+	f.operations.RemovePropertyFunc = func(_ context.Context, _ model.Principal, _, id, name string, version int64) (model.Task, error) {
+		if id != current.ID || name != "pullRequests" || version != 2 {
+			t.Error("RemoveProperty changed identity, name or version")
+		}
+		return removed, nil
+	}
+	resource = taskData(t, f.client, "task_remove_property", map[string]any{"projectId": f.project, "taskId": current.ID, "name": "pullRequests", "returnView": "full"})
+	if _, exists := object(t, resource["properties"])["pullRequests"]; exists {
+		t.Fatalf("removed property present: %#v", resource)
+	}
+	expectTaskGet(t, f, removed, nil)
+	values = taskData(t, f.client, "task_properties", map[string]any{"projectId": f.project, "taskId": current.ID, "mode": "values"})
 	if _, exists := object(t, values["properties"])["pullRequests"]; exists {
-		t.Fatalf("property not removed in read: %#v", values)
+		t.Fatalf("removed property read: %#v", values)
 	}
 }
 
 func TestMCPTaskCancellationPreservesReadabilityAndSatisfiesDependencies(t *testing.T) {
-	client, project, _, tasks, database, entry, _ := taskResourceClient(t)
-	if err := RegisterTaskQueryTools(entry, tasks); err != nil {
+	f := newTaskResourceFixture(t)
+	original := taskFixtureTask()
+	original.Description = "Retained material"
+	expectTaskGet(t, f, original, nil)
+	first := taskData(t, f.client, "task_show", map[string]any{"projectId": f.project, "taskId": original.ID, "view": "full"})
+	if value, present := first["cancelledAt"]; !present || value != nil {
+		t.Fatalf("nullable cancellation time: %#v", first)
+	}
+	cancelled := original
+	stamp := time.Date(2026, 11, 7, 1, 2, 3, 456789123, time.UTC)
+	cancelled.Status, cancelled.Version, cancelled.Ready, cancelled.CancelledAt = model.TaskCancelled, 2, false, &stamp
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 1, Status: model.TaskCancelled}, cancelled, nil)
+	args := map[string]any{"projectId": f.project, "taskId": original.ID, "status": "cancelled", "ifVersion": "1", "returnView": "full"}
+	resource := taskData(t, f.client, "task_set_status", args)
+	if resource["status"] != "cancelled" || resource["version"] != "2" || resource["ready"] != false || resource["description"] != original.Description || resource["assignedTo"] != *original.AssignedTo || resource["allowAgents"] != false || resource["startedAt"] != nil || resource["completedAt"] != nil || resource["cancelledAt"] != stamp.Format(time.RFC3339Nano) {
+		t.Fatalf("cancelled resource: %#v", resource)
+	}
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 2, Status: model.TaskCancelled}, cancelled, nil)
+	args["ifVersion"] = "2"
+	if same := taskData(t, f.client, "task_set_status", args); !reflect.DeepEqual(same, resource) {
+		t.Fatalf("unchanged cancellation projection: %#v", same)
+	}
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 1, Status: model.TaskCancelled}, cancelled, taskResourceFault("version_conflict"))
+	args["ifVersion"] = "1"
+	taskError(t, f.client, "task_set_status", args, "version_conflict")
+	claim := uuid.NewString()
+	taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": original.ID, "status": "cancelled", "claimId": claim}, "invalid_input")
+	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
+		expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 2, Status: status}, cancelled, taskResourceFault("invalid_transition"))
+		taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": original.ID, "status": status, "ifVersion": "2"}, "invalid_transition")
+	}
+	expectTaskGet(t, f, cancelled, nil)
+	if show := taskData(t, f.client, "task_show", map[string]any{"projectId": f.project, "taskId": original.ID, "view": "full"}); !reflect.DeepEqual(show, resource) {
+		t.Fatalf("cancelled read projection: %#v", show)
+	}
+	dependent := taskFixtureTask()
+	dependent.ID, dependent.DependsOn, dependent.ExternalDependsOn = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", []string{original.ID}, []string{original.ID}
+	expectTaskGet(t, f, dependent, nil)
+	ready := taskData(t, f.client, "task_show", map[string]any{"projectId": f.project, "taskId": dependent.ID, "view": "full"})
+	if ready["ready"] != true || ready["version"] != "1" || !reflect.DeepEqual(ready["dependsOn"], []any{original.ID}) || !reflect.DeepEqual(ready["externalDependsOn"], []any{original.ID}) {
+		t.Fatalf("dependent resource projection: %#v", ready)
+	}
+	queries := &taskResourceQueryMock{base: f.operations}
+	f.operations.wantCalls["Graph"] = 1
+	f.operations.wantCalls["MCPList"] = 2
+	queries.GraphFunc = func(_ context.Context, _ model.Principal, _, taskID string) (model.TaskGraph, error) {
+		if taskID != original.ID {
+			t.Error("Graph changed the scoped Task ID")
+		}
+		return model.TaskGraph{Summary: model.TaskGraphSummary{Total: 1, Cancelled: 1}, Tasks: []model.GraphTask{{ID: original.ID, Status: model.TaskCancelled, CancelledAt: &stamp}}}, nil
+	}
+	queries.ListFunc = func(_ context.Context, _ model.Principal, _ string, input taskcore.MCPListRequest, visit func(store.TaskPriorityItem, string, bool) bool) error {
+		if !reflect.DeepEqual(input, taskcore.MCPListRequest{Limit: 50, View: "summary"}) || visit == nil {
+			t.Error("unfinished Task list changed its filter or projection")
+		}
+		if !visit(store.TaskPriorityItem{Task: dependent}, "", false) {
+			t.Error("unfinished Task item was not accepted")
+		}
+		return nil
+	}
+	if err := registerTaskQueryTools(f.entry, queries); err != nil {
 		t.Fatal(err)
 	}
-	prerequisite := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Abandoned prerequisite", "description": "Retained material", "returnView": "full"})
-	id := prerequisite["id"].(string)
-	if value, present := prerequisite["cancelledAt"]; !present || value != nil {
-		t.Fatalf("initial nullable cancellation time: %#v", prerequisite)
-	}
-	dependent := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Dependent", "externalDependsOn": []string{id}, "returnView": "full"})
-	if dependent["ready"] != false {
-		t.Fatalf("unsatisfied prerequisite: %#v", dependent)
-	}
-	var epoch string
-	if err := database.Pool.QueryRow(t.Context(), "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project).Scan(&epoch); err != nil {
-		t.Fatal(err)
-	}
-	cancelled := taskData(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": "1", "returnView": "full"})
-	if cancelled["status"] != "cancelled" || cancelled["version"] != "2" || cancelled["ready"] != false || cancelled["description"] != prerequisite["description"] || cancelled["assignedTo"] != prerequisite["assignedTo"] || cancelled["allowAgents"] != prerequisite["allowAgents"] || cancelled["startedAt"] != nil || cancelled["completedAt"] != nil {
-		t.Fatalf("cancelled resource: %#v", cancelled)
-	}
-	stamp, ok := cancelled["cancelledAt"].(string)
-	if !ok {
-		t.Fatalf("missing cancellation time: %#v", cancelled)
-	}
-	if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
-		t.Fatal(err)
-	}
-	same := taskData(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": "2", "returnView": "full"})
-	if !reflect.DeepEqual(same, cancelled) {
-		t.Fatalf("same-status mutation: before=%#v after=%#v", cancelled, same)
-	}
-	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": "1"}, "version_conflict")
-	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "claimId": uuid.NewString()}, "invalid_input")
-	for _, status := range []string{"todo", "in_progress", "done"} {
-		taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": status, "ifVersion": "2"}, "invalid_transition")
-	}
-	show := taskData(t, client, "task_show", map[string]any{"projectId": project, "taskId": id, "view": "full"})
-	if !reflect.DeepEqual(show, cancelled) {
-		t.Fatalf("cancelled material unreadable or changed: %#v", show)
-	}
-	dependent = taskData(t, client, "task_show", map[string]any{"projectId": project, "taskId": dependent["id"], "view": "full"})
-	if dependent["ready"] != true || dependent["version"] != "1" || !reflect.DeepEqual(dependent["dependsOn"], []any{id}) || !reflect.DeepEqual(dependent["externalDependsOn"], []any{id}) {
-		t.Fatalf("dependency satisfaction changed intrinsic material: %#v", dependent)
-	}
-	graph := taskData(t, client, "task_graph", map[string]any{"projectId": project, "taskId": id, "view": "full"})
+	graph := taskData(t, f.client, "task_graph", map[string]any{"projectId": f.project, "taskId": original.ID, "view": "full"})
 	summary := object(t, graph["summary"])
 	if summary["cancelled"] != float64(1) || summary["done"] != float64(0) || summary["ready"] != float64(0) || summary["total"] != float64(1) {
 		t.Fatalf("graph cancellation summary: %#v", summary)
 	}
-	var graphCancelled map[string]any
-	for _, value := range graph["tasks"].([]any) {
-		node := object(t, value)
-		if node["id"] == id {
-			graphCancelled = node
+	if node := object(t, graph["tasks"].([]any)[0]); node["id"] != original.ID || node["cancelledAt"] != stamp.Format(time.RFC3339Nano) {
+		t.Fatalf("graph cancellation time: %#v", node)
+	}
+	list := taskData(t, f.client, "task_list", map[string]any{"projectId": f.project})
+	if items := list["items"].([]any); len(items) != 1 || object(t, items[0])["id"] != dependent.ID {
+		t.Fatalf("unfinished list projection: %#v", list)
+	}
+	queries.ListFunc = func(_ context.Context, _ model.Principal, _ string, input taskcore.MCPListRequest, visit func(store.TaskPriorityItem, string, bool) bool) error {
+		status := model.TaskCancelled
+		if !reflect.DeepEqual(input, taskcore.MCPListRequest{Limit: 50, View: "full", Status: &status}) || visit == nil {
+			t.Error("cancelled Task list changed its filter or projection")
 		}
+		if !visit(store.TaskPriorityItem{Task: cancelled}, "", false) {
+			t.Error("cancelled Task item was not accepted")
+		}
+		return nil
 	}
-	if graphCancelled == nil || graphCancelled["cancelledAt"] != stamp {
-		t.Fatalf("cancelled graph node: %#v", graphCancelled)
-	}
-	list := taskData(t, client, "task_list", map[string]any{"projectId": project})
-	if items := list["items"].([]any); len(items) != 1 || object(t, items[0])["id"] != dependent["id"] {
-		t.Fatalf("unfinished list retained cancellation: %#v", list)
-	}
-	list = taskData(t, client, "task_list", map[string]any{"projectId": project, "status": "cancelled", "view": "full"})
-	if items := list["items"].([]any); len(items) != 1 || object(t, items[0])["id"] != id || object(t, items[0])["cancelledAt"] != stamp {
-		t.Fatalf("cancelled list filtering or full time: %#v", list)
-	}
-	var afterEpoch string
-	if err := database.Pool.QueryRow(t.Context(), "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project).Scan(&afterEpoch); err != nil {
-		t.Fatal(err)
-	}
-	if afterEpoch != epoch {
-		t.Fatalf("cancellation rotated cache epoch: before=%q after=%q", epoch, afterEpoch)
+	list = taskData(t, f.client, "task_list", map[string]any{"projectId": f.project, "status": "cancelled", "view": "full"})
+	if items := list["items"].([]any); len(items) != 1 || object(t, items[0])["id"] != original.ID || object(t, items[0])["cancelledAt"] != stamp.Format(time.RFC3339Nano) {
+		t.Fatalf("cancelled list projection: %#v", list)
 	}
 }
 
 func TestMCPTaskCancellationRequiresReleaseAndRetainsClaimHistory(t *testing.T) {
-	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
-	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Release then cancel"})
-	id := task["id"].(string)
-	taskData(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "allowAgents": true})
-	current, err := tasks.Get(t.Context(), principal, project, id)
+	f := newTaskResourceFixture(t)
+	current := taskFixtureTask()
+	current.Version, current.AllowAgents, current.Status = 3, true, model.TaskInProgress
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 3, Status: model.TaskCancelled}, current, taskResourceFault("invalid_transition"))
+	taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "cancelled", "ifVersion": "3"}, "invalid_transition")
+	claim := uuid.NewString()
+	worker, err := json.Marshal(map[string]any{"claimId": claim, "state": "released"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor := taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "test machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, WorktreeID: uuid.NewString()}
-	claimed, err := tasks.ClaimWorker(t.Context(), principal, project, id, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
-	if err != nil {
-		t.Fatal(err)
-	}
-	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": Decimal(claimed.Version)}, "invalid_transition")
-	released, err := tasks.ReleaseWorker(t.Context(), principal, project, id, taskcore.ReleaseWorker{Version: claimed.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cancelled := taskData(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "cancelled", "ifVersion": Decimal(released.Version), "returnView": "full"})
-	worker := object(t, object(t, cancelled["properties"])["worker"])
-	if cancelled["status"] != "cancelled" || worker["state"] != "released" || worker["claimId"] != descriptor.ClaimID || cancelled["allowAgents"] != true {
-		t.Fatalf("released cancellation history: %#v", cancelled)
+	cancelled := current
+	stamp := current.UpdatedAt.Add(time.Minute)
+	cancelled.Version, cancelled.Status, cancelled.CancelledAt = 5, model.TaskCancelled, &stamp
+	cancelled.Properties = model.TaskProperties{"worker": worker}
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 4, Status: model.TaskCancelled}, cancelled, nil)
+	resource := taskData(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "cancelled", "ifVersion": "4", "returnView": "full"})
+	history := object(t, object(t, resource["properties"])["worker"])
+	if resource["status"] != "cancelled" || resource["allowAgents"] != true || history["state"] != "released" || history["claimId"] != claim {
+		t.Fatalf("released cancellation history: %#v", resource)
 	}
 }
 
 func TestMCPTaskCompletesOnlyExplicitClaim(t *testing.T) {
-	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
-	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Claim"})
-	id := task["id"].(string)
-	taskData(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "allowAgents": true})
-	current, err := tasks.Get(context.Background(), principal, project, id)
+	f := newTaskResourceFixture(t)
+	current := taskFixtureTask()
+	current.Version, current.Status = 3, model.TaskInProgress
+	wrong, claim := uuid.NewString(), uuid.NewString()
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 3, Status: model.TaskDone, ClaimID: &wrong}, current, taskResourceFault("claim_conflict"))
+	taskError(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "done", "claimId": wrong, "ifVersion": "3"}, "claim_conflict")
+	done := current
+	worker, err := json.Marshal(map[string]any{"claimId": claim, "state": "completed"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor := taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "test machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, WorktreeID: uuid.NewString()}
-	claimed, err := tasks.ClaimWorker(context.Background(), principal, project, id, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
-	if err != nil {
-		t.Fatal(err)
-	}
-	taskError(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "done", "claimId": uuid.NewString(), "ifVersion": Decimal(claimed.Version)}, "claim_conflict")
-	done := taskData(t, client, "task_set_status", map[string]any{"projectId": project, "taskId": id, "status": "done", "claimId": descriptor.ClaimID, "ifVersion": Decimal(claimed.Version), "returnView": "full"})
-	worker := object(t, object(t, done["properties"])["worker"])
-	if done["status"] != "done" || worker["state"] != "completed" || worker["claimId"] != descriptor.ClaimID {
-		t.Fatalf("claim completion: %#v", done)
+	done.Version, done.Status, done.Properties = 4, model.TaskDone, model.TaskProperties{"worker": worker}
+	expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 3, Status: model.TaskDone, ClaimID: &claim}, done, nil)
+	resource := taskData(t, f.client, "task_set_status", map[string]any{"projectId": f.project, "taskId": current.ID, "status": "done", "claimId": claim, "ifVersion": "3", "returnView": "full"})
+	history := object(t, object(t, resource["properties"])["worker"])
+	if resource["status"] != "done" || history["state"] != "completed" || history["claimId"] != claim {
+		t.Fatalf("claim completion: %#v", resource)
 	}
 }
 
 func TestMCPTaskPropertyBudgetFollowsMode(t *testing.T) {
-	client, project, _, _, _, entry, _ := taskResourceClient(t)
-	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Budget"})
-	id := task["id"].(string)
-	release, err := entry.budget.Acquire(context.Background(), BudgetLarge)
+	f := newTaskResourceFixture(t)
+	release, err := f.entry.budget.Acquire(context.Background(), BudgetLarge)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	schema := taskData(t, client, "task_properties", map[string]any{"mode": "schema"})
+	schema := taskData(t, f.client, "task_properties", map[string]any{"mode": "schema"})
 	if _, ok := object(t, schema["properties"])["paused"]; !ok {
 		t.Fatalf("schema response: %#v", schema)
 	}
-	taskError(t, client, "task_properties", map[string]any{"mode": "values", "projectId": project, "taskId": id}, "resource_busy")
+	taskError(t, f.client, "task_properties", map[string]any{"mode": "values", "projectId": f.project, "taskId": testTargetID}, "resource_busy")
 	release()
-	values := taskData(t, client, "task_properties", map[string]any{"mode": "values", "projectId": project, "taskId": id})
-	if values["taskId"] != id {
+	expectTaskGet(t, f, taskFixtureTask(), nil)
+	values := taskData(t, f.client, "task_properties", map[string]any{"mode": "values", "projectId": f.project, "taskId": testTargetID})
+	if values["taskId"] != testTargetID {
 		t.Fatalf("property response: %#v", values)
 	}
 }
 
 func TestMCPTaskBusinessJSONLimit(t *testing.T) {
-	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
+	f := newTaskResourceFixture(t)
 	description := strings.Repeat("x", 65536)
-	data := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Limit", "description": description})
-	got, err := tasks.Get(context.Background(), principal, project, data["id"].(string))
-	if err != nil || got.Description != description {
-		t.Fatalf("exact-limit content: length=%d err=%v", len(got.Description), err)
+	current := taskFixtureTask()
+	current.Title, current.Description = "Limit", description
+	expectTaskCreate(t, f, taskcore.CreateTask{Title: "Limit", Description: description, AssignedTo: &f.principal.UserID}, current, nil)
+	data := taskData(t, f.client, "task_create", map[string]any{"projectId": f.project, "title": "Limit", "description": description, "returnView": "full"})
+	if data["description"] != description {
+		t.Fatal("exact-limit description changed during request/response encoding")
 	}
-	taskError(t, client, "task_create", map[string]any{"projectId": project, "title": "Limit", "description": description + "x"}, "invalid_input")
+	expectTaskCreate(t, f, taskcore.CreateTask{Title: "Limit", Description: description + "x", AssignedTo: &f.principal.UserID}, model.Task{}, taskResourceFault("invalid_input"))
+	taskError(t, f.client, "task_create", map[string]any{"projectId": f.project, "title": "Limit", "description": description + "x"}, "invalid_input")
 }
 
 func TestMCPTaskRejectsDuplicateVersionBeforeWrite(t *testing.T) {
-	client, project, principal, tasks, _, _, server := taskResourceClient(t)
-	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Original"})
-	id := task["id"].(string)
-	before, err := tasks.Get(context.Background(), principal, project, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_update","arguments":{"projectId":%q,"taskId":%q,"ifVersion":"1","ifVersion":"2","title":"Changed"}}}`, project, id)
-	req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer alice")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	response, err := httpClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
+	f := newTaskResourceFixture(t)
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_update","arguments":{"projectId":%q,"taskId":%q,"ifVersion":"1","ifVersion":"2","title":"Changed"}}}`, f.project, testTargetID)
+	response, raw := rpcTaskRawRequest(t, f.server.URL, "2025-11-25", []byte(body))
 	var result struct {
 		Result struct {
 			IsError           bool `json:"isError"`
@@ -385,144 +446,72 @@ func TestMCPTaskRejectsDuplicateVersionBeforeWrite(t *testing.T) {
 			} `json:"structuredContent"`
 		} `json:"result"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatal(err)
 	}
 	if response.StatusCode != http.StatusOK || !result.Result.IsError || result.Result.StructuredContent.Error.Code != "invalid_input" {
 		t.Fatalf("duplicate response: status=%d result=%#v", response.StatusCode, result)
 	}
-	after, err := tasks.Get(context.Background(), principal, project, id)
-	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Fatalf("duplicate version changed task: before=%#v after=%#v err=%v", before, after, err)
-	}
 }
 
 func TestMCPTaskPropertyBusinessLimitCountsEncodedText(t *testing.T) {
-	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
-	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Property limit"})
-	id := task["id"].(string)
-	before, err := tasks.Get(context.Background(), principal, project, id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f := newTaskResourceFixture(t)
 	valueText, err := json.Marshal([]map[string]string{{"url": strings.Repeat(`"`, 350000), "title": "Quoted"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	restBody, err := json.Marshal(map[string]any{"version": before.Version, "valueText": string(valueText)})
+	restBody, err := json.Marshal(map[string]any{"version": 1, "valueText": string(valueText)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(valueText) >= 1<<20 || len(restBody) <= 1<<20 {
 		t.Fatalf("fixture does not cross encoded limit: text=%d body=%d", len(valueText), len(restBody))
 	}
-	taskError(t, client, "task_set_property", map[string]any{"projectId": project, "taskId": id, "name": "pullRequests", "valueText": string(valueText), "ifVersion": Decimal(before.Version)}, "invalid_input")
-	after, err := tasks.Get(context.Background(), principal, project, id)
-	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Fatalf("oversized property changed task: err=%v", err)
-	}
+	taskError(t, f.client, "task_set_property", map[string]any{"projectId": f.project, "taskId": testTargetID, "name": "pullRequests", "valueText": string(valueText), "ifVersion": "1"}, "invalid_input")
 }
 
 func TestMCPTaskBusinessLimitDoesNotEscapeRawHTML(t *testing.T) {
-	_, project, principal, tasks, _, _, server := taskResourceClient(t)
+	f := newTaskResourceFixture(t)
 	description := strings.Repeat("<", 65536)
-	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_create","arguments":{"projectId":%q,"title":"HTML","description":"%s"}}}`, project, description)
-	req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer alice")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
+	current := taskFixtureTask()
+	current.Title, current.Description = "HTML", description
+	expectTaskCreate(t, f, taskcore.CreateTask{Title: "HTML", Description: description, AssignedTo: &f.principal.UserID}, current, nil)
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_create","arguments":{"projectId":%q,"title":"HTML","description":"%s","returnView":"full"}}}`, f.project, description)
+	response, raw := rpcTaskRawRequest(t, f.server.URL, "2025-11-25", []byte(body))
 	var result struct {
 		Result struct {
 			IsError           bool `json:"isError"`
 			StructuredContent struct {
 				Data struct {
-					ID string `json:"id"`
+					ID          string `json:"id"`
+					Description string `json:"description"`
 				} `json:"data"`
 			} `json:"structuredContent"`
 		} `json:"result"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK || result.Result.IsError || result.Result.StructuredContent.Data.ID == "" {
-		t.Fatalf("raw HTML at limit rejected: status=%d result=%#v", response.StatusCode, result)
+	if response.StatusCode != http.StatusOK || result.Result.IsError || result.Result.StructuredContent.Data.ID != current.ID || result.Result.StructuredContent.Data.Description != description {
+		t.Fatalf("raw HTML at limit: status=%d id=%s error=%v", response.StatusCode, result.Result.StructuredContent.Data.ID, result.Result.IsError)
 	}
-	got, err := tasks.Get(context.Background(), principal, project, result.Result.StructuredContent.Data.ID)
-	if err != nil || got.Description != description {
-		t.Fatalf("raw HTML content: length=%d err=%v", len(got.Description), err)
-	}
-}
-
-// A successful commit with a lost receipt is indistinguishable from an
-// unsuccessful commit to the caller, so the adapter must not replay it.
-type taskUnknownStore struct {
-	*postgres.Store
-	reads  int
-	writes int
-}
-
-func (s *taskUnknownStore) ReadSnapshot(ctx context.Context, read func(store.SnapshotScope) error) error {
-	s.reads++
-	return s.Store.ReadSnapshot(ctx, read)
-}
-
-func (s *taskUnknownStore) WriteProject(ctx context.Context, project string, write func(store.ProjectWriteScope) error) (store.Completion, error) {
-	s.writes++
-	completion, err := s.Store.WriteProject(ctx, project, write)
-	if err != nil || completion.Outcome != store.TransactionCommitted {
-		return completion, err
-	}
-	return store.Completion{Outcome: store.TransactionUnknown}, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("commit response lost")}
 }
 
 func TestMCPTaskUnknownCommitIsNotReplayed(t *testing.T) {
-	original, project, principal, tasks, database, _, _ := taskResourceClient(t)
-	task := taskData(t, original, "task_create", map[string]any{"projectId": project, "title": "Before"})
-	id := task["id"].(string)
-	wrapped := &taskUnknownStore{Store: database}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	entry, err := New(taskResourceAuthenticator{principal}, "https://daynight.test", nil, logger, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := RegisterTaskTools(entry, taskservice.NewTasks(wrapped)); err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(httpx.RequestLogging(logger, entry))
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := entry.Shutdown(ctx); err != nil {
-			t.Errorf("shutdown: %v", err)
-		}
-		server.Close()
-	})
-	client := (&entryFixture{entry: entry, server: server}).client(t, "2026-07-28", "alice")
-	result, envelope := callTaskResource(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "title": "After"})
+	f := newTaskResourceFixture(t)
+	before := taskFixtureTask()
+	expectTaskGet(t, f, before, nil)
+	unknown := &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("commit response lost")}
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1, Title: taskResourceString("After")}, nil, nil, before, unknown)
+	result, envelope := callTaskResource(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": before.ID, "title": "After"})
 	failure := object(t, envelope["error"])
 	if !result.IsError || failure["writeOutcome"] != "unknown" || failure["phase"] != "commit" {
 		t.Fatalf("unknown result: %#v", envelope)
 	}
-	if wrapped.reads != 1 || wrapped.writes != 1 {
-		t.Fatalf("operation replayed: reads=%d writes=%d", wrapped.reads, wrapped.writes)
-	}
-	actual, err := tasks.Get(context.Background(), principal, project, id)
-	if err != nil || actual.Title != "After" || actual.Version != 2 {
-		t.Fatalf("committed state after lost response: %#v %v", actual, err)
-	}
 }
 
 func TestMCPTaskExternalDependenciesCountCompiledBusinessPayload(t *testing.T) {
-	client, project, _, _, database, _, _ := taskResourceClient(t)
+	f := newTaskResourceFixture(t)
 	dependencies := make([]string, 14000)
 	for i := range dependencies {
 		dependencies[i] = uuid.NewString()
@@ -538,25 +527,16 @@ func TestMCPTaskExternalDependenciesCountCompiledBusinessPayload(t *testing.T) {
 	if len(input) >= 1<<20 || len(compiled) <= 1<<20 {
 		t.Fatalf("fixture does not cross compiled limit: input=%d compiled=%d", len(input), len(compiled))
 	}
-	result, envelope := callTaskResource(t, client, "task_create", map[string]any{"projectId": project, "title": "Large", "externalDependsOn": dependencies})
-	failure := object(t, envelope["error"])
-	if !result.IsError || failure["code"] != "invalid_input" {
-		t.Fatalf("compiled payload not rejected at size limit: %#v", envelope)
-	}
-	var count int
-	if err := database.Pool.QueryRow(context.Background(), "SELECT count(*) FROM tasks WHERE project_id=$1", project).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 {
-		t.Fatalf("oversized dependency payload created %d tasks", count)
-	}
+	taskError(t, f.client, "task_create", map[string]any{"projectId": f.project, "title": "Large", "externalDependsOn": dependencies}, "invalid_input")
 }
 
 func TestMCPTaskUnchangedMutationReceipt(t *testing.T) {
-	client, project, _, _, _, _, _ := taskResourceClient(t)
-	task := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": "Unchanged"})
-	result, envelope := callTaskResource(t, client, "task_update", map[string]any{"projectId": project, "taskId": task["id"], "ifVersion": task["version"], "title": "Unchanged"})
-	if result.IsError || object(t, envelope["meta"])["outcome"] != "unchanged" || object(t, envelope["data"])["version"] != task["version"] {
+	f := newTaskResourceFixture(t)
+	current := taskFixtureTask()
+	current.Title = "Unchanged"
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1, Title: taskResourceString("Unchanged")}, nil, nil, current, nil)
+	result, envelope := callTaskResource(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "ifVersion": "1", "title": "Unchanged"})
+	if result.IsError || object(t, envelope["meta"])["outcome"] != "unchanged" || object(t, envelope["data"])["version"] != "1" {
 		t.Fatalf("unchanged receipt: %#v", envelope)
 	}
 }
@@ -576,8 +556,8 @@ func TestMCPRejectsUnknownToolBudgetClass(t *testing.T) {
 	})
 	tool := simpleTestTool("invalid_budget", testObjectSchema(), standardOutputSchema())
 	err = entry.RegisterTool(tool, BudgetClass(255), func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
-		t.Fatal("invalid-budget handler invoked")
-		return ToolResult{}, nil
+		t.Error("invalid-budget handler invoked")
+		return ToolResult{}, errors.New("invalid-budget handler invoked")
 	})
 	if err == nil {
 		t.Fatal("unknown budget class registered")
@@ -585,23 +565,25 @@ func TestMCPRejectsUnknownToolBudgetClass(t *testing.T) {
 }
 
 func TestMCPTaskWriteAdmission(t *testing.T) {
-	client, project, principal, tasks, _, _, _ := taskResourceClient(t)
+	f := newTaskResourceFixture(t)
 	title := strings.Repeat("界", 341) + "x"
-	created := taskData(t, client, "task_create", map[string]any{"projectId": project, "title": title, "description": strings.Repeat("d", 65536), "returnView": "full"})
-	id := created["id"].(string)
-	before, err := tasks.Get(context.Background(), principal, project, id)
-	if err != nil {
-		t.Fatal(err)
+	current := taskFixtureTask()
+	current.Title, current.Description = title, strings.Repeat("d", 65536)
+	expectTaskCreate(t, f, taskcore.CreateTask{Title: title, Description: current.Description, AssignedTo: &f.principal.UserID}, current, nil)
+	created := taskData(t, f.client, "task_create", map[string]any{"projectId": f.project, "title": title, "description": current.Description, "returnView": "full"})
+	if created["title"] != title || created["description"] != current.Description {
+		t.Fatal("maximum field content changed")
 	}
-	taskError(t, client, "task_create", map[string]any{"projectId": project, "title": title + "x"}, "invalid_input")
-	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "description": strings.Repeat("d", 65537)}, "invalid_input")
-	deps := make([]string, 16)
-	for i := range deps {
-		deps[i] = uuid.NewString()
+	expectTaskCreate(t, f, taskcore.CreateTask{Title: title + "x", AssignedTo: &f.principal.UserID}, model.Task{}, taskResourceFault("invalid_input"))
+	taskError(t, f.client, "task_create", map[string]any{"projectId": f.project, "title": title + "x"}, "invalid_input")
+	expectTaskGet(t, f, current, nil)
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1, Description: taskResourceString(strings.Repeat("d", 65537))}, nil, nil, current, taskResourceFault("invalid_input"))
+	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "description": strings.Repeat("d", 65537)}, "invalid_input")
+	dependencies := make([]string, 16)
+	for i := range dependencies {
+		dependencies[i] = uuid.NewString()
 	}
-	taskError(t, client, "task_update", map[string]any{"projectId": project, "taskId": id, "dependsOn": deps}, "invalid_input")
-	after, err := tasks.Get(context.Background(), principal, project, id)
-	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Fatalf("rejected updates changed task: %v", err)
-	}
+	expectTaskGet(t, f, current, nil)
+	expectTaskUpdate(t, f, taskcore.UpdateTask{Version: 1}, &dependencies, nil, current, taskResourceFault("invalid_input"))
+	taskError(t, f.client, "task_update", map[string]any{"projectId": f.project, "taskId": current.ID, "dependsOn": dependencies}, "invalid_input")
 }

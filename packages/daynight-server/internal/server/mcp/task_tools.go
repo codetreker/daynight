@@ -19,6 +19,16 @@ import (
 //go:embed task_tools.json
 var taskToolDefinitions []byte
 
+type taskResourceOperations interface {
+	Create(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
+	Get(context.Context, model.Principal, string, string) (model.Task, error)
+	UpdatePartitionedDependencies(context.Context, model.Principal, string, string, taskcore.UpdateTask, *[]string, *[]string) (model.Task, error)
+	SetStatus(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
+	Delete(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
+	SetProperty(context.Context, model.Principal, string, string, string, string, int64) (model.Task, error)
+	RemoveProperty(context.Context, model.Principal, string, string, string, int64) (model.Task, error)
+}
+
 type taskArguments struct {
 	ProjectID         string              `json:"projectId"`
 	TaskID            string              `json:"taskId"`
@@ -47,6 +57,10 @@ func RegisterTaskTools(e *Entry, tasks *taskservice.Tasks) error {
 	if e == nil || tasks == nil {
 		return fmt.Errorf("MCP task tools require an entry and Tasks service")
 	}
+	return registerTaskTools(e, tasks)
+}
+
+func registerTaskTools(e *Entry, tasks taskResourceOperations) error {
 	var definitions []*sdk.Tool
 	if err := json.Unmarshal(taskToolDefinitions, &definitions); err != nil {
 		return err
@@ -133,7 +147,7 @@ func taskResult(task model.Task, view string, previous int64) ToolResult {
 	}
 	return ToolResult{Data: taskView(task, view), Outcome: outcome, WriteOutcome: "confirmed", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
 }
-func taskVersion(ctx context.Context, actor RequestActor, tasks *taskservice.Tasks, input taskArguments) (int64, error) {
+func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOperations, input taskArguments) (int64, error) {
 	if input.IfVersion != nil {
 		return ParseVersion(*input.IfVersion)
 	}
@@ -143,7 +157,7 @@ func taskVersion(ctx context.Context, actor RequestActor, tasks *taskservice.Tas
 	}
 	return task.Version, nil
 }
-func handleTaskTool(ctx context.Context, actor RequestActor, tasks *taskservice.Tasks, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
+func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceOperations, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
 	if name != "task_show" && name != "task_properties" && name != "task_delete" {
 		if actor.rpcResponseID == nil {
 			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Task response could not be bounded."}
