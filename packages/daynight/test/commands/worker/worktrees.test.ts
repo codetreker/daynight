@@ -63,7 +63,7 @@ const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "
 const privateBases = (cwd: string): string => git(cwd, ["for-each-ref", "--format=%(refname)", "refs/daynight/worker-bases/"]);
 const commitForOrigin = (repository: string, bare: string, branch: string, message: string): string => {
   const commit = git(repository, ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", message]);
-  git(repository, ["push", bare, `${commit}:refs/heads/${branch}`]);
+  git(bare, ["fetch", "--no-write-fetch-head", "--no-tags", "--no-auto-maintenance", repository, `${commit}:refs/heads/${branch}`]);
   return commit;
 };
 const changedClaim = (owner: ResourceOwner): ResourceOwner => ({ ...owner, claimId: "66666666-6666-4666-8666-666666666666", worktreeId: "77777777-7777-4777-8777-777777777777" });
@@ -443,6 +443,7 @@ describe("worker repositories and task worktrees", () => {
     try {
       await firstFetched;
       const secondHead = commitForOrigin(f.repository, f.bare, "main", "remote advances between fetches");
+      expect(git(f.repository, ["rev-parse", "refs/remotes/origin/main"])).toBe(firstHead);
       const second = await reservation(adapter.prepareWorktree(f.project, otherOwner, operation()));
       release();
       const firstBinding = await first;
