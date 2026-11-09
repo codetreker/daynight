@@ -52,7 +52,25 @@ type Application struct {
 	Sessions       *session.Service
 }
 
+type constructors struct {
+	projects    func(store.Transactions, *sessioncore.Engine) *project.Projects
+	tasks       func(store.Transactions, task.Capturer) *task.Tasks
+	attachments func(store.SnapshotReader, store.AttachmentMutationWriter, filestorage.Storage) *attachment.Attachments
+}
+
 func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration, capture ...task.Capturer) *Application {
+	return assemble(database, files, client, callbackURL, overlap, constructors{
+		projects: func(database store.Transactions, engine *sessioncore.Engine) *project.Projects {
+			return project.NewProjects(database, engine)
+		},
+		tasks: func(database store.Transactions, capturer task.Capturer) *task.Tasks {
+			return task.NewTasks(database, capturer)
+		},
+		attachments: attachment.NewAttachments,
+	}, capture...)
+}
+
+func assemble(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration, construct constructors, capture ...task.Capturer) *Application {
 	var capturer task.Capturer = &webhook.Capturer{}
 	if len(capture) != 0 && capture[0] != nil {
 		capturer = capture[0]
@@ -64,19 +82,19 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		OAuth:          oauth.NewAuthenticator(database),
 		OAuthGrants:    oauthcore.NewGrantLifecycle(database),
 		Memberships:    project.NewMemberships(database),
-		Projects:       project.NewProjects(database, engine),
+		Projects:       construct.projects(database, engine),
 		Teams:          team.NewTeams(database),
 		Workers:        worker.NewWorkersWithPrompts(database, database),
 		Prompts:        prompt.New(database),
 		WorkerReadOnly: workerReadOnly,
 		Bots:           bot.NewWithNativeDiscovery(database, workerReadOnly),
 		BotDeletions:   bot.NewDeletions(database, files, engine),
-		Tasks:          task.NewTasks(database, capturer),
+		Tasks:          construct.tasks(database, capturer),
 		TaskSearch:     database,
 		TaskSteps:      task.NewTaskSteps(database, capturer),
 		TaskThreads:    task.NewTaskThreads(database, capturer),
 		TaskSync:       task.NewTaskSync(database, engine, overlap),
-		Attachments:    attachment.NewAttachments(database, database, files),
+		Attachments:    construct.attachments(database, database, files),
 		Engine:         engine,
 		Sessions:       session.New(database, engine),
 	}
