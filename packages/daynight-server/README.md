@@ -1019,13 +1019,18 @@ without database or UniAuth fixtures:
 source scripts/env.sh
 env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
   go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
-  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors)' \
+  -run '^TestWorkerConfiguration(Validation|UsesControlled|Refusal|Completion|Constructors)|^TestHistoricalConfigurationCandidateAdmissionAndRead$' \
   ./internal/service/worker
 ```
 
 The PostgreSQL Worker contract suite retains actual configuration write/read
-independence after Task storage is removed. Other bootstrap, CAS and capacity
-cases keep their existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
+independence after Task storage is removed. Historical configuration repair and
+revoked-Project policy execute in Core with controlled DAO facts; candidate
+admission and supplied read results execute in the service subset. The Store
+contract suite retains actual stored 65 values, grant revocation, JSONB args,
+committed repair and fresh readback. The [historical configuration decision](../../.agents/notes/implemented/testing/2026-11-09-worker-historical-configuration-test-owners.md)
+records these owners. Other bootstrap, CAS and report-budget cases keep their
+existing fixtures. The [configuration test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-test-boundary.md)
 records these proof owners.
 
 ### Identity service tests
