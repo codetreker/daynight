@@ -13,13 +13,13 @@ const timeline = `${selected} .session-timeline`;
 const row = `${selected} [data-entry-key]`;
 const entryId = (n: number) => `30000000-0000-4000-8000-${String(10000 + n).padStart(12, '0')}`;
 
-async function install(page: Page, tail: { readonly initialStart: number; readonly restoredStart: number; readonly end: number } | null = null) {
+async function install(page: Page, tail: { readonly initialStart: number; readonly restoredStart: number; readonly end: number } | null = null, history: { readonly epoch: string; readonly revision: string; readonly lastEventSeq: string } | null = null) {
   let holdDetail = false, missing = false;
   const pending: (() => void)[] = [], writes: string[] = [];
-  await page.addInitScript(tail => {
+  await page.addInitScript(({ tail, history }) => {
     const restored = sessionStorage.getItem('b2-history-barriers') === 'true';
-    window.botViewportOptions = { scenario: 'persistent', holdCurrent: restored, holdHistory: restored, revision: restored ? '2' : '1', ...(tail ? { persistentTail: { start: restored ? tail.restoredStart : tail.initialStart, end: tail.end } } : {}) };
-  }, tail);
+    window.botViewportOptions = { scenario: 'persistent', holdCurrent: restored, holdHistory: restored, revision: history?.revision ?? (restored ? '2' : '1'), ...(history ? { historyEpoch: history.epoch, lastEventSeq: history.lastEventSeq } : {}), ...(tail ? { persistentTail: { start: restored ? tail.restoredStart : tail.initialStart, end: tail.end } } : {}) };
+  }, { tail, history });
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
@@ -223,4 +223,85 @@ test('keeps uncovered preview rows and the reading anchor after a shorter real t
   expect(restored.key).toBe(reading.key); expect(Math.abs(restored.offset - reading.offset)).toBeLessThanOrEqual(3);
   expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
   expect(api.writes).toEqual([]);
+});
+
+test('does not replace another tab history from passive reads or local drafts', async ({ context, page }) => {
+  const oldEpoch = 'tab-a-history', peerEpoch = 'tab-b-history';
+  const api = await install(page, null, { epoch: oldEpoch, revision: '1', lastEventSeq: '0' });
+  await page.goto(`/bots/${bots[0]!.id}`); await saved(page);
+  const stored = () => page.evaluate(({ namespace, target }) => {
+    const raw = localStorage.getItem(namespace);
+    if (!raw) return null;
+    return (JSON.parse(raw).records as { preview: { botId: string; historyEpoch: string; lastEventSeq: string; entries: { revision: string }[] } }[]).find(record => record.preview.botId === target)?.preview ?? null;
+  }, { namespace, target: bots[0]!.id });
+  const peer = await context.newPage();
+  const peerApi = await install(peer, null, { epoch: peerEpoch, revision: '2', lastEventSeq: '0' });
+  await peer.goto(`/bots/${bots[0]!.id}`);
+  await expect(peer.locator(`${row}[data-entry-key="${entryId(80)}"]`)).toContainText('Revision 2');
+  // Read only real StorageEvents produced by the peer's production observer.
+  // Keeping every newValue detects deletion/rewrite cycles hidden by a final read.
+  await expect.poll(() => page.evaluate(({ target, peerEpoch }) => window.botViewport.metrics.snapshotEvents.findIndex(raw => {
+    if (!raw) return false;
+    return (JSON.parse(raw).records as { preview: { botId: string; historyEpoch: string } }[]).some(record => record.preview.botId === target && record.preview.historyEpoch === peerEpoch);
+  }), { target: bots[0]!.id, peerEpoch })).toBeGreaterThanOrEqual(0);
+  const notifications = () => page.evaluate(({ target, peerEpoch }) => {
+    const events = window.botViewport.metrics.snapshotEvents;
+    const first = events.findIndex(raw => raw !== null && (JSON.parse(raw).records as { preview: { botId: string; historyEpoch: string } }[]).some(record => record.preview.botId === target && record.preview.historyEpoch === peerEpoch));
+    return events.slice(first).map(raw => raw === null ? null : (JSON.parse(raw).records as { preview: { botId: string; historyEpoch: string } }[]).find(record => record.preview.botId === target)?.preview.historyEpoch ?? null);
+  }, { target: bots[0]!.id, peerEpoch });
+  const peerNotifications = () => peer.evaluate(({ target, peerEpoch }) => {
+    const epoch = (raw: string | null) => raw === null ? null : (JSON.parse(raw).records as { preview: { botId: string; historyEpoch: string } }[]).find(record => record.preview.botId === target)?.preview.historyEpoch ?? null;
+    const events = window.botViewport.metrics.snapshotChanges.map(event => ({ before: epoch(event.oldValue), after: epoch(event.newValue) }));
+    // The peer does not receive its own save event. Include the first event
+    // touching its epoch so a first deletion or rollback cannot be skipped.
+    const first = events.findIndex(event => event.before === peerEpoch || event.after === peerEpoch);
+    return first < 0 ? [] : events.slice(first).map(event => event.after);
+  }, { target: bots[0]!.id, peerEpoch });
+  const changes = (tab: Page) => tab.evaluate(target => {
+    const epoch = (raw: string | null) => raw === null ? null : (JSON.parse(raw).records as { preview: { botId: string; historyEpoch: string } }[]).find(record => record.preview.botId === target)?.preview.historyEpoch ?? null;
+    return window.botViewport.metrics.snapshotChanges.map(event => ({ ...event, before: epoch(event.oldValue), after: epoch(event.newValue) }));
+  }, bots[0]!.id);
+  const metrics = async (tab: Page) => ({ changes: await changes(tab), snapshotWrites: await tab.evaluate(() => window.botViewport.metrics.snapshotWrites) });
+  const captureEvidence = async (phase: string, closedPeer?: Awaited<ReturnType<typeof metrics>>) => {
+    const [a, b, preview] = await Promise.all([metrics(page), closedPeer ? Promise.resolve(closedPeer) : metrics(peer), stored()]);
+    const eventsPath = test.info().outputPath(`passive-history-storage-events-${phase}.json`);
+    await writeFile(eventsPath, JSON.stringify({ phase, a, b, peerClosed: Boolean(closedPeer), stored: { epoch: preview?.historyEpoch, lastEventSeq: preview?.lastEventSeq, revision: preview?.entries[0]?.revision } }, null, 2));
+    await test.info().attach(`passive-history-storage-events-${phase}`, { path: eventsPath, contentType: 'application/json' });
+    return b;
+  };
+  await expect.poll(async () => (await stored())?.historyEpoch).toBe(peerEpoch);
+  const writes = await page.evaluate(() => window.botViewport.metrics.snapshotWrites);
+  await page.waitForTimeout(2_500);
+  await captureEvidence('idle');
+  expect((await stored())?.historyEpoch).toBe(peerEpoch);
+  expect(await notifications()).not.toContain(null);
+  expect((await notifications()).every(epoch => epoch === peerEpoch)).toBe(true);
+  const peerEvents = await peerNotifications();
+  expect(peerEvents).toEqual(peerEvents.map(() => peerEpoch));
+  expect(await page.evaluate(() => window.botViewport.metrics.snapshotWrites)).toBe(writes);
+  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Local draft must not renew old history');
+  await page.waitForTimeout(2_500);
+  const peerFinal = await captureEvidence('draft');
+  expect((await stored())?.historyEpoch).toBe(peerEpoch);
+  expect((await notifications()).every(epoch => epoch === peerEpoch)).toBe(true);
+  expect((await peerNotifications()).every(epoch => epoch === peerEpoch)).toBe(true);
+  expect(await page.evaluate(() => window.botViewport.metrics.snapshotWrites)).toBe(writes);
+  expect(await page.getByRole('textbox', { name: 'Message', exact: true }).inputValue()).toBe('Local draft must not renew old history');
+  expect(await peer.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
+  await peer.close();
+  // Epoch labels are opaque. A genuinely newer accepted page, obtained through
+  // the real Refresh action, can establish authority again even with A's label.
+  await page.evaluate(() => Object.assign(window.botViewportOptions!, { revision: '3', lastEventSeq: '1' }));
+  const header = page.locator(`${selected} .session-header`);
+  await header.getByRole('button', { name: 'More actions', exact: true }).click();
+  await header.getByRole('group', { name: 'More actions', exact: true }).getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.locator(`${row}[data-entry-key="${entryId(80)}"]`)).toContainText('Revision 3');
+  await expect.poll(async () => {
+    const preview = await stored();
+    return { epoch: preview?.historyEpoch, lastEventSeq: preview?.lastEventSeq, revision: preview?.entries[0]?.revision };
+  }).toEqual({ epoch: oldEpoch, lastEventSeq: '1', revision: '3' });
+  await captureEvidence('refresh', peerFinal);
+  expect(await page.getByRole('textbox', { name: 'Message', exact: true }).inputValue()).toBe('Local draft must not renew old history');
+  expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
+  expect(api.writes).toEqual([]); expect(peerApi.writes).toEqual([]);
 });

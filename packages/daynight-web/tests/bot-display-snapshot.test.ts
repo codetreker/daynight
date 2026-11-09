@@ -360,6 +360,30 @@ describe('Bot display snapshot invalidation and observations', () => {
     expect(await target.read(owner, id(1))).toBeNull(); expect(await target.observe(owner, id(1))).toBeNull();
   });
 
+  it('revokes one queued observation without changing peer data or other observation authority', async () => {
+    const owner = crypto.randomUUID(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    let blocked = false;
+    const target = store(owner, { storage: storageFacade(), withLock: async (_name, run) => {
+      if (blocked) { entered.resolve(); await gate.promise; }
+      return run();
+    } });
+    const value = preview(owner), sibling = preview(owner, 2);
+    expect(await save(target, value)).toBe('saved'); expect(await save(target, sibling)).toBe('saved');
+    const revoked = (await target.observe(owner, value.botId))!, retained = (await target.observe(owner, value.botId))!, siblingLease = (await target.observe(owner, sibling.botId))!;
+    const before = localStorage.getItem(key(owner)), token = target.revocationToken(owner);
+    blocked = true;
+    const queued = target.save(revoked, { source: 'verified-history', historyLoaded: true, preview: { ...value, lastEventSeq: '2' } });
+    await entered.promise;
+    target.revokeObservation(revoked); target.revokeObservation(revoked);
+    expect(target.revocationToken(owner)).toBe(token);
+    gate.resolve();
+    expect(await queued).toBe('stale');
+    expect(localStorage.getItem(key(owner))).toBe(before);
+    expect(await target.save(retained, { source: 'verified-history', historyLoaded: true, preview: { ...value, lastEventSeq: '2' } })).toBe('saved');
+    expect(await target.save(siblingLease, { source: 'verified-history', historyLoaded: true, preview: { ...sibling, lastEventSeq: '2' } })).toBe('saved');
+    expect((await target.read(owner, value.botId))?.lastEventSeq).toBe('2');
+    expect((await target.read(owner, sibling.botId))?.lastEventSeq).toBe('2');
+  });
   it('prevents a queued write from restoring synchronously revoked history', async () => {
     const owner = crypto.randomUUID(), target = store(owner), value = preview(owner);
     await save(target, value); const observed = (await target.observe(owner, value.botId))!;

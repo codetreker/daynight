@@ -69,9 +69,13 @@ export class BotDisplaySnapshotCoordinator {
   private readonly bindings = new Map<string, string>();
   private readonly histories = new Map<string, string>();
   private readonly previews = new Map<string, BotDisplayPreview>();
+  private readonly rejectedPreviews = new Map<string, string>();
+  private readonly sourceRejections = new Map<string, number>();
+  private readonly sources = new WeakMap<TaskSessionClient, { readonly source: string; readonly rejection: number }>();
   private readonly generations = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
   private readonly historyListeners = new Set<(botId: string) => void>();
+  private readonly rejectionListeners = new Set<(botId: string) => void>();
   private revision = 0;
   private storageGeneration = 0;
   private storeRevocation: object | null = null;
@@ -90,6 +94,7 @@ export class BotDisplaySnapshotCoordinator {
   version = () => this.revision;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   subscribeHistoryReplacement = (listener: (botId: string) => void) => { this.historyListeners.add(listener); return () => { this.historyListeners.delete(listener); }; };
+  subscribeHistoryRejection = (listener: (botId: string) => void) => { this.rejectionListeners.add(listener); return () => { this.rejectionListeners.delete(listener); }; };
   private publish() { this.revision++; for (const listener of this.listeners) listener(); }
   private expire(botId: string) { this.generations.set(botId, (this.generations.get(botId) ?? 0) + 1); this.previews.delete(botId); this.publish(); }
   private externalChange = (event: StorageEvent) => {
@@ -105,14 +110,22 @@ export class BotDisplaySnapshotCoordinator {
     return this.storageGeneration + (this.generations.get(botId) ?? 0);
   };
   cached = (botId: string): BotDisplayPreview | null => this.allowed(botId) ? this.previews.get(botId) ?? null : null;
+  sourceAllowed(client: TaskSessionClient, botId: string, source: string): boolean {
+    const rejection = this.sourceRejections.get(botId) ?? 0, previous = this.sources.get(client);
+    // Keep the barrier with the client rather than an observer's mount lifetime.
+    // A name, draft edit or rebuilt observer cannot advance accepted history.
+    if (!previous || previous.source !== source) { this.sources.set(client, { source, rejection }); return true; }
+    return previous.rejection === rejection;
+  }
   async read(botId: string, options: { readonly touch?: boolean } = {}): Promise<BotDisplayPreview | null> {
     if (!this.allowed(botId)) return null;
     const generation = this.generation(botId);
     const preview = await this.store.read(this.options.userId, botId, options);
     if (!this.allowed(botId) || generation !== this.generation(botId)) return null;
     if (preview && (this.bindings.has(botId) && this.bindings.get(botId) !== bindingKey(preview.lastKnownBinding) || this.histories.has(botId) && this.histories.get(botId) !== previewHistoryKey(preview))) {
-      this.clearTarget(botId, true); return null;
+      this.rejectPreview(botId, preview); return null;
     }
+    if (preview) this.rejectedPreviews.delete(botId);
     if (preview) this.previews.set(botId, preview); else this.previews.delete(botId);
     return preview;
   }
@@ -120,14 +133,27 @@ export class BotDisplaySnapshotCoordinator {
     if (binding.ownerUserId !== this.options.userId || !this.allowed(binding.botId)) return;
     const key = bindingKey(binding), previous = this.bindings.get(binding.botId), preview = this.previews.get(binding.botId);
     this.bindings.set(binding.botId, key);
-    if (previous !== undefined && previous !== key || preview && bindingKey(preview.lastKnownBinding) !== key) { this.histories.delete(binding.botId); this.clearTarget(binding.botId, true); }
+    if (previous !== undefined && previous !== key) { this.histories.delete(binding.botId); this.clearTarget(binding.botId, true); }
+    else if (preview && bindingKey(preview.lastKnownBinding) !== key) this.rejectPreview(binding.botId, preview);
   }
   history(binding: BotSessionBinding, snapshot: SessionSnapshot): void {
     this.bind(binding);
     if (!this.allowed(binding.botId)) return;
     const key = historyKey(snapshot), previous = this.histories.get(binding.botId), preview = this.previews.get(binding.botId);
     this.histories.set(binding.botId, key);
-    if (previous !== undefined && previous !== key || preview && previewHistoryKey(preview) !== key) this.clearTarget(binding.botId, true);
+    if (previous !== undefined && previous !== key) this.clearTarget(binding.botId, true);
+    else if (preview && previewHistoryKey(preview) !== key) this.rejectPreview(binding.botId, preview);
+  }
+  private rejectPreview(botId: string, preview: BotDisplayPreview): void {
+    const key = JSON.stringify([this.bindings.get(botId), this.histories.get(botId), bindingKey(preview.lastKnownBinding), previewHistoryKey(preview)]);
+    this.previews.delete(botId);
+    if (this.rejectedPreviews.get(botId) === key) return;
+    this.rejectedPreviews.set(botId, key);
+    this.sourceRejections.set(botId, (this.sourceRejections.get(botId) ?? 0) + 1);
+    // A peer's incompatible record revokes local persistence authority without
+    // deleting that record or authorizing another observation of old history.
+    this.expire(botId);
+    for (const listener of this.rejectionListeners) listener(botId);
   }
   blockBot(botId: string): void { if (!this.blocked.has(botId)) { this.blocked.add(botId); this.expire(botId); } }
   unblockBot(botId: string): void { if (this.blocked.delete(botId)) this.expire(botId); }
@@ -136,6 +162,7 @@ export class BotDisplaySnapshotCoordinator {
     this.revoked.add(botId); this.blocked.delete(botId); this.clearTarget(botId);
   }
   private clearTarget(botId: string, replacedHistory = false): void {
+    this.rejectedPreviews.delete(botId);
     this.expire(botId);
     void this.store.clearTarget(this.options.userId, botId).then(cleared => {
       if (!cleared) console.error('Bot display snapshot could not be physically cleared.', botId);
@@ -155,7 +182,7 @@ export class BotDisplaySnapshotCoordinator {
     return this.clearing;
   }
   close(): void {
-    this.invalidated = true; this.previews.clear(); this.detach(); this.store.close(); this.listeners.clear(); this.historyListeners.clear();
+    this.invalidated = true; this.previews.clear(); this.detach(); this.store.close(); this.listeners.clear(); this.historyListeners.clear(); this.rejectionListeners.clear();
     accounts.get(this.options.userId)?.delete(this);
     if (typeof window !== 'undefined') window.removeEventListener('storage', this.externalChange);
   }
@@ -166,6 +193,7 @@ type ObserverOptions = {
   readonly name: () => string | null; readonly bookmark: () => TimelineReadingBookmark | null;
 };
 type Candidate = { readonly lease: BotDisplaySnapshotObservation; readonly preview: BotDisplayPreview; readonly generation: number; readonly source: string };
+const historySource = (view: ReturnType<TaskSessionClient['snapshot']>): string | null => view.state.snapshot ? JSON.stringify([historyKey(view.state.snapshot), view.historyRevision, view.state.lastEventSeq]) : null;
 
 /** Only protocol-accepted client state can supply persistence; preview rows never enter this observer. */
 export class BotHistorySnapshotObserver {
@@ -177,13 +205,21 @@ export class BotHistorySnapshotObserver {
   private observedSource: string | null = null;
   private observedGeneration: number | null = null;
   private expiredSource: string | null = null;
+  private readonly saving = new Map<BotDisplaySnapshotObservation, number>();
   private observation = 0;
   private closed = false;
   private readonly detach: () => void;
   private readonly detachReplacement: () => void;
+  private readonly detachRejection: () => void;
   constructor(private readonly options: ObserverOptions) {
     this.detach = options.client.subscribe(this.observe);
     this.detachReplacement = options.owner.subscribeHistoryReplacement(botId => { if (botId === options.binding.botId) { this.lease = null; this.observedSource = null; this.expiredSource = null; this.observe(); } });
+    this.detachRejection = options.owner.subscribeHistoryRejection(botId => {
+      if (botId !== options.binding.botId) return;
+      for (const lease of [this.lease, this.candidate?.lease, this.lastAccepted?.lease, ...this.saving.keys()]) if (lease) options.owner.store.revokeObservation(lease);
+      this.observation++; this.lease = null; this.candidate = null; this.lastAccepted = null;
+      this.expiredSource = historySource(options.client.snapshot());
+    });
     window.addEventListener('pagehide', this.pagehide);
     this.observe();
   }
@@ -192,11 +228,13 @@ export class BotHistorySnapshotObserver {
   private observe = (): void => {
     const { owner, binding, client } = this.options, view = client.snapshot(), snapshot = view.state.snapshot;
     if (this.closed || !owner.allowed(binding.botId)) return;
+    const source = historySource(view);
+    if (source) owner.sourceAllowed(client, binding.botId, source);
     if (snapshot) owner.history(binding, snapshot);
     if (!snapshot || !view.historyLoaded || !view.historySettled) return;
+    if (!source || !owner.sourceAllowed(client, binding.botId, source)) return;
     const name = this.options.name(); if (!name) return;
     const identity = historyKey(snapshot), generation = owner.generation(binding.botId);
-    const source = JSON.stringify([identity, view.historyRevision, view.state.lastEventSeq]);
     if (source === this.expiredSource) return;
     if (this.observedGeneration !== generation) {
       // New authority can obtain a fresh lease, but cannot reuse one revoked by
@@ -229,14 +267,24 @@ export class BotHistorySnapshotObserver {
     const bookmark = this.options.bookmark(), anchor = bookmark?.anchor;
     const { readingAnchor: _oldAnchor, ...history } = candidate.preview;
     const readingAnchor = anchor && bookmark.historyEpoch === history.historyEpoch ? { entryId: anchor.key, offset: Math.max(0, -anchor.top), following: bookmark.following } : undefined;
-    const result = await this.options.owner.store.save(candidate.lease, { source: 'verified-history', historyLoaded: true, preview: { ...history, savedAt: Date.now(), ...(readingAnchor ? { readingAnchor } : {}) } });
-    if (result === 'stale') { this.lease = null; this.expiredSource = candidate.source; }
-    return result;
+    this.saving.set(candidate.lease, (this.saving.get(candidate.lease) ?? 0) + 1);
+    try {
+      const result = await this.options.owner.store.save(candidate.lease, { source: 'verified-history', historyLoaded: true, preview: { ...history, savedAt: Date.now(), ...(readingAnchor ? { readingAnchor } : {}) } });
+      if (result === 'stale') { this.lease = null; this.expiredSource = candidate.source; }
+      return result;
+    } finally {
+      const remaining = this.saving.get(candidate.lease)! - 1;
+      if (remaining) this.saving.set(candidate.lease, remaining); else this.saving.delete(candidate.lease);
+      if (this.closed && this.saving.size === 0) this.detachRejection();
+    }
   }
   close(flush = true): void {
     if (this.closed) return;
     if (flush) void this.flush();
     this.closed = true; this.observation++; this.detach(); this.detachReplacement(); window.removeEventListener('pagehide', this.pagehide);
+    // Eviction may have queued a final save. Keep its negative revocation live
+    // until the store has completed every save, even when close(false) follows.
+    if (this.saving.size === 0) this.detachRejection();
     if (this.timer !== null) clearTimeout(this.timer); this.timer = null; this.candidate = null; this.lastAccepted = null;
   }
 }

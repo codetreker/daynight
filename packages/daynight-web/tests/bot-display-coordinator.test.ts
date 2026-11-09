@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { BotDisplaySnapshotCoordinator, BotHistorySnapshotObserver, clearBotDisplaySnapshots, retryBotDisplaySnapshotCleanup } from '../src/features/bots/display-snapshot-coordinator';
-import { BotDisplaySnapshotStore, type BotDisplayPreview } from '../src/features/bots/display-snapshot';
+import { BotDisplaySnapshotStore, type BotDisplayPreview, type BotDisplaySnapshotLock } from '../src/features/bots/display-snapshot';
 import { BotSessionCache } from '../src/features/bots/session-cache';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
 import type { TimelineReadingBookmark } from '../src/ui/useTimelineScroll';
@@ -35,11 +35,18 @@ it('reads an authenticated cold target and hides it synchronously on temporary b
   expect(await owner.read(value.botId)).toBeNull();
   expect(await store.read(botOwner, value.botId)).toBeNull();
 });
-it('clears a cold obsolete binding before it can become a preview for a new execution', async () => {
+it('hides an incompatible cold binding without deleting the peer record', async () => {
   const { owner, store } = fixture(), value = await seed(store);
   expect(await owner.read(value.botId)).toEqual(value);
   owner.bind({ ...value.lastKnownBinding, testExecutionId: crypto.randomUUID() });
   expect(await owner.read(value.botId)).toBeNull();
+  expect(owner.cached(value.botId)).toBeNull();
+  expect(await store.read(botOwner, value.botId)).toEqual(value);
+});
+it('clears the target after a previously observed local binding is replaced', async () => {
+  const { owner, store } = fixture(), value = await seed(store);
+  owner.bind(value.lastKnownBinding);
+  owner.bind({ ...value.lastKnownBinding, testExecutionId: crypto.randomUUID() });
   expect(await store.read(botOwner, value.botId)).toBeNull();
 });
 it('rejects a read queued before revocation instead of publishing its late private payload', async () => {
@@ -294,4 +301,238 @@ it('reobserves new accepted history when a sibling clear changes the generation 
   await expect(observer.flush()).resolves.toBe('saved');
   expect((await store.read(userId, bot.binding.botId))?.entries).toEqual([first, second]);
   expect(await store.read(userId, sibling.botId)).toBeNull();
+});
+
+function epochTab(userId: string, epoch: string, nativeStorage: boolean, withLock: BotDisplaySnapshotLock = async (_key, run) => run()) {
+  const store = new BotDisplaySnapshotStore({ isCurrent: user => user === userId, storage: nativeStorage ? localStorage : storage(), withLock });
+  const owner = new BotDisplaySnapshotCoordinator({ userId, isCurrent: () => true, store });
+  const bot = botFixture({ ...botBinding(1), ownerUserId: userId });
+  bot.change({ ...bot.snapshot(), historyEpoch: epoch });
+  const item = { ...bot.page.items[0]!, entryId: crypto.randomUUID() };
+  vi.mocked(bot.api.timeline).mockResolvedValue({ ...bot.page, historyEpoch: epoch, items: [item] });
+  const cache = new BotSessionCache({ userId, isCurrent: () => true, storage: null, createApi: () => bot.api, onPrincipalMismatch: vi.fn() });
+  const observe = vi.spyOn(store, 'observe'), clear = vi.spyOn(store, 'clearTarget');
+  cleanups.push(cache.close, () => owner.close());
+  const start = () => { cache.select(bot.binding, bot.binding); return cache.snapshot()[0]!.client; };
+  return { store, owner, bot, item, observe, clear, start };
+}
+async function savedEpochTab(userId: string, epoch: string, nativeStorage: boolean, named = true) {
+  const tab = epochTab(userId, epoch, nativeStorage), client = tab.start();
+  await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
+  let name: string | null = named ? 'Assistant' : null;
+  const observer = new BotHistorySnapshotObserver({ owner: tab.owner, binding: tab.bot.binding, client, name: () => name, bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  if (named) { await tab.observe.mock.results.at(-1)!.value; await expect(observer.flush()).resolves.toBe('saved'); }
+  return { ...tab, client, observer, setName: () => { name = 'Assistant'; } };
+}
+it.each([true, false])('keeps a peer accepted epoch after passive mismatches and unchanged local publishes (old lease: %s)', async named => {
+  const userId = crypto.randomUUID(), oldEpoch = crypto.randomUUID(), newEpoch = crypto.randomUUID();
+  const old = await savedEpochTab(userId, oldEpoch, true, named);
+  const acceptedRevision = old.client.snapshot().historyRevision;
+  const peer = await savedEpochTab(userId, newEpoch, false);
+  expect((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
+  window.dispatchEvent(new StorageEvent('storage', { key: `daynight:bot-display:v1:${userId}`, storageArea: localStorage, newValue: localStorage.getItem(`daynight:bot-display:v1:${userId}`) }));
+  await expect(old.owner.read(old.bot.binding.botId, { touch: false })).resolves.toBeNull();
+  await Promise.all(old.clear.mock.results.map(result => result.value));
+  const generation = old.owner.generation(old.bot.binding.botId), version = old.owner.version();
+  old.setName();
+  old.observer.refresh();
+  await Promise.all(old.observe.mock.results.map(result => result.value));
+  await old.observer.flush();
+  expect((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
+  const results: (string | null | undefined)[] = [];
+  const reads: (string | null)[] = [];
+  for (const draft of ['first local edit', 'second local edit', 'third local edit']) {
+    old.client.setDraft(draft); old.observer.refresh();
+    reads.push((await old.owner.read(old.bot.binding.botId, { touch: false }))?.historyEpoch ?? null);
+    await Promise.all(old.clear.mock.results.map(result => result.value));
+    await Promise.all(old.observe.mock.results.map(result => result.value));
+    await old.observer.flush();
+    results.push((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch ?? null);
+  }
+  expect(old.client.snapshot().historyRevision).toBe(acceptedRevision);
+  expect(old.bot.api.current).toHaveBeenCalledOnce(); expect(old.bot.api.timeline).toHaveBeenCalledOnce();
+  expect(results).toEqual([newEpoch, newEpoch, newEpoch]);
+  expect(reads).toEqual([null, null, null]);
+  expect(old.clear).not.toHaveBeenCalled();
+  expect(old.owner.generation(old.bot.binding.botId)).toBe(generation);
+  expect(old.owner.version()).toBe(version);
+  await old.client.refresh();
+  await vi.waitFor(() => expect(old.client.snapshot().historyRevision).toBeGreaterThan(acceptedRevision));
+  await old.observe.mock.results.at(-1)!.value;
+  await expect(old.observer.flush()).resolves.toBe('saved');
+  expect((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(oldEpoch);
+});
+it('keeps a peer epoch when a cold preview meets current-only old history before any accepted history page', async () => {
+  const userId = crypto.randomUUID(), oldEpoch = crypto.randomUUID(), newEpoch = crypto.randomUUID();
+  const peer = await savedEpochTab(userId, newEpoch, false), old = epochTab(userId, oldEpoch, true);
+  expect((await old.owner.read(old.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
+  const history = Promise.withResolvers<typeof old.bot.page>();
+  vi.mocked(old.bot.api.timeline).mockReturnValue(history.promise);
+  const client = old.start();
+  const observer = new BotHistorySnapshotObserver({ owner: old.owner, binding: old.bot.binding, client, name: () => 'Assistant', bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  await vi.waitFor(() => expect(client.snapshot().state.snapshot).not.toBeNull());
+  expect(client.snapshot().historyLoaded).toBe(false);
+  await Promise.all(old.clear.mock.results.map(result => result.value));
+  const results: (string | null | undefined)[] = [];
+  for (const draft of ['first cold draft', 'second cold draft']) {
+    client.setDraft(draft); observer.refresh();
+    await old.owner.read(old.bot.binding.botId, { touch: false });
+    await Promise.all(old.clear.mock.results.map(result => result.value));
+    await observer.flush();
+    results.push((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch ?? null);
+  }
+  expect(client.snapshot().historyLoaded).toBe(false);
+  expect(old.bot.api.current).toHaveBeenCalledOnce(); expect(old.bot.api.timeline).toHaveBeenCalledOnce();
+  expect(results).toEqual([newEpoch, newEpoch]);
+  expect(old.clear).not.toHaveBeenCalled();
+  history.resolve({ ...old.bot.page, historyEpoch: oldEpoch, items: [old.item] });
+});
+it.each([false, true])('revokes an already queued old-source save when a captured passive mismatch is delivered (closed: %s)', async close => {
+  const userId = crypto.randomUUID(), oldEpoch = crypto.randomUUID(), newEpoch = crypto.randomUUID();
+  const peer = await savedEpochTab(userId, newEpoch, false);
+  const saveEntered = Promise.withResolvers<void>(), saveGate = Promise.withResolvers<void>();
+  let blocked = false;
+  const old = epochTab(userId, oldEpoch, true, async (_key, run) => {
+    if (blocked) { saveEntered.resolve(); await saveGate.promise; }
+    return run();
+  });
+  const client = old.start();
+  await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
+  const subscribeRejection = old.owner.subscribeHistoryRejection.bind(old.owner), detached = vi.fn();
+  vi.spyOn(old.owner, 'subscribeHistoryRejection').mockImplementation(listener => {
+    const detach = subscribeRejection(listener); return () => { detached(); detach(); };
+  });
+  const observer = new BotHistorySnapshotObserver({ owner: old.owner, binding: old.bot.binding, client, name: () => 'Assistant', bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  // This first lease observes the peer version, before the coordinator reads it.
+  await old.observe.mock.results.at(-1)!.value;
+  const readCaptured = Promise.withResolvers<void>(), readGate = Promise.withResolvers<void>();
+  const realRead = old.store.read.bind(old.store);
+  vi.spyOn(old.store, 'read').mockImplementation(async (...args) => {
+    const result = await realRead(...args); readCaptured.resolve(); await readGate.promise; return result;
+  });
+  const read = old.owner.read(old.bot.binding.botId, { touch: false });
+  await readCaptured.promise;
+  blocked = true;
+  const save = observer.flush();
+  await saveEntered.promise;
+  if (close) observer.close(false);
+  expect(detached).not.toHaveBeenCalled();
+  readGate.resolve();
+  await expect(read).resolves.toBeNull();
+  saveGate.resolve();
+  await expect(save).resolves.toBe('stale');
+  if (!close) observer.close(false);
+  expect(detached).toHaveBeenCalledOnce();
+  await Promise.all(old.clear.mock.results.map(result => result.value));
+  expect((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
+  expect(old.clear).not.toHaveBeenCalled();
+});
+it('does not accept an old-source observation that finishes after passive mismatch rejection', async () => {
+  const userId = crypto.randomUUID(), oldEpoch = crypto.randomUUID(), newEpoch = crypto.randomUUID();
+  const peer = await savedEpochTab(userId, newEpoch, false);
+  const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  let blocked = false;
+  const old = epochTab(userId, oldEpoch, true, async (_key, run) => {
+    if (blocked) { entered.resolve(); await gate.promise; }
+    return run();
+  });
+  const client = old.start();
+  await vi.waitFor(() => expect(client.snapshot().historySettled).toBe(true));
+  const readCaptured = Promise.withResolvers<void>(), readGate = Promise.withResolvers<void>();
+  const realRead = old.store.read.bind(old.store);
+  vi.spyOn(old.store, 'read').mockImplementation(async (...args) => {
+    const result = await realRead(...args); readCaptured.resolve(); await readGate.promise; return result;
+  });
+  const read = old.owner.read(old.bot.binding.botId, { touch: false });
+  await readCaptured.promise;
+  blocked = true;
+  const observer = new BotHistorySnapshotObserver({ owner: old.owner, binding: old.bot.binding, client, name: () => 'Assistant', bookmark: () => null });
+  cleanups.push(() => observer.close(false));
+  await entered.promise;
+  readGate.resolve(); await expect(read).resolves.toBeNull();
+  gate.resolve(); await old.observe.mock.results.at(-1)!.value;
+  for (const draft of ['first post-observation edit', 'second post-observation edit']) {
+    client.setDraft(draft); observer.refresh();
+    await expect(observer.flush()).resolves.toBeNull();
+    expect((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
+  }
+  expect(old.observe).toHaveBeenCalledOnce();
+  expect(old.clear).not.toHaveBeenCalled();
+  expect(old.bot.api.current).toHaveBeenCalledOnce(); expect(old.bot.api.timeline).toHaveBeenCalledOnce();
+});
+it.each([false, true])('keeps the rejected source fenced when its observer is rebuilt (closed before rejection: %s)', async closeBefore => {
+  const userId = crypto.randomUUID(), oldEpoch = crypto.randomUUID(), newEpoch = crypto.randomUUID();
+  const old = await savedEpochTab(userId, oldEpoch, true), peer = await savedEpochTab(userId, newEpoch, false);
+  if (closeBefore) old.observer.close(false);
+  await expect(old.owner.read(old.bot.binding.botId, { touch: false })).resolves.toBeNull();
+  old.observer.close(false);
+  let name: string | null = closeBefore ? 'Assistant' : null;
+  const rebuilt = new BotHistorySnapshotObserver({ owner: old.owner, binding: old.bot.binding, client: old.client, name: () => name, bookmark: () => null });
+  cleanups.push(() => rebuilt.close(false));
+  name = 'Assistant'; old.client.setDraft('draft after rebuilding'); rebuilt.refresh();
+  await Promise.all(old.observe.mock.results.map(result => result.value));
+  await expect(rebuilt.flush()).resolves.toBeNull();
+  expect((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
+  expect(old.bot.api.current).toHaveBeenCalledOnce(); expect(old.bot.api.timeline).toHaveBeenCalledOnce();
+  const revision = old.client.snapshot().historyRevision;
+  await old.client.refresh();
+  await vi.waitFor(() => expect(old.client.snapshot().historyRevision).toBeGreaterThan(revision));
+  await old.observe.mock.results.at(-1)!.value;
+  await expect(rebuilt.flush()).resolves.toBe('saved');
+});
+it('allows a reopened pane to save only after its new client accepts a fresh history page', async () => {
+  const userId = crypto.randomUUID(), oldEpoch = crypto.randomUUID(), newEpoch = crypto.randomUUID();
+  const store = new BotDisplaySnapshotStore({ isCurrent: user => user === userId, storage: localStorage, withLock: async (_key, run) => run() });
+  const owner = new BotDisplaySnapshotCoordinator({ userId, isCurrent: () => true, store });
+  cleanups.push(() => owner.close());
+  const bots = [1, 2, 3, 4].map(number => {
+    const bot = botFixture({ ...botBinding(number), ownerUserId: userId });
+    bot.change({ ...bot.snapshot(), historyEpoch: oldEpoch });
+    vi.mocked(bot.api.timeline).mockResolvedValue({ ...bot.page, historyEpoch: oldEpoch, items: [{ ...bot.page.items[0]!, entryId: crypto.randomUUID() }] });
+    return bot;
+  });
+  const first = bots[0]!, observe = vi.spyOn(store, 'observe'), save = vi.spyOn(store, 'save');
+  const cache = new BotSessionCache({ userId, isCurrent: () => true, storage: null, createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api, onPrincipalMismatch: vi.fn(), displaySnapshots: owner });
+  cleanups.push(cache.close); cache.setBotName(first.binding.botId, 'Assistant'); cache.select(first.binding, first.binding);
+  const original = cache.snapshot()[0]!.client;
+  await vi.waitFor(() => expect(original.snapshot().historySettled).toBe(true));
+  await observe.mock.results.at(-1)!.value;
+  cache.flushDisplay(first.binding.botId); await save.mock.results.at(-1)!.value;
+  const peer = await savedEpochTab(userId, newEpoch, false);
+  await expect(owner.read(first.binding.botId, { touch: false })).resolves.toBeNull();
+  for (const bot of bots.slice(1)) cache.select(bot.binding, bot.binding);
+  expect(cache.snapshot().some(pane => pane.client === original)).toBe(false);
+  expect(first.channel.close).toHaveBeenCalledOnce();
+  const history = Promise.withResolvers<typeof first.page>();
+  vi.mocked(first.api.timeline).mockReturnValue(history.promise);
+  cache.select(first.binding, first.binding);
+  const reopened = cache.snapshot().find(pane => pane.binding.botId === first.binding.botId)!.client;
+  expect(reopened).not.toBe(original);
+  await vi.waitFor(() => expect(reopened.snapshot().state.snapshot).not.toBeNull());
+  expect(reopened.snapshot().historyLoaded).toBe(false);
+  reopened.setDraft('a new pane still needs accepted history'); cache.flushDisplay(first.binding.botId);
+  expect((await peer.store.read(userId, first.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
+  const item = { ...first.page.items[0]!, entryId: crypto.randomUUID() };
+  history.resolve({ ...first.page, historyEpoch: oldEpoch, items: [item] });
+  await vi.waitFor(() => expect(reopened.snapshot().historySettled).toBe(true));
+  await observe.mock.results.at(-1)!.value;
+  cache.flushDisplay(first.binding.botId); await expect(save.mock.results.at(-1)!.value).resolves.toBe('saved');
+  expect((await peer.store.read(userId, first.binding.botId, { touch: false }))?.entries).toEqual([item]);
+  expect(first.api.current).toHaveBeenCalledTimes(2); expect(first.api.timeline).toHaveBeenCalledTimes(2);
+});
+it('broadcasts a passive rejection to simultaneous observers of the same accepted client source', async () => {
+  const userId = crypto.randomUUID(), oldEpoch = crypto.randomUUID(), newEpoch = crypto.randomUUID();
+  const old = await savedEpochTab(userId, oldEpoch, true);
+  const second = new BotHistorySnapshotObserver({ owner: old.owner, binding: old.bot.binding, client: old.client, name: () => 'Second pane', bookmark: () => null });
+  cleanups.push(() => second.close(false));
+  await old.observe.mock.results.at(-1)!.value;
+  const peer = await savedEpochTab(userId, newEpoch, false);
+  await expect(old.owner.read(old.bot.binding.botId, { touch: false })).resolves.toBeNull();
+  old.client.setDraft('shared local edit'); old.observer.refresh(); second.refresh();
+  await expect(old.observer.flush()).resolves.toBeNull(); await expect(second.flush()).resolves.toBeNull();
+  expect((await peer.store.read(userId, peer.bot.binding.botId, { touch: false }))?.historyEpoch).toBe(newEpoch);
+  expect(old.bot.api.current).toHaveBeenCalledOnce(); expect(old.bot.api.timeline).toHaveBeenCalledOnce();
 });

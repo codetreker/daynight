@@ -39,6 +39,21 @@ metadata. New observations capture that known metadata before queuing and still
 require the locked version comparison; a superseded notification cannot renew
 an older source against a later disk version.
 
+A mismatch with a peer's persisted identity is negative evidence about the local
+source, not authority to delete the peer's record or announce a history
+replacement. Passive reads and preview-only first binding/history mismatches
+idempotently freeze that source, even before a name or lease exists. Only new
+accepted history progress permits another observation; draft publications and
+repeated passive reads do not. The coordinator retains the barrier by client and
+source across observer reconstruction. A reopened pane's new client still needs
+an accepted history page before saving. Known local identity transitions retain
+their cleanup and replacement behavior. The observer synchronously revokes its
+store-owned observation, and saving checks that revocation inside the lock. This
+also rejects an old save already queued past the coordinator's generation check
+without invalidating another Bot's observation. Closing an observer stops normal
+observation immediately but retains its negative subscription until all in-flight
+saves finish, so pane eviction cannot remove a queued save's revocation guard.
+
 The client publishes accepted-history and settled-history facts separately from
 online pagination readiness. Applied-page coverage, rather than a current
 snapshot or wall-clock timestamp, determines which cached rows have been verified.
@@ -81,6 +96,14 @@ panes and six bounded persistent targets remain independent.
 **Enable previews before connecting cleanup.** A cold deleted target or a queued
 write could recover private content. Cleanup is part of the same delivered data
 flow, using the store's generations and leases rather than component state alone.
+
+**Clear a mismatched peer preview or only return no preview.** Clearing grants an
+unchanged stale client a new lease and can replace a peer's newer history with an
+older epoch. Returning no preview alone leaves clients without an earlier lease
+able to acquire the peer's current version. A negative source fence prevents both
+paths while retaining the peer's data. Coordinator generations alone cannot stop
+a save that has already passed their check and is waiting for the storage lock;
+the captured store-owned lease must itself be revocable.
 
 ## Consequences
 

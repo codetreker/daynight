@@ -59,7 +59,7 @@ export type BotDisplaySnapshotObservation = {
   readonly generation: string;
   readonly historyVersion: string | null;
 };
-type Lease = { ownerUserId: string; botId: string; generation: string; localGeneration: object; historyVersion: string | null; historyKey: string | null };
+type Lease = { ownerUserId: string; botId: string; generation: string; localGeneration: object; historyVersion: string | null; historyKey: string | null; revoked?: boolean };
 export type BotDisplaySnapshotSave = {
   readonly source: 'verified-history';
   /** True only for protocol-accepted history of this exact identity, including authoritative empty history. */
@@ -253,6 +253,11 @@ export class BotDisplaySnapshotStore {
       return observation;
     }, null);
   }
+  /** Revoke this observation, including saves already waiting for their lock. */
+  revokeObservation(observation: BotDisplaySnapshotObservation): void {
+    const lease = this.leases.get(observation);
+    if (lease) lease.revoked = true;
+  }
   /** Invalid input and stale leases leave the last readable snapshot untouched. */
   save(observation: BotDisplaySnapshotObservation, input: BotDisplaySnapshotSave): Promise<BotDisplaySnapshotSaveResult> {
     const lease = this.leases.get(observation);
@@ -266,7 +271,7 @@ export class BotDisplaySnapshotStore {
     return this.serialized<BotDisplaySnapshotSaveResult>(lease.ownerUserId, () => {
       if (!this.current(lease.ownerUserId)) return 'unavailable';
       const account = this.refresh(lease.ownerUserId);
-      if (account.clearing || lease.localGeneration !== account.localGeneration || lease.generation !== account.value.generation) return 'stale';
+      if (lease.revoked || account.clearing || lease.localGeneration !== account.localGeneration || lease.generation !== account.value.generation) return 'stale';
       const previous = account.value.records.find(row => row.preview.botId === lease.botId);
       const historyKey = botDisplayHistoryKey(candidate), sameHistory = previous && botDisplayHistoryKey(previous.preview) === historyKey;
       if (lease.historyKey !== null && lease.historyKey !== historyKey) return 'stale';
