@@ -58,9 +58,17 @@ export type SessionComposerPresentation = {
   readonly renderFooter?: (slot: SessionComposerFooterSlot) => ReactNode;
 };
 
+export type SessionPendingSlot = {
+  readonly phase: 'binding' | 'snapshot' | 'history';
+  readonly hasContent: boolean;
+  readonly retry: () => void;
+};
+
 /** Optional presentation only; SessionView retains state, admission and error ownership. */
 export type SessionPresentationSlots = {
   readonly variant?: SessionPresentationVariant;
+  readonly renderPending?: (slot: SessionPendingSlot) => ReactNode;
+  readonly renderUnavailable?: (slot: SessionPendingSlot & { readonly error: string }) => ReactNode;
   readonly renderHeader?: (slot: SessionHeaderSlot) => ReactNode;
   /** Called only for confirmed empty live history. Keep this slot configured across updates. */
   readonly renderEmpty?: (slot: SessionEmptySlot) => ReactNode;

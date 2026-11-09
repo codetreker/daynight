@@ -97,6 +97,102 @@ Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩�
 
 独立 API 仅把已认证 current 读取的 409/resource_conflict 转为 `IndependentSessionReadDenied`，保留真实 HTTP 状态和错误码；它不解释一般 command/resource 冲突。共享 client 对该访问失效清空状态、草稿、回执和 Session 显示偏好。独立 current 没有调用方可变版本/fence，服务端删除屏障使用该拒绝。共享观察器每三秒复核独立 live/归档入口，归档已载入时只复核权限，不重复下载正文；本地已知的删除屏障不等待轮询结果。暂停、close 与 invalidate 沿原生命周期停止或延迟观察；普通 Task 的冲突语义保持不变。
 
+## 持久显示快照与真实历史
+
+`display-snapshot-coordinator.ts` 为已认证 `TaskCacheScope` 共享一个
+`BotDisplaySnapshotStore`。页面读取、pane 观察器和冷目标删除使用同一协调器；
+账号清理入口还覆盖当前没有挂载助手页面的账号。协调器先同步撤销读取、观察
+和待写候选资格，再调用 store 的 `clearTarget` 或 `clearAccount`。物理清理失败
+保留撤销状态并记录诊断，不能作为已从磁盘删除的证据。临时删除 block 同步撤销
+目标当前及在途观察，包括已经关闭 observer 的排队保存，但保留最后成功快照；
+只有权威 active 详情允许恢复。权威拒绝或删除清目标记录。
+
+选择目标时读取可更新 LRU；存储通知触发的被动重读使用 `touch: false`，不能
+再次写磁盘并形成跨标签反馈。旧清理失败的重试只处理失败时的磁盘值，不重新
+撤销后续同账号 scope 的资格或重复清理其当前草稿；磁盘已有新值时不覆盖新记录。
+重试仅写入旧磁盘值对应的空 tombstone，不替换同一 localStorage realm 中新 scope
+的内存历史、不改变其观察 lease。跨标签真实清理、淘汰或撤销改变 store 的撤销
+token，协调层据此推进账号级撤销代次，覆盖尚未得到缓存记录的首次读取和观察，
+不能只撤销已经显示的目标。普通保存和 LRU 更新只触发被动重读，不撤销合法历史来源。
+真实撤销通知同步清空旧内存记录，并将当前撤销 token 标记为待磁盘校验，
+仅保留通知中已校验的 generation 和目标 historyVersion 元数据。
+后续读取用该 token 校验最新磁盘值，不为同一次通知重复撤销；锁失败降级也不能
+重新暴露旧内存记录。新历史观察捕获排队前已知版本，lease 仍须通过锁内的当前
+版本比较；通知已被后续清理或历史替换覆盖时，不能为旧来源取得新版本的 lease。
+
+`SessionViewState.historyLoaded` 表示当前 fence/historyEpoch 下实际应用过合法
+历史页或校验归档；它与负责在线分页的 `historyReady` 分开。`historySettled`
+还要求替换和 hydration 已结束且没有待恢复缺口。普通同历史刷新保留已读事实，
+身份或 epoch 替换、close 和 invalidate 清除；current 和连接本身不构成历史证据。
+`historyCoverage` 记录真实应用页的首条序列、覆盖水位、完整前边界和事件水位，
+供视图撤下已覆盖预览，不由保存时间或空数组猜测完整性。
+连续覆盖上下边界仅由合法历史页扩张；单条 `timeline_upsert` 通过 entryId
+确认其自身行并推进事件水位，不能把它与已读页之间尚未读取的范围认作已覆盖。
+每次 tail 刷新建立自己的游标链覆盖范围，before 分页仅扩张该链；不连续的新旧
+tail 不能通过最小首序列和最大末序列合并。此前真实行仍按 entryId 保留。
+
+`BotHistorySnapshotObserver` 仅观察真实 client。确认完整绑定、scope、历史与
+可信名称后取得 store-owned lease，再合并约两秒的变化；候选保持原 lease，
+隐藏、pagehide 和关闭尽力 flush。异步 lease 返回后重新验证当前历史与撤销代次。
+预览行不进入 client state 或保存输入；替换半成品、空壳和无法保留一条完整 entry
+的超大记录不能覆盖最后成功快照。预算与 UTF-16 单位裁剪继续由既有 codec/store
+拥有；pagehide 写入不保证完成，无 Web Locks 或存储失败沿用内存降级。
+
+stale lease 或跨标签失效会冻结该次已接受历史来源，后续本地草稿发布不能为
+旧 payload 续租。store 在观察排队前捕获已知代次与目标历史版本，锁内发现变化即拒绝原来源，
+不依赖跨标签通知先于锁返回。新合法页或同身份真实历史进度允许重新观察，完整历史身份
+替换还须等待旧快照清理完成。覆盖水位与阅读锚点只描述历史，不授予操作资格。
+观察代次变化总是先丢弃旧 lease 和候选；新历史来源与撤销同时到达时，也必须
+重新取得观察，不能沿用旧 lease 后将新权威来源错误标记为过期。
+
+本地绑定或历史与磁盘预览不匹配，只能证明该本地来源不能使用该预览，不能证明
+另一个标签保存的历史已经失效。读取以及首次绑定、首次历史确认中的此类冲突
+使用幂等的本地负向屏障：保留对方记录，不发出历史替换通知，并冻结当前来源，
+包括尚无名称或尚未取得 lease 的来源。相同冲突不推进代次；本地草稿和被动重读
+不能解除冻结，只有新的合法历史 revision 或事件水位进展允许重新观察。
+协调器以 client 与来源保留冻结状态，同一 client 重建 observer 不能重获资格；
+pane 重开创建的新 client 仍须实际接受合法历史页，current 本身不能保存。
+真实已知本地身份转换仍执行原有清理与替换流程。
+历史冲突、临时删除 block 与权威无 Session 共用目标级负向来源屏障。
+负向屏障同步撤销当前及在途 store-owned observation；`save` 在持锁后检查其撤销标记，
+拒绝已经越过协调层检查但仍排队的旧写入。撤销只作用于该 observation，不删除
+其他标签记录，也不撤销其他 Bot 的观察资格。observer 关闭时立即停止普通观察，
+但为已排队的保存保留负向撤销订阅，最后一笔保存结束后解除订阅。
+
+读取须等待实际账号确认，并在返回时重新校验账号、目标、选择和撤销代次。
+临时身份复核暂停新读取和保存；仅同账号、目标和撤销代次下已经前台显示的
+预览继续可读，隐藏或切换后不能在暂停期间重新恢复。
+`lastKnownBinding` 只校验历史数据，不能创建 client 或授予新操作资格。无绑定
+时 `SessionView` 接受 null client，保持同一外壳、Timeline 和输入占位；绑定由
+真实详情提供后接入实际 client，不以伪造 snapshot 复用能力或操作账本。
+详情尚未确认与权威确认 `sessionId: null` 是不同状态。后者同步撤下目标旧 pane、
+显示种子和恢复记录，并清理持久历史；scope 保留可恢复的无 Session 事实，认证
+暂停、迟到读取、旧 observer 或重新选择目标均不能撤销该事实。普通缓存 binding
+和历史回调不能恢复资格，只有新的权威详情通过 `confirmSession` 确认真实绑定
+后，才允许新 client 接受历史并保存；该状态不把 Bot 永久标记为已删除。
+
+共享 `SessionHistoryPreview` 仅包含 fence、epoch、事件水位、entries、资源描述符和可选
+阅读锚点。Timeline 在同一滚动区使用相同 entryId 行 key，真实 reducer 的行优先；
+实际页覆盖的范围撤下旧预览，未覆盖范围继续明确标记。完整历史或权威空历史
+撤下剩余预览，身份变化拒绝跨历史拼接。预览资源显式使用 `resourceAccess: none`，
+不请求资源、不生成下载入口；历史交互只读，不恢复旧审批。
+本次准入的有界显示种子独立于后续持久记录。同账号、目标、撤销代次和完整历史
+身份下，普通保存或 LRU 通知不能用更短记录替换它。真实页覆盖及真实 entryId
+接管会永久缩减种子，后续游标链覆盖范围重建也不能使已撤下的旧行再次出现。
+种子只减不增，不进入 reducer 或保存输入；真实撤销和身份变化仍立即撤下它。
+
+`SessionPresentationSlots` 的可选 `renderPending` / `renderUnavailable` 接受
+`binding`、`snapshot`、`history` 阶段、是否存在可读内容及现有重试回调。
+插槽只负责显示，错误、请求、身份和权限仍由原 owner 管理。正常复核保留正文、
+草稿和阅读状态；无内容时显示稳定占位，有内容的失败局部显示，不能制造欢迎语
+或缓存活动状态。省略预览及新插槽的 Task/Test 调用方保持原默认行为。
+
+详情错误重试归详情 owner，已绑定 Session 的刷新与历史恢复归真实 client，
+不能用详情回调覆盖其固定失败恢复。撤权或删除撤下私有正文和操作后，窄屏仍
+保留中性标题与返回助手列表入口，避免列表隐藏时失去产品内导航。
+
+数据所有者及取舍见[持久历史决策](../../.agents/notes/implemented/architecture/2026-11-09-bot-persistent-history-preview.md)。
+
 ## 书签与分页
 
 `SessionView` 将可选 `reading` 透传给 `SessionTimeline`；未提供时保持原调用方式。pane 的 scope 是完整 Bot 绑定，Timeline 再加实际 Session fence，并独立校验 historyEpoch。

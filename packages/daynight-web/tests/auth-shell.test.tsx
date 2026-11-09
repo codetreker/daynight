@@ -331,7 +331,7 @@ describe("authenticated application shell", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("menu")).toBeNull();
     await interaction.click(trigger);
-    await interaction.click(screen.getByRole("heading", { name: "私有项目" }));
+    await interaction.click(await screen.findByRole("heading", { name: "私有项目" }));
     expect(screen.queryByRole("menu")).toBeNull();
     trigger.focus();
     await interaction.keyboard("{ArrowDown}");

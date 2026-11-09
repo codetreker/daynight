@@ -179,3 +179,11 @@
 .session-presentation-timeline > .session-timeline-shell,
 .session-presentation-timeline > .session-presentation-empty { grid-area: 1 / 1; }
 .session-presentation-empty { position: relative; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+
+.session-history-preview-label { color: #7a8497; font-size: 11px; margin: 0 0 12px; }
+.session-presentation-pending { position: absolute; inset: 0; pointer-events: none; }
+.session-pending-content { display: grid; gap: 18px; padding: 28px 20px; }
+.session-pending-content span { height: 12px; max-width: 75%; border-radius: 6px; background: #edf0f5; }
+.session-pending-content span:nth-child(2) { width: 52%; }
+.session-pending-content span:nth-child(3) { width: 65%; }
+.session-composer-placeholder { min-height: 84px; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 16px; padding: 14px; border: 1px solid #e2e6ee; border-radius: 12px; color: #7a8497; }

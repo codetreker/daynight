@@ -36,8 +36,8 @@ export async function expectBotDetailsMode(page: Page, expected?: 'modal' | 'non
   const details = botDetails(page);
   await expect(details).toHaveCount(1);
   await expect(details).toBeVisible();
+  if (expected !== undefined) await expect.poll(() => details.evaluate(node => node.matches(':modal'))).toBe(expected === 'modal');
   const modal = await details.evaluate(node => node.matches(':modal'));
-  if (expected !== undefined) expect(modal).toBe(expected === 'modal');
   if (modal) {
     await expect(details).toHaveAttribute('aria-modal', 'true');
     await page.keyboard.press('Tab');
