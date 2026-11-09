@@ -34,23 +34,34 @@ export const loadWindowsOperationFiles = async (): Promise<PrivateOperationFiles
   const flushDirectory = nt.func("int32_t __stdcall NtFlushBuffersFileEx(void *file, uint32_t flags, void *parameters, uint32_t size, void *status)");
   const moveFile = kernel.func("int __stdcall MoveFileExW(str16 from, str16 to, uint32_t flags)");
   const deleteFile = kernel.func("int __stdcall DeleteFileW(str16 path)");
-  const failure = (stage: string): Error => Object.assign(new Error(`Private operation storage ${stage} failed (Win32 ${lastError() as number}).`), { win32Code: lastError() as number });
+  const failure = (stage: string): Error & { readonly stage: string; readonly win32Code: number } => {
+    const win32Code = lastError() as number;
+    return Object.assign(new Error(`Private operation storage ${stage} failed (Win32 ${win32Code}).`), { stage, win32Code });
+  };
   const closeHandle = (handle: Handle): void => { if (!close(handle)) throw failure("close"); };
+  const withHandle = <T>(handle: Handle, action: () => T): T => {
+    let failed = false, primary: unknown;
+    try { return action(); }
+    catch (error) { failed = true; primary = error; throw error; }
+    finally {
+      try { closeHandle(handle); }
+      catch (cleanup) { throw failed ? new AggregateError([primary, cleanup], "Operation storage and handle cleanup failed.", { cause: primary }) : cleanup; }
+    }
+  };
   const badHandle = (handle: Handle): boolean => handle === null || (typeof handle === "bigint" && BigInt.asIntN(ptr * 8, handle) === -1n);
   const tokenOut = Buffer.alloc(ptr);
   if (!openToken(currentProcess(), 8, tokenOut)) throw failure("open-token");
   const token = pointer(tokenOut), returned = Buffer.alloc(4);
-  let sid: Handle, sidText: string;
   // Retain TokenUser storage: its SID is an interior pointer into this buffer.
   const tokenUser = Buffer.alloc(65_536);
-  try {
+  const sidText = withHandle(token, () => {
     if (!tokenInformation(token, 1, tokenUser, tokenUser.length, returned)) throw failure("token-user");
-    sid = pointer(tokenUser);
+    const sid = pointer(tokenUser);
     const textOut = Buffer.alloc(ptr);
     if (!sidString(sid, textOut)) throw failure("sid-string");
     const text = pointer(textOut);
-    try { sidText = koffi.decode.string16(text); } finally { free(text); }
-  } finally { closeHandle(token); }
+    try { return koffi.decode.string16(text); } finally { free(text); }
+  });
   const securityOut = Buffer.alloc(ptr);
   if (!descriptor(`O:${sidText}D:P(A;;FA;;;${sidText})`, 1, securityOut, null)) throw failure("security-descriptor");
   const allocatedDescriptor = pointer(securityOut);
@@ -84,7 +95,8 @@ export const loadWindowsOperationFiles = async (): Promise<PrivateOperationFiles
   };
   const openHandle = (name: string, directory: boolean, create: boolean, exclusive = false, writable = true): Handle => {
     if (create) koffi.encode(securityAttributes, attributes, { nLength: securityAttributes.length, lpSecurityDescriptor: sd, bInheritHandle: 0 });
-    const handle: unknown = createFile(name, writable ? 0xc0020000 : 0x80020000, exclusive ? 0 : 3, create ? securityAttributes : null, create ? 1 : 3, 0x00200000 | (directory ? 0x02000000 : 0) | 0x80000000, null);
+    // Unlike node:fs, direct Win32 calls need an explicit extended-length path.
+    const handle: unknown = createFile(path.toNamespacedPath(name), writable ? 0xc0020000 : 0x80020000, exclusive ? 0 : 3, create ? securityAttributes : null, create ? 1 : 3, 0x00200000 | (directory ? 0x02000000 : 0) | 0x80000000, null);
     if (badHandle(handle)) throw failure("open");
     return handle;
   };
@@ -107,7 +119,7 @@ export const loadWindowsOperationFiles = async (): Promise<PrivateOperationFiles
           const handle = openHandle(ancestor, true, false, false, ancestor === root); handles.push(handle); verify(handle, true, false);
         }
         for (const target of [managed, origin, actor]) {
-          if (create && !createDirectory(target, securityAttributes) && lastError() !== 183) throw failure("mkdir");
+          if (create && !createDirectory(path.toNamespacedPath(target), securityAttributes) && lastError() !== 183) throw failure("mkdir");
           let handle: Handle;
           try { handle = openHandle(target, true, false); }
           catch (error) { const code = (error as { win32Code?: number }).win32Code; if (!create && (code === 2 || code === 3)) { await dispose(); return undefined; } throw error; }
@@ -121,43 +133,55 @@ export const loadWindowsOperationFiles = async (): Promise<PrivateOperationFiles
             let handle: Handle;
             try { handle = openHandle(path.join(directory, name), false, false); }
             catch (error) { if ((error as { win32Code?: number }).win32Code === 2) return undefined; throw error; }
-            try {
+            return withHandle(handle, () => {
               verify(handle, false, true);
               const bytes = Buffer.alloc(32_769), read = Buffer.alloc(4);
               if (!readFile(handle, bytes, bytes.length, read, null)) throw failure("read");
               const size = read.readUInt32LE(); if (size > 32_768) throw new Error("Operation record exceeds its limit.");
               return bytes.subarray(0, size);
-            } finally { closeHandle(handle); }
+            });
           },
           lock: async name => {
             let handle: Handle;
             try { handle = openHandle(path.join(directory, name), false, true, true); }
             catch (error) { if (![80, 183].includes((error as { win32Code?: number }).win32Code ?? 0)) throw error; handle = openHandle(path.join(directory, name), false, false, true); }
             try { verify(handle, false, true); return async () => { closeHandle(handle); }; }
-            catch (error) { closeHandle(handle); throw error; }
+            catch (error) { return withHandle(handle, () => { throw error; }); }
           },
           replace: async (name, bytes) => {
             const temporary = path.join(directory, `.${name}.${randomUUID()}.tmp`), target = path.join(directory, name);
-            let published = false;
+            let created = false, published = false, failed = false, primary: unknown;
             try {
               const handle = openHandle(temporary, false, true);
-              try {
+              created = true;
+              withHandle(handle, () => {
                 verify(handle, false, true);
                 const written = Buffer.alloc(4);
                 if (!writeFile(handle, bytes, bytes.length, written, null) || written.readUInt32LE() !== bytes.length) throw failure("write");
                 if (!flushFile(handle)) throw failure("file-flush");
-              } finally { closeHandle(handle); }
+              });
               let previous: Handle | undefined;
-              try { previous = openHandle(target, false, false); verify(previous, false, true); }
+              try { previous = openHandle(target, false, false); }
               catch (error) { if ((error as { win32Code?: number }).win32Code !== 2) throw error; }
-              finally { if (previous !== undefined) closeHandle(previous); }
-              if (!moveFile(temporary, target, 1 | 8)) throw failure("rename-write-through");
+              if (previous !== undefined) withHandle(previous, () => verify(previous, false, true));
+              if (!moveFile(path.toNamespacedPath(temporary), path.toNamespacedPath(target), 1 | 8)) throw failure("rename-write-through");
               published = true; flush(parent);
-              const final = openHandle(target, false, false); try { verify(final, false, true); } finally { closeHandle(final); }
-            } finally { if (!published && !deleteFile(temporary) && lastError() !== 2) throw failure("temporary-cleanup"); }
+              const final = openHandle(target, false, false); withHandle(final, () => verify(final, false, true));
+            } catch (error) { failed = true; primary = error; throw error; }
+            finally {
+              // CREATE_NEW must have succeeded before this invocation owns the temporary file.
+              if (created && !published && !deleteFile(path.toNamespacedPath(temporary))) {
+                const cleanup = failure("temporary-cleanup");
+                if (cleanup.win32Code !== 2) throw failed ? new AggregateError([primary, cleanup], "Operation storage and temporary cleanup failed.", { cause: primary }) : cleanup;
+              }
+            }
           },
         };
-      } catch (error) { await dispose(); throw error; }
+      } catch (error) {
+        try { await dispose(); }
+        catch (cleanup) { throw new AggregateError([error, cleanup], "Operation storage and directory cleanup failed.", { cause: error }); }
+        throw error;
+      }
     },
   };
 };

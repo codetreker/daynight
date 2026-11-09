@@ -1,17 +1,23 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { createOperationStore, sessionBodyHash } from "../../../../src/commands/task/session/operation-store.js";
-import type { SessionOperationRecord } from "../../../../src/commands/task/session/operation-store.js";
+import type { OperationStore, SessionOperationRecord } from "../../../../src/commands/task/session/operation-store.js";
 import { actorId, origin, inspection, operationId, projectId, sessionId, taskId } from "./fixtures.js";
 let root: string;
+const stores: OperationStore[] = [];
+afterEach(async () => { for (const store of stores.splice(0)) await store.close(); });
 beforeAll(async () => { const tmp = fileURLToPath(new URL("../../../../../../.tmp/", import.meta.url)); await mkdir(tmp, { recursive: true }); root = await mkdtemp(path.join(tmp, "session-store-")); });
 afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 const base: SessionOperationRecord = { schemaVersion: 1, origin, actorId, projectId, taskId, sessionId, operationId, fence: inspection.fence, expectedTurnId: null, bodySha256: sessionBodyHash("body"), createdAt: "2026-11-10T01:02:03Z", updatedAt: "2026-11-10T01:02:03Z", phase: "prepared", receipt: null };
-const create = async () => { const directory = await mkdtemp(path.join(root, "record-")); return { directory, store: await createOperationStore(directory, origin, actorId, operationId), actor: path.join(directory, "session-operations", sessionBodyHash(origin), actorId) }; };
+const create = async (directory?: string) => {
+  directory ??= await mkdtemp(path.join(root, "record-"));
+  const store = await createOperationStore(directory, origin, actorId, operationId); stores.push(store);
+  return { directory, store, actor: path.join(directory, "session-operations", sessionBodyHash(origin), actorId) };
+};
 it("privately creates and durably replaces records without changing the existing parent", async () => {
   const f = await create(), parent = await stat(f.directory);
   expect(await f.store.read()).toBeUndefined(); await f.store.acquire(); await f.store.write(base);
@@ -70,4 +76,30 @@ it.skipIf(process.platform !== "win32")("uses real protected current-user Window
   const observed = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, DAYNIGHT_ACL_PROBE: target }, timeout: 10_000 }); expect(observed.stdout.trim()).toBe("private");
   await execute("icacls.exe", [target, "/grant", "*S-1-1-0:(R)"], { timeout: 10_000 });
   await expect(f.store.read()).rejects.toThrow();
+});
+
+it.skipIf(process.platform !== "win32")("durably writes and recovers Windows records whose directory and files exceed MAX_PATH", async () => {
+  const directory = path.join(root, "deep-state-" + "x".repeat(110), "next-level-" + "y".repeat(110));
+  await mkdir(directory, { recursive: true });
+  expect(directory.length).toBeGreaterThan(260);
+  const f = await create(directory);
+  await f.store.acquire(); await f.store.write(base);
+  await f.store.write({ ...base, phase: "dispatch_unknown" }); await f.store.close();
+  expect(await f.store.read()).toMatchObject({ phase: "dispatch_unknown", fence: base.fence });
+  expect((await readdir(f.actor)).toSorted()).toEqual([`${operationId}.json`, `${operationId}.lock`].toSorted());
+});
+it.skipIf(process.platform !== "win32")("preserves a failed native create and cleans only its own created temporary file", async () => {
+  const f = await create(); await f.store.acquire(); await f.store.close();
+  const { loadWindowsOperationFiles } = await import("../../../../src/commands/task/session/windows-files.js");
+  const directory = await (await loadWindowsOperationFiles()).open(f.actor, false);
+  if (directory === undefined) throw new Error("Missing prepared native directory.");
+  try {
+    const before = await readdir(f.actor);
+    await expect(directory.replace("invalid<record>.json", Buffer.from("record"))).rejects.toMatchObject({ stage: "open", win32Code: 123 });
+    expect(await readdir(f.actor)).toEqual(before);
+    // The target directory cannot be replaced by a file; the private temporary has already been created and flushed.
+    await mkdir(path.join(f.actor, "existing-directory"));
+    await expect(directory.replace("existing-directory", Buffer.from("record"))).rejects.toMatchObject({ stage: "open" });
+    expect((await readdir(f.actor)).toSorted()).toEqual([...before, "existing-directory"].toSorted());
+  } finally { await directory.close(); }
 });

@@ -47,8 +47,10 @@ it.each(["network", "protocol", "auth"])("does not treat a %s lookup failure as 
 });
 it.each(["prepared", "dispatch_unknown"] as const)("recovers a %s record only by querying the original operation", async phase => {
   const f = await fixture(root), store = await createOperationStore(f.state, origin, actorId, operationId);
-  await store.acquire();
-  await store.write({ schemaVersion: 1, origin, actorId, projectId, taskId, sessionId, operationId, fence: inspection.fence, expectedTurnId: "original-turn", bodySha256: sessionBodyHash("original message"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), phase, receipt: null }); await store.close();
+  try {
+    await store.acquire();
+    await store.write({ schemaVersion: 1, origin, actorId, projectId, taskId, sessionId, operationId, fence: inspection.fence, expectedTurnId: "original-turn", bodySha256: sessionBodyHash("original message"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), phase, receipt: null });
+  } finally { await store.close(); }
   expect(await f.run(sendArgs())).toBe(3); expect(f.fetch.mock.calls.map(([url]) => String(url).split("/").at(-1))).toEqual(["me", operationId]);
   expect(await f.run(["operation", "--operation-id", operationId, "--json"])).toBe(3); expect(JSON.parse(f.output())).toMatchObject({ state: "not_found", operationId, projectId, taskId, sessionId });
 });
