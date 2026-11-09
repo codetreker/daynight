@@ -20,7 +20,7 @@ import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./reso
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
 import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
-import { HerdrInputBlockedError } from "./herdr/agents.js";
+import { HerdrInputWaitingError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
 import type { ManagedAssignment } from "./prompts.js";
 import type { WorkerRemote } from "./remote.js";
@@ -215,7 +215,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const signal = AbortSignal.any([normalSignal, controller.signal]);
     const job = serialize(identity, () => !terminal && !canAdvanceProject(identity.projectId) ? Promise.resolve() : action(signal)).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
       if (isWorkerCancellation(error, signal)) return;
-      if (!terminal && error instanceof HerdrInputBlockedError) {
+      if (!terminal && error instanceof HerdrInputWaitingError) {
         if (inputWaiting.get(identityKey) !== error.message) {
           inputWaiting.set(identityKey, error.message);
           const task = options.store.getTask(identity);

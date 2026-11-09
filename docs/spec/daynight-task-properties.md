@@ -20,7 +20,7 @@ Task 使用服务端预定义且有明确值结构的属性。属性目录随服
 | TP10 | 数据迁移保留既有 PR 字符串、顺序及重复项，保留执行归属与任务元数据；旧空 PR 数组保留，旧 worker:null 转为缺失。 |
 | TP11 | 非法输入或非法存储属性值返回 400 invalid_input；数据库故障及其他内部错误返回 500 internal_error，不返回局部成功或丢弃非法属性。 |
 | TP12 | 网页保持只读 PR 展示和原有视觉；通用读取保留缺失与空值，PR 展示本身可把缺失和空列表显示为同一空态。 |
-| TP13 | paused 为可写布尔值，允许在执行中设置与移除；true 抑制 worker 的周期 continuation ping，false 或缺席适用原有策略，读取不注入默认键。 |
+| TP13 | paused 为可写布尔值，允许在执行中设置与移除；true 按 Worker 运行模式抑制自动输入，false 或缺席适用原有策略，读取不注入默认键。 |
 
 ## 属性对象与值
 
@@ -43,11 +43,11 @@ PR 项只允许 url/title 两字段，两者均必填。嵌套未知字段、重
 
 sessionStartup 存在时必须是绑定当前执行身份的合法启动报告，不接受 null。只有原执行所有者经既有 Worker claim 更新和服务端身份校验才能写入；普通创建、编辑、设置与删除均拒绝。新 claim 清除旧报告，完整读取保留属性，消费时仍须检查当前代际。[Task Session 需求](task-sessions.md#启动结果与恢复阻断)拥有分类与兼容要求。
 
-## 暂停周期 ping
+## 暂停自动输入
 
 paused 仅接受 JSON 布尔 true 或 false，null、字符串、数字及复合值均拒绝。缺席表示不暂停，但不是一个自动生成的 false 属性；设置 false 会保留该键，移除则删除它。两种操作均可用于执行中的任务，保留其状态、计时、归属及其他属性。
 
-paused:true 只抑制 worker 自动发送的周期 continuation ping，不停止已运行的 agent、不改变任务领取资格或 Task/worker phase，也不阻止初始及待递交 assignment、恢复、终止清理或人工会话交互。解除暂停后，原生观察未改变也能重新适用正常 ping 条件。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。
+paused:true 抑制 Herdr 周期 continuation ping；macOS Herdr 还在首次、待递交及恢复后的自动输入与 cleanup 提示的最终边界检查暂停。Linux/Windows legacy 的首次及待递交 assignment、恢复和 cleanup 不使用周期门禁。标记不停止已运行的 agent，不改变任务领取资格、Task/worker phase、观察、人工交互或原运行停止。解除暂停后，原生观察未改变也能重新适用正常输入条件；人工控制与显式交还仍遵守各自的协议。Web backend 当前没有周期 continuation ping。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。
 
 ## 属性 HTTP 资源
 

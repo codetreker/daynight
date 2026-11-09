@@ -45,7 +45,9 @@ unchanged. The same claim and original native processes are verified before
 reconnecting through the existing durable registration and readback path. That
 connection advances only its connection epoch, preserving the Session, native
 generation, segment and suspended input state. Task pause permits read-only
-observation to reconnect but grants no input or automation recovery. An unknown
+observation to reconnect but grants no automatic input or automation recovery;
+the [pause input decision](../bug-fix/2026-11-09-herdr-pause-input-waiting.md)
+retains separately authorized manual control. An unknown
 registration is read back before any new registration; input is never replayed.
 Browser lease revocation or expiry suspends input without invalidating a live
 relay registration. Only actual channel closure clears the connected state;

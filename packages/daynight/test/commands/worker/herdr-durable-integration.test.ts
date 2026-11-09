@@ -18,12 +18,12 @@ import { createWorkerCoordinator } from "../../../src/commands/worker/coordinato
 import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
-import { createExecutionDriver, type WorkerGitManager } from "../../../src/commands/worker/execution.js";
+import { createExecutionDriver, type WorkerEvent, type WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
-import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
+import { HerdrInputBlockedError, HerdrInputWaitingError } from "../../../src/commands/worker/herdr/agents.js";
 import type { createWorkerHerdr, HerdrAgentObservation, HerdrExecutionContext, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import { resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
 import { herdrLedgerHash, openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
@@ -59,6 +59,9 @@ const fixture = (realInspector = false, driverResources = false) => {
   const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
   const shellSettings = { managed: false, captureFailure: false };
   let beforePromptGuard: (() => void) | undefined;
+  let beforeFrame: ((index: number) => void | Promise<void>) | undefined;
+  let beforeInspect: ((purpose: string) => void | Promise<void>) | undefined;
+  let taskReadFailure: Error | undefined;
   let beforeLaunchRetry: (() => void) | undefined;
   let recoveryDelay: ((stage: "publish" | "state" | "prepare", signal: AbortSignal | undefined) => Promise<void>) | undefined;
   const observed = new Map<number, MacProcessObservation>();
@@ -204,7 +207,7 @@ const fixture = (realInspector = false, driverResources = false) => {
   };
   const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
-    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native,
+    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => { if (taskReadFailure) throw taskReadFailure; return task; }, processControl: native,
       readRecording: async (_record, signal) => {
         if (settings.recordingBlocked) await new Promise<void>((_resolve, reject) => {
           if (signal.aborted) reject(signal.reason);
@@ -218,6 +221,7 @@ const fixture = (realInspector = false, driverResources = false) => {
         remote.recording.push({ executionGeneration: m.executionGeneration, responsibility: m.payload, evidence: null }); return message;
       } },
       inspectInput: async request => {
+        await beforeInspect?.(request.purpose);
         if (realInspector) return inspectHerdrInput({ ...request, readSize: async () => ({ width: 100, height: 24 }), rpc: { request: async method => {
           const local = [...instances.values()].find(value => value.binding.terminalId === request.binding.terminalId)!;
           const binding = local.binding;
@@ -234,12 +238,14 @@ const fixture = (realInspector = false, driverResources = false) => {
         beforePromptGuard?.();
         let written = false;
         try {
-          for (const part of request.inputs) {
+          for (const [index, part] of request.inputs.entries()) {
+            await beforeFrame?.(index);
             await request.beforeWrite(); request.onWrite?.(); written = true;
             settings.nativeWrites += 1;
             settings.nativeDraft = part.kind === "paste";
           }
         } catch (error) { return { status: written ? "unknown" : "rejected", reason: String(error) }; }
+        if (facade.input?.state(context).state === "manual") return { status: "transport_completed", reason: "detached" };
         try {
           const body = request.inputs.filter(input => input.kind === "paste").map(input => input.text).join("");
           await transmit.get(request.endpoint)!(read().initialAssignment === "dispatching", body);
@@ -255,9 +261,10 @@ const fixture = (realInspector = false, driverResources = false) => {
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
   return { context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, observed, nativeId, api, read, stateView, register, prepare, start, reopen, readTask: async () => task,
+    acknowledgeControl: (control: NonNullable<HerdrSessionState["control"]>) => { if (!remote) throw new Error("No remote state"); remote.control = structuredClone(control); },
     revealNative: () => { for (const local of instances.values()) if (local.launched) local.nativeVisible = true; },
     mutateRecord: (change: Parameters<HerdrLifecycleStore["update"]>[1]) => { const record = read(); return reader!.update(record, change); },
-    get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
+    get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeFrame: (hook: typeof beforeFrame) => { beforeFrame = hook; }, beforeInspect: (hook: typeof beforeInspect) => { beforeInspect = hook; }, failTaskRead: (error?: Error) => { taskReadFailure = error; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
 };
 
 describe("durable Herdr facade with real SQLite", () => {
@@ -327,6 +334,125 @@ describe("durable Herdr facade with real SQLite", () => {
       expect(f.settings.nativeStatus).toBe("idle"); expect(f.settings.nativeWrites).toBe(4);
     } finally { input.close(); }
   });
+  it.each([0, 1])("preserves a paused first assignment at native frame %s", async frame => {
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    const originalTask = await f.readTask();
+    f.beforeFrame(index => { if (index === frame) f.changeTask({ properties: { ...originalTask.properties, paused: true } }); });
+    await expect(f.start(binding)).rejects.toThrow();
+    const store = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    try {
+      const current = store.get(f.read().sessionId)!;
+      expect(f.settings.nativeWrites).toBe(frame);
+      expect(f.read().runs.at(-1)?.admission).toBeNull();
+      if (frame === 0) {
+        expect(f.read()).toMatchObject({ initialAssignment: "pending", initialPrompt: "Original managed assignment" });
+        expect(current).toMatchObject({ initialOutcome: "pending", unknownInput: false });
+        expect(current.operations.at(-1)?.result).toMatchObject({ state: "rejected", errorCode: "automation_suspended" });
+        const initialOperationId = current.initialOperationId;
+        f.beforeFrame(undefined); f.changeTask({ properties: originalTask.properties });
+        await expect(f.facade.tasks.submitPrompt(f.context, binding, "Different text", operation())).resolves.toMatchObject({ submission: "submitted" });
+        expect(store.get(f.read().sessionId)!.initialOperationId).toBe(initialOperationId);
+        expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+      } else {
+        expect(f.read().initialAssignment).toBe("unknown");
+        expect(current).toMatchObject({ state: "suspended", initialOutcome: "unknown", unknownInput: true });
+        expect(current.operations.at(-1)?.result).toMatchObject({ state: "unknown", errorCode: "input_unknown" });
+        f.beforeFrame(undefined); f.changeTask({ properties: originalTask.properties });
+        await expect(f.facade.tasks.submitPrompt(f.context, binding, "Do not replay", operation())).rejects.toThrow();
+        expect(f.settings.nativeWrites).toBe(1); expect(f.inputs).toEqual([]);
+        expect(store.get(f.read().sessionId)).toMatchObject({ state: "suspended", initialOutcome: "unknown", unknownInput: true });
+      }
+    } finally { store.close(); }
+  });
+  it.each(["readiness", "serialized queue"] as const)("rechecks pause after a %s wait before native writing", async boundary => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const originalTask = await f.readTask();
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    if (boundary === "readiness") f.beforeInspect(async purpose => { if (purpose === "automatic") { enter(); await gate; } });
+    else f.beforeFrame(async index => { if (index === 0) { enter(); await gate; } });
+    const first = f.facade.tasks.submitPrompt(f.context, binding, "First continuation", operation());
+    const firstResult = first.then(() => null, error => error);
+    await entered;
+    const secondResult = boundary === "serialized queue" ? f.facade.tasks.submitPrompt(f.context, binding, "Queued continuation", operation()).then(() => null, error => error) : null;
+    expect(f.read().runs.at(-1)?.admission).not.toBeNull();
+    f.changeTask({ properties: { ...originalTask.properties, paused: true } });
+    f.beforeInspect(undefined); f.beforeFrame(undefined); release();
+    expect(await firstResult).toMatchObject({ promptSubmission: "not-submitted" });
+    if (secondResult) expect(await secondResult).toMatchObject({ promptSubmission: "not-submitted" });
+    expect(f.settings.nativeWrites).toBe(2); expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(f.read().runs.at(-1)?.admission).toBeNull();
+    const journal = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    try { expect(journal.get(f.read().sessionId)!.operations.at(-1)?.result).toMatchObject({ state: "rejected", errorCode: "automation_suspended" }); }
+    finally { journal.close(); }
+    f.changeTask({ properties: originalTask.properties });
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Continuation after unpause", operation())).resolves.toMatchObject({ submission: "submitted" });
+    expect(f.inputs).toHaveLength(2); expect(f.settings.nativeWrites).toBe(4);
+  });
+  it.each(["entry", "first frame"] as const)("reports a replaced daemon despite pause at %s", async boundary => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const task = await f.readTask();
+    const replace = () => { f.settings.peerReplaced = true; f.changeTask({ properties: { ...task.properties, paused: true } }); };
+    if (boundary === "entry") replace(); else f.beforeFrame(index => { if (index === 0) replace(); });
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Must not write", operation())).rejects.toThrow(boundary === "entry" ? /daemon was replaced/i : /target_changed/);
+    expect(f.settings.nativeWrites).toBe(2); expect(f.inputs).toHaveLength(1);
+    expect(f.read().runs.at(-1)?.admission).toBeNull();
+    if (boundary === "first frame") {
+      const journal = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+      try { expect(journal.get(f.read().sessionId)!.operations.at(-1)?.result).toMatchObject({ state: "rejected", errorCode: "target_changed" }); }
+      finally { journal.close(); }
+    }
+  });
+  it("preserves a task read failure after input admission before the first frame", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const failure = new Error("marked task read failure");
+    f.beforeFrame(index => { if (index === 0) f.failTaskRead(failure); });
+    const error = await f.facade.tasks.submitPrompt(f.context, binding, "Must not write", operation()).then(() => null, reason => reason as unknown);
+    expect(error).toBeInstanceOf(HerdrAgentActionError); expect(error).not.toBeInstanceOf(HerdrInputWaitingError);
+    expect(error).toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: failure });
+    expect(f.settings.nativeWrites).toBe(2); expect(f.inputs).toHaveLength(1);
+    expect(f.read().runs.at(-1)?.admission).toBeNull();
+    const journal = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    try { expect(journal.get(f.read().sessionId)!.operations.at(-1)?.result).toMatchObject({ state: "rejected", errorCode: "invalid_payload" }); }
+    finally { journal.close(); }
+  });
+  it("permits the owner to control and use the paused terminal but requires explicit handback after unpause", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const originalTask = await f.readTask(); f.changeTask({ properties: { ...originalTask.properties, paused: true } });
+    const input = f.facade.input!, record = f.read(); let seq = 200;
+    const control = async (action: "acquire_control" | "renew_control" | "release_control" | "resume_automation", overrides: { actor?: string; epoch?: string; leaseId?: string | null; draftHandled?: boolean } = {}) => {
+      const state = input.state(f.context), actorUserId = overrides.actor ?? uuid(5);
+      const request = { operationId: uuid(seq++), connectionEpoch: record.connectionEpoch!, controlEpoch: overrides.epoch ?? state.controlEpoch, action, browserClientId: uuid(101), leaseId: overrides.leaseId === undefined ? state.lease?.leaseId ?? null : overrides.leaseId, draftHandled: overrides.draftHandled ?? action === "resume_automation", initialUnknownDisposition: null };
+      const requestDigest = createHash("sha256").update(canonicalSessionJson({ actorUserId, request })).digest("hex");
+      const ack = await input.control(f.context, { protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: record.sessionId, claimId: record.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", type: "control_dispatch", payload: { actorUserId, requestDigest, request } }, operation());
+      if (ack.result.state === "transport_completed") f.acknowledgeControl(ack.controlState);
+      return ack;
+    };
+    expect((await control("acquire_control")).result.state).toBe("transport_completed");
+    expect((await control("renew_control", { actor: uuid(99) })).result.state).toBe("rejected");
+    expect((await control("renew_control")).result.state).toBe("transport_completed");
+    const store = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    try {
+      const target = store.get(record.sessionId)!.target;
+      for (const [index, kind] of (["paste", "keys"] as const).entries()) {
+        const state = input.state(f.context);
+        const common = { operationId: uuid(seq++), connectionEpoch: target.connectionEpoch, segmentId: target.segmentId, binding: target.binding, controlEpoch: state.controlEpoch, leaseId: state.lease!.leaseId, leaseSeq: String(index + 1) };
+        const payload = kind === "paste" ? { ...common, kind, payload: { text: "Manual guidance" } } : { ...common, kind, payload: { key: "Enter" as const } };
+        const result = await input.submit(f.context, { protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: record.sessionId, claimId: record.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", type: "operation", payload }, operation());
+        expect(result).toMatchObject({ state: "transport_completed", errorCode: null });
+      }
+      expect((await control("release_control", { leaseId: uuid(999) })).result.state).toBe("rejected");
+      expect((await control("release_control")).controlState.state).toBe("suspended");
+      expect((await control("resume_automation")).result.state).toBe("rejected");
+      expect((await f.readTask()).properties.paused).toBe(true);
+      f.changeTask({ properties: originalTask.properties });
+      expect(input.state(f.context).state).toBe("suspended");
+      await expect(control("resume_automation", { draftHandled: false })).rejects.toThrow();
+      expect(input.state(f.context).state).toBe("suspended");
+      expect((await control("resume_automation")).controlState.state).toBe("automation");
+    } finally { store.close(); }
+  });
   it("keeps manual control across detach and blocks continuation until explicit handback", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     const input = f.facade.input!;
@@ -348,6 +474,13 @@ describe("durable Herdr facade with real SQLite", () => {
     f.facade.input!.suspend(f.context);
     expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(false);
     expect(f.inputs).toHaveLength(1); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  });
+  it("suppresses a paused cleanup prompt while stopping the original run", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const task = await f.readTask(); f.changeTask({ properties: { ...task.properties, paused: true } });
+    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(false);
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
   it("keeps manual menus usable and requires real styled empty input before explicit handback", async () => {
     const f = fixture(true); f.register(); const binding = await f.prepare(); await f.start(binding);
@@ -908,6 +1041,137 @@ it("does not replay the accepted assignment through the execution driver after e
     expect(f.launches).toHaveLength(1); expect(f.read().ledgerRequest).toBeNull();
     expect(store.getTask(task)?.sessionId).toBe(f.nativeId);
   } finally { store.close(); }
+});
+
+it.each(["initial", "deferred"] as const)("keeps the %s assignment pending through paused driver advances", async kind => {
+  const f = fixture(false, true); f.register();
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} });
+  store.registerProject(project); const task = store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
+  const originalTask = await f.readTask();
+  if (kind === "initial") f.changeTask({ properties: { ...originalTask.properties, paused: true } });
+  else f.settings.nativeStatus = "blocked";
+  let submitted = 0;
+  const start = f.facade.tasks.start.bind(f.facade.tasks);
+  vi.spyOn(f.facade.tasks, "start").mockImplementation((context, binding, input, active) => start(context, binding, { ...input, onPromptSubmitted: receipt => { submitted++; input.onPromptSubmitted?.(receipt); } }, active));
+  const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager, herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now });
+  const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 } };
+  try {
+    await driver.advance(input);
+    if (kind === "deferred") { f.changeTask({ properties: { ...originalTask.properties, paused: true } }); f.settings.nativeStatus = "idle"; }
+    const journal = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    try {
+      const original = f.read(), initialOperationId = journal.get(original.sessionId)!.initialOperationId;
+      for (let count = 0; count < 4; count++) {
+        await expect(driver.advance(input)).rejects.toMatchObject({ promptSubmission: "not-submitted" });
+        expect(f.read()).toMatchObject({ initialAssignment: "pending", initialPrompt: "Original managed assignment" });
+        expect(journal.get(original.sessionId)).toMatchObject({ initialOperationId, initialOutcome: "pending", unknownInput: false });
+      }
+      expect(submitted).toBe(0); expect(f.inputs).toEqual([]);
+      f.changeTask({ properties: originalTask.properties });
+      await driver.advance(input); await driver.advance(input);
+      expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+      expect(f.read()).toMatchObject({ sessionId: original.sessionId, initialAssignment: "transport_completed" });
+      expect(journal.get(original.sessionId)!.initialOperationId).toBe(initialOperationId);
+      expect(f.launches).toHaveLength(1);
+    } finally { journal.close(); }
+  } finally { store.close(); }
+});
+
+it.each([[0, false], [0, undefined], [3, false], [3, undefined]] as const)("keeps durable patrols within recovery limit %s and resumes when paused becomes %s", async (recoveryLimit, resumed) => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const original = f.read(), originalTask = await f.readTask();
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} }); store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
+  f.changeTask({ properties: { ...originalTask.properties, paused: true } });
+  const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = {
+    currentUserId: async () => uuid(5), ownInventory: async () => [await f.readTask()], candidates: async function* () {}, readTask: f.readTask, update: f.readTask,
+  };
+  const git = { listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit };
+  const events: WorkerEvent[] = []; let settled = 0;
+  const submit = f.facade.tasks.submitPrompt.bind(f.facade.tasks);
+  vi.spyOn(f.facade.tasks, "submitPrompt").mockImplementation(async (...args) => { try { return await submit(...args); } finally { settled++; } });
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
+  try {
+    for (let count = 1; count <= 5; count++) {
+      await vi.waitFor(async () => { await coordinator.tick(); expect({ settled, errors: events.filter(event => event.kind === "execution-error").map(event => String(event.error)) }).toMatchObject({ settled: expect.any(Number), errors: [] }); expect(settled).toBeGreaterThanOrEqual(count); }, { timeout: 2000, interval: 10 });
+    }
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(events.filter(event => event.kind === "execution-error")).toEqual([]);
+    const properties = { ...originalTask.properties }; if (resumed === false) properties.paused = false;
+    f.changeTask({ properties });
+    await vi.waitFor(async () => { await coordinator.tick(); expect(f.inputs).toHaveLength(2); }, { timeout: 2000, interval: 10 });
+    expect(f.inputs[1]).toMatchObject({ initial: false }); expect(f.inputs[1]!.body).toContain("worker's periodic check");
+    expect(f.read().sessionId).toBe(original.sessionId); expect(f.read().runs).toHaveLength(1);
+    expect(f.launches).toHaveLength(1); expect(events.filter(event => event.kind === "execution-error")).toEqual([]);
+  } finally { await coordinator.shutdown(); store.close(); }
+});
+
+it("counts a first-frame task read failure against the coordinator recovery budget", async () => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const failure = new Error("marked task read failure");
+  f.beforeFrame(index => { if (index === 0) f.failTaskRead(failure); });
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} }); store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
+  const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = { currentUserId: async () => uuid(5), ownInventory: async () => [await f.readTask()], candidates: async function* () {}, readTask: f.readTask, update: f.readTask };
+  const git = { listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 }, events: WorkerEvent[] = [];
+  const submit = vi.spyOn(f.facade.tasks, "submitPrompt"), sync = vi.spyOn(f.facade.tasks, "syncWorkspaceName");
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
+  try {
+    await vi.waitFor(async () => { await coordinator.tick(); expect(events.filter(event => event.kind === "execution-error")).toHaveLength(1); }, { timeout: 2000, interval: 10 });
+    const error = events.find(event => event.kind === "execution-error")!.error;
+    expect(error).toBeInstanceOf(HerdrAgentActionError); expect(error).not.toBeInstanceOf(HerdrInputWaitingError);
+    expect(error).toMatchObject({ promptSubmission: "not-submitted", cause: failure });
+    expect(f.read().runs.at(-1)?.admission).toBeNull(); expect(f.settings.nativeWrites).toBe(2);
+    f.failTaskRead(); f.beforeFrame(undefined);
+    const baseline = sync.mock.calls.length;
+    for (let count = 1; count <= 3; count++) {
+      await vi.waitFor(async () => { await coordinator.tick(); expect(sync.mock.calls.length).toBeGreaterThanOrEqual(baseline + count); }, { timeout: 2000, interval: 10 });
+    }
+    expect(submit).toHaveBeenCalledOnce(); expect(f.inputs).toHaveLength(1);
+    await coordinator.advanceRetry(f.context);
+    expect(f.inputs).toHaveLength(2); expect(submit).toHaveBeenCalledTimes(2);
+  } finally { f.failTaskRead(); await coordinator.shutdown(); store.close(); }
+});
+
+it("keeps manual and suspended durable control as ordinary coordinator waits", async () => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const record = f.read(), input = f.facade.input!; let sequence = 300;
+  const control = async (action: "acquire_control" | "release_control" | "resume_automation") => {
+    const state = input.state(f.context), actorUserId = uuid(5);
+    const request = { operationId: uuid(sequence++), connectionEpoch: record.connectionEpoch!, controlEpoch: state.controlEpoch, action, browserClientId: uuid(101), leaseId: state.lease?.leaseId ?? null, draftHandled: action === "resume_automation", initialUnknownDisposition: null };
+    const requestDigest = createHash("sha256").update(canonicalSessionJson({ actorUserId, request })).digest("hex");
+    const ack = await input.control(f.context, { protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: record.sessionId, claimId: record.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", type: "control_dispatch", payload: { actorUserId, requestDigest, request } }, operation());
+    expect(ack.result.state).toBe("transport_completed"); f.acknowledgeControl(ack.controlState);
+  };
+  await control("acquire_control");
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+  const store = openWorkerStore(f.paths.databaseFile, { onMigration: () => {} }); store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex", sessionId: f.nativeId }));
+  const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "update"> = { currentUserId: async () => uuid(5), ownInventory: async () => [await f.readTask()], candidates: async function* () {}, readTask: f.readTask, update: f.readTask };
+  const git = { listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
+  const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 }, events: WorkerEvent[] = []; let settled = 0;
+  const submit = f.facade.tasks.submitPrompt.bind(f.facade.tasks);
+  vi.spyOn(f.facade.tasks, "submitPrompt").mockImplementation(async (...args) => { try { return await submit(...args); } finally { settled++; } });
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
+  try {
+    for (let count = 1; count <= 6; count++) {
+      if (count === 4) { await control("release_control"); expect(input.state(f.context).state).toBe("suspended"); }
+      await vi.waitFor(async () => { await coordinator.tick(); expect(settled).toBeGreaterThanOrEqual(count); }, { timeout: 2000, interval: 10 });
+      expect(events.filter(event => event.kind === "execution-error")).toEqual([]);
+      expect(input.state(f.context).state).toBe(count < 4 ? "manual" : "suspended");
+      expect(f.inputs).toHaveLength(1);
+    }
+    await control("resume_automation");
+    await vi.waitFor(async () => { await coordinator.tick(); expect(f.inputs).toHaveLength(2); }, { timeout: 2000, interval: 10 });
+    expect(f.read().sessionId).toBe(record.sessionId); expect(f.launches).toHaveLength(1);
+    expect(events.filter(event => event.kind === "execution-error")).toEqual([]);
+  } finally { await coordinator.shutdown(); store.close(); }
 });
 
 

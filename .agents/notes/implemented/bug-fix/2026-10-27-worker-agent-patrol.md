@@ -107,7 +107,9 @@ allowing the original discovery error to propagate.
 Review and CI waits remain with the assigned agent. The worker still owns
 claim reconciliation and resources, without interpreting business acceptance
 or introducing another scheduler or durable journal. The task pause property
-only gates periodic continuation at its native submission boundary. Prompt
+gates periodic continuation at its native submission boundary; the
+[macOS input-wait decision](2026-11-09-herdr-pause-input-waiting.md) specifies
+additional macOS Herdr input boundaries. Prompt
 instructions cannot prove that a native agent follows the wait policy; native
 runtime evidence remains distinct from controlled component checks.
 

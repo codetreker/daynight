@@ -44,7 +44,9 @@ owns this distinction and the native launch-directory precondition.
 
 Known automatic blockers before any native write retain their typed waiting
 result after the arbiter persists a rejected receipt and, for initial input,
-pending state.
+pending state. The [pause input decision](../bug-fix/2026-11-09-herdr-pause-input-waiting.md)
+distinguishes task pause and legitimate manual or suspended control from native
+input blockers, and permits manual operations while the task is paused.
 The lifecycle projection clears admission and preserves that pending input;
 serialization must not convert it into an execution failure. After a possible
 native write, the same error remains unknown and cannot authorize replay.
