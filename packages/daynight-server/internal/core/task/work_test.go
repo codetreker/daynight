@@ -3,6 +3,7 @@ package task
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 	"strings"
@@ -166,3 +167,16 @@ func TestWorkTargetBudgetContinuationBindsTargetAndAssignee(t *testing.T) {
 }
 
 func workString(v string) *string { return &v }
+
+func TestWorkCursorEncodingDoesNotPublishUnencodableTimestamp(t *testing.T) {
+	const id = "00000000-0000-4000-8000-000000000001"
+	selection, err := SelectWork(id, id, WorkRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := selection.CursorAfter(store.TaskSearchFence{Epoch: id, Count: "1", VersionSum: "1"}, store.TaskWorkPosition{GroupID: id, StartedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)})
+	var encodingError *json.MarshalerError
+	if cursor != "" || !errors.As(err, &encodingError) {
+		t.Fatalf("published unusable cursor: %q %v", cursor, err)
+	}
+}

@@ -59,6 +59,41 @@ func (f inspectionObserver) InspectTaskSession(ctx context.Context, p model.Prin
 type inspectionCredential struct{ store.CredentialReader }
 type inspectionProject struct{ store.ProjectReader }
 
+type inspectionBoundProject struct {
+	store.ProjectReader
+	access func(context.Context, model.Principal, string) (model.ProjectAccess, error)
+}
+
+func (r inspectionBoundProject) ProjectAccess(ctx context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+	return r.access(ctx, p, project)
+}
+
+func TestInspectionConstructorBindsProjectRead(t *testing.T) {
+	const project = "11111111-1111-4111-8111-111111111111"
+	actor := model.Principal{Kind: model.OAuthCredential, UserID: "44444444-4444-4444-8444-444444444444", CredentialID: "55555555-5555-4555-8555-555555555555"}
+	cause := errors.New("bound project lookup failed")
+	for _, test := range []struct {
+		name    string
+		failure error
+	}{{"success", nil}, {"lookup failure", cause}} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			calls := 0
+			reader := inspectionBoundProject{access: func(got context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+				calls++
+				if calls != 1 || got != ctx || p != actor || id != project {
+					t.Fatal("constructor-bound project lookup changed its inputs or call count")
+				}
+				return model.ProjectAccess{ProjectID: project, UserID: actor.UserID, Role: model.ProjectAdmin}, test.failure
+			}}
+			service := NewInspection(nil, nil)
+			if err := service.projectRead(ctx, reader, actor, project); !errors.Is(err, test.failure) || calls != 1 {
+				t.Fatalf("bound project lookup: calls=%d error=%v want %v", calls, err, test.failure)
+			}
+		})
+	}
+}
+
 func TestInspectionUsesAuthorizedSnapshotAndExactSession(t *testing.T) {
 	const project = "11111111-1111-4111-8111-111111111111"
 	const task = "22222222-2222-4222-8222-222222222222"

@@ -32,6 +32,48 @@ describe("Task Session command observations", () => {
     expect(new URL(String(f.fetch.mock.calls[0]![0])).searchParams.get("include")).toBe("session");
   });
 
+  it.each(["text", "JSON"])("preserves each page's observation times in ordinary list %s without current requests", async format => {
+    const items = [
+      { ...task, session: observation },
+      { ...task, id: "55555555-5555-4555-8555-555555555555", title: "Second Task", session: {
+        ...observation, sessionId: "66666666-6666-4666-8666-666666666666",
+        observedAt: "2026-11-10T01:03:03.123456789Z", lastSeenAt: "2026-11-10T01:03:03.123456789Z", freshUntil: "2026-11-10T01:03:33.123456789Z",
+      } },
+    ];
+    const f = fixture(null);
+    f.fetch.mockReset().mockRejectedValue(new Error("Unexpected request"));
+    items.forEach((item, index) => {
+      f.fetch.mockResolvedValueOnce(new Response(stringifyApiJson({ items: [item], observedAt: item.session.observedAt, partial: false, nextCursor: index === 0 ? "page-two" : null }), {
+        headers: { "content-type": "application/json", "Daynight-User-ID": actorId },
+      }));
+    });
+
+    expect(await f.run(["list", "--assigned-to", "me", ...(format === "JSON" ? ["--json"] : [])])).toBe(0);
+    expect(f.stdout).toHaveLength(1);
+    expect(f.stderr).toEqual([]);
+    if (format === "JSON") {
+      expect(parseApiJson(f.stdout[0]!)).toEqual(items.map(({ description: _description, ...item }) => item));
+    } else {
+      const blocks = f.stdout[0]!.trimEnd().split("\n\n");
+      expect(blocks).toHaveLength(2);
+      items.forEach((item, index) => {
+        expect(blocks[index]).toContain(`ID: ${item.id}\n`);
+        expect(blocks[index]).toContain(`Session: ${item.session.sessionId}\n`);
+        expect(blocks[index]).toContain(`Observed: ${item.session.observedAt}; last seen: ${item.session.lastSeenAt}; fresh until: ${item.session.freshUntil}`);
+        expect(blocks[index]).not.toContain(items[1 - index]!.session.observedAt);
+        expect(blocks[index]).not.toContain(items[1 - index]!.session.freshUntil);
+      });
+    }
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.fetch.mock.calls.map(([value]) => {
+      const url = new URL(String(value));
+      return { path: url.pathname, query: Object.fromEntries(url.searchParams) };
+    })).toEqual([
+      { path: `/api/v1/projects/${projectId}/tasks`, query: { assignedTo: "me", include: "session", limit: "100" } },
+      { path: `/api/v1/projects/${projectId}/tasks`, query: { assignedTo: "me", include: "session", limit: "100", cursor: "page-two" } },
+    ]);
+  });
+
   it("prints warning and ordinary send eligibility independently", async () => {
     const f = fixture({ ...task, session: observation });
     expect(await f.run(["show", taskId])).toBe(0);

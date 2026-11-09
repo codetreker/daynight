@@ -42,16 +42,23 @@ func (r *workServiceReader) TaskWorkTargets(ctx context.Context, p string, g []s
 
 type workServiceSnapshot struct {
 	store.SnapshotScope
-	tasks    store.TaskReader
-	sessions store.SessionReader
-	project  store.ProjectReader
+	tasks      store.TaskReader
+	sessions   store.SessionReader
+	project    store.ProjectReader
+	observedAt time.Time
+	clockErr   error
 }
 
-func (s workServiceSnapshot) TaskDAO() store.TaskReader                     { return s.tasks }
-func (s workServiceSnapshot) SessionDAO() store.SessionReader               { return s.sessions }
-func (s workServiceSnapshot) ProjectDAO() store.ProjectReader               { return s.project }
-func (s workServiceSnapshot) CredentialDAO() store.CredentialReader         { return nil }
-func (s workServiceSnapshot) ObservedAt(context.Context) (time.Time, error) { return workTime, nil }
+func (s workServiceSnapshot) TaskDAO() store.TaskReader             { return s.tasks }
+func (s workServiceSnapshot) SessionDAO() store.SessionReader       { return s.sessions }
+func (s workServiceSnapshot) ProjectDAO() store.ProjectReader       { return s.project }
+func (s workServiceSnapshot) CredentialDAO() store.CredentialReader { return nil }
+func (s workServiceSnapshot) ObservedAt(context.Context) (time.Time, error) {
+	if !s.observedAt.IsZero() {
+		return s.observedAt, s.clockErr
+	}
+	return workTime, s.clockErr
+}
 
 type workServiceStore struct {
 	snapshot   store.SnapshotScope
@@ -105,7 +112,7 @@ func workServiceFixture(t *testing.T) (*Observations, *workServiceReader, *workS
 	return service, reader, observer, database
 }
 func TestWorkTargetCursorIgnoresLiveChangesAndResetsForTaskChanges(t *testing.T) {
-	service, reader, observer, _ := workServiceFixture(t)
+	service, reader, observer, database := workServiceFixture(t)
 	reader.groups = func(_ context.Context, p string, q store.TaskWorkQuery) (store.TaskWorkGroups, error) {
 		if p != workProject || q.AssignedTo != workActor {
 			t.Fatal("wrong work filter")
@@ -128,10 +135,20 @@ func TestWorkTargetCursorIgnoresLiveChangesAndResetsForTaskChanges(t *testing.T)
 	if err != nil || len(first.Groups) != 1 || len(first.Groups[0].Targets) != 20 || first.Groups[0].ContributorCursor == nil || first.Groups[0].Summary.WorkingCount != 21 {
 		t.Fatalf("first page %#v %v", first, err)
 	}
+	if first.ObservedAt != workTime || first.Groups[0].ObservedAt != workTime || first.Groups[0].Summary.ObservedAt != workTime {
+		t.Fatalf("first page observation clocks: %#v", first)
+	}
+	secondTime := workTime.Add(time.Minute)
+	snapshot := database.snapshot.(workServiceSnapshot)
+	snapshot.observedAt = secondTime
+	database.snapshot = snapshot
 	observer.indicator = "warning"
 	second, err := service.WorkList(t.Context(), actor, workProject, taskcore.WorkRequest{GroupID: ptrWork(workGroup), TargetsCursor: first.Groups[0].ContributorCursor})
 	if err != nil || len(second.Groups[0].Targets) != 1 || second.Groups[0].Targets[0].TaskID <= first.Groups[0].Targets[19].TaskID || second.Groups[0].ContributorCursor != nil || second.Groups[0].Summary.WarningCount != 21 {
 		t.Fatalf("second page %#v %v", second, err)
+	}
+	if second.ObservedAt != secondTime || second.Groups[0].ObservedAt != secondTime || second.Groups[0].Summary.ObservedAt != secondTime || first.ObservedAt != workTime || first.Groups[0].Summary.ObservedAt != workTime {
+		t.Fatalf("continuation reused or overwrote observation clocks: first=%#v second=%#v", first, second)
 	}
 	reader.fence.VersionSum = "23"
 	_, err = service.WorkList(t.Context(), actor, workProject, taskcore.WorkRequest{GroupID: ptrWork(workGroup), TargetsCursor: first.Groups[0].ContributorCursor})

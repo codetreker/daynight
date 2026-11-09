@@ -154,6 +154,7 @@ func TestTaskObservationDistinguishesAbsenceAndChangedExecution(t *testing.T) {
 			s.TaskStatus = model.TaskTodo
 		}, "not_applicable", "observed", "not_started"},
 		{"not registered", func(_ *Engine, s *store.TaskSessionSource, _ *liveSession) { s.Session = nil }, "not_registered", "observed", "not_registered"},
+		{"worker removed", func(_ *Engine, s *store.TaskSessionSource, _ *liveSession) { s.Worker = nil }, "unknown", "unavailable", "execution_changed"},
 		{"claim changed", func(_ *Engine, s *store.TaskSessionSource, _ *liveSession) {
 			s.Worker.ClaimID = "99999999-9999-4999-8999-999999999999"
 		}, "unknown", "unavailable", "execution_changed"},
@@ -177,16 +178,27 @@ func TestTaskObservationDistinguishesAbsenceAndChangedExecution(t *testing.T) {
 	}
 }
 func TestTaskInspectionRetainsHistoricalIdentityWithoutSending(t *testing.T) {
-	e, p, s, _ := observationFixture(t)
-	old := s.Session.ClaimID
-	s.Worker.ClaimID = "99999999-9999-4999-8999-999999999999"
-	s.Session.ArchiveState = "ready"
-	got, err := e.InspectTaskSession(t.Context(), p, s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.CurrentBinding || got.Fence.ClaimID != old || got.Source != "archive" || got.Session.Send.Allowed == nil || *got.Session.Send.Allowed || got.Session.Send.Reason != "not_current" || got.Session.Indicator != nil {
-		t.Fatalf("inspection: %#v", got)
+	for _, test := range []struct {
+		name          string
+		workerPresent bool
+	}{{"replacement claim", true}, {"removed worker", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			e, p, s, _ := observationFixture(t)
+			old := s.Session.ClaimID
+			if test.workerPresent {
+				s.Worker.ClaimID = "99999999-9999-4999-8999-999999999999"
+			} else {
+				s.Worker = nil
+			}
+			s.Session.ArchiveState = "ready"
+			got, err := e.InspectTaskSession(t.Context(), p, s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.CurrentBinding || got.Fence.ClaimID != old || got.Source != "archive" || got.Session.Send.Allowed == nil || *got.Session.Send.Allowed || got.Session.Send.Reason != "not_current" || got.Session.Indicator != nil {
+				t.Fatalf("inspection: %#v", got)
+			}
+		})
 	}
 }
 

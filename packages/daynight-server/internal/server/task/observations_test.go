@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,6 +209,56 @@ func TestTaskHTTPObservationRefusalsAndWorkInputErrors(t *testing.T) {
 			r := projectRequest(h, http.MethodGet, "/api/v1/projects/"+testProjectID+"/task-work?"+query, "")
 			if r.Code != 400 || h.Observations.TotalCalls() != 0 {
 				t.Fatalf("invalid work request: %d %s", r.Code, r.Body.String())
+			}
+		})
+	}
+}
+
+func TestTaskHTTPWorkCompleteWireBudgetIncludesEncoderNewline(t *testing.T) {
+	for _, targets := range []bool{false, true} {
+		t.Run(map[bool]string{false: "groups", true: "targets"}[targets], func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			cursor := "continuation"
+			page := taskwork.Page{Groups: []taskwork.Group{{GroupID: testTaskID, Kind: "chain", DisplayTaskID: testTaskID, AssignedTo: testUserID, AggregationScope: "accessible_in_progress_members", MemberCount: 2, MatchedCount: 1, InProgressCount: 1, RootCount: 1, Roots: []taskwork.Root{{TaskID: testTaskID, TitlePreview: "root"}}, Summary: taskwork.Aggregation{UnknownCount: 1, ObservedAt: testTime}, Targets: []taskwork.Target{{TaskID: testTaskID, Reason: "observation_unavailable"}}, ObservedAt: testTime}}, ObservedAt: testTime, Partial: true}
+			if targets {
+				page.Groups[0].ContributorCursor = &cursor
+			} else {
+				page.NextCursor = &cursor
+			}
+			h.Observations.WorkFunc = func(_ context.Context, p model.Principal, project string, input taskcore.WorkRequest) (taskwork.Page, error) {
+				if p != testPrincipal() || project != testProjectID || input.ResponseOverhead != 1 {
+					t.Fatalf("work response envelope: %#v", input)
+				}
+				if targets && (input.GroupID == nil || *input.GroupID != testTaskID || input.TargetsCursor == nil || *input.TargetsCursor != "previous") {
+					t.Fatalf("target scope lost: %#v", input)
+				}
+				raw, err := json.Marshal(page)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The operation mock fills its delegated budget. Core tests separately
+				// prove fitting valid previews and generating the continuation boundary.
+				page.Groups[0].TitlePreview = strings.Repeat("x", taskwork.MaxResponseBytes-input.ResponseOverhead-len(raw))
+				return page, nil
+			}
+			path := "/api/v1/projects/" + testProjectID + "/task-work"
+			if targets {
+				path += "?groupId=" + testTaskID + "&targetsCursor=previous"
+			}
+			response := projectRequest(h, http.MethodGet, path, "")
+			raw := response.Body.Bytes()
+			if response.Code != http.StatusOK || len(raw) != taskwork.MaxResponseBytes || len(raw) == 0 || raw[len(raw)-1] != '\n' {
+				t.Fatalf("complete response: status=%d bytes=%d", response.Code, len(raw))
+			}
+			var decoded taskwork.Page
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if len(decoded.Groups) != 1 || decoded.Groups[0].TitlePreview != page.Groups[0].TitlePreview || decoded.ObservedAt != testTime || decoded.Partial != true {
+				t.Fatal("complete response changed the use-case page")
+			}
+			if targets && (decoded.Groups[0].ContributorCursor == nil || *decoded.Groups[0].ContributorCursor != cursor) || !targets && (decoded.NextCursor == nil || *decoded.NextCursor != cursor) {
+				t.Fatal("complete response lost its continuation")
 			}
 		})
 	}
