@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -543,8 +544,8 @@ func TestRequestMetricsExposedTransportErrorReturns(t *testing.T) {
 						t.Errorf("Write = %d, %v", n, err)
 					}
 				case "flush":
-					if _, ok := w.(http.Flusher); !ok {
-						t.Error("writer lost Flusher")
+					if _, ok := w.(http.Flusher); ok {
+						t.Error("FlushError-only writer exposed http.Flusher")
 					}
 					if err := http.NewResponseController(w).Flush(); err != failure {
 						t.Errorf("Flush = %v", err)
@@ -592,4 +593,40 @@ func TestRequestMetricsFlushErrorOnlyCapability(t *testing.T) {
 		t.Fatal("ResponseController.Flush did not reach underlying FlushError")
 	}
 	assertCompleted(t, registry, map[string]string{"method": "GET", "route": "unrouted", "mode": "http", "status": "200", "outcome": "returned"})
+}
+
+type metricFlusherFaultWriter struct {
+	*metricFaultWriter
+	flushes int
+}
+
+func (w *metricFlusherFaultWriter) Flush()            { w.flushes++ }
+func (w *metricFlusherFaultWriter) FlushError() error { w.flushes++; return w.flushErr }
+
+func TestRequestMetricsStandardFlusherError(t *testing.T) {
+	failure := errors.New("underlying flush failure")
+	for _, viaController := range []bool{false, true} {
+		t.Run(fmt.Sprintf("controller=%v", viaController), func(t *testing.T) {
+			registry, handler := requestMetricsFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					t.Error("writer lost http.Flusher")
+					return
+				}
+				if viaController {
+					if err := http.NewResponseController(w).Flush(); err != failure {
+						t.Errorf("Flush = %v", err)
+					}
+				} else {
+					flusher.Flush()
+				}
+			}))
+			writer := &metricFlusherFaultWriter{metricFaultWriter: &metricFaultWriter{header: make(http.Header), flushErr: failure}}
+			handler.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/", nil))
+			if writer.flushes != 1 {
+				t.Fatalf("underlying flush calls = %d", writer.flushes)
+			}
+			assertCompleted(t, registry, map[string]string{"method": "GET", "route": "unrouted", "mode": "http", "status": "none", "outcome": "write_error"})
+		})
+	}
 }
