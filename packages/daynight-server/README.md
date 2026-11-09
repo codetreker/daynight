@@ -786,6 +786,39 @@ records the proof allocation and the shared-factory rationale. Runtime compariso
 include receiving packages; removed database preparation is distinct from moved
 physical work.
 
+### Bot runtime service tests
+
+The `internal/service/bot/runtime` suite executes the Runtime transaction and
+callback orchestration with controlled direct core operations. `NewRuntime`
+binds instance-owned Engine, Operation, Bot authorization and Access operations
+to their production implementations; unit tests supply independent operation
+results and errors without running core business rules or preparing a database.
+Opaque Operation and Access values preserve the identity passed to callbacks.
+
+The existing tests verify current and parent credential checks, Bot/Session
+ordering, prepare/check/work short-circuiting, exact context and scope propagation,
+error preservation and exactly one operation close. The Session service still
+owns transaction completion and `Operation.Finish`; its production consumer
+coverage verifies the default Runtime binding. Run the ordinary module without
+PostgreSQL or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/bot/runtime
+```
+
+Core tests retain Bot authorization, parent-credential policy and Engine stop
+admission. The existing PostgreSQL Session lifecycle test checks the inserted
+Bot/parent association before a grant can overwrite it, then checks the live
+connection. It verifies a distinct current PAT remains valid after the
+parent PAT is physically removed, and retains transactional cleanup and rollback.
+These physical assertions run with isolated PostgreSQL through the module check;
+mocked outcomes cannot establish them. The
+[Runtime test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-bot-runtime-service-test-boundary.md)
+records the operation bindings and proof ownership.
+
 ### Business rules and DAO mocks
 
 The [test-writing rules](../../docs/writing_tests.md) define the dependency
