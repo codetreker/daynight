@@ -417,6 +417,7 @@ export type TaskFilters = {
   readonly workerId?: string;
 };
 export type TaskSearchInput = Omit<TaskFilters, "workerId"> & { readonly query: string };
+export type TaskSearchField = "id" | "title" | "description";
 export type TaskSearchItem = {
   readonly id: string;
   readonly projectId: string;
@@ -424,7 +425,7 @@ export type TaskSearchItem = {
   readonly status: TaskStatus;
   readonly cancelledAt: string | null;
   readonly context: { readonly taskId: string; readonly title: string } | null;
-  readonly match: { readonly fields: readonly ("title" | "description")[]; readonly descriptionSnippet: string | null };
+  readonly match: { readonly fields: readonly TaskSearchField[]; readonly descriptionSnippet: string | null };
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };

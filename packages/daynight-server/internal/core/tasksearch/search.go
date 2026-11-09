@@ -159,7 +159,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		return Page{}, err
 	}
 	hash := sha256.Sum256([]byte(request.Query))
-	scope := cursorScope{Version: 1, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
+	scope := cursorScope{Version: 2, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
 	var prior *cursor
 	if request.Cursor != nil {
 		value, err := decodeCursor(*request.Cursor, scope)
@@ -198,11 +198,14 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			var snippet *string
 			var err error
 			if row.Hits != nil {
-				hits := make(map[searchmodel.Atom]query.Evidence, len(row.Hits))
+				hits := make(map[searchmodel.Atom]query.Hit, len(row.Hits))
 				for _, hit := range row.Hits {
-					hits[hit.Atom] = query.Evidence{Title: hit.Title, Description: hit.Description}
+					if _, exists := hits[hit.Atom]; exists {
+						return false, fmt.Errorf("duplicate search evidence atom")
+					}
+					hits[hit.Atom] = query.Hit{ID: hit.ID, Title: hit.Title, Description: hit.Description}
 				}
-				evidence, err = query.EvaluateHits(ctx, ast, hits)
+				evidence, err = query.EvaluateHits(ctx, ast, row.ID, hits)
 				if err == nil && len(evidence.DescriptionTerms) != 0 {
 					for _, hit := range row.Hits {
 						if hit.Description && hit.Atom.Term == evidence.DescriptionTerms[0] {
@@ -215,7 +218,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 					}
 				}
 			} else {
-				evidence, err = query.EvaluateContext(ctx, ast, row.Title, row.Description)
+				evidence, err = query.EvaluateContext(ctx, ast, query.Text{ID: row.ID, Title: row.Title, Description: row.Description})
 				if err == nil {
 					snippet, err = query.SnippetContext(ctx, row.Description, evidence)
 				}
@@ -223,10 +226,13 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			if err != nil {
 				return false, err
 			}
-			if !evidence.Matches || evidence.Title != row.TitlePriority {
+			if !evidence.Matches || evidence.Title != row.TitlePriority || evidence.ExactID != row.ExactIDPriority {
 				return false, fmt.Errorf("search evidence differs from database result")
 			}
 			fields := []string{}
+			if evidence.ID {
+				fields = append(fields, "id")
+			}
 			if evidence.Title {
 				fields = append(fields, "title")
 			}
@@ -254,7 +260,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			}
 			itemBytes = candidateBytes
 			draft = append(draft, item)
-			positions = append(positions, store.TaskSearchPosition{TitlePriority: row.TitlePriority, UpdatedAt: row.UpdatedAt, ID: row.ID})
+			positions = append(positions, store.TaskSearchPosition{ExactIDPriority: row.ExactIDPriority, TitlePriority: row.TitlePriority, UpdatedAt: row.UpdatedAt, ID: row.ID})
 			return true, nil
 		})
 		if err != nil {

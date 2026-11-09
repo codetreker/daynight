@@ -811,7 +811,7 @@ is 0 for success, 2 for usage errors and 1 for runtime failures or unknown resul
 
 ## Task management
 
-`daynight task search <expression>` searches complete Task titles and Markdown
+`daynight task search <expression>` searches Task IDs, complete titles and Markdown
 descriptions in one project, including completed Tasks by default. Supply the
 entire expression as one shell argument; `--` permits an expression beginning
 with a dash. For example:
@@ -821,9 +821,11 @@ daynight task search 'title:缓存 AND NOT description:废弃' --status done
 daynight task search -- '-worker'
 ```
 
-Words and quoted phrases match literal substrings, with ASCII case folding.
-Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `title:`
-and `description:` fields form expressions. Inside quotes, `\"` and `\\`
+Words and quoted phrases match literal substrings, with ASCII case folding. ID
+queries match the canonical hyphenated UUID, including prefixes and middle fragments.
+A positive exact full ID match ranks before a title match; fragments do not.
+Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `id:`,
+`title:` and `description:` fields form expressions. Inside quotes, `\"` and `\\`
 escape a quote and a backslash. `--status`, `--assigned-to`, `--ready`,
 `--allow-agents`, and `--compatible-platform` intersect the expression; search
 does not accept `--all`. Explicit `--project` searches that project directly;

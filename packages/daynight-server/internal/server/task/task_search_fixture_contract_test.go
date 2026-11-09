@@ -185,3 +185,39 @@ func TestSearchHTTPEncodesBoundedPagesAndCursor(t *testing.T) {
 	}
 	assertProjectError(t, projectRequest(h, http.MethodPost, path, `{"query":"match","limit":2}`), 409, "resource_limit_exceeded")
 }
+
+func TestTaskSearchIDFixtureContract(t *testing.T) {
+	h := newHTTPFixture(t, io.Discard)
+	id := "05d609a8-50e2-4aaf-a31d-82466dca2a36"
+	snippet := "reference " + id
+	calls := 0
+	h.ExpectCalls("Search", 2)
+	h.Search = func(ctx context.Context, principal model.Principal, pid string, input tasksearch.Request) (tasksearch.Page, error) {
+		calls++
+		if principal != h.principal || pid != testProjectID || ctx.Err() != nil {
+			t.Fatalf("identity=%+v project=%s", principal, pid)
+		}
+		if calls == 1 {
+			if input.Query != "id:"+id {
+				t.Fatalf("query=%q", input.Query)
+			}
+			return tasksearch.Page{ProjectID: pid, Total: 1, Items: []tasksearch.Item{{ID: id, ProjectID: pid, Title: "Search task", Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"id"}}}}}, nil
+		}
+		if input.Query != id {
+			t.Fatalf("query=%q", input.Query)
+		}
+		return tasksearch.Page{ProjectID: pid, Total: 1, Items: []tasksearch.Item{{ID: id, ProjectID: pid, Title: id, Status: model.TaskTodo, UpdatedAt: testTime, Match: tasksearch.Match{Fields: []string{"id", "title", "description"}, DescriptionSnippet: &snippet}}}}, nil
+	}
+	path := taskCollection(testProjectID) + "/search"
+	for i, tc := range []struct {
+		name, query string
+		fields      []string
+	}{{"id-only", "id:" + id, []string{"id"}}, {"mixed-fields", id, []string{"id", "title", "description"}}} {
+		response := projectRequest(h, http.MethodPost, path, jsonBody(t, map[string]any{"query": tc.query}))
+		page := decodeResponse[api.TaskSearchPage](t, response, 200)
+		if len(page.Items) != 1 || page.Items[0].ID != id || strings.Join(page.Items[0].Match.Fields, ",") != strings.Join(tc.fields, ",") || (page.Items[0].Match.DescriptionSnippet != nil) != (i == 1) {
+			t.Fatalf("page=%+v", page)
+		}
+		captureSearchFixture(t, tc.name, response.Body.Bytes())
+	}
+}

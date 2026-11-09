@@ -82,7 +82,7 @@ export type WorkspaceMessages = {
     readonly applied: (args: { readonly query: string }) => string; readonly empty: string; readonly loading: string;
     readonly failed: string; readonly stale: string; readonly syntax: (args: { readonly position: number; readonly reason: string }) => string;
     readonly reasons: Readonly<Record<string, string>>; readonly open: (args: { readonly title: string }) => string;
-    readonly titleMatch: string; readonly descriptionMatch: string; readonly negativeMatch: string; readonly updated: (args: { readonly date: string }) => string;
+    readonly idMatch: string; readonly titleMatch: string; readonly descriptionMatch: string; readonly negativeMatch: string; readonly updated: (args: { readonly date: string }) => string;
   };
   readonly overview: {
     readonly heading: string;

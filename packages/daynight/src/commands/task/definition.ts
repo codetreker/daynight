@@ -39,11 +39,11 @@ export const taskDefinition: CommandDefinition = {
     },
     {
       name: "search",
-      description: "Search task titles and descriptions in one project",
+      description: "Search task IDs, titles and descriptions in one project",
       arguments: [{ name: "expression", description: "Complete search expression" }],
       options: [statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, { names: ["--json"], description: "Print search results as a JSON array" }, helpOption],
       allowOptionsTerminator: true,
-      details: "Pass the complete expression as one argument; use -- before an expression starting with a dash. Supports AND, OR, NOT, parentheses, quoted phrases, title: and description:.\nAll statuses, including done, are searched by default. Filters combine with the expression. Every page is read before output, preserving server order. Search output omits assignee and update time; use task show for complete details.",
+      details: "Pass the complete expression as one argument; use -- before an expression starting with a dash. Supports AND, OR, NOT, parentheses, quoted phrases, id:, title: and description:.\nAll statuses, including done, are searched by default. Filters combine with the expression. Every page is read before output, preserving server order. Search output omits assignee and update time; use task show for complete details.",
     },
     {
       name: "ready",

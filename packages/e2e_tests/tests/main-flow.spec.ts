@@ -3,6 +3,7 @@ import { test, expect, topology, cli, cliEnvironment } from "./fixtures.ts";
 import { startCommand } from "../src/command.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
+type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
 
 test("compiled CLI and production Web share a normal task lifecycle", async ({ page }) => {
   await page.goto(`${topology.baseURL}/login`);
@@ -41,10 +42,46 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(taskId).toBeDefined();
   const task = JSON.parse((await cli(["task", "show", taskId!, "--project", projectId!, "--json"])).stdout) as Task;
 
-  await page.goto(`${topology.baseURL}/projects/${projectId}/tasks/${task.id}`);
-  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
-  await expect(page.getByText("Shared E2E content", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "To do", exact: true }).click();
+  const referenceTitle = `Reference ${task.id}`;
+  const referenceCreation = await cli(["task", "create", "--project", projectId!, "--title", referenceTitle]);
+  const referenceId = referenceCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(referenceId).toBeDefined();
+  const results = JSON.parse((await cli(["task", "search", task.id, "--project", projectId!, "--json"])).stdout) as SearchItem[];
+  expect(results.map(({ id, title, match }) => ({ id, title, match }))).toEqual([
+    { id: task.id, title: name, match: { fields: ["id"], descriptionSnippet: null } },
+    { id: referenceId, title: referenceTitle, match: { fields: ["title"], descriptionSnippet: null } },
+  ]);
+  const idResults = JSON.parse((await cli(["task", "search", `id:${task.id}`, "--project", projectId!, "--json"])).stdout) as SearchItem[];
+  expect(idResults.map(({ id, match }) => ({ id, match }))).toEqual([
+    { id: task.id, match: { fields: ["id"], descriptionSnippet: null } },
+  ]);
+
+  await page.goto(`${topology.baseURL}/projects/${projectId}`);
+  await page.getByRole("tab", { name: "Task list" }).click();
+  const input = page.getByRole("textbox", { name: "Search task IDs, titles and descriptions" });
+  await input.fill(task.id);
+  const searchResponse = page.waitForResponse(response => response.url().endsWith(`/api/v1/projects/${projectId}/tasks/search`) && response.request().method() === "POST");
+  await input.press("Enter");
+  const response = await searchResponse;
+  expect(response.status()).toBe(200);
+  const searchRequestId = response.headers()["x-request-id"];
+  expect(searchRequestId).toBeTruthy();
+  console.log(`ID search request ID: ${searchRequestId}`);
+  const webResults = (await response.json() as { items: SearchItem[] }).items;
+  expect(webResults.map(({ id, title, match }) => ({ id, title, match }))).toEqual(results.map(({ id, title, match }) => ({ id, title, match })));
+  const hits = page.getByRole("button", { name: /^Open task: / });
+  await expect(hits).toHaveCount(2);
+  await expect(hits.nth(0)).toContainText(task.id);
+  await expect(hits.nth(0)).toContainText(name);
+  await expect(hits.nth(0)).toContainText("ID match");
+  await expect(hits.nth(1)).toContainText(referenceId!);
+  await expect(hits.nth(1)).toContainText(referenceTitle);
+  await expect(hits.nth(1)).toContainText("Title match");
+  await hits.nth(0).click();
+  const detail = page.getByRole("dialog");
+  await expect(detail.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(detail.getByText("Shared E2E content", { exact: true })).toBeVisible();
+  await detail.getByRole("button", { name: "To do", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "In progress", exact: true }).click();
   await page.getByRole("button", { name: "Confirm status", exact: true }).click();
   await expect.poll(async () => JSON.parse((await cli(["task", "show", task.id, "--project", projectId!, "--json"])).stdout).status).toBe("in_progress");
@@ -52,5 +89,12 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(observed).toMatchObject({ id: task.id, title: name, description: "Shared E2E content" });
   await cli(["task", "set-status", task.id, "done", "--project", projectId!, "--if-version", String(observed.version)]);
   await page.reload();
-  await expect(page.getByRole("button", { name: "Done", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Task list" }).click();
+  const refreshedSearch = page.getByRole("textbox", { name: "Search task IDs, titles and descriptions" });
+  await refreshedSearch.fill(`id:${task.id}`);
+  await refreshedSearch.press("Enter");
+  const refreshedHit = page.getByRole("button", { name: `Open task: ${name}` });
+  await expect(refreshedHit).toContainText(task.id);
+  await refreshedHit.click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Done", exact: true })).toBeVisible();
 });

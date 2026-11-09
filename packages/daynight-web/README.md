@@ -940,8 +940,8 @@ index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
-Project task search submits the original expression to the server, including
-completed Tasks and chain members. Its draft, filters and cursor pages are
+Project task search submits the original expression to the server, matching IDs,
+complete titles and Markdown descriptions, including completed Tasks and chain members. Its draft, filters and cursor pages are
 independent of the ordinary lists. Clearing the search restores the ordinary
 view and its scroll position. Search results open a live Task detail, including
 when project graph synchronization fails. Errors and empty results remain

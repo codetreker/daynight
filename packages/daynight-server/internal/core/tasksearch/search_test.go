@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	searchmodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -268,7 +270,7 @@ func TestSearchSnapshotFailuresAreNotSuccess(t *testing.T) {
 }
 
 func TestSearchCursorValidation(t *testing.T) {
-	scope := cursorScope{Version: 1, UserID: user, ProjectID: projectID, QueryHash: "hash"}
+	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: "hash"}
 	valid := cursor{Scope: scope, Fence: store.TaskSearchFence{Epoch: user, Count: "0", VersionSum: "123456789012345678901234567890"}, Position: store.TaskSearchPosition{ID: child, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	encoded, err := encodeCursor(valid)
 	if err != nil {
@@ -321,10 +323,10 @@ func TestSearchPageEncodedBudgetAndContinuation(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	large := "cache" + strings.Repeat("\x01", 180000)
 	f.rows = store.TaskSearchPage{Total: 2, Items: []store.TaskSearchRow{
-		{ID: child, Title: large, Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true},
+		{ID: child, Title: large, Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true, ExactIDPriority: true},
 		{ID: root, Title: large, Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true},
 	}}
-	page, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 2})
+	page, err := Search(context.Background(), f, principal(), projectID, Request{Query: child + " OR cache", Limit: 2})
 	if err != nil || len(page.Items) != 1 || page.NextCursor == nil {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
@@ -337,16 +339,16 @@ func TestSearchPageEncodedBudgetAndContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cursor cursor
-	if err := json.Unmarshal(raw, &cursor); err != nil || cursor.Position.ID != child {
+	if err := json.Unmarshal(raw, &cursor); err != nil || cursor.Scope.Version != 2 || cursor.Position.ID != child || !cursor.Position.ExactIDPriority || !cursor.Position.TitlePriority {
 		t.Fatalf("cursor=%+v err=%v", cursor, err)
 	}
 	f.rows.Items = f.rows.Items[1:]
-	second, err := Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 2, Cursor: page.NextCursor})
+	second, err := Search(context.Background(), f, principal(), projectID, Request{Query: child + " OR cache", Limit: 2, Cursor: page.NextCursor})
 	if err != nil || len(second.Items) != 1 || second.Items[0].ID != root || second.NextCursor != nil {
 		t.Fatalf("next=%+v err=%v", second, err)
 	}
 	f.rows.Items[0].Title = "cache" + strings.Repeat("\x01", 360000)
-	_, err = Search(context.Background(), f, principal(), projectID, Request{Query: "cache", Limit: 2})
+	_, err = Search(context.Background(), f, principal(), projectID, Request{Query: child + " OR cache", Limit: 2})
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
 		t.Fatalf("oversized first item: %v", err)
@@ -382,10 +384,10 @@ func TestSearchPagesBeforeLaterOversizedContext(t *testing.T) {
 	f := &contextBoundaryFixture{searchFixture: testFixture(), oversizedID: "55555555-5555-4555-8555-555555555555", secondTitle: strings.Repeat("<", 300000)}
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	f.rows = store.TaskSearchPage{Total: 2, Items: []store.TaskSearchRow{
-		{ID: child, Title: "Cache", Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true},
+		{ID: child, Title: "Cache", Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true, ExactIDPriority: true},
 		{ID: f.oversizedID, Title: "Cache", Status: model.TaskTodo, UpdatedAt: now, TitlePriority: true},
 	}}
-	request := Request{Query: "cache", Limit: 2}
+	request := Request{Query: child + " OR cache", Limit: 2}
 	page, err := Search(context.Background(), f, principal(), projectID, request)
 	if err != nil || len(page.Items) != 1 || page.Items[0].ID != child || page.NextCursor == nil {
 		t.Fatalf("prefix: %d cursor=%v err=%v", len(page.Items), page.NextCursor, err)
@@ -396,8 +398,8 @@ func TestSearchPagesBeforeLaterOversizedContext(t *testing.T) {
 	if !errors.As(smallErr, &smallFault) || smallFault.Code != "search_context_limit_exceeded" || smallFault.GraphLimit == nil || smallFault.GraphLimit.NodeCount != MaxNodes+3 {
 		t.Fatalf("fitting over-limit graph: %v", smallErr)
 	}
-	decoded, err := decodeCursor(*page.NextCursor, cursorScope{Version: 1, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte("cache"))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}})
-	if err != nil || decoded.Position.ID != child || decoded.Fence != f.fence {
+	decoded, err := decodeCursor(*page.NextCursor, cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte(child+" OR cache"))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}})
+	if err != nil || decoded.Position.ID != child || !decoded.Position.ExactIDPriority || !decoded.Position.TitlePriority || decoded.Fence != f.fence {
 		t.Fatalf("cursor: %+v %v", decoded, err)
 	}
 	f.rows.Items = f.rows.Items[1:]
@@ -406,5 +408,75 @@ func TestSearchPagesBeforeLaterOversizedContext(t *testing.T) {
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "search_context_limit_exceeded" || fault.GraphLimit == nil || fault.GraphLimit.NodeCount != MaxNodes+1 {
 		t.Fatalf("first oversized component: %v", err)
+	}
+}
+
+func TestSearchIDProjectedEvidenceAndContinuation(t *testing.T) {
+	const id = child
+	atom := searchmodel.Atom{Field: searchmodel.IDField, Term: id}
+	f := testFixture()
+	f.rows.Items[0].Hits = []store.TaskSearchHit{{Atom: atom, ID: true}}
+	f.rows.Items[0].TitlePriority = false
+	f.rows.Items[0].ExactIDPriority = true
+	page, err := Search(context.Background(), f, principal(), projectID, Request{Query: "id:" + id, Limit: 1})
+	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].Match.Fields, []string{"id"}) || page.Items[0].Match.DescriptionSnippet != nil || page.NextCursor == nil {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte("id:"+id))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}}
+	value, err := decodeCursor(*page.NextCursor, scope)
+	if err != nil || !value.Position.ExactIDPriority || value.Position.TitlePriority || value.Position.ID != id {
+		t.Fatalf("position=%+v err=%v", value.Position, err)
+	}
+	for _, tc := range []struct {
+		name  string
+		hits  []store.TaskSearchHit
+		exact bool
+	}{
+		{"wrong-id", []store.TaskSearchHit{{Atom: atom}}, true},
+		{"excluded", []store.TaskSearchHit{{Atom: atom, ID: true, Title: true}}, true},
+		{"duplicate", []store.TaskSearchHit{{Atom: atom, ID: true}, {Atom: atom, ID: true}}, true},
+		{"extra", []store.TaskSearchHit{{Atom: atom, ID: true}, {Atom: searchmodel.Atom{Field: searchmodel.IDField, Term: "bad"}}}, true},
+		{"empty", []store.TaskSearchHit{}, true},
+		{"rank", []store.TaskSearchHit{{Atom: atom, ID: true}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := testFixture()
+			bad.rows.Items[0].Hits = tc.hits
+			bad.rows.Items[0].TitlePriority = false
+			bad.rows.Items[0].ExactIDPriority = tc.exact
+			result, err := Search(context.Background(), bad, principal(), projectID, Request{Query: "id:" + id, Limit: 1})
+			if err == nil || !reflect.DeepEqual(result, Page{}) {
+				t.Fatalf("page=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestSearchCursorV2RequiresCanonicalExactPriority(t *testing.T) {
+	scope := cursorScope{Version: 2, UserID: user, ProjectID: projectID, QueryHash: "hash"}
+	c := cursor{Scope: scope, Fence: store.TaskSearchFence{Epoch: user, Count: "1", VersionSum: "1"}, Position: store.TaskSearchPosition{ID: child, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
+	encoded, err := encodeCursor(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"missing":     strings.Replace(string(raw), `"ExactIDPriority":false,`, "", 1),
+		"null":        strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":null`, 1),
+		"wrong type":  strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":"false"`, 1),
+		"old version": strings.Replace(string(raw), `"version":2`, `"version":1`, 1),
+		"duplicate":   strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":false,"ExactIDPriority":false`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeCursor(base64.RawURLEncoding.EncodeToString([]byte(value)), scope); err == nil {
+				t.Fatal("invalid cursor accepted")
+			}
+		})
+	}
+	if _, err := decodeCursor(encoded, scope); err != nil {
+		t.Fatalf("explicit false rejected: %v", err)
 	}
 }
