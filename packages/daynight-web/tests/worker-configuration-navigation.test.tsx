@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from '@testing-library/react';
+import { act, fireEvent, screen, within } from '@testing-library/react';
 import { StrictMode, useSyncExternalStore } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserNavigation } from '../src/app/navigation';
@@ -27,6 +27,7 @@ const mount = async (strict = false, withProject = false) => {
   const writes: unknown[] = [];
   const fetch = vi.fn((url: string, init: RequestInit = {}) => {
     if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: projects, nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+    if (url === `/api/v1/me/workers/${target}/prompt`) return Promise.resolve(missing ? configurationError(404, 'not_found') : workerResponse({ scope: 'worker', scopeId: target, revision: '0', text: '', updatedAt: null }));
     if (!url.endsWith('/configuration')) return Promise.resolve(workerResponse(workerDetail()));
     if (init.method === 'PUT') {
       writes.push(JSON.parse(String(init.body)));
@@ -51,6 +52,69 @@ const leave = () => { const link = screen.getByRole('link', { name: 'Projects' }
 const unload = () => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; };
 
 describe('Worker configuration navigation', () => {
+  it('keeps the prompt textarea mounted while the independent configuration finishes loading', async () => {
+    const config = Promise.withResolvers<Response>();
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+      if (url === `/api/v1/me/workers/${target}/prompt`) return Promise.resolve(workerResponse({ scope: 'worker', scopeId: target, revision: '0', text: '', updatedAt: null }));
+      if (url.endsWith('/configuration')) return config.promise;
+      return Promise.resolve(workerResponse(workerDetail()));
+    }));
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    browserNavigation().navigate(path);
+    renderWithLocale(<TaskCacheProvider scope={scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    const prompt = screen.getByRole('textbox', { name: 'Prompt text' }) as HTMLTextAreaElement;
+    fireEvent.change(prompt, { target: { value: 'preserved prompt' } }); prompt.focus(); prompt.setSelectionRange(2, 7);
+    await act(async () => { config.resolve(configurationResponse(configurationResource())); }); await flush();
+    expect(screen.getByRole('textbox', { name: 'Prompt text' })).toBe(prompt);
+    expect(prompt).toHaveValue('preserved prompt'); expect(prompt).toHaveFocus();
+    expect(prompt.selectionStart).toBe(2); expect(prompt.selectionEnd).toBe(7);
+  });
+
+  it('guards a prompt changed back to its original text while saving and after unknown reconciliation', async () => {
+    const put = Promise.withResolvers<Response>(); let promptReads = 0;
+    const savedPrompt = (revision: string, text: string) => workerResponse({ scope: 'worker', scopeId: target, revision, text, updatedAt: '2026-11-09T10:00:00Z' });
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.startsWith('/api/v1/projects?')) return Promise.resolve(wireResponse({ items: [], nextCursor: null }, { headers: { 'Daynight-User-ID': WORKER_USER } }));
+      if (url === `/api/v1/me/workers/${target}/prompt`) {
+        if (init.method === 'PUT') return put.promise;
+        return Promise.resolve(++promptReads === 1 ? savedPrompt('1', 'old') : savedPrompt('2', 'other'));
+      }
+      if (url.endsWith('/configuration')) return Promise.resolve(configurationResponse(configurationResource()));
+      return Promise.resolve(workerResponse(workerDetail()));
+    }));
+    const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    browserNavigation().navigate(path);
+    renderWithLocale(<TaskCacheProvider scope={scope}><Workspace enabled /></TaskCacheProvider>, { locale: 'en' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    const prompt = screen.getByRole('textbox', { name: 'Prompt text' });
+    fireEvent.change(prompt, { target: { value: 'submitted' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' })); await flush();
+    fireEvent.change(prompt, { target: { value: 'old' } });
+    leave(); expect(screen.getByRole('alertdialog')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    await act(async () => { put.reject(new Error('response lost')); }); await flush();
+    expect(prompt).toHaveValue('old'); expect(screen.getByText('The saved version has changed. Your draft is retained.')).toBeVisible();
+    leave(); expect(screen.getByRole('alertdialog')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(prompt).toHaveValue('old');
+  });
+
+  it('uses one confirmation for both Worker forms and restores the prompt editor on cancellation', async () => {
+    await mount();
+    edit();
+    const prompt = screen.getByRole('textbox', { name: 'Prompt text' });
+    prompt.focus(); fireEvent.change(prompt, { target: { value: 'Worker instructions' } });
+    leave();
+    expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(prompt).toHaveFocus(); expect(prompt).toHaveValue('Worker instructions');
+    expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toHaveValue('3');
+    leave(); fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+    expect(location.pathname).toBe('/projects'); expect(unload()).toBe(false);
+  });
+
   it('protects invalid raw input, defaults to keep editing and restores the editor after cancel or Escape', async () => {
     await mount(); const input = edit('-'); leave();
     expect(screen.getByRole('alertdialog')).toHaveTextContent('Leave this Worker configuration and discard unsaved changes?');
@@ -94,7 +158,7 @@ describe('Worker configuration navigation', () => {
   it.each(['clean', 'saved', 'discarded'] as const)('does not block a %s configuration', async (kind) => {
     await mount();
     if (kind !== 'clean') {
-      edit(); fireEvent.click(screen.getByRole('button', { name: kind === 'saved' ? 'Save configuration' : 'Discard changes' })); await flush();
+      edit(); fireEvent.click(within(screen.getByRole('form', { name: 'Configuration' })).getByRole('button', { name: kind === 'saved' ? 'Save configuration' : 'Discard changes' })); await flush();
     }
     expect(unload()).toBe(false); leave(); expect(location.pathname).toBe('/projects'); expect(screen.queryByRole('alertdialog')).toBeNull();
   });

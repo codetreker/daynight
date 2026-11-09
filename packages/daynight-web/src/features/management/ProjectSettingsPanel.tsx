@@ -1,3 +1,4 @@
+import { useLayoutEffect } from "react";
 import { ProjectAccessBoundary } from "../projects/ProjectAccess";
 import type { CurrentUser } from "../../api/auth";
 import { useI18n } from "../../i18n/LocaleProvider";
@@ -5,15 +6,21 @@ import { ManagementError } from "./feedback";
 import { useProjectSettings } from "./useProjectSettings";
 import { ProjectOwnership } from "./ProjectOwnership";
 import type { ProjectTransferReceipt } from "../../api/project-transfer";
+import { usePromptNavigation } from "./AccountPage";
+import { useWorkerPrompt } from "../worker-prompts/useWorkerPrompt";
+import { WorkerPromptEditor } from "../worker-prompts/WorkerPromptEditor";
 
-export const ProjectSettingsPanel = ({ projectId, user, onTransferred, active = true, onRoute = true, onRetentionChange, onSettingsRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active?: boolean; readonly onRoute?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly onSettingsRetentionChange?: ((retain: boolean) => void) | undefined }) =>
-  <ProjectAccessBoundary projectId={projectId} initialRead active={active}><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} onTransferred={onTransferred} active={active} onRoute={onRoute} onRetentionChange={onRetentionChange} onSettingsRetentionChange={onSettingsRetentionChange} /></ProjectAccessBoundary>;
+export const ProjectSettingsPanel = ({ projectId, user, onTransferred, active = true, onRoute = true, onRetentionChange, onSettingsRetentionChange, onPromptRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active?: boolean; readonly onRoute?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly onSettingsRetentionChange?: ((retain: boolean) => void) | undefined; readonly onPromptRetentionChange?: ((retain: boolean) => void) | undefined }) =>
+  <ProjectAccessBoundary projectId={projectId} initialRead active={active}><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} onTransferred={onTransferred} active={active} onRoute={onRoute} onRetentionChange={onRetentionChange} onSettingsRetentionChange={onSettingsRetentionChange} onPromptRetentionChange={onPromptRetentionChange} /></ProjectAccessBoundary>;
 
-const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRoute, onRetentionChange, onSettingsRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRoute: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly onSettingsRetentionChange?: ((retain: boolean) => void) | undefined }) => {
+const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRoute, onRetentionChange, onSettingsRetentionChange, onPromptRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRoute: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly onSettingsRetentionChange?: ((retain: boolean) => void) | undefined; readonly onPromptRetentionChange?: ((retain: boolean) => void) | undefined }) => {
   const { messages: { auth: { management: { settings: m, common } } } } = useI18n();
   const state = useProjectSettings(projectId, user.id, onRoute, active, onSettingsRetentionChange);
+  const prompt = useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: active });
+  const navigation = usePromptNavigation({ scope: 'project', projectId }, prompt);
+  useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.uncertain]);
   const disabled = state.pending || state.loading || state.uncertain || state.role !== "admin";
-  return <>
+  return <div ref={navigation.owner} onFocusCapture={navigation.rememberFocus}>
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{state.project?.name ?? m.title}</h1><p className="subtitle">{m.scopeHint}</p></div></div>
     {state.error !== null && <ManagementError error={state.error} retry={state.retry} />}
     {state.reconciliation !== null ? <div className="notice warning" role="alert"><p>{state.reconciliation === "conflict" ? m.conflictPending : m.permissionPending}</p>{state.error === null && <button className="button" type="button" disabled={state.pending || state.loading} onClick={state.retry}>{common.retry}</button>}</div> : state.writeError !== null && <ManagementError error={state.writeError} retry={state.retry} />}
@@ -31,6 +38,8 @@ const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRout
         </form>
       </section>
     </>}
+    <WorkerPromptEditor state={prompt} scope="project" />
     <ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={active} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onRetentionChange} />
-  </>;
+    {navigation.confirmation}
+  </div>;
 };
