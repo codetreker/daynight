@@ -548,6 +548,12 @@ func (s unexpectedAppTransactions) ReadSnapshot(context.Context, func(store.Snap
 	failure := s.backend.unexpected("ReadSnapshot")
 	return failure
 }
+func (s unexpectedAppTransactions) ReadPromptSnapshot(context.Context, func(store.PromptSnapshot) error) error {
+	return s.backend.unexpected("ReadPromptSnapshot")
+}
+func (s unexpectedAppTransactions) WritePrompt(context.Context, func(store.PromptWriteScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WritePrompt")
+}
 func (s unexpectedAppTransactions) ReadTaskSearch(context.Context, func(store.TaskSearchSnapshot) error) error {
 	failure := s.backend.unexpected("ReadTaskSearch")
 	return failure
