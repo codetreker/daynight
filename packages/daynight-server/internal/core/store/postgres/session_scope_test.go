@@ -99,13 +99,14 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		if caller.Kind == model.PATCredential {
 			table = "personal_access_tokens"
 		}
-		duration := "1 day"
-		if expired {
-			duration = "1 second"
-		}
 		var expiry time.Time
-		if err := db.Pool.QueryRow(probeCtx, `UPDATE `+table+` SET expires_at=clock_timestamp()+$2::interval WHERE id=$1 RETURNING expires_at`, caller.CredentialID, duration).Scan(&expiry); err != nil {
+		if err := db.Pool.QueryRow(probeCtx, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '1 day' WHERE id=$1 RETURNING expires_at`, caller.CredentialID).Scan(&expiry); err != nil {
 			t.Fatal(err)
+		}
+		admittedAt := expiry.Add(-time.Second)
+		recheckedAt := admittedAt
+		if expired {
+			recheckedAt = expiry.Add(time.Second)
 		}
 		holder, err := db.Pool.Begin(probeCtx)
 		if err != nil {
@@ -123,7 +124,7 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		go func() {
 			defer close(finished)
 			completion, err := db.WriteSession(probeCtx, func(scope store.SessionScope) error {
-				if err := scope.SessionDAO().LockCredential(probeCtx, caller, time.Now().UTC()); err != nil {
+				if err := scope.SessionDAO().LockCredential(probeCtx, caller, admittedAt); err != nil {
 					return err
 				}
 				current, err := scope.BotDAO().Bot(probeCtx, bot.ID)
@@ -133,7 +134,7 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 				if err := operation(probeCtx, scope, current); err != nil {
 					return err
 				}
-				return scope.SessionDAO().LockCredential(probeCtx, caller, time.Now().UTC())
+				return scope.SessionDAO().LockCredential(probeCtx, caller, recheckedAt)
 			})
 			done <- result{completion, err}
 		}()
@@ -147,20 +148,6 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 			}
 		}()
 		waitTransferTeamLock(t, probeCtx, db, "SELECT id::text FROM bots WHERE id=", holder.Conn().PgConn().PID())
-		if expired {
-			for {
-				var reached bool
-				if err := db.Pool.QueryRow(probeCtx, `SELECT clock_timestamp()>=$1::timestamptz`, expiry).Scan(&reached); err != nil {
-					t.Fatal(err)
-				}
-				if reached {
-					break
-				}
-				if err := waitThreadClock(probeCtx); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
 		if err := holder.Commit(probeCtx); err != nil {
 			t.Fatal(err)
 		}
