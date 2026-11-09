@@ -17,20 +17,14 @@ import (
 // promhttp's Registry option otherwise panics or reuses an existing counter on
 // registration failure. Capture the error so composition fails explicitly.
 type metricsRegisterer struct {
-	registry *prometheus.Registry
-	err      error
+	prometheus.Registerer
+	err error
 }
 
 func (r *metricsRegisterer) Register(c prometheus.Collector) error {
-	r.err = errors.Join(r.err, r.registry.Register(c))
+	r.err = errors.Join(r.err, r.Registerer.Register(c))
 	return nil
 }
-func (r *metricsRegisterer) MustRegister(cs ...prometheus.Collector) {
-	for _, c := range cs {
-		_ = r.Register(c)
-	}
-}
-func (r *metricsRegisterer) Unregister(c prometheus.Collector) bool { return r.registry.Unregister(c) }
 
 type metricsErrorLog struct{ logger *slog.Logger }
 
@@ -67,7 +61,7 @@ func (l metricsErrorLog) Println(values ...any) {
 }
 
 func newMetricsHandler(registry *prometheus.Registry, logger *slog.Logger) (http.Handler, error) {
-	registerer := &metricsRegisterer{registry: registry}
+	registerer := &metricsRegisterer{Registerer: registry}
 	gather := promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		ErrorLog: metricsErrorLog{logger}, ErrorHandling: promhttp.HTTPErrorOnError,
 		Registry: registerer, EnableOpenMetrics: true, MaxRequestsInFlight: 2,

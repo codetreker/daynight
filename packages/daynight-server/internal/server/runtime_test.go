@@ -131,6 +131,9 @@ func TestGracefulDrainPreservesActiveRequestsAndReleasesResources(t *testing.T) 
 			}
 		})
 	})
+	if got := runtime.MetricsAddress(); got != "" {
+		t.Fatalf("disabled metrics exposed an address: %q", got)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
