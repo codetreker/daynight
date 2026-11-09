@@ -16,6 +16,7 @@ type ListRequest struct {
 	Status             *model.TaskStatus
 	Ready, AllowAgents *bool
 	CompatiblePlatform *model.TaskPlatform
+	PlatformSpecific   *bool
 	WorkerID           *string
 }
 
@@ -53,7 +54,7 @@ func SelectList(projectID, principalUserID string, request ListRequest) (ListSel
 	if err != nil {
 		return ListSelection{}, err
 	}
-	scope := query.ListScope{Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, AssignedTo: assignedTo}
+	scope := query.ListScope{Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AssignedTo: assignedTo}
 	var worker *store.WorkerQuery
 	if request.WorkerID != nil {
 		workerID, err := model.CanonicalID(*request.WorkerID)
@@ -71,7 +72,7 @@ func SelectList(projectID, principalUserID string, request ListRequest) (ListSel
 	if err != nil {
 		return ListSelection{}, err
 	}
-	return ListSelection{Scope: scope, Query: store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Worker: worker, AssignedTo: assignedTo}}, nil
+	return ListSelection{Scope: scope, Query: store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, Worker: worker, AssignedTo: assignedTo}}, nil
 }
 
 // ReadFault classifies a task read refusal without hiding unrelated failures.

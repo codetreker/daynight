@@ -14,6 +14,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   uncertain: 'The save result is not yet confirmed. Your draft has been kept.', verifySave: 'Check save result',
   conflict: 'The cloud configuration changed in another page.', viewLatest: 'View latest cloud configuration', loadLatest: 'Load latest configuration',
   settings: 'Runtime settings', maxConcurrent: 'Concurrent task limit', pollIntervalMs: 'Task polling interval', recoveryLimit: 'Automatic recovery limit', milliseconds: 'ms',
+  preferPlatformSpecificTasks: 'Prefer platform-specific tasks', platformPreferenceDetail: 'Check tasks requiring this Worker’s platform across all selected projects before unrestricted tasks.', enabled: 'On', disabled: 'Off',
   defaultNative: 'Default Agent', agent: 'Agent', model: 'Model', args: 'Startup arguments', defaultModel: 'Agent default model', customModel: 'Custom model',
   inherit: 'Inherit applicable settings', inheritGlobal: 'Inherit global', customArgs: 'Custom arguments', clearArgs: 'No extra arguments',
   argsHint: 'JSON string array; [] means no extra arguments.', inheritanceNote: 'With a different Agent, inherited model and arguments use that Agent’s defaults.', resolved: 'Resolved',
@@ -32,7 +33,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   localSettings: 'Local settings', localSettingsDetail: 'These settings stay on the Worker machine.',
   localSettingsItems: ['Repository root and local paths', 'Worker identity, service connection and credentials', 'Agent control mode'],
   state: { pending: 'Awaiting application', applying: 'Applying', applied: 'Applied', error: 'Failed', unsaved: 'Unsaved' },
-  kind: { maxConcurrent: 'Concurrent task limit', pollIntervalMs: 'Task polling interval', recoveryLimit: 'Automatic recovery limit', native: 'Default Agent', projectNative: 'Project Agent', projectPreparation: 'Repository preparation', projectRemoval: 'Stop project execution' },
+  kind: { preferPlatformSpecificTasks: 'Prefer platform-specific tasks', maxConcurrent: 'Concurrent task limit', pollIntervalMs: 'Task polling interval', recoveryLimit: 'Automatic recovery limit', native: 'Default Agent', projectNative: 'Project Agent', projectPreparation: 'Repository preparation', projectRemoval: 'Stop project execution' },
   codes: { not_found: 'Resource not found', permission_denied: 'Permission denied', timeout: 'Operation timed out', command_failed: 'Command failed', invalid_output: 'Invalid command output', invalid_configuration: 'Invalid configuration', io_error: 'Storage or I/O error', unavailable: 'Resource unavailable' },
   phases: { validate: 'Validation', prepare: 'Preparation', apply: 'Application', stop: 'Stopping', persist: 'Persistence' },
 };

@@ -15,13 +15,14 @@
 
 ## 目标配置
 
-完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、native 与 projects，均必填。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
+完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
 
 | 字段 | 语义 |
 | --- | --- |
 | maxConcurrent | 1..64 的整数 |
 | pollIntervalMs | 1000..60000 的整数，单位毫秒 |
 | recoveryLimit | 0..10 的整数 |
+| preferPlatformSpecificTasks | 布尔值；true 优先领取明确指定当前运行平台的任务，false 保留原候选顺序 |
 | native | 完整 {agent,model,args}，Agent 为 codex、copilot 或 claude |
 | projects | 显式数组；条目为 {projectId,nativeOverrides}，规范 Project UUID 不重复，最多 128 项 |
 
@@ -29,7 +30,7 @@
 
 model 最多 256 UTF-8 字节；args 最多 128 项，每项最多 4096 UTF-8 字节。项目覆盖遵循相同限制。本地候选及云端目标共享这些数值和集合限制。
 
-项目列表规范化后比较语义值。repositoryRoot、本机路径、服务连接与凭据、Worker 身份及 agentControlMode 不属于目标配置。
+项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、本机路径、服务连接与凭据、Worker 身份及 agentControlMode 不属于目标配置。
 
 ## 首次导入与编辑
 
@@ -49,16 +50,17 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 ## 应用观测
 
-每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。完整 items 最多 1024 个不同 key，应用值遵循目标配置相同的字段与数值限制。
+每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。完整 items 最多 1025 个不同 key，应用值遵循目标配置相同的字段与数值限制。
 
 | kind | appliedValue |
 | --- | --- |
 | maxConcurrent、pollIntervalMs、recoveryLimit | 对应合法标量或 null |
+| preferPlatformSpecificTasks | true 或 false 表示已应用的优先策略；尚无确认值时为 null |
 | native、projectNative | 完整 native 元组或 null |
 | projectPreparation | true 表示已准备；没有可确认结果时为 null |
 | projectRemoval | true 表示已移除/停止；没有可确认结果时为 null |
 
-null 表示没有可确认的实际值，不是生效默认值。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
+null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false 是已应用关闭，不能解释为缺少结果。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
 
 error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextAttemptAt 为 nullable RFC3339 本机重试期限。失败使用闭合 code/category/phase 及 occurredAt，不接受自由命令输出、配置正文或敏感信息。code 为 not_found、permission_denied、timeout、command_failed、invalid_output、invalid_configuration、io_error 或 unavailable；category 为 validation、repository、agent、runtime、storage；phase 为 validate、prepare、apply、stop、persist。error 只在 state:error 时存在；applied 必须具有非 null 实际值，nextAttemptAt 只用于 error 状态。pending/applying/error 可保留先前成功值。恢复可清除当前 error，不能提前丢弃尚未报告的失败。
 

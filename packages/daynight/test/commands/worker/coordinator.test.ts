@@ -150,12 +150,12 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const remote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => uuid(2)),
     ownInventory: vi.fn(async (projects: readonly { projectId: string }[]) => ({ tasks: [...grants.values()], coveredProjectIds: [...new Set(projects.map(project => project.projectId))], unavailableProjectIds: [] })),
-    candidates: vi.fn(async function* (projectId: string) { for (const candidate of candidates) if (candidate.projectId === projectId && ![...grants.values()].some((value) => value.id === candidate.id)) yield candidate; }),
+    candidates: vi.fn(async function* (projectId: string, platform, _signal, platformSpecific) { for (const candidate of candidates) if (candidate.projectId === projectId && (candidate.requiredPlatform === null || candidate.requiredPlatform === platform) && (platformSpecific === undefined || (candidate.requiredPlatform !== null) === platformSpecific) && ![...grants.values()].some((value) => value.id === candidate.id)) yield candidate; }),
     claim: vi.fn(async (candidate: Task, descriptor: WorkerClaimDescriptor) => grant(candidate, descriptor)),
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find((value) => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
     update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...readWorkerClaim(current.properties)!, ...update } } }; grants.set(readWorkerClaim(current.properties)!.claimId, result); return result; }),
   } as unknown as WorkerRemote;
-  const options = { store, git, herdr, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, buildPrompt: vi.fn((_assignment: ManagedAssignment) => "worker-managed using-daynight autopilot-managed-task"), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
+  const options = { store, git, herdr, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, buildPrompt: vi.fn((_assignment: ManagedAssignment) => "worker-managed using-daynight autopilot-managed-task"), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   return { root, store, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind, blockStartupInput: () => { blockedStartupInput = true; } };
 };
 
@@ -326,7 +326,7 @@ describe("worker report publication boundaries", () => {
     const tick = coordinator.tick();
     try {
       await requested;
-      coordinator.updateConfiguration({ ...f.options, maxConcurrent: 2 });
+      coordinator.updateConfiguration({ ...f.options, maxConcurrent: 2, preferPlatformSpecificTasks: false });
       coordinator.updateConfiguration(f.options);
       release(); await tick;
       expect(publish.mock.calls.every(([value]) => value === null)).toBe(true);
@@ -1674,6 +1674,102 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.remote.claim).toHaveBeenCalledTimes(3);
   });
 
+  it.each(["linux", "macos", "windows"] as const)("prioritizes %s tasks across projects, then falls back while preserving rotation", async platform => {
+    const f = await fixture(5);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    const specific = (projectId: string, id: number): Task => ({ ...task(projectId, uuid(id)), requiredPlatform: platform });
+    f.candidates.splice(0, f.candidates.length,
+      task(f.project.projectId, uuid(100)), specific(f.project.projectId, 101), specific(f.project.projectId, 102),
+      task(second.projectId, uuid(200)), specific(second.projectId, 201));
+    const coordinator = createWorkerCoordinator({ ...f.options, platform, preferPlatformSpecificTasks: true });
+    const expected = [101, 201, 102, 100, 200].map(uuid);
+    for (let round = 0; round < expected.length; round++) {
+      await coordinator.tick();
+      expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual(expected.slice(0, round + 1));
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(round + 1));
+    }
+    expect(vi.mocked(f.remote.candidates).mock.calls.some(([, , , platformSpecific]) => platformSpecific === false)).toBe(true);
+  });
+
+  it.each([false, true])("keeps platform preference local to each Worker when enabled=%s", async preferPlatformSpecificTasks => {
+    const f = await fixture();
+    f.candidates[1] = { ...f.candidates[1]!, requiredPlatform: "linux" };
+    f.coordinator.updateConfiguration({ ...f.options, preferPlatformSpecificTasks });
+    await f.coordinator.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([uuid(preferPlatformSpecificTasks ? 101 : 100)]);
+    const query = vi.mocked(f.remote.candidates).mock.calls[0]!;
+    expect(query[3]).toBe(preferPlatformSpecificTasks ? true : undefined);
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
+  it("round-robins unrestricted work while a preferred task retains its stopped worktree", async () => {
+    const f = await fixture(4);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    const blocked = { ...task(f.project.projectId, uuid(102)), requiredPlatform: "linux" as const };
+    f.candidates.splice(0, f.candidates.length, blocked,
+      task(f.project.projectId, uuid(100)), task(f.project.projectId, uuid(101)),
+      task(second.projectId, uuid(200)), task(second.projectId, uuid(201)), task(second.projectId, uuid(202)), task(second.projectId, uuid(203)));
+    const owner: ResourceOwner = { projectId: blocked.projectId, taskId: blocked.id, claimId: uuid(951), worktreeId: uuid(952) };
+    f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    Object.assign(f.herdr, { lifecycle: { registerClaim: () => {}, responsibilities: () => [owner], isStopped: (target: ResourceOwner) => target.claimId === owner.claimId, assertCanAdvance: () => {} } });
+    f.coordinator.updateConfiguration({ ...f.options, preferPlatformSpecificTasks: true });
+    const expected = [100, 200, 101, 201].map(uuid);
+    for (let round = 0; round < expected.length; round++) {
+      await f.coordinator.tick();
+      expect(f.remote.claim).toHaveBeenCalledTimes(round + 1);
+      expect(f.worktrees.has(owner.claimId)).toBe(true);
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(round + 1));
+    }
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual(expected);
+  });
+
+  it("preserves unrestricted rotation across intermittent successful preferred claims", async () => {
+    const f = await fixture(6);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.candidates.push(task(second.projectId, uuid(200)), task(second.projectId, uuid(201)), task(second.projectId, uuid(202)));
+    f.coordinator.updateConfiguration({ ...f.options, preferPlatformSpecificTasks: true });
+    const expected: string[] = [];
+    for (const [offset, ordinary] of [100, 200, 101].entries()) {
+      const preferred = { ...task(f.project.projectId, uuid(300 + offset)), requiredPlatform: "linux" as const };
+      f.candidates.push(preferred);
+      await f.coordinator.tick(); expected.push(preferred.id);
+      expect(f.remote.claim).toHaveBeenCalledTimes(expected.length);
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(expected.length));
+      await f.coordinator.tick(); expected.push(uuid(ordinary));
+      expect(f.remote.claim).toHaveBeenCalledTimes(expected.length);
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(expected.length));
+    }
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual(expected);
+  });
+
+  it("closes tier streams and discards a candidate when preference changes during its query", async () => {
+    const f = await fixture();
+    f.coordinator.updateConfiguration({ ...f.options, preferPlatformSpecificTasks: true });
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const querying = vi.fn(), closed = vi.fn();
+    vi.mocked(f.remote.candidates).mockImplementationOnce(async function* (_projectId, _platform, _signal, platformSpecific) {
+      expect(platformSpecific).toBe(true);
+      try {
+        querying(); await barrier;
+        yield { ...f.candidates[1]!, requiredPlatform: "linux" };
+      } finally { closed(); }
+    });
+    const round = f.coordinator.tick();
+    await eventually(() => expect(querying).toHaveBeenCalledOnce());
+    f.coordinator.updateConfiguration(f.options);
+    release(); await round;
+    expect(closed).toHaveBeenCalledOnce();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    await f.coordinator.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([uuid(100)]);
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
   it("round-robins pending work per free slot instead of draining the first project", async () => {
     const f = await fixture(2);
     const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
@@ -2280,7 +2376,7 @@ describe("cloud project removal", () => {
       f.store.registerProject(next);
       f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
       f.grant(task(next.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex" });
-      f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }, { project: next, configuration }], readyProjectIds: [f.project.projectId, next.projectId], targetProjectIds: [f.project.projectId, next.projectId], globalConfiguration: configuration, maxConcurrent: 1 });
+      f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }, { project: next, configuration }], readyProjectIds: [f.project.projectId, next.projectId], targetProjectIds: [f.project.projectId, next.projectId], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
       release(); await tick;
       expect(f.events.some(event => event.kind === "warning" && event.message.includes("unproven Git ownership"))).toBe(false);
       expect(f.remote.claim).not.toHaveBeenCalled();
@@ -2307,7 +2403,7 @@ describe("cloud project removal", () => {
       f.store.registerProject(next);
       f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
       f.grant(task(next.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex" });
-      f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }, { project: next, configuration }], readyProjectIds: [f.project.projectId, next.projectId], targetProjectIds: [f.project.projectId, next.projectId], globalConfiguration: configuration, maxConcurrent: 1 });
+      f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }, { project: next, configuration }], readyProjectIds: [f.project.projectId, next.projectId], targetProjectIds: [f.project.projectId, next.projectId], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
       release(); await tick;
       expect(f.remote.claim).not.toHaveBeenCalled();
       expect(f.tasks.start).not.toHaveBeenCalled();
@@ -2445,7 +2541,7 @@ describe("cloud project removal", () => {
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
     f.tasks.stopAndClose.mockImplementationOnce(async owner => { await pending; f.resources.delete(owner.claimId); });
-    f.coordinator.updateConfiguration({ repositories: [{ project: second, configuration }], readyProjectIds: [second.projectId], targetProjectIds: [second.projectId], globalConfiguration: configuration, maxConcurrent: 1 });
+    f.coordinator.updateConfiguration({ repositories: [{ project: second, configuration }], readyProjectIds: [second.projectId], targetProjectIds: [second.projectId], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
     const stopping = f.coordinator.stopProject(f.project.projectId);
     try {
       await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledOnce());
@@ -2469,7 +2565,7 @@ describe("cloud project removal", () => {
     const f = await fixture();
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     const row = f.store.listUnfinishedTasks()[0]!;
-    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1 });
+    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
     f.tasks.stopAndClose.mockRejectedValueOnce(new Error("stop failed"));
     await expect(f.coordinator.stopProject(f.project.projectId)).rejects.toThrow("Project execution stop was not confirmed");
     expect(f.resources.has(row.claimId)).toBe(true);
@@ -2488,7 +2584,7 @@ describe("Web acquisition configuration changes", () => {
     const f = await fixture(); f.candidates.splice(1);
     const webStore = openWebExecutionStore(createMemoryDatabase());
     const native: ExecutionConfiguration = { ...configuration, agentControlMode: "web", args: [] };
-    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1 };
+    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     let release!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; });
     const verify = vi.fn(async () => { if (verify.mock.calls.length === 1) await waiting; });
@@ -2521,7 +2617,7 @@ describe("applied cloud runtime configuration", () => {
     const f = await fixture();
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     const observed = f.tasks.observe.mock.calls.length;
-    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [f.project.projectId], globalConfiguration: { ...configuration, model: "unrelated-global-model" }, maxConcurrent: 2 });
+    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [f.project.projectId], globalConfiguration: { ...configuration, model: "unrelated-global-model" }, maxConcurrent: 2, preferPlatformSpecificTasks: false });
     await f.coordinator.tick();
     expect(f.tasks.observe).toHaveBeenCalledTimes(observed);
     expect(f.tasks.start).toHaveBeenCalledOnce();
@@ -2537,7 +2633,7 @@ describe("applied cloud runtime configuration", () => {
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     const first = f.tasks.start.mock.calls[0]![2];
     const native = { ...configuration, model: "updated-model", args: ["--search"] };
-    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: native }], globalConfiguration: native, maxConcurrent: 2 });
+    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: native }], globalConfiguration: native, maxConcurrent: 2, preferPlatformSpecificTasks: false });
     native.model = "mutated-after-publication";
     native.args.push("--no-alt-screen");
     await f.coordinator.tick();
@@ -2546,7 +2642,7 @@ describe("applied cloud runtime configuration", () => {
     expect(first.configuration.model).toBe("current-model");
     expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
     f.candidates.push(task(f.project.projectId, uuid(102)));
-    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, maxConcurrent: 1 });
+    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
     await f.coordinator.tick();
     expect(f.remote.claim).toHaveBeenCalledTimes(2);
     expect(f.tasks.start).toHaveBeenCalledTimes(2);
@@ -2563,11 +2659,11 @@ describe("applied cloud runtime configuration", () => {
     await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: failed })));
     const observations = f.tasks.observe.mock.calls.length;
     const exhausted = { ...configuration, recoveryLimit: 0 };
-    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: exhausted }], globalConfiguration: exhausted, maxConcurrent: 1 });
+    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: exhausted }], globalConfiguration: exhausted, maxConcurrent: 1, preferPlatformSpecificTasks: false });
     await f.coordinator.tick();
     expect(f.tasks.observe).toHaveBeenCalledTimes(observations);
     const resumed = { ...configuration, recoveryLimit: 5 };
-    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: resumed }], globalConfiguration: resumed, maxConcurrent: 1 });
+    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: resumed }], globalConfiguration: resumed, maxConcurrent: 1, preferPlatformSpecificTasks: false });
     await f.coordinator.tick();
     await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(observations + 1));
     expect(f.tasks.start).toHaveBeenCalledOnce();
@@ -2582,7 +2678,7 @@ describe("applied cloud runtime configuration", () => {
     const ticking = f.coordinator.tick();
     try {
       await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
-      f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1 });
+      f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
       release(); await ticking;
       expect(f.store.listUnfinishedTasks()).toEqual([expect.objectContaining({ projectId: f.project.projectId, status: "pending" })]);
       expect(f.grants.size).toBe(1);
@@ -2599,7 +2695,7 @@ describe("applied cloud runtime configuration", () => {
     vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await pending; return f.grant(candidate, descriptor); });
     const ticking = f.coordinator.tick();
     await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
-    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [f.project.projectId], globalConfiguration: configuration, maxConcurrent: 1 });
+    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [f.project.projectId], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
     release(); await ticking;
     expect(f.store.listUnfinishedTasks()).toHaveLength(1);
     expect(f.store.listUnfinishedTasks()[0]!.status).toBe("pending");

@@ -147,3 +147,13 @@ func TestProjectionFailurePropagation(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestSelectListPreservesPlatformSpecificTier(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	for _, tier := range []*bool{nil, ptr(false), ptr(true)} {
+		selection, err := SelectList(id, id, ListRequest{PageRequest: model.PageRequest{Limit: 1}, CompatiblePlatform: ptr(model.PlatformMacOS), PlatformSpecific: tier})
+		if err != nil || !model.EqualOptional(selection.Query.PlatformSpecific, tier) || !model.EqualOptional(selection.Scope.PlatformSpecific, tier) {
+			t.Fatalf("tier lost: %#v %v", selection, err)
+		}
+	}
+}

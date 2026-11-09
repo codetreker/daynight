@@ -63,7 +63,7 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 		projection += ", worker_property.value"
 		join = " LEFT JOIN task_properties worker_property ON worker_property.task_id=t.id AND worker_property.name='worker'"
 	}
-	arguments := []any{projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit}
+	arguments := []any{projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit, query.PlatformSpecific}
 	assignmentCondition := ""
 	switch query.AssignedTo.Mode {
 	case model.TaskAssignmentAll:
@@ -76,7 +76,7 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 		}
 		assignmentCondition = " AND t.assigned_to IS NULL"
 	case model.TaskAssignmentUser:
-		assignmentCondition = " AND t.assigned_to = $9::uuid"
+		assignmentCondition = " AND t.assigned_to = $10::uuid"
 		arguments = append(arguments, query.AssignedTo.UserID)
 	default:
 		return store.TaskPage{}, pg.QueryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
@@ -88,6 +88,7 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
   AND ($5::boolean IS NULL OR `+pg.TaskReady+` = $5)
   AND ($6::boolean IS NULL OR t.allow_agents = $6)
   AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
+  AND ($9::boolean IS NULL OR (t.required_platform IS NOT NULL) = $9)
   `+assignmentCondition+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)

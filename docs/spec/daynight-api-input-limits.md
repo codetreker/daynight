@@ -28,7 +28,7 @@
 | Worker workingDirectory、native arg | 各 4 KiB |
 | Worker OS type、arch、release、version | 分别 64、64、256、1024 bytes |
 | Worker CPU model | 512 bytes |
-| Worker native args、projects、claims、observation items | 分别 128、128、256、1024 项 |
+| Worker native args、projects、claims、observation items | 分别 128、128、256、1025 项 |
 | Worker telemetry、configuration、完整单项编码 | 各 4 MiB |
 | Worker maxConcurrent、pollIntervalMs、recoveryLimit | 分别 1–64、1000–60000、0–10 |
 

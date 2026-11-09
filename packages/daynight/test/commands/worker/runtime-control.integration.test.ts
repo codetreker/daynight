@@ -55,7 +55,7 @@ const fixture = async (mode: "herdr" | "web" = "herdr") => {
   return { homeDirectory, packageDirectory: path.resolve("package"), request, paths, store, project, task, sibling };
 };
 const staleManagedSource = (mode = "herdr") => `serverUrl: ${origin}\nserverToken: dn_pat_abcdefghijklmnopqrstuvwxyz1234567890\nworkerId: ${uuid(4)}\nworker:\n  agentControlMode: ${mode}\n  agent: invalid-local-agent\n  maxConcurrent: 0\n  args: false\n  repositories: null\n`;
-const cloudTarget = (selected: boolean): WorkerCloudDesired => ({ revision: "8", updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: 4, pollIntervalMs: 2000, recoveryLimit: 7, native: { agent: "codex", model: "cloud-global", args: [] }, projects: selected ? [{ projectId: uuid(1), nativeOverrides: { model: "cloud-project" } }] : [] } });
+const cloudTarget = (selected: boolean): WorkerCloudDesired => ({ revision: "8", updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: 4, pollIntervalMs: 2000, recoveryLimit: 7, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-global", args: [] }, projects: selected ? [{ projectId: uuid(1), nativeOverrides: { model: "cloud-project" } }] : [] } });
 
 describe("worker synchronous management runtime ownership", () => {
   it("resolves only the target Project when an unrelated explicit Project is unavailable", async () => {

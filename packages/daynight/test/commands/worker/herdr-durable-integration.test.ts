@@ -1215,7 +1215,7 @@ it.each([[0, false], [0, undefined], [3, false], [3, undefined]] as const)("keep
   const events: WorkerEvent[] = []; let settled = 0;
   const submit = f.facade.tasks.submitPrompt.bind(f.facade.tasks);
   vi.spyOn(f.facade.tasks, "submitPrompt").mockImplementation(async (...args) => { try { return await submit(...args); } finally { settled++; } });
-  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
   try {
     for (let count = 1; count <= 5; count++) {
       await vi.waitFor(async () => { await coordinator.tick(); expect({ settled, errors: events.filter(event => event.kind === "execution-error").map(event => String(event.error)) }).toMatchObject({ settled: expect.any(Number), errors: [] }); expect(settled).toBeGreaterThanOrEqual(count); }, { timeout: 2000, interval: 10 });
@@ -1242,7 +1242,7 @@ it("counts a first-frame task read failure against the coordinator recovery budg
   const git = { listWorktrees: async () => [{ owner: f.context, binding: worktree }], verifyWorktree: async () => worktree, findWorktree: async () => worktree } as unknown as WorkerGitManager;
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 }, events: WorkerEvent[] = [];
   const submit = vi.spyOn(f.facade.tasks, "submitPrompt"), sync = vi.spyOn(f.facade.tasks, "syncWorkspaceName");
-  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
   try {
     await vi.waitFor(async () => { await coordinator.tick(); expect(events.filter(event => event.kind === "execution-error")).toHaveLength(1); }, { timeout: 2000, interval: 10 });
     const error = events.find(event => event.kind === "execution-error")!.error;
@@ -1279,7 +1279,7 @@ it("keeps manual and suspended durable control as ordinary coordinator waits", a
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 0 }, events: WorkerEvent[] = []; let settled = 0;
   const submit = f.facade.tasks.submitPrompt.bind(f.facade.tasks);
   vi.spyOn(f.facade.tasks, "submitPrompt").mockImplementation(async (...args) => { try { return await submit(...args); } finally { settled++; } });
-  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git, remote: remote as WorkerRemote, workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: event => events.push(event), buildPrompt: () => "Original managed assignment" });
   try {
     for (let count = 1; count <= 6; count++) {
       if (count === 4) { await control("release_control"); expect(input.state(f.context).state).toBe("suspended"); }
@@ -1347,7 +1347,7 @@ it("releases a deleted claim with an unacknowledged stopped ledger for the next 
   };
   const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 };
   const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git: { listWorktrees: async () => [], findWorktree: async () => null } as unknown as WorkerGitManager, remote: remote as WorkerRemote,
-    workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1,
+    workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false,
     emit: () => {}, buildPrompt: () => "managed", signal: cancellation.signal, onClaim: () => cancellation.abort(new Error("Stop this test after successor admission")) });
   try {
     await coordinator.tick();

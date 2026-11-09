@@ -414,9 +414,10 @@ export type TaskFilters = {
   readonly ready?: boolean;
   readonly allowAgents?: boolean;
   readonly compatiblePlatform?: TaskPlatform;
+  readonly platformSpecific?: boolean;
   readonly workerId?: string;
 };
-export type TaskSearchInput = Omit<TaskFilters, "workerId"> & { readonly query: string };
+export type TaskSearchInput = Omit<TaskFilters, "workerId" | "platformSpecific"> & { readonly query: string };
 export type TaskSearchField = "id" | "title" | "description";
 export type TaskSearchItem = {
   readonly id: string;

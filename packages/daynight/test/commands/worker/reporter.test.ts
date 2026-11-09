@@ -414,7 +414,7 @@ it("starts no work when its root signal is already cancelled", async () => {
   expect(f.collect).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
 });
 
-const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
 const cloudDesired = { revision: "1", updatedAt: timestamp, value: cloudValue };
 
 it("uses the latest inventory after a delayed cloud configuration preparation", async () => {
@@ -504,7 +504,7 @@ it("captures current configuration after an unknown send outcome instead of repl
 
 it("keeps bootstrap reporting independent of runtime application and joins receipt commits on shutdown", async () => {
   const f = fixture(), committed = deferred<void>();
-  const bootstrap = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+  const bootstrap = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
   const capture = vi.fn(() => ({ bootstrap, observation: null }));
   const receipt = { desired: { revision: "1", updatedAt: timestamp, value: bootstrap }, observationRevision: "0", observationAccepted: false };
   const send = vi.fn(async () => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));

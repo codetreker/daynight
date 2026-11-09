@@ -42,8 +42,8 @@ const fixture = async () => {
   const store = openWorkerStore(path.join(alias, "worker.sqlite")); store.registerProject(project);
   const git = { removeWorktree: vi.fn(), listWorktrees: vi.fn(async () => []) } as unknown as WorkerGitManager;
   const workerId = randomUUID();
-  const common = { store, git, remote: {} as WorkerRemote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: randomUUID(), name: "test" }, repositories: [{ project, configuration: config }], targetProjectIds: [owner.projectId], readyProjectIds: [owner.projectId], globalConfiguration: config, maxConcurrent: 2, buildPrompt: () => "test", emit: () => {} };
-  const exclude = { repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: config, maxConcurrent: 2 };
+  const common = { store, git, remote: {} as WorkerRemote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: randomUUID(), name: "test" }, repositories: [{ project, configuration: config }], targetProjectIds: [owner.projectId], readyProjectIds: [owner.projectId], globalConfiguration: config, maxConcurrent: 2, preferPlatformSpecificTasks: false, buildPrompt: () => "test", emit: () => {} };
+  const exclude = { repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: config, maxConcurrent: 2, preferPlatformSpecificTasks: false };
   const verify = async () => {
     expect(await readFile(sentinel, "utf8")).toBe("retained\n");
     expect(gitCommand(repository, "worktree", "list", "--porcelain")).toContain(owner.taskId);

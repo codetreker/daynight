@@ -201,7 +201,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId", "assignedTo")
+	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "workerId", "assignedTo")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -230,6 +230,13 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 		}
 		allowAgents := value[0] == "true"
 		result.AllowAgents = &allowAgents
+	}
+	if value, exists := values["platformSpecific"]; exists {
+		if value[0] != "true" && value[0] != "false" {
+			return service.TaskListRequest{}, httpx.InvalidInput("platformSpecific must be true or false")
+		}
+		platformSpecific := value[0] == "true"
+		result.PlatformSpecific = &platformSpecific
 	}
 	if value, exists := values["compatiblePlatform"]; exists {
 		platform := model.TaskPlatform(value[0])
