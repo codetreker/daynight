@@ -55,9 +55,11 @@ observations remain in Core with independently constructed expectations.
 
 The Report HTTP capacity subset executes with database and UniAuth fixture
 variables unset. Protocol and call-count proofs stay separate from actual Core
-validation and projection. Configuration and assistant-host capacity cases retain
-their existing fixtures and separately owned guarantees; complete root suites
-retain their own environment requirements.
+validation and projection. The
+[Configuration capacity decision](2026-11-09-worker-configuration-capacity-test-owners.md)
+extends the shared operation fixture and assigns its parser and business proofs.
+Assistant-host capacity cases retain their existing DAO fixture and separately
+owned guarantees; complete root suites retain their own environment requirements.
 
 Matching performance comparisons include the receiving Core package and full
 validation. Package elapsed times and a faster subset do not establish hosted

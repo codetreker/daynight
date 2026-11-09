@@ -308,3 +308,127 @@ func TestExchangeConfigurationFailurePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type capacityConfigurationDAO struct {
+	t                 *testing.T
+	read              func(context.Context, string, string) (model.WorkerConfigurationResource, error)
+	desired           func(context.Context, string, string, int64, model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error)
+	observation       func(context.Context, string, string, int64, model.WorkerConfigurationObservation) error
+	reads             int
+	desiredWrites     int
+	observationWrites int
+}
+
+func (d *capacityConfigurationDAO) unexpected(method string) error {
+	d.t.Helper()
+	d.t.Errorf("unexpected configuration DAO call: %s", method)
+	return errors.New("unexpected configuration DAO call: " + method)
+}
+
+func (d *capacityConfigurationDAO) ReportTaskSnapshots(context.Context, string, model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
+	return nil, d.unexpected("ReportTaskSnapshots")
+}
+func (d *capacityConfigurationDAO) UpsertWorker(context.Context, model.WorkerSnapshot) (model.WorkerSnapshot, error) {
+	return model.WorkerSnapshot{}, d.unexpected("UpsertWorker")
+}
+func (d *capacityConfigurationDAO) WorkerConfiguration(ctx context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+	d.reads++
+	if d.read == nil {
+		return model.WorkerConfigurationResource{}, d.unexpected("WorkerConfiguration")
+	}
+	return d.read(ctx, user, worker)
+}
+func (d *capacityConfigurationDAO) ConfigurationProjectAccess(context.Context, string, string) error {
+	return d.unexpected("ConfigurationProjectAccess")
+}
+func (d *capacityConfigurationDAO) SetWorkerConfiguration(ctx context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+	d.desiredWrites++
+	if d.desired == nil {
+		return model.WorkerDesiredConfiguration{}, d.unexpected("SetWorkerConfiguration")
+	}
+	return d.desired(ctx, user, worker, revision, value)
+}
+func (d *capacityConfigurationDAO) SetWorkerConfigurationObservation(ctx context.Context, user, worker string, revision int64, observation model.WorkerConfigurationObservation) error {
+	d.observationWrites++
+	if d.observation == nil {
+		return d.unexpected("SetWorkerConfigurationObservation")
+	}
+	return d.observation(ctx, user, worker, revision, observation)
+}
+
+func configurationCapacityResource() model.WorkerConfigurationResource {
+	return model.WorkerConfigurationResource{
+		Desired:             &model.WorkerDesiredConfiguration{Revision: "1", Value: configurationCapacityValue(), UpdatedAt: time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)},
+		ObservationRevision: "0",
+	}
+}
+
+func TestPutConfigurationCapacityValues(t *testing.T) {
+	for _, tc := range configurationCapacityCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			principal := model.Principal{UserID: "capacity-user"}
+			const workerID = "capacity-worker"
+			input, expectedValue := configurationCapacityValue(), configurationCapacityValue()
+			tc.setValue(&input)
+			tc.setValue(&expectedValue)
+			current, expected := configurationCapacityResource(), configurationCapacityResource()
+			if tc.name == "desired.projects" {
+				tc.setValue(&current.Desired.Value)
+				tc.setValue(&expected.Desired.Value)
+			}
+			d := &capacityConfigurationDAO{t: t}
+			d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+				if actual != ctx || user != principal.UserID || worker != workerID || d.reads != 1 {
+					t.Errorf("configuration read arguments or count differ: %s %s reads=%d", user, worker, d.reads)
+				}
+				return current, nil
+			}
+			writes := 0
+			if tc.changed {
+				writes = 1
+				expected.Desired = &model.WorkerDesiredConfiguration{Revision: "2", Value: expectedValue, UpdatedAt: expected.Desired.UpdatedAt.Add(1)}
+				returnedValue := configurationCapacityValue()
+				tc.setValue(&returnedValue)
+				returned := model.WorkerDesiredConfiguration{Revision: "2", Value: returnedValue, UpdatedAt: time.Date(2026, 11, 8, 0, 0, 0, 1, time.UTC)}
+				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+					if actual != ctx || user != principal.UserID || worker != workerID || revision != 2 || !reflect.DeepEqual(value, expectedValue) || d.reads != 1 || d.desiredWrites != 1 {
+						t.Errorf("configuration write differs: revision=%d value=%+v reads=%d writes=%d", revision, value, d.reads, d.desiredWrites)
+					}
+					return returned, nil
+				}
+			}
+			got, err := PutConfiguration(ctx, d, principal, workerID, 1, input)
+			if err != nil || !reflect.DeepEqual(got, expected) || d.reads != 1 || d.desiredWrites != writes || d.observationWrites != 0 {
+				t.Fatalf("capacity configuration differs: got %+v, want %+v; reads=%d writes=%d observationWrites=%d: %v", got, expected, d.reads, d.desiredWrites, d.observationWrites, err)
+			}
+		})
+	}
+}
+
+func TestExchangeConfigurationCapacityObservation(t *testing.T) {
+	ctx := t.Context()
+	principal := model.Principal{UserID: "capacity-user"}
+	const workerID = "capacity-worker"
+	current, expected := configurationCapacityResource(), configurationCapacityResource()
+	input := configurationCapacityObservation(MaxObservationItems, "0")
+	expectedObservation := configurationCapacityObservation(MaxObservationItems, "0")
+	d := &capacityConfigurationDAO{t: t}
+	d.read = func(actual context.Context, user, worker string) (model.WorkerConfigurationResource, error) {
+		if actual != ctx || user != principal.UserID || worker != workerID || d.reads != 1 {
+			t.Errorf("observation read arguments or count differ: %s %s reads=%d", user, worker, d.reads)
+		}
+		return current, nil
+	}
+	d.observation = func(actual context.Context, user, worker string, revision int64, observation model.WorkerConfigurationObservation) error {
+		if actual != ctx || user != principal.UserID || worker != workerID || revision != 1 || !reflect.DeepEqual(observation, expectedObservation) || d.reads != 1 || d.observationWrites != 1 {
+			t.Errorf("observation write differs: revision=%d observation=%+v reads=%d writes=%d", revision, observation, d.reads, d.observationWrites)
+		}
+		return nil
+	}
+	got, err := ExchangeConfiguration(ctx, d, principal, workerID, model.WorkerConfigurationExchange{Observation: &input})
+	want := &model.WorkerConfigurationReceipt{Desired: expected.Desired, ObservationRevision: "1", ObservationAccepted: true}
+	if err != nil || !reflect.DeepEqual(got, want) || d.reads != 1 || d.desiredWrites != 0 || d.observationWrites != 1 {
+		t.Fatalf("capacity observation receipt differs: got %+v, want %+v; reads=%d writes=%d observationWrites=%d: %v", got, want, d.reads, d.desiredWrites, d.observationWrites, err)
+	}
+}
