@@ -914,6 +914,29 @@ and that normal connectivity prove different responsibilities. The
 [inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
 records the three bindings and the retained lifetime proof.
 
+### Worker admission tests
+
+The `internal/service/worker` admission subset controls directly invoked Core
+report operations, transaction scopes and DAO results. It executes real report
+orchestration and encoding, with exact argument/order checks, independent
+completion outcomes, cancellation and result suppression. Production
+constructors retain the real Core bindings. Run this subset without database or
+UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestWorkerAdmission' ./internal/service/worker
+```
+
+Core admission tests own 99/100/101 decisions and active-window boundaries.
+PostgreSQL Worker tests retain real owner locks, counts, clock samples and expiry;
+root Store tests retain `WriteWorker` completion, physical rollback, cancellation
+and persisted readback. The remaining Worker suites retain their existing fixture
+requirements. The [admission test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-admission-test-owners.md)
+records these proof owners.
+
 ### Identity service tests
 
 `internal/service/identity` tests mock the directly invoked Core Identity and
