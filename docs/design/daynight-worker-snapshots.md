@@ -14,7 +14,7 @@ flowchart LR
   Q --> H
 ```
 
-`api/workers.go` 定义公开 DTO；`internal/server/worker` 注册报告、快照和[配置](daynight-worker-configuration.md)认证端点，输入解析拒绝各层未知、重复和错误分支字段。`service/worker` 选择事务作用域并组合任务清单与项目准入；`core/worker` 处理报告校验、任务匹配、时效及配置规则。报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存受控 JSONB。
+`api/workers.go` 定义公开 DTO；`internal/server/worker` 注册报告、快照和[配置](daynight-worker-configuration.md)认证端点，输入解析拒绝各层未知、重复和错误分支字段。`service/worker` 选择事务作用域并组合任务清单与项目准入；`core/worker` 处理报告校验、任务匹配、时效及配置规则。报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存由写入入口校验、规范化并编码的 JSONB。读取直接消费该表示，正常扫描、解码及输出错误沿原错误链传播。
 
 机器信息不授予身份。资源由 `(principal.UserID,workerId)` 定位，Cookie 写入的 Origin、PAT、身份响应标头及 no-store 复用既有认证。报告日志使用 `component=worker_report`，关联 user_id、已验证 worker_id、request_id 与处理阶段；正文和原生命令内容不进入日志。
 
@@ -44,9 +44,11 @@ UPSERT 同时写锁后采集的 last_seen_at、telemetry、task_snapshot，目�
 
 列表和详情复用 read-only REPEATABLE READ，并在同一快照取得数据库 observedAt、Worker 行及任务可见性。近期条件为 `last_seen_at >= observedAt - interval '72 hours'`；详情额外按账号和 workerId 定位。GET 没有续活写入。
 
-列表按稳定 `(created_at,worker_id)` keyset 逐项读取摘要，service 按实际 JSON 输出和 cursor 计入 8 MiB 页预算，最多多读一项作为续页依据。cursor 绑定认证 userId；它不将频繁变化的 last_seen_at 用作游标。近期索引与创建时间排序承担不同职责。
+列表按稳定 `(created_at,worker_id)` keyset 在一次摘要查询中读取 `limit+1` 项。DAO 返回 `WorkerSummaryPage{Items,HasMore}`，service 映射响应，并在 HasMore 时用最后返回项生成 cursor。cursor 绑定认证 userId；它不将频繁变化的 last_seen_at 用作游标。近期索引与创建时间排序承担不同职责。
 
-列表 SQL 只投影摘要字段，并使用 `ProjectAccessRelation` 按认证 userId 计数当前可访问且未删除的快照任务，不传输或解码完整 telemetry 和任务数组。详情读取单份完整快照后以相同权限规则过滤。unavailable 输出 null，已知或 stale 输出实际可见数量。当前 claim 不参与旧观测的读取资格，因此完成和转交不会改写历史 phase/status，权限撤销与删除则立即约束后续读取的标题和计数。过滤不改写保存的快照；重新获得项目权限后，仍未删除的历史观测可再次返回。
+列表 SQL 直接读取规范存储字段 `telemetry.machine.ID/Name`、`telemetry.platform` 和 `task_snapshot.state/observedAt`。嵌套 `WorkerMachine` 由 Go writer 按导出字段名编码为 `ID/Name`；公开 HTTP DTO 的对应字段仍为 `machine.id/name`。任务引用转换为 UUID 后与 tasks 的 UUID 主键和 project_id 等值关联，再使用 `ProjectAccessRelation` 按认证 userId 计数当前可访问且未删除的快照任务。查询不传输完整 telemetry 或任务数组，也不枚举字段别名、复现 Go JSON 解码规则或校验未展示的完整结构。DAO 正常扫描摘要和时间值。详情读取单份完整快照，普通 Go 解码后以相同权限规则过滤。unavailable 输出 null，已知或 stale 输出实际可见数量。当前 claim 不参与旧观测的读取资格，因此完成和转交不会改写历史 phase/status，权限撤销与删除则立即约束后续读取的标题和计数。过滤不改写保存的快照；重新获得项目权限后，仍未删除的历史观测可再次返回。
+
+写入入口拥有数据结构、字段、规范化和现有容量规则。列表与详情不追加存储数据校验、容量复查、读取字节预算或历史格式解释；不扫描或迁移历史数据，也不新增写入配额。该职责取舍由[读取简化决策](../../.agents/notes/implemented/simplification/2026-11-09-worker-bot-canonical-reads.md)记录。
 
 ## 时间与数据含义
 

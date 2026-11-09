@@ -112,7 +112,7 @@ func (s *workerHTTPWriteScope) AdmitWorker(ctx context.Context, u, w string, d t
 type workerHTTPReader struct {
 	t                       *testing.T
 	WorkersCall             func(context.Context, string, time.Time, store.Page) (store.WorkerPage, error)
-	WorkerSummariesCall     func(context.Context, string, time.Time, store.Page, func(store.WorkerSummary) (bool, error)) error
+	WorkerSummariesCall     func(context.Context, string, time.Time, store.Page) (store.WorkerSummaryPage, error)
 	WorkerCall              func(context.Context, string, string, time.Time) (model.WorkerSnapshot, error)
 	WorkerConfigurationCall func(context.Context, string, string) (model.WorkerConfigurationResource, error)
 }
@@ -123,11 +123,11 @@ func (d *workerHTTPReader) Workers(ctx context.Context, u string, now time.Time,
 	}
 	return d.WorkersCall(ctx, u, now, p)
 }
-func (d *workerHTTPReader) WorkerSummaries(ctx context.Context, u string, now time.Time, p store.Page, accept func(store.WorkerSummary) (bool, error)) error {
+func (d *workerHTTPReader) WorkerSummaries(ctx context.Context, u string, now time.Time, p store.Page) (store.WorkerSummaryPage, error) {
 	if d.WorkerSummariesCall == nil {
 		workerHTTPUnexpected(d.t, "WorkerSummaries")
 	}
-	return d.WorkerSummariesCall(ctx, u, now, p, accept)
+	return d.WorkerSummariesCall(ctx, u, now, p)
 }
 func (d *workerHTTPReader) Worker(ctx context.Context, u, w string, now time.Time) (model.WorkerSnapshot, error) {
 	if d.WorkerCall == nil {
@@ -306,21 +306,17 @@ func (f *workerHTTPFixture) detail(t *testing.T, id string, stored model.WorkerS
 func (f *workerHTTPFixture) list(t *testing.T, path string, page store.Page, summaries []store.WorkerSummary) api.WorkerPage {
 	t.Helper()
 	calls := 0
-	reader := &workerHTTPReader{t: t, WorkerSummariesCall: func(_ context.Context, u string, now time.Time, actual store.Page, accept func(store.WorkerSummary) (bool, error)) error {
+	reader := &workerHTTPReader{t: t, WorkerSummariesCall: func(_ context.Context, u string, now time.Time, actual store.Page) (store.WorkerSummaryPage, error) {
 		calls++
 		if u != f.handler.principal.UserID || now != f.now || !reflect.DeepEqual(actual, page) {
 			workerHTTPFail(t, "list delegation: %s %s %+v want %+v", u, now, actual, page)
 		}
-		for _, item := range summaries {
-			more, err := accept(workerHTTPValue[store.WorkerSummary](t, item))
-			if err != nil {
-				return err
-			}
-			if !more {
-				break
-			}
+		hasMore := len(summaries) > page.Limit
+		items := summaries
+		if hasMore {
+			items = items[:page.Limit]
 		}
-		return nil
+		return store.WorkerSummaryPage{Items: workerHTTPValue[[]store.WorkerSummary](t, items), HasMore: hasMore}, nil
 	}}
 	var result api.WorkerPage
 	f.read(t, reader, func() { result = decodeResponse[api.WorkerPage](t, f.send(http.MethodGet, path, ""), http.StatusOK) })

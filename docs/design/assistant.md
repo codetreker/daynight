@@ -90,11 +90,11 @@ Bot 生命周期验证 Worker PAT；共享 Session 继续验证 owner 的当前�
 
 ## 查询与授权
 
-查询使用现有 snapshot 和分页游标，范围包含当前用户及可选 Worker ID。普通列表过滤所有删除意图；Worker 清单保留任一清理阶段尚未完成的行。排序为 `(created_at,id)`；`creation_order` 另用于比较创建先后，不用作当前分页游标。
+查询使用现有 snapshot 和分页游标，范围包含当前用户及可选 Worker ID。REST 分别调用 `List` 或 `ListWorker`，MCP 列表调用同一 `List`；每次列表在该快照中核验凭据及作用域后，由 `BotReader.Bots` 一次读取 `limit+1` 项。普通列表过滤所有删除意图；Worker 清单保留任一清理阶段尚未完成的行。排序为 `(created_at,id)`；`creation_order` 另用于比较创建先后，不用作当前分页游标。
 
-`Get` 先确定资源是否存在，再验证 owner。Worker 清单检查组合身份，不以 Worker UUID 推导跨用户权限。服务层重新核对持久凭据；HTTP 外层继续使用现有 Authentication middleware，保留浏览器 Origin 检查和 PAT 生命周期。
+`Get` 先确定资源是否存在，再验证 owner。Worker 清单检查组合身份，不以 Worker UUID 推导跨用户权限。服务层在一次列表用例内核对持久凭据，不为每个候选重复授权；HTTP 外层继续使用现有 Authentication middleware，保留浏览器 Origin 检查和 PAT 生命周期。
 
-HTTP DTO 将版本及创建序号编码为字符串，并投影实际关联的 sessionId/testExecutionId；尚未登记时两者为 null。删除后整体省略 `BotDefinition`，仅保留最小责任，避免单独漏删某个配置或角色字段。内部数据库对象不直接序列化为管理响应。
+HTTP DTO 将版本及创建序号编码为字符串，并投影实际关联的 sessionId/testExecutionId；尚未登记时两者为 null。删除后整体省略 `BotDefinition`，仅保留最小责任，避免单独漏删某个配置或角色字段。内部数据库对象不直接序列化为管理响应。DAO 通过 `scanBot` 和普通 `json.Unmarshal` 读取保存的 JSON；结构、字段、规范化和现有容量规则由写入入口拥有，不在读取时复查，也不在 SQL 中解释完整 JSON。列表按条数产生 cursor，不使用读侧 measurement callback 或字节准入。正常扫描、解码和输出错误保留原错误链。共享 MCP 入口的结果限制仍独立适用；Bot 列表不为它逐项查询或裁页。[读取简化决策](../../.agents/notes/implemented/simplification/2026-11-09-worker-bot-canonical-reads.md)记录这些职责。
 
 ## CLI 管理与远端观测
 

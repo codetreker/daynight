@@ -51,7 +51,7 @@ Worker 原生默认值及其来源来自受容量约束的机器报告；model�
 
 ## HTTP 管理契约
 
-管理接口使用现有登录/PAT、浏览器写入 Origin 校验、`no-store` 和 `Daynight-User-ID` 响应身份。Worker 生命周期写入只接受有效 PAT，另核验 Bot owner 与绑定 Worker；浏览器登录和 Controller relay token 不能代替 Worker PAT。没有项目参数。分页采用现有 `limit`（1–100）和 `cursor`，游标绑定用户及普通/Worker 清单范围。
+管理接口使用现有登录/PAT、浏览器写入 Origin 校验、`no-store` 和 `Daynight-User-ID` 响应身份。Worker 生命周期写入只接受有效 PAT，另核验 Bot owner 与绑定 Worker；浏览器登录和 Controller relay token 不能代替 Worker PAT。没有项目参数。分页采用现有 `limit`（1–100，默认 50）和 `cursor`，游标绑定用户及普通/Worker 清单范围。列表按条数返回完整项，使用一项 lookahead 判断续页，cursor 指向最后返回项；普通列表和 Worker 清单不按响应字节裁页。写入入口负责数据结构、字段、规范化与现有容量规则，读取保存的定义不重复这些检查；正常解码及响应编码错误继续传播。
 
 | 方法与路径 | 结果 |
 |---|---|

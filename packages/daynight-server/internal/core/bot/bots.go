@@ -15,6 +15,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
+// MaxNameCodePoints is the Bot name limit after trimming.
+const MaxNameCodePoints = 40
+
 func invalidInput(message string) error { return &model.Fault{Code: "invalid_input", Message: message} }
 
 // CreateBot is the storage kernel input. Its configuration must already have
@@ -224,19 +227,6 @@ func List(ctx context.Context, snapshot store.SnapshotScope, principal model.Pri
 		}
 	}
 	return snapshot.BotDAO().Bots(ctx, principal.UserID, workerID, page)
-}
-
-// ListBounded authorizes the same scopes as List and reads one bounded projection page.
-func ListBounded(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, workerID *string, page store.Page) (store.BotPage, error) {
-	if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
-		return store.BotPage{}, botCredentialError(err)
-	}
-	if workerID != nil {
-		if err := botWorkerError(snapshot.BotDAO().BotWorker(ctx, principal.UserID, *workerID)); err != nil {
-			return store.BotPage{}, err
-		}
-	}
-	return snapshot.BotDAO().BotsBounded(ctx, principal.UserID, workerID, page)
 }
 
 func ListPage(principal model.Principal, workerID *string, request model.PageRequest) (store.Page, error) {

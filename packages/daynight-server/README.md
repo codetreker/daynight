@@ -31,7 +31,13 @@ account-owned definitions and defaults without requiring a Project. Worker Bot
 registration, grants, startup reports and deletion receipts use the bound
 Worker's normal PAT; Controller relay credentials do not authorize those writes.
 The [assistant contract](../../docs/spec/assistant.md) defines exact endpoints,
-version strings, idempotency, observed availability and failure responses.
+version strings, idempotency, observed availability and failure responses. Bot
+lists authorize once within their read snapshot and use one `limit+1` query
+through `List` or `ListWorker`. The DAO uses ordinary Go JSON decoding; fields,
+normalization and existing capacity checks belong to write ingress. Bot pages
+continue by item count without domain read-byte admission or candidate callbacks.
+Normal decoding and output errors propagate. The shared MCP entry retains its
+independent result limits.
 
 A name-only create resolves a fresh compatible Worker report and freezes its
 configuration. Older Workers without `assistantHost` remain unsupported, even
@@ -1377,8 +1383,10 @@ is returned as `HasMore`; HTTP cursor encoding belongs to the API layer.
 `Store.WriteWorker` is an independent `READ COMMITTED` transaction for account-owned
 Worker observations. It updates only the matching Worker row, atomically preserving
 server report time, telemetry and normalized task observations. It does not acquire
-a project lock or mutate task ownership. Snapshot reads batch-filter saved task
-references by current project membership and undeleted-task visibility. The
+a project lock or mutate task ownership. Summary reads select only canonical
+list fields and count visible saved task references through UUID joins. Detail
+reads batch-filter those references by current project membership and
+undeleted-task visibility. The
 [Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
 separate storage and current-permission behavior.
 
@@ -1443,6 +1451,12 @@ query parameters. List uses `limit` (default 50, maximum 100) and `cursor`. The
 recent window includes exactly 72 hours; 120 seconds without a report is offline
 when consumers compare the returned server clock with `lastReportedAt`. GET does
 not refresh liveness. Unknown, other-account and expired detail reads return 404.
+One summary query returns `limit+1` rows; the cursor follows the last returned
+item when lookahead exists. The list does not fetch full telemetry or task
+payloads. Write ingress owns structure, field, normalization and existing
+capacity checks; snapshot reads consume saved canonical data without repeating
+those checks or applying a domain response-byte budget. Normal scan, decode and
+output errors propagate.
 
 Reports use closed Probe states, explicit unknown inventory and a full task
 reference array. A known empty array is distinct from inventory that has never

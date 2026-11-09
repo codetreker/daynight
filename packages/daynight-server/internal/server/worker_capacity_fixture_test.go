@@ -95,7 +95,7 @@ type capacityWorkerReader struct {
 	plan          *capacityCallPlan
 	worker        func(string, string, time.Time) (model.WorkerSnapshot, error)
 	configuration func(string, string) (model.WorkerConfigurationResource, error)
-	summaries     func(string, time.Time, store.Page, func(store.WorkerSummary) (bool, error)) error
+	summaries     func(string, time.Time, store.Page) (store.WorkerSummaryPage, error)
 }
 
 func (r *capacityWorkerReader) Worker(_ context.Context, user, worker string, observed time.Time) (model.WorkerSnapshot, error) {
@@ -106,9 +106,9 @@ func (r *capacityWorkerReader) WorkerConfiguration(_ context.Context, user, work
 	r.plan.call("configuration")
 	return r.configuration(user, worker)
 }
-func (r *capacityWorkerReader) WorkerSummaries(_ context.Context, user string, observed time.Time, page store.Page, accept func(store.WorkerSummary) (bool, error)) error {
+func (r *capacityWorkerReader) WorkerSummaries(_ context.Context, user string, observed time.Time, page store.Page) (store.WorkerSummaryPage, error) {
 	r.plan.call("summaries")
-	return r.summaries(user, observed, page, accept)
+	return r.summaries(user, observed, page)
 }
 
 type capacitySnapshot struct {

@@ -10,7 +10,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	modellimit "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -25,7 +24,7 @@ var botToolsJSON []byte
 type botOperations interface {
 	CreateResolved(context.Context, model.Principal, botcore.CreateBot) (model.Bot, error)
 	Get(context.Context, model.Principal, string) (model.Bot, error)
-	ListAdmitted(context.Context, model.Principal, *string, model.PageRequest, func([]model.Bot, *string) error) (botcore.BotPage, error)
+	List(context.Context, model.Principal, model.PageRequest) (botcore.BotPage, error)
 }
 type botDeletion interface {
 	DeleteBot(context.Context, model.Principal, string, store.DeleteBot) (model.Bot, error)
@@ -89,28 +88,15 @@ func (h *botTools) list(ctx context.Context, actor RequestActor, in botListInput
 	if in.Limit != nil {
 		limit = *in.Limit
 	}
-	project := func(items []model.Bot, cursor *string) botPage {
-		out := botPage{Items: make([]api.Bot, 0, len(items)), NextCursor: cursor}
-		for _, item := range items {
-			out.Items = append(out.Items, bothttp.Response(item))
-		}
-		return out
-	}
-	page, err := h.bots.ListAdmitted(ctx, actor.Principal, nil, model.PageRequest{Limit: limit, Cursor: in.Cursor}, func(items []model.Bot, cursor *string) error {
-		raw, err := json.Marshal(envelope{Data: project(items, cursor), Meta: &envelopeMeta{RequestID: actor.RequestID}})
-		if err != nil {
-			return err
-		}
-		if len(raw) > botcore.MaxCandidatePageResponseJSONBytes {
-			return &modellimit.Violation{Field: "bot.page", Actual: int64(len(raw)), Max: botcore.MaxCandidatePageResponseJSONBytes, Unit: "bytes"}
-		}
-		return nil
-	})
+	page, err := h.bots.List(ctx, actor.Principal, model.PageRequest{Limit: limit, Cursor: in.Cursor})
 	if err != nil {
 		return ToolResult{}, err
 	}
-	return ToolResult{Data: project(page.Items, page.NextCursor)}, nil
-
+	response := botPage{Items: make([]api.Bot, 0, len(page.Items)), NextCursor: page.NextCursor}
+	for _, item := range page.Items {
+		response.Items = append(response.Items, bothttp.Response(item))
+	}
+	return ToolResult{Data: response}, nil
 }
 func (h *botTools) show(ctx context.Context, actor RequestActor, in botShowInput) (ToolResult, error) {
 	bot, err := h.bots.Get(ctx, actor.Principal, in.BotID)

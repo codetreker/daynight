@@ -31,7 +31,6 @@ func TestResponseAndRangePolicies(t *testing.T) {
 		unit string
 	}{
 		{"attachment.metadataPage", 2 << 20, "bytes"},
-		{"bot.candidatePage", 8 << 20, "bytes"},
 		{"bot.cwd", 4096, "bytes"},
 		{"identity.invitation.page", 256 << 10, "bytes"},
 		{"identity.pat.page", 256 << 10, "bytes"},
@@ -43,7 +42,6 @@ func TestResponseAndRangePolicies(t *testing.T) {
 		{"task.assignee.page", 4 << 20, "bytes"},
 		{"task.resource", 512 << 10, "bytes"},
 		{"task.sync", 64 << 20, "bytes"},
-		{"worker.page", 8 << 20, "bytes"},
 		{"search.expression", 8192, "bytes"},
 		{"search.terms", 128, "items"},
 		{"search.depth", 32, "levels"},

@@ -36,7 +36,6 @@ type Entry struct {
 func Catalog() []Entry {
 	return []Entry{
 		{ID: "attachment.metadataPage", Max: attachment.MaxMetadataPageResponseJSONBytes, Unit: "bytes"},
-		{ID: "bot.candidatePage", Max: bot.MaxCandidatePageResponseJSONBytes, Unit: "bytes"},
 		{ID: "bot.name", Max: bot.MaxNameCodePoints, Unit: "code points", Min: 1, HasMin: true},
 		{ID: "bot.cwd", Max: bot.MaxCwdBytes, Unit: "bytes"},
 		{ID: "attachment.content", Max: attachment.MaxContentBytes, Unit: "bytes", Min: 0, HasMin: true},
@@ -98,7 +97,6 @@ func Catalog() []Entry {
 		{ID: "transport.attachment.readTimeout", Max: int64(transport.AttachmentBodyReadTimeout.Seconds()), Unit: "seconds"},
 		{ID: "transport.archive.readTimeout", Max: int64(transport.ArchiveBodyReadTimeout.Seconds()), Unit: "seconds"},
 		{ID: "worker.active.window", Max: int64(worker.ActiveWindow.Seconds()), Unit: "seconds", Min: 0, HasMin: true, UpperExclusive: true},
-		{ID: "worker.page", Max: worker.MaxPageResponseJSONBytes, Unit: "bytes"},
 		{ID: "worker.active", Max: worker.MaxActiveWorkers, Unit: "items"},
 		{ID: "worker.configuration", Max: worker.MaxConfigurationJSONBytes, Unit: "bytes"},
 		{ID: "worker.cpu.model", Max: worker.MaxCPUModelBytes, Unit: "bytes"},

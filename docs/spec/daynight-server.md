@@ -310,7 +310,7 @@ Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigne
 
 ### 账号级 Worker 快照
 
-Worker 资源归属来自认证 principal，报告不能提供 userId 或权威任务状态。完整结构、Probe 分支、null/空/旧清单、72 小时窗口及任务计数由[快照协议](daynight-worker-snapshots.md)拥有。GET 不续活，详情超窗、未知与他人资源统一为 404。离线和移出近期列表不改变任务执行；读取时的当前项目权限同时约束历史标题、任务行和计数。[云端配置接口](daynight-worker-configuration.md)独立管理目标与应用观测，通过显式报告协议交换。配置读取/保存不续活，也不以 active claim 为接入条件。
+Worker 资源归属来自认证 principal，报告不能提供 userId 或权威任务状态。完整结构、Probe 分支、null/空/旧清单、72 小时窗口及任务计数由[快照协议](daynight-worker-snapshots.md)拥有。GET 不续活，详情超窗、未知与他人资源统一为 404。列表按条数分页；列表与详情信任写入入口已校验和规范化的存储数据，不重复结构、字段或容量检查，也不设置领域读取响应字节预算。自然解码和编码错误继续传播。离线和移出近期列表不改变任务执行；读取时的当前项目权限同时约束历史标题、任务行和计数。[云端配置接口](daynight-worker-configuration.md)独立管理目标与应用观测，通过显式报告协议交换。配置读取/保存不续活，也不以 active claim 为接入条件。
 
 ### 时间窗口任务摘要
 

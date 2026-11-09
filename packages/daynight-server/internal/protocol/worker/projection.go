@@ -1,9 +1,7 @@
 package worker
 
 import (
-	"bytes"
 	"io"
-	"math"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -88,29 +86,12 @@ func runtimeNativeResponse(native *model.WorkerRuntimeNative) *WorkerRuntimeNati
 	return &WorkerRuntimeNative{Agent: string(native.Agent), Model: WorkerConfigurationValue(native.Model), ReasoningEffort: WorkerConfigurationValue(native.ReasoningEffort)}
 }
 
-type detailResponseWire WorkerDetailResponse
-type detailWire WorkerDetail
-
-func (v WorkerDetailResponse) MarshalJSON() ([]byte, error) {
-	var b bytes.Buffer
-	_, err := measure.JSON(&b, "worker", math.MaxInt64, detailResponseWire(v), false)
-	return b.Bytes(), err
-}
-
-// EncodeDetail uses the exact detail projection and REST Encoder newline.
-func EncodeDetail(w io.Writer, snapshot model.WorkerSnapshot, observedAt time.Time, max int64) (int64, error) {
-	if err := preflightCollections(snapshot, max); err != nil {
-		return 0, err
-	}
-	return measure.JSON(w, "worker", max, detailResponseWire(WorkerDetailResponse{ObservedAt: observedAt.UTC(), Worker: Detail(snapshot)}), true)
-}
-
 // EncodeItem measures the Worker item without the outer response envelope.
 func EncodeItem(w io.Writer, snapshot model.WorkerSnapshot, max int64) (int64, error) {
 	if err := preflightCollections(snapshot, max); err != nil {
 		return 0, err
 	}
-	return measure.JSON(w, "worker", max, detailWire(Detail(snapshot)), false)
+	return measure.JSON(w, "worker", max, Detail(snapshot), false)
 }
 
 // EncodeTelemetry and the configuration encoders use the exact JSON shapes
@@ -125,9 +106,8 @@ func EncodeObservation(w io.Writer, value model.WorkerConfigurationReportedObser
 	return measure.JSON(w, "worker.configuration.observation", max, model.WorkerConfigurationReportedObservationWire(value), false)
 }
 
-// Before constructing the response projection, stream-count the collections
-// whose DTO conversion requires allocation. Their encoding is part of the final
-// Worker response, so a collection exceeding the complete budget cannot fit.
+// Write admission counts collections before allocating their protocol projection.
+// Each collection must fit within the complete stored Worker item budget.
 func preflightCollections(snapshot model.WorkerSnapshot, max int64) error {
 	if _, err := measure.JSON(io.Discard, "worker", max, snapshot.TaskSnapshot.Items, false); err != nil {
 		return err
