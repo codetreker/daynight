@@ -17,6 +17,7 @@ export type BotDetailView = {
   readonly deletion: DeletedBot | null;
   readonly displayBinding: BotSessionBinding | null;
   readonly actionBinding: BotSessionBinding | null;
+  readonly confirmed: boolean;
   readonly busy: boolean;
   readonly error: unknown;
   readonly errorKind: 'network' | 'protocol' | 'server' | 'unavailable' | 'unknown' | null;
@@ -31,7 +32,7 @@ type Entry = {
   errorKind: BotDetailView['errorKind'];
 };
 const emptyEntry = (): Entry => ({ value: null, binding: null, deletion: null, confirmed: null, pending: null, error: null, errorKind: null });
-const emptyView = (): BotDetailView => ({ value: null, deletion: null, displayBinding: null, actionBinding: null, busy: false, error: null, errorKind: null });
+const emptyView = (): BotDetailView => ({ value: null, deletion: null, displayBinding: null, actionBinding: null, confirmed: false, busy: false, error: null, errorKind: null });
 const unavailable = (error: unknown): boolean => error instanceof ApiError && error.kind === 'server' && [403, 404, 410].includes(error.status ?? 0);
 type Guards = { blocked: Set<string>; revoked: Set<string>; caches: Set<BotDetailCache> };
 const scopeGuards = new WeakMap<TaskCacheScope, Guards>();
@@ -84,9 +85,10 @@ export class BotDetailCache {
     if (!entry) return emptyView();
     const visible = this.allowed(selection.botId) && (canRestore && !authRequestsPaused() || this.selection === selection && this.displayed);
     const displayBinding = visible ? entry.binding : null;
+    const confirmed = visible && actionEnabled && !authRequestsPaused() && this.selection === selection && entry.confirmed === selection;
     return {
       value: visible ? entry.value : null, deletion: entry.deletion, displayBinding,
-      actionBinding: displayBinding && actionEnabled && !authRequestsPaused() && this.selection === selection && entry.confirmed === selection ? displayBinding : null,
+      actionBinding: confirmed ? displayBinding : null, confirmed,
       busy: entry.pending !== null, error: entry.error, errorKind: entry.errorKind,
     };
   }

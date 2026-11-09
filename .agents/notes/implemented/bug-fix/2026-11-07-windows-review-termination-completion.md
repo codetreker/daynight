@@ -14,7 +14,13 @@ confirm completion.
 
 ## Decision
 
-The Windows review stop path retains `taskkill /T /F` and adds native exit
+The captured-process completion rule remains in effect. The
+[Job ownership decision](2026-11-09-windows-review-job-ownership.md) replaces
+ancestry-based termination for both product review phases. This note owns the
+remaining legacy helper and the rationale for waiting on original process
+objects, including its bounded ancestry diagnostics.
+
+The legacy unowned Windows stop helper retains `taskkill /T /F` and native exit
 confirmation for the process objects captured before termination. After native
 library loading, it rechecks the original `ChildProcess`, opens its process
 object with query and synchronization rights, and verifies that the root remains
@@ -76,8 +82,10 @@ objects observes the required state directly.
 **Replace review startup with a gated Job Object guardian.** Assigning a job before
 allowing the agent to create descendants would provide a stronger ownership
 boundary, but changes the launch protocol and its lifecycle. The termination
-completion defect does not require that larger change. Job containment remains
-a separate design decision if arbitrary later descendants must be covered.
+completion defect did not require that larger change. The later
+[Job ownership decision](2026-11-09-windows-review-job-ownership.md) adopts this
+launch boundary to cover ordinary descendants after inventory and across parent
+exit while preserving the captured-object completion rule.
 
 **Treat a quiet snapshot as complete containment.** Snapshot enumeration cannot
 prove that no process was born afterward or recover a chain through an
@@ -105,8 +113,9 @@ wall-clock bound.
 The confirmation applies to the captured members. It does not strengthen
 `taskkill /T` into arbitrary descendant containment or change the Windows normal
 completion path. Access denial and ambiguous ancestry retain failure rather than
-silently dropping a potentially live member. The implementation uses the existing
-`koffi` dependency and changes neither POSIX signaling nor adapter startup.
+silently dropping a potentially live member. The legacy helper uses the existing `koffi` dependency and does not change POSIX
+signaling. Product adapter startup and normal completion now follow the linked
+Job ownership decision.
 
 An old unrelated branch can still make stopping fail after every owned process
 has exited. The deterministic kernel witness preserves that case alongside

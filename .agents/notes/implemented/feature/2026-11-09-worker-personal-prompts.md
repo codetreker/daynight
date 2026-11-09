@@ -12,6 +12,8 @@ The server stores three independently revisioned personal resources under the au
 
 A bounded selector batch shares the existing configuration report and acknowledgment. Only a confirmed native report is followed by a separate read snapshot; unchanged, unavailable and transient errors remain distinct from an empty value. Prompt data does not become native desired configuration or a task claim.
 
+The Worker retains the received values only in memory and appends the latest available user, project and Worker text to newly assembled inputs. The existing reporter owns bounded catch-up; generation checks reject stale project results. Unknown or oversized input waits without consuming recovery budget, and each native path validates its complete input before submission. Existing delivery evidence continues to own already assembled text.
+
 ## Alternatives
 
 **Shared project settings or per-Worker project copies.** Shared settings would expose one member's instructions to others; copies would make one user's Workers disagree about the same project.
@@ -22,4 +24,4 @@ A bounded selector batch shares the existing configuration report and acknowledg
 
 ## Consequences
 
-Authorization and revision checks protect different facts: project authorization is held through writes, while conditional writes prevent stale text from winning. A later revocation stops subsequent reads, but cannot retract a completed snapshot. A successful native report remains committed when the following prompt read fails. Server delivery alone does not establish that a Worker has received or applied the text.
+Authorization and revision checks protect different facts: project authorization is held through writes, while conditional writes prevent stale text from winning. A later revocation stops subsequent reads, but cannot retract a completed snapshot. A successful native report remains committed when the following prompt read fails. Server delivery alone does not establish that a Worker has received the text; native input limits can also defer its use.

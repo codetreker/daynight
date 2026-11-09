@@ -426,7 +426,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     enrich(owner, observed);
     await publishObservedLedger(owner, operation);
   };
-  const send = async (context: HerdrExecutionContext, prompt: string, operation: Operation, guard?: (operation: Operation) => Promise<boolean>, onSubmitted?: (receipt: HerdrPromptReceipt) => void) => {
+  const send = async (context: HerdrExecutionContext, prompt: string, operation: Operation, guard?: (operation: Operation) => Promise<boolean>, onSubmitted?: (receipt: HerdrPromptReceipt) => void, initialOnly = false) => {
     const record = need(context), run = current(record), arbiter = getInput(context);
     if (run.phase !== "active") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
     await verifyRuntime(record); await verifyInputPurpose(context, operation, "automatic");
@@ -438,7 +438,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await verifyInputPurpose(context, operation, "automatic");
       return { submission: "skipped" as const, observation: await adapter(record).tasks.observe(context, bindingFor(run), operation) };
     }
-    const initial = arbiter.record().initialOutcome === "pending";
+    const currentInput = arbiter.record();
+    if (initialOnly && (currentInput.initialOutcome !== "pending" || currentInput.initialDisposition !== null || currentInput.unknownInput)) return { submission: "skipped" as const, observation: await adapter(record).tasks.observe(context, bindingFor(run), operation) };
+    const initial = currentInput.initialOutcome === "pending";
     const body = initial ? record.initialPrompt : prompt;
     if (body === null) throw new Error("The original pending assignment body is missing.");
     const operationId = initial ? arbiter.record().initialOperationId : randomUUID();
@@ -731,7 +733,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await beforeStart(operation);
       await publish(context, operation);
       await prepareRecording(context, operation);
-      record = update(context, draft => { current(draft).phase = "launch_requested"; current(draft).nativeLaunch = "requested"; if (draft.initialAssignment === "pending") draft.initialPrompt = input.prompt; });
+      const recovery = record.initialAssignment !== "pending";
+      const existing = recovery ? null : record.initialPrompt;
+      if (existing === null) await input.preparePromptSource?.(operation);
+      const prompt = existing ?? input.preparePrompt?.(recovery) ?? (recovery ? "Continue the original assigned task under its existing authorization." : input.prompt);
+      input.onPromptPrepared?.(prompt, recovery);
+      record = update(context, draft => { current(draft).phase = "launch_requested"; current(draft).nativeLaunch = "requested"; if (draft.initialAssignment === "pending") draft.initialPrompt = prompt; });
       const manager = adapter(record).tasks;
       const observed = await manager.launch(context, binding, { configuration: input.configuration, beforeStart, ...(run.run.binding.nativeSessionId === null ? {} : { resumeSessionId: run.run.binding.nativeSessionId }) }, operation);
       const info = await manager.processInfo(context, binding, operation);
@@ -759,12 +766,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const inputState = getInput(context).state().state;
       if (inputState === "manual" || inputState === "suspended") throw new HerdrInputWaitingError("control_suspended", "Automatic input is waiting for explicit control handoff.");
       if (inputState !== "automation") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-      await send(context, need(context).initialAssignment === "pending" ? input.prompt : "Continue the original assigned task under its existing authorization.", operation, undefined, input.onPromptSubmitted);
+      await send(context, prompt, operation, undefined, input.onPromptSubmitted);
       const after = await manager.observe(context, binding, operation); await publishObservedIdentity(context, after, operation); return after;
     }),
     observe: (context, binding, operation) => serialize(context, async () => { await attachRun(context, operation); const record = need(context); const observed = await adapter(record).tasks.observe(context, binding, operation); await publishObservedIdentity(context, observed, operation); return observed; }),
     submitPrompt: (context, binding, prompt, operation, guard) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard); }),
-    submitInitialPrompt: (context, binding, prompt, operation, guard) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard); }),
+    submitInitialPrompt: (context, binding, prompt, operation, guard) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard, undefined, true); }),
     launch: async () => { throw new Error("Native launch must pass the durable Herdr admission path."); },
     processInfo: (context, binding, operation) => adapter(need(context)).tasks.processInfo(context, binding, operation),
     syncWorkspaceName: async (context, binding, title, operation) => { const record = need(context); if (record.runs.length > 0 && current(record).phase === "active") await adapter(record).tasks.syncWorkspaceName(context, binding, title, operation); },
@@ -825,6 +832,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       archive: resources,
       responsibilities: () => retainedResources().map(resource => resource.owner),
       hasPreparedRun: owner => { const record = store.get(owner); return record !== null && record.preparation === null && record.runs.at(-1)?.phase === "prepared"; },
+      pendingInitialPrompt: owner => {
+        const record = need(owner), input = inputStore.get(record.sessionId);
+        return record.initialAssignment === "pending" && record.initialPrompt !== null && input !== null
+          && input.target.sessionId === record.sessionId && input.target.claimId === record.claimId
+          && input.initialOutcome === "pending" && input.initialDisposition === null && !input.unknownInput ? record.initialPrompt : null;
+      },
       isStopped: owner => { const record = store.get(owner); return selectionEpoch === settledSelectionEpoch && record !== null && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) && record.segments.every(segment => segment.endedAt !== null); },
       cleanup: async (owner, prompt, operation) => {
         let notified = false;

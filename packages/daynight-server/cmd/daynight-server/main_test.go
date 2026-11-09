@@ -27,11 +27,15 @@ import (
 
 func testEnvironment(t *testing.T) map[string]string {
 	t.Helper()
+	return testEnvironmentAt(t, testAddress(t))
+}
+
+func testEnvironmentAt(t *testing.T, address string) map[string]string {
+	t.Helper()
 	url := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
 	if url == "" {
 		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
 	}
-	address := testAddress(t)
 	origin := "http://" + address
 	return map[string]string{
 		"DAYNIGHT_DATABASE_URL": url, "DAYNIGHT_STORAGE_ROOT": testStorageRoot(t), "DAYNIGHT_LISTEN_ADDR": address,
@@ -78,7 +82,12 @@ func testStorageRoot(t *testing.T) string {
 
 func processAPIEnvironment(t *testing.T) map[string]string {
 	t.Helper()
-	values := testEnvironment(t)
+	return processAPIEnvironmentAt(t, testAddress(t))
+}
+
+func processAPIEnvironmentAt(t *testing.T, address string) map[string]string {
+	t.Helper()
+	values := testEnvironmentAt(t, address)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, values["DAYNIGHT_DATABASE_URL"])

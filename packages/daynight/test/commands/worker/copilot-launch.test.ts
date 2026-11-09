@@ -65,3 +65,32 @@ it("renews before two default polling cycles and serializes concurrent credentia
     expect(JSON.parse(await readFile(ticket.credentialFile, "utf8"))).toEqual({ token: "renewed", expiresAt: new Date(now + 900_000).toISOString() });
   } finally { store.close(); }
 });
+
+it.each([
+  ["raw", "x".repeat(4 * 1024 * 1024 + 1), 4 * 1024 * 1024],
+  ["encoded", "x" + "\n".repeat(3 * 1024 * 1024), 6 * 1024 * 1024],
+] as const)("does not freeze a %s oversized prompt and uses the latest value on retry", async (_kind, large, limit) => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
+  const home = await mkdtemp(path.join(base, "prompt-")); roots.push(home);
+  vi.stubEnv("DN_CONFIG_DIR", path.join(home, "state"));
+  if (process.platform !== "win32") socketDirectories.add(path.dirname(resolveControllerIpcEndpoint(home, randomUUID())));
+  const store = openWebExecutionStore(createMemoryDatabase());
+  try {
+    const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
+    const claim = { ...project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID() };
+    store.register({ ...claim, project, configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, 1);
+    store.bindWorktree(claim, { repositoryPath: home, commonDirectory: path.join(home, ".git"), worktreePath: home, branch: "task" }, 3);
+    const task = store.initializeWebExecution(claim, 4);
+    let latest = "before preparation";
+    const sessionApi = { register: vi.fn(async () => ({ sessionId: randomUUID() })), grant: vi.fn(async () => { latest = large; return {}; }), verifySupport: vi.fn() } as unknown as WorkerSessionApi;
+    const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => 5 });
+    await expect(launcher.prepare(task, () => latest, new AbortController().signal)).rejects.toMatchObject({ name: "PromptInputLimitError", inputPath: "web_ticket", maxBytes: limit, submission: "not-submitted" });
+    expect(store.getTask(claim)?.webExecution).toMatchObject({ initialPrompt: null, ticketPath: null, launchSubmission: "not-submitted" });
+    vi.mocked(sessionApi.grant).mockResolvedValue({} as never);
+    latest = "revised after rejection";
+    const ticket = await launcher.prepare(store.getTask(claim)!, () => latest, new AbortController().signal);
+    expect(ticket.initialPrompt).toBe(latest);
+    expect(store.getTask(claim)?.webExecution?.initialPrompt).toBe(latest);
+    expect(JSON.parse(await readFile(store.getTask(claim)!.webExecution!.ticketPath!, "utf8")).initialPrompt).toBe(latest);
+  } finally { store.close(); }
+});

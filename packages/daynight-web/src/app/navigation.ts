@@ -1,6 +1,7 @@
 export type BrowserLocation = { readonly pathname: string; readonly search: string; readonly hash: string };
 export type WorkerConfigurationDraftScope = { readonly kind: 'worker-configuration'; readonly identity: object; readonly workerId: string };
-export type DraftScope = { readonly kind?: 'task'; readonly identity: object; readonly projectId: string; readonly taskId: string } | WorkerConfigurationDraftScope;
+export type PromptDraftScope = { readonly kind: 'user-prompt'; readonly identity: object } | { readonly kind: 'project-prompt'; readonly identity: object; readonly projectId: string };
+export type DraftScope = { readonly kind?: 'task'; readonly identity: object; readonly projectId: string; readonly taskId: string } | WorkerConfigurationDraftScope | PromptDraftScope;
 export type DirtyDraft = {
   readonly scope: DraftScope;
   readonly isDirty: () => boolean;
@@ -12,9 +13,13 @@ type Entry = { readonly url: URL; readonly index: number | null };
 type Decision = { readonly kind: 'action'; readonly run: () => void; readonly drafts: readonly DirtyDraft[] }
   | { readonly kind: 'history'; readonly drafts: readonly DirtyDraft[] };
 const namespace = '__daynightNavigation';
-const sameScope = (a: DraftScope, b: DraftScope) => a.identity === b.identity && (a.kind === 'worker-configuration'
-  ? b.kind === 'worker-configuration' && a.workerId === b.workerId
-  : b.kind !== 'worker-configuration' && a.projectId === b.projectId && a.taskId === b.taskId);
+const sameScope = (a: DraftScope, b: DraftScope): boolean => {
+  if (a.identity !== b.identity) return false;
+  if (a.kind === 'worker-configuration') return b.kind === 'worker-configuration' && a.workerId === b.workerId;
+  if (a.kind === 'user-prompt') return b.kind === 'user-prompt';
+  if (a.kind === 'project-prompt') return b.kind === 'project-prompt' && a.projectId === b.projectId;
+  return (b.kind === undefined || b.kind === 'task') && a.projectId === b.projectId && a.taskId === b.taskId;
+};
 
 /** Owns admitted locations for one window. Raw popstate must never mount routes directly. */
 export class BrowserNavigation {

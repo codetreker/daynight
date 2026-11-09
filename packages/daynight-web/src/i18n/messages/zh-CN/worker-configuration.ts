@@ -2,7 +2,7 @@ import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
   leaveQuestion: '离开此 Worker 的配置并放弃未保存的修改吗？',
-  leaveExplanation: '未保存的修改将丢失。已提交到服务端的配置不会撤销。',
+  leaveExplanation: '未保存的修改将丢失。已提交到服务端的更改不会撤销。',
   overview: '运行概况', configuration: '配置', sections: 'Worker 页面', loading: '正在读取配置', unavailable: 'Worker 配置不可用',
   uninitialized: '尚未接入配置管理', uninitializedDetail: '运行支持配置管理的 Worker，导入本机设置。',
   readFailed: '读取配置失败。', saveFailed: '保存配置失败。', networkError: '请检查网络连接后重试。', protocolError: '服务返回了无效的配置响应。',
@@ -11,7 +11,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   uncertain: '保存结果尚未确认，当前草稿已保留。', verifySave: '核对保存结果', conflict: '云端配置已被其他页面修改。',
   viewLatest: '查看最新云端配置', loadLatest: '载入最新配置', settings: '运行设置', maxConcurrent: '并发任务上限', pollIntervalMs: '任务轮询间隔',
   recoveryLimit: '自动恢复次数上限', milliseconds: '毫秒', defaultNative: '默认 Agent', agent: 'Agent', model: 'Model', args: '启动参数',
-  preferPlatformSpecificTasks: '优先领取平台特定任务', platformPreferenceDetail: '优先从所有已选项目中领取指定此 Worker 平台的任务，再领取不限平台任务。', enabled: '开启', disabled: '关闭',
+  preferPlatformSpecificTasks: '优先领取平台特定任务', preferPlatformTasks: ({ platform }) => `优先领取 ${platform} 的任务`, platformPreferenceDetail: '优先从所有已选项目中领取指定此 Worker 平台的任务，再领取不限平台任务。', enabled: '开启', disabled: '关闭',
   defaultModel: '使用 Agent 默认模型', customModel: '指定模型', inherit: '继承适用设置', inheritGlobal: '继承全局', customArgs: '自定义参数', clearArgs: '没有附加参数',
   argsHint: 'JSON 字符串数组；[] 表示没有附加参数。', inheritanceNote: 'Agent 类型与全局不同，未覆盖的 Model 和参数使用该 Agent 的默认设置。', resolved: '当前解析',
   projects: '项目', chooseProjects: '选择项目', noProjects: '尚未选择项目', noMatchingProjects: '没有匹配的项目', projectSearch: '搜索项目',

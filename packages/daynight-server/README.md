@@ -422,6 +422,15 @@ configuration, browser authorization and connection verification. A normal HEAD
 returns the same headers without a body. Reading the manual does not authenticate
 or invoke business operations.
 
+Authenticated MCP clients can list seven product manual Resources and read a
+complete topic at `daynight://manuals/<topic>.md`. The server instructions guide
+clients to the catalog; reading it does not select a Project or authorize work.
+The manuals are embedded with the server and require no Project membership.
+Their fixed URIs link related topics; a new server version serves its own content.
+Resource reads share the Control permit through response delivery and refuse
+immediately when it is exhausted. They do not change business data. The public
+installation manual remains a separate entry.
+
 Configure a client with the service's HTTPS URL ending in `/mcp`. Standard clients
 discover OAuth from the unauthenticated protocol challenge and request the
 `daynight:mcp` scope through the existing browser account. The account holder
@@ -547,8 +556,9 @@ Configure the required UniAuth App and origin settings using the
 dashboard and API with PostgreSQL and wait for readiness. Only Docker is required
 on the host; valid authentication settings remain mandatory. The [deployment guide](../../deployment/localhost/README.md) owns
 prerequisites, API examples, port selection and persistence/teardown commands.
-The gateway publishes host `127.0.0.1:8787` and forwards TCP to the server's
-loopback listener in their shared network namespace; the database has no
+The gateway publishes host `127.0.0.1:8787` for the application and
+`127.0.0.1:8788` for metrics, forwarding each over a separate TCP stream to the
+server's loopback listeners in their shared network namespace; the database has no
 published host port. Startup initializes or upgrades the database with this
 module's embedded format snapshot and migrations. Open
 `http://127.0.0.1:8787/` for projects and task graphs. The
@@ -621,12 +631,17 @@ diagnostics and cause categories.
 | `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN` | Explicit main-site HTTP test-origin policy (`0` or `1`) | `0` |
 | `DAYNIGHT_ALLOW_LOOPBACK_HTTP` | Separate SDK permission for a literal loopback UniAuth HTTP gateway (`0` or `1`) | `0` |
 | `DAYNIGHT_LISTEN_ADDR` | Numeric loopback IP and port, including IPv6 syntax | `127.0.0.1:8787` |
+| `DAYNIGHT_METRICS_LISTEN_ADDR` | Optional numeric IP and port for the independent metrics listener | Empty (disabled) |
 | `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration for database connection and listener startup | `10s` |
 | `DAYNIGHT_SHUTDOWN_TIMEOUT` | Shared positive shutdown duration, at most 10 seconds | `10s` |
 | `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
 
-Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
-rejected. Callback paths that collide with application routes are rejected during
+The business listener rejects wildcard, non-loopback, hostname, scoped IPv6, and
+malformed addresses. The optional metrics address accepts literal IPv4 or IPv6,
+including wildcard addresses, without a scope; hostnames are rejected. Its port
+must be canonical decimal in `0..65535`, and the two configured nonzero ports
+must differ. Port zero requests an ephemeral port; the lifecycle log reports the
+actual bound address. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
 `/mcp`, `/login`, `/setup`, `/teams` and every descendant path, together with the
 `/api/v1/teams` API namespace and `/api/v1/webhook-event-types`. If an existing callback occupies that
@@ -689,6 +704,75 @@ JSON 404 responses. GET routes support HEAD; other methods receive 405 with
 `Cache-Control: no-store`; hashed assets use long-lived immutable caching.
 Handler panics emit a safe request-correlated error and abort the HTTP request;
 the recovered value and stack are not printed by the HTTP server.
+
+## Metrics
+
+Metrics are disabled when `DAYNIGHT_METRICS_LISTEN_ADDR` is empty. Set it
+explicitly to start a separate listener, for example:
+
+```bash
+export DAYNIGHT_METRICS_LISTEN_ADDR=127.0.0.1:8788
+# IPv6 loopback alternative: export DAYNIGHT_METRICS_LISTEN_ADDR='[::1]:8788'
+curl --fail-with-body http://127.0.0.1:8788/metrics
+```
+
+`GET` and `HEAD` serve the exact `/metrics` path; other methods return 405 with
+`Allow: GET, HEAD`, and other paths return 404. The business listener does not
+serve metrics. This endpoint has no application authentication: choose the
+bind address and network rules to restrict scrapers. In containers, a loopback
+listener is reachable only within its network namespace; use a separate secured
+forwarder or an appropriately restricted container network when needed. The
+[localhost stack](../../deployment/localhost/README.md) provides a separate
+host-loopback TCP forwarding port.
+
+Each enabled App owns an independent Prometheus registry with its PostgreSQL
+pool collector and the official default Go and process collectors. Their `go_*` and `process_*` families describe
+the Go runtime and this process, not the machine. Availability depends on the
+platform and build; Linux process collection requires readable `/proc`.
+The pool collector reads one local `pgxpool.Stat` snapshot per scrape without
+issuing SQL. It exposes the following families for the App's own pool:
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `daynight_postgres_pool_connections` | Gauge | Connections with `state` of `acquired`, `idle`, or `constructing` |
+| `daynight_postgres_pool_total_connections` | Gauge | Current total connections |
+| `daynight_postgres_pool_max_connections` | Gauge | Configured connection limit |
+| `daynight_postgres_pool_acquires_total` | Counter | Successful acquisitions |
+| `daynight_postgres_pool_acquire_duration_seconds_total` | Counter | Total time spent in successful acquisitions, in seconds |
+| `daynight_postgres_pool_canceled_acquires_total` | Counter | Acquisitions canceled by context |
+| `daynight_postgres_pool_empty_acquires_total` | Counter | Successful acquisitions that waited for an empty pool |
+| `daynight_postgres_pool_empty_acquire_wait_seconds_total` | Counter | Total empty-pool wait time for those successful acquisitions, in seconds |
+
+Among the pool families, only the connections family has labels. These acquisition durations are not SQL
+execution latency; the pool metrics do not describe the database server's CPU or
+resource use. Counters reset when the process restarts.
+
+Collection failures are exposed rather than replaced with zero values. Scrapes
+negotiate Prometheus text or OpenMetrics; clients should parse according to the
+response Content-Type. At most two scrapes execute concurrently; further
+requests receive 503. The endpoint's read-header and read timeouts are 5 seconds,
+write timeout is 10 seconds, and idle timeout is 60 seconds. A timeout does not
+force a collector to stop; shutdown waits for active scrapes before closing App
+resources. See the [metrics design](../../docs/design/server-metrics.md) for
+registry and lifecycle ownership.
+
+Business requests expose `daynight_http_requests_total` (Counter),
+`daynight_http_request_duration_seconds` (Histogram, seconds) and
+`daynight_http_requests_in_flight` (Gauge). The counter labels are `method`,
+`route`, `mode`, `status` and `outcome`; the histogram uses only `method`,
+`route` and `mode`. Its classic buckets are 0.005, 0.01, 0.025, 0.05, 0.1,
+0.25, 0.5, 1, 2.5, 5, 10, 30, 60 and 300 seconds, plus `+Inf`.
+
+The route is the registered template without its method prefix, or `unrouted`
+when no pattern matched. Methods outside GET, HEAD, POST, PUT, PATCH, DELETE,
+OPTIONS, CONNECT and TRACE are `OTHER`. Modes are `http`, `websocket` and
+`sse`; streaming durations cover the handler or connection lifetime, so select
+`mode="http"` for ordinary request latency. The first final response status is
+retained; an uncommitted abnormal exit uses `none`. Outcomes, in descending
+priority, are `panic`, `aborted`, `write_error`, `canceled` and `returned`.
+A canceled stream is not automatically a server failure. These observations do
+not prove complete client receipt. Business health requests are included; scrapes
+on the separate listener are excluded.
 
 ## Validate
 
@@ -806,6 +890,29 @@ Successful native application/process composition remains in the independent
 records the proof allocation and the shared-factory rationale. Runtime comparisons
 include receiving packages; removed database preparation is distinct from moved
 physical work.
+
+The inner `internal/service/application` suite verifies the business-module
+construction shared by protocol adapters. It records Projects, Tasks and
+Attachments constructor arguments and returned module identities through the
+same production assembly body. The wrappers call real pure constructors; fixed
+business data does not require Project/Task/Attachment workflows or PostgreSQL.
+Actual Session/Engine identity, origin propagation and operation/stop/close
+behavior remain real, with store and files borrowed from their external owners.
+
+Run the inner suite without database or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/application
+```
+
+The existing API attachment normal flow retains complete byte and final Project
+readback through production construction. Exact constructor dependency identity
+and that normal connectivity prove different responsibilities. The
+[inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
+records the three bindings and the retained lifetime proof.
 
 ### Bot runtime service tests
 

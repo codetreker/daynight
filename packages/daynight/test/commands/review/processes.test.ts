@@ -12,6 +12,7 @@ import { createProcessSupervisor, processGroupIsExecuting } from "../../../src/c
 import { formatError } from "../../../src/platform/diagnostics.js";
 import type { CopilotAttemptOutcome } from "../../../src/commands/review/adapters/copilot.js";
 import type { ReviewState } from "../../../src/commands/review/model.js";
+import { spawnWindowsReviewPhase } from "../../../src/commands/review/windows-phase.js";
 
 const review = (pid: number | null): ReviewState => ({ id: "review", host: "github.com", githubId: "1", number: 1, revision: 1,
   headSha: "a".repeat(40), baseRef: "main", baseSha: "b".repeat(40), status: "running", attemptCount: 1, maxAttempts: 3,
@@ -85,15 +86,21 @@ fs.writeFileSync(${JSON.stringify(marker)}+'.'+role+'.json',JSON.stringify({pid:
   await writeFile(fixture, `const {spawn}=require('node:child_process');const fs=require('node:fs');\n${declaration}\nif(process.argv[2]==='leaf'){setInterval(()=>fs.writeFileSync(process.argv[3],String(Date.now())),15);}else{const leaf=spawn(process.execPath,[__filename,'leaf',process.argv[2]],{stdio:'ignore'});process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(termMarker)},'received');${ignoreTerm ? "" : "if(leaf.exitCode!==null||leaf.signalCode!==null)process.exit(0);else leaf.once('close',()=>process.exit(0));"}});setInterval(()=>{},1000);}`);
   let file = process.execPath;
   let args = [fixture, marker];
-  if (process.platform === "win32") {
+  if (process.platform === "win32" && !observeWindows) {
     file = path.join(directory, `${name}.cmd`);
     await writeFile(file, `@echo off\r\n"${process.execPath}" "${fixture}" "${marker}"\r\n`);
     args = [];
   }
-  const child = crossSpawn(file, args, { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const phase = process.platform === "win32" && observeWindows ? spawnWindowsReviewPhase({ file, args, cwd: directory,
+    environment: process.env, deadline: performance.now() + 10_000, graceMs: 3_000 }) : undefined;
+  const child = phase?.child ?? crossSpawn(file, args, { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const closed = once(child, "close");
   child.stdout!.resume(); child.stderr!.resume();
   await once(child, "spawn");
+  if (phase !== undefined) {
+    child.stdin!.end();
+    try { await phase.start(); } catch (error) { await phase.stop(); throw error; }
+  }
   return { child, closed, marker, termMarker };
 };
 const expectHeartbeatStopped = async (marker: string, observer?: WindowsFixtureObserver): Promise<void> => {

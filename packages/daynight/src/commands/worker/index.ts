@@ -14,7 +14,7 @@ export type WorkerCommandDependencies = {
   attach: (options: { homeDirectory: string }) => Promise<void>;
   repository: (request: WorkerRepositoryCommandRequest, context: CliContext) => Promise<void>;
   run: (options: { homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
-  manage: (options: { homeDirectory: string; packageDirectory: string; request: WorkerControlRequest; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
+  manage: (options: { homeDirectory: string; packageDirectory: string; version: string; request: WorkerControlRequest; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
 };
 
 const defaultDependencies: WorkerCommandDependencies = {
@@ -92,5 +92,5 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
     catch (cause) { throw new UsageError(cause instanceof Error ? cause.message : String(cause), help); }
     request = { ...original, kind: command.command.name as "release" | "resume", version };
   }
-  await dependencies.manage({ ...runtime(), request });
+  await dependencies.manage({ ...runtime(), version: context.version, request });
 };

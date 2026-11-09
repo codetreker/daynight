@@ -157,10 +157,56 @@ func TestPersonalOwnershipMigrationPreservesFactsAndSequence(t *testing.T) {
 }
 
 func TestPersonalOwnershipMigrationFailuresAreAtomic(t *testing.T) {
+	s := ownershipMigrationSource(t)
+	ctx := context.Background()
+	original := ownershipMigrationFacts(t, s, "project_members")
+	var sequenceLast int64
+	var sequenceCalled bool
+	if err := s.Pool.QueryRow(ctx, "SELECT last_value,is_called FROM project_member_versions").Scan(&sequenceLast, &sequenceCalled); err != nil {
+		t.Fatal(err)
+	}
+	ledger := func(t *testing.T) string {
+		t.Helper()
+		var value string
+		if err := s.Pool.QueryRow(t.Context(), "SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m").Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	originalLedger := ledger(t)
+	assertSourceCatalog := func(t *testing.T) {
+		t.Helper()
+		var restored bool
+		if err := s.Pool.QueryRow(t.Context(), `SELECT
+ to_regclass('teams') IS NULL AND to_regclass('team_members') IS NULL
+ AND to_regclass('team_member_versions') IS NULL AND to_regclass('project_ownership') IS NULL
+ AND to_regclass('project_grants') IS NULL AND to_regclass('project_grant_versions') IS NULL
+ AND to_regclass('project_members') IS NOT NULL AND to_regclass('project_member_versions') IS NOT NULL
+ AND to_regclass('project_members_user') IS NOT NULL
+ AND (SELECT count(*) FROM pg_constraint WHERE conrelid='project_members'::regclass
+ AND conname IN ('project_members_pkey','project_members_role_check','project_members_version_check'))=3
+ AND (SELECT pg_get_expr(adbin,adrelid) FROM pg_attrdef d JOIN pg_attribute a
+ ON a.attrelid=d.adrelid AND a.attnum=d.adnum
+ WHERE d.adrelid='project_members'::regclass AND a.attname='version')
+ = 'nextval(''project_member_versions''::regclass)'`).Scan(&restored); err != nil || !restored {
+			t.Fatalf("historical ownership catalog changed: %t %v", restored, err)
+		}
+	}
+	assertSequence := func(t *testing.T) {
+		t.Helper()
+		var last int64
+		var called bool
+		if err := s.Pool.QueryRow(t.Context(), "SELECT last_value,is_called FROM project_member_versions").Scan(&last, &called); err != nil || last != sequenceLast || called != sequenceCalled {
+			t.Fatalf("historical member sequence was not restored: %d %t, want %d %t: %v", last, called, sequenceLast, sequenceCalled, err)
+		}
+	}
 	for _, phase := range []string{"no-admin", "bad-grant-user", "bad-invite-user", "bad-invite-project", "sql", "transform", "ledger"} {
-		t.Run(phase, func(t *testing.T) {
-			s := ownershipMigrationSource(t)
-			ctx := context.Background()
+		if !t.Run(phase, func(t *testing.T) {
+			if !reflect.DeepEqual(original, ownershipMigrationFacts(t, s, "project_members")) || originalLedger != ledger(t) {
+				t.Fatal("previous failure changed the historical ownership fixture")
+			}
+			assertSourceCatalog(t)
+			assertSequence(t)
 			migrations := append([]migration(nil), schemaMigrations...)
 			switch phase {
 			case "no-admin":
@@ -198,7 +244,30 @@ func TestPersonalOwnershipMigrationFailuresAreAtomic(t *testing.T) {
 			if err := s.Pool.QueryRow(ctx, `SELECT to_regclass('teams')::text,(SELECT count(*) FROM schema_migrations WHERE version=32)`).Scan(&fresh, &count); err != nil || fresh != nil || count != 0 {
 				t.Fatalf("failed migration kept new schema or ledger: %v %d %v", fresh, count, err)
 			}
+			assertSourceCatalog(t)
+			if originalLedger != ledger(t) {
+				t.Fatal("failed migration changed the historical ledger")
+			}
 			assertMigrationPoolReusable(t, s.Pool)
-		})
+			switch phase {
+			case "no-admin", "bad-grant-user":
+				mustQueryExec(t, s, "DELETE FROM project_members")
+				mustQueryExec(t, s, "INSERT INTO project_members SELECT * FROM jsonb_populate_recordset(NULL::project_members,$1::jsonb)", original["grants"])
+			case "bad-invite-user", "bad-invite-project":
+				mustQueryExec(t, s, "DELETE FROM project_invitations")
+				mustQueryExec(t, s, "INSERT INTO project_invitations SELECT * FROM jsonb_populate_recordset(NULL::project_invitations,$1::jsonb)", original["project_invitations"])
+			case "ledger":
+				mustQueryExec(t, s, "DROP TRIGGER reject_ownership_ledger ON schema_migrations; DROP FUNCTION reject_ownership_ledger()")
+				assertFaultTriggerRemoved(t, s, "reject_ownership_ledger", "schema_migrations")
+			}
+			// Existing sequence state is not restored by transaction rollback.
+			mustQueryExec(t, s, "SELECT setval('project_member_versions',$1,$2)", sequenceLast, sequenceCalled)
+			assertSequence(t)
+			if !reflect.DeepEqual(original, ownershipMigrationFacts(t, s, "project_members")) || originalLedger != ledger(t) {
+				t.Fatal("historical ownership fixture was not restored exactly")
+			}
+		}) {
+			return
+		}
 	}
 }

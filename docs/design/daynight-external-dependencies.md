@@ -239,7 +239,7 @@ Details、reset、全屏、模态、附件和焦点继续使用现有生命周�
 图有效性要求定位任务存在且 `component.memberIds.size > 1`，不依赖列表筛选及当前页。
 不存在或成为单成员时关闭浮层并清除定位任务；
 离开任务列表或任务链类别也清除打开状态，返回和重载均不自动打开。
-类别和共享页面位置记录保持原格式；状态与负责人筛选在本次访问中共享，不持久化。
+类别和共享页面位置记录保持原格式；两个类别共享状态与负责人筛选。状态只在本次访问中保留，负责人选择按认证账号和项目在本浏览器恢复，详见[负责人偏好决策](../../.agents/notes/implemented/feature/2026-11-09-project-assignee-filter-preference.md)。
 
 只有状态或同一拓扑内容刷新时继续保留可见集合、视口和检查。
 `VisibleTaskGraph` 只按代表 rootId 保持呈现生命周期，`GraphVisibility.topologyKey` 则记录有序主成员集合。

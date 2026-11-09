@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
@@ -20,11 +21,13 @@ import (
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 	"github.com/codetreker/uniauth/sdk/go"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // App owns the shared modules and their underlying resources.
 type App struct {
 	*application.Application
+	Metrics          *prometheus.Registry
 	Web              *webresources.Resources
 	Ready            func(context.Context) error
 	Webhooks         *webhook.Service
@@ -132,6 +135,7 @@ type appOpeners struct {
 	files      func(string) (appStorage, error)
 	database   func(context.Context, string) (persistenceBackend, error)
 	monitoring func(string) (monitoringBackend, error)
+	metrics    func() (*prometheus.Registry, error)
 }
 
 func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open appOpeners) (*App, error) {
@@ -177,6 +181,22 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		}
 		app.monitoring = monitoring
 		app.Workers.SetMonitoringStore(monitoring)
+	}
+	if c.MetricsListenAddress != "" {
+		makeMetrics := open.metrics
+		if makeMetrics == nil {
+			makeMetrics = newMetricsRegistry
+		}
+		app.Metrics, err = makeMetrics()
+		if err != nil {
+			return failOpen(err)
+		}
+		if app.Metrics == nil {
+			return failOpen(errors.New("metrics registry is unavailable"))
+		}
+		if err := app.Metrics.Register(database.MetricsCollector); err != nil {
+			return failOpen(fmt.Errorf("register persistence metrics collector: %w", err))
+		}
 	}
 	if err := app.assembleWebhooks(database.Transactions, c.WebhookEnabled, logger); err != nil {
 		return failOpen(err)

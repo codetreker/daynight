@@ -83,6 +83,7 @@ export type WorkerHerdrLifecycle = {
   registerClaim(context: HerdrExecutionContext, ownerUserId: string): void;
   assertCanAdvance(context: HerdrExecutionContext): void;
   hasPreparedRun(owner: HerdrExecutionOwner): boolean;
+  pendingInitialPrompt?(owner: HerdrExecutionOwner): string | null;
   responsibilities(): HerdrExecutionOwner[];
   isStopped(owner: HerdrExecutionOwner): boolean;
   stop(owner: HerdrExecutionOwner, reason: "shutdown" | "terminal", operation: Operation): Promise<void>;

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type monitoringAppBackend struct {
@@ -137,5 +138,37 @@ func TestAppMonitoringClosesAfterLaterStartupFailure(t *testing.T) {
 	app, err := openApp(t.Context(), c, nil, openers)
 	if app != nil || err == nil || monitor.closes.Load() != 1 || persistence.closes != 1 {
 		t.Fatalf("later startup failure leaked resources: app=%v err=%v", app, err)
+	}
+}
+
+func TestAppMonitoringAndMetricsAssembly(t *testing.T) {
+	for _, failMetrics := range []bool{false, true} {
+		t.Run(map[bool]string{false: "both enabled", true: "metrics failure"}[failMetrics], func(t *testing.T) {
+			c := appTestConfig(t)
+			c.RedisURL = "redis://redis.example"
+			c.MetricsListenAddress = "127.0.0.1:0"
+			backend := newAppBackend(t)
+			open := appTestOpeners(t, c, backend)
+			monitor := &monitoringAppBackend{started: make(chan struct{}), release: make(chan struct{})}
+			close(monitor.release)
+			open.monitoring = func(string) (monitoringBackend, error) { return monitor, nil }
+			failure := errors.New("metrics creation failed")
+			if failMetrics {
+				open.metrics = func() (*prometheus.Registry, error) { return nil, failure }
+			}
+			app, err := openApp(t.Context(), c, nil, open)
+			if failMetrics {
+				if app != nil || !errors.Is(err, failure) || monitor.closes.Load() != 1 || backend.closes != 1 {
+					t.Fatalf("metrics failure did not close monitoring: %v", err)
+				}
+				return
+			}
+			if err != nil || app.Metrics == nil || app.monitoring != monitor {
+				t.Fatalf("assembly: %v", err)
+			}
+			if err = app.Close(context.Background()); err != nil || monitor.closes.Load() != 1 {
+				t.Fatalf("close: %v", err)
+			}
+		})
 	}
 }

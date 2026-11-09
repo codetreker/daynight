@@ -63,13 +63,18 @@ export class BotSessionCache {
   snapshot = (): readonly BotSessionPane[] => this.panes;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
   private publish() { for (const listener of this.listeners) listener(); }
-  select(binding: BotSessionBinding | null): void {
+  /** Revoke new operations without disturbing reading, drafts or original receipts. */
+  suspendActions = (): void => { for (const pane of this.panes) pane.client.setActionAdmission(false); };
+  select(binding: BotSessionBinding | null, actionBinding: BotSessionBinding | null = null): void {
+    this.suspendActions();
     if (!this.isCurrent()) { this.invalidate(); return; }
     this.guards.caches.add(this);
     if (!binding || binding.ownerUserId !== this.options.userId || this.isRevoked(binding.botId) || this.isBlocked(binding.botId)) return;
     const key = botSessionKey(binding);
+    const actionAdmitted = actionBinding !== null && botSessionKey(actionBinding) === key;
     this.recent.set(key, ++this.clock);
-    if (this.panes.some(pane => pane.key === key)) return;
+    const existing = this.panes.find(pane => pane.key === key);
+    if (existing) { existing.client.setActionAdmission(actionAdmitted); return; }
     // A changed stable binding cannot inherit another execution's local state.
     for (const [otherKey, other] of this.retained) if (other.binding.botId === binding.botId && otherKey !== key) this.remove(otherKey, true);
     if (this.panes.length === 3) {
@@ -85,6 +90,7 @@ export class BotSessionCache {
     const client = new TaskSessionClient({
       api: (this.options.createApi ?? createBotSessionApi)(immutableBinding, this.options.onPrincipalMismatch),
       userId: binding.ownerUserId, testSessionId: binding.sessionId, bot: immutableBinding,
+      initialActionAdmitted: false,
       isCurrent: () => this.isCurrent() && !this.isBlocked(binding.botId) && !this.isRevoked(binding.botId) && this.panes.some(pane => pane.key === key && pane.client === client),
       ...(this.options.isPaused ? { isPaused: this.options.isPaused } : {}),
       onPrincipalMismatch: this.options.onPrincipalMismatch,
@@ -92,7 +98,7 @@ export class BotSessionCache {
       storage: saved.storage,
     });
     const pane: BotSessionPane = { key, binding: immutableBinding, client, reading: createRef(), retained: saved };
-    this.panes = [...this.panes, pane]; this.publish(); client.syncAvailability();
+    this.panes = [...this.panes, pane]; client.setActionAdmission(actionAdmitted); this.publish(); client.syncAvailability();
   }
   private remove(key: string, invalidate: boolean): void {
     const pane = this.panes.find(value => value.key === key), saved = this.retained.get(key);

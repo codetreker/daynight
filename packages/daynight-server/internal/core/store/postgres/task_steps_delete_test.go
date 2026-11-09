@@ -13,29 +13,32 @@ import (
 )
 
 func TestTaskStepsDeleteStoreFailureCausesAndRollback(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := context.Background()
+	project := queryProject(t, database, 1)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
+	for index, id := range []string{"00000000", "11111111", "abcdef01", "fedcba98"} {
+		seedStoreStep(t, database, task.ID, id, int64(index))
+	}
+	state := func(t *testing.T) string {
+		t.Helper()
+		var result string
+		if err := database.Pool.QueryRow(ctx, `SELECT jsonb_build_object('task',to_jsonb(t),'steps',(SELECT jsonb_agg(to_jsonb(s) ORDER BY position) FROM task_steps s WHERE task_id=t.id))::text FROM tasks t WHERE id=$1`, task.ID).Scan(&result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	before := state(t)
 	for _, mode := range []string{"missing", "query", "tail_count", "tail_constraint"} {
-		t.Run(mode, func(t *testing.T) {
-			database := isolatedStore(t)
-			ctx := context.Background()
-			project := queryProject(t, database, 1)
-			task := queryTask(t, database, project.ID, 10, model.TaskTodo)
-			for index, id := range []string{"00000000", "11111111", "abcdef01", "fedcba98"} {
-				seedStoreStep(t, database, task.ID, id, int64(index))
+		if !t.Run(mode, func(t *testing.T) {
+			if before != state(t) {
+				t.Fatal("previous fault changed the shared delete fixture")
 			}
 			if mode == "tail_constraint" {
 				if _, err := database.Pool.Exec(ctx, `ALTER TABLE task_steps ADD CONSTRAINT refuse_compaction CHECK (position>=0 AND (id<>'11111111' OR position=1))`); err != nil {
 					t.Fatal(err)
 				}
 			}
-			state := func() string {
-				t.Helper()
-				var result string
-				if err := database.Pool.QueryRow(ctx, `SELECT jsonb_build_object('task',to_jsonb(t),'steps',(SELECT jsonb_agg(to_jsonb(s) ORDER BY position) FROM task_steps s WHERE task_id=t.id))::text FROM tasks t WHERE id=$1`, task.ID).Scan(&result); err != nil {
-					t.Fatal(err)
-				}
-				return result
-			}
-			before := state()
 			err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
 				switch mode {
 				case "missing":
@@ -68,10 +71,22 @@ func TestTaskStepsDeleteStoreFailureCausesAndRollback(t *testing.T) {
 					t.Fatal(driver.Code)
 				}
 			}
-			if before != state() {
+			if before != state(t) {
 				t.Fatal("failed delete left target loss or partial tail/parent changes")
 			}
-		})
+			assertMigrationPoolReusable(t, database.Pool)
+			if mode == "tail_constraint" {
+				if _, err := database.Pool.Exec(ctx, "ALTER TABLE task_steps DROP CONSTRAINT refuse_compaction"); err != nil {
+					t.Fatal(err)
+				}
+				var retained bool
+				if err := database.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT FROM pg_constraint WHERE conrelid='task_steps'::regclass AND conname='refuse_compaction')").Scan(&retained); err != nil || retained {
+					t.Fatalf("delete fault constraint was retained: %t %v", retained, err)
+				}
+			}
+		}) {
+			return
+		}
 	}
 }
 

@@ -85,7 +85,8 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 
 ### W-06：稳定的 task worktree
 
-- 分支为 daynight/<taskId>，目录为 .worktrees/daynight/<taskId>。首次分支从仓库 HEAD 创建，保留分支从原 tip 使用；仍有效 claim 正常复用 dirty worktree，不 reset/clean。准备时允许通过检查及非递归 rmdir 清除 mkdir 后、Git add 前中断留下的无注册空预留目录，再正常创建；不采纳非空外来目录或别的 claim 的注册。普通退出、失败和崩溃保留其 worktree 与原生历史。
+- 分支为 daynight/<taskId>，目录为 .worktrees/daynight/<taskId>。首次创建分支前刷新 origin 的远端默认分支，并以本次取得的 commit 创建分支；首次 clone 也遵守此规则。远端 HEAD 无法获取或不是可用 commit，或刷新失败、超时、取消时报告错误，不从本地旧基线创建分支或 worktree。主 checkout 的分支、HEAD、工作区内容及本地主线保持不变。
+- 保留分支从原 tip 使用；仍有效 claim 正常复用 dirty worktree，不 reset/clean。复用已有分支或有效 worktree 不要求 origin 可用。准备时允许通过检查及非递归 rmdir 清除 mkdir 后、Git add 前中断留下的无注册空预留目录，再正常创建；不采纳非空外来目录或别的 claim 的注册。普通退出、失败和崩溃保留其 worktree 与原生历史。
 - 创建、复用和删除核对实际仓库、Git 注册、静态 projectId/taskId/claimId/worktreeId、分支及精确 .git 指针。静态标签身份仅含这四项 canonical UUID，Herdr 与 Git 标记一致；macOS lifecycle 的完整 owner 另绑定 serverOrigin、workerId、ownerUserId 和 provider，不能与静态标签混淆。符号链接、外来路径、非空目录的缺失指针和歧义注册不能授权递归删除。Device/inode 仅为辅助，refs backend 通过 Git 核对，支持 reftable。
 - 发现资源时，Git 注册的 marker 或 Herdr workspace label 不符合当前格式即静默跳过并保留，不阻塞其他资源；成功解析后的受管资源仍严格校验实际身份和完整性。Git 发现只枚举可识别的注册，不把保留目录中的无注册普通路径当作已识别 worktree，也不因此使整个资源快照失败。针对明确目标清理时，无法归属的非空目录仍保留并报告。
 - 原生会话已知而原 worktree 意外丢失时报告错误并保留 active；尚无原会话的新执行可以按规则准备工作区。异常既有路径保留并报告，不用空目录掩盖旧成果丢失。
@@ -181,7 +182,7 @@ Web 与 Herdr 共用 claim 结束和工作区删除门槛。两种模式保留�
 | W-01、W-07 | cloud-first、首次原始候选与空项目启动成立，本地托管值不能覆盖云端；缓存身份/损坏/持久化错误明确，receive/apply/ACK 串行合并保留新目标和未确认失败；当前 mode 重新验证 native 历史，部分成功、退避、快恢复及飞行期间新失败正确，实际并发/轮询/恢复/native 消费且健康进程不重启；本地字段与首次候选严格、省略值一致，项目选择明确；managed assignment 完整，正常与 managed 模式互斥；后台 prompt 明确范围内自主决定、必要介入前暂停自身任务、解决并获准后解除暂停，以及等待 PR review、reviewer approval、CI 或轮询超时时持续交付、不得因此设置 paused=true；恢复使用保存的 agent 和当前适用配置；两个 provider 的 fresh/resume 均带固定 full access、目录信任参数或环境，冲突参数和缺失能力明确拒绝；Codex 通过独立启动 argv 关闭更新检查，有新版时不等待更新选择，没有新版时正常进入任务，配置参数和含引号等字符的 prompt 保持各自原值与传递位置。 |
 | W-02、W-03 | 默认许可、双向确认、平台清除、未知结果及候选组合过滤成立；assignedTo=me 贯穿全部候选页，他人和未分配任务不遮挡本人合格候选。 |
 | W-04、W-05 | 本人可领取，他人和未分配任务的直接 claim 拒绝且保持数据；负责人变更与 claim 竞争遵循项目锁及精确版本；既有库存和人工 resume 保留原执行权限；同 task 竞争单赢家；未知 claim 不启动资源或重放；单项目和多项目空闲容量大于一时，每轮合计最多一个新 claim，暂留 pending 也结束本轮领取，下一轮延续项目轮转与候选顺序，候选迭代器正常关闭；已有 pending 同轮仍可按容量启动多个；等待与收尾占容量，同 task 旧资源形成启动屏障；撤回只允许原 owner/admin，原子重置归属/状态/计时并关闭许可。 |
-| W-06 | Dirty worktree 复用，静态归属、注册、指针与删除核对成立；普通恢复中的缺失原成果和外来路径保持可见错误；清理中的目录已缺失、Git 注册残留、最终 unlink 后空目录及无注册空预留目录均能收敛，无关非空目录保持不变且不阻断其他资源发现。 |
+| W-06 | 首次分支使用本次刷新取得的远端默认分支 commit，主 checkout 保持不变；远端不可用或刷新失败、取消、超时不创建新分支或 worktree，既有 dirty worktree 和保留分支在 origin 不可用时仍可复用；不同任务并发创建互不串扰。静态归属、注册、指针与删除核对成立；普通恢复中的缺失原成果和外来路径保持可见错误；清理中的目录已缺失、Git 注册残留、最终 unlink 后空目录及无注册空预留目录均能收敛，无关非空目录保持不变且不阻断其他资源发现。 |
 | W-07、W-09（Linux/Windows legacy Herdr） | 活进程重连不重发启动 prompt；意外退出后自动重建并 resume 原 session，替代 shell 初始化期间的明确 busy 拒绝有界恢复，健康 Agent、前台程序占用、身份变化、取消、超时及未知启动结果均不触发不安全重试；idle/done 且就绪、未暂停时 ping；暂停期间多轮零 ping，改为 false 或移除后同一观察恢复 ping；排队或界面等待期间设置暂停时，最终递交边界使用当前服务端值；读取失败及原 claim 换代不递交；首次和待递交 assignment、观察、恢复及清理不受标记拦截。Herdr working/blocked/unknown 保持观察；自定义状态栏及未知可见布局不等待正向识别；已知菜单/禁用输入未递交且不消耗恢复次数，关闭后保留首次与 continuation 机会；窄宽度、长 primary key binding 的 Resume/Fork/restore Session picker 只剩主动作时仍拒绝，展开会话且 inline error 替代搜索时仍拒绝，标题或搜索/列表证据缺失、正文中的动作说明及后续正常 prompt 不误作该菜单；读取后最终暂停/归属检查仍有效。未改变观察和未知回执不触发重复输入；已知原生 ID resume；首次启动与恢复中的 NULL 分支记录 info 后新建并保存 ID；空库先建项目映射再找回已有 claim。标题首先可见，改名按需同步且不改变执行身份，含控制字符/分隔符/长标题；命名故障和未知回执不消耗恢复预算。 |
 | W-08 | 人工操作与 run 互斥；远端拒绝保留 worktree；成功后本机删除失败可由下次对账收尾；未知结果不重放；Web 强制撤回不声明远端已停，原 worker 下次对账收尾。 |
 | W-07、W-08、W-09（Web） | SQLite 重开保留暂停原因、次数、claim 与原生身份；暂停后多轮 tick、Worker restart、shutdown/clearShutdown 均不准备或启动原生执行、不递交初始输入；旧耗尽停止记录与健康最后一代、健康 orderly restart 成对验证；waiting 首次发布失败后以新版本对账成功且稳定后不重复写；retry 成功与失败均保留原身份，claim 失效、停止证明不足或缺失原生 ID 时安全拒绝；暂停继续占用容量并保留资源。 |

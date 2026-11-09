@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
+import { pauseAuthRequests } from '../src/api/client';
 import { navigate } from '../src/app/router';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { mockSidebarMediaQuery } from './helpers/mediaQuery';
@@ -57,6 +58,196 @@ beforeEach(() => {
 });
 
 describe('Worker pages in the authenticated workspace', () => {
+  it('guards a configuration edited back to its original value while a save is in flight', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const pending = Promise.withResolvers<Response>();
+    install((url, init) => {
+      if (url === `/api/v1/me/workers/${firstWorker}/prompt`) return json({ scope: 'worker', scopeId: firstWorker, revision: '0', text: '', updatedAt: null });
+      if (url === `/api/v1/me/workers/${firstWorker}/configuration`) return init?.method === 'PUT' ? pending.promise : configurationResponse(configurationResource(), 200, owner);
+      if (url === `/api/v1/me/workers/${firstWorker}`) return detail();
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
+    fireEvent.change(input, { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    await screen.findByRole('button', { name: 'Saving…' });
+    fireEvent.change(input, { target: { value: '2' } });
+    act(() => navigate('/projects'));
+    expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    await act(async () => pending.resolve(configurationResponse(configurationResource('2', { ...configurationResource().desired!.value, maxConcurrent: 3 }), 200, owner)));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled());
+    expect(input).toHaveValue('2');
+  });
+
+  it('does not send an abandoned configuration while identity admission is waiting', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    let writes = 0;
+    install((url, init) => {
+      if (url === `/api/v1/me/workers/${firstWorker}/prompt`) return json({ scope: 'worker', scopeId: firstWorker, revision: '0', text: '', updatedAt: null });
+      if (url === `/api/v1/me/workers/${firstWorker}/configuration`) {
+        if (init?.method === 'PUT') writes++;
+        return configurationResponse(configurationResource(), 200, owner);
+      }
+      if (url === `/api/v1/me/workers/${firstWorker}`) return detail();
+      if (url.startsWith('/api/v1/me/workers?')) return list();
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
+    fireEvent.change(input, { target: { value: '3' } });
+    const resume = pauseAuthRequests();
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+      await screen.findByRole('button', { name: 'Saving…' });
+      act(() => navigate('/workers'));
+      fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+      expect(writes).toBe(0);
+    } finally { resume(); }
+    await act(async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); });
+    expect(writes).toBe(0);
+    act(() => navigate(`/workers/${firstWorker}`));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
+    expect(await screen.findByRole('textbox', { name: 'Concurrent task limit' })).toHaveValue('2');
+    expect(writes).toBe(0);
+  });
+
+  it('abandons a pending configuration draft without blocking subsequent routes and keeps later edits', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const pending = Promise.withResolvers<Response>();
+    let writeSignal: AbortSignal | undefined, writes = 0;
+    install((url, init) => {
+      if (url === `/api/v1/me/workers/${firstWorker}/prompt`) return json({ scope: 'worker', scopeId: firstWorker, revision: '0', text: '', updatedAt: null });
+      if (url === `/api/v1/me/workers/${firstWorker}/configuration`) {
+        if (init?.method === 'PUT') { writes++; writeSignal = init.signal as AbortSignal; return pending.promise; }
+        return configurationResponse(configurationResource(), 200, owner);
+      }
+      if (url === `/api/v1/me/workers/${firstWorker}`) return detail();
+      if (url.startsWith('/api/v1/me/workers?')) return list();
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
+    fireEvent.change(input, { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    await waitFor(() => expect(writes).toBe(1));
+    act(() => navigate('/workers'));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+    expect(writeSignal?.aborted).toBe(false);
+    act(() => navigate('/projects')); expect(screen.queryByRole('alertdialog')).toBeNull();
+    act(() => navigate(`/workers/${firstWorker}`));
+    expect(await screen.findByRole('textbox', { name: 'Concurrent task limit' })).toBe(input);
+    expect(input).toHaveValue('2');
+    fireEvent.change(input, { target: { value: '4' } });
+    await act(async () => pending.resolve(configurationResponse(configurationResource('2', { ...configurationResource().desired!.value, maxConcurrent: 3 }), 200, owner)));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled());
+    expect(input).toHaveValue('4'); expect(writes).toBe(1);
+  });
+
+  it('keeps an unknown configuration submission for a read-only reconciliation after abandonment', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const pending = Promise.withResolvers<Response>();
+    let failReads = false, writes = 0;
+    install((url, init) => {
+      if (url === `/api/v1/me/workers/${firstWorker}/prompt`) return json({ scope: 'worker', scopeId: firstWorker, revision: '0', text: '', updatedAt: null });
+      if (url === `/api/v1/me/workers/${firstWorker}/configuration`) {
+        if (init?.method === 'PUT') { writes++; return pending.promise; }
+        if (failReads) return Promise.reject(new TypeError('offline'));
+        return configurationResponse(configurationResource(writes === 0 ? '1' : '2', { ...configurationResource().desired!.value, maxConcurrent: writes === 0 ? 2 : 3 }), 200, owner);
+      }
+      if (url === `/api/v1/me/workers/${firstWorker}`) return detail();
+      if (url.startsWith('/api/v1/me/workers?')) return list();
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    const input = await screen.findByRole('textbox', { name: 'Concurrent task limit' });
+    fireEvent.change(input, { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    await waitFor(() => expect(writes).toBe(1)); failReads = true;
+    await act(async () => pending.reject(new TypeError('lost response')));
+    await screen.findByText('The save result is not yet confirmed. Your draft has been kept.');
+    act(() => navigate('/workers'));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+    act(() => navigate('/projects')); expect(screen.queryByRole('alertdialog')).toBeNull();
+    act(() => navigate(`/workers/${firstWorker}`));
+    expect(await screen.findByRole('textbox', { name: 'Concurrent task limit' })).toBe(input);
+    expect(input).toHaveValue('2');
+    failReads = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Check save result' }));
+    await waitFor(() => expect(input).toHaveValue('3'));
+    expect(writes).toBe(1);
+  });
+
+  it('keeps the account prompt draft through tab changes and a pending write through navigation', async () => {
+    window.history.replaceState(null, '', '/account');
+    const pending = Promise.withResolvers<Response>();
+    let writeSignal: AbortSignal | undefined, writes = 0;
+    install((url, init) => {
+      if (url === '/api/v1/me/worker-prompt') {
+        if (init?.method === 'PUT') { writes++; writeSignal = init.signal as AbortSignal; return pending.promise; }
+        return json({ scope: 'user', scopeId: owner, revision: '0', text: '', updatedAt: null });
+      }
+      if (url.startsWith('/api/v1/me/workers?')) return list();
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole('button', { name: 'User prompt' }));
+    const field = await screen.findByRole('textbox', { name: 'Prompt text' });
+    fireEvent.change(field, { target: { value: 'account instructions' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Profile' }));
+    expect(field).not.toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
+    expect(screen.getByRole('textbox', { name: 'Prompt text' })).toBe(field);
+    fireEvent.click(within(field.closest('form')!).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(writes).toBe(1));
+    act(() => navigate('/workers'));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+    expect(writeSignal?.aborted).toBe(false);
+    act(() => navigate('/account'));
+    expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
+    await act(async () => pending.resolve(json({ scope: 'user', scopeId: owner, revision: '1', text: 'account instructions', updatedAt: observedAt })));
+    expect(writes).toBe(1);
+  });
+
+  it('retains a dispatched Worker prompt across departure and re-entry without replaying it', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const pending = Promise.withResolvers<Response>();
+    let writeSignal: AbortSignal | undefined, writes = 0;
+    install((url, init) => {
+      if (url === `/api/v1/me/workers/${firstWorker}/prompt`) {
+        if (init?.method === 'PUT') { writes++; writeSignal = init.signal as AbortSignal; return pending.promise; }
+        return json({ scope: 'worker', scopeId: firstWorker, revision: '0', text: '', updatedAt: null });
+      }
+      if (url === `/api/v1/me/workers/${firstWorker}/configuration`) return configurationResponse(configurationResource(), 200, owner);
+      if (url === `/api/v1/me/workers/${firstWorker}`) return detail();
+      if (url.startsWith('/api/v1/me/workers?')) return list();
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    const field = await screen.findByRole('textbox', { name: 'Prompt text' });
+    fireEvent.change(field, { target: { value: 'instructions' } });
+    fireEvent.click(within(field.closest('form')!).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(writes).toBe(1));
+    act(() => navigate('/workers'));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
+    expect(writeSignal?.aborted).toBe(false);
+    act(() => navigate(`/workers/${firstWorker}`));
+    expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
+    await act(async () => pending.resolve(json({ scope: 'worker', scopeId: firstWorker, revision: '1', text: 'instructions', updatedAt: observedAt })));
+    expect(writes).toBe(1);
+  });
+
   it('quietly retains Worker details through foreground identity checks and replaces the confirmed report afterward', async () => {
     window.history.replaceState(null, '', `/workers/${firstWorker}`);
     const identity = Promise.withResolvers<Response>(), replacement = Promise.withResolvers<Response>();

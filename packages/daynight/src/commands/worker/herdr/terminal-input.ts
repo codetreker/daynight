@@ -1,6 +1,7 @@
 import { Socket } from "node:net";
 
 import type { SessionV2Key } from "../../../session/v2/types.js";
+import { PromptInputLimitError } from "../prompt-input-limit.js";
 
 export type TerminalKey = SessionV2Key;
 export type TerminalInput = { kind: "paste"; text: string } | { kind: "keys"; key: TerminalKey };
@@ -85,21 +86,37 @@ const keyBytes = (key: TerminalKey, flags: number, modify: number): string => {
   }
   return modify === 2 && modifier !== 1 ? `\x1b[27;${modifier};${code}~` : legacy;
 };
-const prepare = (request: TerminalInputRequest): readonly TerminalInput[] => {
-  if (request.herdrVersion !== supportedVersion) throw new Error("Herdr version has no verified terminal-input profile.");
-  if (!request.endpoint || /[\0\r\n]/.test(request.endpoint) || !request.terminalId || /[\0\r\n]/.test(request.terminalId)) throw new Error("Invalid terminal endpoint or identity.");
-  if (![request.width, request.height].every((value) => Number.isInteger(value) && value > 0 && value <= 1000)) throw new Error("Invalid terminal geometry.");
-  if (!Array.isArray(request.inputs) || request.inputs.length < 1 || request.inputs.length > 2) throw new Error("Invalid terminal input batch.");
+class TerminalPasteLimitError extends Error {
+  constructor(readonly actualBytes: number) { super("Terminal paste exceeds 16 KiB."); }
+}
+const prepareInputs = (batch: readonly TerminalInput[]): readonly TerminalInput[] => {
+  if (!Array.isArray(batch) || batch.length < 1 || batch.length > 2) throw new Error("Invalid terminal input batch.");
   let pasteBytes = 0;
-  const inputs = request.inputs.map((input): TerminalInput => {
+  const inputs = batch.map((input): TerminalInput => {
     if (input.kind === "keys" && typeof input.key === "string" && validKey(input.key)) return { kind: "keys", key: input.key };
     if (input.kind !== "paste" || typeof input.text !== "string" || !input.text.isWellFormed() || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(input.text)) throw new Error("Invalid terminal paste or shortcut.");
     pasteBytes += Buffer.byteLength(input.text);
     return { kind: "paste", text: input.text };
   });
-  if (pasteBytes > HERDR_INPUT_MAX_PASTE_BYTES) throw new Error("Terminal paste exceeds 16 KiB.");
+  if (pasteBytes > HERDR_INPUT_MAX_PASTE_BYTES) throw new TerminalPasteLimitError(pasteBytes);
   if (inputs.length === 2 && !(inputs[0]?.kind === "paste" && inputs[1]?.kind === "keys" && inputs[1].key === "Enter")) throw new Error("Only a prompt paste followed by Enter may share an attachment.");
   return inputs;
+};
+
+const prepare = (request: TerminalInputRequest): readonly TerminalInput[] => {
+  if (request.herdrVersion !== supportedVersion) throw new Error("Herdr version has no verified terminal-input profile.");
+  if (!request.endpoint || /[\0\r\n]/.test(request.endpoint) || !request.terminalId || /[\0\r\n]/.test(request.terminalId)) throw new Error("Invalid terminal endpoint or identity.");
+  if (![request.width, request.height].every((value) => Number.isInteger(value) && value > 0 && value <= 1000)) throw new Error("Invalid terminal geometry.");
+  return prepareInputs(request.inputs);
+};
+
+/** Validate the same complete paste batch used for direct terminal submission. */
+export const validateMacosPromptInput = (prompt: string): void => {
+  try { prepareInputs([{ kind: "paste", text: prompt }, { kind: "keys", key: "Enter" }]); }
+  catch (error) {
+    if (error instanceof TerminalPasteLimitError) throw new PromptInputLimitError("macos_terminal", error.actualBytes, HERDR_INPUT_MAX_PASTE_BYTES);
+    throw error;
+  }
 };
 
 /**

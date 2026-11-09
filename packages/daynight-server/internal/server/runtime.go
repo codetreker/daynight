@@ -11,13 +11,14 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Runtime owns the listener, transport, and admission of HTTP work. Application
+// Runtime owns the listeners, transports, and admission of HTTP work. Application
 // dependencies remain owned by the supplied closeApp function.
 type Runtime struct {
 	listener        net.Listener
-	http            *http.Server
+	http            *runtimeHTTPServer
 	logger          *slog.Logger
 	shutdownTimeout time.Duration
 	cancelRequests  context.CancelFunc
@@ -27,10 +28,8 @@ type Runtime struct {
 	drainApp        func(context.Context) error
 	closeApp        func(context.Context) error
 
-	admission sync.Mutex
-	closing   bool
-	active    int
-	drained   chan struct{}
+	admissionState
+	metrics *metricsServer
 
 	closeLock  chan struct{}
 	graceDone  bool
@@ -42,9 +41,66 @@ type Runtime struct {
 	appClosed  bool
 }
 
-func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout time.Duration, logger *slog.Logger, handler http.Handler, shutdownHandler func(context.Context) error, cancelApp func(), drainApp func(context.Context) error, closeApp func(context.Context) error) (*Runtime, error) {
+type MetricsEndpoint struct {
+	Address  string
+	Registry *prometheus.Registry
+}
+
+type admissionState struct {
+	admission sync.Mutex
+	closing   bool
+	active    int
+	drained   chan struct{}
+}
+
+type metricsServer struct {
+	admissionState
+	listener net.Listener
+	http     *runtimeHTTPServer
+}
+
+// Every Close owned by Runtime is ordered with admission shutdown. Remember an
+// earlier Close even if its Serve goroutine is scheduled after shutdown begins.
+type runtimeHTTPServer struct {
+	*http.Server
+	state       *admissionState
+	closedEarly bool
+}
+
+func (s *runtimeHTTPServer) Close() error {
+	s.state.admission.Lock()
+	if !s.state.closing {
+		s.closedEarly = true
+	}
+	s.state.admission.Unlock()
+	return s.Server.Close()
+}
+
+func (s *runtimeHTTPServer) expectedClose(err error) bool {
+	s.state.admission.Lock()
+	defer s.state.admission.Unlock()
+	return s.state.closing && !s.closedEarly && errors.Is(err, http.ErrServerClosed)
+}
+
+func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout time.Duration, logger *slog.Logger, handler http.Handler, shutdownHandler func(context.Context) error, cancelApp func(), drainApp func(context.Context) error, closeApp func(context.Context) error, metrics ...MetricsEndpoint) (*Runtime, error) {
 	if handler == nil {
 		return nil, &httpx.RuntimeError{Phase: "composition", Cause: errors.New("HTTP handler is required")}
+	}
+	if len(metrics) > 1 || len(metrics) == 1 && (metrics[0].Address == "" || metrics[0].Registry == nil) {
+		return nil, &httpx.RuntimeError{Component: "metrics", Phase: "composition", Cause: errors.New("metrics address and registry are required")}
+	}
+	var metricsHandler http.Handler
+	var requestMetrics *httpx.RequestMetrics
+	if len(metrics) == 1 {
+		var err error
+		requestMetrics, err = httpx.NewRequestMetrics(metrics[0].Registry)
+		if err != nil {
+			return nil, &httpx.RuntimeError{Component: "metrics", Phase: "composition", Cause: err}
+		}
+		metricsHandler, err = newMetricsHandler(metrics[0].Registry, logger)
+		if err != nil {
+			return nil, &httpx.RuntimeError{Component: "metrics", Phase: "composition", Cause: err}
+		}
 	}
 	startup, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
@@ -53,28 +109,49 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 	}
 	listener, err := (&net.ListenConfig{}).Listen(startup, "tcp", address)
 	if err != nil {
-		return nil, &httpx.RuntimeError{Phase: "listen", Cause: err}
+		return nil, &httpx.RuntimeError{Component: "server", Phase: "listen", Cause: err}
+	}
+	var metricsListener net.Listener
+	if metricsHandler != nil {
+		metricsListener, err = (&net.ListenConfig{}).Listen(startup, "tcp", metrics[0].Address)
+		if err != nil {
+			return nil, &httpx.RuntimeError{Component: "metrics", Phase: "listen", Cause: errors.Join(err, listener.Close())}
+		}
 	}
 	if err := startup.Err(); err != nil {
-		return nil, &httpx.RuntimeError{Phase: "listen", Cause: errors.Join(err, listener.Close())}
+		var metricsErr error
+		if metricsListener != nil {
+			metricsErr = metricsListener.Close()
+		}
+		return nil, &httpx.RuntimeError{Phase: "listen", Cause: errors.Join(err, listener.Close(), metricsErr)}
 	}
 	requests, cancelRequests := context.WithCancel(context.Background())
 	r := &Runtime{listener: listener, logger: logger, shutdownTimeout: shutdownTimeout, cancelRequests: cancelRequests,
-		shutdownHandler: shutdownHandler, cancelApp: cancelApp, drainApp: drainApp, closeApp: closeApp, drained: make(chan struct{}), closeLock: make(chan struct{}, 1)}
+		shutdownHandler: shutdownHandler, cancelApp: cancelApp, drainApp: drainApp, closeApp: closeApp, admissionState: admissionState{drained: make(chan struct{})}, closeLock: make(chan struct{}, 1)}
 	if starter, ok := handler.(interface{ BeginShutdown() }); ok {
 		r.beginShutdown = starter.BeginShutdown
 	}
 	r.closeLock <- struct{}{}
-	r.http = &http.Server{
-		Handler: httpx.RequestLogging(logger, httpx.LimitRequestTarget(logger, r.admit(handler))), ReadHeaderTimeout: 5 * time.Second,
+	r.http = &runtimeHTTPServer{state: &r.admissionState, Server: &http.Server{
+		Handler: httpx.RequestLoggingWithMetrics(logger, httpx.LimitRequestTarget(logger, r.admit(handler)), requestMetrics), ReadHeaderTimeout: 5 * time.Second,
 		// net/http adds 4096 bytes of read-ahead to MaxHeaderBytes.
 		MaxHeaderBytes: transport.MaxRequestHeadersBytes - 4096,
 		IdleTimeout:    60 * time.Second, BaseContext: func(net.Listener) context.Context { return requests },
+	}}
+	if metricsListener != nil {
+		m := &metricsServer{listener: metricsListener, admissionState: admissionState{drained: make(chan struct{})}}
+		m.http = &runtimeHTTPServer{state: &m.admissionState, Server: &http.Server{
+			Handler: metricsRequestLogging(logger, m.admit(metricsHandler)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second,
+			WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second,
+			MaxHeaderBytes: transport.MaxRequestHeadersBytes - 4096,
+			BaseContext:    func(net.Listener) context.Context { return requests },
+		}}
+		r.metrics = m
 	}
 	return r, nil
 }
 
-func (r *Runtime) admit(next http.Handler) http.Handler {
+func (r *admissionState) admit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		r.admission.Lock()
 		if r.closing {
@@ -96,7 +173,7 @@ func (r *Runtime) admit(next http.Handler) http.Handler {
 	})
 }
 
-func (r *Runtime) stopAdmission() {
+func (r *admissionState) stopAdmission() {
 	r.admission.Lock()
 	defer r.admission.Unlock()
 	if !r.closing {
@@ -208,27 +285,48 @@ func (r *Runtime) grace() error {
 	}
 	r.graceDone = true
 	r.stopAdmission()
+	if r.metrics != nil {
+		r.metrics.stopAdmission()
+	}
 	if r.beginShutdown != nil {
 		r.beginShutdown()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.shutdownTimeout)
 	defer cancel()
 	r.startRelay(ctx)
-	httpErr := r.http.Shutdown(ctx)
+	serverShutdown := make(chan error, 1)
+	go func() { serverShutdown <- r.http.Shutdown(ctx) }()
+	var metricsShutdown chan error
+	if r.metrics != nil {
+		metricsShutdown = make(chan error, 1)
+		go func() { metricsShutdown <- r.metrics.http.Shutdown(ctx) }()
+	}
+	httpErr := <-serverShutdown
+	if httpErr != nil {
+		httpErr = &httpx.RuntimeError{Component: "server", Phase: "shutdown", Cause: httpErr}
+	}
+	var metricsErr, metricsDrainErr error
+	if r.metrics != nil {
+		metricsErr = <-metricsShutdown
+		if metricsErr != nil {
+			metricsErr = &httpx.RuntimeError{Component: "metrics", Phase: "shutdown", Cause: metricsErr}
+		}
+		metricsDrainErr = waitDrained(ctx, r.metrics.drained)
+	}
 	drainErr := waitDrained(ctx, r.drained)
 	relayErr := r.waitRelay(ctx)
 	var appErr error
-	if httpErr == nil && drainErr == nil && r.relayDone && ctx.Err() == nil {
+	if httpErr == nil && metricsErr == nil && drainErr == nil && metricsDrainErr == nil && r.relayDone && ctx.Err() == nil {
 		r.startAppDrain(ctx)
 		appErr = r.waitAppDrain(ctx)
 	}
 	// Resource release belongs to the same budget as transport and application
 	// draining. A timed-out process must not close dependencies still in use.
 	var closeErr error
-	if httpErr == nil && drainErr == nil && r.relayDone && appErr == nil && r.appDrained && ctx.Err() == nil {
+	if httpErr == nil && metricsErr == nil && drainErr == nil && metricsDrainErr == nil && r.relayDone && appErr == nil && r.appDrained && ctx.Err() == nil {
 		closeErr = r.finish(ctx)
 	}
-	r.graceErr = errors.Join(httpErr, drainErr, relayErr, appErr, closeErr)
+	r.graceErr = errors.Join(httpErr, metricsErr, drainErr, metricsDrainErr, relayErr, appErr, closeErr)
 	if ctx.Err() != nil && !errors.Is(r.graceErr, context.DeadlineExceeded) {
 		r.graceErr = errors.Join(r.graceErr, ctx.Err())
 	}
@@ -240,10 +338,20 @@ func (r *Runtime) grace() error {
 		if err := r.http.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			r.graceErr = errors.Join(r.graceErr, err)
 		}
+		if r.metrics != nil {
+			if err := r.metrics.http.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				r.graceErr = errors.Join(r.graceErr, &httpx.RuntimeError{Component: "metrics", Phase: "shutdown", Cause: err})
+			}
+		}
 	}
 	// Shutdown does not own the listener before Serve has started.
 	if err := r.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		r.graceErr = errors.Join(r.graceErr, err)
+	}
+	if r.metrics != nil {
+		if err := r.metrics.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			r.graceErr = errors.Join(r.graceErr, &httpx.RuntimeError{Component: "metrics", Phase: "shutdown", Cause: err})
+		}
 	}
 	r.cancelRequests()
 	if relayErr != nil && !r.relayDone && !onlyContextError(relayErr) {
@@ -284,6 +392,11 @@ func (r *Runtime) finish(ctx context.Context) error {
 	}
 	if err := waitDrained(ctx, r.drained); err != nil {
 		return err
+	}
+	if r.metrics != nil {
+		if err := waitDrained(ctx, r.metrics.drained); err != nil {
+			return err
+		}
 	}
 	if !r.appDrained {
 		r.startAppDrain(ctx)
@@ -339,29 +452,54 @@ func (r *Runtime) Close(ctx context.Context) error {
 
 func (r *Runtime) Address() string { return r.listener.Addr().String() }
 
+func (r *Runtime) MetricsAddress() string {
+	if r.metrics == nil {
+		return ""
+	}
+	return r.metrics.listener.Addr().String()
+}
+
 func (r *Runtime) Run(ctx context.Context) error {
-	result := make(chan error, 1)
-	go func() { result <- r.http.Serve(r.listener) }()
+	type serveResult struct {
+		component string
+		err       error
+		expected  bool
+	}
+	result := make(chan serveResult, 2)
+	serve := func(component string, server *runtimeHTTPServer, listener net.Listener) {
+		err := server.Serve(listener)
+		result <- serveResult{component, err, server.expectedClose(err)}
+	}
+	go serve("server", r.http, r.listener)
 	r.logger.InfoContext(ctx, "server started", "type", "lifecycle", "component", "server", "phase", "listening", "address", r.Address())
+	count := 1
+	if r.metrics != nil {
+		count++
+		go serve("metrics", r.metrics.http, r.metrics.listener)
+		r.logger.InfoContext(ctx, "metrics started", "type", "lifecycle", "component", "metrics", "phase", "listening", "address", r.MetricsAddress())
+	}
 	var serveErr error
-	served := false
+	remaining := count
 	select {
-	case serveErr = <-result:
-		served = true
+	case outcome := <-result:
+		remaining--
+		if !outcome.expected {
+			serveErr = &httpx.RuntimeError{Component: outcome.component, Phase: "serve", Cause: outcome.err}
+		}
 	case <-ctx.Done():
 	}
 	_ = r.acquireClose(context.Background())
 	graceErr := r.grace()
 	shutdownErr := errors.Join(r.graceErr, graceErr)
 	r.closeLock <- struct{}{}
-	if !served {
-		serveErr = <-result
-	}
-	if errors.Is(serveErr, http.ErrServerClosed) {
-		serveErr = nil
+	for ; remaining > 0; remaining-- {
+		outcome := <-result
+		if !outcome.expected {
+			serveErr = errors.Join(serveErr, &httpx.RuntimeError{Component: outcome.component, Phase: "serve", Cause: outcome.err})
+		}
 	}
 	if err := errors.Join(shutdownErr, serveErr); err != nil {
-		return &httpx.RuntimeError{Phase: "shutdown", Cause: err}
+		return err
 	}
 	r.logger.InfoContext(ctx, "server stopped", "type", "lifecycle", "component", "server", "phase", "stopped")
 	return nil

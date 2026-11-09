@@ -30,6 +30,10 @@ export type HerdrPromptGuard = (operation: Operation) => Promise<boolean>;
 export type HerdrAgentLaunchInput = { configuration: HerdrAgentConfiguration; resumeSessionId?: string; beforeStart?: (operation: Operation) => Promise<void> };
 export type HerdrAgentStartInput = HerdrAgentLaunchInput & {
   prompt: string;
+  /** Capture the current input immediately before the durable native launch. */
+  preparePrompt?: (recovery: boolean) => string;
+  preparePromptSource?: (operation: Operation) => Promise<void>;
+  onPromptPrepared?: (prompt: string, recovery: boolean) => void;
   // The receipt preserves the pre-input observation before session discovery
   // can observe a completed turn or fail after acknowledged submission.
   onPromptSubmitted?: (receipt: HerdrPromptReceipt) => void;
