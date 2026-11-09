@@ -513,16 +513,26 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 ## 验证设计
 
 [测试编写规则](../writing_tests.md)定义依赖和场景归属，并按被测职责选择隔离边界。
-core 使用合成领域输入及所需 DAO mock；service 控制被编排的下层操作及所需 DAO、
-scope、transaction 结果；server HTTP 适配单元测试 mock 直接调用的 service 或业务
-用例，保留实际路由、协议认证、编解码与请求生命周期，不连接 PostgreSQL。
-Mock 明确检查方法、参数、调用次数与错误，独立提供返回值及完成结果；拟写不代表
-持久化，后续给定读取也不模拟提交或回滚。并发工作使用所属操作的 barrier，未配置的
-后台访问必须使测试失败并完成取消与 drain。Task 与 Session HTTP 单元测试采用直接
+core 实际执行业务规则，使用合成领域输入及所需 DAO、scope 和 transaction mock。
+service 实际执行自身装配、编排、事务协调与共享资源生命周期，mock 直接调用的 core
+及其他下层业务操作，并控制自身所需的 DAO、scope、transaction 和外部资源。server
+HTTP 适配单元测试 mock handler 直接调用的 service 或 core 用例，保留实际路由、协议
+认证、编解码与请求生命周期。仅 mock DAO 并继续执行下层业务，不能隔离 server 或
+service 的职责；不连接 PostgreSQL 也不足以证明直接操作边界。
+
+Mock 明确检查 principal、ID、输入、context、事务绑定能力、方法、调用次数及所需
+顺序，独立提供操作结果、完成结果和错误。service 的实际事务 callback 仍执行，
+验证后续操作、完成结果优先级、错误链和失败清理；拟写不代表持久化，后续给定读取
+也不模拟提交或回滚。并发工作使用所属操作的 barrier，未配置的后台访问必须使测试
+失败并完成取消与 drain。共享模型、领域错误和普通数据直接构造，纯逻辑、协议、
+传输及生命周期的被测机制仍实际执行。Task 与 Session HTTP 单元测试采用直接
 用例边界；Session 的私有类型化回调、不透明归档能力及实际 socket 证明由
 [Session HTTP 用例决策](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)维护。
 
-根 `internal/service` 测试拥有 App 组装、启动、readiness、后台监督和关闭重试。
+装配和生命周期测试使用受控协作者及外部资源边界执行生产构造及绑定，验证依赖身份、
+readiness、部分启动清理、后台退出、资源保留和停止使用后关闭的顺序，不通过完整
+下层业务矩阵取得固定数据。根 `internal/service` 测试拥有 App 组装、启动、readiness、
+后台监督和关闭重试。
 公开入口与测试共用同一 `openApp` 组装流程，通过实例级资源 factory 控制下层；
 `openPersistence` 将同一个 backend 绑定为 Transactions、Ready 和 Close，应用与
 公开持久化入口共用这段绑定。测试保留实际 Engine、文件、permit 和 worker 生命周期，
@@ -532,7 +542,7 @@ Mock 明确检查方法、参数、调用次数与错误，独立提供返回值
 归 core 或对应子 service，物理事务及持久化归 Store，具体依据由
 [根 service 测试归属决策](../../.agents/notes/implemented/testing/2026-11-09-root-service-test-ownership.md)维护。
 
-根 server 单元测试组装真实模块、路由和认证适配。HTTP/TCP、MCP SDK、WebSocket、
+现有根 server fixture 组装真实模块、路由和认证适配。HTTP/TCP、MCP SDK、WebSocket、
 Session Engine、文件和 runtime 生命周期按实际机制运行；HTTP control 与 WebSocket
 共享同一 application 和 Engine。UniAuth 浏览器绑定、一次性结果及 SDK 断流测试保留隔离的
 真实 gateway、代理与 socket。其他认证输入通过明确 credential 与 Identity DAO 事实提供，

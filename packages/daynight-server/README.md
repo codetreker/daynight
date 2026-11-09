@@ -789,14 +789,26 @@ physical work.
 ### Business rules and DAO mocks
 
 The [test-writing rules](../../docs/writing_tests.md) define the dependency
-boundary of each test. Core rules construct domain facts and use narrow
-`core/store` DAO mocks when they need query or storage results. Service tests
-control lower operations and DAO, scope or transaction results while exercising
-their own orchestration and lifecycle. Store tests own physical database
-mechanisms; API integration tests own representative normal assembled flows. Check arguments, expected calls, results
-and error chains; unconfigured access must fail immediately. Pure functions need
-no storage mock. Unit selections must execute without
-`DAYNIGHT_TEST_DATABASE_URL`; fixed model data does not require PostgreSQL.
+boundary of each test. Core tests execute business rules over constructed domain
+facts and narrow `core/store` DAO, scope or transaction mocks. Service tests
+execute their own assembly, orchestration, transaction coordination and shared
+resource lifetime, mocking directly invoked core and other lower business
+operations. They also control DAO, scope, transaction and external-resource
+calls made by the service itself. Server units execute the real HTTP adapter
+with directly invoked service or core use case mocks. DAO-only mocks that still
+execute lower business decisions do not isolate service or server behavior.
+
+Check exact principal, IDs, inputs, context, transaction-bound capabilities,
+expected calls and order, results and error chains. Service transaction callbacks
+still execute; lower operation results, completion and cleanup errors are
+independent facts. Assembly and lifecycle tests control collaborators and external
+resources while executing production construction, wiring and the real lifetime
+mechanism under test. Shared types and pure data remain ordinary values, and pure/protocol
+code executes at its owner. Store tests own physical database mechanisms; API
+integration tests own representative normal assembled flows. Unconfigured access
+must fail immediately. Unit selections must execute without
+`DAYNIGHT_TEST_DATABASE_URL`; database isolation alone does not establish the
+direct operation boundary.
 
 The regular `internal/server/task` suite uses direct Task, Step and Thread
 service mocks plus Search and Sync operations. It exercises production routing,
