@@ -68,6 +68,7 @@ rules. Default Task/Test and archive behavior remains independent of Bot selecti
 
 The page, cache and final dispatcher each enforce their own timing boundary;
 future image submission paths must consume the same admission before freezing or
-submitting input. This decision does not deliver persistent display previews,
-first-history loading or snapshot-to-live merging. Those mechanisms have separate
-owners and cannot derive permissions from readable cached history.
+submitting input. Persistent display previews, first-history facts and
+snapshot-to-live merging have a separate
+[history owner](2026-11-09-bot-persistent-history-preview.md) and cannot derive
+permissions from readable cached history.

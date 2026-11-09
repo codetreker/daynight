@@ -42,7 +42,7 @@ func TestAdmitTransferRejectsInvalidInputsAndMissingStorage(t *testing.T) {
 		})
 	}
 	for _, storage := range []filestorage.Storage{attachmentStorageOnly{files}, attachmentTransferWithoutPublisher{Storage: files, TransferStorage: files}} {
-		subject := NewAttachments(m, m, storage)
+		subject := m.service(m, storage)
 		admission, err := subject.AdmitTransfer(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", namespace)
 		if err == nil || admission != nil || FileEffectPossible(err) {
 			t.Fatalf("unsupported storage admission: %v %v", admission, err)

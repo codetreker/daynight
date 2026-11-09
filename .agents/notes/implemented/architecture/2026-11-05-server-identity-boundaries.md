@@ -15,7 +15,12 @@ on the root service or server packages.
 
 `core/identity` owns identity rules and receives transaction-bound DAO
 capabilities. `service/identity` coordinates the upstream client and local
-transactions, including Personal Team bootstrap through `core/team`. Login
+transactions through private, instance-owned operation bindings. Its constructor
+binds the Core Identity methods and Personal Team operations in `core/team` to
+their production implementations. The concrete UniAuth SDK remains the transport
+and parsing mechanism. The [Identity test ownership decision](../testing/2026-11-09-identity-direct-operation-tests.md)
+separates operation facts from SDK transport and real PostgreSQL observations.
+Login
 consumption completes before the upstream request; user, Personal Team and
 session writes share a local transaction. Transaction completion failures take
 precedence over staged business refusals and an uncommitted secret is not

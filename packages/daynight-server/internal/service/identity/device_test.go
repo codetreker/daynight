@@ -1,417 +1,206 @@
 package identity
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 )
 
-func requireDeviceError(t *testing.T, err error, code string) {
-	t.Helper()
-	var failure *core.DeviceGrantError
-	if !errors.As(err, &failure) || failure.Code != code || failure.Error() == "" {
-		t.Fatalf("expected device error %s, got %v", code, err)
-	}
-}
-func startDevice(t *testing.T, f *identityFixture) core.DeviceStart {
-	t.Helper()
-	d, err := f.identity.StartDevice(context.Background(), core.DeviceClientID, "client-source")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return d
-}
-func redeemDevice(f *identityFixture, d core.DeviceStart) (core.MintedPAT, error) {
-	return f.identity.RedeemDevice(context.Background(), core.DeviceClientID, core.DeviceGrantType, d.DeviceCode, "workstation")
-}
-
-func TestDeviceAuthorizationLifecycle(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	bob := identityPrincipal(t, f, completeIdentityLogin(t, f, "bob"))
-	d := startDevice(t, f)
-	if !secret.Valid(d.DeviceCode, "") || len(d.UserCode) != 11 || !d.ExpiresAt.Equal(f.now.Add(core.DeviceLifetime)) {
-		t.Fatal("invalid device material")
-	}
-	var stored []byte
-	if err := f.database.Pool.QueryRow(ctx, `SELECT device_code_hash FROM device_authorizations`).Scan(&stored); err != nil || !bytes.Equal(stored, secret.Hash(d.DeviceCode)) {
-		t.Fatalf("device secret was not hashed: %v", err)
-	}
-	inspected, err := f.identity.InspectDevice(ctx, alice, " "+strings.ToLower(d.UserCode)+" ")
-	if err != nil || inspected.Status != "pending" || inspected.UserCode != d.UserCode || !inspected.ExpiresAt.Equal(d.ExpiresAt) {
-		t.Fatalf("inspect: %+v %v", inspected, err)
-	}
-	_, err = redeemDevice(f, d)
-	requireDeviceError(t, err, "slow_down")
-	f.now = f.now.Add(10 * time.Second)
-	_, err = redeemDevice(f, d)
-	requireDeviceError(t, err, "authorization_pending")
-	if err = f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID); err != nil {
-		t.Fatal(err)
-	}
-	inspected, err = f.identity.InspectDevice(ctx, alice, d.UserCode)
-	if err != nil || inspected.Status != "approved" {
-		t.Fatalf("approved: %+v %v", inspected, err)
-	}
-	_, err = f.identity.InspectDevice(ctx, bob, d.UserCode)
-	requireFault(t, err, "not_found")
-	requireFault(t, f.identity.DecideDevice(ctx, bob, d.UserCode, "deny", bob.UserID), "not_found")
-	requireFault(t, f.identity.DecideDevice(ctx, alice, d.UserCode, "deny", alice.UserID), "invalid_transition")
-	f.now = f.now.Add(10 * time.Second)
-	minted, err := redeemDevice(f, d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !secret.Valid(minted.Secret, "dnpat_") || minted.Credential.Name != "Daynight CLI (workstation)" || minted.Credential.ExpiresAt != nil {
-		t.Fatal("invalid CLI credential")
-	}
-	pat, err := f.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
-	if err != nil || pat.UserID != alice.UserID {
-		t.Fatalf("CLI credential: %+v %v", pat, err)
-	}
-	listed, err := f.identity.ListPATs(ctx, alice)
-	if err != nil || len(listed) != 1 || listed[0].Name != "Daynight CLI (workstation)" {
-		t.Fatalf("account listing: %+v %v", listed, err)
-	}
-	inspected, err = f.identity.InspectDevice(ctx, alice, d.UserCode)
-	if err != nil || inspected.Status != "consumed" {
-		t.Fatalf("consumed: %+v %v", inspected, err)
-	}
-	_, err = redeemDevice(f, d)
-	requireDeviceError(t, err, "invalid_grant")
-	if err = f.identity.LogoutDevice(ctx, pat); err != nil {
-		t.Fatal(err)
-	}
-	if err = f.identity.LogoutDevice(ctx, pat); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
-	requireFault(t, err, "unauthenticated")
-	requireFault(t, f.identity.LogoutDevice(ctx, alice), "forbidden")
-}
-
-func TestDeviceDeniedExpiredAndBrowserRestrictions(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	denied := startDevice(t, f)
-	if err := f.identity.DecideDevice(ctx, alice, denied.UserCode, "deny", alice.UserID); err != nil {
-		t.Fatal(err)
-	}
-	_, err := redeemDevice(f, denied)
-	requireDeviceError(t, err, "access_denied")
-	inspected, err := f.identity.InspectDevice(ctx, alice, denied.UserCode)
-	if err != nil || inspected.Status != "denied" {
-		t.Fatalf("denied: %+v %v", inspected, err)
-	}
-	expired := startDevice(t, f)
-	f.now = expired.ExpiresAt
-	_, err = redeemDevice(f, expired)
-	requireDeviceError(t, err, "expired_token")
-	inspected, err = f.identity.InspectDevice(ctx, alice, expired.UserCode)
-	if err != nil || inspected.Status != "expired" {
-		t.Fatalf("expired: %+v %v", inspected, err)
-	}
-	requireFault(t, f.identity.DecideDevice(ctx, alice, expired.UserCode, "approve", alice.UserID), "invalid_transition")
-	pat := model.Principal{Kind: model.PATCredential, UserID: alice.UserID, CredentialID: alice.CredentialID}
-	_, err = f.identity.InspectDevice(ctx, pat, expired.UserCode)
-	requireFault(t, err, "forbidden")
-	requireFault(t, f.identity.DecideDevice(ctx, pat, expired.UserCode, "approve", pat.UserID), "forbidden")
-	d := startDevice(t, f)
-	requireFault(t, f.identity.DecideDevice(ctx, alice, d.UserCode, "other", alice.UserID), "invalid_input")
-	for _, code := range []string{"", "ABC", "AAAAAAAAAA", "界界界界界"} {
-		_, err = f.identity.InspectDevice(ctx, alice, code)
-		requireFault(t, err, "invalid_input")
-	}
-	_, err = f.identity.InspectDevice(ctx, alice, "BBBBB-BBBBB")
-	requireFault(t, err, "not_found")
-	if err = f.identity.Logout(ctx, alice); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.identity.InspectDevice(ctx, alice, d.UserCode)
-	requireFault(t, err, "not_found")
-}
-
-func TestDeviceRequestValidationAndSecretNormalization(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	_, err := f.identity.StartDevice(ctx, "other", "source")
-	requireDeviceError(t, err, "invalid_client")
-	for _, input := range []struct{ client, grant, secret, want string }{
-		{"other", core.DeviceGrantType, "x", "invalid_client"}, {core.DeviceClientID, "other", "x", "unsupported_grant_type"}, {core.DeviceClientID, core.DeviceGrantType, "!", "invalid_grant"}, {core.DeviceClientID, core.DeviceGrantType, secret.Random(""), "invalid_grant"},
-	} {
-		_, err = f.identity.RedeemDevice(ctx, input.client, input.grant, input.secret, "workstation")
-		requireDeviceError(t, err, input.want)
-	}
-	code, err := core.NormalizeDeviceCode(" bcdfg\t-hjklm ")
-	if err != nil || code != "BCDFGHJKLM" {
-		t.Fatalf("normalize: %s %v", code, err)
-	}
-}
-
-func TestDeviceCredentialNames(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	for _, input := range []struct{ hostname, display string }{
-		{"workstation", "workstation"},
-		{"开发工作站", "开发工作站"},
-		{strings.Repeat("a", 85), strings.Repeat("a", 85)},
-		{strings.Repeat("界", 84) + "🖥️", strings.Repeat("界", 84) + "🖥"},
-		{strings.Repeat("界", 255), strings.Repeat("界", 85)},
-	} {
-		d := startDevice(t, f)
-		if err := f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID); err != nil {
-			t.Fatal(err)
-		}
-		f.now = f.now.Add(5 * time.Second)
-		minted, err := f.identity.RedeemDevice(ctx, core.DeviceClientID, core.DeviceGrantType, d.DeviceCode, input.hostname)
-		if err != nil || minted.Credential.Name != "Daynight CLI ("+input.display+")" {
-			t.Fatalf("hostname credential name: %q %v", minted.Credential.Name, err)
-		}
-		listed, err := f.identity.ListPATs(ctx, alice)
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := false
-		for _, credential := range listed {
-			if credential.ID == minted.Credential.ID && credential.Name == minted.Credential.Name {
-				found = true
+func TestDeviceRateAndCollisionAttempts(t *testing.T) {
+	cause := errors.New("driver detail")
+	collision := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &store.Error{DatabaseFailure: true, SQLState: "23505", Cause: cause}}
+	for _, scenario := range []string{"success", "rate", "retry success", "exhaustion", "unknown collision", "cleanup collision", "other database", "operation"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newIdentityFixture(t)
+			s := f.identity
+			client, source := "raw-client", "raw-source"
+			refusal := &model.Fault{Code: "rate_limited"}
+			want := core.DeviceStart{DeviceCode: "opaque-code", UserCode: "BCDFG-HJKLM", ExpiresAt: f.now.Add(10 * time.Minute)}
+			f.plan = []string{"validate", "write", "rate", "finish"}
+			f.transaction()
+			s.ops.validateDeviceClient = func(c string) error { f.hit("validate"); f.equal(c, client); return nil }
+			s.ops.deviceRate = func(ctx context.Context, dao store.IdentityDAO, op, actor string, global, perActor int, now time.Time) error {
+				f.hit("rate")
+				f.bound(ctx, dao)
+				f.equal([]any{op, actor, global, perActor, now}, []any{"device-create", source, 120, 30, f.now})
+				if scenario == "rate" {
+					return refusal
+				}
+				return nil
 			}
-		}
-		if !found {
-			t.Fatalf("hostname name not persisted: %+v", listed)
-		}
+			attempts := 1
+			if scenario == "retry success" || scenario == "exhaustion" {
+				attempts = 3
+			}
+			if scenario != "rate" {
+				for range attempts {
+					f.plan = append(f.plan, "write", "start", "finish")
+					f.transaction()
+				}
+			}
+			attemptErrors := make([]error, attempts)
+			for i := range attempts {
+				switch scenario {
+				case "retry success":
+					if i < 2 {
+						attemptErrors[i] = collision
+					}
+				case "exhaustion":
+					attemptErrors[i] = collision
+				case "unknown collision":
+					attemptErrors[i] = &store.TransactionError{Phase: "operation", Outcome: store.TransactionUnknown, Cause: collision}
+				case "cleanup collision":
+					attemptErrors[i] = &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: collision}
+				case "other database":
+					attemptErrors[i] = &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &store.Error{DatabaseFailure: true, SQLState: "08006", Cause: cause}}
+				case "operation":
+					attemptErrors[i] = cause
+				}
+			}
+			calls := 0
+			s.ops.startDevice = func(ctx context.Context, dao store.IdentityDAO, c string, now time.Time) (core.DeviceStart, error) {
+				f.hit("start")
+				f.bound(ctx, dao)
+				f.equal([]any{c, now}, []any{client, f.now})
+				err := attemptErrors[calls]
+				calls++
+				return want, err
+			}
+			for i := 1; i < len(f.transactions); i++ {
+				f.transactions[i].callbackErr = attemptErrors[i-1]
+				f.transactions[i].err = attemptErrors[i-1]
+			}
+			got, err := s.StartDevice(f.ctx, client, source)
+			if scenario == "success" || scenario == "retry success" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.equal(got, want)
+			} else {
+				f.equal(got, core.DeviceStart{})
+				if err == nil {
+					t.Fatal("failed device start succeeded")
+				}
+				if scenario == "rate" && err != refusal {
+					t.Fatal("rate refusal changed")
+				}
+			}
+		})
 	}
 }
 
-func TestDeviceInvalidNameDoesNotConsumeGrant(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	d := startDevice(t, f)
-	if err := f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID); err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(5 * time.Second)
-	for _, name := range []string{"", " \u2003", "\xff", "host\x00name", "host\nname", "host\u0085name", strings.Repeat("a", 256)} {
-		minted, err := f.identity.RedeemDevice(ctx, core.DeviceClientID, core.DeviceGrantType, d.DeviceCode, name)
-		requireDeviceError(t, err, "invalid_request")
-		if minted.Secret != "" {
-			t.Fatal("invalid name exposed a credential")
+func TestDeviceBrowserStagesAndPostTransactionClock(t *testing.T) {
+	for _, operation := range []string{"inspect", "decide"} {
+		for _, stage := range []string{"success", "browser", "rate", "admission", "lower", "completion"} {
+			t.Run(operation+"/"+stage, func(t *testing.T) {
+				f := newIdentityFixture(t)
+				s := f.identity
+				p := model.Principal{Kind: model.SessionCredential, UserID: "current-user", CredentialID: "session"}
+				raw := " bcdfg\t-hjklm "
+				failure := &model.Fault{Code: "forbidden"}
+				f.plan = []string{"browser"}
+				s.ops.validateDeviceBrowser = func(got model.Principal) error {
+					f.hit("browser")
+					f.equal(got, p)
+					if stage == "browser" {
+						return failure
+					}
+					return nil
+				}
+				if stage != "browser" {
+					f.plan = append(f.plan, "write", "rate", "finish")
+					f.transaction()
+				}
+				s.ops.deviceRate = func(ctx context.Context, dao store.IdentityDAO, op, actor string, global, perActor int, now time.Time) error {
+					f.hit("rate")
+					f.bound(ctx, dao)
+					f.equal([]any{op, actor, global, perActor, now}, []any{"device-lookup", p.UserID, 120, 12, f.now})
+					if stage == "rate" {
+						return failure
+					}
+					return nil
+				}
+				if stage != "browser" && stage != "rate" {
+					if operation == "decide" {
+						f.plan = append(f.plan, "admission")
+					}
+					if stage != "admission" {
+						f.plan = append(f.plan, "write", operation, "finish")
+						f.transaction()
+						if stage == "completion" {
+							f.transactions[1].err = context.Canceled
+						}
+					}
+					if stage == "success" && operation == "inspect" {
+						f.plan = append(f.plan, "render")
+					}
+				}
+				s.ops.validateDeviceDecision = func(principal model.Principal, code, decision, user string) (string, string, error) {
+					f.hit("admission")
+					f.equal([]any{principal, code, decision, user}, []any{p, raw, "approve", p.UserID})
+					if stage == "admission" {
+						return "", "", failure
+					}
+					return "normalized", "approved", nil
+				}
+				loaded := model.DeviceAuthorization{ID: "device", UserCode: "BCDFGHJKLM", Status: "pending", CreatedAt: f.now, ExpiresAt: f.now.Add(time.Second), NextPollAt: f.now, PollIntervalSeconds: 5}
+				want := core.DeviceInspection{UserCode: "BCDFG-HJKLM", ExpiresAt: loaded.ExpiresAt, Status: "expired"}
+				s.ops.inspectDevice = func(ctx context.Context, dao store.IdentityDAO, principal model.Principal, code string, now time.Time) (model.DeviceAuthorization, error) {
+					f.hit("inspect")
+					f.bound(ctx, dao)
+					f.equal([]any{principal, code, now}, []any{p, raw, f.now})
+					if stage == "lower" {
+						return loaded, failure
+					}
+					f.now = loaded.ExpiresAt
+					return loaded, nil
+				}
+				s.ops.deviceInspection = func(got model.DeviceAuthorization, now time.Time) core.DeviceInspection {
+					f.hit("render")
+					f.equal(got, loaded)
+					f.equal(now, loaded.ExpiresAt)
+					return want
+				}
+				s.ops.decideDevice = func(ctx context.Context, dao store.IdentityDAO, principal model.Principal, code, decision, user string, now time.Time) error {
+					f.hit("decide")
+					f.bound(ctx, dao)
+					f.equal([]any{principal, code, decision, user, now}, []any{p, raw, "approve", p.UserID, f.now})
+					if stage == "lower" {
+						return failure
+					}
+					return nil
+				}
+				var err error
+				if operation == "inspect" {
+					if stage == "admission" {
+						raw = "bad"
+					}
+					got, e := s.InspectDevice(f.ctx, p, raw)
+					err = e
+					if stage == "success" {
+						f.equal(got, want)
+					} else {
+						f.equal(got, core.DeviceInspection{})
+					}
+				} else {
+					err = s.DecideDevice(f.ctx, p, raw, "approve", p.UserID)
+				}
+				if stage == "success" {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if err == nil {
+					t.Fatal("failed stage succeeded")
+				}
+				if stage == "completion" && !errors.Is(err, context.Canceled) {
+					t.Fatalf("completion cause=%v", err)
+				}
+			})
 		}
 	}
-	listed, err := f.identity.ListPATs(ctx, alice)
-	if err != nil || len(listed) != 0 {
-		t.Fatalf("invalid name created credentials: %+v %v", listed, err)
-	}
-	inspected, err := f.identity.InspectDevice(ctx, alice, d.UserCode)
-	if err != nil || inspected.Status != "approved" {
-		t.Fatalf("invalid name consumed grant: %+v %v", inspected, err)
-	}
-	if _, err = redeemDevice(f, d); err != nil {
-		t.Fatalf("valid name could not redeem rejected grant: %v", err)
-	}
-}
-
-func TestDeviceConcurrentRedemptionAndDecision(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	d := startDevice(t, f)
-	launch := make(chan struct{})
-	outcomes := make(chan error, 2)
-	var workers sync.WaitGroup
-	for _, decision := range []string{"approve", "deny"} {
-		workers.Go(func() { <-launch; outcomes <- f.identity.DecideDevice(ctx, alice, d.UserCode, decision, alice.UserID) })
-	}
-	close(launch)
-	workers.Wait()
-	close(outcomes)
-	successes := 0
-	for err := range outcomes {
-		if err == nil {
-			successes++
-		} else {
-			requireFault(t, err, "invalid_transition")
-		}
-	}
-	if successes != 1 {
-		t.Fatalf("decision successes %d", successes)
-	}
-	d = startDevice(t, f)
-	if err := f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID); err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(5 * time.Second)
-	launch = make(chan struct{})
-	outcomes = make(chan error, 8)
-	for range 8 {
-		workers.Go(func() { <-launch; _, err := redeemDevice(f, d); outcomes <- err })
-	}
-	close(launch)
-	workers.Wait()
-	close(outcomes)
-	successes = 0
-	for err := range outcomes {
-		if err == nil {
-			successes++
-		} else {
-			requireDeviceError(t, err, "invalid_grant")
-		}
-	}
-	if successes != 1 {
-		t.Fatalf("redemption successes %d", successes)
-	}
-	var tokens int
-	if err := f.database.Pool.QueryRow(ctx, `SELECT count(*) FROM personal_access_tokens`).Scan(&tokens); err != nil || tokens != 1 {
-		t.Fatalf("concurrent credentials: %d %v", tokens, err)
-	}
-}
-
-func TestDevicePersistentLimitsAndBoundedCleanup(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	for range 30 {
-		startDevice(t, f)
-	}
-	_, err := f.identity.StartDevice(ctx, core.DeviceClientID, "client-source")
-	requireFault(t, err, "rate_limited")
-	second := New(f.database, nil, "")
-	second.now = f.identity.now
-	_, err = second.StartDevice(ctx, core.DeviceClientID, "client-source")
-	requireFault(t, err, "rate_limited")
-	for range 12 {
-		_, err = f.identity.InspectDevice(ctx, alice, "BBBBB-BBBBB")
-		requireFault(t, err, "not_found")
-	}
-	_, err = second.InspectDevice(ctx, alice, "BBBBB-BBBBB")
-	requireFault(t, err, "rate_limited")
-	if _, err = f.database.Pool.Exec(ctx, `INSERT INTO device_authorization_limits (bucket_hash,attempts,expires_at) SELECT decode(md5(i::text)||md5(i::text),'hex'),1,$1 FROM generate_series(1,200) i`, f.now.Add(-time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(time.Minute)
-	if _, err = f.identity.StartDevice(ctx, core.DeviceClientID, "client-source"); err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(core.DeviceLifetime + time.Hour)
-	startDevice(t, f)
-	var count int
-	if err = f.database.Pool.QueryRow(ctx, `SELECT count(*) FROM device_authorizations`).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("expired grants not cleaned: %d %v", count, err)
-	}
-	// Different sources share the same persistent service-wide creation budget.
-	f.now = f.now.Add(time.Minute)
-	for index := range 120 {
-		_, err = f.identity.StartDevice(ctx, core.DeviceClientID, string(rune(index)))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	_, err = f.identity.StartDevice(ctx, core.DeviceClientID, "extra")
-	requireFault(t, err, "rate_limited")
-}
-
-func TestDeviceStoreFailuresAndAtomicMint(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	d := startDevice(t, f)
-	if err := f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID); err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(5 * time.Second)
-	if _, err := f.database.Pool.Exec(ctx, `ALTER TABLE personal_access_tokens ADD CONSTRAINT reject_cli CHECK (name <> 'Daynight CLI (workstation)')`); err != nil {
-		t.Fatal(err)
-	}
-	result, err := redeemDevice(f, d)
-	requireIdentityOperationalError(t, err)
-	if result.Secret != "" {
-		t.Fatal("failed commit exposed credential")
-	}
-	inspected, err := f.identity.InspectDevice(ctx, alice, d.UserCode)
-	if err != nil || inspected.Status != "approved" {
-		t.Fatalf("failed mint consumed grant: %+v %v", inspected, err)
-	}
-	if _, err = f.database.Pool.Exec(ctx, `ALTER TABLE personal_access_tokens DROP CONSTRAINT reject_cli`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = redeemDevice(f, d); err != nil {
-		t.Fatal(err)
-	}
-	f.database.Close()
-	_, err = f.identity.StartDevice(ctx, core.DeviceClientID, "source")
-	requireIdentityOperationalError(t, err)
-	_, err = f.identity.InspectDevice(ctx, alice, d.UserCode)
-	requireIdentityOperationalError(t, err)
-	requireIdentityOperationalError(t, f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID))
-	_, err = redeemDevice(f, d)
-	requireIdentityOperationalError(t, err)
-	requireIdentityOperationalError(t, f.identity.LogoutDevice(ctx, model.Principal{Kind: model.PATCredential, UserID: alice.UserID, CredentialID: alice.CredentialID}))
-}
-
-func TestDeviceDecisionBindsReviewedAccount(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	bob := identityPrincipal(t, f, completeIdentityLogin(t, f, "bob"))
-	d := startDevice(t, f)
-	if _, err := f.identity.InspectDevice(ctx, alice, d.UserCode); err != nil {
-		t.Fatal(err)
-	}
-	requireFault(t, f.identity.DecideDevice(ctx, bob, d.UserCode, "approve", alice.UserID), "forbidden")
-	requireFault(t, f.identity.DecideDevice(ctx, bob, d.UserCode, "deny", alice.UserID), "forbidden")
-	requireFault(t, f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", "bad"), "invalid_input")
-	inspected, err := f.identity.InspectDevice(ctx, alice, d.UserCode)
-	if err != nil || inspected.Status != "pending" {
-		t.Fatalf("changed account mutated grant: %+v %v", inspected, err)
-	}
-	if err = f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestDevicePersistenceFailuresRemainOperational(t *testing.T) {
-	f := newIdentityFixture(t)
-	ctx := context.Background()
-	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
-	d := startDevice(t, f)
-	if _, err := f.database.Pool.Exec(ctx, `ALTER TABLE device_authorizations RENAME TO unavailable_device_authorizations`); err != nil {
-		t.Fatal(err)
-	}
-	_, err := f.identity.InspectDevice(ctx, alice, d.UserCode)
-	requireIdentityOperationalError(t, err)
-	requireIdentityOperationalError(t, f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID))
-	_, err = redeemDevice(f, d)
-	requireIdentityOperationalError(t, err)
-	_, err = f.identity.StartDevice(ctx, core.DeviceClientID, "source")
-	requireIdentityOperationalError(t, err)
-	if _, err = f.database.Pool.Exec(ctx, `ALTER TABLE unavailable_device_authorizations RENAME TO device_authorizations`); err != nil {
-		t.Fatal(err)
-	}
-	inspected, err := f.identity.InspectDevice(ctx, alice, d.UserCode)
-	if err != nil || inspected.Status != "pending" {
-		t.Fatal("failed persistence mutated grant")
-	}
-	if _, err = f.database.Pool.Exec(ctx, `ALTER TABLE device_authorization_limits RENAME TO unavailable_device_authorization_limits`); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.identity.StartDevice(ctx, core.DeviceClientID, "source")
-	requireIdentityOperationalError(t, err)
-	f.database.Close()
-	_, err = f.database.WriteIdentity(ctx, func(scope store.IdentityScope) error {
-		return scope.IdentityDAO().InsertDevice(ctx, model.DeviceAuthorization{})
-	})
-	requireIdentityOperationalError(t, err)
 }

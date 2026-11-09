@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -121,6 +122,11 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 					t.Fatalf("delete missed just-committed ownership %v", err)
 				}
 				_ = readStoreTeam(t, s, actor.UserID, team.ID)
+				var name, repo string
+				var owner string
+				if err := s.Pool.QueryRow(ctx, `SELECT p.name,p.repo_url,o.team_id::text FROM projects p JOIN project_ownership o ON o.project_id=p.id WHERE p.id=$1`, projectID).Scan(&name, &repo, &owner); err != nil || name != "Created while locked" || repo != "host:repo" || owner != team.ID {
+					t.Fatalf("occupied Team refusal changed Project: %q %q %q %v", name, repo, owner, err)
+				}
 			} else {
 				if err != nil {
 					t.Fatal(err)
@@ -129,6 +135,67 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 				if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM teams WHERE id=$1`, team.ID).Scan(&count); err != nil || count != 0 {
 					t.Fatalf("empty Team not deleted %d %v", count, err)
 				}
+			}
+		})
+	}
+	for _, remove := range []bool{false, true} {
+		t.Run(map[bool]string{false: "actor demoted while locked", true: "actor removed while locked"}[remove], func(t *testing.T) {
+			s, actor, team := storeTeamFixture(t)
+			_, observer, _ := testAuthRecords(t, s)
+			_, target, _ := testAuthRecords(t, s)
+			mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin'),($1,$3,'member')`, team.ID, observer.UserID, target.UserID)
+			before := readStoreTeam(t, s, observer.UserID, team.ID)
+			targetBefore := readStoreTeam(t, s, target.UserID, team.ID).Membership
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			holder, err := s.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Rollback(context.Background())
+			if _, err := holder.Exec(ctx, `SELECT id FROM teams WHERE id=$1 FOR UPDATE`, team.ID); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := s.WriteTeam(ctx, team.ID, func(scope TeamWriteScope) error {
+					current, err := scope.TeamDAO().Team(ctx, actor.UserID)
+					if remove {
+						if !errors.Is(err, model.ErrNotFound) {
+							return fmt.Errorf("removed actor still readable: %#v %v", current, err)
+						}
+					} else if err != nil || current.Membership.Role != model.ProjectMemberRole || current.Membership.Version <= team.Membership.Version {
+						return fmt.Errorf("actor role predates Team lock release: %#v %v", current, err)
+					}
+					member, err := scope.TeamDAO().Member(ctx, target.UserID)
+					if err != nil || !reflect.DeepEqual(member, targetBefore) {
+						return fmt.Errorf("unrelated target changed: %#v %v", member, err)
+					}
+					return nil
+				})
+				done <- err
+			}()
+			testutil.WaitTransferTeamLock(t, ctx, s.Pool, "SELECT id::text FROM teams WHERE", holder.Conn().PgConn().PID())
+			dao := teamstore.NewWriter(holder, team.ID)
+			if remove {
+				err = dao.RemoveMember(ctx, actor.UserID)
+			} else {
+				_, err = dao.SetMemberRole(ctx, actor.UserID, model.ProjectMemberRole)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := receiveQueryResult(t, ctx, done); err != nil {
+				t.Fatal(err)
+			}
+			if after := readStoreTeam(t, s, observer.UserID, team.ID); !reflect.DeepEqual(after, before) {
+				t.Fatalf("actor refresh changed Team or observer: before %#v after %#v", before, after)
+			}
+			if after := readStoreTeam(t, s, target.UserID, team.ID).Membership; !reflect.DeepEqual(after, targetBefore) {
+				t.Fatalf("actor refresh changed target: before %#v after %#v", targetBefore, after)
 			}
 		})
 	}

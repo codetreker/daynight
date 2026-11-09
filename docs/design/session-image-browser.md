@@ -12,6 +12,8 @@
 
 界面遵循 [UI 原则](../ui-design.md)。控件表达可用、选中和忙碌，真实失败保留具体可恢复信息；不向用户暴露 uploadId、fence、hash、块协调或数据库术语。
 
+Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`、`image`、Markdown、reasoning 和 retained binding 的描述符闭包。快照允许保留未决投影及上一份已知图片，只保存描述符，不保存原件、URL、操作或读取资格。缓存行以只读方式展示，不请求图片原件；当前权威历史接管对应行后，资源读取继续由当前 Session 权限和共享 reader 决定。
+
 ## 草稿组件与控制流
 
 采用一个 Session owner 的 `ImageDraftController`，由现有 Session client/host 提供已认证身份和生命周期。它不创建第二个 Session client。职责拆为四个模块：

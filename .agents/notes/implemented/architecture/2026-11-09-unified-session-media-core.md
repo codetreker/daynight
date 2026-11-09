@@ -36,6 +36,11 @@ native-resume and temporary archive pins retain bytes without granting access.
 The authorized transaction checks references before I/O and again before
 returning the bytes, so releasing a private reference cannot publish a late read.
 
+Historical display snapshots use the same complete resource-reference traversal
+as archives, including Markdown, reasoning and retained bindings. They retain
+descriptor closure while allowing unresolved projections; sealing remains an
+archive-only requirement. Cached rows retain no original bytes or read authority.
+
 A source retry retains its capture, occurrence and locator while a new attempt
 fences private staging and every subsequent commit. Its reservation and durable
 Controller request commit together, so cancellation cannot strand a reserved
@@ -74,6 +79,11 @@ was the earlier design's response to strict old readers. It would also keep two
 production representations and require identity and capacity reconciliation in
 every downstream consumer. Revision negotiation and a bounded legacy data
 adapter preserve old text without that duplication.
+
+**Maintain a separate reference collector for historical display snapshots.** A
+legacy-resource-only collector silently drops descriptors for unified images and
+misses retained and reasoning bindings. Sharing the traversal keeps one closure
+rule while allowing display snapshots to preserve unresolved history.
 
 **Publish a deterministic schema1 archive copy for old readers.** This was the
 earlier compatibility plan. It duplicates metadata, creates a second hash and

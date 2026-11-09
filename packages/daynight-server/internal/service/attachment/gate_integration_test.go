@@ -49,8 +49,8 @@ func TestAttachmentGateOrdersConcurrentInstances(t *testing.T) {
 				planAttachmentPut(firstMock, p, task, after, false)
 			}
 			observed := &observedAttachmentStorage{Storage: first, reached: make(chan struct{}), release: make(chan struct{})}
-			a := NewAttachments(firstMock, firstMock, observed)
-			b := NewAttachments(secondMock, secondMock, second)
+			a := firstMock.service(firstMock, observed)
+			b := secondMock.service(secondMock, second)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			var once sync.Once
 			release := func() { once.Do(func() { close(observed.release) }) }
@@ -195,7 +195,7 @@ func TestAttachmentGateHeldThroughFailedCompletion(t *testing.T) {
 	item := attachmentItem(task, "file", "text/plain", 5)
 	planAttachmentPut(m, p, task, item, true)
 	writer := pausedAttachmentCompletion{inner: m, reached: make(chan struct{}), release: make(chan struct{}), cause: errors.New("commit response lost")}
-	subject := NewAttachments(m, writer, files)
+	subject := m.service(writer, files)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	var once sync.Once
 	release := func() { once.Do(func() { close(writer.release) }) }
@@ -228,7 +228,7 @@ func TestAttachmentGateHeldThroughFailedCompletion(t *testing.T) {
 	if err := attachmentWaitResult(t, ctx, finished); !errors.Is(err, writer.cause) || !FileEffectPossible(err) {
 		t.Fatalf("failed completion: %v", err)
 	}
-	subject = NewAttachments(m, m, files)
+	subject = m.service(m, files)
 	final := attachmentItem(task, "file", "text/plain", 5)
 	planAttachmentPut(m, p, task, final, false)
 	if _, _, err := subject.Put(ctx, p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("final")); err != nil {

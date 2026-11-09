@@ -1,4 +1,5 @@
 import { parseSessionResource, parseTimelineEntry, sessionFence, sessionFenceKey, type SessionFence, type SessionResource, type TimelineEntry } from '../../../../daynight/src/session/protocol';
+import { sessionArchiveReferences } from '../../../../daynight/src/session/archive';
 import type { BotSessionBinding } from '../../api/sessions';
 
 export const MAX_SNAPSHOTS = 6;
@@ -32,10 +33,8 @@ const fields = (value: unknown, required: readonly string[], optional: readonly 
 const uuid = (value: unknown): string => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value) ? value : invalid();
 const text = (value: unknown): string => typeof value === 'string' && value.isWellFormed() && /[^\p{White_Space}]/u.test(value) && !value.includes('\0') ? value : invalid();
 const sequence = (value: unknown): string => typeof value === 'string' && /^(0|[1-9][0-9]{0,18})$/.test(value) && BigInt(value) <= 9_223_372_036_854_775_807n ? value : invalid();
-const referencedResources = (entry: TimelineEntry): readonly string[] => {
-  const parts = entry.kind === 'tool_call' ? entry.output : entry.kind === 'user_message' || entry.kind === 'assistant_message' ? entry.content : [];
-  return parts.flatMap(part => part.type === 'resource' ? [part.resourceId] : []);
-};
+// Display snapshots may retain unresolved projections and their last known images.
+const referencedResources = (entry: TimelineEntry): readonly string[] => [...sessionArchiveReferences([entry], false).resources];
 
 function validate(value: unknown, ownerUserId: string, botId: string): BotDisplayPreview {
   const data = fields(value, ['schemaVersion', 'ownerUserId', 'botId', 'lastKnownBinding', 'botName', 'fence', 'historyEpoch', 'lastEventSeq', 'entries', 'resources', 'savedAt'], ['readingAnchor']);

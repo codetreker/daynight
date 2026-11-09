@@ -185,7 +185,7 @@ it('SessionView closes new actions without disabling the original operation chec
   const operation: SessionOperation = { protocol: s.protocol, ...sessionFence(s), operationId: 'old-operation', kind: 'send_message', state: 'unknown', providerResult: null, error: null };
   let view: SessionViewState & { readonly actionAdmitted: boolean } = {
     actionAdmitted: true, operationProgress: new Map(), settingIntents: new Map(), startupReport: null, errorCode: null, environmentConnected: true,
-    historyReady: true, historyRevision: 1, connectionGeneration: 1, archiveState: null, status: 'ready', connected: true, authPaused: false,
+    historyReady: true, historyLoaded: true, historySettled: true, historyCoverage: { firstEntrySeq: null, throughEntrySeq: '9', completeBefore: true, lastEventSeq: '0' }, historyRevision: 1, connectionGeneration: 1, archiveState: null, status: 'ready', connected: true, authPaused: false,
     error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), draft: { text: 'Retain draft', revision: '1', submission: null },
     state: hydrateSession(emptySessionState(), { ...s, activity: 'waiting_input', operations: { ...s.operations, canRespond: true } }, [{ entryId: 'request', entrySeq: '1', revision: '1', kind: 'interaction', interaction: question }]),
   };

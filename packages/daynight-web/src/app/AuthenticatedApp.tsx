@@ -1,4 +1,5 @@
 import { clearPendingBotDeletions } from '../features/bots/deletion-coordinator';
+import { clearBotDisplaySnapshots, retryBotDisplaySnapshotCleanup } from '../features/bots/display-snapshot-coordinator';
 import { clearPendingBotCreation } from '../features/bots/pending-creation';
 import { BotsPage } from '../features/bots/BotsPage';
 import '../styles/assistant-workspace.css';
@@ -11,13 +12,14 @@ import { clearSessionDrafts } from '../features/task-agent-session/client';
 import { clearBotSessionStorage } from '../features/bots/session-storage';
 import { clearSessionDisplayPreference } from '../features/task-agent-session/useSessionDisplayPreference';
 
-function clearPrivateSessionState(userId: string): Error | null {
+async function clearPrivateSessionState(userId: string): Promise<Error | null> {
+  const snapshotsCleared = clearBotDisplaySnapshots(userId);
   const webhookCleanupError = clearWebhookPending(window.location.origin, userId);
   clearSessionDrafts(userId);
   clearPendingBotCreation(userId);
   clearPendingBotDeletions(userId);
   for (const sessionId of clearBotSessionStorage(userId)) clearSessionDisplayPreference({ userId, sessionId });
-  return webhookCleanupError;
+  return await snapshotsCleared ? webhookCleanupError : new Error('Assistant display snapshots could not be cleared.');
 }
 import { TestSessionPage } from '../features/task-agent-session/TestSessionPage';
 import { TestSessionListPage } from '../features/task-agent-session/TestSessionListPage';
@@ -277,21 +279,29 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const [logoutPending, setLogoutPending] = useState(false);
   const [privateCleanup, setPrivateCleanup] = useState<ReadonlyMap<string, Error>>(new Map());
   const discardPrivateSession = useCallback((userId: string) => {
-    const error = clearPrivateSessionState(userId);
-    setPrivateCleanup((previous) => {
-      const next = new Map(previous);
-      if (error === null) next.delete(userId);
-      else next.set(userId, error);
-      return next;
+    void clearPrivateSessionState(userId).then(error => {
+      if (!mounted.current) return;
+      setPrivateCleanup((previous) => {
+        const next = new Map(previous);
+        if (error === null) next.delete(userId);
+        else next.set(userId, error);
+        return next;
+      });
     });
   }, []);
   const retryPrivateCleanup = () => {
-    const failures = new Map<string, Error>();
     for (const userId of privateCleanup.keys()) {
-      const error = clearWebhookPending(window.location.origin, userId);
-      if (error !== null) failures.set(userId, error);
+      const webhookError = clearWebhookPending(window.location.origin, userId);
+      void retryBotDisplaySnapshotCleanup(userId).then(cleared => {
+        if (!mounted.current) return;
+        const error = cleared ? webhookError : new Error('Assistant display snapshots could not be cleared.');
+        setPrivateCleanup(previous => {
+          const next = new Map(previous);
+          if (error === null) next.delete(userId); else next.set(userId, error);
+          return next;
+        });
+      });
     }
-    setPrivateCleanup(failures);
   };
   const logoutContinuation = useRef<string | null>(null);
   const [cleanupFailed, setCleanupFailed] = useState(() => !invitationLocation(window.location.pathname, window.location.search) && !clearInvitation());
@@ -492,7 +502,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     const parameters = new URLSearchParams({ provider, returnPath });
     navigateToLogin(`/api/v1/auth/login?${parameters}`);
   };
-  const cleanupWarning = <>{(cleanupFailed || invitation.cleanupFailed) && <div className="notice warning" role="alert">{m.invitationCleanupError}</div>}{privateCleanup.size > 0 && <div className="notice warning" role="alert"><p>{locale === "zh-CN" ? "无法清理 Webhook 恢复记录。" : "Webhook recovery records could not be cleared."}</p><button className="button" type="button" onClick={retryPrivateCleanup}>{locale === "zh-CN" ? "重试清理" : "Retry cleanup"}</button></div>}</>;
+  const cleanupWarning = <>{(cleanupFailed || invitation.cleanupFailed) && <div className="notice warning" role="alert">{m.invitationCleanupError}</div>}{privateCleanup.size > 0 && <div className="notice warning" role="alert"><p>{locale === "zh-CN" ? "无法清理本地恢复记录。" : "Local recovery records could not be cleared."}</p><button className="button" type="button" onClick={retryPrivateCleanup}>{locale === "zh-CN" ? "重试清理" : "Retry cleanup"}</button></div>}</>;
   const invalidTarget = <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.invalidLoginTarget}</h1><p>{m.invalidLoginTargetDetail}</p><LanguageSelector /><a className="button primary" href="/login">{m.startFreshLogin}</a></section></main></>;
   const notFound = <>{cleanupWarning}<main className="auth-main"><section className="state-box"><h1>{app.notFound}</h1><LanguageSelector /><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section></main></>;
   const identityLoading = <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main></>;

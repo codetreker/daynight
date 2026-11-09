@@ -123,6 +123,8 @@ it.each([200, 403, 404, 410])('never shows the previous private target while a s
    expect(screen.queryByRole('complementary', { name: 'Assistant details' })).toBeNull();
    expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
    expect(f.fixtures[1]!.api.current).not.toHaveBeenCalled();
+   expect(screen.getByRole('link', { name: 'Back to assistants' })).toBeVisible();
+   expect(f.view.container.querySelector(`[data-bot-id="${f.fixtures[1]!.binding.botId}"]`)).toBeNull();
   }
   f.view.rerender(f.node(f.definitions[0]!.id));
   await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBe(input));

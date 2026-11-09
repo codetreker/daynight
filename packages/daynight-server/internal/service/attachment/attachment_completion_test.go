@@ -44,7 +44,7 @@ func TestAttachmentUnknownCommitDoesNotClaimSuccessOrCompensate(t *testing.T) {
 				} else {
 					m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
 					m.metadata(task, item)
-					m.expect("delete", task.ProjectID, task.ID, "file")
+					m.expect("metadataDelete", task.ProjectID, task.ID, "file")
 				}
 				var err error
 				if operation == "put" {
@@ -87,7 +87,7 @@ func TestDeleteFileEffectFact(t *testing.T) {
 	missing := attachmentItem(task, "missing", "text/plain", 0)
 	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
 	m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
-	m.metadata(task, missing).err = model.ErrNotFound
+	m.metadata(task, missing).err = attachmentNotFound()
 	if err := subject.Delete(t.Context(), p, task.ProjectID, task.ID, "missing"); FileEffectPossible(err) {
 		t.Fatalf("missing metadata reached file: %v", err)
 	} else {
@@ -98,7 +98,7 @@ func TestDeleteFileEffectFact(t *testing.T) {
 	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
 	m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
 	m.metadata(task, item)
-	failed := NewAttachments(m, m, attachmentFaultStorage{Storage: files, delete: sentinel})
+	failed := m.service(m, attachmentFaultStorage{Storage: files, delete: sentinel})
 	if err := failed.Delete(t.Context(), p, task.ProjectID, task.ID, "file"); !errors.Is(err, sentinel) || !FileEffectPossible(err) {
 		t.Fatalf("file effect or cause lost: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestDeleteFileEffectFact(t *testing.T) {
 	m.expect("lock", task.ProjectID, task.ID).result = store.TaskPresence{Found: true}
 	m.expect("authorize", p, task.ProjectID).result = model.ProjectAccess{}
 	m.metadata(task, item)
-	e := m.expect("delete", task.ProjectID, task.ID, "file")
+	e := m.expect("metadataDelete", task.ProjectID, task.ID, "file")
 	e.ctx = ctx
 	e.err = context.Canceled
 	e.after = func() {
@@ -124,7 +124,7 @@ func TestDeleteFileEffectFact(t *testing.T) {
 			t.Error("metadata delete did not receive cancellation")
 		}
 	}
-	failed = NewAttachments(m, m, attachmentFaultStorage{Storage: files, afterDelete: cancel})
+	failed = m.service(m, attachmentFaultStorage{Storage: files, afterDelete: cancel})
 	err := failed.Delete(ctx, p, task.ProjectID, task.ID, "file")
 	var failure *store.TransactionError
 	if !FileEffectPossible(err) || !errors.Is(err, context.Canceled) || !errors.As(err, &failure) || failure.Outcome != store.TransactionNotCommitted {
@@ -146,7 +146,7 @@ func TestAttachmentCancellationAfterFileWritePreservesCompletion(t *testing.T) {
 	m.expect("lock", task.ProjectID, task.ID).result = store.TaskPresence{Found: true}
 	m.expect("live", task.ProjectID)
 	m.conflict(task, "file", false)
-	e := m.expect("put", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: "file", ContentType: "text/plain", SizeBytes: 5})
+	e := m.expect("metadataPut", model.Attachment{ProjectID: task.ProjectID, TaskID: task.ID, Path: "file", ContentType: "text/plain", SizeBytes: 5})
 	e.ctx = ctx
 	e.err = context.Canceled
 	e.after = func() {
@@ -154,7 +154,7 @@ func TestAttachmentCancellationAfterFileWritePreservesCompletion(t *testing.T) {
 			t.Error("metadata write did not receive cancellation")
 		}
 	}
-	subject := NewAttachments(m, m, attachmentFaultStorage{Storage: files, afterPut: cancel})
+	subject := m.service(m, attachmentFaultStorage{Storage: files, afterPut: cancel})
 	item, created, err := subject.Put(ctx, p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
 	var failure *store.TransactionError
 	if item.Path != "" || created || !FileEffectPossible(err) || !errors.Is(err, context.Canceled) || !errors.As(err, &failure) || failure.Outcome != store.TransactionNotCommitted || failure.CommitAttempted {
@@ -185,12 +185,12 @@ func TestAttachmentDeletedTaskDoesNotExposeStateWithoutAuthorization(t *testing.
 				deleted := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 				if operation == "put" {
 					m.expect("snapshot").callback = true
-					access := m.expect("access", p, task.ProjectID)
+					access := m.expect("projectRead", p, task.ProjectID)
 					access.result = model.ProjectAccess{ProjectID: task.ProjectID}
 					if authorized {
 						m.expect("presence", task.ProjectID, task.ID).result = store.TaskPresence{Found: true, DeletedAt: &deleted}
 					} else {
-						access.err = model.ErrNotFound
+						access.err = projectReadNotFound()
 					}
 				}
 				m.expect("mutation").callback = true
@@ -201,7 +201,7 @@ func TestAttachmentDeletedTaskDoesNotExposeStateWithoutAuthorization(t *testing.
 					access.err = model.ErrNotFound
 				}
 				observed := &observedAttachmentStorage{Storage: files}
-				err := attachmentMutation(t.Context(), NewAttachments(m, m, observed), p, task, operation)
+				err := attachmentMutation(t.Context(), m.service(m, observed), p, task, operation)
 				code := "not_found"
 				if authorized {
 					code = "task_deleted"

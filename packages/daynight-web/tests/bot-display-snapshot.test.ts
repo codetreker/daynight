@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   BOT_DISPLAY_SNAPSHOT_NAMESPACE, BotDisplaySnapshotStore,
   decodeBotDisplayPreview, parseBotDisplayPreview, prepareBotDisplayPreview,
   type BotDisplayPreview, type BotDisplaySnapshotLock, type BotDisplaySnapshotSave,
 } from '../src/features/bots/display-snapshot';
-import type { SessionResource, TimelineEntry } from '../../daynight/src/session/protocol';
+import { parseTimelineEntry, type SessionResource, type TimelineEntry } from '../../daynight/src/session/protocol';
 
 const id = (n: number) => `${n.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
 const key = (owner: string) => BOT_DISPLAY_SNAPSHOT_NAMESPACE + owner;
@@ -52,6 +53,36 @@ function storageFacade(): Storage {
 }
 
 describe('Bot display snapshot codec', () => {
+  it.each(['markdown', 'reasoning', 'unknown_reasoning'] as const)('retains the complete resource closure for %s image bindings', kind => {
+    const owner = crypto.randomUUID(), image = { ...resource(), revision: '1', width: 1, height: 1, frameCount: 1 };
+    const text = '![saved](resource:saved)', textSha256 = createHash('sha256').update(text).digest('hex');
+    const binding = { imageId: id(3_001), start: 0, end: text.length, part: { type: 'image' as const, imageId: id(3_001), resourceId: image.resourceId, label: 'saved' } };
+    const unknown = kind === 'unknown_reasoning';
+    const markdown = { partId: id(4_001), revision: '2', textSha256, complete: true, truncated: false, bindings: unknown ? null : [binding], retainedImages: unknown ? [{ ...binding, sourceRevision: '1', sourceTextSha256: textSha256, linkHref: null }] : [] };
+    const common = { entryId: id(1_001), entrySeq: '1', revision: '2', imageProjectionError: unknown ? { code: 'source_unavailable', message: 'Projection unavailable.' } : null };
+    const message = parseTimelineEntry(kind === 'markdown'
+      ? { ...common, kind: 'assistant_message', content: [{ type: 'markdown', text, ...markdown }] }
+      : { ...common, kind: 'reasoning', text, markdown });
+    const value = preview(owner, 1, { entries: [message], resources: [image] });
+    expect(prepareBotDisplayPreview(value, owner, value.botId)?.resources).toEqual([image]);
+    expect(decodeBotDisplayPreview(JSON.stringify({ ...value, resources: [] }), owner, value.botId)).toBeNull();
+  });
+
+  it.each(['user_message', 'assistant_message', 'tool_call'] as const)('persists unified image descriptors from %s and rejects missing resource metadata', async kind => {
+    const owner = crypto.randomUUID(), image = { ...resource(), revision: '1', width: 1, height: 1, frameCount: 1 };
+    const content = [{ type: 'image' as const, imageId: id(3_001), resourceId: image.resourceId, label: 'saved image' }];
+    const message: TimelineEntry = kind === 'tool_call'
+      ? { kind, entryId: id(1_001), entrySeq: '1', revision: '1', imageProjectionError: null, callId: 'image-call', name: 'image', input: '', output: content, status: 'completed', truncated: false }
+      : { ...entry(), kind, imageProjectionError: null, content };
+    const value = preview(owner, 1, { entries: [message], resources: [image] });
+    expect(prepareBotDisplayPreview(value, owner, value.botId)?.resources).toEqual([image]);
+    expect(decodeBotDisplayPreview(JSON.stringify({ ...value, resources: [] }), owner, value.botId)).toBeNull();
+    const target = store(owner);
+    expect(await save(target, value)).toBe('saved');
+    target.close();
+    expect(await store(owner, { storage: storageFacade() }).read(owner, value.botId)).toEqual(value);
+  });
+
   it('round-trips detached historical entries, descriptors and a reading anchor', () => {
     const owner = crypto.randomUUID(), image = resource();
     const message: TimelineEntry = { ...entry(), kind: 'assistant_message', content: [{ type: 'text', text: 'saved response' }, { type: 'resource', resourceId: image.resourceId, label: 'image' }] };
@@ -290,6 +321,26 @@ describe('Bot display snapshot storage', () => {
     expect(JSON.parse(localStorage.getItem(key(owner))!).records).toEqual([]);
   });
 
+  it('retries old disk cleanup without discarding newer memory history or its lease in the same storage realm', async () => {
+    const owner = crypto.randomUUID(), old = store(owner, { storage: localStorage }), first = preview(owner);
+    expect(await save(old, first)).toBe('saved');
+    const oldRaw = localStorage.getItem(key(owner));
+    const denied = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); });
+    expect(await old.clearAccount(owner)).toBe(false);
+    denied.mockRestore();
+    const fresh = store(owner, { storage: localStorage }), next = { ...first, lastEventSeq: '2', entries: [entry(2, 'new authorized history')] };
+    const lease = (await fresh.observe(owner, next.botId))!;
+    expect(await fresh.save(lease, { source: 'verified-history', historyLoaded: true, preview: next })).toBe('memory');
+    expect(localStorage.getItem(key(owner))).toBe(oldRaw);
+    expect(await old.retryClearAccount(owner, oldRaw)).toBe(true);
+    expect(JSON.parse(localStorage.getItem(key(owner))!).records).toEqual([]);
+    expect(await fresh.read(owner, next.botId)).toEqual(next);
+    const latest = { ...next, lastEventSeq: '3' };
+    expect(await fresh.save(lease, { source: 'verified-history', historyLoaded: true, preview: latest })).toBe('memory');
+    expect(await fresh.read(owner, next.botId)).toEqual(latest);
+    expect(JSON.parse(localStorage.getItem(key(owner))!).records).toEqual([]);
+  });
+
   it('recovers read-only data without Web Locks and avoids unlocked persistent writes', async () => {
     const owner = crypto.randomUUID(), value = preview(owner), raw = JSON.stringify(envelope(owner, value));
     localStorage.setItem(key(owner), raw); vi.stubGlobal('navigator', { locks: undefined });
@@ -340,6 +391,30 @@ describe('Bot display snapshot invalidation and observations', () => {
     expect(await target.read(owner, id(1))).toBeNull(); expect(await target.observe(owner, id(1))).toBeNull();
   });
 
+  it('revokes one queued observation without changing peer data or other observation authority', async () => {
+    const owner = crypto.randomUUID(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    let blocked = false;
+    const target = store(owner, { storage: storageFacade(), withLock: async (_name, run) => {
+      if (blocked) { entered.resolve(); await gate.promise; }
+      return run();
+    } });
+    const value = preview(owner), sibling = preview(owner, 2);
+    expect(await save(target, value)).toBe('saved'); expect(await save(target, sibling)).toBe('saved');
+    const revoked = (await target.observe(owner, value.botId))!, retained = (await target.observe(owner, value.botId))!, siblingLease = (await target.observe(owner, sibling.botId))!;
+    const before = localStorage.getItem(key(owner)), token = target.revocationToken(owner);
+    blocked = true;
+    const queued = target.save(revoked, { source: 'verified-history', historyLoaded: true, preview: { ...value, lastEventSeq: '2' } });
+    await entered.promise;
+    target.revokeObservation(revoked); target.revokeObservation(revoked);
+    expect(target.revocationToken(owner)).toBe(token);
+    gate.resolve();
+    expect(await queued).toBe('stale');
+    expect(localStorage.getItem(key(owner))).toBe(before);
+    expect(await target.save(retained, { source: 'verified-history', historyLoaded: true, preview: { ...value, lastEventSeq: '2' } })).toBe('saved');
+    expect(await target.save(siblingLease, { source: 'verified-history', historyLoaded: true, preview: { ...sibling, lastEventSeq: '2' } })).toBe('saved');
+    expect((await target.read(owner, value.botId))?.lastEventSeq).toBe('2');
+    expect((await target.read(owner, sibling.botId))?.lastEventSeq).toBe('2');
+  });
   it('prevents a queued write from restoring synchronously revoked history', async () => {
     const owner = crypto.randomUUID(), target = store(owner), value = preview(owner);
     await save(target, value); const observed = (await target.observe(owner, value.botId))!;
@@ -363,6 +438,26 @@ describe('Bot display snapshot invalidation and observations', () => {
     expect(await second.clearTarget(owner, id(1))).toBe(true);
     expect(await first.save(stale, { source: 'verified-history', historyLoaded: true, preview: preview(owner, 1, { lastEventSeq: '99' }) })).toBe('stale');
     expect(await first.read(owner, id(1))).toBeNull();
+  });
+
+  it('does not renew an observation queued before a peer replaces the target history', async () => {
+    const owner = crypto.randomUUID(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    let blocked = false;
+    const first = store(owner, { storage: storageFacade(), withLock: async (_name, run) => {
+      if (blocked) { entered.resolve(); await gate.promise; }
+      return run();
+    } });
+    const second = store(owner, { storage: storageFacade() }), original = preview(owner);
+    expect(await save(first, original)).toBe('saved');
+    blocked = true;
+    const queued = first.observe(owner, original.botId);
+    await entered.promise;
+    const replacement = { ...original, historyEpoch: 'history-2', lastEventSeq: '0', entries: [] };
+    expect(await save(second, replacement)).toBe('saved');
+    gate.resolve();
+    expect(await queued).toBeNull();
+    expect(await first.read(owner, original.botId)).toEqual(replacement);
+    expect(await save(first, replacement)).toBe('saved');
   });
 
   it('rejects stale history and absence leases after identity and eviction ABA cycles', async () => {
@@ -402,6 +497,45 @@ describe('Bot display snapshot invalidation and observations', () => {
     window.dispatchEvent(new StorageEvent('storage', { key: key(owner), newValue: oldRaw, storageArea: localStorage }));
     expect(changes).toHaveBeenCalled(); expect(target.getVersion()).toBeGreaterThan(version);
     expect((await target.read(owner, value.botId))?.lastEventSeq).toBe('2');
+  });
+
+  it('does not restore revoked disk history when the first reconciliation cannot acquire its lock', async () => {
+    const owner = crypto.randomUUID();
+    let denied = false;
+    const target = store(owner, { storage: localStorage, withLock: async (_name, run) => {
+      if (denied) throw new DOMException('locks denied', 'SecurityError');
+      return run();
+    } });
+    const peer = store(owner, { storage: storageFacade() }), value = preview(owner);
+    expect(await save(target, value)).toBe('saved');
+    const oldLease = (await target.observe(owner, value.botId))!;
+    expect(await peer.clearTarget(owner, value.botId)).toBe(true);
+    window.dispatchEvent(new StorageEvent('storage', { key: key(owner), storageArea: localStorage, newValue: localStorage.getItem(key(owner)) }));
+    denied = true;
+    expect(await target.read(owner, value.botId)).toBeNull();
+    expect(await target.save(oldLease, { source: 'verified-history', historyLoaded: true, preview: value })).toBe('stale');
+    expect(JSON.parse(localStorage.getItem(key(owner))!).records).toEqual([]);
+  });
+
+  it('does not issue a newer lease when an unreconciled storage notification is superseded by another clear', async () => {
+    const owner = crypto.randomUUID(), target = store(owner, { storage: localStorage }), peer = store(owner, { storage: storageFacade() });
+    await save(target, preview(owner, 1)); await save(target, preview(owner, 2));
+    expect(await peer.clearTarget(owner, id(1))).toBe(true);
+    window.dispatchEvent(new StorageEvent('storage', { key: key(owner), storageArea: localStorage, newValue: localStorage.getItem(key(owner)) }));
+    expect(await peer.clearTarget(owner, id(2))).toBe(true);
+    expect(await target.observe(owner, id(2))).toBeNull();
+    expect(await target.read(owner, id(2))).toBeNull();
+  });
+
+  it('can observe new accepted sibling history before the first passive reconciliation', async () => {
+    const owner = crypto.randomUUID(), target = store(owner, { storage: localStorage }), peer = store(owner, { storage: storageFacade() });
+    const sibling = preview(owner, 2);
+    await save(target, preview(owner, 1)); await save(target, sibling);
+    expect(await peer.clearTarget(owner, id(1))).toBe(true);
+    window.dispatchEvent(new StorageEvent('storage', { key: key(owner), storageArea: localStorage, newValue: localStorage.getItem(key(owner)) }));
+    const lease = await target.observe(owner, id(2));
+    expect(lease).not.toBeNull();
+    expect(await target.save(lease!, { source: 'verified-history', historyLoaded: true, preview: { ...sibling, lastEventSeq: '2' } })).toBe('saved');
   });
 
   it.each([false, true])('fences leases on %s whole-storage removal events even after same-generation rewrite', async wholeStorage => {

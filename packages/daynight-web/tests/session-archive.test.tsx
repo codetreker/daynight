@@ -29,6 +29,7 @@ function fixture(lifecycle: SessionSnapshot['lifecycle'] = 'archived', standalon
 }
 it.each([false, true])('renders completed history without a live controller (standalone=%s)', async standalone => {
   const f = fixture('archived', standalone); await f.client.start();
+  expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true, historyReady: false, historyCoverage: { firstEntrySeq: '1', completeBefore: true } });
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   for (const locale of ['en', 'zh-CN'] as const) {
     view.setLocale(locale);
@@ -72,10 +73,12 @@ it('keeps the archive loading notice until content is ready, then removes it', a
   vi.mocked(f.api.archiveContent).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
   const loading = f.client.start();
   await vi.waitFor(() => expect(f.api.archiveContent).toHaveBeenCalledOnce());
+  expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
   render(<SessionView userId={userId} client={f.client} active current />);
   expect(screen.getByText('Loading archived history…')).toBeVisible();
   expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
   await act(async () => { finish(f.archive); await loading; });
+  expect(f.client.snapshot()).toMatchObject({ historyLoaded: true, historySettled: true });
   expect(screen.queryByText('Loading archived history…')).toBeNull();
   expect(screen.getAllByRole('status')).toHaveLength(1);
   expect(screen.getByText('The saved result.')).toBeVisible();
@@ -113,6 +116,7 @@ it('closes a live channel as soon as its snapshot starts draining', async () => 
 it.each(['claimId', 'controllerId', 'controllerInstanceId', 'nativeSessionId'] as const)('rejects archive identity mismatch in %s', async field => {
   const f = fixture(); vi.mocked(f.api.archiveContent).mockResolvedValue({ ...f.archive, [field]: '00000099-1111-4111-8111-111111111111' } as SessionArchive);
   await f.client.start(); expect(f.client.snapshot().archiveState).toBe('failed'); expect(f.client.snapshot().state.entries).toEqual([]);
+  expect(f.client.snapshot()).toMatchObject({ historyLoaded: false, historySettled: false, historyCoverage: null });
 });
 it('discards an archive response after the client closes', async () => {
   const f = fixture(); let resolve!: (archive: SessionArchive) => void;

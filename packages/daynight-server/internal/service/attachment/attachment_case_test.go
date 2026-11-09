@@ -59,7 +59,7 @@ func TestAttachmentCaseDistinctPaths(t *testing.T) {
 			t.Errorf("unconsumed case storage calls: %+v", controlled.calls)
 		}
 	})
-	subject := NewAttachments(m, m, controlled)
+	subject := m.service(m, controlled)
 	for _, test := range []struct{ path, content string }{{"Case", "upper"}, {"case", "lower"}} {
 		item := attachmentItem(task, test.path, "text/plain", int64(len(test.content)))
 		controlled.calls = append(controlled.calls, caseStorageCall{"put", attachmentTestStoragePath(task, test.path), test.content})
@@ -90,7 +90,7 @@ func TestAttachmentFilesystemNameConflictPreservesMetadataAndBytes(t *testing.T)
 	if _, err := files.Put(t.Context(), "task-attachments", attachmentTestStoragePath(task, "Case"), strings.NewReader("original")); err != nil {
 		t.Fatal(err)
 	}
-	failed := NewAttachments(m, m, attachmentFaultStorage{Storage: files, put: errors.Join(filestorage.ErrPathConflict)})
+	failed := m.service(m, attachmentFaultStorage{Storage: files, put: errors.Join(filestorage.ErrPathConflict)})
 	m.read(p, task)
 	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
 	m.expect("live", task.ProjectID)

@@ -21,7 +21,7 @@ func TestProjectDeletionRefusesAttachmentMutations(t *testing.T) {
 				}
 				if operation != "delete" {
 					m.expect("snapshot").callback = true
-					m.expect("access", p, task.ProjectID).result = model.ProjectAccess{ProjectID: task.ProjectID}
+					m.expect("projectRead", p, task.ProjectID).result = model.ProjectAccess{ProjectID: task.ProjectID}
 					m.expect("presence", task.ProjectID, task.ID).result = presence
 				}
 				m.expect("mutation").callback = true
@@ -32,7 +32,7 @@ func TestProjectDeletionRefusesAttachmentMutations(t *testing.T) {
 					m.expect("live", task.ProjectID).err = model.ErrNotFound
 				}
 				observed := &observedAttachmentStorage{Storage: files}
-				err := attachmentMutation(t.Context(), NewAttachments(m, m, observed), p, task, operation)
+				err := attachmentMutation(t.Context(), m.service(m, observed), p, task, operation)
 				requireFault(t, err, "not_found")
 				if observed.calls.Load() != 0 {
 					t.Fatal("deleted Project reached file storage")

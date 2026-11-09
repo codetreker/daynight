@@ -926,6 +926,36 @@ and that normal connectivity prove different responsibilities. The
 [inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
 records the three bindings and the retained lifetime proof.
 
+### Identity service tests
+
+`internal/service/identity` tests mock the directly invoked Core Identity and
+Personal Team operations through private instance bindings. `New` binds the real
+operations and `time.Now`. The complete ordinary suite clears database and auth
+fixture variables and executes real service callbacks, completion handling and
+UniAuth SDK HTTP transport.
+
+Tests verify raw input and principal propagation, context and transaction-bound
+capability identity, login consumption before upstream retrieval, shared
+user/Personal Team/session scope, partial login results, secret suppression,
+completion precedence, device rate scopes and known-rollback collision retries.
+Actual SDK parsing, response errors, cancellation, provider discovery and profile
+encoding remain with the service adapter. Core Identity and Personal Team tests
+own business admission, credentials, expiry and device decisions; PostgreSQL
+Identity tests own SQL, current-row locks, uniqueness, persisted fields and
+cross-DAO rollback. Controlled completion does not prove persistence.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/identity ./internal/core/identity
+```
+
+PostgreSQL receivers use the documented isolated database configuration and run
+with `go test ./internal/core/store/postgres/identity ./internal/core/store/postgres`.
+
+The [Identity test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-identity-direct-operation-tests.md) records the operation defaults and proof ownership.
+
 ### Bot runtime service tests
 
 The `internal/service/bot/runtime` suite executes the Runtime transaction and
@@ -958,6 +988,37 @@ These physical assertions run with isolated PostgreSQL through the module check;
 mocked outcomes cannot establish them. The
 [Runtime test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-bot-runtime-service-test-boundary.md)
 records the operation bindings and proof ownership.
+
+### Team service tests
+
+The `internal/service/team` suite executes Team scope callbacks, completion
+handling and invitation/eligibility orchestration with strict direct-operation
+mocks. `NewTeams` binds private, instance-owned Team admission, business and
+eligibility operations to their production implementations. Unit fixtures supply
+independent domain facts, errors and completion outcomes, checking principal,
+raw input, IDs, context, transaction capabilities, calls and required order.
+They do not run core business rules, construct an in-memory Store or prepare
+identity/database fixtures. The test binary clears database and UniAuth fixture
+variables before its ordinary suite.
+
+Run the module without PostgreSQL or UniAuth fixtures:
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -timeout=5m -overlay=scripts/unit-overlay.json \
+  ./internal/service/team
+```
+
+Completion tests retain allocated-ID errors, staged snapshot refusals and the
+method-specific result contracts. Invitation acceptance uses a completed read
+snapshot followed by an independent Team write scope; eligibility refresh uses
+that write scope and runs only after the lower mutation succeeds. Core tests
+own lifecycle, last-admin, invitation and post-lock clock decisions. PostgreSQL
+owners verify current facts after Team/invitation locks, SQL failures, consumption,
+rollback and fresh persisted readback. `PersonalTeamID` belongs to Identity.
+The [Team test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-team-service-test-boundary.md)
+records these proof owners and the distinct read/completion behavior.
 
 ### Business rules and DAO mocks
 
@@ -1105,10 +1166,18 @@ records the read-before-validation distinction.
 
 ### Attachment service and store tests
 
+The complete `internal/service/attachment` suite"
+through "including during complete module validation", with:
+
 The complete `internal/service/attachment` suite uses synthetic principals,
-Project and Task facts with strict expectations on the existing snapshot,
-attachment mutation and DAO interfaces. Each operation has an explicit call
-plan; unconfigured, extra or unconsumed calls fail. Query results are configured
+Project and Task facts and controls directly invoked Project-read, path-conflict
+and metadata read/write/delete operations through private instance-owned function
+dependencies. The production constructor binds the real Core functions. Snapshot,
+attachment mutation and directly used DAO interfaces remain controlled separately.
+Each logical operation has an explicit call plan checking callback capability,
+context, canonical addresses, inputs and order; unconfigured, extra or unconsumed
+calls fail. Lower business DAO calls fail explicitly, so the fixture cannot
+silently resume real Core operations. Operation and query results are configured
 independently of captured writes. Callback execution and transaction completion
 remain separate, including `committed`, `not_committed` and `unknown` outcomes.
 The test binary clears `DAYNIGHT_TEST_DATABASE_URL` and
@@ -1128,6 +1197,11 @@ upload leases and transfer cleanup. Real temporary files and permits remain
 where the assertion concerns their use and lifetime. The content reader still
 crosses the actual 5 MiB boundary; test-local fixtures do not reduce production
 limits or timing defaults.
+
+Core Attachment tests retain exact conflict-query Project/Task/context forwarding
+and metadata write/delete cancellation context, input, one-call and error-chain
+assertions. The independent Core Project read receiver retains the original
+Attachment principal, Project ID, context and complete inherited access result.
 
 PostgreSQL attachment DAO tests own SQL mapping, upsert identity, pagination,
 literal wildcard prefixes, legacy metadata and affected-row failures. Root

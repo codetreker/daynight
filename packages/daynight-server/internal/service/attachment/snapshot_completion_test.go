@@ -30,11 +30,11 @@ func TestMissingAttachmentTaskRefusalWaitsForSnapshotCompletion(t *testing.T) {
 				failure = &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: context.Canceled}
 				snapshot.err = failure
 			}
-			access := reader.expect("access", principal, projectID)
+			access := reader.expect("projectRead", principal, projectID)
 			access.ctx, access.result = ctx, model.ProjectAccess{ProjectID: projectID}
 			presence := reader.expect("presence", projectID, taskID)
 			presence.ctx, presence.result = ctx, store.TaskPresence{Found: false}
-			result, err := NewAttachments(reader, nil, nil).List(ctx, principal, projectID, taskID, model.PageRequest{Limit: 10})
+			result, err := reader.service(nil, nil).List(ctx, principal, projectID, taskID, model.PageRequest{Limit: 10})
 			if !reflect.DeepEqual(result, attachmentcore.Page{}) {
 				t.Fatalf("missing attachment Task exposed a result: %+v", result)
 			}

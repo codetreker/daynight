@@ -33,6 +33,13 @@ export function clearIndependentSessionStorage(userId: string, sessionId: string
 }
 
 export type SessionSettingIntent = { readonly operationId: string; readonly settingId: string; readonly value: string; readonly confirmedValue: string | null };
+/** Coverage belongs to applied history, never to a later current snapshot. */
+export type SessionHistoryCoverage = {
+  readonly firstEntrySeq: string | null;
+  readonly throughEntrySeq: string;
+  readonly completeBefore: boolean;
+  readonly lastEventSeq: string;
+};
 type CommandInput = { [K in SessionCommand['kind']]: Pick<Extract<SessionCommand, { kind: K }>, 'kind' | 'payload'> }[SessionCommand['kind']];
 export type SessionViewState = {
   readonly actionAdmitted: boolean;
@@ -47,6 +54,10 @@ export type SessionViewState = {
   readonly connected: boolean; readonly authPaused: boolean; readonly error: string | null; readonly hasOlder: boolean; readonly loadingOlder: boolean;
   readonly historyError: string | null; readonly checking: ReadonlySet<string>;
   readonly historyReady: boolean; readonly historyRevision: number; readonly connectionGeneration: number;
+  readonly historyLoaded: boolean;
+  /** Accepted history can be observed only outside replacement and recovery. */
+  readonly historySettled: boolean;
+  readonly historyCoverage: SessionHistoryCoverage | null;
 };
 type Options = { readonly api: SessionApi; readonly userId: string; readonly initialActionAdmitted?: boolean; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly onInvalidate?: () => void; readonly storage: Storage | null } & (
   { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly ownerUserId: string; readonly testSessionId?: never; readonly bot?: never } |
@@ -64,7 +75,7 @@ class HistoryCursorError extends Error {}
 type CurrentReadFlight = { readonly kind: 'start' | 'observation' | 'archive'; readonly controller: AbortController; readonly generation: number; readonly archive: { readonly snapshot: SessionSnapshot; readonly generation: number } | null };
 
 export class TaskSessionClient {
-  private view: SessionViewState = { actionAdmitted: true, operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyRevision: 0, connectionGeneration: 0 };
+  private view: SessionViewState = { actionAdmitted: true, operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyLoaded: false, historySettled: false, historyCoverage: null, historyRevision: 0, connectionGeneration: 0 };
   private archive: LoadedSessionArchive | null = null;
   private media: { readonly key: string; readonly client: SessionResourceClient } | null = null;
   private listeners = new Set<() => void>();
@@ -211,7 +222,7 @@ export class TaskSessionClient {
     const previous = this.view.state.snapshot, next = change.state?.snapshot;
     if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.historyEpoch !== next.historyEpoch)) {
       this.cancelOlder(); this.cancelHydration(); this.before = null; this.beforeCursors.clear();
-      change = { ...change, loadingOlder: false, historyError: null };
+      change = { ...change, historyLoaded: change.historyLoaded ?? false, historyCoverage: change.historyCoverage ?? null, loadingOlder: false, historyError: null };
     } else if (previous && next && previous.connectionEpoch !== next.connectionEpoch) {
       this.cancelOlder(); this.cancelHydration(); change = { ...change, loadingOlder: false };
     }
@@ -242,7 +253,7 @@ export class TaskSessionClient {
     }
     this.view = { ...this.view, ...change };
     if (this.view.connected && (this.currentReadFailure || !this.view.state.snapshot || !this.historyAllowed(this.view.state.snapshot) || BigInt(this.view.state.lastEventSeq) < BigInt(this.replayThrough))) this.view = { ...this.view, connected: false };
-    this.view = { ...this.view, connectionGeneration: this.connectionGeneration, historyReady: this.hydrated && !this.hydrating && this.view.connected && this.view.status === 'ready' && !this.view.state.recoveryRequired && this.view.state.snapshot !== null && this.historyAllowed(this.view.state.snapshot) };
+    this.view = { ...this.view, connectionGeneration: this.connectionGeneration, historySettled: this.view.historyLoaded && !this.hydrating && !this.replaceHistory && !this.view.state.recoveryRequired && this.view.state.snapshot !== null, historyReady: this.hydrated && !this.hydrating && this.view.connected && this.view.status === 'ready' && !this.view.state.recoveryRequired && this.view.state.snapshot !== null && this.historyAllowed(this.view.state.snapshot) };
     const snapshot = this.view.state.snapshot;
     if (snapshot) this.bindDraft(snapshot);
     const draft = this.view.draft, operation = draft.submission && this.view.state.operations.get(draft.submission.operationId);
@@ -455,7 +466,7 @@ export class TaskSessionClient {
   }
   private startHydration(snapshot: SessionSnapshot, generation: number): void {
     if (this.hydrating || !this.historyAllowed(snapshot)) return;
-    this.hydrating = true; this.buffer = []; void this.hydrate(snapshot, generation);
+    this.hydrating = true; this.buffer = []; this.publish({}); void this.hydrate(snapshot, generation);
   }
   private schedule(delay = Math.min(1000 * 2 ** this.retries++, 15_000)) {
     if (this.timer !== null) clearTimeout(this.timer);
@@ -520,8 +531,21 @@ export class TaskSessionClient {
     const s = this.view.state.snapshot;
     if (!s || sessionFenceKey(value.event) !== sessionFenceKey(s)) return;
     if (value.event.kind === 'operation' && value.event.payload.state === 'unknown') this.endOperationProgress(value.event.payload.operationId);
-    const state = applySessionEvent(this.view.state, value.event);
-    this.publish({ state });
+    let state = applySessionEvent(this.view.state, value.event);
+    const sameHistory = state.snapshot !== null && sessionFenceKey(state.snapshot) === sessionFenceKey(s) && state.snapshot.historyEpoch === s.historyEpoch;
+    if (!sameHistory) {
+      this.replaceHistory = true;
+      state = { ...state, recoveryRequired: true };
+    }
+    const coverage = this.view.historyCoverage;
+    const applied = !state.recoveryRequired && BigInt(state.lastEventSeq) > BigInt(this.view.state.lastEventSeq);
+    // An upsert verifies its own row, not the unread interval between it and a
+    // loaded page. Only accepted pages may expand contiguous entry coverage.
+    const historyCoverage = applied && coverage ? {
+      ...coverage,
+      lastEventSeq: state.lastEventSeq,
+    } : sameHistory ? coverage : null;
+    this.publish({ state, historyCoverage });
     if (state.snapshot && state.snapshot.lifecycle !== 'active') { this.beginArchive(state.snapshot); return; }
     if (state.recoveryRequired) { this.cancelOlder(); this.beforeCursors.clear(); this.hydrated = false; this.cursor = null; this.publish({ connected: false, loadingOlder: false }); this.schedule(0); }
     else { this.cursor = value.cursor; if (!this.hydrating && BigInt(state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: this.historyAllowed(state.snapshot!) }); }
@@ -573,7 +597,8 @@ export class TaskSessionClient {
       this.archive = archive;
       const resources = archive.schemaVersion === 3 ? archive.resources.map(({ resource }) => resource) : archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
       const state = hydrateSession(emptySessionState(), finalSnapshot, archive.entries, resources);
-      this.publish({ archiveState: 'ready', state, status: 'ready', connected: false, error: null });
+      this.replaceHistory = false;
+      this.publish({ archiveState: 'ready', state, historyLoaded: true, historyCoverage: this.pageCoverage(archive.entries, finalSnapshot.lastTimelineSeq, finalSnapshot.lastEventSeq, true, null), status: 'ready', connected: false, error: null });
     } catch (error) {
       if (!this.currentReadCurrent(flight) || !this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
@@ -586,6 +611,14 @@ export class TaskSessionClient {
     if (page.hasMoreBefore && !page.beforeCursor) throw new HistoryCursorError('Session history returned an empty pagination cursor.');
   }
   private cancelHydration(): void { this.historyRequest?.abort(); this.historyRequest = null; this.hydrating = false; this.buffer = []; }
+  private pageCoverage(entries: SessionState['entries'], throughEntrySeq: string, lastEventSeq: string, completeBefore: boolean, previous: SessionHistoryCoverage | null): SessionHistoryCoverage {
+    let first = previous?.firstEntrySeq ?? null, through = previous && BigInt(previous.throughEntrySeq) > BigInt(throughEntrySeq) ? previous.throughEntrySeq : throughEntrySeq;
+    for (const entry of entries) {
+      if (first === null || BigInt(entry.entrySeq) < BigInt(first)) first = entry.entrySeq;
+      if (BigInt(entry.entrySeq) > BigInt(through)) through = entry.entrySeq;
+    }
+    return { firstEntrySeq: first, throughEntrySeq: through, completeBefore: completeBefore || (previous?.completeBefore ?? false), lastEventSeq: previous && BigInt(previous.lastEventSeq) > BigInt(lastEventSeq) ? previous.lastEventSeq : lastEventSeq };
+  }
   private async hydrate(snapshot: SessionSnapshot, generation: number, online = true) {
     const request = new AbortController(); this.historyRequest = request;
     const currentRequest = () => this.owned() && this.historyRequest === request && generation === this.connectionGeneration && this.sameHistory(snapshot);
@@ -594,22 +627,27 @@ export class TaskSessionClient {
       if (!currentRequest() || !(this.paused() ? await this.admit(request.signal) : this.admitted()) || !currentRequest()) return;
       this.validatePage(page, snapshot);
       if (BigInt(page.lastEventSeq) < BigInt(snapshot.lastEventSeq)) throw new ApiError('protocol');
-      const previous = this.replaceHistory ? { ...this.view.state, entries: [], resources: new Map() } : this.view.state;
+      const previous = this.replaceHistory ? { ...this.view.state, entries: [], resources: new Map(), lastEventSeq: '0' } : this.view.state;
+      const lastEventSeq = BigInt(previous.lastEventSeq) > BigInt(page.lastEventSeq) ? previous.lastEventSeq : page.lastEventSeq;
+      // A refreshed tail starts a new cursor chain. Previously accepted rows remain
+      // authoritative by ID, but disjoint tails do not prove the interval between them.
+      const coverage = this.pageCoverage(page.items, snapshot.lastTimelineSeq, lastEventSeq, !page.hasMoreBefore, null);
       // A current read can publish a newer state while this tail is in flight.
       // Materializing history cannot roll back that accepted connection or activity.
       const latest = this.view.state.snapshot!;
       const selected = BigInt(latest.sessionRevision) > BigInt(snapshot.sessionRevision) ? latest : snapshot;
       let state = hydrateSession(previous, selected, page.items, page.resources);
       this.replaceHistory = false;
-      state = { ...state, lastEventSeq: page.lastEventSeq };
+      state = { ...state, lastEventSeq };
       // The tail may include events newer than the initial WS snapshot. Replay only their
       // latest state receipts while retaining the page's already materialized timeline.
       for (const item of this.buffer) {
         if (item.event.kind === 'snapshot' && BigInt(item.event.eventSeq) <= BigInt(page.lastEventSeq) && BigInt(item.event.payload.sessionRevision) > BigInt(state.snapshot!.sessionRevision)) state = { ...state, snapshot: item.event.payload };
         if (item.event.kind === 'operation' && BigInt(item.event.eventSeq) <= BigInt(page.lastEventSeq)) state = { ...state, operations: new Map(state.operations).set(item.event.payload.operationId, item.event.payload) };
       }
+      if (state.snapshot!.historyEpoch !== snapshot.historyEpoch || sessionFenceKey(state.snapshot!) !== sessionFenceKey(snapshot)) throw new ApiError('protocol');
       this.before = page.beforeCursor; this.beforeCursors = new Set(page.beforeCursor ? [page.beforeCursor] : []); this.hydrated = online; this.hydrating = false;
-      this.publish({ state, status: 'ready', hasOlder: page.hasMoreBefore, connected: online, historyError: null, historyRevision: this.view.historyRevision + 1, ...(online ? { error: null } : {}) });
+      this.publish({ state, historyLoaded: true, historyCoverage: coverage, status: 'ready', hasOlder: page.hasMoreBefore, connected: online, historyError: null, historyRevision: this.view.historyRevision + 1, ...(online ? { error: null } : {}) });
       if (state.snapshot && state.snapshot.lifecycle !== 'active') { this.beginArchive(state.snapshot); return; }
       const buffered = this.buffer; this.buffer = [];
       if (online) for (const item of buffered) { this.apply(item); if (generation !== this.connectionGeneration) return; }
@@ -642,7 +680,7 @@ export class TaskSessionClient {
       const resources = new Map(this.view.state.resources); for (const resource of page.resources) if (!resources.has(resource.resourceId)) resources.set(resource.resourceId, resource);
       this.before = page.beforeCursor;
       if (page.beforeCursor) this.beforeCursors.add(page.beforeCursor);
-      this.publish({ state: { ...this.view.state, entries: mergeTimeline(this.view.state.entries, page.items), resources }, hasOlder: page.hasMoreBefore, historyRevision: this.view.historyRevision + 1 });
+      this.publish({ state: { ...this.view.state, entries: mergeTimeline(this.view.state.entries, page.items), resources }, historyCoverage: this.pageCoverage(page.items, '0', this.view.state.lastEventSeq, !page.hasMoreBefore, this.view.historyCoverage), hasOlder: page.hasMoreBefore, historyRevision: this.view.historyRevision + 1 });
     } catch (error) {
       if (!current() || isAbortError(error)) return;
       if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
