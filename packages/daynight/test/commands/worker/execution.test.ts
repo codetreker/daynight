@@ -118,6 +118,45 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
 };
 
 describe("execution from current Herdr resources", () => {
+  it("reports native progress only when its observed state changes", async () => {
+    const f = await fixture("codex", staleId);
+    const current: Entry = { ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
+    f.agents.push(current);
+    const observe = vi.fn(), success = vi.fn();
+    f.dependencies.observePhase = observe; f.dependencies.observeSuccess = success;
+    await f.driver.advance(f.input);
+    expect(observe).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "observation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    observe.mockClear(); success.mockClear();
+    await f.driver.advance(f.input);
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" });
+    expect(success).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" });
+    expect(observe).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+    expect(observe).not.toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "worktree-preparation" }, true, undefined);
+    current.state_change_seq = 11;
+    await f.driver.advance(f.input);
+    expect(observe).toHaveBeenCalledWith(f.input.owner, { kind: "execution", phase: "agent-observation" }, true, undefined);
+  });
+
+  it("records successful start and input submission without allowing callback failure to change execution", async () => {
+    const f = await fixture("codex", null);
+    const phases: string[] = [];
+    f.dependencies.observeSuccess = (_identity, phase) => { phases.push(phase.phase); throw new Error("monitoring callback"); };
+    expect((await f.driver.advance(f.input)).kind).toBe("observed");
+    expect(phases).toEqual(expect.arrayContaining(["observation", "worktree-preparation", "agent-start", "input-submission"]));
+  });
+
+  it("preserves the original execution failure when monitoring throws", async () => {
+    const f = await fixture("codex", null);
+    const failure = new Error("original worktree failure");
+    f.dependencies.observePhase = () => { throw new Error("monitoring failure"); };
+    f.dependencies.observeSuccess = () => { throw new Error("monitoring failure"); };
+    vi.mocked(f.dependencies.git.prepareWorktree).mockRejectedValueOnce(failure);
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+  });
+
   it("waits for the initial tuple and captures the value received during workspace preparation", async () => {
     const f = await fixture("codex", null);
     const resource = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: scope === "project" ? f.input.task.projectId : uuid(5), revision: "1", text, updatedAt: "2026-11-09T00:00:00Z" });

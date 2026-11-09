@@ -11,7 +11,7 @@ import { createWebControllerLauncher } from "./backends/web-process.js";
 import { createWorkerSessionApi } from "./backends/session-api.js";
 import type { WorkerEvent } from "./execution.js";
 import type { WorkerPaths } from "./paths.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { statfsSync } from "node:fs";
 import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
 import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
@@ -34,6 +34,8 @@ import type { WorkerProject } from "./types.js";
 import type { AgentControlMode, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
+import { createMonitoringObserver } from "./monitoring/observer.js";
+import { createMonitoringSender } from "./monitoring/sender.js";
 import type { WorkerCoordinatorConfiguration, WorkerRepositoryAssignment } from "./coordinator.js";
 import { submitWorkerControl } from "./control.js";
 import type { WorkerControlRequest } from "./control.js";
@@ -230,6 +232,11 @@ export const runWorker = async (options: {
   let readOnly: ReturnType<typeof createWorkerReadOnlyChannel> | undefined;
   let modelDiscovery: ReturnType<typeof createWorkerModelDiscovery> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
+  let monitoring: ReturnType<typeof createMonitoringObserver> | undefined;
+  let monitoringSender: ReturnType<typeof createMonitoringSender> | undefined;
+  const observeMonitoring = (action: (observer: NonNullable<typeof monitoring>) => void): void => {
+    if (monitoring !== undefined) try { action(monitoring); } catch { /* Monitoring cannot change worker execution. */ }
+  };
   const localMappingJobs = new Map<string, Promise<void>>();
   const localMappingRetryAt = new Map<string, number>();
   const failures: unknown[] = [];
@@ -240,6 +247,7 @@ export const runWorker = async (options: {
     const { serverUrl, serverToken } = local;
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
     lock = await acquireWorkerInstanceLock(paths);
+    monitoring = createMonitoringObserver({ onDirty: () => monitoringSender?.markDirty() });
     signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, signal);
     for (const directory of [paths.temporaryDirectory, paths.logsDirectory]) await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -258,6 +266,12 @@ export const runWorker = async (options: {
       }
     };
     const userId = await remote.currentUserId(signal);
+    const observer = monitoring;
+    monitoringSender = createMonitoringSender({ runId: observer.runId, capture: observer.capture,
+      read: (operation, requestId) => remote.readMonitoring(workerId, operation, requestId),
+      write: (revision, observation, operation, requestId) => remote.writeMonitoring(workerId, revision, observation, operation, requestId),
+      deliverySuccess: observer.deliverySuccess, deliveryFailure: observer.deliveryFailure, emit });
+    observeMonitoring(m => m.setPhase("configuration"));
     const currentPromptSource = createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId });
     promptSource = currentPromptSource;
     const readCloudConfiguration = async (readSignal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource> => {
@@ -267,7 +281,15 @@ export const runWorker = async (options: {
         return { desired: null, observationRevision: "0", observation: null };
       }
     };
-    const resource = await readCloudConfiguration(signal);
+    let resource: WorkerCloudResource;
+    try { resource = await readCloudConfiguration(signal); }
+    catch (error) {
+      if (!isWorkerCancellation(error, signal)) observeMonitoring(m => {
+        m.setAdmission("partial", [{ code: "configuration-unavailable", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]);
+        m.fail({ operationId: randomUUID(), component: "configuration", phase: "configuration", scope: { kind: "worker" }, error });
+      });
+      throw error;
+    }
     const machine = machineDescription(platform);
     const prepared = new Map<string, WorkerProject>();
     const locallyKnownIds = new Set(workerLocalExplicitProjectIds(local, paths));
@@ -629,6 +651,7 @@ export const runWorker = async (options: {
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
         coordinator = createWorkerCoordinator({ store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
+          monitoring: observer,
           hasHerdrJournal: await hasHerdrJournal(paths, platform),
           availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
           onInventory: inventory => {
@@ -672,8 +695,10 @@ export const runWorker = async (options: {
       prepared.delete(projectId);
     } });
     let attachmentShown = false, started = false;
+    observeMonitoring(m => m.setLifecycle("running"));
     while (!signal.aborted) {
       try {
+        observeMonitoring(m => m.setPhase("configuration"));
         scheduleLocalMappingChecks();
         await refreshFallback();
         await ensureInitialRemovals();
@@ -684,29 +709,34 @@ export const runWorker = async (options: {
             if (coordinator !== undefined) {
               const latest = view(manager.current());
               if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
+              observeMonitoring(m => m.setPhase("archive-backfill"));
               await web!.backfillArchives(signal);
             }
           }
-        }
+        } else observeMonitoring(m => { m.setAdmission("partial", [{ code: "configuration-incomplete", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]); m.staleCapacity(); });
         if (!started) { emit({ kind: "started", message: `Foreground worker ${workerId} on ${platform}; cloud-managed configuration; logs=${diagnostics.filename}.` }); started = true; }
         if (!attachmentShown && herdr !== undefined) { emit({ kind: "attach", message: "Run daynight worker attach in another terminal for native input." }); attachmentShown = true; }
       } catch (error) {
         if (isWorkerCancellation(error, signal)) break;
         if (signal.aborted) throw error;
+        observeMonitoring(m => { m.setAdmission("unknown", []); m.staleCapacity(); });
         emit({ kind: "reconciliation-error", message: "The reconciliation round failed; configuration reporting remains active and resources remain for the next successful observation.", error });
       }
       await diagnostics.flush();
       if (signal.aborted) break;
       const interval = manager.current().effective.pollIntervalMs ?? (manager.current().desired === null ? fallback?.pollIntervalMs ?? null : null);
+      observeMonitoring(m => { m.setPhase("waiting-poll"); m.setNextPoll(new Date(Date.now() + (interval ?? 1_000)).toISOString()); });
       const changed = configurationChanged;
       try {
         if (!changed.signal.aborted) await delay(interval === null ? 1_000 : interval, undefined, { signal: AbortSignal.any([signal, changed.signal]) });
       } catch (error) { if (!changed.signal.aborted && !isWorkerCancellation(error, signal)) throw error; }
       finally { if (configurationChanged === changed) configurationChanged = new AbortController(); }
+      observeMonitoring(m => m.setNextPoll(null));
     }
   } catch (error) {
     if (!isWorkerCancellation(error, signal)) failures.push(error);
   } finally {
+    observeMonitoring(m => { m.setLifecycle("stopping"); m.setPhase("stopping"); });
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
     readOnly?.close();
     modelDiscovery?.close();
@@ -728,6 +758,8 @@ export const runWorker = async (options: {
       } catch (error) { if (!failures.includes(error)) failures.push(error); }
     }
     await botRun;
+    observeMonitoring(m => { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); });
+    try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
     try { bots?.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }

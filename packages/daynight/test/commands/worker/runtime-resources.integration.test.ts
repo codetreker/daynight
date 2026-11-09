@@ -14,7 +14,7 @@ import archiveFixture from "../../session/fixtures/v2/valid-archive.json" with {
 const mocks = vi.hoisted(() => ({ durable: vi.fn(), remote: vi.fn(), git: vi.fn() }));
 vi.mock("../../../src/commands/worker/herdr/durable.js", () => ({ createDurableWorkerHerdr: mocks.durable }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
-vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitManager: mocks.git }));
+vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 const roots: string[] = [];
 afterEach(() => { vi.clearAllMocks(); for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
 const fixture = () => {

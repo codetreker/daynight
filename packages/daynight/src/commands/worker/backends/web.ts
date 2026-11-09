@@ -9,7 +9,8 @@ import { readControllerOperation, readControllerSnapshot, recordStoppedControlle
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
 import { WorktreePreconditionError } from "../worktrees.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
-import { workerOperation, type WorkerGitManager } from "../execution.js";
+import { observeWorkerPhase, workerOperation, type WorkerGitManager, type WorkerObservedPhase, type WorkerPhaseObserver } from "../execution.js";
+import type { ClaimIdentity } from "../types.js";
 import { appendWorkerPrompts, workerCleanupPrompt } from "../prompts.js";
 import { PromptInputLimitError } from "../prompt-input-limit.js";
 import type { WorkerPromptSource, WorkerPromptTuple } from "../prompt-source.js";
@@ -34,6 +35,9 @@ export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large";
 export type WebAdvanceResult = { kind: "observed"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
 class PromptUnknownError extends Error {}
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
+  let monitoring: { observePhase?: WorkerPhaseObserver; observeSuccess?: (identity: ClaimIdentity, phase: WorkerObservedPhase) => void } = {};
+  const phase = (identity: ClaimIdentity, value: WorkerObservedPhase, progressed = false, deadlineAt?: number): void => observeWorkerPhase(monitoring.observePhase, identity, value, progressed, deadlineAt);
+  const success = (identity: ClaimIdentity, value: WorkerObservedPhase): void => { try { monitoring.observeSuccess?.(identity, value); } catch { /* Monitoring cannot change the operation result. */ } };
   const request = options.request ?? requestController;
   const waiting = new Map<string, WebInputWaitingReason>();
   const rejected = new Map<string, string>();
@@ -74,9 +78,13 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const verifyWorktree = async (task: LocalTask, signal: AbortSignal): Promise<LocalTask> => {
     try {
       const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
-      if (task.resources.worktree === null) return options.store.bindWorktree(task, await workerOperation(operation => options.git.prepareWorktree(project, task, operation), signal), options.now());
-      await workerOperation(operation => options.git.verifyWorktree(project, task, operation), signal);
-      return current(task);
+      phase(task, { kind: "execution", phase: "worktree-preparation" });
+      const preparing = task.resources.worktree === null;
+      if (preparing) task = options.store.bindWorktree(task, await workerOperation(operation => options.git.prepareWorktree(project, task, operation), signal), options.now());
+      else { await workerOperation(operation => options.git.verifyWorktree(project, task, operation), signal); task = current(task); }
+      success(task, { kind: "execution", phase: "worktree-preparation" });
+      if (preparing) phase(task, { kind: "execution", phase: "worktree-preparation" }, true);
+      return task;
     } catch (error) {
       signal.throwIfAborted();
       const failure = error instanceof WorktreePreconditionError ? error : new WorktreePreconditionError("validation_failed", error instanceof Error ? error.message : String(error), { cause: error });
@@ -106,6 +114,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       || saved.controllerProcess === null || execution.controllerProcess === null || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)
       || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("Orchestration verification requires original generation and process evidence.");
     let observed: ControllerSnapshot | null = null;
+    phase(task, { kind: "execution", phase: "agent-observation" });
     try { observed = (await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 })).snapshot; }
     catch (error) { signal.throwIfAborted(); if (correctLegacyLatch) throw error; }
     if (observed !== null && !matchesGeneration(task, observed)) throw new Error("Orchestration verification found a conflicting controller generation.");
@@ -114,6 +123,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     if (observed !== null && !preservesControllerEvidence(saved, observed, ticket.launchId)) throw new Error("The native observation conflicts with the original controller journal.");
     if (observed !== null && ((!firstNativeObservation && observed.nativeSessionId !== task.resources.nativeSession?.sessionId)
       || ((observed.lifecycle === "ready" || observed.lifecycle === "working") && !liveObservation))) throw new Error("Orchestration verification found conflicting original native evidence.");
+    if (observed !== null) success(task, { kind: "execution", phase: "agent-observation" });
     const unusedRetry = task.recovery.retryAuthorized && task.recovery.pauseReason !== null;
     if (unusedRetry || execution.restartAfterShutdown || observed === null || !liveObservation) {
       const stopped = await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses);
@@ -143,8 +153,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, observed, options.now());
     if (initialContinuation && observed.initialInputState === "not_submitted") {
       await options.launcher.refreshGrant(task, ticket, signal);
+      phase(task, { kind: "execution", phase: "input-submission" });
       const response = await request(ticket, { kind: "submit_initial", operationId: execution.initialOperationId }, { signal, timeoutMs: 30000 });
       task = remember(task, response.snapshot);
+      if (response.snapshot.initialInputState === "confirmed") { success(task, { kind: "execution", phase: "input-submission" }); phase(task, { kind: "execution", phase: "input-submission" }, true); }
     }
     return { task, live: true };
   };
@@ -233,12 +245,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             capturedSignature = signature(preparedTask, tuple);
             return appendWorkerPrompts(options.buildPrompt(preparedTask, options.platform), tuple);
           });
+        phase(task, { kind: "execution", phase: "agent-start" });
         let ticket = await options.launcher.prepare(task, prompt, signal);
         rejected.delete(task.claimId);
         task = current(task);
+        const wasUnsubmitted = task.webExecution?.launchSubmission === "not-submitted";
         await options.launcher.launch(task, ticket, signal);
         task = current(task);
+        if (wasUnsubmitted && task.webExecution?.launchSubmission !== "not-submitted") { success(task, { kind: "execution", phase: "agent-start" }); phase(task, { kind: "execution", phase: "agent-start" }, true); }
         let snapshot: ControllerSnapshot;
+        phase(task, { kind: "execution", phase: "agent-observation" });
         try { snapshot = (await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 })).snapshot; }
         catch (error) {
           signal.throwIfAborted();
@@ -254,11 +270,15 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           if (task.recovery.pauseReason !== null) return task;
           recovering = true;
           task = options.store.beginWebGeneration(task, stopped, options.now());
+          phase(task, { kind: "execution", phase: "agent-start" });
           ticket = await options.launcher.prepare(task, task.webExecution!.initialPrompt!, signal);
           await options.launcher.launch(current(task), ticket, signal);
+          success(task, { kind: "execution", phase: "agent-start" });
+          phase(task, { kind: "execution", phase: "agent-observation" });
           snapshot = (await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 })).snapshot;
         }
         task = remember(current(task), snapshot);
+        success(task, { kind: "execution", phase: "agent-observation" });
         if (snapshot.lifecycle === "failed" || snapshot.lifecycle === "paused" || snapshot.lifecycle === "stopped" || snapshot.lifecycle === "stopping") {
           recovering = true;
           const error = new Error(snapshot.error ?? "The native controller is paused or stopped.");
@@ -277,8 +297,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         await options.launcher.refreshGrant(task, ticket, signal);
         if (snapshot.lifecycle === "starting") return options.store.updateWebExecution(task, { activity: "initializing" }, options.now());
         if (snapshot.initialInputState === "not_submitted") {
+          phase(task, { kind: "execution", phase: "input-submission" });
           const response = await request(ticket, { kind: "submit_initial", operationId: task.webExecution!.initialOperationId }, { signal, timeoutMs: 30000 });
           task = remember(task, response.snapshot);
+          if (response.snapshot.initialInputState === "confirmed") { success(task, { kind: "execution", phase: "input-submission" }); phase(task, { kind: "execution", phase: "input-submission" }, true); }
         }
         options.emit({ kind: "web-observed", task, message: `Original ${ticket.provider} controller generation ${ticket.executionGeneration} is bound to session ${ticket.sessionId}.` });
         return current(task);
@@ -298,6 +320,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     },
     cleanup: async (input: LocalTask, kind: CleanupState["kind"], deadline: number, signal: AbortSignal = new AbortController().signal, immediateStop = false): Promise<WebCleanupOutcome> => {
       let stage: WorkerCleanupStage = "observation";
+      phase(input, { kind: "cleanup", phase: stage });
       try {
         const startedAt = options.now();
         let task = current(input);
@@ -318,7 +341,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         if (intent === null) throw new Error("The original cleanup intent is missing.");
         const execution = task.webExecution;
         if (execution === null && task.configuration === null) throw new Error("The recovered Web claim has no original launch provenance; its resources are retained.");
+        success(task, { kind: "cleanup", phase: "observation" });
         stage = "agent-stop";
+        phase(task, { kind: "cleanup", phase: stage }, false);
         let launched = false;
         if (execution !== null) {
           let saved = readControllerSnapshot(journal(task));
@@ -386,21 +411,33 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             }
             if (!stopped) throw new Error("The original controller or its native processes still exist.");
             if (saved !== null) await recordStoppedControllerGeneration(journal(task), ticket);
+            success(task, { kind: "cleanup", phase: "agent-stop" });
+            phase(task, { kind: "cleanup", phase: "agent-stop" }, true);
             stage = "backend-close";
+            phase(task, { kind: "cleanup", phase: stage }, false);
             await removeEndpoint(ticket.ipcEndpoint);
+            success(task, { kind: "cleanup", phase: "backend-close" });
+            phase(task, { kind: "cleanup", phase: "backend-close" }, true);
           }
         }
         signal.throwIfAborted();
+        if (!launched) success(task, { kind: "cleanup", phase: "agent-stop" });
         if (kind === "shutdown") return { task, complete: true };
         if (launched) {
           stage = "archive";
+          phase(task, { kind: "cleanup", phase: stage }, false);
           if (!options.archive) throw new Error("Session archive uploader is unavailable; the original worktree is retained.");
           await options.archive(task, journal(task), signal);
+          success(task, { kind: "cleanup", phase: "archive" });
+          phase(task, { kind: "cleanup", phase: "archive" }, true);
         }
         stage = "worktree-removal";
+        phase(task, { kind: "cleanup", phase: stage }, false);
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
         await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
         if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+        success(task, { kind: "cleanup", phase: "worktree-removal" });
+        phase(task, { kind: "cleanup", phase: "worktree-removal" }, true);
         waiting.delete(task.claimId); rejected.delete(task.claimId);
         return { task, complete: true };
       } catch (error) {
@@ -410,6 +447,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   return {
     ...backend,
+    setMonitoringObserver: (value: { observePhase?: WorkerPhaseObserver; observeSuccess?: (identity: ClaimIdentity, phase: WorkerObservedPhase) => void }): void => { monitoring = value; },
     advanceResult: async (task: LocalTask, signal: AbortSignal): Promise<WebAdvanceResult> => {
       const result = await backend.advance(task, signal);
       const reason = waiting.get(task.claimId);
