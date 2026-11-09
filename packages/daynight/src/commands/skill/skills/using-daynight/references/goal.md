@@ -10,7 +10,7 @@ This file covers only stage progression and Goal-specific requirements.
 | --- | --- | --- |
 | Requirements discussion | Known problem, expected outcome, scope, constraints, open questions, and completion conditions | A complete uploaded and read-back `spec.md` and applicable interactive prototypes; the user explicitly confirms the current spec and directs progression to solution discussion; the required solution task has been registered and verified. |
 | Solution discussion | The confirmed requirements task’s `spec.md` and applicable prototypes, design questions, and completion conditions | Architecture, key decisions, and breakdown; the user confirms the solution, and actual delivery tasks have been registered and read back. |
-| Delivery tasks | A task-specific objective, scope, implementation approach and acceptance, with required designs, prototypes and contracts | Actual results meeting the [shared delivery conditions](task-execution.md#completion-conditions). |
+| Delivery tasks | A task-specific objective, scope, selected solution, detailed design, implementation steps and acceptance under the [task content standard](task-content.md#definitions-and-results), with required prototypes and contracts | Actual results meeting the [shared delivery conditions](task-execution.md#completion-conditions). |
 | Final acceptance | Complete confirmed requirements, actual combined results, and acceptance criteria | A conclusion for the whole Goal under [final acceptance](final-acceptance.md). |
 
 Discussions remain `in_progress` without user confirmation; completed prose, agent confidence, successful reviews, and passing CI cannot replace confirmation.
@@ -72,15 +72,15 @@ Each Goal delivery task has one independently assessable outcome. Keep changes n
 | --- | --- |
 | Objective | The confirmed Goal requirement or outcome this task serves and its concrete contribution to that outcome. |
 | Scope | The behavior and changes it owns, with relevant exclusions and producer/consumer boundaries. |
-| Implementation approach | How it realizes its assigned part of the solution: the substantive method and, where needed, affected components, contracts, sequencing and integration, so the task can proceed without inventing undecided architecture. |
-| Acceptance | Observable success, failure and boundary checks that demonstrate this task's contribution to the Goal. |
+| Implementation approach | The selected solution and essential rationale, detailed design, and ordered implementation steps for its assigned contribution, meeting the [task content standard](task-content.md#definitions-and-results) so the implementer can execute without further investigation to choose a solution or complete missing design. |
+| Acceptance | Observable success, failure and boundary checks, with verification methods and expected results that demonstrate this task's contribution to the Goal. |
 
 Judge task boundaries by purpose and reviewability. File boundaries, technical layers or routine execution steps alone do not justify separate tasks; foundations, migrations and independent acceptance can be tasks when each has a defined result. Do not impose fixed task, file, line or time limits or a mandatory slicing pattern.
 
 These parts may be inline or supplied through precise readable references, without fixed headings or a separate plan file.
 The description must explain this task's contribution and boundary and directly identify the source sections supplying any remaining brief content; a generic whole-Goal or architecture pointer or a copied document packet is insufficient.
-Keep shared detail with its owner. An implementation approach must explain the actual method for this task; "follow the architecture" alone is insufficient.
-For an acceptance task, the approach describes how to check the requirements against the combined delivery. This approach is durable task design, distinct from the session's command schedule, tool activity or debugging plan. Requirements and solution discussions still produce their own designs; those future outputs are not prerequisites for starting the producing stage.
+Keep shared detail with its owner. An implementation approach must explain the actual solution, design and implementation steps for this task; "follow the architecture" alone is insufficient. Apply the [delivery handoff threshold](task-content.md#content-sufficiency) to every delivery task.
+For an acceptance task, the approach describes how to check the requirements against the combined delivery. Detailed designs and implementation steps are durable task content, distinct from the session's command schedule, tool activity or debugging plan. Requirements and solution discussions still produce their own designs; those future outputs are not prerequisites for starting the producing stage.
 
 ### Check the whole breakdown
 
