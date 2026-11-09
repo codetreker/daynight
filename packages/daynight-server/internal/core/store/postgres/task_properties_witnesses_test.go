@@ -11,6 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,11 +46,7 @@ func taskPropertyTracedStore(t *testing.T, database *Store, action taskPropertyQ
 	return &Store{Pool: pool}
 }
 
-func taskPropertyWriteValues(task model.Task) TaskWrite {
-	return TaskWrite{Title: task.Title, Description: task.Description, Status: task.Status,
-		AllowAgents: task.AllowAgents, RequiredPlatform: task.RequiredPlatform, AssignedTo: task.AssignedTo,
-		Properties: task.Properties, DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn}
-}
+func taskPropertyWriteValues(task model.Task) TaskWrite { return testutil.TaskWrite(task) }
 
 func taskPropertyFacts(t *testing.T, database *Store) map[string]string {
 	t.Helper()

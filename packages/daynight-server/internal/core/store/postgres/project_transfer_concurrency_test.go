@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/google/uuid"
@@ -139,17 +141,5 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 
 func waitTransferTeamLock(t *testing.T, ctx context.Context, s *Store, prefix string, blockerPID uint32) {
 	t.Helper()
-	for {
-		var waiting bool
-		if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
- WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE $1 AND $2=ANY(pg_blocking_pids(pid)))`, prefix+"%", blockerPID).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			return
-		}
-		if err := waitThreadClock(ctx); err != nil {
-			t.Fatalf("operation did not wait for the other Team transaction: %v", err)
-		}
-	}
+	testutil.WaitTransferTeamLock(t, ctx, s.Pool, prefix, blockerPID)
 }

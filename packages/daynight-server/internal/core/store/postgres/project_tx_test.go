@@ -3,11 +3,12 @@ package postgres
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
@@ -15,69 +16,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestActiveDependentIDsUseOnlyDirectScopedOrdinaryAndExternalEdges(t *testing.T) {
-	database := isolatedStore(t)
-	ctx := context.Background()
-	project, foreign := queryProject(t, database, 1), queryProject(t, database, 2)
-	predecessor := queryTask(t, database, project.ID, 10, model.TaskDone)
-	active := queryTask(t, database, project.ID, 11, model.TaskInProgress, predecessor.ID)
-	done := queryTask(t, database, project.ID, 12, model.TaskDone, predecessor.ID)
-	queryTask(t, database, project.ID, 13, model.TaskTodo, predecessor.ID)
-	queryTask(t, database, project.ID, 14, model.TaskDone, active.ID)
-	queryTask(t, database, foreign.ID, 15, model.TaskInProgress, predecessor.ID)
-	mustQueryExec(t, database, `UPDATE task_dependencies SET external=true WHERE task_id=$1`, done.ID)
-	mustQueryExec(t, database, `CREATE FUNCTION reject_dependent_materials() RETURNS text LANGUAGE plpgsql STABLE AS $$
-		BEGIN RAISE EXCEPTION 'dependent materials must not be selected'; END $$;
-		ALTER TABLE tasks RENAME TO task_source;
-		CREATE VIEW tasks AS SELECT id, project_id, status, reject_dependent_materials() AS title,
-		reject_dependent_materials() AS description, deleted_at FROM task_source`)
-	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
-		ids, err := tx.TaskDAO().ActiveDependentIDs(ctx, predecessor.ID)
-		if err != nil || !reflect.DeepEqual(ids, []string{active.ID, done.ID}) {
-			t.Fatalf("direct active dependents lost scope, order, classification or ID-only projection: %#v %v", ids, err)
-		}
-		empty, err := tx.TaskDAO().ActiveDependentIDs(ctx, queryID(99))
-		if err != nil || len(empty) != 0 {
-			t.Fatalf("empty active dependent lookup failed: %#v %v", empty, err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func waitForQueryLock(t *testing.T, s *Store, prefix string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var waiting bool
-		if err := s.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1)`, prefix+"%").Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("query never reached a database lock wait")
-		case <-ticker.C:
-		}
-	}
+	testutil.WaitForQueryLock(t, s.Pool, prefix)
 }
 
 func receiveQueryResult(t *testing.T, ctx context.Context, result <-chan error) error {
 	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-		return ctx.Err()
-	}
+	return testutil.ReceiveQueryResult(t, ctx, result)
 }
 
 func TestProjectTransactionsSerializeAndReadFreshAfterLock(t *testing.T) {
@@ -301,61 +247,6 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "private SQL") {
 		t.Fatalf("replace dependency error: %v", err)
 	}
-}
-
-func TestProjectWriteClockUsesDatabaseStatementTimeAndUTC(t *testing.T) {
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	ctx := context.Background()
-	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
-		if _, err := tx.(*ProjectTx).tx.Exec(ctx, "SET LOCAL TIME ZONE 'Asia/Kolkata'"); err != nil {
-			return err
-		}
-		var before, after time.Time
-		if err := tx.(*ProjectTx).tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&before); err != nil {
-			return err
-		}
-		observed, err := tx.TaskDAO().ObservedAt(ctx)
-		if err != nil {
-			return err
-		}
-		if err := tx.(*ProjectTx).tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&after); err != nil {
-			return err
-		}
-		if observed.Location() != time.UTC || observed.Before(before) || observed.After(after) {
-			t.Fatalf("project clock is not a UTC database statement timestamp: before %s observed %s after %s", before, observed, after)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	assertMigrationPoolReusable(t, database.Pool)
-}
-
-func TestProjectWriteClockPreservesQueryFailureCause(t *testing.T) {
-	database := isolatedStore(t)
-	project := queryProject(t, database, 1)
-	ctx := context.Background()
-	var completed ProjectWriteScope
-	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
-		completed = tx
-		canceled, cancel := context.WithCancel(ctx)
-		cancel()
-		observed, err := tx.TaskDAO().ObservedAt(canceled)
-		var failure *Error
-		if !observed.IsZero() || !errors.Is(err, context.Canceled) || !errors.As(err, &failure) || failure.Phase != "read project clock" {
-			t.Fatalf("canceled project clock lost its query cause: observed %s, error %v", observed, err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	observed, err := completed.TaskDAO().ObservedAt(ctx)
-	var failure *Error
-	if !observed.IsZero() || !errors.Is(err, pgx.ErrTxClosed) || !errors.As(err, &failure) || failure.Phase != "read project clock" {
-		t.Fatalf("completed project clock hid its closed transaction: observed %s, error %v", observed, err)
-	}
-	assertMigrationPoolReusable(t, database.Pool)
 }
 
 func TestProjectWriteScopeCompletion(t *testing.T) {

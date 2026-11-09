@@ -9,33 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"crypto/sha256"
-	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
-
-func sessionDAOTransaction(t *testing.T, db *postgres.Store, fn func(store.SessionDAO) error) {
-	t.Helper()
-	tx, err := db.Pool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(context.Background())
-	if err := fn(pgsession.New(tx)); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 	ctx := context.Background()
@@ -107,7 +88,7 @@ func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 			return err
 		}
 		record, err := dao.LockSession(ctx, testID)
-		if err != nil || !record.Consumed || record.ConnectionParent != patID {
+		if err != nil || !record.Consumed || record.ConnectionParent != patID || record.ConnectionExpiry == nil || !record.ConnectionExpiry.Equal(now.Add(time.Hour)) {
 			t.Fatalf("connection: %+v %v", record, err)
 		}
 		list, err := dao.ListTestSessions(ctx, principal.UserID, now, 10, true, now.Add(-time.Minute), nil, "")
@@ -119,20 +100,38 @@ func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 		if err != nil || len(list) != 1 {
 			t.Fatalf("cursor list: %+v %v", list, err)
 		}
+		return nil
+	})
+	var connectedExpiry *time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT connection_expires_at FROM task_sessions WHERE id=$1`, testID).Scan(&connectedExpiry); err != nil || connectedExpiry == nil || !connectedExpiry.Equal(now.Add(time.Hour)) {
+		t.Fatalf("committed controller connection expiry: %v %v", connectedExpiry, err)
+	}
+	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		if err := dao.DisconnectSession(ctx, testID); err != nil {
 			return err
 		}
-		list, err = dao.ListTestSessions(ctx, principal.UserID, now, 10, true, now.Add(-time.Minute), nil, "")
+		list, err := dao.ListTestSessions(ctx, principal.UserID, now, 10, true, now.Add(-time.Minute), nil, "")
 		if err != nil || len(list) != 0 {
 			t.Fatalf("disconnected list: %+v %v", list, err)
 		}
+		record, err := dao.LockSession(ctx, testID)
+		if err != nil || record.ConnectionExpiry != nil {
+			t.Fatalf("disconnected controller still has connection expiry: %+v %v", record, err)
+		}
+		return nil
+	})
+	var disconnectedExpiry *time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT connection_expires_at FROM task_sessions WHERE id=$1`, testID).Scan(&disconnectedExpiry); err != nil || disconnectedExpiry != nil {
+		t.Fatalf("committed controller disconnect retained expiry: %v %v", disconnectedExpiry, err)
+	}
+	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		if err := dao.SetSessionGenerationStop(ctx, id, []byte(`{"kind":"stopped"}`)); err != nil {
 			return err
 		}
 		if err := dao.SetTestSessionStop(ctx, testID, []byte(`{"kind":"stopped"}`)); err != nil {
 			return err
 		}
-		record, err = dao.LockSession(ctx, testID)
+		record, err := dao.LockSession(ctx, testID)
 		if err != nil || record.GrantHash != nil || record.ConnectionExpiry != nil || string(record.StopProof) == "" {
 			t.Fatalf("stop: %+v %v", record, err)
 		}
@@ -157,8 +156,6 @@ func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 		return nil
 	})
 }
-
-func ptrTime(v time.Time) *time.Time { return &v }
 
 func TestSessionDAOLedgerAndArchive(t *testing.T) {
 	ctx := context.Background()
@@ -447,7 +444,7 @@ func TestSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T) {
 	}
 }
 
-func TestSessionDAOTaskArchiveLocksAndDeletion(t *testing.T) {
+func TestSessionDAOTaskArchiveLocksAndWorkerDecodeFailure(t *testing.T) {
 	ctx := context.Background()
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
@@ -476,48 +473,13 @@ func TestSessionDAOTaskArchiveLocksAndDeletion(t *testing.T) {
 		}
 		return nil
 	})
-
-}
-
-func isolatedStore(t *testing.T) *postgres.Store {
-	t.Helper()
-	db, err := postgres.Open(t.Context(), testutil.ScopedDatabaseURL(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.Close)
-	return db
-}
-
-func mustQueryExec(t *testing.T, db *postgres.Store, sql string, args ...any) {
-	t.Helper()
-	if _, err := db.Pool.Exec(t.Context(), sql, args...); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func queryID(number int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012d", number) }
-
-func queryProject(t *testing.T, db *postgres.Store, number int) model.Project {
-	t.Helper()
-	id := queryID(number)
-	mustQueryExec(t, db, `INSERT INTO projects(id,name,repo_url) VALUES($1,'Project','https://example.com/repo.git')`, id)
-	return model.Project{ID: id}
-}
-
-func queryTask(t *testing.T, db *postgres.Store, project string, number int, status model.TaskStatus) model.Task {
-	t.Helper()
-	id := queryID(number)
-	mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'Task',$3)`, id, project, status)
-	return model.Task{ID: id}
-}
-
-func testAuthRecords(t *testing.T, db *postgres.Store) (model.User, model.Principal, model.Session) {
-	t.Helper()
-	user, credential := uuid.NewString(), uuid.NewString()
-	now := time.Now().UTC()
-	hash := sha256.Sum256([]byte(credential))
-	mustQueryExec(t, db, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,$3,$3)`, user, "github:"+user, now)
-	mustQueryExec(t, db, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5)`, credential, user, hash[:], now, now.Add(time.Hour))
-	return model.User{ID: user}, model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: credential}, model.Session{ID: credential}
+	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','{"claimId":1}')`, task.ID)
+	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+		_, _, err := dao.LockArchiveTask(ctx, project.ID, task.ID)
+		var invalid *json.UnmarshalTypeError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("worker decode cause lost: %v", err)
+		}
+		return nil
+	})
 }

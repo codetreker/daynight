@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -16,8 +18,7 @@ import (
 
 func seedStoreStep(t *testing.T, database *Store, taskID, id string, position int64) {
 	t.Helper()
-	mustQueryExec(t, database, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
- VALUES($1,$2,$3,'Coding','## Result','done','2026-11-03T10:11:12.123456Z','2026-11-03T11:12:13.654321Z')`, taskID, id, position)
+	testutil.SeedStep(t, database.Pool, taskID, id, position)
 }
 
 func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T) {
@@ -124,40 +125,6 @@ func TestTaskStepsParentAndRowsShareSnapshot(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestTaskStepsStorageErrorsPropagate(t *testing.T) {
-	database := isolatedStore(t)
-	ctx := context.Background()
-	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
-	seedStoreStep(t, database, task.ID, "00000000", 0)
-	mustQueryExec(t, database, `UPDATE task_steps SET created_at='infinity' WHERE task_id=$1`, task.ID)
-	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		if _, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID); err == nil {
-			t.Fatal("scan failure concealed")
-		}
-		if _, err := snapshot.TaskDAO().TaskStep(ctx, task.ID, "00000000"); err == nil {
-			t.Fatal("item scan failure concealed")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	mustQueryExec(t, database, `DROP TABLE task_steps`)
-	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		_, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID)
-		return err
-	}); err == nil {
-		t.Fatal("query failure concealed")
-	}
-	mustQueryExec(t, database, `ALTER TABLE tasks RENAME COLUMN version TO missing_version`)
-	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		_, err := snapshot.TaskDAO().TaskHeader(ctx, project.ID, task.ID)
-		return err
-	}); err == nil {
-		t.Fatal("parent query failure concealed")
 	}
 }
 

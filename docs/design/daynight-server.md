@@ -528,9 +528,18 @@ Session Engine、文件和 runtime 生命周期按实际机制运行；HTTP cont
 真实 gateway、代理与 socket。其他认证输入通过明确 credential 与 Identity DAO 事实提供，
 不为取得固定 Project/Task/Worker 模型重复完整登录与数据库准备。
 
-Store 层在测试环境拥有的隔离 PostgreSQL 实例验证 SQL、映射、约束、快照、锁、提交、
-回滚与迁移。真实数据库缺失应明确失败，不以跳过取得通过。Store 测试直接验证所属 DAO
-机制，正常 Go API 集成和产品 E2E 不承担边界、错误与竞态矩阵。完整进程的组装、drain
+`core/store` 的数据库中立接口能力和纯错误合同测试直接构造输入。PostgreSQL 实现
+测试在测试环境拥有的隔离实例验证 SQL、映射、约束、快照、锁、提交、回滚与迁移。
+领域 DAO 测试随 `postgres` 子包组织；根包保留连接、迁移、scope、事务完成、共享
+快照及跨 DAO 原子性证明。真实数据库缺失应明确失败，不以跳过取得通过。
+
+`postgres/testdata/testutil` 共享有效领域 fixture、历史 schema 设置和数据库观察工具。
+它接收既有 store 合同与显式连接池，测试调用方将 `postgres.Open` 传给 factory，公共
+fixture 不反向导入 `postgres` 根包。混合测试按独立证明拆分，小文件按相同所有者与
+职责归组，原有断言、资源清理和独立 stress tag 保持可执行。具体安排和替代方案见
+[PostgreSQL 测试归属决策](../../.agents/notes/implemented/testing/2026-11-09-postgres-test-ownership.md)。
+
+正常 Go API 集成和产品 E2E 不承担边界、错误与竞态矩阵。完整进程的组装、drain
 和重启持久化由实际 process 所属测试证明；CLI/Web 与 Go 模块测试保持独立入口。
 
 正常资源操作、非法字段和地址、同 Project 限制、自身及重复依赖、环、完整依赖替换、

@@ -3,244 +3,47 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/jackc/pgx/v5"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func queryID(number int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012d", number) }
+func queryID(number int) string { return testutil.QueryID(number) }
 
 func queryProject(t *testing.T, s *Store, number int) model.Project {
 	t.Helper()
-	project, err := s.CreateProject(context.Background(), queryID(number), "Project", "https://example.com/owner/repo.git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return project
+	return testutil.QueryProject(t, s.Pool, s, number)
 }
 
 func queryTask(t *testing.T, s *Store, projectID string, number int, status model.TaskStatus, dependencies ...string) model.Task {
 	t.Helper()
-	var task model.Task
-	err := writeProjectForTest(s, context.Background(), projectID, func(tx ProjectWriteScope) error {
-		var err error
-		task, err = tx.TaskDAO().CreateTask(context.Background(), queryID(number), TaskWrite{
-			Title: "Task", Description: "Description", Status: status, DependsOn: dependencies,
-		})
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return task
+	return testutil.QueryTask(t, s, projectID, number, status, dependencies...)
 }
 
 func snapshotTask(t *testing.T, s *Store, projectID, id string) model.Task {
 	t.Helper()
-	var task model.Task
-	err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-		var err error
-		task, err = snapshot.TaskDAO().Task(context.Background(), projectID, id)
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return task
+	return testutil.SnapshotTask(t, s, projectID, id)
 }
 
 func mustQueryExec(t *testing.T, s *Store, sql string, args ...any) {
 	t.Helper()
-	if _, err := s.Pool.Exec(context.Background(), sql, args...); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, s.Pool, sql, args...)
 }
 
 func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 	s := isolatedStore(t)
-	ctx := context.Background()
-	first, second := queryProject(t, s, 1), queryProject(t, s, 2)
-	if first.CreatedAt.IsZero() || first.CreatedAt.Location() != time.UTC || !first.CreatedAt.Equal(first.UpdatedAt) {
-		t.Fatalf("database creation timestamps: %#v", first)
-	}
-	if _, err := s.CreateProject(ctx, first.ID, "Duplicate", "ssh://git@example.com/repo"); err == nil {
-		t.Fatal("duplicate project succeeded")
-	} else {
-		var cause *pgconn.PgError
-		if !errors.As(err, &cause) || cause.Code != "23505" || strings.Contains(err.Error(), "projects_pkey") {
-			t.Fatalf("redacted error and driver cause: %v", err)
-		}
-	}
-	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		project, err := snapshot.ProjectDAO().Project(ctx, first.ID)
-		if err != nil || !reflect.DeepEqual(project, first) {
-			t.Fatalf("project read: %#v, %v", project, err)
-		}
-		page, err := snapshot.TaskDAO().Tasks(ctx, first.ID, TaskQuery{Page: Page{Limit: 10}})
-		if err != nil || page.Items == nil || len(page.Items) != 0 || page.HasMore {
-			t.Fatalf("empty task page: %#v, %v", page, err)
-		}
-		_, err = snapshot.ProjectDAO().Project(ctx, queryID(999))
-		return err
-	}); !errors.Is(err, model.ErrNotFound) || !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("missing project: %v", err)
-	}
+	ctx := t.Context()
 	if err := writeProjectForTest(s, ctx, queryID(999), func(ProjectWriteScope) error {
 		t.Fatal("missing project invoked write callback")
 		return nil
 	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing project write: %v", err)
-	}
-	done := queryTask(t, s, first.ID, 10, model.TaskDone)
-	pending := queryTask(t, s, first.ID, 11, model.TaskTodo)
-	other := queryTask(t, s, second.ID, 12, model.TaskTodo)
-	dependent := queryTask(t, s, first.ID, 13, model.TaskTodo, pending.ID, done.ID)
-	if !reflect.DeepEqual(dependent.DependsOn, []string{done.ID, pending.ID}) ||
-		!reflect.DeepEqual(dependent.BlockedBy, []string{pending.ID}) || dependent.Ready || dependent.Version != 1 {
-		t.Fatalf("derived task fields: %#v", dependent)
-	}
-	if done.DependsOn == nil || done.BlockedBy == nil || pending.Ready != true {
-		t.Fatalf("empty dependencies and ready: %#v, %#v", done, pending)
-	}
-	if err := writeProjectForTest(s, ctx, first.ID, func(tx ProjectWriteScope) error {
-		for _, ids := range [][]string{nil, {}, {other.ID, pending.ID, done.ID, queryID(999)}} {
-			tasks, err := tx.TaskDAO().TasksByID(ctx, ids)
-			if err != nil || tasks == nil {
-				t.Fatalf("prerequisites: %#v, %v", tasks, err)
-			}
-			if len(ids) > 0 && (len(tasks) != 2 || tasks[0].ID != done.ID || tasks[1].ID != pending.ID) {
-				t.Fatalf("project-scoped prerequisites: %#v", tasks)
-			}
-		}
-		_, err := tx.TaskDAO().Task(ctx, other.ID)
-		if !errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("cross-project task: %v", err)
-		}
-		_, err = tx.TaskDAO().UpdateTask(ctx, other.ID, TaskWrite{Title: "Forbidden", Status: model.TaskTodo})
-		if !errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("cross-project update: %v", err)
-		}
-		updated, err := tx.TaskDAO().UpdateTask(ctx, dependent.ID, TaskWrite{Title: "Updated", Status: model.TaskInProgress, DependsOn: []string{done.ID}})
-		if err != nil {
-			return err
-		}
-		if updated.Title != "Updated" || updated.Description != "" || updated.Version != 2 ||
-			updated.Status != model.TaskInProgress || !updated.CreatedAt.Equal(dependent.CreatedAt) ||
-			!updated.UpdatedAt.After(dependent.UpdatedAt) || !reflect.DeepEqual(updated.DependsOn, []string{done.ID}) ||
-			len(updated.BlockedBy) != 0 || updated.Ready {
-			t.Fatalf("updated task: %#v", updated)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		_, err := snapshot.TaskDAO().Task(ctx, second.ID, done.ID)
-		return err
-	}); !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("cross-project snapshot: %v", err)
-	}
-}
-
-func TestQueriesKeysetsAndFiltersBeforePagination(t *testing.T) {
-	s := isolatedStore(t)
-	ctx := context.Background()
-	project := queryProject(t, s, 1)
-	for _, n := range []int{3, 2, 4} {
-		queryProject(t, s, n)
-	}
-	instant := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
-	mustQueryExec(t, s, "UPDATE projects SET created_at = $1", instant)
-	a := queryTask(t, s, project.ID, 11, model.TaskTodo)
-	c := queryTask(t, s, project.ID, 13, model.TaskTodo)
-	b := queryTask(t, s, project.ID, 12, model.TaskTodo, c.ID)
-	d := queryTask(t, s, project.ID, 14, model.TaskDone)
-	e := queryTask(t, s, project.ID, 15, model.TaskInProgress, d.ID)
-	f := queryTask(t, s, project.ID, 16, model.TaskTodo, d.ID)
-	mustQueryExec(t, s, "UPDATE tasks SET created_at = $1", instant)
-	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		first, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 2})
-		if err != nil || !first.HasMore || len(first.Items) != 2 || first.Items[0].ID != queryID(1) || first.Items[1].ID != queryID(2) {
-			t.Fatalf("first project page: %#v, %v", first, err)
-		}
-		second, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 2, After: &Position{CreatedAt: instant, ID: first.Items[1].ID}})
-		if err != nil || second.HasMore || len(second.Items) != 2 || second.Items[0].ID != queryID(3) || second.Items[1].ID != queryID(4) {
-			t.Fatalf("second project page: %#v, %v", second, err)
-		}
-		empty, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 2, After: &Position{CreatedAt: instant, ID: queryID(4)}})
-		if err != nil || empty.HasMore || empty.Items == nil || len(empty.Items) != 0 {
-			t.Fatalf("empty project page: %#v, %v", empty, err)
-		}
-		todo, yes, no := model.TaskTodo, true, false
-		for _, test := range []struct {
-			query   TaskQuery
-			want    []string
-			hasMore bool
-		}{
-			{TaskQuery{Page: Page{Limit: 2}}, []string{a.ID, b.ID}, true},
-			{TaskQuery{Page: Page{Limit: 10, After: &Position{CreatedAt: instant, ID: b.ID}}}, []string{c.ID, d.ID, e.ID, f.ID}, false},
-			{TaskQuery{Page: Page{Limit: 2}, Status: &todo, Ready: &yes}, []string{a.ID, c.ID}, true},
-			{TaskQuery{Page: Page{Limit: 2, After: &Position{CreatedAt: instant, ID: c.ID}}, Status: &todo, Ready: &yes}, []string{f.ID}, false},
-			{TaskQuery{Page: Page{Limit: 1}, Status: &todo, Ready: &no}, []string{b.ID}, false},
-			{TaskQuery{Page: Page{Limit: 10}, Ready: &no}, []string{b.ID, d.ID, e.ID}, false},
-		} {
-			page, err := snapshot.TaskDAO().Tasks(ctx, project.ID, test.query)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ids := make([]string, 0, len(page.Items))
-			for _, task := range page.Items {
-				ids = append(ids, task.ID)
-			}
-			if !reflect.DeepEqual(ids, test.want) || page.HasMore != test.hasMore {
-				t.Fatalf("filtered page: ids %v, more %v; want %v, %v", ids, page.HasMore, test.want, test.hasMore)
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestQueriesCandidateGraphReplacesWholeSet(t *testing.T) {
-	s := isolatedStore(t)
-	ctx := context.Background()
-	project, other := queryProject(t, s, 1), queryProject(t, s, 2)
-	a := queryTask(t, s, project.ID, 11, model.TaskTodo)
-	b := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID)
-	c := queryTask(t, s, project.ID, 13, model.TaskTodo, b.ID)
-	z := queryTask(t, s, other.ID, 14, model.TaskTodo, a.ID)
-	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
-		for _, test := range []struct {
-			from, to string
-			replace  DependencyReplacement
-			want     bool
-		}{
-			{c.ID, a.ID, DependencyReplacement{TaskID: a.ID, DependsOn: nil}, true},
-			{b.ID, a.ID, DependencyReplacement{TaskID: a.ID, DependsOn: []string{b.ID}}, true},
-			{c.ID, a.ID, DependencyReplacement{TaskID: a.ID, DependsOn: []string{c.ID}}, true},
-			{c.ID, a.ID, DependencyReplacement{TaskID: b.ID, DependsOn: nil}, false},
-			{c.ID, b.ID, DependencyReplacement{TaskID: c.ID, DependsOn: []string{a.ID}}, false},
-			{c.ID, a.ID, DependencyReplacement{TaskID: c.ID, DependsOn: []string{a.ID}}, true},
-			{z.ID, a.ID, DependencyReplacement{TaskID: a.ID, DependsOn: nil}, false},
-			{a.ID, z.ID, DependencyReplacement{TaskID: a.ID, DependsOn: []string{c.ID}}, false},
-		} {
-			got, err := tx.TaskDAO().Reachable(ctx, test.from, test.to, test.replace)
-			if err != nil || got != test.want {
-				t.Fatalf("candidate reachability %#v: %v, %v", test, got, err)
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -326,58 +129,6 @@ func TestQueriesSnapshotRetainsCompleteOldGraph(t *testing.T) {
 	if !reflect.DeepEqual(oldDependent.DependsOn, []string{a.ID}) || !reflect.DeepEqual(oldDependent.BlockedBy, []string{a.ID}) {
 		t.Fatal("reader returned shared mutable dependency slices")
 	}
-}
-
-func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
-	t.Run("project decoding", func(t *testing.T) {
-		s := isolatedStore(t)
-		queryProject(t, s, 1)
-		mustQueryExec(t, s, `ALTER TABLE projects RENAME TO project_source;
-			CREATE VIEW projects AS SELECT id, name, repo_url, created_at, 1::bigint AS updated_at, settings_version, execution_warning_minutes, deleted_at FROM project_source`)
-		err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-			_, err := snapshot.ProjectDAO().Projects(context.Background(), Page{Limit: 10})
-			return err
-		})
-		if err == nil || errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("project decode failure became an empty result: %v", err)
-		}
-	})
-	t.Run("project database execution", func(t *testing.T) {
-		s := isolatedStore(t)
-		queryProject(t, s, 1)
-		mustQueryExec(t, s, `CREATE FUNCTION fail_read() RETURNS text LANGUAGE plpgsql AS $$
-			BEGIN RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'private read failure'; END $$;
-			ALTER TABLE projects RENAME TO project_source;
-			CREATE VIEW projects AS SELECT id, fail_read() AS name, repo_url, created_at, updated_at, settings_version, execution_warning_minutes, deleted_at FROM project_source`)
-		err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-			_, err := snapshot.ProjectDAO().Projects(context.Background(), Page{Limit: 10})
-			return err
-		})
-		var cause *pgconn.PgError
-		if !errors.As(err, &cause) || cause.Code != "P1002" || strings.Contains(err.Error(), "private read") {
-			t.Fatalf("project read failure cause or redaction: %v", err)
-		}
-	})
-	t.Run("task decoding", func(t *testing.T) {
-		s := isolatedStore(t)
-		project := queryProject(t, s, 1)
-		task := queryTask(t, s, project.ID, 11, model.TaskTodo)
-		mustQueryExec(t, s, `ALTER TABLE tasks RENAME TO task_source;
-			CREATE VIEW tasks AS SELECT id, project_id, title, description, status, 'invalid version'::text AS version,
-			created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
-		if err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-			_, err := snapshot.TaskDAO().Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}})
-			return err
-		}); err == nil || errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("task decode failure became an empty page: %v", err)
-		}
-		if err := writeProjectForTest(s, context.Background(), project.ID, func(tx ProjectWriteScope) error {
-			_, err := tx.TaskDAO().TasksByID(context.Background(), []string{task.ID})
-			return err
-		}); err == nil || errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("prerequisite decode failure became an empty result: %v", err)
-		}
-	})
 }
 
 func projectBeforeSettings(t *testing.T, database *Store, number int) model.Project {

@@ -1,166 +1,173 @@
-# 测试编写规则
+# Test-Writing Rules
 
-按测试要证明的行为确定归属。CLI、Web、Go 各自负责本模块的正常行为、边界、错误与并发保证。Go server 单元测试 mock 直接调用的 service 或业务用例，service 与 core 单元测试隔离自身职责之外的依赖，store 测试验证真实 PostgreSQL。Go API 集成测试和独立产品 E2E 只验证代表性的正常主流程。
+Assign tests by the behavior they prove. CLI, Web and Go each own their module's normal behavior, boundaries, errors and concurrency guarantees. Go server unit tests mock the directly invoked service or business use case. Service and core unit tests isolate dependencies outside their own responsibility. Store contract unit tests construct inputs directly; DAO implementation tests verify real PostgreSQL. Go API integration and independent product E2E tests cover representative normal flows only.
 
-本文定义测试职责、依赖边界和迁移条件。可执行命令、环境要求和 CI 配置由 `docs/development.md` 及各模块 README 维护。本文指定的目录与入口是测试组织要求；实际测试、运行器及 CI 选择是否已经实现，应通过对应源码和运行结果确认。
+This document owns test responsibilities, dependency boundaries and migration conditions. `docs/development.md` and module READMEs own executable commands, environment requirements and CI configuration. The directories and entry points specified here are organizational requirements; verify their actual implementation, runners and CI selection through source and execution results.
 
-## 测试职责划分
+## Test Responsibilities
 
-| 测试层次 | 验证内容 | 依赖与运行方式 |
+| Layer | Verified behavior | Dependencies and execution |
 |---|---|---|
-| CLI 模块测试 | 参数、配置、请求构造、输出、客户端状态、错误处理及本地机制 | 产品 API 使用可控响应；需要验证本地机制时使用真实资源 |
-| Installed CLI 测试 | 打包、安装、随包资源、命令入口、运行时与平台兼容性 | 在 Linux、Windows、macOS ARM64 运行真实安装包；产品 HTTP 服务使用可控 fixture |
-| Web 模块测试 | 组件、交互、状态、缓存、响应处理、异步竞态及浏览器行为 | 产品 API 使用可控响应；需要真实浏览器时使用纯前端 fixture |
-| Go server 单元测试 | 路由、HTTP 请求解析、参数传递、响应编码、错误映射、协议认证接入和请求生命周期，包括边界、错误与竞态 | mock 直接调用的 service 或业务用例，认证使用可控身份依赖；实际执行被测 HTTP 适配，不连接真实数据库 |
-| Go service 单元测试 | 跨模块编排、依赖组装与共享资源生命周期，包括调用顺序、错误和完成结果 | mock 被编排的下层业务操作及所需 DAO、scope、transaction 和外部资源边界，不连接真实数据库 |
-| Go core 单元测试 | 本模块的业务规则、权限、状态转换及业务操作，包括边界、错误与竞态 | 构造合成领域数据；需要数据访问结果时使用所需 DAO mock，不连接真实数据库 |
-| Go store 层测试 | SQL、数据映射、持久化、约束、锁、快照、事务与迁移，包括边界、错误与并发保证 | 必须使用隔离的真实 PostgreSQL，不用 DAO mock 替代数据库机制 |
-| Go API 集成测试 | 通过完整组装的 Go Server 验证各功能的正常主流程 | 真实 Go Server 进程、HTTP 请求和隔离 PostgreSQL；通过 Go HTTP 客户端顺序驱动 |
-| 产品 E2E | 完整 CLI、Web、Server 与持久化之间的正常业务流程 | 仅运行 Linux；从同一源码版本构建完整 Server、CLI、生产 Web，在隔离环境中启动系统及真实 PostgreSQL |
+| CLI module tests | Arguments, configuration, request construction, output, client state, error handling and local mechanisms | Controlled product API responses; real resources when testing local mechanisms |
+| Installed CLI tests | Packaging, installation, bundled resources, command entry points, runtime and platform compatibility | Real installed packages on Linux, Windows and macOS ARM64; controlled fixtures for product HTTP services |
+| Web module tests | Components, interactions, state, caching, response handling, asynchronous races and browser behavior | Controlled product API responses; frontend-only fixtures when a real browser is required |
+| Go server unit tests | Routing, HTTP request parsing, argument propagation, response encoding, error mapping, protocol authentication and request lifetime, including boundaries, errors and races | Mock the directly invoked service or business use case, with controlled identity dependencies; execute the real HTTP adapter without a real database |
+| Go service unit tests | Cross-module orchestration, dependency assembly and shared-resource lifetime, including call order, errors and completion outcomes | Mock orchestrated lower operations and required DAO, scope, transaction and external-resource boundaries; no real database |
+| Go core unit tests | Module business rules, permissions, state transitions and operations, including boundaries, errors and races | Synthetic domain data and required DAO mocks for data-access results; no real database |
+| Go store contract unit tests | Database-independent interface capabilities, pure functions and error contracts | Directly constructed inputs; no database or concrete driver dependency |
+| Go store implementation tests | SQL, mapping, persistence, constraints, locks, snapshots, transactions and migrations, including boundaries, errors and concurrency guarantees | An isolated real PostgreSQL instance; DAO mocks cannot replace database mechanisms |
+| Go API integration tests | Normal feature flows through a fully assembled Go Server | A real Go Server process, HTTP requests and isolated PostgreSQL, driven sequentially by Go HTTP clients |
+| Product E2E | Normal flows connecting the complete CLI, Web, Server and persistence | Linux only; build the complete Server, CLI and production Web from the same source revision and run them with real PostgreSQL in an isolated environment |
 
-使用真实 HTTP、浏览器、数据库或子进程，本身不决定测试是否属于产品 E2E。例如，使用可控 API 响应的浏览器布局测试属于 Web，使用真实 PostgreSQL 的锁与事务测试属于 Go store 层。归属取决于测试要证明的行为，并遵守该层的依赖限制。
+Using real HTTP, a browser, a database or a subprocess does not itself make a test product E2E. Browser layout tests with controlled API responses belong to Web; PostgreSQL lock and transaction tests belong to Go store implementations. Ownership follows the behavior being proved and the dependency restrictions of that layer.
 
-本文中的“真实数据库”指在隔离测试环境内实际启动的 PostgreSQL 实例。测试环境负责实例的准备、就绪等待和回收，数据库数据目录与连接配置属于该环境。不得连接已有的开发、共享或生产数据库；仅在共享实例内划分 schema 不满足这里的环境隔离要求。
+A "real database" means a PostgreSQL instance actually started inside an isolated test environment. That environment owns preparation, bounded readiness and cleanup, including the data directory and connection configuration. Do not connect to an existing development, shared or production database. Separate schemas inside a shared instance do not satisfy this environment-isolation requirement.
 
-## 模块测试
+## Module Tests
 
-CLI、Web、Go 必须在各自的单元测试及所属底层机制测试中验证完整行为，包括适用的正常操作、非法输入、容量边界、权限拒绝、超时、取消、版本冲突、并发与恢复。Go API 集成测试和产品 E2E 只测正常主流程，不承担这些边界、故障与竞态矩阵。
+CLI, Web and Go must verify complete behavior in their unit and owned mechanism tests, including applicable normal operations, invalid input, capacity boundaries, permission refusals, timeouts, cancellation, version conflicts, concurrency and recovery. Go API integration and product E2E cover normal flows, without taking over these boundary, fault or race matrices.
 
-将断言放在能够解释失败原因的实现所属层。测试可以使用同一产品模块内的多个包，但不得绕过测试层次的依赖限制。Mock 用于控制被测职责之外的协作者，不能替代正在验证的解析、编码、时序、I/O 或资源生命周期机制。纯函数直接构造输入，不为使用 mock 引入额外依赖。
+Place assertions with the implementation that can explain their failure. Tests may use several packages in the same product module, but must respect their layer's dependency restrictions. Mocks control collaborators outside the tested responsibility; they cannot replace the parsing, encoding, timing, I/O or resource-lifetime mechanism under test. Pure functions use directly constructed inputs, without extra dependencies introduced merely to support mocks.
 
 ### CLI
 
-CLI 测试负责命令解析、配置、请求头与请求体、分页、输出、退出状态、操作时限及服务响应处理。通过可控 HTTP fixture 验证认证错误、冲突、结果未知等协议结果，不启动 Go Server 或 Web。
+CLI tests own command parsing, configuration, request headers and bodies, pagination, output, exit status, operation deadlines and service-response handling. Controlled HTTP fixtures verify authentication errors, conflicts and unknown outcomes without starting Go Server or Web.
 
-当测试对象是 Git、SQLite、文件系统、终端或子进程等本地机制时，使用真实资源。HTTP fixture 不能替代正在验证的本地机制。
+Use real resources when testing local Git, SQLite, filesystem, terminal or subprocess mechanisms. HTTP fixtures cannot replace the local mechanism being verified.
 
 ### Web
 
-使用可控 API 响应、Promise 和时钟，验证渲染、交互、客户端状态、身份变化、缓存、错误呈现及异步竞态。焦点、浏览器历史、布局、滚动和文本选择等需要真实浏览器的行为，使用纯前端浏览器 fixture 验证。
+Controlled API responses, Promises and clocks verify rendering, interaction, client state, identity changes, caching, error presentation and asynchronous races. Browser-dependent focus, history, layout, scrolling and text selection use frontend-only browser fixtures.
 
-Web 模块测试不启动 Go Server、不准备 PostgreSQL、不安装 CLI。Web 测试证明前端如何处理 API 结果；Go 测试证明服务端如何产生这些结果。
+Web module tests do not start Go Server, prepare PostgreSQL or install CLI. Web tests prove how the frontend handles API results; Go tests prove how the server produces them.
 
 ### Go server
 
-遵循 `docs/daynight-server.md` 中的服务端代码组织规则。Server 单元测试实际执行生产路由、请求解析、DTO 转换、响应编码和错误映射，在 handler 直接调用的 service 或业务用例边界配置返回值、领域错误、完成结果和可控阻塞。直接调用 core 业务用例的 handler 也在该用例边界隔离；只 mock DAO 并继续运行真实 service/core 业务逻辑，不满足 server 单元测试的职责隔离。
+Follow the server organization rules in `docs/daynight-server.md`. Server unit tests execute production routing, request parsing, DTO conversion, response encoding and error mapping. Configure return values, domain errors, completion outcomes and controlled blocking at the service or business-use-case boundary directly invoked by the handler. A handler calling core directly is isolated at that use case too; mocking only DAO access while running real service/core decisions does not isolate the HTTP adapter's responsibility.
 
-验证 principal、canonical IDs、输入、协议头与 context 的准确传递，以及调用次数和必要顺序。协议层拒绝输入时，验证下层业务操作未被调用。正常领域结果和拒绝结果分别用于验证 HTTP status、headers、响应内容、日志分类与脱敏；业务规则本身由 core 或 service 验证。
+Verify exact propagation of principal, canonical IDs, input, protocol headers and context, including call counts and required order. Protocol refusals must verify that the lower business operation was not called. Normal domain results and refusals separately verify HTTP status, headers, response content, log classification and redaction. Core or service tests own the business rules themselves.
 
-认证中间件实际处理 HTTP 认证输入，并使用可控身份依赖返回 principal 或认证错误。普通资源 handler 测试不得为准备身份启动真实 UniAuth、执行完整登录/PAT 流程或组装整个应用。真实认证与完整组装的正常链路由 API 集成测试验证。
+Authentication middleware executes real HTTP authentication parsing and uses controlled identity dependencies to return a principal or authentication error. Ordinary resource-handler tests must not start real UniAuth, run complete login/PAT flows or assemble the full application merely to prepare identity. API integration tests verify real authentication in normal fully assembled flows.
 
-保留 server 自身的请求时限、取消传播、响应短写或丢失、取消-before-body、后台操作退出和清理证明。通过可观察条件或 barrier 确认 mock 操作已开始，再取消或触发 deadline；必要的 socket 或 ResponseWriter 行为使用真实机制。Mock 返回 committed、not_committed 或 unknown 只代表给定的下层结果，不能证明事务实际提交、回滚或持久化。响应失败后的日志和业务调用次数仍由 server 测试验证。
+Preserve server-owned request deadlines, cancellation propagation, short or lost responses, cancellation before body handling, background-operation exit and cleanup. Observe that the mock operation has started, or establish that fact with a barrier, before cancellation or deadline delivery. Necessary socket and ResponseWriter behavior uses real mechanisms. Mock `committed`, `not_committed` and `unknown` values are supplied lower outcomes, not proof of a real commit, rollback or persistence. Server tests still verify logs and business-call counts after response failure.
 
-精确 HTTP 输入、server 自己构造的响应信封、newline 与页面编码容量必须经过实际解析器或编码器。service 提供已编码 Document/JSON 时，server 测试验证实际发送的字节、headers、短写和取消；字节生成与准入由生成这些内容的 service 或纯协议包验证。图节点/边限制、领域字段准入与其他业务容量由对应业务规则测试验证；实际查询和存储容量机制由 store 测试验证。
+Exact HTTP input and server-owned response envelopes, newlines and encoded page capacities must pass through the real parser or encoder. When service supplies an encoded Document/JSON result, server tests verify transmitted bytes, headers, short writes and cancellation; the producing service or pure protocol package verifies byte generation and admission. Graph node/edge limits, domain-field admission and other business capacities belong to their rule owners. Store tests verify actual query and storage capacity mechanisms.
 
-### Go service 与 core
+### Go service and core
 
-Core 单元测试使用合成领域数据，验证本模块的规则、权限、状态转换和业务操作。需要查询结果、存储错误或事务结果时，通过本模块所需的 `core/store` DAO、scope 与 transaction 接口 mock 控制并检查参数、调用、返回值和错误链。
+Core unit tests use synthetic domain data to verify module rules, permissions, state transitions and operations. Required query results, storage errors or transaction outcomes are controlled through the module's `core/store` DAO, scope and transaction mocks, with checks for arguments, calls, results and error chains.
 
-Service 单元测试验证其编排、组装与共享资源生命周期。被编排的下层业务操作和外部资源边界使用可控依赖；需要验证事务协调时，通过 DAO、scope 与 transaction mock 实际执行 callback，并分别配置操作结果、事务完成结果和清理错误。不要在 service 测试中重复下层业务规则矩阵。
+Service unit tests verify orchestration, assembly and shared-resource lifetime. Orchestrated lower business operations and external resources use controlled dependencies. Transaction coordination tests execute the actual callback through DAO, scope and transaction mocks, separately configuring the operation result, completion outcome and cleanup errors. Do not repeat lower business-rule matrices in service tests.
 
-Mock 只实现当前测试需要的能力，未配置或额外调用必须使测试失败，后台未预期调用也必须独立标记失败并完成取消与 drain。事务 callback、拟写参数和 committed、not_committed、unknown 结果须分开；记录写入调用不等于已持久化，unknown 不能解释为回滚。不要 mock SQL 字符串或另建完整内存数据库模拟 PostgreSQL。
+Mocks implement only the capabilities needed by the current test. Unconfigured or extra calls must fail the test, including independently reported background calls followed by cancellation and drain. Callback execution, proposed write arguments and `committed`, `not_committed` or `unknown` outcomes remain separate. A recorded write is not persistence, and an unknown outcome cannot be interpreted as rollback. Do not mock SQL strings or build a complete in-memory PostgreSQL substitute.
 
-这些单元测试不得连接真实数据库，也不为取得固定模型数据启动 PostgreSQL。选中的 core、service 或 server 单元测试必须在未设置 `DAYNIGHT_TEST_DATABASE_URL` 时实际执行，不能通过跳过测试或默认空结果满足隔离。Task HTTP 的普通 TestMain 在执行整套测试前清除数据库与 UniAuth fixture 环境变量，因此完整 Go 检查向其他包提供基础设施时仍保留该包的隔离；独立 stress 入口不使用这个 TestMain。没有数据访问依赖的纯逻辑无需 DAO mock。
+These unit tests must not connect to a real database or start PostgreSQL to obtain fixed domain data. Selected core, service and server units must actually execute with `DAYNIGHT_TEST_DATABASE_URL` unset; skipped tests and default empty results do not establish isolation. Ordinary Task HTTP `TestMain` clears database and UniAuth fixture variables before running its complete suite, so full Go validation cannot lend that package infrastructure intended for other owners. The separate stress entry does not use this `TestMain`. Pure logic without data-access dependencies needs no DAO mock.
 
-### Go store 与进程机制
+### Go store and process mechanisms
 
-Store 层测试必须连接隔离的真实 PostgreSQL，直接验证 SQL、数据映射、持久化读回、数据库约束、锁、快照、事务提交与回滚、迁移，以及这些机制的边界、错误和并发保证。不能用 DAO mock 代替真实数据库，也不承载上层业务规则或完整 API 流程。
+Database-independent `core/store` interface capabilities and pure-function contracts are tested in the contract root package with directly constructed types, errors and results, without PostgreSQL. DAO implementation tests must use isolated real PostgreSQL to verify SQL, mapping, persisted readback, constraints, locks, snapshots, transaction commit and rollback, migrations and their boundaries, errors and concurrency. DAO mocks cannot replace the database. These tests do not own upper business rules or complete API flows.
 
-真实数据库查询取消、连接释放、锁顺序、提交确认丢失、跨操作读取与一致性由实现这些机制的 store 测试证明。上层的取消传播或 mock 事务结果不能替代这些证明。
+Organize DAO tests by the actual implementation owner. Domain queries, mapping, constraints and locks follow the DAO child package. The implementation root retains its connections, migrations, scope construction, transaction completion, cross-DAO atomicity, shared snapshots and resource release. A root database fixture, `Open` or scope entry does not make a domain assertion a root responsibility. Independent business rules remain in core or service with their required mock boundaries.
 
-服务进程的启动、关闭、迁移与恢复机制由对应进程或运行时测试验证，使用证明该机制所需的真实进程和资源。它们的异常与竞态场景仍属于机制所有者，不归入只验证正常 API 主流程的 `cmd/integration_tests`。
+Split mixed files by independent proof. Retain the setup and persisted observations necessary for a real scope, snapshot or rollback proof. Move independent query, business-rule and contract matrices to their owners. Consolidate small files by a shared responsibility while preserving existing inputs, assertions, fault detection, cleanup and build tags. File length and equal test names do not establish equivalent coverage. Confirm receiving-package discovery and execution before removing the proof from its original location.
 
-Go 的上述测试都不安装或运行 CLI，不执行 Web 测试。为 Go Server 准备需要嵌入的生产 Web 资源属于构建依赖，不应由此在 Go 测试命令中调用 Web 测试。
+Shared fixtures receive required DAO or scope capabilities through existing contracts; raw SQL tools receive an explicit pool. Backend-opening factories remain with consuming tests, and public fixtures do not depend back on the DAO implementation root, avoiding test import cycles. Fixtures may call existing production operations to prepare valid facts, but must not copy business decisions or build an automatically evolving storage model. Callback execution remains distinct from actual completion and subsequent persisted readback.
 
-## Go API 集成测试
+Actual database query cancellation, connection release, lock order, lost commit confirmation, cross-operation reads and consistency are proved by the store implementations that own them. Upper cancellation propagation and mock transaction outcomes cannot replace this evidence.
 
-Go Server 的 API 集成测试统一放在 `packages/daynight-server/cmd/integration_tests/`，使用显式 `integration` build tag，并由 `scripts/integration.sh` 构建生产 Server 后运行。这些测试属于 Go 模块验证，与普通单元测试发现及独立产品 E2E 分开。可执行命令、生产资源准备和环境回收由 server README 与开发指南维护。
+Process startup, shutdown, migration and recovery mechanisms belong to their process or runtime tests, using the real processes and resources needed to prove them. Their errors and races remain with the mechanism owner; they do not move into the normal-flow-only `cmd/integration_tests` suite.
 
-在隔离环境内启动真实 Go Server 进程、PostgreSQL 实例和附件存储，通过 Go HTTP 客户端驱动服务，断言公开响应和可观察结果。测试必须经过真实路由、认证接入、服务组装、DAO 和持久化链路，不能用 DAO mock 或模拟产品 API 替代，也不使用 CLI 或浏览器作为驱动。生产 Web 资源是 Server 构建依赖；这些测试不驱动 Web 交互。
+These Go tests do not install or execute CLI, or run Web tests. Preparing production Web resources needed for Server embedding is a build dependency, not permission for Go test commands to invoke Web tests.
 
-每个功能选择有代表性的正常成功流程，使用有效数据、正常资源规模和正常授权身份，顺序执行操作。例如，通过 API 创建项目与任务、读取并修改任务、完成任务；Step、讨论、附件等功能验证各自的基本成功读写。后续请求读回同一资源及其内容，确认真实链路可用。身份、资源 ID、版本与内容必须对应，不能只断言请求成功或 HTTP status。
+## Go API Integration Tests
 
-不在这里展开非法输入、容量边界、权限拒绝、冲突、竞态、故障注入或恢复矩阵。这些保证由对应的单元测试、store 测试或进程机制测试负责。正常认证与正常授权可以作为流程步骤，拒绝、过期和撤销等异常语义留在所属层测试。
+Go Server API integration tests live in `packages/daynight-server/cmd/integration_tests/`, use the explicit `integration` build tag, and run through `scripts/integration.sh` after a production Server build. They are Go module validation, separate from ordinary unit discovery and independent product E2E. The server README and development guide own executable commands, production-resource preparation and cleanup.
 
-就绪等待、执行时限、失败诊断和资源清理仍必须完整；这些运行保障不等于增加异常业务场景。运行器自身的异常行为由工具自身测试验证。
+Start a real Go Server process, PostgreSQL instance and attachment storage in an isolated environment. Drive the service through Go HTTP clients and assert public responses and observable results. Requests must pass through real routing, authentication, service assembly, DAO and persistence. Do not replace DAO or product API behavior with mocks, or use CLI/browser drivers. Production Web resources are a Server build dependency; these tests do not drive Web interactions.
 
-### 现有测试迁入的条件
+Choose representative normal success flows for each feature, with valid input, ordinary resource sizes, normal authorized identities and sequential operations. For example, create a Project and Task, read and modify the same Task, then complete it. Step, discussion and attachment features verify basic successful reads and writes. Subsequent requests read the same resource and content to confirm the real chain works. Identity, resource IDs, versions and content must correspond; success or HTTP status alone is insufficient.
 
-按场景和断言逐项判断，不按文件名、是否使用数据库或是否曾经请求成功判断。只有证明完整 API 链路正常协作的代表性成功流程适合迁入：
+Do not expand this suite into invalid input, capacity boundaries, permission refusals, conflicts, races, fault injection or recovery matrices. Unit, store or process tests own those guarantees. Normal authentication and authorization may be flow steps; refusal, expiry and revocation remain at their owning layer.
 
-- 使用正常身份和有效数据，创建、读取、修改同一资源，再通过后续 API 请求确认结果。
-- Task 的正常状态推进，以及 Step、讨论、附件等功能的基本成功读写。
-- 正常筛选、分页或依赖读取所需的少量数据，验证请求经过完整组装链路得到正确结果。
+Bounded readiness, execution deadlines, failure diagnostics and resource cleanup remain mandatory. These runner guarantees do not add abnormal business scenarios. The runner's own failure behavior is tested as tooling.
 
-同一测试混合正常主流程和边界、拒绝、冲突、竞态、故障、取消或响应丢失时，先按证明职责拆分。正常流程可进入 API 集成测试；协议断言使用 server mock，业务规则留在 core/service，真实 SQL、事务、锁与持久化故障留在 store，进程异常留在运行时所有者。压力和容量负载使用独立入口。
+### Conditions for Migrating Existing Tests
 
-迁移前核对每个独有保证的最终所有者，保留有价值的输入、断言和失败检测。仅有测试名称相近或覆盖率通过，不能认定等价覆盖已经存在。不要将每个正常分支展开为集成矩阵，也不要在 API 集成与产品 E2E 中复制同一套规则。
+Evaluate scenarios and assertions individually, not by filename, database use or whether a request once succeeded. Only representative success flows proving normal collaboration through the complete API chain belong here:
 
-迁移后，接收测试的运行器、测试发现、命令和 CI 选择必须真实执行，相关验证结果须确认。不能通过移入不存在、未选中或未执行的套件减少原有缺陷检测；删除原场景前必须完成接收层及所属规则层的证明保全。评估优化收益时，同时计算接收层和完整验证的成本。
+- Normal identity and valid data create, read and modify the same resource, with later API requests confirming the result.
+- Normal Task status progression and basic successful Step, discussion and attachment reads and writes.
+- A small normal dataset for filtering, pagination or dependency reads verifies the fully assembled request path.
 
-## Installed CLI 测试
+Split tests mixing normal flows with boundaries, refusals, conflicts, races, faults, cancellation or response loss by proof responsibility. Normal flows may move to API integration; protocol assertions use server mocks, business rules remain in core/service, actual SQL, transactions, locks and persistence faults remain in store, and process faults remain with their runtime owner. Stress and capacity workloads use independent entries.
 
-实际打包并安装 CLI，然后执行安装后的 `daynight` 和 `dn` 命令入口，验证源码级测试无法证明的交付属性：包内容、生产依赖、随包资源、命令入口、运行时加载与平台特有行为。
+Before migration, identify the final owner of every unique guarantee and preserve valuable input, assertions and fault detection. Similar test names or passing coverage do not establish equivalent proof. Do not expand every normal branch into an integration matrix or duplicate the same rule matrix in API integration and product E2E.
 
-在 Linux、Windows、macOS ARM64 上运行对应的安装验证。Node.js 运行时兼容性与 shell 集成检查归 CLI 的产物及平台验证。
+Receiving runners, discovery, commands and CI selection must actually execute, with verified results. A missing, unselected or unexecuted destination suite must not reduce original defect detection. Before removing a scenario, complete proof preservation in the receiving layer and its corresponding rule owner. Performance evaluation includes the receiving layer and complete validation cost.
 
-产品 API 依赖使用可控 HTTP 服务。请求经过真实 socket 和真实安装版客户端，服务响应由 fixture 提供。这证明安装后的客户端行为，不代表已经验证与真实 Go Server、PostgreSQL 的联通。
+## Installed CLI Tests
 
-选择代表性命令验证安装产物。完整的参数、响应、边界及竞态矩阵放在 CLI 模块测试中。真实客户端与真实产品服务之间的业务连接由产品 E2E 验证。
+Actually package and install CLI, then execute installed `daynight` and `dn` entries to verify delivery properties that source tests cannot prove: package contents, production dependencies, bundled resources, command entries, runtime loading and platform-specific behavior.
 
-## 产品 E2E
+Run installation validation on Linux, Windows and macOS ARM64. Node.js runtime compatibility and shell integration belong to CLI artifact and platform validation.
 
-产品 E2E 的代码放在 `packages/e2e_tests`，显式入口为 `pnpm e2e:test`，与 CLI、Web、Go 的模块测试分开。只运行一种 Linux 拓扑，从同一源码版本编译完整 Go Server 和 CLI，并构建生产 Web 资源。将这些构建产物组成完整系统，在隔离环境内启动真实 PostgreSQL 和 auth，通过构建后的 CLI 与浏览器操作生产 Web，执行端到端测试。
+Product API dependencies use controlled HTTP services. Requests pass through real sockets and the actual installed client, with fixture-provided responses. This proves installed-client behavior, not connectivity to the real Go Server and PostgreSQL.
 
-测试环境拥有独立的数据库实例、数据目录、附件存储、配置与运行进程，并负责准备和回收。Server 使用完整产品入口；CLI 执行编译后的程序；Web 使用生产构建产物。不得用源码函数调用、局部模块 host 或模拟产品组件替代完整系统。CLI 的打包安装、命令入口与多平台兼容性由 Installed CLI 测试负责。
+Choose representative commands for artifact validation. Complete argument, response, boundary and race matrices stay in CLI module tests. Product E2E verifies business connectivity between real clients and the actual product service.
 
-使用真实产品 API 和正常认证流程，包括浏览器登录和 CLI device login。auth 服务本身在隔离环境内启动完整实现；需要外部身份提供方时，以环境内的可控 provider 提供正常身份，运行时不依赖外部服务或账号。不得 mock 产品 API，也不得用纯前端 fixture 替换生产 Web。
+## Product E2E
 
-仅保留少量使用有效数据、正常资源规模、顺序执行的业务流程：
+Product E2E lives in `packages/e2e_tests`, with the explicit `pnpm e2e:test` entry separate from CLI, Web and Go module tests. Run one Linux topology. Build the complete Go Server and CLI and production Web from the same source revision, assemble those artifacts into the complete system, and start real PostgreSQL and auth in an isolated environment. Drive the built CLI and production Web through a browser.
 
-1. 浏览器登录和 CLI 登录。
-2. CLI 创建项目和任务，Web 读取同一任务。
-3. Web 修改任务状态，CLI 读回并完成任务，Web 再验证结果。
-4. Step、讨论和附件各选择一条基本成功读写链路，由另一客户端读取同一资源及其内容。
+The environment owns its database instance, data directory, attachment storage, configuration and processes, including preparation and cleanup. Server uses the complete product entry, CLI executes the built program, and Web uses production artifacts. Source function calls, partial module hosts and mocked product components cannot replace the complete system. Installed CLI tests own packaging, installation, command entries and multiplatform compatibility.
 
-跨客户端断言必须核对资源身份和实际内容，不能只检查命令成功或 HTTP 状态码。通过另一客户端读回已提交数据，并在适用时刷新浏览器，验证持久化结果。
+Use real product APIs and normal authentication, including browser login and CLI device login. Start the complete auth implementation inside the isolated environment. When an external identity provider is needed, use an environment-owned controlled provider supplying normal identity; runtime must not depend on external services or accounts. Do not mock product APIs or replace production Web with frontend fixtures.
 
-不将这些流程展开为边界、拒绝、过期、冲突、竞态、故障注入或恢复矩阵，也不按操作系统、部署拓扑、角色、语言或文件格式重复业务矩阵。相关保证由对应模块、产物或部署测试负责。
+Keep only a few sequential flows with valid data and ordinary resource sizes:
 
-## 测试归属示例
+1. Browser login and CLI login.
+2. CLI creates a Project and Task; Web reads the same Task.
+3. Web changes Task status; CLI reads and completes it; Web verifies the result.
+4. Step, discussion and attachment each have one basic successful write/read chain, read by the other client.
 
-| 要证明的保证 | 测试归属 |
+Cross-client assertions verify resource identity and actual content, not command success or HTTP status alone. Another client reads committed data; when applicable, refresh the browser to verify persistence.
+
+Do not expand these flows into boundary, refusal, expiry, conflict, race, fault-injection or recovery matrices, or repeat business matrices by operating system, topology, role, language or file format. Module, artifact and deployment tests own those guarantees.
+
+## Ownership Examples
+
+| Guarantee | Owner |
 |---|---|
-| CLI 发送正确版本，并正确报告冲突 | CLI 模块测试，使用可控 HTTP 响应 |
-| server 将 service 返回的版本冲突准确编码为 HTTP 409 | Go server 单元测试，mock service 结果并执行实际错误映射 |
-| server 拒绝非法 body 时不调用业务操作 | Go server 单元测试，执行实际解析并检查 mock 调用 |
-| core 在版本不匹配或无权限时拒绝操作 | Go core 单元测试，使用 DAO mock 控制数据与结果 |
-| service 在下层操作失败时保留错误链并正确结束 scope | Go service 单元测试，控制下层操作和 scope/transaction 结果 |
-| 数据库锁与事务保证两个针对同一版本的并发写入不能同时提交 | Go store 层测试，使用真实 PostgreSQL 和确定性的并发协调 |
-| HTTP 请求取消传递到被调用的业务用例 | Go server 单元测试，观察 mock 操作开始后取消并 drain |
-| PostgreSQL 查询取消后释放查询和连接 | Go store 层测试，观察实际 SQL 后取消并核对资源 |
-| 通过 HTTP 创建、读取、修改并完成同一任务 | Go API 集成测试，走真实 Server 与数据库的正常主流程 |
-| Web 正确呈现冲突，且不重放写入 | Web 模块测试，使用可控响应 |
-| Windows 上安装后的命令入口能找到随包资源 | Windows Installed CLI 测试 |
-| CLI 创建的任务能在 Web 看到，Web 修改后 CLI 能读回 | Linux 产品 E2E |
-| 部署备份与恢复能够保留附件文件 | 部署集成测试 |
+| CLI sends the correct version and reports a conflict accurately | CLI module test with controlled HTTP responses |
+| Server encodes a service version conflict as HTTP 409 | Go server unit test with a mocked service result and real error mapping |
+| Server rejects an invalid body without invoking business work | Go server unit test with real parsing and mock-call assertions |
+| Core rejects a version mismatch or unauthorized operation | Go core unit test with DAO-controlled data and results |
+| Service preserves the lower error chain and completes its scope correctly | Go service unit test controlling lower operations and scope/transaction outcomes |
+| Locks and transactions prevent two writes for the same version from both committing | Go store implementation test with real PostgreSQL and deterministic concurrency coordination |
+| HTTP cancellation reaches the invoked business use case | Go server unit test observing mock-operation start, then cancelling and draining |
+| PostgreSQL query cancellation releases query and connection resources | Go store implementation test observing actual SQL before cancellation and resource checks |
+| HTTP creates, reads, modifies and completes the same Task | Go API integration test through the real Server and database normal flow |
+| Web presents a conflict without replaying the write | Web module test with controlled responses |
+| Installed Windows command entry finds bundled resources | Windows Installed CLI test |
+| CLI-created Task appears in Web; a Web modification is read by CLI | Linux product E2E |
+| Deployment backup and restore preserve attachment files | Deployment integration test |
 
-同一功能可以在多个层次拥有测试，但各层应证明不同职责，避免在每层复制整套行为矩阵。
+A feature may have tests at several layers, but each must prove a different responsibility without duplicating complete behavior matrices.
 
-## 测试运行与基础设施
+## Runners and Infrastructure
 
-模块测试命令不得调用其他产品模块的测试，也不得隐式运行产品 E2E。安装产物验证、模块浏览器测试、Go API 集成、产品 E2E、部署测试和测试工具自身的测试，应有职责明确的显式入口。
+Module test commands must not invoke another product module's tests or implicitly run product E2E. Installed-artifact validation, module browser tests, Go API integration, product E2E, deployment tests and tool tests each need explicit entries with clear responsibilities.
 
-产品 E2E 在 CI 中使用独立 Linux job，按照框架及其真实构建输入选择运行。模块测试仍在各自 job 中运行。选中的 E2E job 必须真实成功才能通过最终门禁；失败、取消或意外跳过均不能视为通过。未受影响时可以按变更选择跳过。
+Product E2E has an independent Linux CI job selected by its framework and actual build inputs. Module tests retain their own jobs. A selected E2E job must actually succeed for the final gate: failure, cancellation or unexpected skipping cannot count as success. Unaffected changes may skip it through change selection.
 
-每个运行器都必须具备有界的就绪等待和执行时限，传播准备与测试失败，保留有用的失败诊断，并回收自己拥有的资源。成功、失败和取消时都要清理，包括服务、浏览器进程、隔离数据库、存储和安装 fixture。CI 必须为清理保留时间，并在测试进程被终止后通过独立清理步骤核对本次运行的资源；清理成功不能抹去原测试失败。
+Every runner needs bounded readiness and execution deadlines, propagated preparation/test failures, useful diagnostics and cleanup of owned resources. Clean up after success, failure and cancellation, including services, browser processes, isolated databases, storage and installed fixtures. CI must reserve cleanup time and independently check the run's resources after test termination. Cleanup success cannot erase the original test failure.
 
-CI 只上传结果、日志和必要的失败截图或 trace，不上传私有配置与凭据文件、数据库文件、附件存储、证书文件或复制构建产物。缓存只用于依赖准备，每次选中的 E2E 都必须重新构建并运行当前源码。
+CI uploads results, logs and necessary failure screenshots or traces, without private configuration, credentials, database files, attachment storage, certificates or copied build artifacts. Caches only prepare dependencies; every selected E2E execution rebuilds and tests current source.
 
-运行器自身的超时、取消、失败传播与清理行为，由工具自身测试验证；这些验证不要求在产品 E2E 中增加故障注入的业务流程。
+The runner's own timeout, cancellation, failure propagation and cleanup are tooling tests; their verification does not require adding fault-injected business flows to product E2E.
 
-根据被验证的机制，使用可观察条件、可控时钟或同步屏障。模块与 store 并发测试先观察到目标操作或锁，再触发下一步；任意等待一段时间不能证明测试实际触发了竞态。并发调用顺序只验证同一逻辑操作或明确 barrier 的关系，不要求所有 goroutine 使用全局 FIFO。只重试语义允许重试的操作；不能通过重试掩盖失败断言或结果未知的写入。
+Use observable conditions, controlled clocks or synchronization barriers suited to the mechanism. Module and store concurrency tests observe the target operation or lock before triggering the next action; an arbitrary wait cannot prove that a race was exercised. Ordering assertions cover the same logical operation or explicit barriers, without requiring global FIFO across goroutines. Retry only operations whose semantics permit it; retries must not conceal failed assertions or unknown write outcomes.
 
-压力、容量负载与性能工作负载使用独立的本地命令。常规 CI 的单元测试、集成测试和产品 E2E 不执行压力测试用例；有界、确定性的并发测试仍属于模块验证。
+Stress, capacity and performance workloads use separate local commands. Ordinary CI unit, integration and product E2E suites do not execute stress cases; bounded deterministic concurrency tests remain module validation.
 
-根据改动影响的行为和依赖选择验证范围。Mock 下的 server、service 和 core 单元测试不能证明数据库机制或完整 API 链路；store 测试不能替代上层规则与协议测试；API 主流程不能替代模块与 store 的边界和并发覆盖；产品主流程不能替代这些分层保证。
+Choose validation from affected behavior and dependencies. Mocked server, service and core units cannot prove database mechanisms or complete API connectivity. Store tests cannot replace upper rules or protocols; normal API flows cannot replace module/store boundaries and concurrency; product normal flows cannot replace these layered guarantees.

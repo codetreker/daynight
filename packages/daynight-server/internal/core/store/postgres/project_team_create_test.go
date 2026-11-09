@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -123,11 +125,7 @@ func TestProjectCreationCommitResponseLoss(t *testing.T) {
 	lost := errors.New("commit response lost")
 	id := uuid.NewString()
 	err = writeProjectCreationTx(ctx, &threadCommitResponseLoss{Tx: tx, cause: lost}, actor.UserID, func(dao ProjectCreationDAO) error {
-		teamID, err := creationTeamForTest(ctx, dao, actor.UserID, &team.ID)
-		if err != nil {
-			return err
-		}
-		_, _, err = dao.InsertProject(ctx, id, "Created", "host:repo", teamID)
+		_, _, err := coreproject.Create(ctx, dao, actor.UserID, id, coreproject.CreateProject{Name: "Created", RepoURL: "host:repo", TeamID: &team.ID})
 		return err
 	})
 	var failure *TransactionError
@@ -137,47 +135,5 @@ func TestProjectCreationCommitResponseLoss(t *testing.T) {
 	var count int
 	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM projects p JOIN project_ownership o ON o.project_id=p.id JOIN project_grants g ON g.project_id=p.id WHERE p.id=$1 AND o.team_id=$2 AND g.user_id=$3 AND g.role='admin'`, id, team.ID, actor.UserID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("actual committed data: %d %v", count, err)
-	}
-}
-
-func TestExplicitPersonalProjectCreationRejectsOtherOwnerAndCorruptMembership(t *testing.T) {
-	for _, scenario := range []string{"other owner", "missing membership", "wrong role", "extra member"} {
-		t.Run(scenario, func(t *testing.T) {
-			s := isolatedStore(t)
-			owner, actor, _ := testAuthRecords(t, s)
-			other, otherActor, _ := testAuthRecords(t, s)
-			ctx := context.Background()
-			var teamID string
-			if err := s.Pool.QueryRow(ctx, `SELECT id::text FROM teams WHERE personal_user_id=$1`, owner.ID).Scan(&teamID); err != nil {
-				t.Fatal(err)
-			}
-			switch scenario {
-			case "other owner":
-				actor = otherActor
-			case "missing membership":
-				mustQueryExec(t, s, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, owner.ID)
-			case "wrong role":
-				mustQueryExec(t, s, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, teamID, owner.ID)
-			case "extra member":
-				mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, teamID, other.ID)
-			}
-			id := uuid.NewString()
-			project, access, err := s.CreateProjectInTeam(ctx, actor, id, "Rejected", "host:repo", &teamID)
-			var failure *TransactionError
-			if err == nil || project != (model.Project{}) || access.ProjectID != "" || !errors.As(err, &failure) || failure.Outcome != TransactionNotCommitted || failure.CommitAttempted || failure.CleanupFailed {
-				t.Fatalf("failure result %#v %#v %#v %v", project, access, failure, err)
-			}
-			if scenario == "other owner" {
-				if !errors.Is(err, model.ErrNotFound) {
-					t.Fatalf("other Personal owner not hidden: %v", err)
-				}
-			} else if errors.Is(err, model.ErrNotFound) || failure.Cause.Error() != "Personal Team owner membership is invalid" {
-				t.Fatalf("Personal corruption was hidden: %v", err)
-			}
-			var empty bool
-			if err := s.Pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM projects WHERE id=$1) AND NOT EXISTS(SELECT 1 FROM project_ownership WHERE project_id=$1) AND NOT EXISTS(SELECT 1 FROM project_grants WHERE project_id=$1)`, id).Scan(&empty); err != nil || !empty {
-				t.Fatalf("failure left creation rows: %v %v", empty, err)
-			}
-		})
 	}
 }

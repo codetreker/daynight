@@ -51,7 +51,10 @@ witnesses retain those mechanisms. Focused Store witnesses cover Task and Bot
 archive/delete lock ordering, Session list filtering and pagination, and mixed
 terminal history with original archive identity. Bot and Task service tests own
 their cross-module orchestration; complete business fault matrices are not moved
-into API integration tests.
+into API integration tests. The
+[PostgreSQL test ownership decision](2026-11-09-postgres-test-ownership.md)
+organizes independent Session DAO witnesses in the child implementation package
+while retaining root scope completion, shared rollback and connection lifetimes.
 
 The [test-writing rules](../../../../docs/writing_tests.md) own dependency
 restrictions, and the [server test guide](../../../../packages/daynight-server/README.md#business-rules-and-dao-mocks)

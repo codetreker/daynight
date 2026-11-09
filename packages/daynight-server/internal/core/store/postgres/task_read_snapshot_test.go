@@ -266,3 +266,13 @@ func TestTaskSyncAssigneeFactsUseTheTaskSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func storeAssigneeUser(t *testing.T, database *Store, projectID string, number int, member bool) string {
+	t.Helper()
+	id := queryID(number)
+	mustQueryExec(t, database, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,$1::uuid::text,now(),now())`, id)
+	if member {
+		mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, projectID, id)
+	}
+	return id
+}

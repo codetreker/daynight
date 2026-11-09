@@ -32,6 +32,9 @@ direct DAO and transaction scopes. They retain real query projections, fresh
 reads after lock waits, database clocks, commit and rollback, partial-write
 failures, Session and capture atomicity, and process-exit readback. They do not
 invoke complete service flows to reproduce an upper-layer rule matrix. The
+[PostgreSQL test ownership decision](2026-11-09-postgres-test-ownership.md)
+places domain DAO proofs beside their implementations and retains root scope,
+transaction and shared-snapshot witnesses. The
 [test-writing rules](../../../../docs/writing_tests.md) own dependency isolation
 and the separate normal-flow scope of API integration and product E2E tests.
 

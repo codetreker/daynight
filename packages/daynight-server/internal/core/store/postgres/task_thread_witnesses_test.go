@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -296,69 +295,6 @@ func TestThreadCancellationBeforeCommitRollsBackEveryWriteStage(t *testing.T) {
 	}
 }
 
-func TestThreadIDPaginationTraversesSameMillisecondInBothDirections(t *testing.T) {
-	database, principal, _, project := membershipFixture(t)
-	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
-	other := queryTask(t, database, project.ID, 11, model.TaskTodo)
-	createdAt := time.Date(2026, 11, 3, 0, 0, 0, 123000000, time.UTC)
-	want := make([]string, 137)
-	for index := range want {
-		want[index] = fmt.Sprintf("00000000-0000-4000-8000-%012x", index+1)
-	}
-	mustQueryExec(t, database, `INSERT INTO task_thread_messages(task_id,message_id,created_at,author_user_id,author_agent,body)
- SELECT $1,id,$2,$3,false,'same millisecond' FROM unnest($4::uuid[]) AS id`, task.ID, createdAt, principal.UserID, want)
-	mustQueryExec(t, database, `INSERT INTO task_thread_messages(task_id,message_id,created_at,author_user_id,author_agent,body)
- VALUES($1,$2,$3,$4,false,'other body')`, other.ID, want[0], createdAt.Add(time.Second), principal.UserID)
-	if err := database.ReadSnapshot(t.Context(), func(scope store.SnapshotScope) error {
-		for _, reverse := range []bool{false, true} {
-			var ids []string
-			var anchor *model.ThreadPosition
-			for {
-				messages, err := scope.TaskDAO().ThreadCandidates(t.Context(), task.ID, anchor, reverse, 17)
-				if err != nil {
-					return err
-				}
-				if len(messages) == 0 {
-					break
-				}
-				if reverse {
-					slices.Reverse(messages)
-				}
-				batch := make([]string, len(messages))
-				for index, message := range messages {
-					batch[index] = message.ID
-					if message.Body != "same millisecond" || !message.CreatedAt.Equal(createdAt) {
-						t.Fatalf("stored body/time changed: %#v", message)
-					}
-				}
-				if reverse {
-					ids = append(batch, ids...)
-					position := messages[0].Position()
-					anchor = &position
-				} else {
-					ids = append(ids, batch...)
-					position := messages[len(messages)-1].Position()
-					anchor = &position
-				}
-			}
-			if !slices.Equal(ids, want) {
-				t.Fatalf("reverse=%t lost or duplicated scoped IDs: %v", reverse, ids)
-			}
-		}
-		message, err := scope.TaskDAO().ThreadMessage(t.Context(), other.ID, want[0])
-		if err != nil || message.Body != "other body" {
-			t.Fatalf("same UUID in other Task crossed scope: %#v %v", message, err)
-		}
-		before, after, err := scope.TaskDAO().ThreadSides(t.Context(), task.ID, model.ThreadPosition{ID: want[87], CreatedAt: createdAt}, model.ThreadPosition{ID: want[136], CreatedAt: createdAt})
-		if err != nil || !before || after {
-			t.Fatalf("tail sides: %v %v %v", before, after, err)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
 	for _, agent := range []bool{false, true} {
 		t.Run(fmt.Sprintf("agent=%t", agent), func(t *testing.T) {
@@ -524,19 +460,6 @@ func TestThreadReadCancellationAndParentDeadlineAreBounded(t *testing.T) {
 func TestThreadReadDatabaseFailuresRemainVisible(t *testing.T) {
 	database, principal, _, project := membershipFixture(t)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
-	mustQueryExec(t, database, `DROP TABLE task_thread_messages`)
-	for _, post := range []bool{false, true} {
-		var err error
-		if post {
-			_, _, err = threadWitnessAppend(t.Context(), database, principal, project.ID, task.ID, "no table", nil)
-		} else {
-			err = threadWitnessRead(t.Context(), database, principal, project.ID, task.ID, nil)
-		}
-		var driver *pgconn.PgError
-		if !errors.As(err, &driver) || driver.Code != "42P01" || errors.Is(err, model.ErrNotFound) {
-			t.Fatalf("missing-table SQL error hidden: post=%t error=%v", post, err)
-		}
-	}
 	database.Close()
 	for _, operation := range []func() error{
 		func() error { return threadWitnessRead(t.Context(), database, principal, project.ID, task.ID, nil) },
