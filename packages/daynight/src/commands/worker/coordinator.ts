@@ -92,6 +92,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const snapshotWarnings = new Map<string, Set<string>>();
   let unmappedWarnings = new Set<string>();
   let nextRepository = 0;
+  let nextPlatformRepository = 0;
   let nextPendingProject = 0;
   let shuttingDown = false;
   let ticking = false;
@@ -814,8 +815,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const exhausted = new Set<number>();
       try {
         while (configuration === acquisitionConfiguration && allMappingsObserved() && capacity(resources) < configuration.maxConcurrent && exhausted.size < configuration.repositories.length) {
-          const index = nextRepository % configuration.repositories.length;
-          nextRepository = (nextRepository + 1) % configuration.repositories.length;
+          const index = (platformSpecific === true ? nextPlatformRepository : nextRepository) % configuration.repositories.length;
+          if (platformSpecific === true) nextPlatformRepository = (index + 1) % configuration.repositories.length;
+          else nextRepository = (index + 1) % configuration.repositories.length;
           if (exhausted.has(index)) continue;
           const repository = configuration.repositories[index]!;
           if (!coveredProjects.has(repository.project.projectId) || !prepared.has(repository.project.projectId) || !resources.scannedProjects.has(repository.project.projectId)) { exhausted.add(index); continue; }

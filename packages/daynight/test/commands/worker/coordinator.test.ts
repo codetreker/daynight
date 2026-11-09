@@ -1683,7 +1683,7 @@ describe("minimal worker resource reconciliation", () => {
       task(f.project.projectId, uuid(100)), specific(f.project.projectId, 101), specific(f.project.projectId, 102),
       task(second.projectId, uuid(200)), specific(second.projectId, 201));
     const coordinator = createWorkerCoordinator({ ...f.options, platform, preferPlatformSpecificTasks: true });
-    const expected = [101, 201, 102, 200, 100].map(uuid);
+    const expected = [101, 201, 102, 100, 200].map(uuid);
     for (let round = 0; round < expected.length; round++) {
       await coordinator.tick();
       expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual(expected.slice(0, round + 1));
@@ -1701,6 +1701,49 @@ describe("minimal worker resource reconciliation", () => {
     const query = vi.mocked(f.remote.candidates).mock.calls[0]!;
     expect(query[3]).toBe(preferPlatformSpecificTasks ? true : undefined);
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
+  it("round-robins unrestricted work while a preferred task retains its stopped worktree", async () => {
+    const f = await fixture(4);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    const blocked = { ...task(f.project.projectId, uuid(102)), requiredPlatform: "linux" as const };
+    f.candidates.splice(0, f.candidates.length, blocked,
+      task(f.project.projectId, uuid(100)), task(f.project.projectId, uuid(101)),
+      task(second.projectId, uuid(200)), task(second.projectId, uuid(201)), task(second.projectId, uuid(202)), task(second.projectId, uuid(203)));
+    const owner: ResourceOwner = { projectId: blocked.projectId, taskId: blocked.id, claimId: uuid(951), worktreeId: uuid(952) };
+    f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    Object.assign(f.herdr, { lifecycle: { registerClaim: () => {}, responsibilities: () => [owner], isStopped: (target: ResourceOwner) => target.claimId === owner.claimId, assertCanAdvance: () => {} } });
+    f.coordinator.updateConfiguration({ ...f.options, preferPlatformSpecificTasks: true });
+    const expected = [100, 200, 101, 201].map(uuid);
+    for (let round = 0; round < expected.length; round++) {
+      await f.coordinator.tick();
+      expect(f.remote.claim).toHaveBeenCalledTimes(round + 1);
+      expect(f.worktrees.has(owner.claimId)).toBe(true);
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(round + 1));
+    }
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual(expected);
+  });
+
+  it("preserves unrestricted rotation across intermittent successful preferred claims", async () => {
+    const f = await fixture(6);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.candidates.push(task(second.projectId, uuid(200)), task(second.projectId, uuid(201)), task(second.projectId, uuid(202)));
+    f.coordinator.updateConfiguration({ ...f.options, preferPlatformSpecificTasks: true });
+    const expected: string[] = [];
+    for (const [offset, ordinary] of [100, 200, 101].entries()) {
+      const preferred = { ...task(f.project.projectId, uuid(300 + offset)), requiredPlatform: "linux" as const };
+      f.candidates.push(preferred);
+      await f.coordinator.tick(); expected.push(preferred.id);
+      expect(f.remote.claim).toHaveBeenCalledTimes(expected.length);
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(expected.length));
+      await f.coordinator.tick(); expected.push(uuid(ordinary));
+      expect(f.remote.claim).toHaveBeenCalledTimes(expected.length);
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(expected.length));
+    }
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual(expected);
   });
 
   it("closes tier streams and discards a candidate when preference changes during its query", async () => {

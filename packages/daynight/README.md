@@ -2039,8 +2039,9 @@ preparation failures do not disable configuration exchange.
 Workers in My Workers; local YAML supplies it only for the first cloud import.
 When enabled, new acquisition first scans all selected, eligible Projects for
 tasks explicitly requiring the actual host platform, then considers unrestricted
-tasks. Each category retains Project rotation and creation-time/ID order within
-a Project, across every candidate page. Applied changes affect later acquisition;
+tasks. Each category retains its own Project rotation and creation-time/ID order
+within a Project, across every candidate page. Preferred scans and claims do not
+advance the unrestricted category's rotation. Applied changes affect later acquisition;
 existing claims and pending startup retain their current lifecycle. A confirmed
 false application value means disabled; null means no confirmed application.
 
@@ -2172,9 +2173,9 @@ authorize another launch.
 Each reconciliation round acquires at most one new task across all configured
 Projects, even when more slots remain free or the granted task must stay pending.
 The next acquisition waits until the next round after `pollIntervalMs`, continuing
-Project rotation within the selected platform category and preserving server
+the selected category's independent Project rotation and preserving server
 creation-time/ID order within each Project. With the preference disabled, the
-original mixed compatible category is used. Empty Projects are skipped. Existing
+original mixed compatible category shares the unrestricted category's rotation. Empty Projects are skipped. Existing
 pending rows have startup priority, with stable task-ID order inside each Project; they can use multiple free slots in one round,
 rotating Projects after each successful slot allocation.
 

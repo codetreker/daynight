@@ -76,7 +76,7 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 
 ### W-05：调度与全局并发
 
-- 每轮调度在所有配置仓库中合计最多领取一个新任务；确认授予后结束本轮领取，即使任务暂留 pending 或仍有空闲名额。后续新领取等待本轮完成后的 pollIntervalMs 间隔，再从下一项目继续轮转；空项目可以跳过。preferPlatformSpecificTasks 默认 false，候选按既有项目轮转与项目内 createdAt、id 升序选择。为 true 时先在全部可领取项目中查找 requiredPlatform 等于实际运行平台的任务；该类别没有可领取项时才进入 requiredPlatform=null 类别。同类别内保留项目轮转及项目内 createdAt、id 顺序，优先级跨项目和全部候选页生效。例如项目 A 的较早不限平台任务不能排在项目 B 的较晚当前平台专用任务前面。配置更新对后续新领取生效，已取得的 claim 继续原生命周期。
+- 每轮调度在所有配置仓库中合计最多领取一个新任务；确认授予后结束本轮领取，即使任务暂留 pending 或仍有空闲名额。后续新领取等待本轮完成后的 pollIntervalMs 间隔，再从下一项目继续轮转；空项目可以跳过。preferPlatformSpecificTasks 默认 false，候选按既有项目轮转与项目内 createdAt、id 升序选择。为 true 时先在全部可领取项目中查找 requiredPlatform 等于实际运行平台的任务；该类别没有可领取项时才进入 requiredPlatform=null 类别。两个类别各自保留项目轮转及项目内 createdAt、id 顺序；一个类别的扫描、跳过或成功领取不得改变另一个类别的项目轮转位置，优先级跨项目和全部候选页生效。例如项目 A 的较早不限平台任务不能排在项目 B 的较晚当前平台专用任务前面。配置更新对后续新领取生效，已取得的 claim 继续原生命周期。
 - 已有 pending 优先启动，项目内按稳定 task_id 顺序选择，每成功分配一个名额后轮转到下一项目，同轮可按容量启动多个已领取的 pending；平台优先不改变该规则或抢占已有执行。
 - Active 从启动前资源预留到收尾完成占用名额。等待 CI/review、人工输入、恢复超限及清理仍占用。容量是 active 行、实际归属资源、已确认收尾责任及适配器待确认停止责任按 claim 去重的并集；没有本机行的孤立执行也须保留责任。macOS Herdr 原运行停止、封段和 ledger 确认后可释放执行槽，但保留工作区继续维持同 task 屏障；已排队恢复仍占名额。
 - Pending 在没有实际运行资源时不占名额；同 task 旧执行停止、关闭 workspace 并删除 worktree 后，新 claim 才能 active。降低上限不抢占已有任务。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。

@@ -8,7 +8,9 @@ A Worker can use its platform-specific capacity on an unrestricted task while
 an eligible task requiring that platform waits in another configured Project.
 Compatibility filtering admits both categories and chronological ordering does
 not reserve that capacity for platform-specific work. Different Workers need
-different acquisition preferences.
+different acquisition preferences. Sharing a rotation position between categories
+also lets blocked or intermittent platform-specific work repeatedly displace
+unrestricted tasks in one Project.
 
 ## Decision
 
@@ -19,8 +21,12 @@ The setting is independent of native execution configuration and does not change
 existing claims or pending startup priority.
 
 An enabled coordinator scans eligible Projects for exact-platform candidates
-before considering unrestricted candidates. Each category retains Project
-rotation and chronological task ordering. The list-only `platformSpecific`
+before considering unrestricted candidates. Platform-specific and ordinary
+acquisition retain independent Project rotation positions. Ordinary acquisition
+covers unrestricted candidates when enabled and the original mixed compatible
+stream when disabled. Scanning, skipping or claiming preferred work never advances
+the ordinary position; each category preserves chronological task ordering. The
+list-only `platformSpecific`
 filter combines with `compatiblePlatform` before pagination; each category has
 its own filter-bound cursor. The chronological position key remains unchanged.
 Disabled Workers retain their original mixed candidate stream. The
@@ -50,6 +56,12 @@ independent opt-in preserves the existing policy where it is still desired.
 the first Project can still precede a dedicated task elsewhere. Changing SQL
 ordering alone also disagrees with the chronological cursor and can skip tasks.
 Separate server-filtered categories preserve pagination and cover all Projects.
+
+**Restore a shared position only after unsuccessful preferred scans.** This
+prevents blocked preferred work from redirecting the fallback scan, but successful
+preferred claims still change its starting Project. Intermittent preferred work
+can therefore repeatedly displace unrestricted tasks. Independent positions keep
+the required category-local rotation across both successful and exhausted scans.
 
 **Sort a received candidate page.** A platform-specific task on a later page
 would remain hidden behind unrestricted rows, so this cannot establish priority
