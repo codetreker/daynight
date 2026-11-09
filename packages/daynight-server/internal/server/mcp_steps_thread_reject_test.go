@@ -1,0 +1,361 @@
+package server
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
+)
+
+type mcpStepsRejectedTaskReader struct{ t *testing.T }
+
+func (d mcpStepsRejectedTaskReader) Task(context.Context, string, string) (model.Task, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.Task")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) Tasks(context.Context, string, store.TaskQuery) (store.TaskPage, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.Tasks")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskListFence(context.Context, string) (store.TaskListFence, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskListFence")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskPriorityList(context.Context, string, store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskPriorityList")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskPresence(context.Context, string, string) (store.TaskPresence, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskPresence")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskHeader(context.Context, string, string) (model.TaskHeader, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskHeader")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskStep(context.Context, string, string) (model.TaskStep, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskStep")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskSteps")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskStepPage(context.Context, string, int64, int, bool) ([]store.TaskStepProjection, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskStepPage")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskStepSummary(context.Context, string, string) (store.TaskStepProjection, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskStepSummary")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) ThreadMessage(context.Context, string, string) (model.ThreadMessage, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.ThreadMessage")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) ThreadCandidates(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.ThreadCandidates")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) ThreadSides(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.ThreadSides")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskAssignees(context.Context, string) ([]model.TaskAssigneeFact, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskAssignees")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) ResolveTaskAssignees(context.Context, string, []string) ([]model.TaskAssigneeFact, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.ResolveTaskAssignees")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskGraphSize(context.Context, string) (store.TaskGraphSize, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphSize")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskGraphProjectionSize(context.Context, string, string, store.TaskGraphSelection) (store.TaskGraphSize, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphProjectionSize")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskGraphTasks(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskGraphTasks")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskCacheEpoch(context.Context, string) (string, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskCacheEpoch")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskReader) TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
+	unexpectedHTTPCall(d.t, "TaskReader.TaskSyncTasks")
+	panic("unreachable")
+}
+
+type mcpStepsRejectedProjectReader struct{ t *testing.T }
+
+func (d mcpStepsRejectedProjectReader) Project(context.Context, string) (model.Project, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.Project")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) Projects(context.Context, store.Page) (store.ProjectPage, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.Projects")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) DirectProjectMember(context.Context, string, string) (model.ProjectMember, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.DirectProjectMember")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) ProjectParticipants(context.Context, string) ([]model.ProjectParticipant, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.ProjectParticipants")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) Invitation(context.Context, []byte) (model.ProjectInvitation, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.Invitation")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) Invitations(context.Context, string, time.Time) ([]model.ProjectInvitation, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.Invitations")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) ProjectAccess(context.Context, model.Principal, string) (model.ProjectAccess, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.ProjectAccess")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) AccessibleProjects(context.Context, model.Principal, store.Page) (store.ProjectPage, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.AccessibleProjects")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) ScopedProjects(context.Context, model.Principal, store.ProjectScope, store.Page) (store.ProjectPage, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.ScopedProjects")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) TransferTeam(context.Context, string) (store.TransferTeam, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.TransferTeam")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectReader) TransferRole(context.Context, string, string, string) (*model.ProjectRole, error) {
+	unexpectedHTTPCall(d.t, "ProjectReader.TransferRole")
+	panic("unreachable")
+}
+
+type mcpStepsRejectedTaskWriteDAO struct{ t *testing.T }
+
+func (d mcpStepsRejectedTaskWriteDAO) Task(context.Context, string) (model.Task, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.Task")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) TasksByID(context.Context, []string) ([]model.Task, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.TasksByID")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) ActiveDependentIDs(context.Context, string) ([]string, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.ActiveDependentIDs")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) Reachable(context.Context, string, string, store.DependencyReplacement) (bool, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.Reachable")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) CreateTask(context.Context, string, store.TaskWrite) (model.Task, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.CreateTask")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) UpdateTask(context.Context, string, store.TaskWrite) (model.Task, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.UpdateTask")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) ObservedAt(context.Context) (time.Time, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.ObservedAt")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) DependentIDs(context.Context, string) ([]string, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.DependentIDs")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) DeleteTask(context.Context, string, bool) (model.TaskTombstone, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.DeleteTask")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) TaskHeader(context.Context, string) (model.TaskHeader, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.TaskHeader")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) TaskSteps(context.Context, string) ([]model.TaskStep, error) {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.TaskSteps")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) InsertTaskStep(context.Context, string, model.TaskStep) error {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.InsertTaskStep")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) TouchTask(context.Context, string, time.Time) error {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.TouchTask")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) UpdateTaskStep(context.Context, string, model.TaskStep) error {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.UpdateTaskStep")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) MoveTaskStep(context.Context, string, string, int64, int64) error {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.MoveTaskStep")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedTaskWriteDAO) DeleteTaskStep(context.Context, string, string, int64, int64) error {
+	unexpectedHTTPCall(d.t, "TaskWriteDAO.DeleteTaskStep")
+	panic("unreachable")
+}
+
+type mcpStepsRejectedProjectWriteDAO struct{ t *testing.T }
+
+func (d mcpStepsRejectedProjectWriteDAO) InvalidateTaskCache(context.Context) error {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.InvalidateTaskCache")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) Project(context.Context) (model.Project, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.Project")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) ProjectAccess(context.Context, model.Principal) (model.ProjectAccess, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.ProjectAccess")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) UpdateProjectSettings(context.Context, int32) (model.Project, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.UpdateProjectSettings")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) DirectProjectMember(context.Context, string) (model.ProjectMember, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.DirectProjectMember")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) SetMemberRole(context.Context, string, model.ProjectRole) (model.ProjectMember, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.SetMemberRole")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) RemoveMember(context.Context, string) error {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.RemoveMember")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) AddInvitedMember(context.Context, string) (model.ProjectMember, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.AddInvitedMember")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) LockInvitation(context.Context, []byte) (model.ProjectInvitation, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.LockInvitation")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) CreateInvitation(context.Context, model.ProjectInvitation) error {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.CreateInvitation")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) RevokeInvitation(context.Context, string, time.Time) error {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.RevokeInvitation")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) ConsumeInvitation(context.Context, string, string, time.Time) error {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.ConsumeInvitation")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) DirectGrant(context.Context, string) (model.ProjectGrant, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.DirectGrant")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) CreateGrant(context.Context, string, model.ProjectRole) (model.ProjectGrant, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.CreateGrant")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) LockTransferOwnership(context.Context) (model.ProjectOwnership, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.LockTransferOwnership")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) LockTransferTeams(context.Context, string, string) (store.TransferTeam, store.TransferTeam, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.LockTransferTeams")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedProjectWriteDAO) MoveOwnership(context.Context, string) (model.ProjectOwnership, error) {
+	unexpectedHTTPCall(d.t, "ProjectWriteDAO.MoveOwnership")
+	panic("unreachable")
+}
+
+type mcpStepsRejectedWebhookCaptureDAO struct{ t *testing.T }
+
+func (d mcpStepsRejectedWebhookCaptureDAO) FreezeAudience(context.Context, string, []string) ([]store.WebhookAudience, error) {
+	unexpectedHTTPCall(d.t, "WebhookCaptureDAO.FreezeAudience")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedWebhookCaptureDAO) RecordedAt(context.Context) (time.Time, error) {
+	unexpectedHTTPCall(d.t, "WebhookCaptureDAO.RecordedAt")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedWebhookCaptureDAO) Policy(context.Context, int64) (webhook.Policy, error) {
+	unexpectedHTTPCall(d.t, "WebhookCaptureDAO.Policy")
+	panic("unreachable")
+}
+
+func (d mcpStepsRejectedWebhookCaptureDAO) SaveCapture(context.Context, store.WebhookCapturedEvent, []store.WebhookCapturedDelivery) error {
+	unexpectedHTTPCall(d.t, "WebhookCaptureDAO.SaveCapture")
+	panic("unreachable")
+}

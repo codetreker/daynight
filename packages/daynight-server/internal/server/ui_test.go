@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -22,7 +24,7 @@ const uiTestScriptPath = "/assets/app-12345678.js"
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := newTestHandler(Dependencies{Store: &routeOnlyStore{}}, configuredTestConfig(), logger)
+	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, configuredTestConfig(), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,23 +219,36 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 }
 
 func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Task")
-	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + project.ID, "/api/v1/projects/" + project.ID + "/members", taskCollection(project.ID), taskPath(task), graphPath(project.ID, task.ID)} {
-		response := projectRequest(handler, http.MethodGet, target, "")
+	f := newTaskHTTPFixture(t)
+	path := taskCollection(f.project.ID) + "/" + f.target.ID
+	graph := graphPath(f.project.ID, f.target.ID)
+	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + f.project.ID, "/api/v1/projects/" + f.project.ID + "/members", taskCollection(f.project.ID), path, graph} {
+		switch target {
+		case "/api/v1/projects":
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "list", nil, nil)
+		case "/api/v1/projects/" + f.project.ID:
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "project", nil, nil)
+		case "/api/v1/projects/" + f.project.ID + "/members":
+			accessHTTPProject(t, f.store, f.principal, f.project, taskHTTPMockAccess(f.project, f.principal), "members", nil, nil)
+		case taskCollection(f.project.ID):
+			f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 1}, BoundedText: true, LegacyProjection: true}}, []store.TaskPage{{Items: []model.Task{f.target}}})
+		case path:
+			f.expectRead(f.target)
+		case graph:
+			f.expectGraph(f.target.ID, []model.GraphTask{{ID: f.target.ID, TitlePreview: f.target.Title, Status: f.target.Status, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}, AssignedTo: f.target.AssignedTo, Ready: true, CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.UpdatedAt}})
+		}
+		response := projectRequest(f.handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
 			t.Fatalf("UI registration changed API response: %s %d %+v", target, response.Code, response.Header())
 		}
-		if (target == taskPath(task) || target == graphPath(project.ID, task.ID)) && response.Header().Get("Cache-Control") != "no-store" {
+		if (target == path || target == graph) && response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("latest task read may be cached: %s %+v", target, response.Header())
 		}
 	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+project.ID+"/members", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+f.project.ID+"/members", nil)
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	f.handler.ServeHTTP(response, request)
 	assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
 	if response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
 		t.Fatal("member API must retain authenticated JSON behavior")

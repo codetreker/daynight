@@ -15,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func sessionDAOTransaction(t *testing.T, db *Store, fn func(store.SessionScope) error) {
@@ -96,7 +97,7 @@ func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 			return err
 		}
 		record, err := dao.LockSession(ctx, testID)
-		if err != nil || !record.Consumed || record.ConnectionParent != patID {
+		if err != nil || !record.Consumed || record.ConnectionParent != patID || record.ConnectionExpiry == nil || !record.ConnectionExpiry.Equal(now.Add(time.Hour)) {
 			t.Fatalf("connection: %+v %v", record, err)
 		}
 		list, err := dao.ListTestSessions(ctx, principal.UserID, now, 10, true, now.Add(-time.Minute), nil, "")
@@ -108,20 +109,40 @@ func TestSessionDAORegistrationGrantAndList(t *testing.T) {
 		if err != nil || len(list) != 1 {
 			t.Fatalf("cursor list: %+v %v", list, err)
 		}
+		return nil
+	})
+	var connectedExpiry *time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT connection_expires_at FROM task_sessions WHERE id=$1`, testID).Scan(&connectedExpiry); err != nil || connectedExpiry == nil || !connectedExpiry.Equal(now.Add(time.Hour)) {
+		t.Fatalf("committed controller connection expiry: %v %v", connectedExpiry, err)
+	}
+	sessionDAOTransaction(t, db, func(scope store.SessionScope) error {
+		dao := scope.SessionDAO()
 		if err := dao.DisconnectSession(ctx, testID); err != nil {
 			return err
 		}
-		list, err = dao.ListTestSessions(ctx, principal.UserID, now, 10, true, now.Add(-time.Minute), nil, "")
+		list, err := dao.ListTestSessions(ctx, principal.UserID, now, 10, true, now.Add(-time.Minute), nil, "")
 		if err != nil || len(list) != 0 {
 			t.Fatalf("disconnected list: %+v %v", list, err)
 		}
+		record, err := dao.LockSession(ctx, testID)
+		if err != nil || record.ConnectionExpiry != nil {
+			t.Fatalf("disconnected controller still has connection expiry: %+v %v", record, err)
+		}
+		return nil
+	})
+	var disconnectedExpiry *time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT connection_expires_at FROM task_sessions WHERE id=$1`, testID).Scan(&disconnectedExpiry); err != nil || disconnectedExpiry != nil {
+		t.Fatalf("committed controller disconnect retained expiry: %v %v", disconnectedExpiry, err)
+	}
+	sessionDAOTransaction(t, db, func(scope store.SessionScope) error {
+		dao := scope.SessionDAO()
 		if err := dao.SetSessionGenerationStop(ctx, id, []byte(`{"kind":"stopped"}`)); err != nil {
 			return err
 		}
 		if err := dao.SetTestSessionStop(ctx, testID, []byte(`{"kind":"stopped"}`)); err != nil {
 			return err
 		}
-		record, err = dao.LockSession(ctx, testID)
+		record, err := dao.LockSession(ctx, testID)
 		if err != nil || record.GrantHash != nil || record.ConnectionExpiry != nil || string(record.StopProof) == "" {
 			t.Fatalf("stop: %+v %v", record, err)
 		}
@@ -400,6 +421,20 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		return dao.InsertRecordingEvidence(ctx, id, 1, uuid.NewString(), 1, strings.Repeat("c", 64))
 	})
 	rollback := errors.New("cleanup failed")
+	for _, caller := range []model.Principal{principal, runtimeBotPAT(t, db, bot)} {
+		if err := runtimeBotWriteAfterLock(t, db, bot, caller, runtimeDefinitionCredential, true, func(ctx context.Context, dao store.BotWriteDAO, _ pgx.Tx) error {
+			_, err := dao.SaveBotDeletion(ctx, bot.ID, &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 2, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})
+			return err
+		}); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("expired deletion intent credential: kind=%s error=%v", caller.Kind, err)
+		}
+		if err := runtimeBotWriteAfterLock(t, db, bot, caller, runtimeDefinitionCredential, true, func(ctx context.Context, dao store.BotWriteDAO, _ pgx.Tx) error {
+			_, err := dao.Bot(ctx, bot.ID)
+			return err
+		}); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("expired deletion replay credential: kind=%s error=%v", caller.Kind, err)
+		}
+	}
 	completion, err := db.WriteSession(ctx, func(scope store.SessionScope) error {
 		if _, err := scope.BotDAO().Bot(ctx, bot.ID); err != nil {
 			return err

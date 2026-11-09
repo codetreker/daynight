@@ -99,7 +99,7 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	database := &postgres.Store{Pool: pool}
-	handler := projectTestHandler(t, database, io.Discard)
+	handler := projectDatabaseTestHandler(t, database, io.Discard)
 	project := taskProject(t, handler)
 	ids := []string{handler.principal.UserID}
 	for len(ids) < 100 {

@@ -14,62 +14,39 @@ import (
 	"testing"
 	"time"
 
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type mcpPATTransport struct{ token string }
-
-func (t mcpPATTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	r := req.Clone(req.Context())
-	r.Header = req.Header.Clone()
-	r.Header.Set("Authorization", "Bearer "+t.token)
-	return http.DefaultTransport.RoundTrip(r)
-}
-
-func mcpPATClient(t *testing.T, address, token string) *sdk.ClientSession {
-	t.Helper()
-	client := sdk.NewClient(&sdk.Implementation{Name: "mcp-integration", Version: "1"}, nil)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: address + "/mcp", HTTPClient: &http.Client{Transport: mcpPATTransport{token: token}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
-	if err != nil {
-		t.Fatalf("connect MCP: %v", err)
-	}
-	t.Cleanup(func() { _ = session.Close() })
-	return session
-}
-
 func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
-	database := projectTestStore(t)
+	database := newHTTPTestStore(t)
 	files := attachmentTestFiles(t)
-	production := httptest.NewUnstartedServer(nil)
-	origin := "http://" + production.Listener.Addr().String()
-	callback := origin + "/api/v1/auth/callback"
-	gateway := testauth.StartGateway(t, callback)
+	tokens := []string{defaultHTTPToken(), "dnpat_" + strings.Repeat("B", 42) + "A"}
+	principals := []model.Principal{defaultHTTPPrincipal(), {UserID: "c3333333-3333-4333-8333-333333333333", CredentialID: "d4444444-4444-4444-8444-444444444444", Kind: model.PATCredential}}
+	browserPrincipal := principals[0]
+	browserPrincipal.Kind = model.SessionCredential
+	browserPrincipal.CredentialID = "e5555555-5555-4555-8555-555555555555"
+	browserToken := httpTestToken(model.SessionCredential)
+	configureMCPPrincipals(t, database, map[string]model.Principal{tokens[0]: principals[0], tokens[1]: principals[1], browserToken: browserPrincipal})
+	production, _ := newMCPHTTPServer(t, database, files)
+	origin := production.URL
 	config := configuredTestConfig()
-	config.PublicOrigin, config.UniAuthCallbackURL, config.UniAuthURL = origin, callback, gateway.Origin
-	config.UniAuthAppID, config.UniAuthAppSecret = gateway.AppID, gateway.AppSecret
+	config.PublicOrigin = origin
+	config.UniAuthCallbackURL = origin + "/api/v1/auth/callback"
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	newApp := func() *sessionApplication {
-		t.Helper()
-		h, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
+		handler, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
 		if err != nil {
 			t.Fatal(err)
 		}
-		app := h.(*sessionApplication)
+		app := handler.(*sessionApplication)
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -78,27 +55,6 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 			}
 		})
 		return app
-	}
-	app := newApp()
-	production.Config.Handler = httpx.RequestLogging(logger, app)
-	production.Start()
-	t.Cleanup(production.Close)
-	alice := testauth.Browser(t)
-	bob := testauth.Browser(t)
-	testauth.Login(t, alice, origin, "alice")
-	testauth.Login(t, bob, origin, "bob")
-	tokens := []string{testauth.CreatePAT(t, alice, origin), testauth.CreatePAT(t, bob, origin)}
-	client, err := service.NewIdentityClient(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := identityservice.New(database, client, callback)
-	principals := make([]model.Principal, len(tokens))
-	for i, token := range tokens {
-		principals[i], err = identity.Authenticate(t.Context(), model.PATCredential, token)
-		if err != nil {
-			t.Fatal(err)
-		}
 	}
 	if principals[0].UserID == principals[1].UserID || principals[0].CredentialID == principals[1].CredentialID {
 		t.Fatal("fixture PATs do not identify distinct accounts and credentials")
@@ -111,14 +67,8 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		t.Fatalf("production tools: %#v, %v", list, err)
 	}
 	assertMCPProductionTools(t, list.Tools)
-	project, err := projectservice.NewProjects(database).Create(t.Context(), principals[0], projectcore.CreateProject{ExpectedUserID: principals[0].UserID, Name: "MCP queries", RepoURL: "host:mcp-queries"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := taskservice.NewTasks(database).Create(t.Context(), principals[0], project.ID, taskcore.CreateTask{Title: "Ready task", Description: "Complete description"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	project := projectHTTPRecord("f6666666-6666-4666-8666-666666666666", "MCP queries", "host:mcp-queries", "a7777777-7777-4777-8777-777777777777")
+	created := model.Task{ID: "b8888888-8888-4888-8888-888888888888", ProjectID: project.ID, Title: "Ready task", Description: "Complete description", Properties: model.TaskProperties{}, Status: model.TaskTodo, Version: 1, Ready: true, CreatedAt: project.CreatedAt, UpdatedAt: project.CreatedAt, DependsOn: []string{}, ExternalDependsOn: []string{}, BlockedBy: []string{}}
 	call := func(session *sdk.ClientSession, name string, args map[string]any, wantError bool) map[string]any {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -137,26 +87,29 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		}
 		return value
 	}
+	uploadMetadata := model.Attachment{ProjectID: project.ID, TaskID: created.ID, Path: "upload.txt", ContentType: "text/plain", SizeBytes: 5, CreatedAt: project.CreatedAt, UpdatedAt: project.CreatedAt}
+	mcpIsolationInline(t, database, principals[0], uploadMetadata, true)
 	upload := call(productionClient, "task_attachment_put", map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "inline", "path": "upload.txt", "contentType": "text/plain", "contentBase64": "aGVsbG8="}, false)
 	data := upload["data"].(map[string]any)
 	if data["writeOutcome"] != "confirmed" || data["created"] != true {
 		t.Fatalf("upload receipt: %#v", upload)
 	}
-	metadata, object, err := attachmentservice.NewAttachments(database, database, files).Open(t.Context(), principals[0], project.ID, created.ID, "upload.txt")
+	address, err := attachmentcore.NewAddress(project.ID, created.ID, "upload.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, err := files.Open(t.Context(), attachmentcore.Bucket, address.StoragePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	content, readErr := io.ReadAll(object.Body)
 	closeErr := object.Body.Close()
-	if readErr != nil || closeErr != nil || string(content) != "hello" || metadata.SizeBytes != 5 {
-		t.Fatalf("uploaded content=%q metadata=%#v read=%v close=%v", content, metadata, readErr, closeErr)
-	}
-	current, err := taskservice.NewTasks(database).Get(t.Context(), principals[0], project.ID, created.ID)
-	if err != nil || current.Version != created.Version {
-		t.Fatalf("upload changed task version: %#v %v", current, err)
+	if readErr != nil || closeErr != nil || string(content) != "hello" || object.Info.Size != 5 {
+		t.Fatalf("uploaded content=%q info=%#v read=%v close=%v", content, object.Info, readErr, closeErr)
 	}
 	for _, name := range []string{"task_list", "task_ready"} {
 		for _, view := range []string{"summary", "full"} {
+			mcpIsolationTaskRead(t, database, principals[0], project, created, name, view)
 			value := call(productionClient, name, map[string]any{"projectId": project.ID, "view": view}, false)
 			data := value["data"].(map[string]any)
 			items := data["items"].([]any)
@@ -169,6 +122,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		}
 	}
 	for _, view := range []string{"summary", "full"} {
+		mcpIsolationTaskRead(t, database, principals[0], project, created, "task_graph", view)
 		value := call(productionClient, "task_graph", map[string]any{"projectId": project.ID, "taskId": created.ID, "view": view}, false)
 		data := value["data"].(map[string]any)
 		if data["projection"] != view || len(data["tasks"].([]any)) != 1 {
@@ -176,38 +130,64 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		}
 	}
 	bobQueries := mcpPATClient(t, production.URL, tokens[1])
+	denyCounts := newHTTPCallPlan(t, map[string]int{"denied snapshot": 1, "denied access": 1})
+	deniedSnapshot := newHTTPTestSnapshot(t)
+	deniedSnapshot.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+		denyCounts.Called("denied access")
+		mcpAttachmentCheck(t, p, principals[1])
+		mcpAttachmentCheck(t, id, project.ID)
+		return model.ProjectAccess{}, model.ErrNotFound
+	}}
+	database.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
+		denyCounts.Called("denied snapshot")
+		return fn(deniedSnapshot)
+	}
 	if value := call(bobQueries, "task_list", map[string]any{"projectId": project.ID}, true); value["error"] == nil {
 		t.Fatalf("unauthorized project: %#v", value)
 	}
 	attachments := attachmentservice.NewAttachments(database, database, files)
+	sample := model.Attachment{ProjectID: project.ID, TaskID: created.ID, Path: "sample.txt", ContentType: "text/plain", SizeBytes: 13, CreatedAt: project.CreatedAt, UpdatedAt: project.CreatedAt}
 	put := func(content string) {
 		t.Helper()
+		item := sample
+		item.SizeBytes = int64(len(content))
+		isNew := content == "first content"
+		if !isNew {
+			item.UpdatedAt = item.UpdatedAt.Add(time.Second)
+		}
+		mcpIsolationInline(t, database, principals[0], item, isNew)
 		if _, _, err := attachments.Put(t.Context(), principals[0], project.ID, created.ID, "sample.txt", "text/plain", strings.NewReader(content)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	put("first content")
 	base := map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt"}
+	mcpIsolationSource(t, database, principals[0], sample, 1)
+	mcpTransferPlan(t, database, mcpIsolationAuthorize(t, principals[0], project.ID, created.ID, 1), mcpIsolationAuthorize(t, principals[0], project.ID, created.ID, 1))
 	inspect := call(productionClient, "task_attachment_read", base, false)["data"].(map[string]any)
 	if inspect["contentIncluded"] != false || inspect["sizeBytes"] != "13" || inspect["contentRef"] == nil {
 		t.Fatalf("attachment inspect: %#v", inspect)
 	}
 	transferID := uuid.NewString()
 	open := map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt", "action": "open", "transferId": transferID}
+	readable := mcpIsolationDownloadOpen(t, database, principals[0], sample, transferID, time.Now().UTC())
 	opened := call(productionClient, "task_attachment_read", open, false)["data"].(map[string]any)
 	if opened["transferId"] != transferID || opened["state"] != "readable" || opened["totalBytes"] != "13" || opened["sha256"] == nil {
 		t.Fatalf("attachment open: %#v", opened)
 	}
 	put("replacement")
 	chunk := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "chunk", "transferId": transferID, "offset": "0", "format": "base64"}
+	touched := mcpIsolationDownloadChunk(t, database, principals[0], readable)
 	downloadData := call(productionClient, "task_attachment_read", chunk, false)["data"].(map[string]any)
 	if downloadData["contentBase64"] != base64.StdEncoding.EncodeToString([]byte("first content")) || downloadData["nextOffset"] != "13" || downloadData["eof"] != true {
 		t.Fatalf("attachment snapshot: %#v", downloadData)
 	}
+	mcpTransferPlan(t, database, mcpTransferRead(t, principals[1], 0, 0, mcpTransferRow(touched)))
 	if value := call(bobQueries, "task_attachment_read", chunk, true); value["error"] == nil {
 		t.Fatalf("unauthorized snapshot: %#v", value)
 	}
 	closeInput := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "close", "transferId": transferID}
+	mcpIsolationDownloadClose(t, database, principals[0], touched)
 	closed := call(productionClient, "task_attachment_read", closeInput, false)["data"].(map[string]any)
 	if closed["state"] != "cleanup_pending" || closed["cleanupState"] != "pending" {
 		t.Fatalf("attachment close: %#v", closed)
@@ -284,19 +264,25 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		}
 	}
 	assertStatus("invalid", http.StatusUnauthorized)
+	configureMCPPrincipals(t, database, map[string]model.Principal{tokens[0]: principals[0], tokens[1]: principals[1], browserToken: browserPrincipal})
+	mcpIsolationRevocation(t, database, browserPrincipal, principals[0].CredentialID)
 	revoke, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, origin+"/api/v1/me/tokens/"+principals[0].CredentialID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	revoke.Header.Set("Origin", origin)
-	resp, err := alice.Do(revoke)
+	revoke.AddCookie(&http.Cookie{Name: "daynight_session", Value: browserToken})
+	resp, err := http.DefaultClient.Do(revoke)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	if err = resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke: HTTP %d", resp.StatusCode)
 	}
+	mcpIsolationRevokedAuthentication(t, database, tokens[0], tokens[1], principals[1])
 	assertStatus(tokens[0], http.StatusUnauthorized)
 	bobProduction := mcpPATClient(t, production.URL, tokens[1])
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
@@ -306,34 +292,4 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		t.Fatalf("remaining PAT discovery: %#v, %v", list, err)
 	}
 	assertMCPProductionTools(t, list.Tools)
-}
-
-func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
-	t.Helper()
-	want := map[string]bool{
-		"project_create": true, "project_transfer": true, "project_list": true, "project_show": true,
-		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true,
-		"team_list": true, "team_show": true, "team_projects": true, "team_member_list": true,
-		"team_member_set_role": true, "team_member_remove": true,
-		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
-		"invitation_inspect": true, "invitation_accept": true,
-		"bot_list": true, "bot_show": true, "bot_create": true, "bot_delete": true,
-		"task_thread_read": true, "task_thread_post": true,
-		"task_step_list": true, "task_step_show": true, "task_step_add": true, "task_step_update": true,
-		"task_step_set_status": true, "task_step_move": true, "task_step_delete": true,
-		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
-		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
-		"task_attachment_list": true, "task_attachment_read": true, "task_attachment_remove": true, "task_attachment_put": true,
-		"task_list": true, "task_ready": true, "task_graph": true,
-	}
-	for _, tool := range tools {
-		if !want[tool.Name] {
-			t.Errorf("unexpected or duplicate production tool %s", tool.Name)
-			continue
-		}
-		delete(want, tool.Name)
-	}
-	for name := range want {
-		t.Errorf("missing production tool %s", name)
-	}
 }

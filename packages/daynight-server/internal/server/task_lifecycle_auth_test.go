@@ -3,155 +3,127 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
-	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestTaskLifecycleAuthenticationAndMemberAccess(t *testing.T) {
-	integration := newIdentityIntegration(t)
-	admin, member, outsider, anonymous := identityBrowser(t), identityBrowser(t), identityBrowser(t), identityBrowser(t)
-	adminUser := integration.login(t, admin, "alice")
-	memberUser := integration.login(t, member, "bob")
-	integration.login(t, outsider, "nullable")
-	origin := map[string]string{"Origin": integration.server.URL}
-	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects",
-		jsonBody(t, api.CreateProjectRequest{Name: "Lifecycle authorization", RepoURL: "https://example.com/lifecycle", ExpectedUserID: adminUser.ID}), origin, http.StatusCreated)
-	project := identityDecode[api.Project](t, data)
-	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+taskCollection(project.ID), `{"title":"Completed external prerequisite"}`, origin, http.StatusCreated)
-	prerequisite := identityDecode[api.Task](t, data)
-	for _, action := range []string{"in_progress", "done"} {
-		_, data = identityRequest(t, admin, http.MethodPut, integration.server.URL+taskPath(prerequisite)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: prerequisite.Version, Status: action}), origin, http.StatusOK)
-		prerequisite = identityDecode[api.Task](t, data)
-	}
-	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(adminUser.ID), origin, http.StatusCreated)
-	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
-	link, err := url.Parse(invitation.Link)
-	if err != nil || link.Fragment == "" {
-		t.Fatal("project invitation did not contain an acceptance token")
-	}
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, http.StatusOK)
-	if joined := identityDecode[api.ProjectInvitationAcceptance](t, data); joined.DirectGrant.UserID != memberUser.ID || joined.DirectGrant.Role != "member" {
-		t.Fatalf("invitation did not grant the ordinary member role: %+v", joined)
-	}
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+taskCollection(project.ID),
-		jsonBody(t, map[string]any{"title": "Member workflow", "description": "Original", "dependsOn": []string{prerequisite.ID}, "externalDependsOn": []string{prerequisite.ID}}), origin, http.StatusCreated)
-	task := identityDecode[api.Task](t, data)
-	_, data = identityRequest(t, member, http.MethodPatch, integration.server.URL+taskPath(task),
-		jsonBody(t, map[string]any{"version": task.Version, "description": "Revised by a member", "allowAgents": true}), origin, http.StatusOK)
-	task = identityDecode[api.Task](t, data)
-	if !task.AllowAgents {
-		t.Fatal("ordinary member could not enable automatic execution")
-	}
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Member lifecycle","expiresAt":null}`, origin, http.StatusCreated)
-	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
-	bearer := map[string]string{"Authorization": "Bearer " + token.Token}
-	integration.secrets = append(integration.secrets, token.Token)
+	f := newTaskCredentialFixture(t)
+	member := defaultHTTPPrincipal()
+	memberSession := member
+	memberSession.Kind, memberSession.CredentialID = model.SessionCredential, "77777777-7777-4777-8777-777777777777"
+	admin := model.Principal{UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222", Kind: model.SessionCredential}
+	outsider := model.Principal{UserID: "99999999-9999-4999-8999-999999999999", CredentialID: "88888888-8888-4888-8888-888888888888", Kind: model.SessionCredential}
+	session := map[string]string{"Cookie": "__Host-daynight_session=" + httpTestToken(model.SessionCredential), "Origin": f.origin}
+	foreign := map[string]string{"Cookie": session["Cookie"], "Origin": "https://foreign.example"}
+	bearer := map[string]string{"Authorization": "Bearer " + defaultHTTPToken()}
+	prerequisite := f.task
+	prerequisite.ID, prerequisite.Title, prerequisite.Status = "66666666-6666-4666-8666-666666666666", "Completed external prerequisite", model.TaskDone
+	current := f.task
+	current.Title, current.Description = "Member workflow", "Original"
+	current.DependsOn, current.ExternalDependsOn = []string{prerequisite.ID}, []string{prerequisite.ID}
+	path := "/api/v1/projects/" + f.project.ID + "/tasks/" + current.ID
+	next := current
+	next.Description, next.AllowAgents, next.Version, next.UpdatedAt = "Revised by a member", true, 2, current.UpdatedAt.Add(time.Second)
+	f.expectLifecycleMutation(current, next, prerequisite, true, nil)
+	response := f.request(memberSession, http.MethodPatch, path, map[string]any{"version": current.Version, "description": "Revised by a member", "allowAgents": true}, session, 200, "", lifecycleMutationCalls(true))
+	assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), next)
+	current = next
 
-	request := func(t *testing.T, browser *http.Client, method, path, body string, headers map[string]string, status int, code string) []byte {
+	guardPatch := func(body any, after model.Task) {
 		t.Helper()
-		response, data := identityRequest(t, browser, method, integration.server.URL+path, body, headers, status)
-		if response.Header.Get("Cache-Control") != "no-store" {
-			t.Fatalf("lifecycle response can be cached: %s %s", method, path)
-		}
-		if code != "" && identityDecode[api.ErrorResponse](t, data).Error.Code != code {
-			t.Fatalf("lifecycle refusal changed error code: %s", data)
-		}
-		return data
+		f.expectLifecycleMutation(current, after, prerequisite, true, nil)
+		f.request(model.Principal{}, http.MethodPatch, path, body, nil, 401, "unauthenticated", map[string]int{})
+		f.expectLifecycleMutation(current, after, prerequisite, true, model.ErrNotFound)
+		f.request(outsider, http.MethodPatch, path, body, session, 404, "not_found", taskCredentialCalls("projectWrite", "access"))
+		f.expectLifecycleMutation(current, after, prerequisite, true, nil)
+		f.request(memberSession, http.MethodPatch, path, body, foreign, 403, "forbidden", taskCredentialCalls())
 	}
-	body := jsonBody(t, map[string]any{"version": task.Version, "allowAgents": false})
-	request(t, anonymous, http.MethodPatch, taskPath(task), body, nil, http.StatusUnauthorized, "unauthenticated")
-	request(t, outsider, http.MethodPatch, taskPath(task), body, origin, http.StatusNotFound, "not_found")
-	request(t, member, http.MethodPatch, taskPath(task), body, map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden, "forbidden")
-	data = request(t, anonymous, http.MethodPatch, taskPath(task), body, bearer, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	if task.AllowAgents {
-		t.Fatal("member PAT could not disable permission")
-	}
-	classification := jsonBody(t, map[string]any{"version": task.Version, "externalDependsOn": []string{}})
-	request(t, anonymous, http.MethodPatch, taskPath(task), classification, nil, http.StatusUnauthorized, "unauthenticated")
-	request(t, outsider, http.MethodPatch, taskPath(task), classification, origin, http.StatusNotFound, "not_found")
-	request(t, member, http.MethodPatch, taskPath(task), classification, map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden, "forbidden")
-	data = request(t, anonymous, http.MethodPatch, taskPath(task), classification, bearer, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	if len(task.ExternalDependsOn) != 0 || len(task.DependsOn) != 1 {
-		t.Fatal("member PAT could not change classification independently of prerequisites")
-	}
-	data = request(t, member, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "externalDependsOn": []string{prerequisite.ID}}), origin, http.StatusOK, "")
-	task = identityDecode[api.Task](t, data)
-	for _, step := range []struct{ action, status string }{{"in_progress", "in_progress"}, {"todo", "todo"}, {"done", "done"}} {
-		t.Run(step.action, func(t *testing.T) {
-			path := taskPath(task) + "/status"
-			body := jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: step.status})
-			request(t, anonymous, http.MethodPut, path, body, nil, http.StatusUnauthorized, "unauthenticated")
-			request(t, anonymous, http.MethodDelete, path, body, nil, http.StatusUnauthorized, "unauthenticated")
-			request(t, member, http.MethodPut, path, body, map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden, "forbidden")
-			request(t, outsider, http.MethodPut, path, body, origin, http.StatusNotFound, "not_found")
-			data := request(t, member, http.MethodGet, taskPath(task), "", nil, http.StatusOK, "")
-			if observed := identityDecode[api.Task](t, data); !reflect.DeepEqual(observed, task) {
-				t.Fatal("rejected lifecycle request changed the member's task")
+	next = current
+	next.AllowAgents, next.Version, next.UpdatedAt = false, 3, current.UpdatedAt.Add(time.Second)
+	disable := map[string]any{"version": current.Version, "allowAgents": false}
+	guardPatch(disable, next)
+	f.expectLifecycleMutation(current, next, prerequisite, true, nil)
+	response = f.request(member, http.MethodPatch, path, disable, bearer, 200, "", lifecycleMutationCalls(true))
+	assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), next)
+	current = next
+	next = current
+	next.ExternalDependsOn, next.Version, next.UpdatedAt = []string{}, 4, current.UpdatedAt.Add(time.Second)
+	classify := map[string]any{"version": current.Version, "externalDependsOn": []string{}}
+	guardPatch(classify, next)
+	f.expectLifecycleMutation(current, next, prerequisite, true, nil)
+	response = f.request(member, http.MethodPatch, path, classify, bearer, 200, "", lifecycleMutationCalls(true))
+	assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), next)
+	current = next
+	next = current
+	next.ExternalDependsOn, next.Version, next.UpdatedAt = []string{prerequisite.ID}, 5, current.UpdatedAt.Add(time.Second)
+	f.expectLifecycleMutation(current, next, prerequisite, true, nil)
+	response = f.request(memberSession, http.MethodPatch, path, map[string]any{"version": current.Version, "externalDependsOn": []string{prerequisite.ID}}, session, 200, "", lifecycleMutationCalls(true))
+	assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), next)
+	current = next
+	for _, status := range []model.TaskStatus{model.TaskInProgress, model.TaskTodo, model.TaskDone} {
+		t.Run(string(status), func(t *testing.T) {
+			next := current
+			next.Status, next.Version, next.UpdatedAt, next.Ready = status, current.Version+1, current.UpdatedAt.Add(time.Second), status == model.TaskTodo
+			if status == model.TaskInProgress {
+				next.StartedAt = &next.UpdatedAt
 			}
-			browser, headers := member, map[string]string{"Origin": integration.server.URL}
-			if step.action == "in_progress" || step.action == "todo" {
-				browser, headers = anonymous, map[string]string{"Authorization": bearer["Authorization"]}
+			if status == model.TaskTodo {
+				next.StartedAt, next.CompletedAt = nil, nil
 			}
-			headers["X-Request-ID"] = "lifecycle-member-" + step.action
-			data = request(t, browser, http.MethodPut, path, body, headers, http.StatusOK, "")
-			changed := identityDecode[api.Task](t, data)
-			if changed.Status != step.status || changed.Version != task.Version+1 || changed.AllowAgents != task.AllowAgents || len(changed.ExternalDependsOn) != 1 || changed.ExternalDependsOn[0] != prerequisite.ID {
-				t.Fatalf("ordinary member could not perform %s: %+v", step.action, changed)
+			if status == model.TaskDone {
+				next.CompletedAt = &next.UpdatedAt
 			}
-			task = changed
+			body := api.TaskStatusUpdateRequest{Version: current.Version, Status: string(status)}
+			f.expectLifecycleMutation(current, next, prerequisite, false, nil)
+			for _, method := range []string{http.MethodPut, http.MethodDelete} {
+				f.request(model.Principal{}, method, path+"/status", body, nil, 401, "unauthenticated", map[string]int{})
+			}
+			f.request(memberSession, http.MethodPut, path+"/status", body, foreign, 403, "forbidden", taskCredentialCalls())
+			f.expectLifecycleMutation(current, next, prerequisite, false, model.ErrNotFound)
+			f.request(outsider, http.MethodPut, path+"/status", body, session, 404, "not_found", taskCredentialCalls("projectWrite", "access"))
+			f.expectRead(current, nil, nil)
+			response := f.request(memberSession, http.MethodGet, path, nil, session, 200, "", taskCredentialCalls("snapshot", "access", "task", "epoch"))
+			assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), current)
+			f.expectLifecycleMutation(current, next, prerequisite, false, nil)
+			actor, headers := member, map[string]string{"Authorization": bearer["Authorization"], "X-Request-ID": "lifecycle-member-" + string(status)}
+			if status == model.TaskDone {
+				actor, headers = memberSession, map[string]string{"Cookie": session["Cookie"], "Origin": f.origin, "X-Request-ID": "lifecycle-member-done"}
+			}
+			response = f.request(actor, http.MethodPut, path+"/status", body, headers, 200, "", lifecycleMutationCalls(false))
+			assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), next)
+			current = next
 		})
 	}
-
-	mainURL, err := url.Parse(integration.server.URL)
-	if err != nil {
-		t.Fatal(err)
+	f.authenticationError = model.ErrNotFound
+	for _, status := range []string{"todo", "in_progress", "done"} {
+		body := api.TaskStatusUpdateRequest{Version: current.Version, Status: status}
+		f.request(member, http.MethodPut, path+"/status", body, bearer, 401, "unauthenticated", taskCredentialCalls())
+		f.request(memberSession, http.MethodPut, path+"/status", body, session, 401, "unauthenticated", taskCredentialCalls())
 	}
-	var session string
-	for _, cookie := range member.Jar.Cookies(mainURL) {
-		if cookie.Name == integration.sessionCookie {
-			session = cookie.String()
-		}
-	}
-	if session == "" {
-		t.Fatal("member login did not establish a browser session")
-	}
-	identityRequest(t, member, http.MethodDelete, integration.server.URL+"/api/v1/me/tokens/"+token.ID, "", origin, http.StatusNoContent)
-	identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/auth/logout", "", origin, http.StatusNoContent)
-	for _, action := range []string{"todo", "in_progress", "done"} {
-		path := taskPath(task) + "/status"
-		body := jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: action})
-		request(t, anonymous, http.MethodPut, path, body, bearer, http.StatusUnauthorized, "unauthenticated")
-		request(t, anonymous, http.MethodPut, path, body, map[string]string{"Cookie": session, "Origin": integration.server.URL}, http.StatusUnauthorized, "unauthenticated")
-	}
-	_, data = identityRequest(t, admin, http.MethodGet, integration.server.URL+taskPath(task), "", nil, http.StatusOK)
-	if persisted := identityDecode[api.Task](t, data); !reflect.DeepEqual(persisted, task) {
-		t.Fatal("revoked credentials changed the persisted lifecycle state")
-	}
-	integration.logs.mu.Lock()
-	logs := integration.logs.buffer.String()
-	integration.logs.mu.Unlock()
-	for _, action := range []string{"todo", "in_progress", "done"} {
+	f.authenticationError = nil
+	f.expectRead(current, nil, nil)
+	response = f.request(admin, http.MethodGet, path, nil, session, 200, "", taskCredentialCalls("snapshot", "access", "task", "epoch"))
+	assertLifecycleTask(t, taskCredentialDecode[api.Task](t, response), current)
+	for _, status := range []string{"todo", "in_progress", "done"} {
 		found := false
-		for line := range strings.SplitSeq(logs, "\n") {
+		for line := range strings.SplitSeq(f.logs.String(), "\n") {
 			var entry map[string]any
-			if json.Unmarshal([]byte(line), &entry) == nil && entry["component"] == "task" && entry["phase"] == "set_status" &&
-				entry["request_id"] == "lifecycle-member-"+action && entry["user_id"] == memberUser.ID {
+			if json.Unmarshal([]byte(line), &entry) == nil && entry["component"] == "task" && entry["phase"] == "set_status" && entry["request_id"] == "lifecycle-member-"+status && entry["user_id"] == member.UserID {
 				found = true
 			}
 		}
 		if !found {
-			t.Fatalf("%s did not log its authenticated member and request ID", action)
+			t.Fatalf("%s did not log authenticated member and request ID", status)
 		}
 	}
-	for _, secret := range integration.secrets {
-		if secret != "" && strings.Contains(logs, secret) {
-			t.Fatal("lifecycle diagnostics exposed an authentication credential")
+	for _, credential := range []string{defaultHTTPToken(), httpTestToken(model.SessionCredential)} {
+		if strings.Contains(f.logs.String(), credential) {
+			t.Fatal("lifecycle diagnostics exposed credential")
 		}
 	}
 }

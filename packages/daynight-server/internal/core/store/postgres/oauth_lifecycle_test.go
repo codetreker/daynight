@@ -11,6 +11,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	botpg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/bot"
+	oauthpg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -370,57 +371,122 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer botTx.Rollback(context.Background())
-	if _, err = (&ThreadTx{tx: threadTx}).CredentialDAO().Credential(ctx, principal); err != nil {
+	if _, err := (&ThreadTx{tx: threadTx}).CredentialDAO().Credential(ctx, principal); err != nil {
 		t.Fatal(err)
 	}
-	if err = botpg.NewWriter(botTx).Credential(ctx, principal); err != nil {
+	if err := botpg.NewWriter(botTx).Credential(ctx, principal); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { _, err := lifecycle.Rotate(ctx, refresh, "client", grant.Resource, admit); done <- err }()
-	waitForDelete := func() {
-		t.Helper()
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			var waiting bool
-			err := db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=current_setting('application_name') AND wait_event_type='Lock' AND query LIKE 'DELETE FROM oauth_access_tokens%')`).Scan(&waiting)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if waiting {
-				return
-			}
+	revoker, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer revoker.Rollback(context.Background())
+	revoked, revokedDone := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(revokedDone)
+		changed, err := oauthpg.NewDAO(revoker).RevokeFamily(ctx, grant.ID, time.Now())
+		if err == nil && !changed {
+			err = errors.New("active family was not revoked")
+		}
+		revoked <- err
+	}()
+	defer func() {
+		cancel()
+		_ = threadTx.Rollback(context.Background())
+		_ = botTx.Rollback(context.Background())
+		select {
+		case <-revokedDone:
+		case <-time.After(2 * time.Second):
+			t.Error("family revocation did not drain")
+		}
+	}()
+	waitTransferTeamLock(t, ctx, db, "DELETE FROM oauth_access_tokens", threadTx.Conn().PgConn().PID())
+	if err := threadTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitTransferTeamLock(t, ctx, db, "DELETE FROM oauth_access_tokens", botTx.Conn().PgConn().PID())
+	if err := botTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-revoked:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	waiting, finished := make(chan error, 2), make(chan struct{}, 2)
+	go func() {
+		defer func() { finished <- struct{}{} }()
+		_, err := db.WriteThread(ctx, func(scope store.ThreadScope) error {
+			_, err := scope.CredentialDAO().Credential(ctx, principal)
+			return err
+		})
+		waiting <- err
+	}()
+	go func() {
+		defer func() { finished <- struct{}{} }()
+		_, err := db.WriteBot(ctx, func(scope store.BotScope) error { return scope.BotDAO().Credential(ctx, principal) })
+		waiting <- err
+	}()
+	defer func() {
+		cancel()
+		_ = revoker.Rollback(context.Background())
+		for range 2 {
 			select {
-			case err := <-done:
-				t.Fatalf("replay returned before credential locks released: %v", err)
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			case <-ticker.C:
+			case <-finished:
+			case <-time.After(2 * time.Second):
+				t.Error("business credential waiter did not drain")
 			}
 		}
+	}()
+	for {
+		var count int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'SELECT expires_at FROM oauth_access_tokens%' AND $1=ANY(pg_blocking_pids(pid))`, revoker.Conn().PgConn().PID()).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 2 {
+			break
+		}
+		select {
+		case err := <-waiting:
+			t.Fatalf("business credential returned before revocation commit: %v", err)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		default:
+		}
+		if err := waitThreadClock(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
-	waitForDelete()
-	if err = threadTx.Commit(ctx); err != nil {
+	if err := revoker.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitForDelete()
-	if err = botTx.Commit(ctx); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		select {
+		case err := <-waiting:
+			if !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("committed family revocation accepted credential: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
 	}
-	if err = <-done; !errors.Is(err, core.ErrInvalidGrant) {
-		t.Fatalf("replay: %v", err)
+	if _, err := lifecycle.Rotate(ctx, refresh, "client", grant.Resource, admit); !errors.Is(err, core.ErrInvalidGrant) {
+		t.Fatalf("refresh survived family revocation: %v", err)
 	}
-	_, err = db.WriteThread(ctx, func(scope store.ThreadScope) error {
-		_, e := scope.CredentialDAO().Credential(ctx, principal)
-		return e
+	_, err = db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
+		_, err := scope.CredentialFamilyDAO().AuthenticateAccess(ctx, secret.Hash(access), grant.Resource, grant.Scope, time.Now())
+		return err
 	})
 	if !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("thread credential accepted: %v", err)
+		t.Fatalf("access survived family revocation: %v", err)
 	}
-	_, err = db.WriteBot(ctx, func(scope store.BotScope) error { return scope.BotDAO().Credential(ctx, principal) })
-	if !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("bot credential accepted: %v", err)
+	var active int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM oauth_access_tokens WHERE grant_id=$1`, grant.ID).Scan(&active); err != nil || active != 0 {
+		t.Fatalf("revoked family retained access rows: %d %v", active, err)
 	}
 }
 

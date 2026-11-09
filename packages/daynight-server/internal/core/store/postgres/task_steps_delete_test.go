@@ -1,12 +1,18 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"reflect"
 	"testing"
+	"time"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -20,6 +26,36 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 	ids := []string{"00000000", "11111111", "abcdef01", "fedcba98"}
 	for index, id := range ids {
 		seedStoreStep(t, database, task.ID, id, int64(index))
+		mustQueryExec(t, database, `UPDATE task_steps SET status=$3 WHERE task_id=$1 AND id=$2`, task.ID, id,
+			[]model.TaskStepStatus{model.TaskStepTodo, model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped}[index])
+	}
+	mustQueryExec(t, database, `UPDATE task_steps SET description='[Plan](plan.md)' WHERE task_id=$1 AND id=$2`, task.ID, ids[2])
+	mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, task.ID,
+		`[{"url":"opaque-pr-reference","title":"Evidence"}]`)
+	parent := snapshotTask(t, database, project.ID, task.ID)
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := files.Close(); err != nil {
+			t.Errorf("close Step attachment storage: %v", err)
+		}
+	})
+	address, err := attachmentcore.NewAddress(project.ID, task.ID, "plan.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("# Durable attachment\nReferences survive a Step deletion.\n")
+	info, err := files.Put(ctx, attachmentcore.Bucket, address.StoragePath, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, created, err := database.PutAttachment(ctx, model.Attachment{
+		ProjectID: project.ID, TaskID: task.ID, Path: address.RelativePath, ContentType: "text/markdown", SizeBytes: info.Size,
+	})
+	if err != nil || !created {
+		t.Fatalf("attachment fixture metadata: %+v %v", metadata, err)
 	}
 	if _, err := database.Pool.Exec(ctx, `CREATE TABLE deleted_rows(id text PRIMARY KEY); CREATE TABLE compacted_rows(id text PRIMARY KEY); CREATE FUNCTION audit_deleted_rows() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO deleted_rows VALUES(OLD.id); RETURN OLD; END $$; CREATE FUNCTION audit_compacted_rows() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO compacted_rows VALUES(NEW.id); RETURN NEW; END $$; CREATE TRIGGER audit_deleted_rows AFTER DELETE ON task_steps FOR EACH ROW EXECUTE FUNCTION audit_deleted_rows(); CREATE TRIGGER audit_compacted_rows AFTER UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION audit_compacted_rows()`); err != nil {
 		t.Fatal(err)
@@ -41,7 +77,7 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 	for _, row := range original {
 		byID[row.ID] = row
 	}
-	for _, tc := range []struct {
+	for index, tc := range []struct {
 		id             string
 		position, tail int64
 		order          []string
@@ -54,8 +90,17 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, `TRUNCATE deleted_rows,compacted_rows`); err != nil {
 			t.Fatal(err)
 		}
+		var changedAt time.Time
 		if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
-			return tx.TaskDAO().DeleteTaskStep(ctx, task.ID, tc.id, tc.position, tc.tail)
+			var err error
+			changedAt, err = tx.TaskDAO().ObservedAt(ctx)
+			if err != nil {
+				return err
+			}
+			if err := tx.TaskDAO().DeleteTaskStep(ctx, task.ID, tc.id, tc.position, tc.tail); err != nil {
+				return err
+			}
+			return tx.TaskDAO().TouchTask(ctx, task.ID, changedAt)
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -78,7 +123,68 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 		if err := database.Pool.QueryRow(ctx, `SELECT id FROM deleted_rows`).Scan(&removedID); err != nil || removedID != tc.id {
 			t.Fatal("wrong physical target removed")
 		}
+		changedParent := snapshotTask(t, database, project.ID, task.ID)
+		if changedParent.Version != parent.Version+int64(index)+1 || !changedParent.UpdatedAt.Equal(changedAt) {
+			t.Fatal("Step deletion lost its parent revision or database clock")
+		}
+		changedParent.Version, changedParent.UpdatedAt = parent.Version, parent.UpdatedAt
+		if !reflect.DeepEqual(changedParent, parent) {
+			t.Fatal("Step deletion changed parent properties or business fields")
+		}
 	}
+	assertAttachment := func() {
+		t.Helper()
+		if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+			actual, err := scope.AttachmentDAO().Attachment(ctx, project.ID, task.ID, address.RelativePath)
+			if err != nil {
+				return err
+			}
+			page, err := scope.AttachmentDAO().Attachments(ctx, project.ID, task.ID, AttachmentQuery{Limit: 10})
+			if err != nil || !reflect.DeepEqual(actual, metadata) || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], metadata) {
+				t.Fatalf("Step deletion changed referenced attachment metadata: %+v %+v %v", actual, page, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		object, err := files.Open(ctx, attachmentcore.Bucket, address.StoragePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual, readErr := io.ReadAll(object.Body)
+		closeErr := object.Body.Close()
+		if readErr != nil || closeErr != nil || !bytes.Equal(actual, payload) || object.Info.Size != int64(len(payload)) {
+			t.Fatalf("Step deletion changed referenced attachment bytes: read=%v close=%v", readErr, closeErr)
+		}
+	}
+	assertAttachment()
+	var reused model.TaskStep
+	if err := writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
+		stamp, err := scope.TaskDAO().ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		reused = model.TaskStep{ID: ids[2], Position: 0, Title: "new record", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
+		if err := scope.TaskDAO().InsertTaskStep(ctx, task.ID, reused); err != nil {
+			return err
+		}
+		return scope.TaskDAO().TouchTask(ctx, task.ID, stamp)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recreated := read()
+	if len(recreated) != 1 || recreated[0] != reused || !reused.CreatedAt.After(byID[ids[2]].CreatedAt) || !reused.CreatedAt.Equal(reused.UpdatedAt) {
+		t.Fatal("Step ID reuse restored deleted content or lost the new record clock")
+	}
+	afterParent := snapshotTask(t, database, project.ID, task.ID)
+	if afterParent.Version != parent.Version+5 || !afterParent.UpdatedAt.Equal(reused.UpdatedAt) {
+		t.Fatal("Step ID reuse lost its parent revision or database clock")
+	}
+	afterParent.Version, afterParent.UpdatedAt = parent.Version, parent.UpdatedAt
+	if !reflect.DeepEqual(afterParent, parent) {
+		t.Fatal("Step ID reuse changed parent properties or business fields")
+	}
+	assertAttachment()
 }
 
 func TestTaskStepsDeleteStoreFailureCausesAndRollback(t *testing.T) {

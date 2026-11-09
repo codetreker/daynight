@@ -5,10 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,14 +15,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
-	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -122,78 +115,59 @@ func callInvitationTool(t *testing.T, client *sdk.ClientSession, name string, ar
 }
 
 func TestMCPInvitationWorkflow(t *testing.T) {
-	database := projectTestStore(t)
-	files := attachmentTestFiles(t)
-	server := httptest.NewUnstartedServer(nil)
-	origin := "http://" + server.Listener.Addr().String()
-	callback := origin + "/api/v1/auth/callback"
-	gateway := testauth.StartGateway(t, callback)
-	config := configuredTestConfig()
-	config.PublicOrigin, config.UniAuthCallbackURL, config.UniAuthURL = origin, callback, gateway.Origin
-	config.UniAuthAppID, config.UniAuthAppSecret = gateway.AppID, gateway.AppSecret
-	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
+	admin := defaultHTTPPrincipal()
+	member := model.Principal{UserID: "c3333333-3333-4333-8333-333333333333", CredentialID: "d4444444-4444-4444-8444-444444444444", Kind: model.PATCredential}
+	tokens := []string{defaultHTTPToken(), "dnpat_" + strings.Repeat("B", 42) + "A"}
+	tx := newHTTPTestStore(t)
+	configureMCPPrincipals(t, tx, map[string]model.Principal{tokens[0]: admin, tokens[1]: member})
 	logs := &invitationLog{}
-	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	handler, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	app := handler.(*sessionApplication)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	server.Config.Handler = httpx.RequestLogging(logger, handler)
-	server.Start()
-	t.Cleanup(server.Close)
-	identityClient, err := service.NewIdentityClient(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := identityservice.New(database, identityClient, callback)
-	clients := make([]*sdk.ClientSession, 2)
-	principals := make([]model.Principal, 2)
-	tokens := make([]string, 2)
-	for i, name := range []string{"alice", "bob"} {
-		browser := testauth.Browser(t)
-		testauth.Login(t, browser, origin, name)
-		token := testauth.CreatePAT(t, browser, origin)
-		tokens[i] = token
-		principals[i], err = identity.Authenticate(t.Context(), model.PATCredential, token)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clients[i] = mcpPATClient(t, server.URL, token)
-	}
-	admin, member := principals[0], principals[1]
-	teams := teamservice.NewTeams(database)
-	team, err := teams.Create(t.Context(), admin, coreteam.CreateTeam{Name: "Invitation Team", ExpectedUserID: admin.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherTeam, err := teams.Create(t.Context(), admin, coreteam.CreateTeam{Name: "Other Team", ExpectedUserID: admin.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
+	server, _ := newMCPHTTPServer(t, tx, attachmentTestFiles(t), logs)
+	origin := server.URL
+	clients := []*sdk.ClientSession{mcpPATClient(t, origin, tokens[0]), mcpPATClient(t, origin, tokens[1])}
+	team := mcpOrgTeam(t, "e5555555-5555-4555-8555-555555555555", "Invitation Team", admin.UserID)
+	otherTeam := mcpOrgTeam(t, "f6666666-6666-4666-8666-666666666666", "Other Team", admin.UserID)
 	args := map[string]any{"team": team.ID, "confirm": true}
 	created := make([]map[string]any, 0, 3)
 	links := make([]string, 0, 3)
+	invitations := make([]model.TeamInvitation, 0, 3)
 	for range 3 {
+		captured := mcpOrgMintInvitation(t, tx, admin, team)
 		item := callInvitationTool(t, clients[0], "team_invitation_create", args, false)
 		link, ok := item["link"].(string)
 		if !ok || !strings.HasPrefix(link, origin+"/team-invitations#dnteam_") {
 			t.Fatal("invalid created Team invitation link")
 		}
+		token := strings.Split(link, "#")[1]
+		projectHTTPCheck(t, captured.TokenHash, secret.Hash(token))
+		projectHTTPCheck(t, item["id"], captured.ID)
 		created = append(created, item)
 		links = append(links, link)
+		invitations = append(invitations, model.TeamInvitation{ID: captured.ID, TeamID: team.ID, CreatedBy: admin.UserID, TokenHash: secret.Hash(token), CreatedAt: captured.CreatedAt, ExpiresAt: captured.CreatedAt.Add(7 * 24 * time.Hour)})
 	}
+	tx.WriteTeamCall = nil
 	callInvitationTool(t, clients[0], "team_invitation_create", map[string]any{"team": team.ID}, true)
 	seen := map[string]bool{}
 	var cursor any
-	for range 3 {
+	for i := range 3 {
+		query, read := mcpOrgCount(t, 1), mcpOrgCount(t, 1)
+		wantPage := store.Page{Limit: 1}
+		if i > 0 {
+			wantPage.After = &store.Position{CreatedAt: invitations[i-1].CreatedAt, ID: invitations[i-1].ID}
+		}
+		row := invitations[i]
+		mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamCall: func(ctx context.Context, user, id string) (model.Team, error) {
+			read()
+			projectHTTPCheck(t, []string{user, id}, []string{admin.UserID, team.ID})
+			return team, nil
+		}, TeamInvitationPageCall: func(ctx context.Context, id string, now time.Time, page store.Page) (store.TeamInvitationPage, error) {
+			query()
+			projectHTTPCheck(t, id, team.ID)
+			projectHTTPCheck(t, page, wantPage)
+			if now.IsZero() || now.Location() != time.UTC {
+				unexpectedHTTPCall(t, "Team invitation page time")
+			}
+			return store.TeamInvitationPage{Items: []model.TeamInvitation{row}, HasMore: i < 2}, nil
+		}})
 		pageArgs := map[string]any{"team": team.ID, "limit": 1}
 		if cursor != nil {
 			pageArgs["cursor"] = cursor
@@ -217,6 +191,7 @@ func TestMCPInvitationWorkflow(t *testing.T) {
 		if id == "" || seen[id] {
 			t.Fatal("missing or repeated invitation")
 		}
+		projectHTTPCheck(t, id, row.ID)
 		seen[id] = true
 		if _, ok := item["link"]; ok {
 			t.Fatal("list returned link")
@@ -225,10 +200,11 @@ func TestMCPInvitationWorkflow(t *testing.T) {
 			t.Fatal("list returned secret")
 		}
 		cursor = page["nextCursor"]
-		if len(seen) == 1 {
+		if i == 0 {
 			if cursor == nil {
 				t.Fatal("missing next cursor")
 			}
+			mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{})
 			callInvitationTool(t, clients[0], "team_invitation_list", map[string]any{"team": otherTeam.ID, "limit": 1, "cursor": cursor}, true)
 		}
 	}
@@ -240,49 +216,99 @@ func TestMCPInvitationWorkflow(t *testing.T) {
 			t.Fatal("page omitted invitation")
 		}
 	}
+	tx.ReadSnapshotCall = nil
 	for _, bad := range []string{strings.Replace(links[0], origin, "https://other.invalid", 1), links[0] + "?query", " " + links[0], strings.Replace(links[0], "/team-invitations", "/x/../team-invitations", 1)} {
 		callInvitationTool(t, clients[1], "invitation_inspect", map[string]any{"link": bad}, true)
 	}
+	token := strings.Split(links[0], "#")[1]
+	mcpOrgInspectTeam(t, tx, member, team.TeamRef, invitations[0], token, nil)
 	preview := callInvitationTool(t, clients[1], "invitation_inspect", map[string]any{"link": links[0]}, false)
 	if preview["scope"] != "team" || preview["membership"] != nil {
 		t.Fatal("Team preview did not describe the nonmember")
 	}
+	tx.ReadSnapshotCall = nil
+	tx.WriteTeamCall = nil
 	callInvitationTool(t, clients[1], "invitation_accept", map[string]any{"link": links[0]}, true)
+	joinedMember := model.TeamMember{TeamID: team.ID, UserID: member.UserID, Role: model.ProjectMemberRole, Version: 1, CreatedAt: team.CreatedAt, UpdatedAt: team.UpdatedAt}
+	mcpOrgAcceptTeam(t, tx, member, team.TeamRef, invitations[0], token, joinedMember, false)
 	accepted := callInvitationTool(t, clients[1], "invitation_accept", map[string]any{"link": links[0], "confirm": true}, false)
 	if accepted["scope"] != "team" || accepted["joined"] != true || accepted["consumed"] != true {
 		t.Fatal("Team acceptance did not report joining and consumption")
 	}
+	consumedAt := time.Now().UTC()
+	consumed := invitations[0]
+	consumed.ConsumedAt = &consumedAt
+	consumed.ConsumedBy = &member.UserID
+	mcpOrgUnavailableTeamInvitation(t, tx, consumed, token)
+	tx.WriteTeamCall = nil
 	callInvitationTool(t, clients[1], "invitation_accept", map[string]any{"link": links[0], "confirm": true}, true)
-	var count int
-	if err := database.Pool.QueryRow(t.Context(), `SELECT count(*) FROM team_members WHERE team_id=$1 AND user_id=$2`, team.ID, member.UserID).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("Team membership count: %d, %v", count, err)
-	}
+	token = strings.Split(links[1], "#")[1]
+	mcpOrgAcceptTeam(t, tx, admin, team.TeamRef, invitations[1], token, team.Membership, true)
 	existing := callInvitationTool(t, clients[0], "invitation_accept", map[string]any{"link": links[1], "confirm": true}, false)
 	if existing["joined"] != false || existing["consumed"] != false {
 		t.Fatal("existing Team member consumed invitation")
 	}
 	revokeArgs := map[string]any{"team": team.ID, "invitationId": created[1]["id"], "confirm": true}
+	mcpOrgRevokeInvitation(t, tx, admin, team, invitations[1].ID, true)
 	if callInvitationTool(t, clients[0], "team_invitation_revoke", revokeArgs, false)["changed"] != true {
 		t.Fatal("revoke did not change invitation")
 	}
+	mcpOrgRevokeInvitation(t, tx, admin, team, invitations[1].ID, false)
 	if callInvitationTool(t, clients[0], "team_invitation_revoke", revokeArgs, false)["changed"] != false {
 		t.Fatal("repeat revoke was not unchanged")
 	}
+	revoked := invitations[1]
+	revoked.RevokedAt = &consumedAt
+	mcpOrgUnavailableTeamInvitation(t, tx, revoked, token)
 	callInvitationTool(t, clients[1], "invitation_inspect", map[string]any{"link": links[1]}, true)
-	if _, err := database.Pool.Exec(t.Context(), `UPDATE team_invitations SET created_at=now()-interval '2 seconds', expires_at=now()-interval '1 second' WHERE id=$1`, created[2]["id"]); err != nil {
-		t.Fatal(err)
-	}
+	expired := invitations[2]
+	expired.CreatedAt = consumedAt.Add(-2 * time.Second)
+	expired.ExpiresAt = consumedAt.Add(-time.Second)
+	mcpOrgUnavailableTeamInvitation(t, tx, expired, strings.Split(links[2], "#")[1])
 	callInvitationTool(t, clients[1], "invitation_inspect", map[string]any{"link": links[2]}, true)
 
-	// Force a page larger than the encoded response budget. The cursor must
-	// continue after the last returned item rather than the last database row read.
-	if _, err := database.Pool.Exec(t.Context(), `INSERT INTO team_invitations(id, team_id, created_by, token_hash, created_at, expires_at) SELECT gen_random_uuid(), $1, $2, sha256(('page-' || n::text)::bytea), now(), now()+interval '1 day' FROM generate_series(1,100) n`, team.ID, admin.UserID); err != nil {
-		t.Fatal(err)
+	rows := make([]model.TeamInvitation, 100)
+	for i := range rows {
+		rows[i] = model.TeamInvitation{ID: fmt.Sprintf("%08x-aaaa-4aaa-8aaa-aaaaaaaaaaaa", i+1), TeamID: team.ID, CreatedBy: admin.UserID, CreatedAt: team.CreatedAt.Add(time.Duration(i) * time.Second), ExpiresAt: consumedAt.Add(24 * time.Hour)}
 	}
 	seen = map[string]bool{}
 	cursor = nil
-	pages := 0
-	for {
+	pages, offset := 0, 0
+	for offset < len(rows) {
+		start := offset
+		readCalls, pageCalls := 0, 0
+		var observed time.Time
+		tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
+			readCalls++
+			if readCalls != 1 {
+				unexpectedHTTPCall(t, "Invitation budget snapshot")
+			}
+			dao := mcpOrgTeamReader{t: t, TeamCall: func(ctx context.Context, user, id string) (model.Team, error) {
+				projectHTTPCheck(t, []string{user, id}, []string{admin.UserID, team.ID})
+				return team, nil
+			}, TeamInvitationPageCall: func(ctx context.Context, id string, now time.Time, page store.Page) (store.TeamInvitationPage, error) {
+				idx := start + pageCalls
+				if idx >= len(rows) {
+					unexpectedHTTPCall(t, "Invitation budget extra read")
+				}
+				projectHTTPCheck(t, id, team.ID)
+				want := store.Page{Limit: 1}
+				if idx > 0 {
+					want.After = &store.Position{CreatedAt: rows[idx-1].CreatedAt, ID: rows[idx-1].ID}
+				}
+				projectHTTPCheck(t, page, want)
+				if pageCalls == 0 {
+					observed = now
+				} else {
+					projectHTTPCheck(t, now, observed)
+				}
+				pageCalls++
+				return store.TeamInvitationPage{Items: []model.TeamInvitation{rows[idx]}, HasMore: idx < len(rows)-1}, nil
+			}}
+			scope := newHTTPTestSnapshot(t)
+			scope.Teams = dao
+			return op(scope)
+		}
 		pageArgs := map[string]any{"team": team.ID, "limit": 100}
 		if cursor != nil {
 			pageArgs["cursor"] = cursor
@@ -296,16 +322,25 @@ func TestMCPInvitationWorkflow(t *testing.T) {
 		if !ok || len(items) == 0 {
 			t.Fatal("empty invitation page")
 		}
-		for _, value := range items {
+		for i, value := range items {
 			item := value.(map[string]any)
 			id := item["id"].(string)
 			if seen[id] {
 				t.Fatal("repeated invitation across byte-budget pages")
 			}
+			projectHTTPCheck(t, id, rows[start+i].ID)
 			seen[id] = true
 		}
+		offset += len(items)
 		pages++
 		cursor = page["nextCursor"]
+		wantReads := len(items)
+		if cursor != nil {
+			wantReads++
+		}
+		if readCalls != 1 || pageCalls != wantReads {
+			t.Fatalf("budget page DAO calls: snapshot=%d page=%d want=%d", readCalls, pageCalls, wantReads)
+		}
 		if cursor == nil {
 			break
 		}
@@ -317,64 +352,55 @@ func TestMCPInvitationWorkflow(t *testing.T) {
 		t.Fatalf("byte-budget pagination returned %d items over %d pages", len(seen), pages)
 	}
 
-	project, err := projectservice.NewProjects(database).Create(t.Context(), admin, coreproject.CreateProject{Name: "Invite Project", RepoURL: "https://example.test/owner/repo.git", ExpectedUserID: admin.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	invite, err := projectservice.NewMemberships(database).CreateInvitation(t.Context(), admin, project.ID, admin.UserID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	projectLink := origin + "/invitations#" + invite.Secret
+	project := projectHTTPRecord("a7777777-7777-4777-8777-777777777777", "Invite Project", "https://example.test/owner/repo.git", "b8888888-8888-4888-8888-888888888888")
+	projectToken := "dninvite_" + strings.Repeat("C", 42) + "A"
+	invitation := model.ProjectInvitation{ID: "c9999999-9999-4999-8999-999999999999", ProjectID: project.ID, CreatedBy: admin.UserID, TokenHash: secret.Hash(projectToken), CreatedAt: team.CreatedAt, ExpiresAt: consumedAt.Add(24 * time.Hour)}
+	projectLink := origin + "/invitations#" + projectToken
+	grant := model.ProjectGrant{ProjectID: project.ID, UserID: admin.UserID, Role: model.ProjectAdmin, Version: 1, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt}
+	mcpOrgAcceptProject(t, tx, admin, project, invitation, projectToken, model.ProjectMember{Grant: grant}, true)
 	ownerReceipt := callInvitationTool(t, clients[0], "invitation_accept", map[string]any{"link": projectLink, "confirm": true}, false)
 	if ownerReceipt["joined"] != false || ownerReceipt["consumed"] != false {
 		t.Fatal("existing Project member consumed invitation")
 	}
+	mcpOrgInspectProject(t, tx, member, project, invitation, projectToken)
 	projectPreview := callInvitationTool(t, clients[1], "invitation_inspect", map[string]any{"link": projectLink}, false)
 	if projectPreview["scope"] != "project" || projectPreview["projectId"] != project.ID {
 		t.Fatal("Project preview missing project identity")
 	}
+	grant.UserID = member.UserID
+	grant.Role = model.ProjectMemberRole
+	mcpOrgAcceptProject(t, tx, member, project, invitation, projectToken, model.ProjectMember{Grant: grant}, false)
 	projectAccepted := callInvitationTool(t, clients[1], "invitation_accept", map[string]any{"link": projectLink, "confirm": true}, false)
 	if projectAccepted["scope"] != "project" || projectAccepted["projectId"] != project.ID || projectAccepted["joined"] != true || projectAccepted["consumed"] != true {
 		t.Fatal("Project acceptance missing receipt")
 	}
+	consumedProject := invitation
+	consumedProject.ConsumedBy = &member.UserID
+	consumedProject.ConsumedAt = &consumedAt
+	mcpOrgUnavailableProjectInvitation(t, tx, consumedProject, projectToken)
+	tx.WriteProjectCall = nil
 	callInvitationTool(t, clients[1], "invitation_accept", map[string]any{"link": projectLink, "confirm": true}, true)
-	if err := database.Pool.QueryRow(t.Context(), `SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("Project grant count: %d, %v", count, err)
-	}
-	// Drop a real HTTP acceptance response after the server finishes writing it.
-	// The database records the resulting membership and consumption, while the
-	// client cannot claim the missing receipt or repeat the mutation.
-	lostTeam, err := teams.Create(t.Context(), admin, coreteam.CreateTeam{Name: "Lost receipt Team", ExpectedUserID: admin.UserID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	lostInvitation, err := teams.CreateInvitation(t.Context(), admin, lostTeam.ID, admin.UserID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lostLink := origin + "/team-invitations#" + lostInvitation.Secret
+	lostTeam := mcpOrgTeam(t, "d0000000-0000-4000-8000-000000000000", "Lost receipt Team", admin.UserID)
+	lostToken := "dnteam_" + strings.Repeat("D", 42) + "A"
+	lostInvitation := model.TeamInvitation{ID: "e0000000-0000-4000-8000-000000000000", TeamID: lostTeam.ID, CreatedBy: admin.UserID, TokenHash: secret.Hash(lostToken), CreatedAt: team.CreatedAt, ExpiresAt: consumedAt.Add(24 * time.Hour)}
+	lostLink := origin + "/team-invitations#" + lostToken
 	transport := &lostAcceptanceTransport{token: tokens[1]}
 	sdkClient := sdk.NewClient(&sdk.Implementation{Name: "lost-receipt-test", Version: "1"}, nil)
 	connectCtx, connectCancel := context.WithTimeout(t.Context(), 5*time.Second)
-	lostClient, err := sdkClient.Connect(connectCtx, &sdk.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: transport}, DisableStandaloneSSE: true}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
+	lostClient, err := sdkClient.Connect(connectCtx, &sdk.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: transport}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
 	connectCancel()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lostClient.Close() })
+	lostMember := joinedMember
+	lostMember.TeamID = lostTeam.ID
+	mcpOrgAcceptTeam(t, tx, member, lostTeam.TeamRef, lostInvitation, lostToken, lostMember, false)
 	callCtx, callCancel := context.WithTimeout(t.Context(), 5*time.Second)
 	_, callErr := lostClient.CallTool(callCtx, &sdk.CallToolParams{Name: "invitation_accept", Arguments: map[string]any{"link": lostLink, "confirm": true}})
 	callCancel()
 	if callErr == nil || transport.calls.Load() != 1 {
 		t.Fatalf("lost receipt: error=%v calls=%d", callErr, transport.calls.Load())
-	}
-	if err := database.Pool.QueryRow(t.Context(), `SELECT count(*) FROM team_members WHERE team_id=$1 AND user_id=$2`, lostTeam.ID, member.UserID).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("lost receipt membership: %d, %v", count, err)
-	}
-	var consumedBy *string
-	if err := database.Pool.QueryRow(t.Context(), `SELECT consumed_by::text FROM team_invitations WHERE id=$1`, lostInvitation.Invitation.ID).Scan(&consumedBy); err != nil || consumedBy == nil || *consumedBy != member.UserID {
-		t.Fatalf("lost receipt consumption: %v", err)
 	}
 	links = append(links, lostLink)
 	for _, link := range append(links, projectLink) {

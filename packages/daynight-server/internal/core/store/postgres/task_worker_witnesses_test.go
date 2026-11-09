@@ -65,6 +65,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	workerWitnessTask(t, database, project.ID, 16, workerWitnessClaim(16, other, workerID, model.WorkerActive), true, nil)
 	second := workerWitnessTask(t, database, project.ID, 17, workerWitnessClaim(17, owner, workerID, model.WorkerActive), true, nil)
 	manual := workerWitnessTask(t, database, project.ID, 18, workerWitnessClaim(18, owner, workerID, model.WorkerActive), false, workerWitnessPointer(model.PlatformWindows))
+	mustQueryExec(t, database, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project.ID, first.ID, queryID(14))
 	want := []string{first.ID, second.ID, manual.ID}
 	query := TaskQuery{Page: Page{Limit: 1}, Worker: &WorkerQuery{UserID: owner, WorkerID: workerID}, BoundedText: true}
 	var ids []string
@@ -74,6 +75,9 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 			t.Fatalf("owned page lost a valid candidate: %+v", page)
 		}
 		ids = append(ids, page.Items[0].ID)
+		if page.Items[0].ID == first.ID && (!slices.Equal(page.Items[0].DependsOn, []string{queryID(14)}) || !slices.Equal(page.Items[0].ExternalDependsOn, []string{queryID(14)}) || len(page.Items[0].BlockedBy) != 0 || !reflect.DeepEqual(fixtureWorker(t, page.Items[0].Properties), fixtureWorker(t, first.Properties))) {
+			t.Fatalf("owned inventory lost the current claim or external dependency flags: %#v", page.Items[0])
+		}
 		if !page.HasMore {
 			break
 		}

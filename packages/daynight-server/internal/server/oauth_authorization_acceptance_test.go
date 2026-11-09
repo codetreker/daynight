@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,39 +15,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
-	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	oauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/authorization"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 )
 
-// This exercises the unmounted OAuth handlers with the real Session authenticator
-// and PostgreSQL. It does not exercise a human browser or the future consent UI.
 func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	h := testsupport.NewAuthHarness(t, func(identity *identityservice.Identity, logger *slog.Logger) (*authhttp.Authentication, error) {
-		return authhttp.NewAuthentication(identity, config.AuthSettings{PublicOrigin: "http://127.0.0.1:8787", AllowHTTPTestOrigin: true}, logger)
-	})
-	session := h.Login(t, "oauth-acceptance-user")
-	otherSession := h.Login(t, "oauth-acceptance-other")
-	authRequest := httptest.NewRequest(http.MethodGet, "/", nil)
-	authRequest.AddCookie(session)
-	principal, err := h.Auth.AuthenticateRequest(authRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	admission := core.PublicAdmission{Writer: h.Database}
-	clients, err := oauthservice.NewClients(h.Database, admission, map[string][]byte{
+	h := newOAuthHTTPFixture(t)
+	session, otherSession, principal := h.Session, h.OtherSession, h.Principal
+	admission := core.PublicAdmission{Writer: h.Store}
+	clients, err := oauthservice.NewClients(h.Store, admission, map[string][]byte{
 		"acceptance-client": []byte(`{"client_id":"acceptance-client","client_name":"Acceptance","redirect_uris":["https://client.example/callback"]}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := oauthservice.NewAuthorizations(h.Database, clients, admission, h.Origin)
+	service, err := oauthservice.NewAuthorizations(h.Store, clients, admission, h.Origin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +49,7 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 	// its response. A subsequent read establishes state, not the lost receipt.
 	var cut atomic.Bool
 	var cutCount atomic.Int32
+	cutCompleted := make(chan struct{}, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && cut.CompareAndSwap(true, false) {
 			recorder := httptest.NewRecorder()
@@ -70,6 +57,9 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 			if recorder.Code != http.StatusOK {
 				t.Errorf("cut operation returned %d", recorder.Code)
 			}
+			// Socket loss does not synchronize fixture captures with the client.
+			// Publish completion after the actual operation has returned.
+			cutCompleted <- struct{}{}
 			conn, _, err := http.NewResponseController(w).Hijack()
 			if err != nil {
 				t.Error(err)
@@ -114,6 +104,7 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 	resource := h.Origin + "/mcp"
 	start := func(state string) (string, *http.Cookie) {
 		t.Helper()
+		startCapture := oauthHTTPExpectStart(t, h, "acceptance-client", redirect, state)
 		q := url.Values{"client_id": {"acceptance-client"}, "redirect_uri": {redirect}, "response_type": {"code"}, "scope": {"daynight:mcp"}, "resource": {resource}, "state": {state}, "code_challenge": {challenge}, "code_challenge_method": {"S256"}}
 		resp, data, err := send(http.MethodGet, "/oauth/authorize?"+q.Encode(), "", "")
 		if err != nil {
@@ -130,10 +121,15 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 		if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
 			t.Fatal("missing browser binding")
 		}
+		if captured := startCapture.Load(); captured == nil || captured.ID != location.Query().Get("request") || !bytesEqualOAuthHash(cookies[0].Value, captured.BindingHash) {
+			t.Fatal("authorization response differs from inserted request/binding")
+		}
 		return location.Query().Get("request"), cookies[0]
 	}
-	inspect := func(id string, binding *http.Cookie) map[string]any {
+	inspect := func(row store.OAuthAuthorization, binding *http.Cookie) map[string]any {
 		t.Helper()
+		id := row.ID
+		oauthHTTPRead(t, h, row)
 		resp, data, err := send(http.MethodGet, "/api/v1/oauth/requests/"+id, "", "", session, binding)
 		if err != nil || resp.StatusCode != http.StatusOK {
 			t.Fatalf("inspect: %v", err)
@@ -153,16 +149,23 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 		}
 		return v
 	}
-	decision := func(id string, binding *http.Cookie, action string) (*http.Response, []byte, error) {
+	var decisionCapture *atomic.Pointer[store.OAuthAuthorization]
+	decision := func(row store.OAuthAuthorization, binding *http.Cookie, action string) (*http.Response, []byte, error) {
+		id := row.ID
+		status := "approved"
+		if action == "deny" {
+			status = "denied"
+		}
+		decisionCapture = oauthHTTPDecision(t, h, row, status)
 		body, err := json.Marshal(map[string]string{"expectedUserId": principal.UserID, "decision": action})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return send(http.MethodPost, "/api/v1/oauth/requests/"+id+"/decision", string(body), "application/json", session, binding)
 	}
-	approve := func(id string, binding *http.Cookie, state string) string {
+	approve := func(row store.OAuthAuthorization, binding *http.Cookie, state string) string {
 		t.Helper()
-		resp, data, err := decision(id, binding, "approve")
+		resp, data, err := decision(row, binding, "approve")
 		if err != nil || resp.StatusCode != http.StatusOK {
 			t.Fatalf("approve: %v", err)
 		}
@@ -176,6 +179,9 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 		if err != nil || u.Scheme != "https" || u.Host != "client.example" || u.Path != "/callback" || u.Query().Get("iss") != h.Origin || u.Query().Get("state") != state || u.Query().Get("code") == "" {
 			t.Fatal("unsafe or incomplete callback")
 		}
+		if captured := decisionCapture.Load(); captured == nil || !bytesEqualOAuthHash(u.Query().Get("code"), captured.CodeHash) {
+			t.Fatal("approval response code differs from candidate hash")
+		}
 		return u.Query().Get("code")
 	}
 	exchange := func(code, clientID, callback, res, proof string) (*http.Response, []byte, error) {
@@ -185,11 +191,13 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 
 	id, binding := start("original-state")
 	otherID, otherBinding := start("second-state")
+	pending := oauthHTTPPending(h, id, binding.Value, "original-state", "acceptance-client", redirect, "preregistered")
+	otherPending := oauthHTTPPending(h, otherID, otherBinding.Value, "second-state", "acceptance-client", redirect, "preregistered")
 	if id == otherID || binding.Name == otherBinding.Name {
 		t.Fatal("concurrent requests replaced browser bindings")
 	}
-	inspect(id, binding)
-	inspect(otherID, otherBinding)
+	inspect(pending, binding)
+	inspect(otherPending, otherBinding)
 	resp, _, err := send(http.MethodGet, "/api/v1/oauth/requests/"+id, "", "", session, otherBinding)
 	if err != nil || resp.StatusCode == http.StatusOK {
 		t.Fatal("foreign binding accepted")
@@ -199,14 +207,21 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 	if err != nil || resp.StatusCode == http.StatusOK {
 		t.Fatal("changed account accepted a stale decision")
 	}
-	if got := inspect(id, binding); got["status"] != "pending" {
+	if got := inspect(pending, binding); got["status"] != "pending" {
 		t.Fatalf("account mismatch changed request: %v", got["status"])
 	}
-	code := approve(id, binding, "original-state")
+	code := approve(pending, binding, "original-state")
+	approved := oauthHTTPApproved(h, pending, code)
 	for _, tc := range []struct{ client, callback, resource, proof string }{
 		{"wrong", redirect, resource, verifier}, {"acceptance-client", "https://client.example/other", resource, verifier},
 		{"acceptance-client", redirect, h.Origin + "/other", verifier}, {"acceptance-client", redirect, resource, strings.Repeat("w", 43)},
 	} {
+		if tc.resource == resource {
+			var unused store.OAuthFamilyIssue
+			oauthHTTPExpectRedeem(t, h, approved, false, false, true, &unused)
+		} else {
+			h.Store.WriteAuthorizationsCall = nil
+		}
 		r, _, e := exchange(code, tc.client, tc.callback, tc.resource, tc.proof)
 		if e != nil || r.StatusCode != http.StatusBadRequest {
 			t.Fatalf("mismatched exchange: %v", e)
@@ -217,6 +232,8 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 		body   []byte
 		err    error
 	}
+	var winning store.OAuthFamilyIssue
+	oauthHTTPConcurrentRedeem(t, h, approved, &winning)
 	results := make(chan result, 2)
 	var wg sync.WaitGroup
 	for range 2 {
@@ -249,6 +266,9 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 			if json.Unmarshal(r.body, &token) != nil || token.Access == "" || token.Refresh == "" {
 				t.Fatal("incomplete token family")
 			}
+			if !bytesEqualOAuthHash(token.Access, winning.AccessHash) || !bytesEqualOAuthHash(token.Refresh, winning.RefreshHash) {
+				t.Fatal("redemption response secrets differ from issued hashes")
+			}
 			access = token.Access
 		case http.StatusBadRequest:
 			refusals++
@@ -259,36 +279,49 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 	if successes != 1 || refusals != 1 {
 		t.Fatalf("concurrent redemption successes=%d refusals=%d", successes, refusals)
 	}
-	if _, err := oauthservice.NewAuthenticator(h.Database).AuthenticateAccess(ctx, access, resource); err == nil {
+	oauthHTTPExpectAccess(t, h, access, resource, model.Principal{}, "", model.ErrNotFound)
+	if _, err := oauthservice.NewAuthenticator(h.Store).AuthenticateAccess(ctx, access, resource); err == nil {
 		t.Fatal("replay did not revoke winning access")
 	}
 
 	// A lost decision cannot be replayed to recover or mint a code.
 	cut.Store(true)
-	if _, _, err := decision(otherID, otherBinding, "approve"); err == nil {
+	if _, _, err := decision(otherPending, otherBinding, "approve"); err == nil {
 		t.Fatal("decision response was not lost")
 	}
-	if got := inspect(otherID, otherBinding); got["status"] != "approved" {
+	await(t, cutCompleted)
+	otherApproved := oauthHTTPApproved(h, otherPending, "dnoc_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if got := inspect(otherApproved, otherBinding); got["status"] != "approved" {
 		t.Fatalf("lost decision state: %v", got["status"])
 	}
-	if r, _, e := decision(otherID, otherBinding, "approve"); e != nil || r.StatusCode == http.StatusOK {
+	if r, _, e := decision(otherApproved, otherBinding, "approve"); e != nil || r.StatusCode == http.StatusOK {
 		t.Fatal("lost decision was repeated")
 	}
 
 	lostID, lostBinding := start("lost-token")
-	lostCode := approve(lostID, lostBinding, "lost-token")
+	lostPending := oauthHTTPPending(h, lostID, lostBinding.Value, "lost-token", "acceptance-client", redirect, "preregistered")
+	lostCode := approve(lostPending, lostBinding, "lost-token")
+	lostApproved := oauthHTTPApproved(h, lostPending, lostCode)
+	var lostIssue store.OAuthFamilyIssue
+	oauthHTTPExpectRedeem(t, h, lostApproved, false, false, false, &lostIssue)
 	cut.Store(true)
 	if _, _, err := exchange(lostCode, "acceptance-client", redirect, resource, verifier); err == nil {
 		t.Fatal("token response was not lost")
 	}
-	if got := inspect(lostID, lostBinding); got["status"] != "consumed" {
+	await(t, cutCompleted)
+	lostConsumed := lostApproved
+	lostConsumed.Status = "consumed"
+	lostConsumed.GrantID = lostIssue.Grant.ID
+	lostConsumed.RetainUntil = h.Now.Add(core.GrantLifetime)
+	if got := inspect(lostConsumed, lostBinding); got["status"] != "consumed" {
 		t.Fatalf("lost token state: %v", got["status"])
 	}
 	if cutCount.Load() != 2 {
 		t.Fatalf("wire cuts: %d", cutCount.Load())
 	}
 	deniedID, deniedBinding := start("denied-state")
-	deniedResponse, deniedBody, err := decision(deniedID, deniedBinding, "deny")
+	deniedPending := oauthHTTPPending(h, deniedID, deniedBinding.Value, "denied-state", "acceptance-client", redirect, "preregistered")
+	deniedResponse, deniedBody, err := decision(deniedPending, deniedBinding, "deny")
 	if err != nil || deniedResponse.StatusCode != http.StatusOK {
 		t.Fatal("deny failed")
 	}
@@ -302,14 +335,16 @@ func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 	if err != nil || deniedURL.Scheme != "https" || deniedURL.Host != "client.example" || deniedURL.Path != "/callback" || deniedURL.Query().Get("error") != "access_denied" || deniedURL.Query().Get("state") != "denied-state" || deniedURL.Query().Get("iss") != h.Origin || deniedURL.Query().Has("code") {
 		t.Fatal("invalid denial callback")
 	}
-	if got := inspect(deniedID, deniedBinding); got["status"] != "denied" {
+	deniedRow := deniedPending
+	deniedRow.Status = "denied"
+	deniedRow.UserID = principal.UserID
+	deniedRow.State = ""
+	deniedRow.StatePresent = false
+	deniedRow.RetainUntil = h.Now.Add(24 * time.Hour)
+	if got := inspect(deniedRow, deniedBinding); got["status"] != "denied" {
 		t.Fatalf("denial state: %v", got["status"])
 	}
-	var grants, accesses, refreshes, residualStates int
-	if err := h.Database.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants), (SELECT count(*) FROM oauth_access_tokens), (SELECT count(*) FROM oauth_refresh_tokens), (SELECT count(*) FROM oauth_authorizations WHERE state <> '')`).Scan(&grants, &accesses, &refreshes, &residualStates); err != nil {
-		t.Fatal(err)
-	}
-	if grants != 2 || accesses != 1 || refreshes != 2 || residualStates != 0 {
-		t.Fatalf("unexpected persistence: grants=%d accesses=%d refreshes=%d retained_states=%d", grants, accesses, refreshes, residualStates)
+	if h.Rates["oauth:start:global"] != 4 || h.Rates["oauth:start:source:127.0.0.1"] != 4 {
+		t.Fatalf("authorization start admission calls: %+v", h.Rates)
 	}
 }
