@@ -956,10 +956,34 @@ binds source/fingerprint, binary hash, toolchain and race mode; `result.json`
 records phase, command/test exit codes, run status and cleanup status. Successful
 reconciliation of an unobserved command retains its null exit and interrupted
 status. `run.log` contains streaming test output and bounded service diagnostics.
-The Go job prepares production Web resources, runs the module gate and explicit API
-suite, then uploads only these JSON and log files. Private ownership/resource
-receipts, configuration, credentials, database files and copied build artifacts
-stay outside the evidence directory.
+The independent `verify-api-integration` CI job prepares production Web resources
+and its own PostgreSQL service, runs this suite and reconciles its resources,
+then uploads only these JSON and log files as `daynight-server-api-integration`.
+It waits only for change detection; Go module coverage runs in a separate job.
+Private ownership/resource receipts, configuration, credentials, database files
+and copied build artifacts stay outside the evidence directory.
+
+The job is selected for server inputs and the production Web build inputs used
+by the Server: Web source, resources and build configuration, root Node
+configuration and dependency patches. CLI-only changes keep their own checks.
+The final gate requires actual success whenever API integration is selected.
+The [API integration decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
+records this scheduling and resource ownership.
+
+The runner's six process and cleanup unit tests require Linux `/proc` process
+identities. The independent Linux API job runs them as a required, bounded step
+before production Web preparation and API flows. Run the same tests on Linux
+from this module without PostgreSQL or a production Web build:
+
+```bash
+node --test scripts/integration-runtime.test.mts
+```
+
+They verify actual process exit and signal escalation, PID reuse protection,
+owned-child cleanup, retained command and cleanup failures, interrupted runs and
+directory removal recovery. The portable `scripts/check.sh` entry retains its
+ordinary tool tests; these Linux runtime cases retain their separate
+responsibility from the API normal-flow suite.
 
 ### TaskSync lock and time windows
 

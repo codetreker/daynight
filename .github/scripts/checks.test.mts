@@ -38,7 +38,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-api-integration", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -393,23 +393,116 @@ test("Web jobs validate the current checkout without restoring retired acceptanc
   assert.doesNotMatch(workflow, /GITHUB_SHA=.*GITHUB_ENV|^\s+GITHUB_SHA:/m);
 });
 
-test("Go validation retains module coverage and normal API integration", () => {
-  const server = jobs.get("verify-server")!;
-  const validation = stepsOf(server).find((entry) => entry.includes("id: server-validation\n"));
-  assert.ok(validation);
+const server = jobs.get("verify-server")!;
+const apiIntegration = jobs.get("verify-api-integration")!;
+const selectedAPIStep = stepsOf(gate).find((step) => step.includes("name: Require selected Go API integration to succeed\n"))!;
+const selectedAPICommand = selectedAPIStep.match(/^        run: (.+)$/m)![1]!;
+
+test("Go module coverage and API integration prepare independent runners", () => {
+  assert.match(apiIntegration, /^    needs: detect-changes$/m);
+  assert.match(apiIntegration, /^    if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);
+  for (const stage of [server, apiIntegration]) {
+    assert.match(stage, /^    runs-on: ubuntu-latest$/m);
+    assert.match(stage, /uses: actions\/checkout@/);
+    assert.match(stage, /^          persist-credentials: false$/m);
+    assert.match(stage, /^          go-version: 1\.27\.2$/m);
+    assert.match(stage, /^          node-version: 24$/m);
+    assert.match(stage, /^      DAYNIGHT_TEST_DATABASE_URL: postgres:\/\/daynight:daynight-test@127\.0\.0\.1:5432\/daynight\?sslmode=disable$/m);
+    assert.match(stage, /^        image: postgres:18\.6-bookworm@sha256:/m);
+    assert.doesNotMatch(stage, /download-artifact|continue-on-error|pnpm (?:web:test|test|e2e:test)|vitest|playwright/);
+  }
+  assert.doesNotMatch(server, /pnpm|integration\.sh|integration-runtime\.test\.mts|server-integration|integration-results/);
+  const moduleCheck = readFileSync(new URL("../../packages/daynight-server/scripts/check.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(moduleCheck, /integration-runtime\.test\.mts/);
+  const validation = stepsOf(server).find((entry) => entry.includes("id: server-validation\n"))!;
   assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
-  assert.doesNotMatch(validation, /pnpm\/action-setup|Install frontend build dependencies|pnpm .*install|pnpm (?:web:)?test/);
-  const preparation = stepsOf(server).find((entry) => entry.includes("name: Prepare production Web resources for API integration\n"));
-  assert.ok(preparation);
-  assert.ok(preparation.includes("pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
-  assert.ok(preparation.includes("pnpm web:build"));
-  const integration = stepsOf(server).find((entry) => entry.includes("id: server-integration\n"));
-  assert.ok(integration);
-  assert.ok(integration.includes("run: bash scripts/integration.sh\n"));
-  assert.ok(server.indexOf(preparation) < server.indexOf(integration));
-  assert.doesNotMatch(server, /pnpm (?:web:test|test|e2e:test)|vitest|playwright/);
-  const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance");
-  assert.ok(coverage);
+  const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance")!;
   assert.deepEqual(artifactPaths(coverage), ["packages/daynight-server/coverage.out"]);
+  assert.doesNotMatch(apiIntegration, /scripts\/check\.sh|server-validation|coverage\.out/);
   assert.doesNotMatch(workflow, /verify-server-e2e|check\.sh --e2e|project-task-service-evidence|project-task-e2e-evidence|DAYNIGHT_TEST_RACE/);
 });
+
+test("API integration builds production Web resources and runs its explicit suite", () => {
+  assert.match(apiIntegration, /uses: pnpm\/action-setup@/);
+  assert.match(apiIntegration, /^          version: 11\.28\.6$/m);
+  const steps = stepsOf(apiIntegration);
+  const preparation = steps.find((entry) => entry.includes("name: Prepare production Web resources for API integration\n"))!;
+  const integration = steps.find((entry) => entry.includes("id: server-integration\n"))!;
+  assert.ok(preparation.includes("pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
+  assert.ok(preparation.includes("pnpm web:build"));
+  assert.ok(integration.includes("run: bash scripts/integration.sh\n"));
+  assert.doesNotMatch(integration, /if:|continue-on-error/);
+  assert.ok(steps.indexOf(preparation) < steps.indexOf(integration));
+});
+
+test("Linux API integration runs its runtime tools once before production preparation", () => {
+  const command = "node --test scripts/integration-runtime.test.mts";
+  const tools = stepsOf(apiIntegration).filter((entry) => entry.includes(`run: ${command}\n`));
+  assert.equal(tools.length, 1);
+  assert.equal(workflow.split(`run: ${command}\n`).length - 1, 1);
+  const runtimeTools = tools[0]!;
+  assert.match(apiIntegration, /^    runs-on: ubuntu-latest$/m);
+  assert.match(runtimeTools, /^      - name: Validate API integration runtime tools$/m);
+  assert.match(runtimeTools, /^        timeout-minutes: 1$/m);
+  assert.match(runtimeTools, /^        run: node --test scripts\/integration-runtime\.test\.mts$/m);
+  assert.doesNotMatch(runtimeTools, /if:|continue-on-error/);
+  const steps = stepsOf(apiIntegration);
+  const nodeSetup = steps.find((entry) => entry.includes("uses: actions/setup-node@"))!;
+  const preparation = steps.find((entry) => entry.includes("name: Prepare production Web resources for API integration\n"))!;
+  const integration = steps.find((entry) => entry.includes("id: server-integration\n"))!;
+  assert.ok(steps.indexOf(nodeSetup) < steps.indexOf(runtimeTools));
+  assert.ok(steps.indexOf(runtimeTools) < steps.indexOf(preparation));
+  assert.ok(steps.indexOf(runtimeTools) < steps.indexOf(integration));
+});
+
+test("API integration budgets every step and reserves independent cleanup time", () => {
+  const jobMinutes = Number(apiIntegration.match(/^    timeout-minutes: (\d+)$/m)![1]);
+  const stepMinutes = stepsOf(apiIntegration).map((step) => {
+    const match = step.match(/^        timeout-minutes: ([1-9]\d*)$/m);
+    assert.ok(match, `API integration step lacks a positive timeout: ${step.split("\n")[0]}`);
+    return Number(match[1]);
+  });
+  assert.deepEqual(stepMinutes, [1, 1, 2, 1, 1, 1, 7, 20, 3, 1]);
+  assert.ok(stepMinutes.reduce((total, minutes) => total + minutes, 0) <= jobMinutes - 2);
+});
+
+test("API integration reconciles after failure and uploads only safe results and logs", () => {
+  const steps = stepsOf(apiIntegration);
+  const integration = steps.find((entry) => entry.includes("id: server-integration\n"))!;
+  const cleanup = steps.find((entry) => entry.includes("run: bash scripts/integration.sh --cleanup\n"))!;
+  const uploads = uploadSteps(apiIntegration);
+  assert.equal(uploads.length, 1);
+  const upload = uploads[0]!;
+  for (const step of [cleanup, upload]) {
+    assert.match(step, /^        if: \$\{\{ always\(\) && steps.server-integration.outcome != 'skipped' \}\}$/m);
+    assert.doesNotMatch(step, /continue-on-error/);
+  }
+  assert.equal(artifactName(upload), "daynight-server-api-integration");
+  assert.deepEqual(artifactPaths(upload), [
+    "packages/daynight-server/.tmp/integration-results/**/build.json",
+    "packages/daynight-server/.tmp/integration-results/**/result.json",
+    "packages/daynight-server/.tmp/integration-results/**/run.log",
+  ]);
+  assert.match(upload, /^          include-hidden-files: true$/m);
+  assert.match(upload, /^          if-no-files-found: error$/m);
+  assert.match(upload, /^          retention-days: 30$/m);
+  assert.ok(steps.indexOf(integration) < steps.indexOf(cleanup));
+  assert.ok(steps.indexOf(cleanup) < steps.indexOf(upload));
+});
+
+test("selected API integration requires actual success", () => {
+  assert.match(selectedAPIStep, /^        if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);
+  assert.match(selectedAPIStep, /API_INTEGRATION_RESULT: \$\{\{ needs.verify-api-integration.result \}\}/);
+});
+
+for (const outcome of ["success", "skipped", "failure", "cancelled"]) {
+  test(`selected API integration ${outcome} executes the workflow guard`, () => {
+    const result = spawnSync("bash", ["-e", "-c", selectedAPICommand], {
+      env: { ...process.env, API_INTEGRATION_RESULT: outcome },
+      encoding: "utf8", timeout: 5_000,
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, outcome === "success");
+  });
+}
