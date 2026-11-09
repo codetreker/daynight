@@ -1,0 +1,10 @@
+.worker-prompt { min-width: 0; margin-block: 1.25rem; }
+.worker-prompt-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(14rem, 19rem); gap: 1rem; align-items: start; }
+.worker-prompt-panel, .worker-prompt-aside, .worker-prompt-preview { min-width: 0; }
+.worker-prompt-aside { display: grid; gap: 1rem; }
+.worker-prompt-text { display: block; width: 100%; min-height: 14rem; resize: vertical; font: inherit; }
+.worker-prompt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-top: 1rem; }
+.worker-prompt-actions > span { margin-right: auto; }
+.worker-prompt-preview { margin-top: 1rem; }
+.worker-prompt-preview pre, .worker-prompt-latest { max-height: 28rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .worker-prompt-layout { grid-template-columns: minmax(0, 1fr); } }

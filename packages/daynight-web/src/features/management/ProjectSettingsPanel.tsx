@@ -1,3 +1,4 @@
+import { useLayoutEffect } from "react";
 import { ProjectAccessBoundary } from "../projects/ProjectAccess";
 import type { CurrentUser } from "../../api/auth";
 import { useI18n } from "../../i18n/LocaleProvider";
@@ -5,23 +6,29 @@ import { ManagementError } from "./feedback";
 import { useProjectSettings } from "./useProjectSettings";
 import { ProjectOwnership } from "./ProjectOwnership";
 import type { ProjectTransferReceipt } from "../../api/project-transfer";
+import { usePromptNavigation } from "./AccountPage";
+import { useWorkerPrompt } from "../worker-prompts/useWorkerPrompt";
+import { WorkerPromptEditor } from "../worker-prompts/WorkerPromptEditor";
 import type { ProjectDeletionReceipt } from "../../api/project-deletion";
 import { ProjectDeletion } from "./ProjectDeletion";
 import { useProjectManagementGuard } from "./ProjectManagementGuard";
 import type { ReactNode } from "react";
 
-type Props = { readonly projectId: string; readonly user: CurrentUser; readonly navigation?: ReactNode; readonly unavailableView?: ReactNode; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly onDeleted?: ((receipt: ProjectDeletionReceipt, finish: () => Promise<void>) => void) | undefined; readonly onDeletionOutcome?: ((kind: "unknown" | "rejected", error: unknown, check: () => Promise<"available" | "unavailable">) => void) | undefined; readonly active?: boolean; readonly onRoute?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly onSettingsRetentionChange?: ((retain: boolean) => void) | undefined; readonly onDeletionRetentionChange?: ((retain: boolean) => void) | undefined };
+type Props = { readonly projectId: string; readonly user: CurrentUser; readonly navigation?: ReactNode; readonly unavailableView?: ReactNode; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly onDeleted?: ((receipt: ProjectDeletionReceipt, finish: () => Promise<void>) => void) | undefined; readonly onDeletionOutcome?: ((kind: "unknown" | "rejected", error: unknown, check: () => Promise<"available" | "unavailable">) => void) | undefined; readonly active?: boolean; readonly onRoute?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly onSettingsRetentionChange?: ((retain: boolean) => void) | undefined; readonly onDeletionRetentionChange?: ((retain: boolean) => void) | undefined; readonly onPromptRetentionChange?: ((retain: boolean) => void) | undefined };
 
-export const ProjectSettingsPanel = ({ projectId, user, navigation, unavailableView, onTransferred, onDeleted, onDeletionOutcome, active = true, onRoute = true, onRetentionChange, onSettingsRetentionChange, onDeletionRetentionChange }: Props) =>
-  <ProjectAccessBoundary projectId={projectId} initialRead active={active}><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} navigation={navigation} unavailableView={unavailableView} onTransferred={onTransferred} onDeleted={onDeleted} onDeletionOutcome={onDeletionOutcome} active={active} onRoute={onRoute} onRetentionChange={onRetentionChange} onSettingsRetentionChange={onSettingsRetentionChange} onDeletionRetentionChange={onDeletionRetentionChange} /></ProjectAccessBoundary>;
+export const ProjectSettingsPanel = ({ projectId, user, navigation, unavailableView, onTransferred, onDeleted, onDeletionOutcome, active = true, onRoute = true, onRetentionChange, onSettingsRetentionChange, onDeletionRetentionChange, onPromptRetentionChange }: Props) =>
+  <ProjectAccessBoundary projectId={projectId} initialRead active={active}><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} navigation={navigation} unavailableView={unavailableView} onTransferred={onTransferred} onDeleted={onDeleted} onDeletionOutcome={onDeletionOutcome} active={active} onRoute={onRoute} onRetentionChange={onRetentionChange} onSettingsRetentionChange={onSettingsRetentionChange} onDeletionRetentionChange={onDeletionRetentionChange} onPromptRetentionChange={onPromptRetentionChange} /></ProjectAccessBoundary>;
 
-const ProjectSettingsContent = ({ projectId, user, navigation, unavailableView, onTransferred, onDeleted, onDeletionOutcome, active, onRoute, onRetentionChange, onSettingsRetentionChange, onDeletionRetentionChange }: Props & { readonly active: boolean; readonly onRoute: boolean }) => {
+const ProjectSettingsContent = ({ projectId, user, navigation, unavailableView, onTransferred, onDeleted, onDeletionOutcome, active, onRoute, onRetentionChange, onSettingsRetentionChange, onDeletionRetentionChange, onPromptRetentionChange }: Props & { readonly active: boolean; readonly onRoute: boolean }) => {
   const { messages: { auth: { management: { settings: m, common } } } } = useI18n();
   const guard = useProjectManagementGuard();
   const state = useProjectSettings(projectId, user.id, onRoute, active, onSettingsRetentionChange, guard);
+  const prompt = useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: active });
+  const promptNavigation = usePromptNavigation({ scope: 'project', projectId }, prompt);
+  useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.uncertain]);
   const disabled = state.pending || state.loading || state.uncertain || state.role !== "admin";
   const showUnavailable = state.unavailable && unavailableView !== undefined && !guard.isBlocked("delete");
-  return <>
+  return <div ref={promptNavigation.owner} onFocusCapture={promptNavigation.rememberFocus}>
     {showUnavailable ? unavailableView : navigation}
     <div hidden={showUnavailable} inert={showUnavailable}>
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{state.project?.name ?? m.title}</h1><p className="subtitle">{m.scopeHint}</p></div></div>
@@ -41,8 +48,10 @@ const ProjectSettingsContent = ({ projectId, user, navigation, unavailableView, 
         </form>
       </section>
     </>}
+    <WorkerPromptEditor state={prompt} scope="project" />
     <ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={active} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onRetentionChange} guard={guard} />
     <ProjectDeletion projectId={projectId} active={active} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onDeletionRetentionChange} guard={guard} onDeleted={onDeleted} onOutcome={onDeletionOutcome} />
     </div>
-  </>;
+    {promptNavigation.confirmation}
+  </div>;
 };

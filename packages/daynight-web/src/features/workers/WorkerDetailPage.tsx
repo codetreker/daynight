@@ -42,7 +42,7 @@ const TaskRows = ({ tasks }: { readonly tasks: readonly WorkerTaskSnapshot[] }) 
   </tbody></table>;
 };
 
-export const WorkerDetailPage = ({ workerId, readEnabled }: { readonly workerId: string; readonly readEnabled: boolean }) => {
+export const WorkerDetailPage = ({ workerId, readEnabled, onRetentionChange }: { readonly workerId: string; readonly readEnabled: boolean; readonly onRetentionChange?: (retain: boolean) => void }) => {
   const state = useWorker(workerId, { readEnabled });
   const { messages: { workers: m, platform }, locale, format } = useI18n();
   const { snapshot, serverMilliseconds } = state;
@@ -110,6 +110,6 @@ export const WorkerDetailPage = ({ workerId, readEnabled }: { readonly workerId:
       </section><p className="worker-detail-footnote">{m.footer}</p>
     </>}
     </section>
-    {configurationOpened && <section className="worker-section" id="worker-panel-configuration" role="tabpanel" aria-labelledby="worker-tab-configuration" hidden={section !== 'configuration'}><WorkerConfigurationPanel workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform } : {})} onContinueEditing={() => selectSection('configuration')} visible={section === 'configuration'} readEnabled={readEnabled && section === 'configuration'} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} /></section>}
+    {configurationOpened && <section className="worker-section" id="worker-panel-configuration" role="tabpanel" aria-labelledby="worker-tab-configuration" hidden={section !== 'configuration'}><WorkerConfigurationPanel workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform } : {})} onContinueEditing={() => selectSection('configuration')} visible={section === 'configuration'} readEnabled={readEnabled && section === 'configuration'} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} /></section>}
   </div>;
 };

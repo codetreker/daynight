@@ -12,11 +12,11 @@ type State = {
   readonly scope: TaskCacheScope; readonly workerId: string; readonly resource: WorkerConfigurationResource | null;
   readonly draft: ConfigurationDraft | null; readonly baselineDraft: ConfigurationDraft | null; readonly baselineRevision: string | null;
   readonly refreshing: boolean; readonly pending: boolean; readonly error: unknown; readonly errorSource: 'read' | 'write' | null; readonly notice: ConfigurationNotice;
-  readonly uncertain: boolean; readonly unavailable: boolean; readonly submission: Submission | null;
+  readonly uncertain: boolean; readonly unavailable: boolean; readonly submission: Submission | null; readonly abandoned: boolean; readonly protectedDraft: boolean;
 };
-const initialState = (scope: TaskCacheScope, workerId: string): State => ({ scope, workerId, resource: null, draft: null, baselineDraft: null, baselineRevision: null, refreshing: false, pending: false, error: null, errorSource: null, notice: null, uncertain: false, unavailable: false, submission: null });
-type Actions = { readonly setEnabled: (enabled: boolean) => void; readonly setDraft: (update: ConfigurationDraftUpdate) => void; readonly refresh: () => void; readonly loadLatest: () => void; readonly save: () => Promise<void> };
-const emptyActions: Actions = { setEnabled: () => {}, setDraft: () => {}, refresh: () => {}, loadLatest: () => {}, save: async () => {} };
+const initialState = (scope: TaskCacheScope, workerId: string): State => ({ scope, workerId, resource: null, draft: null, baselineDraft: null, baselineRevision: null, refreshing: false, pending: false, error: null, errorSource: null, notice: null, uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false });
+type Actions = { readonly setEnabled: (enabled: boolean) => void; readonly setDraft: (update: ConfigurationDraftUpdate) => void; readonly refresh: () => void; readonly loadLatest: () => void; readonly abandon: () => void; readonly save: () => Promise<void> };
+const emptyActions: Actions = { setEnabled: () => {}, setDraft: () => {}, refresh: () => {}, loadLatest: () => {}, abandon: () => {}, save: async () => {} };
 
 export const useWorkerConfiguration = (workerId: string, { readEnabled }: { readonly readEnabled: boolean }) => {
   const scope = useTaskCacheScope();
@@ -25,6 +25,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
   const setDraft = useCallback((update: ConfigurationDraftUpdate) => actions.current.setDraft(update), []);
   const refresh = useCallback(() => actions.current.refresh(), []);
   const loadLatest = useCallback(() => actions.current.loadLatest(), []);
+  const abandon = useCallback(() => actions.current.abandon(), []);
   const save = useCallback(() => actions.current.save(), []);
 
   useLayoutEffect(() => {
@@ -61,17 +62,28 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       const resource = mergeConfigurationResources(old.resource, incoming);
       if (old.uncertain && !old.pending && old.submission !== null) {
         const submitted = old.submission;
+        if (old.abandoned && resource.desired !== null) {
+          const draft = draftFromValue(resource.desired.value);
+          return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
+        }
         if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value)) {
-          return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: submitted.draft, baselineRevision: resource.desired.revision };
+          return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: submitted.draft, baselineRevision: resource.desired.revision, protectedDraft: false };
         }
         const conflict = resource.desired !== null && resource.desired.revision !== submitted.revision;
-        return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: conflict ? 'conflict' : 'notSaved', uncertain: false, unavailable: false, submission: null };
+        const protectedDraft = conflict && old.draft !== null && !configurationDraftsEqual(old.draft, submitted.draft) &&
+          resource.desired !== null && !configurationDraftsEqual(old.draft, draftFromValue(resource.desired.value));
+        return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: conflict ? 'conflict' : 'notSaved', uncertain: false, unavailable: false, submission: null, protectedDraft };
       }
       if (old.draft === null && resource.desired !== null) {
         const draft = draftFromValue(resource.desired.value);
         return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false };
       }
-      return { ...old, resource, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false };
+      const observedNewer = incoming.desired !== null && old.baselineRevision !== null && BigInt(incoming.desired.revision) > BigInt(old.baselineRevision);
+      if (old.protectedDraft && observedNewer && old.draft !== null && resource.desired !== null && configurationDraftsEqual(old.draft, draftFromValue(resource.desired.value))) {
+        return { ...old, resource, baselineDraft: old.draft, baselineRevision: resource.desired.revision, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false, protectedDraft: false };
+      }
+      const protectedDraft = old.protectedDraft;
+      return { ...old, resource, refreshing: false, error: old.errorSource === 'write' ? old.error : null, errorSource: old.errorSource === 'write' ? 'write' : null, unavailable: false, protectedDraft };
     });
     const requestRead = async (replace = false, explicit = false): Promise<void> => {
       if (!live() || !visible || read !== null && !replace) return;
@@ -98,7 +110,25 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
     const replaceDraft = () => update(old => {
       if (old.pending || old.uncertain || old.resource?.desired === null || old.resource === null) return old;
       const draft = draftFromValue(old.resource.desired.value);
-      return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, error: null, errorSource: null, notice: null };
+      return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, error: null, errorSource: null, notice: null, protectedDraft: false };
+    });
+    const abandonDraft = () => update(old => {
+      if (old.pending && old.submission !== null && !old.submission.dispatched) {
+        write?.abort();
+        const desired = old.resource?.desired;
+        const draft = desired ? draftFromValue(desired.value) : old.baselineDraft;
+        return { ...old, draft, baselineDraft: draft, baselineRevision: desired?.revision ?? old.baselineRevision, pending: false, submission: null, abandoned: false, protectedDraft: false, error: null, errorSource: null, notice: null };
+      }
+      if (!old.pending && !old.uncertain) {
+        if (!old.resource?.desired) return old;
+        const draft = draftFromValue(old.resource.desired.value);
+        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, error: null, errorSource: null, notice: null, abandoned: false, protectedDraft: false };
+      }
+      if (old.resource?.desired) {
+        const draft = draftFromValue(old.resource.desired.value);
+        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource.desired.revision, abandoned: true, protectedDraft: false };
+      }
+      return { ...old, draft: old.baselineDraft, abandoned: true, protectedDraft: false };
     });
     const saveDraft = async (): Promise<void> => {
       if (!live() || !visible) return;
@@ -117,14 +147,30 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
         const incoming = await saveWorkerConfiguration(workerId, submitted.revision, submitted.value, signal, { ...admission, onDispatch: () => { submitted.dispatched = true; } });
         await waitForAdmission(signal);
         if (!alive() || signal.aborted) return;
-        update(value => ({ ...value, resource: mergeConfigurationResources(value.resource, incoming), pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, baselineDraft: submitted.draft, baselineRevision: incoming.desired!.revision }));
+        update(value => {
+          const resource = mergeConfigurationResources(value.resource, incoming);
+          if (value.abandoned && resource.desired !== null) {
+            const draft = draftFromValue(resource.desired.value);
+            return { ...value, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, abandoned: false, protectedDraft: false };
+          }
+          return { ...value, resource, pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, baselineDraft: submitted.draft, baselineRevision: incoming.desired!.revision, protectedDraft: false };
+        });
       } catch (error) {
         if (!alive() || signal.aborted) return;
         try { await waitForAdmission(signal); } catch { return; }
         if (!alive() || signal.aborted) return;
         const conflict = error instanceof ApiError && error.status === 409 && error.code === 'version_conflict';
         const uncertain = submitted.dispatched && (!(error instanceof ApiError) || error.kind !== 'server' || error.status !== null && error.status >= 500);
-        update(value => ({ ...value, pending: false, error, errorSource: 'write', notice: conflict ? 'conflict' : null, uncertain, submission: uncertain ? submitted : null }));
+        update(value => {
+          if (!uncertain && value.abandoned && value.resource?.desired) {
+            const draft = draftFromValue(value.resource.desired.value);
+            return { ...value, draft, baselineDraft: draft, baselineRevision: value.resource.desired.revision, pending: false, error, errorSource: 'write', notice: conflict ? 'conflict' : null, uncertain: false, submission: null, abandoned: false, protectedDraft: false };
+          }
+          const edited = value.draft !== null && !configurationDraftsEqual(value.draft, submitted.draft);
+          const newer = value.resource?.desired != null && value.baselineRevision !== null && BigInt(value.resource.desired.revision) > BigInt(value.baselineRevision);
+          const differsFromLatest = value.draft !== null && value.resource?.desired != null && !configurationDraftsEqual(value.draft, draftFromValue(value.resource.desired.value));
+          return { ...value, pending: false, error, errorSource: 'write', notice: conflict ? 'conflict' : null, uncertain, submission: uncertain ? submitted : null, protectedDraft: value.protectedDraft || !uncertain && edited && (conflict || newer && differsFromLatest) };
+        });
         if (conflict || uncertain) await requestRead(true);
       } finally { if (write === controller) write = null; }
     };
@@ -150,7 +196,16 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       enabled = next;
       if (enabled) { for (const resume of admissionWaiters) resume(); startReads(); }
       else stopReads();
-    }, setDraft: change => update(old => old.draft === null ? old : { ...old, draft: typeof change === 'function' ? change(old.draft) : change, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: null }), refresh: () => { void requestRead(true, true); }, loadLatest: replaceDraft, save: saveDraft };
+    }, setDraft: change => update(old => {
+      if (old.draft === null) return old;
+      const draft = typeof change === 'function' ? change(old.draft) : change;
+      const newer = old.resource?.desired != null && old.baselineRevision !== null && BigInt(old.resource.desired.revision) > BigInt(old.baselineRevision);
+      if (old.protectedDraft && newer && configurationDraftsEqual(draft, draftFromValue(old.resource!.desired!.value))) {
+        return { ...old, draft, baselineDraft: draft, baselineRevision: old.resource!.desired!.revision, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: null, abandoned: false, protectedDraft: false };
+      }
+      const protectedDraft = old.protectedDraft;
+      return { ...old, draft, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: null, abandoned: false, protectedDraft };
+    }), refresh: () => { void requestRead(true, true); }, loadLatest: replaceDraft, abandon: abandonDraft, save: saveDraft };
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
     startReads();
@@ -170,12 +225,14 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
   // A poll can observe our PUT before its response. Settle or reconcile that write
   // before classifying a newer target as an external edit.
   const conflict = !current.pending && !current.uncertain && current.baselineRevision !== null && current.resource?.desired !== null && current.resource !== null && current.resource.desired.revision !== current.baselineRevision;
+  const matchesLatest = conflict && current.draft !== null && current.resource?.desired != null && configurationDraftsEqual(current.draft, draftFromValue(current.resource.desired.value));
   return {
     resource: current.resource, draft: current.draft, baselineRevision: current.baselineRevision,
     loading: current.resource === null && !current.unavailable && (current.error === null || current.refreshing),
     refreshing: current.refreshing, pending: current.pending, error: current.error, errorSource: current.errorSource, notice: current.notice, uncertain: current.uncertain, unavailable: current.unavailable,
-    dirty: current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft),
+    dirty: !current.abandoned && !matchesLatest && current.draft !== null && current.baselineDraft !== null &&
+      (!configurationDraftsEqual(current.draft, current.baselineDraft) || current.submission !== null && !configurationDraftsEqual(current.draft, current.submission.draft) || current.protectedDraft),
     conflict,
-    setDraft, refresh, loadLatest, save, discard: loadLatest,
+    setDraft, refresh, loadLatest, save, discard: loadLatest, abandon,
   };
 };
