@@ -20,7 +20,6 @@ func TestStoreErrorDiagnosticsDoNotExposeDriverCauses(t *testing.T) {
 		{"transaction", &TransactionError{Phase: "commit", Cause: cause, Outcome: TransactionUnknown, CommitAttempted: true}, "transaction commit failed"},
 		{"thread transaction", &ThreadTransactionError{Phase: "rollback", Cause: cause, RollbackFailed: true}, "thread transaction rollback failed"},
 		{"clock", &ThreadClockError{Cause: cause}, "reliable forward clock position was not obtained within budget"},
-		{"maintenance", &AttachmentMaintenanceError{Stage: AttachmentMaintenanceMetadataQuery, Cause: cause}, "attachment maintenance: metadata_query"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := test.err.Error(); got != test.want {
@@ -95,7 +94,7 @@ func TestTransactionErrorsRetainOutcomeFactsThroughWrapping(t *testing.T) {
 	}
 }
 
-func TestClockAndMaintenanceErrorsRetainTypedFacts(t *testing.T) {
+func TestClockErrorsRetainTypedFacts(t *testing.T) {
 	cause := errors.New("read failed")
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	clock := &ThreadClockError{Head: model.ThreadPosition{CreatedAt: now}, Observed: now.Add(-time.Second), Cause: cause}
@@ -105,13 +104,5 @@ func TestClockAndMaintenanceErrorsRetainTypedFacts(t *testing.T) {
 	}
 	if foundClock.Head != clock.Head || !foundClock.Observed.Equal(clock.Observed) || !errors.Is(foundClock, cause) {
 		t.Fatalf("clock facts = %#v", foundClock)
-	}
-	maintenance := &AttachmentMaintenanceError{Stage: AttachmentMaintenanceProjectsDecode, Cause: cause}
-	var foundMaintenance *AttachmentMaintenanceError
-	if !errors.As(fmt.Errorf("inventory: %w", maintenance), &foundMaintenance) || foundMaintenance != maintenance {
-		t.Fatal("wrapped maintenance error lost its typed stage")
-	}
-	if foundMaintenance.Stage != AttachmentMaintenanceProjectsDecode || !errors.Is(foundMaintenance, cause) {
-		t.Fatalf("maintenance facts = %#v", foundMaintenance)
 	}
 }

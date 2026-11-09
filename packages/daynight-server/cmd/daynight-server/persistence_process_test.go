@@ -32,7 +32,7 @@ func TestPersistenceProcessHelper(t *testing.T) {
 	if os.Getenv("DAYNIGHT_PERSISTENCE_PROCESS_HELPER") != "1" {
 		return
 	}
-	os.Exit(run(context.Background(), nil, os.Getenv, os.Stdout, os.Stderr))
+	os.Exit(run(context.Background(), nil, os.Getenv, os.Stderr))
 }
 
 type persistenceProcessLog struct {

@@ -19,16 +19,17 @@ import (
 var exit = os.Exit
 
 func main() {
-	exit(run(context.Background(), os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+	exit(run(context.Background(), os.Args[1:], os.Getenv, os.Stderr))
 }
 
-func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	if len(args) != 0 {
+		httpx.LogFailure(logger, ctx, "configuration", "arguments", &config.ConfigurationError{Field: "command-line arguments", Rule: "are not supported"})
+		return 1
+	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if len(args) != 0 {
-		return runAttachmentMigration(ctx, args, getenv, stdout, logger)
-	}
 	cfg, err := config.LoadConfig(getenv)
 	if err != nil {
 		httpx.LogFailure(logger, ctx, "configuration", "load", err)

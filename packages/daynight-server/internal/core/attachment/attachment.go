@@ -49,11 +49,11 @@ func NewAddress(projectID, taskID, relativePath string) (Address, error) {
 		return Address{}, &model.Fault{Code: "invalid_input", Message: "Attachment path is invalid.", Cause: err}
 	}
 	return Address{ProjectID: projectID, TaskID: taskID, RelativePath: relativePath,
-		StoragePath: TaskStoragePath(projectID, taskID) + "/" + relativePath}, nil
+		StoragePath: taskStoragePath(projectID, taskID) + "/" + relativePath}, nil
 }
 
-// TaskStoragePath requires canonical UUIDs before deriving the physical directory.
-func TaskStoragePath(projectID, taskID string) string {
+// taskStoragePath requires canonical UUIDs before deriving the physical directory.
+func taskStoragePath(projectID, taskID string) string {
 	return projectID + "/" + taskID[:2] + "/" + taskID
 }
 
