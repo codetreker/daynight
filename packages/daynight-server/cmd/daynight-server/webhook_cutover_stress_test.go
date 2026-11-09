@@ -1,4 +1,4 @@
-//go:build stress
+//go:build startupshutdown && stress
 
 package main
 

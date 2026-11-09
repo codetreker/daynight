@@ -761,8 +761,9 @@ pnpm web:test
 pnpm web:build
 pnpm web:test:browser
 
-# Go 模块：完整校验（显式提供隔离 PG URL）
+# Go 服务：模块与命令生命周期校验（显式提供隔离 PG URL）
 DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
+DAYNIGHT_TEST_DATABASE_URL=... bash scripts/startup-shutdown.sh
 ```
 
 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，

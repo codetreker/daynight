@@ -11,9 +11,13 @@ after the cross-product acceptance harness is removed.
 
 ## Decision
 
-The Go module check selects all listed production packages for `-coverpkg` and
-enforces package, function and unrounded total coverage gates. Critical-block
-failure is disabled by the checked-in configuration.
+The Go validation entries enforce package, function and unrounded total
+coverage gates. The module check selects its listed production packages for
+`-coverpkg`; the command package belongs to the separate
+[startup/shutdown partition](2026-11-09-independent-go-startup-shutdown.md). Both
+partitions require unrounded statement coverage strictly greater than 90%, so
+their combined production coverage also exceeds 90%. Every production package
+has an owner. Critical-block failure is disabled by the checked-in configuration.
 The original gate ran race detection locally and disabled it in both PR and main
 CI. The [race policy](2026-11-07-go-coverage-streaming.md) now retains race
 instrumentation on main while PR CI overrides an inherited race flag. The coverage comparator's own tests
@@ -46,7 +50,8 @@ exceed fixture deadlines, despite the schemas being isolated.
 
 ## Consequences
 
-The gate includes cross-package calls without excluding production packages or
-lowering thresholds. Coverage is still a measurement of executed statements,
+The module partition includes cross-package calls while the lifecycle partition
+owns command statements; together they retain every production package and the
+same thresholds. Coverage is still a measurement of executed statements,
 not evidence that each behavior has an equivalent assertion. Database-backed
 tests retain their isolated PostgreSQL and explicit resource cleanup.

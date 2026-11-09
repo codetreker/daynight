@@ -83,6 +83,8 @@ Mock 只实现当前职责需要的能力，未配置或额外调用应立即使
 
 DAO 实现测试使用隔离真实 PostgreSQL，证明 SQL、约束、锁、快照、事务提交与回滚、结果未知、持久化读回和查询取消。跨操作的权限与版本重新检查分别保留规则层的决策证明，以及存储层真实读取、锁定与数据变化的证明；一次 mock 调用不能替代真实事务或跨调用持久化观察。
 
+命令的启动、关闭、迁移和恢复测试在 `cmd/daynight-server` 内保留对实际入口的访问，使用显式 `startupshutdown` build tag，由独立的 startup/shutdown 入口和 CI job 执行。普通模块验证与命令生命周期验证分别拥有生产代码覆盖率分区；具体门禁由[服务端验证说明](../packages/daynight-server/README.md#coverage)维护，所有生产包都必须有归属。
+
 完整组装的正常 API 主流程归使用显式 `integration` build tag 的 `cmd/integration_tests`，通过 Go HTTP 客户端顺序驱动真实 Go Server 进程、认证接入、存储与 PostgreSQL。`scripts/integration.sh` 负责生产构建和该入口的执行，普通单元测试发现不隐式运行它。HTTP 单元测试保留协议边界，命令与运行器机制测试保留自己验证的真实进程、socket 或文件行为。将混合测试中的正常业务链路提取到 API 集成层时，边界、拒绝、冲突、故障、竞态与压力场景仍留在所属层；必须确认新入口实际运行并保全独有证明后，才能移除原位置的重复流程。
 
 ## 结构调整

@@ -69,10 +69,11 @@ available validation commands. The client command toolkit belongs in
 the independent Go service belongs in `packages/daynight-server/`. Use Node.js
 24 LTS and pnpm 11.28.6 for the CLI; run `pnpm typecheck`, `pnpm test`, and
 `pnpm build` as applicable. The server uses Go 1.27.2 and PostgreSQL 18.6. From
-its module, run `bash scripts/check.sh` with `DAYNIGHT_TEST_DATABASE_URL` set to
-an isolated PostgreSQL database. Its required gate includes build, vet, go-cov
-and unrounded total statement coverage strictly greater than 90%. Race
-instrumentation is enabled for local validation and main CI; PR CI disables it
+its module, run `bash scripts/check.sh` and `bash scripts/startup-shutdown.sh`
+with `DAYNIGHT_TEST_DATABASE_URL` set to an isolated PostgreSQL database. The
+module and command-lifecycle coverage partitions both require build, vet, go-cov
+and unrounded statement coverage strictly greater than 90%; together they cover
+every production package. Race instrumentation is enabled for local validation and main CI; PR CI disables it
 through the explicit [race policy](packages/daynight-server/README.md#race-instrumentation).
 Add tooling only within an authorized task.
 

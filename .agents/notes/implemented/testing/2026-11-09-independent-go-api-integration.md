@@ -34,9 +34,11 @@ integration, so an unexpected skip cannot replace execution.
 
 The Go module job retains its directory selection, isolated PostgreSQL,
 build/vet, race policy and numerical coverage gates. Its portable
-`scripts/check.sh` entry retains the ordinary coverage and check-tool unit
-tests. Linux API runtime cases run through the platform that supplies their
-process-observation mechanism and remain mandatory when API validation is
+`scripts/check.sh` entry retains ordinary module coverage and check-tool unit
+tests. Command lifecycle tests and their production coverage use the independent
+[startup/shutdown job](2026-11-09-independent-go-startup-shutdown.md), with the
+same server directory selection and numerical thresholds. Linux API runtime
+cases run through the platform that supplies their process-observation mechanism and remain mandatory when API validation is
 selected.
 
 This scheduling complements the
@@ -62,9 +64,9 @@ required mechanism without weakening or skipping the cases.
 
 ## Consequences
 
-Module coverage and assembled API validation produce separate results and can
-run concurrently. The API job owns its complete preparation and cleanup, adding
-a separate production build and PostgreSQL service while keeping failures
+Module coverage, command lifecycle validation and assembled API validation
+produce separate results and can run concurrently. The API job owns its complete
+preparation and cleanup, adding a separate production build and PostgreSQL service while keeping failures
 attributable to the suite that executes them. Build dependencies may be cached;
 the tested production Server still comes from the current checkout.
 

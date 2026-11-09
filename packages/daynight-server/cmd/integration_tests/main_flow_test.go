@@ -17,6 +17,9 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("task lifecycle", func(t *testing.T) {
 		project := createProject(t, f, "API lifecycle")
 		task := createTask(t, f, project, "Created task", nil)
+		if task.Status != "todo" || !task.Ready || task.Version != 1 {
+			t.Fatalf("initial task state differs: %+v", task)
+		}
 		assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(task), nil, http.StatusOK), task)
 		updated := requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "title": "Updated task", "description": "Normal API content"}, http.StatusOK)
 		if updated.ID != task.ID || updated.Version != task.Version+1 || updated.Title != "Updated task" || updated.Description != "Normal API content" {
@@ -24,8 +27,14 @@ func TestServerAPINormalFlows(t *testing.T) {
 		}
 		started := setStatus(t, f, updated, "in_progress", nil)
 		done := setStatus(t, f, started, "done", nil)
+		if done.Ready {
+			t.Fatal("completed task remains ready")
+		}
 		assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(done), nil, http.StatusOK), done)
-		page := requestJSON[api.TaskPage](t, f, http.MethodGet, taskCollection(project.ID)+"?status=done", nil, http.StatusOK)
+		page := requestJSON[api.TaskPage](t, f, http.MethodGet, taskCollection(project.ID)+"?status=done&ready=false", nil, http.StatusOK)
+		if len(page.Items) != 1 {
+			t.Fatalf("completed task list differs: %+v", page)
+		}
 		assertTaskContent(t, expectID(t, page.Items, done.ID, func(task api.Task) string { return task.ID }), done)
 	})
 	t.Run("search pagination and dependency graph", func(t *testing.T) {

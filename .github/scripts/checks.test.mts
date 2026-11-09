@@ -38,7 +38,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-api-integration", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-completion", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-web-browser", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -394,14 +394,17 @@ test("Web jobs validate the current checkout without restoring retired acceptanc
 });
 
 const server = jobs.get("verify-server")!;
+const startupShutdown = jobs.get("verify-server-startup-shutdown")!;
 const apiIntegration = jobs.get("verify-api-integration")!;
+const selectedServerStep = stepsOf(gate).find((step) => step.includes("name: Require selected Go server jobs to succeed\n"))!;
+const selectedServerCommand = selectedServerStep.match(/^        run: (.+)$/m)![1]!;
 const selectedAPIStep = stepsOf(gate).find((step) => step.includes("name: Require selected Go API integration to succeed\n"))!;
 const selectedAPICommand = selectedAPIStep.match(/^        run: (.+)$/m)![1]!;
 
 test("Go module coverage and API integration prepare independent runners", () => {
   assert.match(apiIntegration, /^    needs: detect-changes$/m);
   assert.match(apiIntegration, /^    if: \$\{\{ needs.detect-changes.outputs.api == 'true' \}\}$/m);
-  for (const stage of [server, apiIntegration]) {
+  for (const stage of [server, startupShutdown, apiIntegration]) {
     assert.match(stage, /^    runs-on: ubuntu-latest$/m);
     assert.match(stage, /uses: actions\/checkout@/);
     assert.match(stage, /^          persist-credentials: false$/m);
@@ -421,6 +424,51 @@ test("Go module coverage and API integration prepare independent runners", () =>
   assert.doesNotMatch(apiIntegration, /scripts\/check\.sh|server-validation|coverage\.out/);
   assert.doesNotMatch(workflow, /verify-server-e2e|check\.sh --e2e|project-task-service-evidence|project-task-e2e-evidence|DAYNIGHT_TEST_RACE/);
 });
+
+test("startup and shutdown uses an independent selected runner and coverage artifact", () => {
+  assert.match(startupShutdown, /^    name: verify \(Go server startup & shutdown\)$/m);
+  assert.match(startupShutdown, /^    needs: detect-changes$/m);
+  assert.match(startupShutdown, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
+  const steps = stepsOf(startupShutdown);
+  const validation = steps.find((step) => step.includes("id: startup-shutdown\n"))!;
+  assert.ok(validation.includes("run: bash scripts/startup-shutdown.sh\n"));
+  assert.doesNotMatch(startupShutdown, /node --test scripts\/startup-shutdown\.test\.mts/);
+  assert.doesNotMatch(validation, /if:|continue-on-error/);
+  assert.doesNotMatch(startupShutdown, /pnpm|scripts\/check\.sh|integration\.sh/);
+  const uploads = uploadSteps(startupShutdown);
+  assert.equal(uploads.length, 1);
+  assert.equal(artifactName(uploads[0]!), "daynight-server-startup-shutdown");
+  assert.deepEqual(artifactPaths(uploads[0]!), ["packages/daynight-server/startup-shutdown-coverage.out"]);
+  assert.match(uploads[0]!, /^        if: \$\{\{ always\(\) && steps.startup-shutdown.outcome != 'skipped' \}\}$/m);
+  assert.match(uploads[0]!, /^          if-no-files-found: error$/m);
+  const jobMinutes = Number(startupShutdown.match(/^    timeout-minutes: (\d+)$/m)![1]);
+  const stepMinutes = steps.map((step) => {
+    const match = step.match(/^        timeout-minutes: ([1-9]\d*)$/m);
+    assert.ok(match, `Startup/shutdown step lacks a timeout: ${step.split("\n")[0]}`);
+    return Number(match[1]);
+  });
+  assert.ok(stepMinutes.reduce((sum, minutes) => sum + minutes, 0) <= jobMinutes - 2);
+});
+
+test("selected Go server validation requires module and startup/shutdown success", () => {
+  assert.match(selectedServerStep, /^        if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
+  assert.match(selectedServerStep, /SERVER_RESULT: \$\{\{ needs.verify-server.result \}\}/);
+  assert.match(selectedServerStep, /STARTUP_SHUTDOWN_RESULT: \$\{\{ needs.verify-server-startup-shutdown.result \}\}/);
+});
+
+for (const module of ["success", "skipped", "failure", "cancelled"]) {
+  for (const lifecycle of ["success", "skipped", "failure", "cancelled"]) {
+    test(`selected Go server module=${module}, startup/shutdown=${lifecycle} executes the workflow guard`, () => {
+      const result = spawnSync("bash", ["-e", "-c", selectedServerCommand], {
+        env: { ...process.env, SERVER_RESULT: module, STARTUP_SHUTDOWN_RESULT: lifecycle },
+        encoding: "utf8", timeout: 5_000,
+      });
+      if (result.error) throw result.error;
+      assert.equal(result.signal, null);
+      assert.equal(result.status === 0, module === "success" && lifecycle === "success");
+    });
+  }
+}
 
 test("API integration builds production Web resources and runs its explicit suite", () => {
   assert.match(apiIntegration, /uses: pnpm\/action-setup@/);

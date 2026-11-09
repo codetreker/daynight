@@ -360,7 +360,7 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 
 | Path | Responsibility |
 |---|---|
-| `cmd/daynight-server/` | Environment, process signals, dependency assembly, exit status and direct command tests |
+| `cmd/daynight-server/` | Environment, process signals, dependency assembly and exit status; command tests use the explicit `startupshutdown` tag |
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/service/webui/` | Embedded production HTML/assets and resource reads |
 | `internal/server/webui/` | Static routes and HTTP response policy |
@@ -680,10 +680,12 @@ the recovered value and stack are not printed by the HTTP server.
 
 ## Validate
 
-The complete module check requires the root workspace dependencies; install them
-with `pnpm install --frozen-lockfile` before running it. That check includes
-PostgreSQL integration tests and requires `DAYNIGHT_TEST_DATABASE_URL` to identify
-an isolated database. Database-independent suites have focused commands below.
+Complete server validation runs both the module and startup/shutdown checks.
+Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
+Both checks require `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated
+PostgreSQL instance; the module check owns SQL and other module mechanisms, and
+the startup/shutdown check owns command lifecycle mechanisms.
+Database-independent suites have focused commands below.
 The regular Session HTTP selection uses Go dependencies and local transport
 fixtures without database, gateway, CLI or Web preparation. For a disposable
 instance for the complete check, use the same PostgreSQL **18.6-bookworm** image
@@ -702,15 +704,41 @@ Set the reported loopback port in the test URL, then run:
 ```bash
 export DAYNIGHT_TEST_DATABASE_URL='postgres://daynight:daynight-test@127.0.0.1:PORT/daynight?sslmode=disable'
 bash scripts/check.sh
+bash scripts/startup-shutdown.sh
 docker rm --force --volumes daynight-server-tests
 ```
 
-The check builds and vets the Go module using its unit-test Web resource overlay,
-prepares the pinned UniAuth fixture, checks controlled Webhook Runner process
-recovery with its dedicated test transport build, and runs module tests and
-coverage. The
-optional `--coverage` argument selects the same check. A production build uses
-the real Web assets described under [Build and run](#build-and-run).
+The module check builds and vets the Go module using its unit-test Web resource
+overlay, prepares the pinned UniAuth fixture, and runs module tests and coverage.
+Its optional `--coverage` argument selects the same check. The independent
+startup/shutdown check runs the command tests with `-tags=startupshutdown` and
+the controlled Webhook Runner abrupt-recovery witness with its dedicated test
+transport build. Production builds use the real Web assets described under
+[Build and run](#build-and-run).
+
+### Startup and shutdown tests
+
+`bash scripts/startup-shutdown.sh` owns command configuration and exit status,
+startup and readiness, graceful shutdown and deadlines, concurrent migrations,
+migration failure recovery, persistence across restart, and attachment
+revocation during an admitted upload. The command tests stay in
+`cmd/daynight-server` so they exercise the private `main` and `run` entries, but
+the explicit `startupshutdown` build tag keeps them out of ordinary module test
+discovery. The entry also runs `TestWebhookRunnerAbruptProcessRecovery` with
+`webhooktest`, preserving its controlled process-exit and lost-acknowledgement
+proofs. Stress workloads retain their separate local command.
+
+Normal Project/Task API creation, state progression and readback belong to
+[Go API integration](#go-api-integration). Protocol refusals stay in mocked HTTP
+tests; listener-origin binding and cancellation stay in the command lifecycle
+tests. Real authentication, SQL, locks and subprocesses remain where they are
+necessary to prove the owned mechanism.
+
+The independent `verify-server-startup-shutdown` CI job follows the server's
+directory selection, uses its own PostgreSQL service and does not wait for
+module validation. The final gate requires actual success for both selected Go
+jobs. Their separate [coverage partitions](#coverage) retain all production code
+and the same numerical thresholds.
 
 ### Business rules and DAO mocks
 
@@ -752,9 +780,10 @@ read-timeout proof remains in the regular HTTP suite. Capacity workloads retain
 their full fixture only behind the separate `stress` build tag.
 
 Project settings and encoded-budget validation, Attachment input validation and
-invalid login scopes use input-only fixtures. Existing fixture-based domain and
-process tests outside the Task HTTP suite remain part of the complete module
-check; their mechanism and ownership are determined by the test-writing rules.
+invalid login scopes use input-only fixtures. Existing fixture-based domain
+tests outside the Task HTTP suite remain part of the module check. Command
+process tests use the startup/shutdown entry. Their mechanism and ownership are
+determined by the test-writing rules.
 
 The complete `internal/service/webhook` suite uses narrow transaction and DAO
 mocks. The mocks return explicitly configured facts and projections, record
@@ -774,12 +803,12 @@ env -u DAYNIGHT_TEST_DATABASE_URL go test -race -count=1 ./internal/service/webh
 Capture source facts and producer invocation belong to their Task, Step, Thread
 and Worker owners. PostgreSQL tests retain the real operation fences, actor
 reads, multi-record rollback, source/capture atomicity, lease and retention locks,
-commit acknowledgement loss and fresh-process readback. The module check also
-runs `TestWebhookRunnerAbruptProcessRecovery` with `-tags=webhooktest`: committed
-claim/admission exit, real TLS response before finalization, and discarded
+commit acknowledgement loss and fresh-process readback. The startup/shutdown
+check also runs `TestWebhookRunnerAbruptProcessRecovery` with
+`-tags=webhooktest`: committed claim/admission exit, real TLS response before finalization, and discarded
 finalize COMMIT acknowledgement followed by an enabled Runner restart. This
-focused process witness runs in ordinary validation; production-duration timeout
-and capacity stress cases remain separate. HTTP and protocol tests
+focused process witness runs in the independent lifecycle job;
+production-duration timeout and capacity stress cases remain separate. HTTP and protocol tests
 own response mappings, request digests, headers, projections and authentication.
 The [Webhook test ownership decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-service-dao-mocks.md)
 records the proof split; the earlier
@@ -1204,7 +1233,7 @@ responsibilities follow the
 
 ### Race instrumentation
 
-The coverage check enables race instrumentation locally and on main CI. PR CI
+Both coverage entries enable race instrumentation locally and on main CI. PR CI
 runs without race and overrides an inherited `GOFLAGS=-race`.
 The separate
 `bash scripts/stress.sh` entry uses `-race` for local-only stress tests.
@@ -1215,43 +1244,65 @@ build and verifies it in the binary; other process tests may differ. The explici
 
 ### Coverage
 
-`scripts/check.sh` builds the executable, runs `go vet`, clears cached Go test
-results and invokes `go-cov` v0.1.4 with the checked-in configuration. Its
-package and function thresholds are 85% and 80%; production packages, files and
-functions are not excluded. `critical_blocks.fail` is false, so the check does
-not analyze or fail on critical blocks. The raw `coverage.out` profile passes
-an exact statement comparison strictly greater than 90%; exactly 90% fails.
-The comparator reads the profile incrementally, deduplicating coverage blocks
-without loading the entire profile into one string.
-The check selects all listed production packages for `-coverpkg`, so a module
-test also attributes its calls to other production packages. Tests and their
-database state require the isolated PostgreSQL instance; preparation failures
-fail validation. The check limits package concurrency to two: schema-isolated
-fixtures still share the database-wide migration advisory lock.
+`scripts/check.sh` and `scripts/startup-shutdown.sh` invoke `go-cov` v0.1.4 with
+one checked-in configuration. Package and function thresholds remain 85% and
+80%. `critical_blocks.fail` is false, so critical-block analysis is disabled.
+Each raw profile passes an exact statement comparison strictly greater than
+90%; exactly 90% fails. The comparator reads rows incrementally and deduplicates
+coverage blocks without loading the complete profile into one string.
+
+Production packages have disjoint coverage owners:
+
+| Entry | Tests and production coverage | Profile |
+|---|---|---|
+| `scripts/check.sh` | Ordinary module tests and every production package except `cmd/daynight-server` | `coverage.out` |
+| `scripts/startup-shutdown.sh` | Tagged command tests; the command package's production statements | `startup-shutdown-coverage.out` |
+
+Every production package belongs to one partition; no production files or
+functions are exempt. Requiring both partitions to exceed 90% also requires
+their combined statement coverage to exceed 90%. The module entry selects all
+of its production packages for `-coverpkg`, preserving cross-package coverage
+within that partition. The lifecycle entry measures the command package from
+its own directory and vets its tagged tests. Neither entry relies on coverage
+of its production code from the other job.
+
+`scripts/validation-env.sh` supplies the common race policy and an absolute-path
+unit-test Web resource overlay. The absolute replacement paths remain valid
+when the command coverage run changes directory and its fresh-process test
+builds a child from the module root. Production builds retain real Web assets.
+Tests and their database state require the isolated PostgreSQL instance;
+preparation failures fail validation. Package concurrency stays limited to two:
+schema-isolated fixtures still share the database-wide migration advisory lock.
+Both entries clear cached test results before their coverage runs.
 
 `scripts/env.sh` places Go tools, caches and temporary outputs under this
-module's `.tmp/`. The `verify-server` CI job uses its own PostgreSQL service,
-runs the same check and uploads `coverage.out` as `daynight-server-acceptance`.
-Inspect the result for the tested revision; a local result does not establish a
-hosted result.
+module's `.tmp/`. The `verify-server` and `verify-server-startup-shutdown` jobs
+use independent PostgreSQL services and upload their profiles separately.
+Selected jobs must both actually succeed. Inspect results for the tested
+revision; a local result does not establish a hosted result. The
+[lifecycle decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-startup-shutdown.md)
+records the partition and scheduling rationale.
 
 Ordinary discovery excludes stress-tagged files. With an isolated database,
-`bash scripts/stress.sh` runs the explicit stress-tagged workloads with race
-detection and refuses a nonempty `CI` environment.
+`bash scripts/stress.sh` runs its explicit stress workloads with race detection
+and refuses a nonempty `CI` environment. Direct command-package stress runs also
+need `startupshutdown` alongside their existing `stress` and, where required,
+`webhooktest` tags.
 
 Authentication integration prepares the pinned UniAuth gateway with
 `scripts/prepare-uniauth-fixture.mts`. The fixture runs on loopback with
 controlled external provider responses and owns its temporary resources. For
 focused integration tests, source `scripts/env.sh`, set
 `DAYNIGHT_TEST_DATABASE_URL`, then set `DAYNIGHT_TEST_UNIAUTH_FIXTURE` to the
-output of that preparation script. The full check performs preparation itself.
-The real archive upload and response socket deadlines can be checked separately
-with `DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 GOFLAGS="-overlay=scripts/unit-overlay.json" go test -tags=stress ./internal/server/session -run '^TestStressArchive(Upload|Send)DeadlineReleasesCapacity$' -count=1 -timeout=5m`; each test waits for the production 120-second deadline.
+output of that preparation script. Both coverage entries perform their required
+preparation themselves. The real archive upload and response socket deadlines
+can be checked separately with
+`DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 GOFLAGS="-overlay=scripts/unit-overlay.json" go test -tags=stress ./internal/server/session -run '^TestStressArchive(Upload|Send)DeadlineReleasesCapacity$' -count=1 -timeout=5m`;
+each test waits for the production 120-second deadline.
 The shared fixture cleanup waits for process exit and reports forced termination;
 an unconfirmed service, database-session or gateway exit retains dependent owned
 resources. `scripts/check.sh` explicitly tests `testdata/testauth`, which `./...`
-does not discover.
-The real wire-loss test in
+does not discover. The real wire-loss test in
 [`auth_transport_acceptance_test.go`](internal/server/auth_transport_acceptance_test.go)
 checks the SDK-side connection and subsequent login recovery; controlled-provider
 evidence does not establish a live human login.
@@ -2409,13 +2460,13 @@ focused run can prepare the fixture and use the module's test-resource overlay:
 ```bash
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export GOFLAGS='-overlay=scripts/unit-overlay.json'
-go test -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
+go test -tags=startupshutdown -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
 # Explicit race evidence for both the test and its freshly built child:
-go test -race -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
+go test -tags=startupshutdown -race -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
 ```
 
 A focused or dirty/overlay run is evidence only for its actual source, flags,
-binary and environment; it does not replace the complete clean module check or
+binary and environment; it does not replace both clean coverage checks or
 hosted CI. The earlier `cmd/e2e_tests` built-process and installed-CLI scenarios
 were removed. Their recorded results and the
 [historical acceptance decisions](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)

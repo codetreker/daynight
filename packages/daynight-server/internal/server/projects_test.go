@@ -99,7 +99,7 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 		`{"name":"one","name":"two","repoUrl":"https://github.com/example/repo"}`,
 		`{"name":"ok","repoUrl":"https://github.com/example/repo","id":"read-only"}`,
 		`{"name":"ok","repoUrl":"https://github.com/example/repo","unknown":"secret-body"}`,
-		`{"name":null,"repoUrl":"https://github.com/example/repo"}`,
+		`{"name":null}`, `{"name":null,"repoUrl":"https://github.com/example/repo"}`,
 		`{"name":42,"repoUrl":"https://github.com/example/repo"}`,
 		`{"name":true,"repoUrl":"https://github.com/example/repo"}`,
 		`{"name":[],"repoUrl":"https://github.com/example/repo"}`,
