@@ -355,8 +355,14 @@ suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
 native Git imports, while real clone/fetch/worktree operations remain the test
 subjects. Worker worktree cases separately copy file-owned starting repositories
-for the files and reftable backends. Direct mutation checks verify independent
-tracked bytes, refs and Git objects in each copy. The
+for the files and reftable backends. The concurrent fetched-commit case keeps
+both real preparations within its fetch barriers and uses a case-local 30-second
+watchdog for native Git execution. Its commit, shared-ref and private-ref cleanup
+assertions remain in that workflow; discovery-only cases retain their separate
+preparation hooks and default behavior budget. The
+[concurrent fetch budget decision](../.agents/notes/implemented/testing/2026-11-09-worker-concurrent-fetch-budget.md)
+records why that interleaving needs its own bound. Direct mutation checks verify
+independent tracked bytes, refs and Git objects in each copy. The
 [Worker seed decision](../.agents/notes/archived/testing/2026-11-04-worker-git-fixture-seeds.md) records the rationale for that fixture lifetime. Tests within a file stay sequential so environment
 changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
