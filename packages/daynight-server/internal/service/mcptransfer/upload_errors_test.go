@@ -11,60 +11,66 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
 func TestUploadRejectsInvalidRequestsWithoutChangingTransfer(t *testing.T) {
-	f, uploads, attachments := uploadFixture(t)
-	id := uuid.NewString()
-	runUpload(t, uploads, f, f.actor, UploadInput{Action: "begin", TransferID: id, Path: "valid", ContentType: "text/plain"})
+	h := newUploadHarness(t)
+	r := h.record("valid", 0)
+	id := r.ID
 	chunk := UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ=="}
 	bad := []struct {
 		name, project, task string
 		input               UploadInput
 	}{
-		{"project", "bad", f.binding.TaskID, chunk},
-		{"task", f.binding.ProjectID, "bad", chunk},
-		{"unknown action", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "other"}},
-		{"invalid path", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "begin", TransferID: uuid.NewString(), Path: "../escape", ContentType: "text/plain"}},
-		{"long path", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "begin", TransferID: uuid.NewString(), Path: strings.Repeat("a", 1025), ContentType: "text/plain"}},
-		{"invalid MIME", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "begin", TransferID: uuid.NewString(), Path: "file", ContentType: "bad"}},
-		{"invalid inline content", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "inline", Path: "file", ContentType: "text/plain", ContentBase64: "%%%"}},
-		{"invalid inline path", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "inline", Path: "../file", ContentType: "text/plain", ContentBase64: "YQ=="}},
-		{"invalid chunk id", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: "bad", Offset: "0", ContentBase64: "YQ=="}},
-		{"negative offset", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "-1", ContentBase64: "YQ=="}},
-		{"noncanonical offset", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "00", ContentBase64: "YQ=="}},
-		{"overflow offset", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "9223372036854775808", ContentBase64: "YQ=="}},
-		{"empty chunk", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0"}},
-		{"invalid chunk encoding", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "%%%"}},
-		{"short hash", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", SHA256: "abc"}},
-		{"nonhex hash", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", SHA256: strings.Repeat("z", 64)}},
-		{"uppercase hash", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", SHA256: strings.ToUpper(digest([]byte("a")))}},
-		{"hash mismatch", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", SHA256: digest([]byte("b"))}},
-		{"missing transfer", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "status", TransferID: uuid.NewString()}},
-		{"abort missing", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "abort", TransferID: uuid.NewString()}},
-		{"negative total", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "commit", TransferID: id, TotalBytes: "-1"}},
-		{"invalid commit hash", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "commit", TransferID: id, TotalBytes: "0", SHA256: strings.Repeat("g", 64)}},
-		{"mismatched total", f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "commit", TransferID: id, TotalBytes: "1"}},
+		{"project", "bad", h.binding.TaskID, chunk},
+		{"task", h.binding.ProjectID, "bad", chunk},
+		{"unknown action", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "other"}},
+		{"invalid path", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "begin", TransferID: uuid.NewString(), Path: "../escape", ContentType: "text/plain"}},
+		{"long path", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "begin", TransferID: uuid.NewString(), Path: strings.Repeat("a", 1025), ContentType: "text/plain"}},
+		{"invalid MIME", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "begin", TransferID: uuid.NewString(), Path: "file", ContentType: "bad"}},
+		{"invalid inline content", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "inline", Path: "file", ContentType: "text/plain", ContentBase64: "%%%"}},
+		{"invalid inline path", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "inline", Path: "../file", ContentType: "text/plain", ContentBase64: "YQ=="}},
+		{"invalid chunk id", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: "bad", Offset: "0", ContentBase64: "YQ=="}},
+		{"negative offset", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "-1", ContentBase64: "YQ=="}},
+		{"noncanonical offset", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "00", ContentBase64: "YQ=="}},
+		{"overflow offset", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "9223372036854775808", ContentBase64: "YQ=="}},
+		{"empty chunk", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0"}},
+		{"invalid chunk encoding", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "%%%"}},
+		{"short hash", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", SHA256: "abc"}},
+		{"nonhex hash", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", SHA256: strings.Repeat("z", 64)}},
+		{"uppercase hash", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", SHA256: strings.ToUpper(digest([]byte("a")))}},
+		{"hash mismatch", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", SHA256: digest([]byte("b"))}},
+		{"missing transfer", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "status", TransferID: uuid.NewString()}},
+		{"abort missing", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "abort", TransferID: uuid.NewString()}},
+		{"negative total", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "commit", TransferID: id, TotalBytes: "-1"}},
+		{"invalid commit hash", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "commit", TransferID: id, TotalBytes: "0", SHA256: strings.Repeat("g", 64)}},
+		{"mismatched total", h.binding.ProjectID, h.binding.TaskID, UploadInput{Action: "commit", TransferID: id, TotalBytes: "1"}},
 	}
+
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {
-			if result, err := uploads.Execute(t.Context(), f.actor, tc.project, tc.task, tc.input); err == nil {
-				t.Fatalf("invalid request accepted: %+v", result)
+			switch tc.name {
+			case "missing transfer", "abort missing":
+				h.expect(getMissing(tc.input.TransferID))
+			case "mismatched total":
+				h.prepare(h.actor, r)
+			case "invalid inline path":
+				item := uploadAttachment(r, 1)
+				h.planInline(h.actor, "../file", []byte("a"), item, false, errors.New("invalid attachment path"))
+			}
+			if result, err := h.uploads.Execute(t.Context(), h.actor, tc.project, tc.task, tc.input); err == nil {
+				t.Fatalf("invalid request accepted %+v", result)
 			}
 		})
 	}
 	var missing *Uploads
-	if _, err := missing.Execute(t.Context(), f.actor, f.binding.ProjectID, f.binding.TaskID, chunk); err == nil {
-		t.Fatal("missing upload service accepted")
+	if _, err := missing.Execute(t.Context(), h.actor, h.binding.ProjectID, h.binding.TaskID, chunk); err == nil {
+		t.Fatal("missing service accepted")
 	}
-	status := runUpload(t, uploads, f, f.actor, UploadInput{Action: "status", TransferID: id})
+	status := h.status(h.actor, r)
 	if status["state"] != "receiving" || status["nextOffset"] != "0" || status["operationId"] != nil {
-		t.Fatalf("invalid requests changed transfer: %+v", status)
-	}
-	if _, _, err := attachments.Open(t.Context(), f.actor.Principal, f.binding.ProjectID, f.binding.TaskID, "valid"); err == nil {
-		t.Fatal("invalid requests published a target")
+		t.Fatalf("invalid request changed transfer %+v", status)
 	}
 }
 
@@ -100,126 +106,105 @@ type uploadTestBody struct {
 
 func (b uploadTestBody) Close() error { return b.err }
 
-type failUploadReceiptDAO struct {
-	store.PrivateTransferDAO
-	lookup, insert error
-}
-
-func (d failUploadReceiptDAO) UploadChunk(ctx context.Context, id, chunk string) (model.UploadChunk, error) {
-	if d.lookup != nil {
-		return model.UploadChunk{}, d.lookup
-	}
-	return d.PrivateTransferDAO.UploadChunk(ctx, id, chunk)
-}
-func (d failUploadReceiptDAO) InsertUploadChunk(ctx context.Context, chunk model.UploadChunk) error {
-	if d.insert != nil {
-		return d.insert
-	}
-	return d.PrivateTransferDAO.InsertUploadChunk(ctx, chunk)
-}
-
-type failUploadReceiptWriter struct {
-	store.PrivateTransferWriter
-	lookup, insert error
-}
-
-func (w failUploadReceiptWriter) WritePrivateTransfer(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error) {
-	return w.PrivateTransferWriter.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { return fn(failUploadReceiptDAO{d, w.lookup, w.insert}) })
-}
-
 func TestUploadChunkFailuresRetainRecoverableState(t *testing.T) {
 	for _, failure := range []string{"storage", "lookup", "receipt", "capacity"} {
 		t.Run(failure, func(t *testing.T) {
-			f, uploads, _ := uploadFixture(t)
-			id := uuid.NewString()
-			runUpload(t, uploads, f, f.actor, UploadInput{Action: "begin", TransferID: id, Path: "file", ContentType: "text/plain"})
+			h := newUploadHarness(t)
+			r := h.record("file", 0)
+			content := []byte("data")
 			cause := errors.New("injected " + failure)
-			originalDB, originalFiles, originalBudget := f.lifecycle.db, uploads.files, f.lifecycle.budget
-			switch failure {
-			case "storage":
-				uploads.files = failedUploadStorage{TransferStorage: f.files, putErr: cause}
-			case "lookup":
-				f.lifecycle.db = failUploadReceiptWriter{PrivateTransferWriter: originalDB, lookup: cause}
-			case "receipt":
-				f.lifecycle.db = failUploadReceiptWriter{PrivateTransferWriter: originalDB, insert: cause}
-			case "capacity":
-				f.lifecycle.budget = 1
+			in := UploadInput{Action: "chunk", TransferID: r.ID, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: base64.StdEncoding.EncodeToString(content)}
+			current := h.prepare(h.actor, r)
+			if failure == "lookup" {
+				h.expect(get(current), method("LockProjectLifecycle", nil, nil, r.ProjectID, r.TaskID), method("UploadChunk", nil, cause, r.ID, in.ChunkID))
+			} else {
+				h.missingReceipt(current, in.ChunkID)
+				if failure == "capacity" {
+					h.lifecycle.budget = 1
+					h.expect(get(current), method("LockProjectLifecycle", nil, nil, r.ProjectID, r.TaskID), method("LockLedger", nil, nil), method("OutstandingTotal", int64(0), nil), get(current), method("LockLedger", nil, nil), method("ReservedTotal", int64(0), nil))
+				} else {
+					reserved := h.reserve(current, 4)
+					steps := []daoStep{get(reserved), method("LockProjectLifecycle", nil, nil, r.ProjectID, r.TaskID)}
+					if failure == "storage" {
+						h.uploads.files = failedUploadStorage{TransferStorage: h.files, putErr: cause}
+					} else {
+						steps = append(steps, daoStep{method: "InsertUploadChunk", check: func(args []any) {
+							c := args[0].(model.UploadChunk)
+							if c.TransferID != r.ID || c.ChunkID != in.ChunkID || c.Size != 4 || c.Offset != 0 || c.SHA256 != digest(content) {
+								t.Errorf("attempted receipt %+v", c)
+							}
+						}, err: cause})
+					}
+					h.expect(steps...)
+				}
 			}
-			input := UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: base64.StdEncoding.EncodeToString([]byte("data"))}
-			result, err := uploads.Execute(t.Context(), f.actor, f.binding.ProjectID, f.binding.TaskID, input)
-			if err == nil {
-				t.Fatalf("%s was ignored: %+v", failure, result)
+			result, err := h.execute(h.actor, in)
+			if err == nil || failure != "capacity" && !errors.Is(err, cause) || failure == "capacity" && result["writeOutcome"] != "not_committed" {
+				t.Fatalf("failure result %+v %v", result, err)
 			}
-			if failure != "capacity" && !errors.Is(err, cause) {
-				t.Fatalf("cause lost: %v", err)
+			h.uploads.files = h.files
+			h.lifecycle.budget = 1 << 30
+			if status := h.status(h.actor, r); status["nextOffset"] != "0" {
+				t.Fatalf("unconfirmed chunk advanced %+v", status)
 			}
-			if failure == "capacity" && result["writeOutcome"] != "not_committed" {
-				t.Fatalf("capacity outcome: %+v", result)
-			}
-			f.lifecycle.db, uploads.files, f.lifecycle.budget = originalDB, originalFiles, originalBudget
-			status := runUpload(t, uploads, f, f.actor, UploadInput{Action: "status", TransferID: id})
-			if status["nextOffset"] != "0" {
-				t.Fatalf("unconfirmed chunk advanced offset: %+v", status)
-			}
-			accepted := runUpload(t, uploads, f, f.actor, input)
-			if accepted["receipt"] != "accepted" || accepted["nextOffset"] != "4" {
-				t.Fatalf("same chunk could not recover: %+v", accepted)
+			next, _ := h.planChunk(h.actor, r, in, content)
+			accepted := h.run(h.actor, in)
+			if accepted["receipt"] != "accepted" || accepted["nextOffset"] != "4" || uploadNextOffset(next) != 4 {
+				t.Fatalf("recovery %+v", accepted)
 			}
 		})
 	}
 }
-
 func TestUploadStreamRejectsMissingCorruptAndIncompleteObjects(t *testing.T) {
-	f, uploads, _ := uploadFixture(t)
-	id := uuid.NewString()
+	h := newUploadHarness(t)
 	content := []byte("correct")
-	runUpload(t, uploads, f, f.actor, UploadInput{Action: "begin", TransferID: id, Path: "file", ContentType: "text/plain"})
-	runUpload(t, uploads, f, f.actor, UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: base64.StdEncoding.EncodeToString(content)})
-	permit, err := f.lifecycle.AcquirePermit(t.Context(), f.actor, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer permit.Close()
-	if _, err := uploads.stream(t.Context(), permit, "invalid", int64(len(content))); err == nil {
+	r := h.record("file", int64(len(content)))
+	chunks := h.seed(r, content)
+	permit := h.lifecycleFixture.permit(r)
+	current := cloneTransfer(r)
+	current.Version++
+	if _, err := h.uploads.stream(t.Context(), permit, "invalid", int64(len(content))); err == nil {
 		t.Fatal("invalid namespace accepted")
 	}
-	cause := errors.New("injected object failure")
+	cause := errors.New("object failure")
 	for _, tc := range []struct {
 		name    string
 		storage failedUploadStorage
 		total   int64
 		want    error
 	}{
-		{"open", failedUploadStorage{TransferStorage: f.files, openErr: cause}, int64(len(content)), cause},
-		{"size mismatch", failedUploadStorage{TransferStorage: f.files, body: content, infoSize: 1}, int64(len(content)), nil},
-		{"short read", failedUploadStorage{TransferStorage: f.files, body: content[:3], infoSize: int64(len(content))}, int64(len(content)), io.ErrUnexpectedEOF},
-		{"hash mismatch", failedUploadStorage{TransferStorage: f.files, body: []byte("corrupt"), infoSize: int64(len(content))}, int64(len(content)), nil},
-		{"close failure", failedUploadStorage{TransferStorage: f.files, body: content, infoSize: int64(len(content)), closeErr: cause}, int64(len(content)), cause},
-		{"receipt exceeds total", failedUploadStorage{TransferStorage: f.files}, 1, nil},
+		{"open", failedUploadStorage{TransferStorage: h.files, openErr: cause}, int64(len(content)), cause},
+		{"size mismatch", failedUploadStorage{TransferStorage: h.files, body: content, infoSize: 1}, int64(len(content)), nil},
+		{"short read", failedUploadStorage{TransferStorage: h.files, body: content[:3], infoSize: int64(len(content))}, int64(len(content)), io.ErrUnexpectedEOF},
+		{"hash mismatch", failedUploadStorage{TransferStorage: h.files, body: []byte("corrupt"), infoSize: int64(len(content))}, int64(len(content)), nil},
+		{"close failure", failedUploadStorage{TransferStorage: h.files, body: content, infoSize: int64(len(content)), closeErr: cause}, int64(len(content)), cause},
+		{"receipt exceeds total", failedUploadStorage{TransferStorage: h.files}, 1, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			uploads.files = tc.storage
-			stream, err := uploads.stream(t.Context(), permit, id, tc.total)
+			h.uploads.files = tc.storage
+			h.streamReads(current, chunks)
+			stream, err := h.uploads.stream(t.Context(), permit, r.ID, tc.total)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, readErr := io.ReadAll(stream)
 			_ = stream.Close()
-			if readErr == nil || (tc.want != nil && !errors.Is(readErr, tc.want)) {
-				t.Fatalf("corruption not reported: %v", readErr)
+			if readErr == nil || tc.want != nil && !errors.Is(readErr, tc.want) {
+				t.Fatalf("corruption not reported %v", readErr)
 			}
 		})
 	}
-	uploads.files = failedUploadStorage{TransferStorage: f.files, body: content, infoSize: int64(len(content)), closeErr: cause}
-	stream, err := uploads.stream(t.Context(), permit, id, int64(len(content)))
+	h.uploads.files = failedUploadStorage{TransferStorage: h.files, body: content, infoSize: int64(len(content)), closeErr: cause}
+	h.streamReads(current, chunks)
+	stream, err := h.uploads.stream(t.Context(), permit, r.ID, int64(len(content)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var one [1]byte
-	if n, err := stream.Read(one[:]); err != nil || n != 1 {
-		t.Fatalf("partial read: %d %v", n, err)
+	if n, err := stream.Read(one[:]); n != 1 || err != nil {
+		t.Fatalf("partial read %d %v", n, err)
 	}
 	if err := stream.Close(); !errors.Is(err, cause) {
-		t.Fatalf("close failure lost: %v", err)
+		t.Fatalf("close cause %v", err)
 	}
 }

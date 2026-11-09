@@ -586,6 +586,14 @@ registration, input/write byte boundaries and request lifecycle. Its [protocol t
 owns the standalone command and lower admission, transfer and persistence proof
 boundaries.
 
+The complete `internal/service/mcptransfer` suite also clears infrastructure
+variables and uses explicit DAO, transaction and direct attachment-operation
+results. It retains actual file permits, chunk streams, hashes and content
+boundaries. Store tests own receipt/accounting atomicity and real lifecycle locks;
+the existing startup/shutdown entry owns the cross-process orphan-recovery
+witness. The [transfer service guide](../packages/daynight-server/README.md#mcp-transfer-service-tests)
+owns focused commands and the core JSON-binding proof.
+
 The explicitly tagged `cmd/integration_tests` suite runs normal API flows through
 a production Server process and Go HTTP client. Its runner selects
 `TestServerAPINormalFlows` and `TestServerAPISessionNormalFlow`. The Session flow
