@@ -133,7 +133,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 调用方向为 `server → service → core/store`。传输层将 API DTO 转换为 service
 参数，core 不依赖 HTTP，store 不决定状态转换或依赖规则。事务内查询所需的数据、
 加锁和持久化操作由 store 提供，已拆分领域的候选变更由 core 判断，service 编排作用域与跨领域操作。现有关系型数据只有 PostgreSQL 一个实现，
-`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Session、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task 与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力；离线维护使用独立连接及维护合同。附件的字节存储接口由其独立
+`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Session、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task 与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力。附件的字节存储接口由其独立
 架构拥有，不替代这里的具体 PostgreSQL store。
 
 独立模块允许服务拥有自己的 Go/PostgreSQL 生命周期，避免将数据库事务接入现有
@@ -513,16 +513,26 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 ## 验证设计
 
 [测试编写规则](../writing_tests.md)定义依赖和场景归属，并按被测职责选择隔离边界。
-core 使用合成领域输入及所需 DAO mock；service 控制被编排的下层操作及所需 DAO、
-scope、transaction 结果；server HTTP 适配单元测试 mock 直接调用的 service 或业务
-用例，保留实际路由、协议认证、编解码与请求生命周期，不连接 PostgreSQL。
-Mock 明确检查方法、参数、调用次数与错误，独立提供返回值及完成结果；拟写不代表
-持久化，后续给定读取也不模拟提交或回滚。并发工作使用所属操作的 barrier，未配置的
-后台访问必须使测试失败并完成取消与 drain。Task 与 Session HTTP 单元测试采用直接
+core 实际执行业务规则，使用合成领域输入及所需 DAO、scope 和 transaction mock。
+service 实际执行自身装配、编排、事务协调与共享资源生命周期，mock 直接调用的 core
+及其他下层业务操作，并控制自身所需的 DAO、scope、transaction 和外部资源。server
+HTTP 适配单元测试 mock handler 直接调用的 service 或 core 用例，保留实际路由、协议
+认证、编解码与请求生命周期。仅 mock DAO 并继续执行下层业务，不能隔离 server 或
+service 的职责；不连接 PostgreSQL 也不足以证明直接操作边界。
+
+Mock 明确检查 principal、ID、输入、context、事务绑定能力、方法、调用次数及所需
+顺序，独立提供操作结果、完成结果和错误。service 的实际事务 callback 仍执行，
+验证后续操作、完成结果优先级、错误链和失败清理；拟写不代表持久化，后续给定读取
+也不模拟提交或回滚。并发工作使用所属操作的 barrier，未配置的后台访问必须使测试
+失败并完成取消与 drain。共享模型、领域错误和普通数据直接构造，纯逻辑、协议、
+传输及生命周期的被测机制仍实际执行。Task 与 Session HTTP 单元测试采用直接
 用例边界；Session 的私有类型化回调、不透明归档能力及实际 socket 证明由
 [Session HTTP 用例决策](../../.agents/notes/implemented/testing/2026-11-09-session-http-use-cases.md)维护。
 
-根 `internal/service` 测试拥有 App 组装、启动、readiness、后台监督和关闭重试。
+装配和生命周期测试使用受控协作者及外部资源边界执行生产构造及绑定，验证依赖身份、
+readiness、部分启动清理、后台退出、资源保留和停止使用后关闭的顺序，不通过完整
+下层业务矩阵取得固定数据。根 `internal/service` 测试拥有 App 组装、启动、readiness、
+后台监督和关闭重试。
 公开入口与测试共用同一 `openApp` 组装流程，通过实例级资源 factory 控制下层；
 `openPersistence` 将同一个 backend 绑定为 Transactions、Ready 和 Close，应用与
 公开持久化入口共用这段绑定。测试保留实际 Engine、文件、permit 和 worker 生命周期，
@@ -532,7 +542,7 @@ Mock 明确检查方法、参数、调用次数与错误，独立提供返回值
 归 core 或对应子 service，物理事务及持久化归 Store，具体依据由
 [根 service 测试归属决策](../../.agents/notes/implemented/testing/2026-11-09-root-service-test-ownership.md)维护。
 
-根 server 单元测试组装真实模块、路由和认证适配。HTTP/TCP、MCP SDK、WebSocket、
+现有根 server fixture 组装真实模块、路由和认证适配。HTTP/TCP、MCP SDK、WebSocket、
 Session Engine、文件和 runtime 生命周期按实际机制运行；HTTP control 与 WebSocket
 共享同一 application 和 Engine。UniAuth 浏览器绑定、一次性结果及 SDK 断流测试保留隔离的
 真实 gateway、代理与 socket。其他认证输入通过明确 credential 与 Identity DAO 事实提供，

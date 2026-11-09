@@ -261,15 +261,6 @@ upload must succeed after restoration. The
 [localhost backup procedure](../localhost/README.md#persistence-and-backup)
 owns the operator commands and the accepted pre-existing consistency limitation.
 
-The [offline layout upgrade](../localhost/README.md#attachment-layout-upgrade)
-uses explicit plan/apply/resume operations before ordinary HTTP startup. The
-server migration acceptance keeps genuine old task-only bytes, covers a project
-UUID equal to an old task UUID, and checks full directory/content inventories,
-unchanged business rows, failure and interruption continuation. This is separate
-from the deployment check's new-layout restart/restore journey. Maintenance does
-not rotate task_cache_epoch; a historical restore still follows the rotation
-contract above. Source-bound results must identify the actual scenarios run.
-
 Source-bound receipts are written under `.tmp/attachment-deployment-*/` and the
 two normal `.tmp/dev-ci/<run-id>/` directories. They record owned project and
 volume identities, performed phases, task-sync epoch observations, metadata and

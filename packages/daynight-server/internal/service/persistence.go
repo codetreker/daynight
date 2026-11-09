@@ -5,7 +5,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/maintenance"
 )
 
 // Persistence owns the shared database resources used by the application.
@@ -35,9 +34,4 @@ func openPersistence(ctx context.Context, databaseURL string, open func(context.
 		return nil, err
 	}
 	return &Persistence{Transactions: database, Ready: database.Ready, Close: database.Close}, nil
-}
-
-// OpenAttachmentMaintenance assembles the dedicated offline maintenance session.
-func OpenAttachmentMaintenance(ctx context.Context, databaseURL string) (store.AttachmentMaintenance, error) {
-	return maintenance.OpenAttachmentMaintenance(ctx, databaseURL)
 }
