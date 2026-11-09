@@ -91,7 +91,7 @@ export const startProvider = async (options: {
   const observe = (socket: Socket, event: ProviderObservationDetail): void => {
     options.observe?.({ timestamp: new Date().toISOString(), elapsedMs: performance.now() - started, connection: connection(socket), ...event });
   };
-  const errorCode = (error: Error): string => "code" in error && typeof error.code === "string" && /^[A-Z][A-Z_0-9]*$/.test(error.code) ? error.code : "unknown";
+  const errorCode = (error: Error): string => "code" in error && typeof error.code === "string" && /^[A-Z][A-Z_0-9/]*$/.test(error.code) ? error.code : "unknown";
   const route = (request: IncomingMessage): ProviderRoute => {
     const pathname = request.url!.split("?")[0];
     const host = request.headers.host;

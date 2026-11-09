@@ -41,7 +41,7 @@ export const registerAuth = async (
       switch (url.pathname) {
         case "/console/": return "console";
         case "/console/api/login": return "console-login";
-        case "/authorize": return "authorize";
+        case "/auth/authorize": return "authorize";
         case "/auth/callback/github": return "provider-callback";
         case "/console/auth/callback": return "console-callback";
         case "/console/api/session": return "console-session";

@@ -40,6 +40,7 @@ for (const scenario of [
       page.emit("response", response);
       page.emit("requestfinished", request);
       page.emit("requestfailed", request);
+      page.emit("request", { ...request, url: () => `${environment.authURL}/auth/authorize?state=${secret}` });
     };
     const fakePage = Object.assign(page, {
       setDefaultTimeout: (value: number) => timeouts.push(value),
@@ -74,6 +75,7 @@ for (const scenario of [
     const request = observations.find((event) => event.event === "request");
     const response = observations.find((event) => event.event === "response");
     assert.ok(request?.event === "request" && request.route === "github-authorize");
+    assert.ok(observations.some((event) => event.event === "request" && event.route === "authorize" && event.navigation));
     assert.ok(response?.event === "response" && response.request === request.request && response.status === 200);
     assert.ok(observations.some((event) => event.event === "request-failed" && event.request === request.request && event.code === "unknown"));
     assert.equal(JSON.stringify(observations).includes(secret), false);
