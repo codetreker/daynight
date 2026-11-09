@@ -471,11 +471,16 @@ func configurationCapacityCases() []configurationCapacityCase {
 	}
 }
 
+func configurationCapacityObservationProjectID(index int) string {
+	// Adjacent IDs are swapped so unintended sorting changes this reproducible input.
+	return configurationCapacityProjectID(index ^ 1)
+}
+
 func configurationCapacityObservationDocument(count int, base string) map[string]any {
 	items := make([]any, count)
 	for i := range items {
 		items[i] = map[string]any{
-			"key":            map[string]any{"kind": "projectPreparation", "projectId": configurationCapacityProjectID(i)},
+			"key":            map[string]any{"kind": "projectPreparation", "projectId": configurationCapacityObservationProjectID(i)},
 			"targetRevision": "1", "appliedValue": nil, "state": "pending", "error": nil, "lastFailure": nil, "nextAttemptAt": nil,
 		}
 	}
@@ -486,7 +491,7 @@ func configurationCapacityObservation(count int, base string) model.WorkerConfig
 	items := make([]model.WorkerConfigurationItem, count)
 	for i := range items {
 		items[i] = model.WorkerConfigurationItem{
-			Key:            model.WorkerConfigurationItemKey{Kind: "projectPreparation", ProjectID: configurationCapacityProjectID(i)},
+			Key:            model.WorkerConfigurationItemKey{Kind: "projectPreparation", ProjectID: configurationCapacityObservationProjectID(i)},
 			TargetRevision: "1", AppliedValue: json.RawMessage("null"), State: "pending",
 		}
 	}

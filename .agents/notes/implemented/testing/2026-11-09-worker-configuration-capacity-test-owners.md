@@ -24,7 +24,8 @@ response additionally retains protocol version 1 and its complete receipt.
 
 Core parser tests retain the original seven configuration and one observation
 boundary pairs, including UTF-8 byte values, complete maximum collections and
-all nullable observation fields. Independent full expected values preserve the
+all nullable observation fields. Observation identifiers are deliberately
+nonmonotonic so unintended item sorting cannot preserve the expected order. Independent full expected values preserve the
 original defaults: maxConcurrent 3, pollIntervalMs 60000 and recoveryLimit 0.
 
 Core business tests execute PutConfiguration for every normal configuration
