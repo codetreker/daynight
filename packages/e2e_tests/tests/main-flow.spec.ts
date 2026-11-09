@@ -78,9 +78,10 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await expect(hits.nth(1)).toContainText(referenceTitle);
   await expect(hits.nth(1)).toContainText("Title match");
   await hits.nth(0).click();
-  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
-  await expect(page.getByText("Shared E2E content", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "To do", exact: true }).click();
+  const detail = page.getByRole("dialog");
+  await expect(detail.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(detail.getByText("Shared E2E content", { exact: true })).toBeVisible();
+  await detail.getByRole("button", { name: "To do", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "In progress", exact: true }).click();
   await page.getByRole("button", { name: "Confirm status", exact: true }).click();
   await expect.poll(async () => JSON.parse((await cli(["task", "show", task.id, "--project", projectId!, "--json"])).stdout).status).toBe("in_progress");
@@ -95,5 +96,5 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const refreshedHit = page.getByRole("button", { name: `Open task: ${name}` });
   await expect(refreshedHit).toContainText(task.id);
   await refreshedHit.click();
-  await expect(page.getByRole("button", { name: "Done", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Done", exact: true })).toBeVisible();
 });
