@@ -21,7 +21,7 @@ func TestStepsCLITextAdmissionAcceptance(t *testing.T) {
 	if cli == "" {
 		t.Skip("DAYNIGHT_TEST_CLI_MAIN is not set")
 	}
-	integration := newIdentityIntegration(t)
+	integration := newDatabaseIdentityIntegration(t)
 	browser := identityBrowser(t)
 	user := integration.login(t, browser, "alice")
 	origin := map[string]string{"Origin": integration.server.URL}

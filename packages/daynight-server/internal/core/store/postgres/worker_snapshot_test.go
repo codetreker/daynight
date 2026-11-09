@@ -24,6 +24,10 @@ func workerSnapshotFixture(userID, workerID string, stamp time.Time) model.Worke
 	}
 }
 
+func workerStoredUTF8(size int) string {
+	return strings.Repeat("界", size/3) + strings.Repeat("x", size%3)
+}
+
 func putWorkerSnapshot(t *testing.T, database *Store, worker model.WorkerSnapshot) model.WorkerSnapshot {
 	t.Helper()
 	var result model.WorkerSnapshot
@@ -68,8 +72,38 @@ func TestWorkerSnapshotUpsertUnknownStaleAndObservedTime(t *testing.T) {
 	database := isolatedStore(t)
 	stamp := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
 	worker := workerSnapshotFixture(queryID(1), queryID(2), stamp)
+	worker.Telemetry.Machine.Name = workerStoredUTF8(256)
+	worker.Telemetry.WorkingDirectory = workerStoredUTF8(4096)
+	worker.Telemetry.OS = model.WorkerProbe[model.WorkerOS]{State: "ok", CheckedAt: stamp, Value: &model.WorkerOS{
+		Type: workerStoredUTF8(64), Arch: workerStoredUTF8(64), Release: workerStoredUTF8(256), Version: workerStoredUTF8(1024),
+	}}
+	worker.Telemetry.CPU = model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: stamp, Value: &model.WorkerCPU{
+		Model: workerStoredUTF8(512), LogicalProcessors: 8, UsagePercent: 37.5,
+	}}
+	worker.Telemetry.Memory = model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: stamp, Value: &model.WorkerMemory{UsedBytes: 1 << 32, TotalBytes: 1 << 33}}
+	worker.Telemetry.Disk = model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: stamp, Value: &model.WorkerDisk{AvailableBytes: 1 << 40, TotalBytes: 1 << 41}}
+	version := workerStoredUTF8(256)
+	worker.Telemetry.Versions = model.WorkerVersions{Daynight: version,
+		Herdr:   model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
+		Codex:   model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
+		Copilot: model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
+	}
+	runtimeProjects := make([]model.WorkerRuntimeProject, 128)
+	for index := range runtimeProjects {
+		runtimeProjects[index] = model.WorkerRuntimeProject{ProjectID: queryID(1000 + index)}
+	}
+	worker.Telemetry.RuntimeConfiguration = &model.WorkerRuntimeConfiguration{SchemaVersion: 1, Projects: runtimeProjects}
+	modelName, unavailable := "gpt-5", "not_found"
+	worker.Telemetry.AssistantHost = &model.WorkerAssistantHost{
+		ProtocolVersion: 1, ObservedAt: stamp, DefaultCwd: "/workspace", DefaultProvider: model.AgentCopilot,
+		Providers: []model.WorkerAssistantProvider{
+			{Provider: model.AgentCodex, Available: true, Args: []string{}},
+			{Provider: model.AgentClaude, Available: false, Reason: &unavailable, Args: []string{}},
+			{Provider: model.AgentCopilot, Available: true, Model: &modelName, Args: []string{"--effort", "high"}},
+		},
+	}
 	first := putWorkerSnapshot(t, database, worker)
-	if first.TaskSnapshot.State != model.WorkerTasksUnavailable || first.TaskSnapshot.ObservedAt != nil || first.TaskSnapshot.Items == nil {
+	if first.TaskSnapshot.State != model.WorkerTasksUnavailable || first.TaskSnapshot.ObservedAt != nil || first.TaskSnapshot.Items == nil || !reflect.DeepEqual(first.Telemetry, worker.Telemetry) {
 		t.Fatalf("initial unknown inventory changed: %#v", first)
 	}
 	worker.CreatedAt = stamp.Add(time.Hour)
@@ -95,9 +129,10 @@ func TestWorkerSnapshotUpsertUnknownStaleAndObservedTime(t *testing.T) {
 		t.Fatalf("upsert did not persist its supplied observation: %#v", older)
 	}
 	worker.LastReportedAt = stamp.Add(4 * time.Second)
+	worker.Telemetry.AssistantHost = nil
 	worker.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &worker.LastReportedAt, InventoryObservedAt: &stamp, Items: []model.WorkerObservedTask{}}
 	empty := putWorkerSnapshot(t, database, worker)
-	if empty.TaskSnapshot.State != model.WorkerTasksObserved || len(empty.TaskSnapshot.Items) != 0 || empty.TaskSnapshot.Items == nil {
+	if empty.TaskSnapshot.State != model.WorkerTasksObserved || len(empty.TaskSnapshot.Items) != 0 || empty.TaskSnapshot.Items == nil || !reflect.DeepEqual(empty.Telemetry, worker.Telemetry) {
 		t.Fatalf("real empty inventory was not a complete observation: %#v", empty)
 	}
 }
@@ -131,10 +166,14 @@ func TestWorkerSnapshotNormalizesTaskReferencesWithoutChangingTasks(t *testing.T
 			t.Errorf("invalid database observation: %v, %v", clock, err)
 			return err
 		}
-		items, err = tx.WorkerDAO().ReportTaskSnapshots(ctx, userID, model.WorkerTaskInventory{ObservedAt: clock, Claims: []model.WorkerTaskReference{
+		claims := []model.WorkerTaskReference{
 			otherUser, valid, otherWorker, wrongClaim, completed, deleted, noMembership, wrongProject, missing,
 			{ProjectID: project.ID, TaskID: missingClaim.ID, ClaimID: queryID(902)},
-		}})
+		}
+		for number := len(claims); number < 256; number++ {
+			claims = append(claims, model.WorkerTaskReference{ProjectID: project.ID, TaskID: queryID(2000 + number), ClaimID: queryID(3000 + number)})
+		}
+		items, err = tx.WorkerDAO().ReportTaskSnapshots(ctx, userID, model.WorkerTaskInventory{ObservedAt: clock, Claims: claims})
 		return err
 	})
 	if err != nil || len(items) != 6 {
@@ -143,6 +182,9 @@ func TestWorkerSnapshotNormalizesTaskReferencesWithoutChangingTasks(t *testing.T
 	seen := make(map[string]bool, len(items))
 	for _, item := range items {
 		seen[item.Task.ID] = true
+		if item.ProjectName != project.Name || item.Task.ID == valid.TaskID && (fixtureWorker(t, item.Task.Properties).ClaimID != valid.ClaimID || fixtureWorker(t, item.Task.Properties).UserID != userID || fixtureWorker(t, item.Task.Properties).WorkerID != workerID) {
+			t.Fatalf("reported source lost its current claim or Project name: %#v", item)
+		}
 	}
 	for _, ref := range []model.WorkerTaskReference{otherUser, valid, otherWorker, wrongClaim, completed, wrongProject} {
 		if !seen[ref.TaskID] {

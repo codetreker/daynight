@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -133,6 +134,13 @@ func TestDeliveryDAOFailureAndBoundaryPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
+		original, err := New(tx).LockDelivery(ctx, f.delivery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if original.Generation != 1 || original.State != "pending" || original.AutomaticAttemptCount != 0 || original.AttemptSequence != 0 {
+			t.Fatalf("initial delivery control: %+v", original)
+		}
 		if _, err = tx.Exec(ctx, `UPDATE webhook_deliveries SET state='leased',lease_token=gen_random_uuid(),lease_claimed_at=clock_timestamp()-interval '60 seconds',lease_until=clock_timestamp()-interval '15 seconds',lease_generation=generation WHERE id=$1`, f.delivery); err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +148,15 @@ func TestDeliveryDAOFailureAndBoundaryPaths(t *testing.T) {
 		if err != nil || len(rows) != 1 || rows[0].ID != f.delivery {
 			t.Fatalf("expired lease rows=%+v err=%v", rows, err)
 		}
-		if err = tx.Rollback(ctx); err != nil {
+		recovered := rows[0]
+		recovered.Generation++
+		recovered.State = "pending"
+		recovered.LeaseToken, recovered.LeaseClaimedAt, recovered.LeaseUntil = nil, nil, nil
+		recovered.LeaseGeneration, recovered.LeasePlanSlot, recovered.CurrentAttemptID = nil, nil, nil
+		if err = New(tx).UpdateDelivery(ctx, recovered); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
 			t.Fatal(err)
 		}
 		tx, err = f.conn.Begin(ctx)
@@ -148,6 +164,16 @@ func TestDeliveryDAOFailureAndBoundaryPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
+		persisted, err := New(tx).LockDelivery(ctx, f.delivery)
+		expected := original
+		expected.Generation = 2
+		if err != nil || !reflect.DeepEqual(persisted, expected) {
+			t.Fatalf("committed lease recovery changed capture or retry budget: expected=%+v actual=%+v err=%v", expected, persisted, err)
+		}
+		attempts, err := New(tx).LockAttempts(ctx, f.delivery)
+		if err != nil || len(attempts) != 0 {
+			t.Fatalf("unadmitted recovery created attempts: %+v %v", attempts, err)
+		}
 		if _, err = tx.Exec(ctx, `UPDATE webhook_deliveries SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, f.delivery); err != nil {
 			t.Fatal(err)
 		}

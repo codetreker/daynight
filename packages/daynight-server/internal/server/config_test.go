@@ -110,7 +110,7 @@ func TestPublicPageCallbackReservationPreservesDistinctPaths(t *testing.T) {
 			if err != nil {
 				t.Fatalf("distinct callback path rejected: %v", err)
 			}
-			handler, err := newTestHandler(Dependencies{Store: &routeOnlyStore{}}, config, testLogger())
+			handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, config, testLogger())
 			if err != nil || handler == nil {
 				t.Fatalf("distinct callback path failed route composition: %v", err)
 			}

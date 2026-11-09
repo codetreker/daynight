@@ -953,34 +953,52 @@ records why database clocks and lock observations are required together.
 
 ### HTTP scenario ownership
 
-Domain packages own their HTTP protocol regressions. Task HTTP tests control
-directly called service/use-case results, while representative normal
-full-application API flows run in `cmd/integration_tests`. Attachment protocol
-fixtures assemble real adapters with controlled authentication and DAO facts;
-their [test guide](#attachment-http-tests) identifies the native transport and
-storage boundaries. Bot and Session HTTP fixtures that require complete
-application composition retain real PostgreSQL and UniAuth. The root
-`internal/server` package retains private composition, shared startup/channel
-and runtime shutdown-ordering tests. Shared scenarios have one owner; different
-preparation, protocol and mechanism proofs remain separate. The
-[HTTP ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
-preserves the earlier consolidation rationale, and the
-[Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
-owns the Task HTTP and API boundary.
+Root `internal/server` unit tests assemble the actual modules, routes and
+HTTP authentication over strict DAO/scope callbacks. Fixed domain records,
+query results, proposed writes, call counts and transaction completion are
+explicit test inputs. Callback writes do not determine future reads or simulate
+committed state. The complete ordinary root selection executes with
+`DAYNIGHT_TEST_DATABASE_URL` unset. Tests of UniAuth result/browser binding and
+SDK wire loss retain their isolated gateway, real proxy and sockets; prepare the
+pinned auth fixture as described in [validation](#validate).
 
-The Session browser ping regression uses production Session routes with real
-business services and authentication in a focused route fixture. Its test-local
-interval allows actual Ping/Pong and subsequent event delivery to complete
-promptly. Other integration scenarios retain the full application. Route
-cleanup drains the relay and stops its engine before the outer fixture releases
-its borrowed Store and files. The
+Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
+remain real where they are the mechanism being verified. HTTP control and
+WebSocket traffic share one application and Engine. Root startup, channel,
+serialization and shutdown cases retain their private composition observations
+and capacity boundaries. Store tests own actual SQL, database-clock expiry after
+locks, transaction outcomes and committed readback; process tests own complete
+entry-point drain and restart persistence. The
+[root DAO ownership decision](../../.agents/notes/implemented/testing/2026-11-09-root-http-test-dao-ownership.md)
+records these fixtures and the distinction between logical and physical evidence.
+
+Domain packages own their HTTP adapters. Task protocol tests control directly
+called service/use-case results and retain actual credential middleware, HTTP
+encoding, response loss and resource handling. Representative normal complete
+API flows run in `cmd/integration_tests`. The
+[Go dependency decision](../../.agents/notes/implemented/testing/2026-11-08-go-test-dependency-boundaries.md)
+owns the Task HTTP and API boundary. Attachment fixtures use controlled
+DAO/authentication facts with real transport and storage; their
+[test guide](#attachment-http-tests) identifies those boundaries. Shared
+scenario bodies have one owner, while distinct internal composition assertions
+remain in the root package. The earlier
+[scenario consolidation](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+records why removing copies had to preserve private application observations.
+
+Domain Bot and Session fixtures that require complete application composition
+retain their existing PostgreSQL and UniAuth observations. The domain Session
+browser ping regression uses production Session routes with real services and
+authentication in a focused route fixture. Its local interval allows actual
+Ping/Pong and subsequent event delivery to complete promptly. Route cleanup
+drains the relay and stops its engine before the outer fixture releases its
+borrowed Store and files. The
 [Session test completion decision](../../.agents/notes/implemented/testing/2026-11-07-session-protocol-test-completion.md)
 records this fixture's responsibility.
 
-The domain Session fixtures share application shutdown cleanup and mutable
+Domain Session fixtures share application shutdown cleanup and explicit mutable
 error expectations. Tests that deliberately revoke authority may declare the
 exact clean domain fault caused by that transition. Project deletion channel
-tests declare `not_found` after successful deletion because socket closure can
+cases declare `not_found` after successful deletion because socket closure can
 precede the server's disconnect cleanup. Every joined cause must match the
 selected fault without an underlying cause; database errors, timeouts and other
 faults still fail cleanup. Production shutdown error handling remains unchanged.

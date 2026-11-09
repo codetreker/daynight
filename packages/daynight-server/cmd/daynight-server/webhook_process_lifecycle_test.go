@@ -92,6 +92,26 @@ func TestWebhookProcessShutdownPreservesCapturedWork(t *testing.T) {
 	if err = json.Unmarshal(body, &created); err != nil || created.Endpoint.ID == "" {
 		t.Fatalf("endpoint: %s %v", body, err)
 	}
+	var destination, signingSecret []byte
+	if err = observer.QueryRow(ctx, `SELECT e.destination_configuration,k.secret
+		FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id
+		WHERE e.id=$1`, created.Endpoint.ID).Scan(&destination, &signingSecret); err != nil || len(signingSecret) != 32 || !bytes.Contains(destination, []byte("https://receiver.example/hook")) {
+		t.Fatalf("stored destination or signing secret invalid: %v", err)
+	}
+	assertCatalog := func(enabled bool) {
+		t.Helper()
+		response, data, err := request(http.MethodGet, "/api/v1/webhook-event-types", nil)
+		var catalog struct {
+			Items   []json.RawMessage `json:"items"`
+			Service struct {
+				Dispatch bool `json:"dispatchEnabled"`
+			} `json:"service"`
+		}
+		if err != nil || response.StatusCode != http.StatusOK || json.Unmarshal(data, &catalog) != nil || len(catalog.Items) != 6 || catalog.Service.Dispatch != enabled {
+			t.Fatalf("process webhook catalog enabled=%v response=%v data=%s err=%v", enabled, response, data, err)
+		}
+	}
+	assertCatalog(true)
 	lock, err := observer.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -201,11 +221,29 @@ func TestWebhookProcessShutdownPreservesCapturedWork(t *testing.T) {
 	}
 	values["DAYNIGHT_WEBHOOK_ENABLED"] = "0"
 	restarted := startPersistenceProcess(t, values)
+	assertCatalog(false)
+	var restartedDestination, restartedSecret []byte
+	if err = observer.QueryRow(ctx, `SELECT e.destination_configuration,k.secret
+		FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id
+		WHERE e.id=$1`, created.Endpoint.ID).Scan(&restartedDestination, &restartedSecret); err != nil || !bytes.Equal(destination, restartedDestination) || !bytes.Equal(signingSecret, restartedSecret) {
+		t.Fatalf("disabled process restart changed destination or signing secret: %v", err)
+	}
 	if err = observer.QueryRow(ctx, `SELECT d.state,d.lease_token::text,(SELECT count(*) FROM webhook_attempts WHERE delivery_id=d.id),(SELECT count(*) FROM webhook_events WHERE id=d.event_id) FROM webhook_deliveries d WHERE d.endpoint_id=$1`, created.Endpoint.ID).Scan(&state, &lease, &attempts, &events); err != nil || state != "pending" || lease != nil || attempts != 0 || events != 1 {
 		t.Fatalf("disabled restart changed captured work: state=%s lease=%v attempts=%d events=%d err=%v", state, lease, attempts, events, err)
 	}
 	if err = restarted.stop(); err != nil {
 		t.Fatalf("disabled restart shutdown: %v", err)
+	}
+	values["DAYNIGHT_WEBHOOK_ENABLED"] = "1"
+	enabledRestart := startPersistenceProcess(t, values)
+	assertCatalog(true)
+	if err = observer.QueryRow(ctx, `SELECT e.destination_configuration,k.secret
+		FROM webhook_endpoints e JOIN webhook_signing_keys k ON k.id=e.active_key_id
+		WHERE e.id=$1`, created.Endpoint.ID).Scan(&restartedDestination, &restartedSecret); err != nil || !bytes.Equal(destination, restartedDestination) || !bytes.Equal(signingSecret, restartedSecret) {
+		t.Fatalf("enabled process restart changed destination or signing secret: %v", err)
+	}
+	if err = enabledRestart.stop(); err != nil {
+		t.Fatalf("enabled restart shutdown: %v", err)
 	}
 	listener, err := net.Listen("tcp", values["DAYNIGHT_LISTEN_ADDR"])
 	if err != nil {
