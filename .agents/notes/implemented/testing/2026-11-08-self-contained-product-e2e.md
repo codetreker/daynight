@@ -46,6 +46,15 @@ maxima include cleanup and upload and remain below the job limit. Recovery
 preserves the original scenario and cleanup receipt instead of turning an
 interrupted run green. Artifact uploads include only results and logs.
 
+Console bootstrap and the local provider expose separate timelines through the
+existing log artifact owner. Fixed bootstrap stages and route labels, connection
+correlation, transport outcomes and response statuses distinguish an unfinished
+browser navigation from CONNECT, TLS or HTTP handling. Timeline records omit raw
+URLs, OAuth parameters, headers, bodies, cookies and credentials. Bootstrap traces
+and page captures are not published because Console registration can return
+application secrets before the product scenario begins. The product test runner's
+later browser evidence cannot explain an earlier bootstrap failure.
+
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
 remain with their established owners. Preparation may retrieve pinned build
@@ -65,6 +74,12 @@ self-contained repeatable run and couples failures to another environment.
 focused module contract but omits complete startup, routing, authentication and
 production resource assembly. It does not establish the cross-client journey.
 
+**Use only the product runner's browser trace for authentication failures.**
+Console bootstrap precedes that runner, so an earlier failure leaves no browser
+trace. Recording the entire Console session would also retain OAuth and App
+credentials. Fixed-stage and transport timelines cover that earlier boundary
+without publishing those payloads.
+
 ## Consequences
 
 The framework adds an independent build and runtime owner while reusing normal
@@ -78,5 +93,9 @@ not claim an offline build. The upstream source pin and local provider must be
 reviewed when UniAuth's protocol changes.
 
 Per-run cleanup remains part of success, and source/artifact identities bound
-the retained result. The independent hosted job does not replace module, installed CLI or deployment
+the retained result. Bootstrap and transport timelines preserve the last observed
+boundary without changing navigation deadlines or retrying failed authentication.
+Expected certificate-error recovery may include a failed TLS attempt followed by
+a successful new connection; observations must be read as a sequence.
+The independent hosted job does not replace module, installed CLI or deployment
 checks; module-only fixture changes do not schedule a complete product journey.

@@ -14,6 +14,23 @@ type Authorization = {
 export const providerClientId = "product-e2e-github";
 export const providerClientSecret = "product-e2e-github-secret";
 
+type ProviderObservationDetail =
+  | { event: "connection" }
+  | { event: "connect"; target: "github" | "github-api" | "unsupported"; accepted: boolean; headBytes: number }
+  | { event: "tls-ready"; protocol: "http/1.1" | "h2" | "none" | "other" }
+  | { event: "tls-error" | "socket-error"; code: string }
+  | { event: "request"; route: ProviderRoute; method: "GET" | "POST" | "other" }
+  | { event: "response"; route: ProviderRoute; status: number }
+  | { event: "close"; hadError: boolean };
+
+export type ProviderObservation = {
+  timestamp: string;
+  elapsedMs: number;
+  connection?: number;
+} & ProviderObservationDetail;
+
+type ProviderRoute = "authorize" | "token" | "profile" | "emails" | "unsupported";
+
 export type Provider = {
   port: number;
   close: () => Promise<void>;
@@ -56,13 +73,38 @@ export const startProvider = async (options: {
   port: number;
   certificatePath: string;
   keyPath: string;
+  observe?: (event: ProviderObservation) => void;
 }): Promise<Provider> => {
   const [cert, key] = await Promise.all([readFile(options.certificatePath), readFile(options.keyPath)]);
   const requests = new Map<string, Authorization>();
   const codes = new Map<string, Authorization>();
   const tokens = new Set<string>();
   const sockets = new Set<Socket>();
+  const connectionIds = new WeakMap<Socket, number>();
+  const endpoints = new Map<string, number>();
+  const started = performance.now();
+  let nextConnection = 1;
   let closing = false;
+  // TLS wraps CONNECT sockets; public peer endpoints correlate the two Socket objects.
+  const endpoint = (socket: Socket): string => `${socket.remoteAddress}:${socket.remotePort}`;
+  const connection = (socket: Socket): number | undefined => connectionIds.get(socket) ?? endpoints.get(endpoint(socket));
+  const observe = (socket: Socket, event: ProviderObservationDetail): void => {
+    options.observe?.({ timestamp: new Date().toISOString(), elapsedMs: performance.now() - started, connection: connection(socket), ...event });
+  };
+  const errorCode = (error: Error): string => "code" in error && typeof error.code === "string" && /^[A-Z][A-Z_0-9]*$/.test(error.code) ? error.code : "unknown";
+  const route = (request: IncomingMessage): ProviderRoute => {
+    const pathname = request.url!.split("?")[0];
+    const host = request.headers.host;
+    if (host === "github.com" || host === "github.com:443") {
+      if (pathname === "/login/oauth/authorize") return "authorize";
+      if (pathname === "/login/oauth/access_token") return "token";
+    }
+    if (host === "api.github.com" || host === "api.github.com:443") {
+      if (pathname === "/user") return "profile";
+      if (pathname === "/user/emails") return "emails";
+    }
+    return "unsupported";
+  };
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const hostname = request.headers.host;
@@ -147,6 +189,9 @@ export const startProvider = async (options: {
   };
 
   const secure = createHTTPSServer({ cert, key }, (request, response) => {
+    const requestRoute = route(request);
+    observe(request.socket, { event: "request", route: requestRoute, method: request.method === "GET" || request.method === "POST" ? request.method : "other" });
+    response.once("finish", () => observe(request.socket, { event: "response", route: requestRoute, status: response.statusCode }));
     void handle(request, response).catch((error: unknown) => {
       if (response.headersSent) {
         response.destroy(error instanceof Error ? error : new Error(String(error)));
@@ -155,16 +200,36 @@ export const startProvider = async (options: {
       }
     });
   });
+  secure.on("secureConnection", (socket) => {
+    const id = connection(socket);
+    if (id !== undefined) connectionIds.set(socket, id);
+    const protocol = socket.alpnProtocol;
+    observe(socket, { event: "tls-ready", protocol: protocol === false ? "none" : protocol === "http/1.1" || protocol === "h2" ? protocol : "other" });
+  });
+  secure.on("tlsClientError", (error, socket) => observe(socket, { event: "tls-error", code: errorCode(error) }));
   const proxy = createHTTPServer((_request, response) => json(response, 403, { error: "CONNECT_required" }));
   proxy.on("connection", (socket) => {
     sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
+    const id = nextConnection++;
+    const key = endpoint(socket);
+    connectionIds.set(socket, id);
+    endpoints.set(key, id);
+    observe(socket, { event: "connection" });
+    socket.once("close", (hadError) => {
+      observe(socket, { event: "close", hadError });
+      sockets.delete(socket);
+      if (endpoints.get(key) === id) endpoints.delete(key);
+    });
     socket.on("error", (error) => {
+      observe(socket, { event: "socket-error", code: errorCode(error) });
       if (!closing) console.error(`Local provider connection failed: ${error.message}`);
     });
   });
   proxy.on("connect", (request, socket, head) => {
-    if (closing || (request.url !== "github.com:443" && request.url !== "api.github.com:443")) {
+    const target = request.url === "github.com:443" ? "github" : request.url === "api.github.com:443" ? "github-api" : "unsupported";
+    const accepted = !closing && target !== "unsupported";
+    observe(socket as Socket, { event: "connect", target, accepted, headBytes: head.length });
+    if (!accepted) {
       socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
       return;
     }

@@ -6,7 +6,7 @@ import { request as requestHTTP } from "node:http";
 import path from "node:path";
 import { test } from "node:test";
 import { connect as connectTLS } from "node:tls";
-import { providerClientId, providerClientSecret, startProvider, type Provider } from "../src/provider.ts";
+import { providerClientId, providerClientSecret, startProvider, type Provider, type ProviderObservation } from "../src/provider.ts";
 
 type Response = { status: number; headers: Map<string, string>; body: string };
 
@@ -57,7 +57,7 @@ const request = async (provider: Provider, certificate: Buffer, hostname: string
   });
 };
 
-const fixture = async (): Promise<{ provider: Provider; certificate: Buffer; cleanup: () => Promise<void> }> => {
+const fixture = async (observe?: (event: ProviderObservation) => void): Promise<{ provider: Provider; certificate: Buffer; cleanup: () => Promise<void> }> => {
   const temporary = path.resolve(import.meta.dirname, "../../../..", ".tmp");
   await mkdir(temporary, { recursive: true });
   const directory = await mkdtemp(path.join(temporary, "e2e-provider-test-"));
@@ -65,7 +65,7 @@ const fixture = async (): Promise<{ provider: Provider; certificate: Buffer; cle
   const keyPath = path.join(directory, "provider.key");
   try {
     execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=Local E2E OAuth provider", "-addext", "subjectAltName=DNS:github.com,DNS:api.github.com", "-keyout", keyPath, "-out", certificatePath], { stdio: "ignore" });
-    const provider = await startProvider({ port: 0, certificatePath, keyPath });
+    const provider = await startProvider({ port: 0, certificatePath, keyPath, observe });
     const certificate = await readFile(certificatePath);
     return { provider, certificate, cleanup: async () => {
       try { await provider.close(); } finally { await rm(directory, { recursive: true, force: true }); }
@@ -76,7 +76,7 @@ const fixture = async (): Promise<{ provider: Provider; certificate: Buffer; cle
   }
 };
 
-const authorize = async (provider: Provider, certificate: Buffer): Promise<{ code: string; verifier: string; callback: string }> => {
+const authorize = async (provider: Provider, certificate: Buffer): Promise<{ code: string; verifier: string; callback: string; state: string; challenge: string }> => {
   const verifier = randomBytes(32).toString("base64url");
   const callback = "http://127.0.0.1:12345/auth/callback";
   const state = randomBytes(16).toString("base64url");
@@ -90,7 +90,7 @@ const authorize = async (provider: Provider, certificate: Buffer): Promise<{ cod
   const location = new URL(authorization.headers.get("location")!);
   assert.equal(location.origin + location.pathname, callback);
   assert.equal(location.searchParams.get("state"), state);
-  return { code: location.searchParams.get("code")!, verifier, callback };
+  return { code: location.searchParams.get("code")!, verifier, callback, state, challenge: query.get("code_challenge")! };
 };
 
 const exchange = async (provider: Provider, certificate: Buffer, authorization: { code: string; verifier: string; callback: string }): Promise<Response> =>
@@ -99,8 +99,9 @@ const exchange = async (provider: Provider, certificate: Buffer, authorization: 
     body: new URLSearchParams({ grant_type: "authorization_code", code: authorization.code, code_verifier: authorization.verifier, redirect_uri: authorization.callback, client_id: providerClientId, client_secret: providerClientSecret }).toString(),
   });
 
-test("local CONNECT and TLS complete OAuth, preserve state and return a verified identity", async () => {
-  const context = await fixture();
+test("local CONNECT and TLS complete OAuth with correlated secret-free observations", async () => {
+  const observations: ProviderObservation[] = [];
+  const context = await fixture((event) => observations.push(event));
   try {
     const authorization = await authorize(context.provider, context.certificate);
     const token = await exchange(context.provider, context.certificate, authorization);
@@ -114,6 +115,21 @@ test("local CONNECT and TLS complete OAuth, preserve state and return a verified
     assert.equal(emails.status, 200);
     assert.deepEqual(JSON.parse(emails.body), [{ email: "admin@example.test", primary: true, verified: true }]);
     assert.equal((await exchange(context.provider, context.certificate, authorization)).status, 400);
+    const requests = observations.filter((event) => event.event === "request");
+    assert.deepEqual(requests.map((event) => event.route), ["authorize", "authorize", "token", "profile", "emails", "token"]);
+    for (const request of requests) {
+      assert.equal(typeof request.connection, "number");
+      const events = observations.filter((event) => event.connection === request.connection);
+      assert.deepEqual(events.slice(0, 5).map((event) => event.event), ["connection", "connect", "tls-ready", "request", "response"]);
+      for (const event of events) {
+        assert.ok(Number.isFinite(Date.parse(event.timestamp)));
+        assert.ok(event.elapsedMs >= 0);
+      }
+    }
+    const diagnostic = JSON.stringify(observations);
+    for (const value of [authorization.state, authorization.challenge, authorization.code, authorization.verifier, credentials.access_token, providerClientSecret]) {
+      assert.equal(diagnostic.includes(value), false);
+    }
   } finally { await context.cleanup(); }
 });
 
@@ -146,4 +162,34 @@ test("CONNECT rejects targets outside the local provider and cleanup closes upgr
     await context.provider.close();
     await closed;
   } finally { await context.cleanup(); }
+});
+
+
+test("malformed TLS is observed without a fabricated HTTP request", { timeout: 10_000 }, async () => {
+  const observations: ProviderObservation[] = [];
+  let receivedFailure: (event: ProviderObservation) => void = () => {};
+  const failure = new Promise<ProviderObservation>((resolve) => { receivedFailure = resolve; });
+  const context = await fixture((event) => {
+    observations.push(event);
+    if (event.event === "tls-error") receivedFailure(event);
+  });
+  let socket: import("node:net").Socket | undefined;
+  try {
+    socket = await new Promise<import("node:net").Socket>((resolve, reject) => {
+      const tunnel = requestHTTP({ hostname: "127.0.0.1", port: context.provider.port, method: "CONNECT", path: "github.com:443" });
+      tunnel.once("error", reject);
+      tunnel.once("connect", (response, connected) => {
+        assert.equal(response.statusCode, 200);
+        resolve(connected as import("node:net").Socket);
+      });
+      tunnel.end();
+    });
+    socket.on("error", () => {});
+    socket.resume();
+    socket.write("GET /private-state HTTP/1.1\r\n\r\n");
+    const event = await failure;
+    assert.ok(event.event === "tls-error" && /^[A-Z][A-Z_0-9]*$/.test(event.code));
+    assert.equal(observations.some((event) => event.event === "request"), false);
+    assert.equal(JSON.stringify(observations).includes("private-state"), false);
+  } finally { socket?.destroy(); await context.cleanup(); }
 });

@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { buildArtifacts } from "./build.ts";
+import { registerAuth } from "./auth-bootstrap.ts";
 import { runCommand } from "./command.ts";
 import { startEnvironment, type CleanupReceipt, type Environment } from "./environment.ts";
 
@@ -35,39 +37,6 @@ const terminate = () => cancel("SIGTERM");
 process.once("SIGINT", interrupt);
 process.once("SIGTERM", terminate);
 
-const registerAuth = async (environment: Environment): Promise<{ appId: string; appSecret: string }> => {
-  const { chromium, expect } = await import("@playwright/test");
-  const browser = await chromium.launch({ proxy: { server: environment.proxyURL, bypass: "127.0.0.1,localhost" } });
-  try {
-    const context = await browser.newContext({ ignoreHTTPSErrors: true, locale: "en-US" });
-    const page = await context.newPage();
-    page.setDefaultTimeout(30_000);
-    await page.goto(`${environment.authURL}/console/`);
-    await page.getByRole("button", { name: "Continue with GitHub", exact: true }).click();
-    await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
-    await expect(page).toHaveURL(`${environment.authURL}/console/`);
-    const session = await context.request.get(`${environment.authURL}/console/api/session`);
-    if (session.status() !== 200) throw new Error(`UniAuth Console session failed (${session.status()}).`);
-    const user = await session.json() as { csrf_token: string };
-    if (typeof user.csrf_token !== "string") throw new Error("UniAuth did not return a Console CSRF token.");
-    const response = await context.request.post(`${environment.authURL}/console/api/apps`, {
-      headers: { Origin: environment.authURL, "X-CSRF-Token": user.csrf_token },
-      data: {
-        name: "Product E2E",
-        enabled: true,
-        redirect_uris: [`${environment.baseURL}/auth/callback`],
-        providers: ["github"],
-        initial_secret: { name: "E2E backend" },
-      },
-    });
-    if (response.status() !== 201) throw new Error(`UniAuth App registration failed (${response.status()}): ${await response.text()}`);
-    const creation = await response.json() as { app: { id: string }; secret: string };
-    if (typeof creation.app.id !== "string" || typeof creation.secret !== "string") throw new Error("UniAuth did not return the registered App credentials.");
-    await context.close();
-    return { appId: creation.app.id, appSecret: creation.secret };
-  } finally { await browser.close(); }
-};
-
 let environment: Environment | undefined;
 const failures: unknown[] = [];
 const manifest: Record<string, unknown> = { startedAt: new Date().toISOString(), status: "running", cleanup: { completed: false } };
@@ -87,7 +56,7 @@ try {
   await writeRunPointer("environment");
   environment = await startEnvironment({ repository, runDirectory, artifactsDirectory: artifacts.directory, signal: cancellation.signal });
   manifest.resources = environment.resourceIdentity;
-  const credentials = await registerAuth(environment);
+  const credentials = await registerAuth(environment, (event) => appendFileSync(path.join(runDirectory, "logs", "auth-bootstrap.jsonl"), `${JSON.stringify(event)}\n`));
   await environment.startServer(credentials);
   const descriptor = {
     baseURL: environment.baseURL,

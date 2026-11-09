@@ -118,6 +118,17 @@ Each invocation prints a `.tmp/product-e2e/<run-id>` result directory. It retain
 the source revision and fingerprint, binary and Web asset hashes, container
 identities, Playwright result, failure screenshots/traces and runtime logs.
 
+Console bootstrap and the local provider retain separate JSONL timelines under
+`logs/`. They identify completed bootstrap stages, browser navigation outcomes,
+CONNECT attempts, TLS outcomes and provider HTTP routes. These timeline records
+use fixed route labels and transport metadata, excluding raw URLs, query values,
+headers, bodies, cookies and application credentials. Bootstrap does not publish
+browser traces, HAR files, HTML or screenshots because they can contain Console
+credentials; the later product journey retains its configured browser evidence.
+An initial TLS certificate rejection can be followed by Chromium's normal
+certificate-error override and a new connection, so a TLS error alone does not
+establish that authentication failed.
+
 Setup and execution have deadlines, readiness detects early service exit, and
 failures propagate to the command exit status. Cleanup runs after success,
 failure or cancellation, removes only the current run's containers, data volume,

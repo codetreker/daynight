@@ -135,6 +135,7 @@ const main = async (): Promise<void> => {
     port: configuration.proxyPort,
     certificatePath: path.join(artifacts, 'provider-ca.pem'),
     keyPath: path.join(artifacts, 'provider-key.pem'),
+    observe: (event) => appendFileSync(path.join(runDirectory, 'logs', 'provider.jsonl'), `${JSON.stringify(event)}\n`),
   });
   lifecycle.defer(provider.close);
   const publicPorts = new Set([configuration.serverPort, configuration.authPort, configuration.proxyPort]);
