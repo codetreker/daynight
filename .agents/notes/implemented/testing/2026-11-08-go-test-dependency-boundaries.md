@@ -20,8 +20,14 @@ collaborator boundary.
 
 ## Decision
 
-The [test-writing policy](../../../../docs/writing_tests.md) assigns mocks outside
-the responsibility being tested. The regular `internal/server/task` suite uses
+The [test-writing policy](../../../../docs/writing_tests.md) assigns mocks at the
+directly invoked lower operation. Server units execute HTTP adaptation with
+service or core use case mocks. Service units execute their own dependency
+assembly, orchestration, transaction coordination and shared-resource lifetime
+with mocks of directly invoked core and other lower business operations. DAO
+mocks beneath real lower business decisions do not establish either boundary.
+
+The regular `internal/server/task` suite uses
 consumer-owned `TaskService`, `StepService` and `ThreadService` contracts plus
 `SearchOperation` and `SyncOperation` functions. Existing production services
 satisfy the contracts directly; the composition point binds the existing Search
@@ -47,13 +53,29 @@ callback/configuration validation. The real middleware can therefore be tested
 without constructing unrelated account services or replacing `Require` with a
 principal-only wrapper.
 
-Core tests synthesize domain facts and control required DAO results. Service
-tests exercise their own orchestration with controlled lower operations and
-scope/transaction results. Store tests retain real PostgreSQL SQL, locks,
-snapshots, cancellation, commit acknowledgement and persistence. Configured
-committed and unknown results are inputs to upper-layer tests, not proof that a
-transaction persisted or rolled back. HTTP cancellation propagation is distinct
-from releasing an actual SQL query and connection.
+Core tests synthesize domain facts and control required DAO results while
+executing their business rules. Service tests supply explicit core-operation
+results, errors and blocking, checking principal, IDs, inputs, context, bound
+capabilities, call counts and required order. They execute their actual scope
+callback while configuring lower results, completion and cleanup independently.
+This exposes coordination, completion precedence and error propagation without
+repeating the lower business-rule matrix.
+
+When production construction or resource lifetime is the subject, assembly
+tests control collaborators and external resources while retaining that
+construction and wiring. They observe dependency identity, readiness, partial
+startup cleanup, background exit, retention and closure after dependency users
+stop. Real runtime, transport and resource
+mechanisms remain with their owner. Fixed domain data does not require lower
+business workflows, and a replacement test application cannot prove production
+wiring. Shared models and domain errors remain ordinary values; pure and protocol
+mechanisms execute in their owning tests.
+
+Store tests retain real PostgreSQL SQL, locks, snapshots, cancellation, commit
+acknowledgement and persistence. Configured committed and unknown results are
+inputs to upper-layer tests, not proof that a transaction persisted or rolled
+back. HTTP cancellation propagation is distinct from releasing an actual SQL
+query and connection.
 
 Step and Thread services supply encoded documents; HTTP tests verify those
 bytes, headers, write failures and cancellation. Server-owned envelopes use the
@@ -83,8 +105,9 @@ module check.
 ## Alternatives
 
 **Keep DAO mocks as the uniform non-store boundary.** This still executes lower
-business rules in HTTP tests and makes a server failure depend on unrelated
-service or core decisions. It does not express what the HTTP adapter must prove.
+business rules in HTTP and service tests, so failures depend on unrelated
+service or core decisions. It does not isolate the adapter or orchestration being
+verified.
 
 **Share a complete gateway and application fixture.** This retains database,
 login and domain preparation for tests whose subject is HTTP adaptation, and it
@@ -109,6 +132,9 @@ the same direct operation boundary to MCP protocol tests and preserves their
 lower admission, transfer and physical proofs in their actual owners. Other
 domain and process fixtures still carry their own existing scopes; adoption of
 the common policy does not claim that every historical suite has been migrated.
+Database isolation and direct operation isolation are separate properties.
+Changing a mock boundary requires preserving each lower rule and mechanism in
+its actual owner before removing the original assertion.
 
 The real socket timeout and exact encoded boundaries remain meaningful costs.
 Performance comparisons must include receiving store/API suites and complete

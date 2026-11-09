@@ -75,11 +75,15 @@ server 管理 HTTP listener、HTTP server 和请求的生命周期，并与模�
 
 按被验证的职责选择 mock 边界和测试目录，具体规则由 [测试编写规则](writing_tests.md) 维护。领域 DAO 的 SQL、映射、约束与锁测试随实际实现子包组织；实现根包保留自己拥有的连接、迁移、scope、事务完成、共享快照和跨 DAO 原子性证明。`core/store` 的数据库中立接口能力与纯函数合同测试直接构造输入，不依赖驱动。使用根包 fixture 或通过 scope 取得 DAO，本身不改变被测职责。server、service 与 core 的单元测试不连接真实 PostgreSQL，也不为取得固定领域数据或 principal 启动完整应用与认证服务。
 
-server 单元测试保留真实路由、HTTP 请求解析、响应编码、错误映射、协议认证接入与请求生命周期，mock 直接调用的 service 或业务用例。server 直接调用 core 操作时，仍在业务用例调用处隔离；仅 mock DAO 并继续执行真实 service/core，不能隔离 HTTP 适配职责。协议拒绝应验证业务用例未被调用；取消与 deadline 应验证 context 传递和操作退出；响应失败应验证日志与完成结果的表达、调用次数和无重复调用。
+server 单元测试保留真实路由、HTTP 请求解析、响应编码、错误映射、协议认证接入与请求生命周期，mock handler 直接调用的 service 或 core 业务用例，明确提供结果、错误和阻塞。仅 mock DAO 并继续执行真实 service/core，不能隔离 HTTP 适配职责。普通 handler fixture 只组装被测适配和受控协作者，不为取得固定数据启动无关模块或注册无关协议。协议拒绝应验证业务用例未被调用；取消与 deadline 应验证 context 传递和操作退出；响应失败应验证日志与完成结果的表达、调用次数和无重复调用。
 
-core 业务规则测试使用合成领域数据，通过所需 `core/store` DAO mock 控制查询与写入结果。service 编排测试控制直接下层业务操作，以及所需 DAO、scope 与 transaction 结果，验证跨模块调用、参数、顺序、完成结果、错误链和资源生命周期。各层保留自己执行的机制，纯函数直接构造输入，不为 mock 增加无职责的转发层或存储依赖。
+service 单元测试实际执行自身的依赖装配、跨模块编排、事务协调和共享资源生命周期，mock 直接调用的 core 操作及其他下层业务操作。仅 mock DAO 并执行真实 core 业务决策，不能隔离 service 职责。service 自身调用的 DAO、scope、transaction 和外部资源也使用所需 mock，验证 principal、ID、输入、context、事务绑定能力、调用次数及顺序、结果和错误链。事务协调测试执行实际 callback，独立提供下层操作结果、completion 和清理错误，验证后续调用、完成结果优先级及失败后的资源处理。下层业务规则矩阵归 core。
 
-Mock 只实现当前职责需要的能力，未配置或额外调用应立即使测试失败。事务 callback、拟写参数与 committed、not_committed、unknown 结果必须分开；mock 返回 committed 或记录过写入都不等于已经持久化。并发顺序只验证同一逻辑操作或明确 barrier 的关系，不要求所有 goroutine 使用全局 FIFO。后台未预期调用也必须独立标记测试失败并完成取消与 drain。不要 mock SQL 字符串或另建完整内存数据库来模拟 PostgreSQL。所属层单元测试应能在未设置 `DAYNIGHT_TEST_DATABASE_URL` 时实际执行；不得以跳过测试或默认空结果代替隔离。
+装配和生命周期本身是被测机制时，测试使用受控协作者及外部资源边界执行生产构造与绑定，验证依赖身份、readiness、部分启动清理、后台退出、资源保留和停止使用后再关闭的顺序。实际 runtime、传输及资源生命周期证明保留所需真实资源；不自行构造替代应用，也不通过下层业务流程准备固定领域数据。
+
+core 业务规则测试使用合成领域数据，实际执行本模块的权限、状态转换和操作，通过所需 `core/store` DAO、scope 与 transaction mock 控制存储事实、错误和完成结果。共享模型、领域错误和普通数据直接构造；纯逻辑和协议机制在其所属测试中实际执行，不因使用 core 类型而引入操作 mock。各层保留自己执行的机制，不为 mock 增加无职责的转发层或存储依赖。
+
+Mock 只实现当前职责需要的能力，未配置或额外调用应立即使测试失败。事务 callback、拟写参数与 committed、not_committed、unknown 结果必须分开；mock 返回 committed 或记录过写入都不等于已经持久化。并发顺序只验证同一逻辑操作或明确 barrier 的关系，不要求所有 goroutine 使用全局 FIFO。后台未预期调用也必须独立标记测试失败并完成取消与 drain。不要 mock SQL 字符串或另建完整内存数据库来模拟 PostgreSQL。所属层单元测试应能在未设置 `DAYNIGHT_TEST_DATABASE_URL` 时实际执行；不得以跳过测试或默认空结果代替隔离。数据库隔离不能代替直接下层操作的隔离。
 
 DAO 实现测试使用隔离真实 PostgreSQL，证明 SQL、约束、锁、快照、事务提交与回滚、结果未知、持久化读回和查询取消。跨操作的权限与版本重新检查分别保留规则层的决策证明，以及存储层真实读取、锁定与数据变化的证明；一次 mock 调用不能替代真实事务或跨调用持久化观察。
 
