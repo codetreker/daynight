@@ -32,7 +32,7 @@ func (h *taskStepsHandler) move(w http.ResponseWriter, request *http.Request, pr
 		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "version", "before", "after", "position")
+	fields, err := h.decodeObject(w, request, "version", "before", "after", "position")
 	if err != nil {
 		refuse(err)
 		return

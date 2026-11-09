@@ -32,7 +32,7 @@ func (h *taskStepsHandler) delete(w http.ResponseWriter, request *http.Request, 
 		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "version")
+	fields, err := h.decodeObject(w, request, "version")
 	if err != nil {
 		refuse(err)
 		return

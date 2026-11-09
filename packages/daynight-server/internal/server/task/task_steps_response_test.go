@@ -21,6 +21,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func stepInputRequest(method string, body io.Reader) *http.Request {
@@ -45,7 +46,7 @@ func TestStepsBodyRejectionPreservesUncommittedOutcome(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			h := &taskStepsHandler{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+			h := newTaskStepsHandler(nil, slog.New(slog.NewJSONHandler(&logs, nil)))
 			request := stepInputRequest(tc.method, strings.NewReader(strings.Repeat("x", httpx.MaxJSONBody+1)))
 			response := httptest.NewRecorder()
 			tc.handle(h, response, request, model.Principal{UserID: "test"})
@@ -64,10 +65,30 @@ func TestStepsBodyRejectionPreservesUncommittedOutcome(t *testing.T) {
 	}
 }
 
+type unexpectedStepAdd struct {
+	StepService
+	t     *testing.T
+	calls int
+}
+
+func (s *unexpectedStepAdd) Add(context.Context, model.Principal, string, string, taskservice.AddTaskStep) (taskservice.StepsWriteResult, error) {
+	s.calls++
+	s.t.Error("incomplete request invoked Step Add")
+	return taskservice.StepsWriteResult{}, errors.New("unexpected Step Add")
+}
+
 func TestStepsSocketTimeoutRetainsUncommittedOutcome(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	h := &taskStepsHandler{logger: logger}
+	steps := &unexpectedStepAdd{t: t}
+	h := newTaskStepsHandler(steps, logger)
+	if transport.JSONBodyReadTimeout != 15*time.Second {
+		t.Fatalf("production JSON body read timeout = %s", transport.JSONBodyReadTimeout)
+	}
+	if h.bodyReadTimeout != transport.JSONBodyReadTimeout {
+		t.Fatalf("constructed body read timeout = %s, want %s", h.bodyReadTimeout, transport.JSONBodyReadTimeout)
+	}
+	h.bodyReadTimeout = 200 * time.Millisecond
 	served := make(chan struct{})
 	handler := httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("projectId", "11111111-1111-4111-8111-111111111111")
@@ -84,7 +105,9 @@ func TestStepsSocketTimeoutRetainsUncommittedOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(transport.JSONBodyReadTimeout + 5*time.Second))
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	_, err = io.WriteString(conn, "POST /steps HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\nX-Request-ID: step-timeout\r\n\r\n{")
 	if err != nil {
 		t.Fatal(err)
@@ -95,13 +118,16 @@ func TestStepsSocketTimeoutRetainsUncommittedOutcome(t *testing.T) {
 	}
 	data, err := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if err != nil || response.StatusCode != http.StatusRequestTimeout || !response.Close || !strings.Contains(string(data), "step-timeout") {
+	if err != nil || response.StatusCode != http.StatusRequestTimeout || !response.Close || !strings.Contains(string(data), `"requestId":"step-timeout"`) || !strings.Contains(string(data), `"code":"request_timeout"`) {
 		t.Fatalf("status=%d close=%v body=%q read=%v", response.StatusCode, response.Close, data, err)
 	}
 	select {
 	case <-served:
 	case <-time.After(5 * time.Second):
 		t.Fatal("step handler did not finish")
+	}
+	if steps.calls != 0 {
+		t.Fatalf("Step Add calls = %d, want 0", steps.calls)
 	}
 	if !strings.Contains(logs.String(), `"tx_outcome":"not_committed"`) {
 		t.Fatalf("missing transaction outcome: %s", logs.String())
